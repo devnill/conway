@@ -98,6 +98,17 @@ fn read_call_response(path: &str) -> GenerateResponse {
     tool_call_response("read", serde_json::json!({ "path": path }))
 }
 
+/// AMENDED by board item `01KZDDPC5MMD49F6JPV9CW4TVM`: the `RenderKind::
+/// Structured` sibling-grant fixture used wherever this file used to pair a
+/// `paths_under`/other structured rule against a `bash:...` flat sibling to
+/// prove "revoking one leaves the other in force" -- a durable pattern
+/// grant no longer exists for `bash` at all, so a `bash` sibling can no
+/// longer demonstrate that. See `conway_core::permission_pattern`'s own
+/// module doc.
+fn write_call_response(path: &str) -> GenerateResponse {
+    tool_call_response("write", serde_json::json!({ "path": path, "content": "x" }))
+}
+
 fn base_config(cwd: &Path) -> ConwayConfig {
     let mut roles = BTreeMap::new();
     roles.insert(
@@ -1525,13 +1536,24 @@ async fn trusting_a_project_file_with_a_bad_prefix_does_not_count_the_dropped_ru
 /// structured equivalent `tools(["bash"]) + command_prefix("git status") +
 /// allow` produce BYTE-IDENTICAL gate decisions across a matrix of bash
 /// calls: an exact match, a subcommand match, a different command, and a
-/// chained command (the metacharacter gate must refuse the chained command
-/// under BOTH forms -- trap 4, the gate is not weakened). Both rules are
-/// loaded from a real global `permissions.json` through the real
-/// `load_permission_files` -> `PermissionBroker` seam, and the matrix is
-/// driven through the real `BashTool::render` -> `render_call` -> `decide`
-/// path. The gate request COUNTS are equal for every command -- the
-/// strongest available evidence there is one evaluator and not two.
+/// chained command. Both rules are loaded from a real global
+/// `permissions.json` through the real `load_permission_files` ->
+/// `PermissionBroker` seam, and the matrix is driven through the real
+/// `BashTool::render` -> `render_call` -> `decide` path. The gate request
+/// COUNTS are equal for every command -- the strongest available evidence
+/// there is one evaluator and not two.
+///
+/// **AMENDED by board item `01KZDDPC5MMD49F6JPV9CW4TVM`.** Every case in
+/// the matrix now reaches the gate (count `1`), including the exact and
+/// subcommand matches this test used to expect to auto-allow (count `0`):
+/// a durable pattern grant no longer exists for `bash` at all (see
+/// `conway_core::permission_pattern`'s own module doc), so there is no
+/// longer a command that clears it. What this test still proves, and the
+/// reason it survives rather than being deleted, is that the flat and
+/// structured forms agree on that refusal for EVERY case, uniformly --
+/// exactly the "one evaluator, not two" property named above. Trap 4's
+/// chained-command proof lives on unchanged, just no longer contrasted
+/// against a matching case that auto-allows.
 #[tokio::test]
 async fn flat_and_structured_command_prefix_produce_byte_identical_gate_decisions() {
     let (xdg_flat, env_flat) = isolated_env();
@@ -1543,8 +1565,8 @@ async fn flat_and_structured_command_prefix_produce_byte_identical_gate_decision
         r#"{"rules":[{"select":{"tools":["bash"]},"when":{"command_prefix":"git status"},"then":"allow"}]}"#,
     );
 
-    // The matrix: exact, subcommand, different, chained (gated). Each is
-    // run against BOTH the flat and structured conway instances, and the
+    // The matrix: exact, subcommand, different, chained. Each is run
+    // against BOTH the flat and structured conway instances, and the
     // gate-request count (0 = auto-allowed, 1 = reached the operator) must
     // match between them.
     let matrix = [
@@ -1562,24 +1584,12 @@ async fn flat_and_structured_command_prefix_produce_byte_identical_gate_decision
             "flat `bash:git status` and structured `command_prefix(\"git status\")` must produce \
              byte-identical gate decisions for `{command}` -- one evaluator, not two"
         );
+        assert_eq!(
+            flat_count, 1,
+            "no `bash` command -- matching the granted prefix or not -- may be auto-allowed \
+             by a pattern grant any more: `{command}`"
+        );
     }
-
-    // The semantic assertions that make the count meaningful: the exact and
-    // subcommand matches auto-allow (0 gate requests), the different command
-    // and the chained command both reach the gate (1 request each).
-    let exact = run_bash_and_count_gate(&xdg_flat, &env_flat, "git status").await;
-    let subcmd = run_bash_and_count_gate(&xdg_flat, &env_flat, "git status --short").await;
-    let different = run_bash_and_count_gate(&xdg_flat, &env_flat, "git push --force").await;
-    let chained =
-        run_bash_and_count_gate(&xdg_flat, &env_flat, "git status && rm -rf /tmp/x").await;
-    assert_eq!(exact, 0, "exact match auto-allows");
-    assert_eq!(subcmd, 0, "subcommand prefix match auto-allows");
-    assert_eq!(different, 1, "a different command reaches the gate");
-    assert_eq!(
-        chained, 1,
-        "TRAP 4: a chained command must reach the gate even under a matching prefix -- the \
-         allow-side metacharacter gate is not weakened for the structured form"
-    );
 }
 
 /// Runs one `bash` call end to end against a fresh conway built with the
@@ -1827,13 +1837,26 @@ async fn an_untrusted_project_structured_allow_rule_does_not_take_effect() {
 
 /// A4: a `command_prefix` rule selecting a MULTI-TOOL set that resolves to
 /// a MIX of `Structured`- and `ShellCommand`-rendering tools is NOT a
-/// registration error -- the `ShellCommand` member installs and matches, and
-/// the operator is warned via a NOTICE that the `Structured` member is inert.
-/// Pinned through the real load seam: the rule installs (a `bash echo hi`
-/// call is auto-allowed by the `ShellCommand` member), and the load report
-/// carries exactly one notice naming the inert `Structured` member -- never
-/// a silent install, never a hard reject that would also drop the working
-/// `bash` member.
+/// registration error -- the rule installs, and the operator is warned via a
+/// NOTICE that the `Structured` member is inert.
+///
+/// **AMENDED by board item `01KZDDPC5MMD49F6JPV9CW4TVM`, and left as a
+/// disclosed gap rather than silently fixed.** This test used to also prove
+/// the `ShellCommand` (`bash`) member installs and matches, on the theory
+/// that only the `Structured` member was inert. That is no longer true: a
+/// durable pattern grant does not exist for `bash` at all any more (see
+/// `conway_core::permission_pattern`'s own module doc), so BOTH members of
+/// this rule are inert now, not just the one the registration notice names.
+/// The registration check itself (`command_prefix_resolved_kinds` in
+/// `crates/conway/src/permissions/mod.rs`) was not touched by that item
+/// (out of its owned scope) and still only counts `Structured` vs
+/// `ShellCommand` membership, so the notice's wording ("the `ShellCommand`
+/// members install and match as written") is now misleading for `allow`
+/// rules -- see `docs/permissions.md`'s "Rules in `permissions.json`"
+/// section for the operator-facing statement of this gap. This test is
+/// pinned to the CURRENT, honest behavior (both members reach the gate) so
+/// a future fix to close that gap has a red test to turn green, not a green
+/// one asserting the old, now-false claim.
 #[tokio::test]
 async fn a_command_prefix_rule_on_a_mixed_kind_multi_tool_select_installs_with_a_notice() {
     let project = TempDir::new().expect("tempdir");
@@ -1848,7 +1871,7 @@ async fn a_command_prefix_rule_on_a_mixed_kind_multi_tool_select_installs_with_a
     );
 
     let gate = RecordingGate::new(PermissionDecision::Deny {
-        reason: "must not be consulted -- the bash member must grant".into(),
+        reason: "operator said no".into(),
     });
     let conway = build_conway(
         project.path(),
@@ -1884,9 +1907,11 @@ async fn a_command_prefix_rule_on_a_mixed_kind_multi_tool_select_installs_with_a
         report.notices[0]
     );
 
-    // Observable: the ShellCommand (`bash`) member installs and authorizes
-    // `echo hi` without the gate -- the rule is NOT silently dropped, and the
-    // working member is preserved.
+    // Observable, AMENDED: the rule installs (not silently dropped), but
+    // NEITHER member authorizes anything any more -- the `ShellCommand`
+    // (`bash`) member is refused by `Rule::gate_allows` exactly like every
+    // other `bash` allow rule now, on top of the `Structured` member the
+    // notice above already names. `echo hi` reaches the operator's gate.
     let handle = conway
         .new_session(SessionSpec::default())
         .await
@@ -1895,11 +1920,12 @@ async fn a_command_prefix_rule_on_a_mixed_kind_multi_tool_select_installs_with_a
     let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
         .await
         .expect("turn must not hang");
-    assert!(
-        gate.requests().is_empty(),
-        "the ShellCommand (`bash`) member of a mixed-kind command_prefix rule must still \
-         authorize its call -- the rule installs; the Structured member is inert but the \
-         ShellCommand member is not: {:?}",
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the rule installs (per the notice above) but authorizes nothing: the \
+         `ShellCommand` (`bash`) member is refused the same way every other `bash` \
+         allow rule now is, so `echo hi` must reach the operator's gate: {:?}",
         gate.requests()
     );
 }
@@ -2128,11 +2154,12 @@ async fn revoking_a_structured_allow_rule_removes_only_it_and_the_call_asks_agai
     write_global_permissions(
         &xdg,
         &format!(
-            r#"{{"allow":["bash:git status"],"rules":[{{"select":{{"tools":["read"]}},"when":{{"paths_under":"{}"}},"then":"allow"}}]}}"#,
+            r#"{{"allow":["write:*"],"rules":[{{"select":{{"tools":["read"]}},"when":{{"paths_under":"{}"}},"then":"allow"}}]}}"#,
             root_canon.display()
         ),
     );
     let global_file = xdg.path().join("conway").join("permissions.json");
+    let write_target = root_dir.path().join("written.txt").display().to_string();
 
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
@@ -2147,7 +2174,7 @@ async fn revoking_a_structured_allow_rule_removes_only_it_and_the_call_asks_agai
             ScriptedTurn::Respond(read_call_response("file.txt")),
             ScriptedTurn::Respond(text_response("done")),
             // Turn 3: the sibling flat grant must still auto-allow.
-            ScriptedTurn::Respond(bash_call_response("git status")),
+            ScriptedTurn::Respond(write_call_response(&write_target)),
             ScriptedTurn::Respond(text_response("done")),
         ],
         gate.clone() as Arc<dyn PermissionGate>,
@@ -2254,7 +2281,7 @@ async fn revoking_a_structured_allow_rule_removes_only_it_and_the_call_asks_agai
         "the structured rule's wire form must be removed from the file: {on_disk}"
     );
     assert!(
-        on_disk.contains("bash:git status"),
+        on_disk.contains("write:*"),
         "the sibling flat grant's wire form must survive: {on_disk}"
     );
 
@@ -2278,7 +2305,7 @@ async fn revoking_a_structured_allow_rule_removes_only_it_and_the_call_asks_agai
         .new_session(SessionSpec::default())
         .await
         .expect("new_session");
-    let turn = handle.prompt("check git status").await.expect("prompt");
+    let turn = handle.prompt("write the file").await.expect("prompt");
     let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
         .await
         .expect("turn must not hang");

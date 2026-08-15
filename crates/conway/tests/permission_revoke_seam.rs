@@ -65,6 +65,41 @@ fn bash_call_response(command: &str) -> GenerateResponse {
     }
 }
 
+/// A scripted `read` call -- the `RenderKind::Structured` stand-in used
+/// wherever this file needs TWO DISTINCT auto-allow grants that genuinely
+/// take effect (AMENDED by board item `01KZDDPC5MMD49F6JPV9CW4TVM`: a
+/// durable pattern grant no longer exists for `bash` at all, so
+/// `bash:git status`/`bash:cargo test` can no longer demonstrate "revoke
+/// one, the other still auto-allows" -- see `conway_core::
+/// permission_pattern`'s own module doc). Paired with `write_call_response`
+/// below as the second, independently-revocable grant.
+fn read_call_response(path: &str) -> GenerateResponse {
+    GenerateResponse {
+        content: vec![],
+        tool_calls: vec![ToolCall {
+            call_id: "call_1".to_string(),
+            name: ToolName::new("read"),
+            arguments: serde_json::json!({ "path": path }),
+        }],
+        stop: StopReason::ToolUse,
+        usage: Usage::default(),
+    }
+}
+
+/// A scripted `write` call -- see `read_call_response`'s own doc.
+fn write_call_response(path: &str) -> GenerateResponse {
+    GenerateResponse {
+        content: vec![],
+        tool_calls: vec![ToolCall {
+            call_id: "call_1".to_string(),
+            name: ToolName::new("write"),
+            arguments: serde_json::json!({ "path": path, "content": "x" }),
+        }],
+        stop: StopReason::ToolUse,
+        usage: Usage::default(),
+    }
+}
+
 fn base_config(cwd: &Path) -> ConwayConfig {
     let mut roles = std::collections::BTreeMap::new();
     roles.insert(
@@ -137,6 +172,10 @@ fn build_conway(cwd: &Path, script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionG
         .expect("build should succeed with the real builtin `bash` tool registered")
 }
 
+/// Runs one scripted tool call end to end -- named for its original `bash`
+/// fixture, but the SCRIPTED backend determines which tool is actually
+/// called, so this drives `read`/`write` calls too (see `read_call_response`'s
+/// own doc for why several tests now use those instead of `bash`).
 async fn run_one_bash_call(conway: &Conway) {
     let handle = conway
         .new_session(SessionSpec::default())
@@ -184,18 +223,24 @@ fn find_grant(conway: &Conway, wire: &str) -> (PatternRule, PatternOrigin) {
 
 /// Grant two patterns, revoke one -- the other must keep suppressing its
 /// prompt, and the revoked one must reach the operator's gate again,
-/// through the REAL bash tool + broker.
+/// through the REAL `read`/`write` tools + broker. `read:*`/`write:*`, not
+/// two `bash` prefixes -- see `read_call_response`'s own doc for why a
+/// `bash`-based fixture can no longer demonstrate this.
 #[tokio::test]
 async fn revoking_one_pattern_leaves_the_other_in_force() {
     let cwd = TempDir::new().expect("tempdir");
+    let read_path = cwd.path().join("read_me.txt");
+    std::fs::write(&read_path, "fixture content").expect("write read fixture");
+    let read_path = read_path.display().to_string();
+    let write_path = cwd.path().join("write_me.txt").display().to_string();
     let (_xdg, env) = isolated_env();
     let gate = RecordingGate::new();
     let conway = build_conway(
         cwd.path(),
         vec![
-            ScriptedTurn::Respond(bash_call_response("git status")),
+            ScriptedTurn::Respond(read_call_response(&read_path)),
             ScriptedTurn::Respond(text_response("done")),
-            ScriptedTurn::Respond(bash_call_response("cargo test")),
+            ScriptedTurn::Respond(write_call_response(&write_path)),
             ScriptedTurn::Respond(text_response("done")),
         ],
         gate.clone() as Arc<dyn PermissionGate>,
@@ -203,18 +248,18 @@ async fn revoking_one_pattern_leaves_the_other_in_force() {
     let agent = AgentId::new();
 
     conway.grant_permission_pattern(
-        PatternRule::parse("bash:git status").expect("valid"),
+        PatternRule::parse("read:*").expect("valid"),
         conway::PermissionScope::Session,
         agent,
     );
     conway.grant_permission_pattern(
-        PatternRule::parse("bash:cargo test").expect("valid"),
+        PatternRule::parse("write:*").expect("valid"),
         conway::PermissionScope::Session,
         agent,
     );
     assert_eq!(conway.active_permission_patterns().len(), 2);
 
-    let (rule, origin) = find_grant(&conway, "bash:git status");
+    let (rule, origin) = find_grant(&conway, "read:*");
     let outcome = conway.revoke_permission_pattern(&env, &rule, &origin);
     assert!(
         matches!(outcome, RevokeOutcome::RevokedNoFile),
@@ -233,7 +278,6 @@ async fn revoking_one_pattern_leaves_the_other_in_force() {
         1,
         "the revoked pattern must prompt again"
     );
-    assert_eq!(gate.requests()[0].rendered, "git status");
 
     // ...while the surviving pattern keeps suppressing its prompt.
     run_one_bash_call(&conway).await;
@@ -249,11 +293,16 @@ async fn revoking_one_pattern_leaves_the_other_in_force() {
 /// A revoked, project-file-origin rule is removed from the exact file it
 /// came from, and stays gone across a simulated restart -- AND the file's
 /// remaining trusted rule keeps applying with no re-`/trust` needed, proving
-/// the re-trust-after-rewrite decision actually works end to end.
+/// the re-trust-after-rewrite decision actually works end to end. `read:*`/
+/// `write:*`, not two `bash` prefixes -- see `read_call_response`'s own doc
+/// for why.
 #[tokio::test]
 async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
-    let project =
-        project_dir_with_permissions(r#"{"allow": ["bash:git status", "bash:cargo test"]}"#);
+    let project = project_dir_with_permissions(r#"{"allow": ["read:*", "write:*"]}"#);
+    let read_path = project.path().join("read_me.txt");
+    std::fs::write(&read_path, "fixture content").expect("write read fixture");
+    let read_path = read_path.display().to_string();
+    let write_path = project.path().join("write_me.txt").display().to_string();
     let (_xdg, env) = isolated_env();
     let path = project.path().join(".conway").join("permissions.json");
     let agent = AgentId::new();
@@ -269,7 +318,7 @@ async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
         .expect("trust succeeds");
     assert_eq!(conway.active_permission_patterns().len(), 2);
 
-    let (rule, origin) = find_grant(&conway, "bash:git status");
+    let (rule, origin) = find_grant(&conway, "read:*");
     let outcome = conway.revoke_permission_pattern(&env, &rule, &origin);
     match &outcome {
         RevokeOutcome::RevokedAndPersisted { retrust_warning } => {
@@ -284,8 +333,8 @@ async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
     // The file on disk no longer mentions the revoked rule, and still has
     // the other one.
     let contents = std::fs::read_to_string(&path).expect("read back");
-    assert!(!contents.contains("git status"), "{contents}");
-    assert!(contents.contains("cargo test"), "{contents}");
+    assert!(!contents.contains("\"read:*\""), "{contents}");
+    assert!(contents.contains("write:*"), "{contents}");
 
     // Simulate a restart: a brand-new `Conway`, loading permission files
     // fresh from disk.
@@ -293,9 +342,9 @@ async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
     let restarted = build_conway(
         project.path(),
         vec![
-            ScriptedTurn::Respond(bash_call_response("git status")),
+            ScriptedTurn::Respond(read_call_response(&read_path)),
             ScriptedTurn::Respond(text_response("done")),
-            ScriptedTurn::Respond(bash_call_response("cargo test")),
+            ScriptedTurn::Respond(write_call_response(&write_path)),
             ScriptedTurn::Respond(text_response("done")),
         ],
         gate2.clone() as Arc<dyn PermissionGate>,
@@ -316,7 +365,6 @@ async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
         "the revoked rule must stay revoked across a restart -- it must \
          prompt again"
     );
-    assert_eq!(gate2.requests()[0].rendered, "git status");
 
     run_one_bash_call(&restarted).await;
     assert_eq!(

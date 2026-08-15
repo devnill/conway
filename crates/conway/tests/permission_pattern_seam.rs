@@ -268,25 +268,39 @@ async fn a_different_subcommand_still_reaches_the_operator_through_the_real_rend
     assert_eq!(requests[0].rendered, "git push --force");
 }
 
-/// The mirror-image acceptance criterion: a command that genuinely matches
-/// the granted prefix must NOT reach the operator at all -- proving the
-/// pattern grant, which was completely inert before this fix (every
-/// `rendered` value carried JSON metacharacters that made
-/// `PatternRule::matches` always return `false`), now actually works
-/// through the real tool.
+/// **AMENDED by board item `01KZDDPC5MMD49F6JPV9CW4TVM`.** This test used
+/// to be the mirror-image acceptance criterion: a command that genuinely
+/// matches the granted prefix must NOT reach the operator at all -- proving
+/// the pattern grant, which was completely inert before an earlier fix
+/// (every `rendered` value carried JSON metacharacters that made
+/// `PatternRule::matches` always return `false`), actually worked through
+/// the real tool.
+///
+/// That is no longer the correct expectation, on purpose. A durable pattern
+/// grant does not exist for `bash` (or any `RenderKind::ShellCommand` tool)
+/// at all any more -- see `conway_core::permission_pattern`'s own module
+/// doc for the resolution -- so even the exact, unchained `git status` the
+/// grant names must now reach the operator, through the identical real
+/// production seam this file exists to drive end to end (not a hand-typed
+/// fixture). `read:*` remains a real, working grant for a `Structured` tool
+/// -- see `a_read_wildcard_grant_actually_grants_through_the_real_render_seam`
+/// below, unaffected by this amendment.
 #[tokio::test]
-async fn a_granted_command_never_reaches_the_operator_through_the_real_render_seam() {
+async fn a_bash_pattern_grant_never_auto_allows_even_its_own_exact_command() {
     let gate = RecordingGate::new(PermissionDecision::Deny {
-        reason: "must not be consulted".into(),
+        reason: "operator said no".into(),
     });
 
     let requests = run_one_bash_call(gate, "git status --short").await;
 
-    assert!(
-        requests.is_empty(),
-        "a command matching the granted `git status` prefix must never \
-         reach the operator: {requests:?}"
+    assert_eq!(
+        requests.len(),
+        1,
+        "a `bash:git status` grant must not auto-allow even the exact, \
+         unchained command it names -- a durable pattern grant does not \
+         exist for `bash` at all: {requests:?}"
     );
+    assert_eq!(requests[0].rendered, "git status --short");
 }
 
 // ---------------------------------------------------------------------

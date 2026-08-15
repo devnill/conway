@@ -1,5 +1,85 @@
-//! Prefix-matching permission patterns (V2), and the metacharacter gate
-//! that makes them safe.
+//! Prefix-matching permission patterns (V2) -- and why a
+//! [`RenderKind::ShellCommand`] tool cannot be granted one.
+//!
+//! ## The requirement this module exists to satisfy
+//!
+//! `PHILOSOPHY.md`, "Constraining a child: its tool set":
+//!
+//! > conway does not inspect a call and judge what it would do. Judging a
+//! > shell command means predicting what a shell will make of a string, and
+//! > a filter built on pattern matching fails in both directions. Loose
+//! > enough to permit ordinary work, it misses the cases it was written
+//! > for. Tight enough to catch those, it rejects enough routine commands
+//! > that the people relying on it turn it off.
+//!
+//! GP-13 names this exact module as the cautionary example of the
+//! anti-pattern the page rules out: "when a dangerous tool surface needs
+//! constraining, the answer is a containment primitive or the tool's
+//! absence -- NOT more policy machinery inside the permission gate. The
+//! shell-metacharacter blocklist in `permission_pattern.rs` is the
+//! cautionary example." Its measured cost is on record: strengthening it
+//! measured a 68% false-positive rate against this repository's own logged
+//! `bash` commands.
+//!
+//! **AMENDED (board item `01KZDDPC5MMD49F6JPV9CW4TVM`, superseding
+//! `01KZ73M5ZD07RQTE47RWX0YYDK`'s "leave the gate unchanged, fix the
+//! documentation instead" ruling): the gate is REMOVED for
+//! [`RenderKind::ShellCommand`], not strengthened, narrowed, or
+//! re-documented.** This module used to carry `contains_shell_metacharacters`
+//! (still present, now used only by the unrelated one-shot `--allowed-tools`
+//! gate in `conway::gates` -- see that module's own doc), a scan of the
+//! rendered command text for `;`, `&`, `|`, backtick, `$(`, newlines and
+//! friends, run as a hard gate inside `PatternRule::matches_render`/
+//! `Rule::matches_allow_render` before any prefix comparison. That scan
+//! was exactly the thing the requirement above forbids: conway reading a
+//! call's text and judging, from it, whether the call could do something
+//! the grant did not intend. Its own history proved the requirement
+//! right -- the identical scan, applied by mistake to every tool's
+//! rendering rather than only shell commands, silently made every
+//! non-`bash` pattern grant inert (fixed in `68ea9b1`) -- a filter that
+//! fails in a direction its own author did not expect is precisely the
+//! failure mode the page describes.
+//!
+//! **The resolution taken is the first of the two the item posed: a
+//! durable prefix/wildcard ALLOW grant is the wrong mechanism for a
+//! [`RenderKind::ShellCommand`] tool, full stop, so it no longer exists for
+//! one.** [`Rule::gate_allows`] now reads only the tool's *static*
+//! [`RenderKind`] declaration -- never the call's rendered text -- and
+//! refuses every allow `when` (`Always`, `CommandPrefix`, `CategoryIn`,
+//! `PathsUnder`) whenever that declaration is
+//! [`RenderKind::ShellCommand`], regardless of what the command contains.
+//! A `bash:git status` grant does not merely fail to cover a chained
+//! command anymore; it does not cover ANYTHING, including the literal,
+//! unchained `git status` it names. Reading `render_kind` is not the thing
+//! the page forbids: it is a fixed fact a tool declares about itself once,
+//! at registration -- not a judgment formed by inspecting the particular
+//! call in front of it. No two calls to the same tool can ever disagree
+//! about it, and nothing about a specific command's text changes the
+//! answer, which is the property a fail-closed, unparseable-input-proof
+//! check needs and a text scan can never have.
+//!
+//! What remains available for a shell command, per the item's own framing:
+//! allow it once (an interactive "yes" that grants nothing durable), deny
+//! it, prompt on it, or confine what it can reach with a containment
+//! primitive (`conway.fs`'s root; PHILOSOPHY.md's "Constraining a child:
+//! its tool set"). A *durable, remembered* grant for `bash` (or any other
+//! [`RenderKind::ShellCommand`] tool) is no longer expressible through this
+//! module at all. [`suggested_rule`]'s own doc covers the operator-facing
+//! half of this: the prompt no longer OFFERS a pattern for a shell command
+//! either, so an operator is never invited to create a grant this module
+//! would then silently never honor.
+//!
+//! `deny`/`prompt` are UNCHANGED by this item -- see "The `allow`/`deny`
+//! asymmetry" below. Narrowing has no failure mode worth removing a
+//! mechanism over; only `allow` (a grant of durable authority) does.
+//!
+//! [`PatternRule`]/[`Rule`] prefix and wildcard ALLOW grants continue to
+//! work unchanged for a [`RenderKind::Structured`] tool (`read`, `write`,
+//! `grep`, ...): no shell is ever involved in running one, so there is
+//! nothing here for the page's requirement to say anything about, and
+//! nothing in this module reads a `Structured` call's rendered text to
+//! decide allow coverage either -- prefix comparison there matches literal
+//! JSON tokens, never shell syntax.
 //!
 //! ## Why prefix matching, and not regex
 //!
@@ -14,56 +94,10 @@
 //! `git status` naturally covers `git status --short` without covering
 //! `git push`. And it is explainable inline at the moment of granting:
 //! "always allow commands starting with `git status`" is a sentence a user
-//! can evaluate before saying yes.
-//!
-//! ## Why a prefix alone is NOT enough
-//!
-//! `git status && <anything>` starts with `git status`. So does
-//! `git status; <anything>`, and `git status $(<anything>)`. A pattern
-//! grant that only checked the prefix would authorize all of them.
-//!
-//! [`contains_shell_metacharacters`] is therefore a **hard gate**: a
-//! command carrying any shell metacharacter can never be satisfied by a
-//! pattern, no matter what patterns exist. It always falls through to the
-//! operator. This is checked in [`PatternRule::matches_render`] itself --
-//! not at rule-creation time, and not at a call site that could be
-//! forgotten -- so there is no path from a pattern to an allow decision
-//! that skips it.
-//!
-//! The gate is deliberately conservative in the "re-prompt too often"
-//! direction. A command with a `|` in it re-prompts even when that pipe is
-//! completely benign, because the cost of an unnecessary prompt is a
-//! keystroke and the cost of a missed one is arbitrary execution.
-//!
-//! ## The gate only means something for a SHELL command
-//!
-//! The gate exists to stop a chained/substituted *shell command* from
-//! riding a matched prefix past what was granted. That reasoning has
-//! nothing to say about a tool like `read`, whose `Tool::render` is a JSON
-//! debug dump (`read({"path":"src/main.rs"})`) that is never handed to a
-//! shell -- yet that dump's own `(`, `)`, `{` trip the SAME gate, on sight,
-//! for every call. Applying a shell-injection gate to a string no shell
-//! will ever see is a category error, and it is what made every pattern
-//! grant except `bash`'s inert: `read:*`, `write:*`, `edit:*`, `grep:*`, and
-//! every third-party tool's wildcard matched nothing, ever.
-//!
-//! [`PatternRule::matches_render`] therefore takes the tool's own
-//! [`crate::ports::RenderKind`] declaration (`conway_core::ports::
-//! Tool::render_kind`) and applies the metacharacter gate only when that
-//! declaration says the rendered text IS a shell command. [`PatternRule::
-//! matches`] (no `RenderKind` parameter) is the conservative convenience
-//! this module's own tests and any caller without a tool's declaration in
-//! hand can still reach -- it always gates, exactly as this module behaved
-//! before this distinction existed. Every production caller
-//! (`conway_runtime::permission::PermissionBroker`) uses
-//! [`PatternRule::matches_render`], fed the real tool's real declaration, so a
-//! chained shell command is gated exactly as before while a `read`/`write`/
-//! `edit`/... wildcard now actually grants.
-//!
-//! **The gate itself -- the code path that rejects a chained command -- is
-//! unchanged.** What changed is only whether it is CONSULTED for a given
-//! tool, decided by a declaration the tool makes about itself, never by
-//! this module inspecting a tool's name.
+//! can evaluate before saying yes. This reasoning is why the prefix
+//! language exists and stays the ergonomic default for `deny`/`prompt`
+//! (every tool) and for `allow` (`RenderKind::Structured` tools only, per
+//! the amendment above).
 //!
 //! ## The `allow`/`deny` asymmetry
 //!
@@ -80,36 +114,40 @@
 //!
 //! `deny` is the opposite: a rule that only ever narrows what is
 //! authorized has no failure mode worth gating (the worst case is an extra
-//! prompt), so it applies immediately, from any file, trusted or not.
+//! prompt), so it applies immediately, from any file, trusted or not, for
+//! EVERY [`RenderKind`] including [`RenderKind::ShellCommand`].
 //! [`PatternRule::matches_deny`] is the deliberately UNGATED sibling of
-//! [`PatternRule::matches_render`] -- it does not consult
-//! [`contains_shell_metacharacters`] at all, for any [`RenderKind`],
-//! because inverted the gate would defeat the very rule it is supposed to
-//! protect: `deny bash:curl` gated the same way `allow` is would let
-//! `curl x; y` slip past simply for carrying a `;`. Composition is
-//! most-restrictive-wins: a deny beats every allow, independent of
-//! authorship or order.
+//! [`PatternRule::matches_render`] -- it does not consult `render_kind` at
+//! all, because gating it the way `allow` is gated would defeat the very
+//! rule it is supposed to protect: `deny bash:curl` refused the same way
+//! `allow` refuses `ShellCommand` calls would let `curl x; y` slip past
+//! simply for being a shell command. Composition is most-restrictive-wins:
+//! a deny beats every allow, independent of authorship or order.
 //!
 //! **The honest limit, stated rather than papered over:** prefix matching
 //! is not a containment boundary in either direction. `deny bash:git push`
 //! does not catch `foo; git push`. What makes the composition sound anyway
-//! is `allow`'s OWN gate: a command carrying a metacharacter can never be
-//! satisfied by a PATTERN GRANT regardless of what patterns exist, so the
-//! chained form falls through to whatever the mode does unaided -- `deny`
+//! is `allow`'s OWN refusal: NO command -- chained or not -- can be
+//! satisfied by a pattern grant for a [`RenderKind::ShellCommand`] tool,
+//! regardless of what patterns exist, so any command reaching a `bash`
+//! call at all falls through to whatever the mode does unaided -- `deny`
 //! is a seatbelt for the obvious case, not a boundary.
 //!
 //! Be precise about what that fallthrough means, because the earlier
 //! wording here ("so the chained form always reaches the human operator")
 //! was FALSE and is the kind of claim an operator would reasonably rely
-//! on. The gate governs pattern matching only. In `PermissionBroker`, the
-//! `AutoAllow` short-circuit sits AFTER the gated `pattern_allows` check
-//! and BEFORE `gate.check`, and is itself ungated -- so under `AutoAllow`,
-//! a chained command with no `deny`/`prompt` rule and no confinement root
-//! is allowed silently, never reaching a human. What DOES force the gate
-//! regardless of mode is `must_reach_gate`: a `PathArgs::Unconfinable`
-//! call under a root, or a matching `prompt` rule. Anything that must
-//! never happen belongs in the confinement root, not in a `deny` prefix --
-//! and not in this gate either.
+//! on. In `PermissionBroker`, the `AutoAllow` short-circuit sits AFTER the
+//! (now unconditionally-refusing, for `ShellCommand`) `pattern_allows`
+//! check and BEFORE `gate.check`, and is itself ungated -- so under
+//! `AutoAllow`, a `bash` call with no `deny`/`prompt` rule and no
+//! confinement root is allowed silently, never reaching a human, exactly
+//! as it was before this item (this item removes a grant SURFACE, not
+//! `AutoAllow`'s own reach). What DOES force the gate regardless of mode
+//! is `must_reach_gate`: a `PathArgs::Unconfinable` call under a root, or
+//! a matching `prompt` rule. Anything that must never happen belongs in
+//! the confinement root, not in a `deny` prefix -- and not in this
+//! module's allow gate either, which no longer has any content to gate on
+//! in the first place.
 //!
 //! ## Sanitizer laundering was a second, DIFFERENT hole
 //!
@@ -169,43 +207,37 @@ use crate::ports::RenderKind;
 use crate::text::sanitize_control_chars;
 use crate::text::SANITIZED_CONTROL_PLACEHOLDER;
 
-/// Shell metacharacters that disqualify a command from *ever* being
-/// satisfied by a pattern grant.
+/// Shell metacharacters that can extend a command past what a pattern
+/// named. `;`/newline sequence, `&`/`|` chain or background, backtick/`$(`
+/// substitute, `<`/`>` redirect.
 ///
-/// Each one can extend a command beyond the part the pattern matched:
-/// `;`/newline sequence, `&`/`|` chain or background, backtick/`$(`
-/// substitute, `<`/`>` redirect. The list is intentionally broad -- an
-/// unnecessary re-prompt is cheap; a missed one is not.
+/// **No longer consulted by this module's own allow gate** ([`Rule::
+/// gate_allows`] refuses every allow rule for a [`RenderKind::ShellCommand`]
+/// tool outright now, without reading `rendered` at all -- see this
+/// module's own doc, "AMENDED" section, for why a text scan was removed
+/// rather than kept or strengthened). [`contains_shell_metacharacters`]
+/// remains, unit-tested, because `conway::gates::AllowListGate` (the
+/// stateless `-p`/`--allowed-tools` one-shot gate, a DIFFERENT mechanism
+/// from the durable pattern grants this module implements) still calls it
+/// directly; see that module's own doc for the scope in which it survives.
 const SHELL_METACHARACTERS: &[char] = &[
     ';', '&', '|', '`', '$', '\n', '\r', '<', '>', '(', ')', '{', '}',
 ];
 
 /// Whether `command` contains anything that could extend it past a matched
-/// prefix. See this module's doc for why this is a hard gate rather than a
-/// heuristic.
+/// prefix.
 ///
 /// Disqualifies three classes, all in the "re-prompt too often" direction:
 /// the `SHELL_METACHARACTERS` themselves; any control character (so an
 /// UNSANITIZED string carrying a raw `\n`/`\x1b` is caught here even if it
 /// never passed through a sanitizer); and [`SANITIZED_CONTROL_PLACEHOLDER`]
 /// (so a SANITIZED string whose control char was already rewritten is
-/// caught too). The gate must not depend on where in the pipeline it is
-/// called from -- it is the security boundary, so it assumes nothing about
-/// what upstream did or did not do to the string.
+/// caught too).
 ///
-/// The placeholder must be disqualifying specifically because `rendered` is
-/// sanitized for display safety BEFORE it reaches [`PatternRule::matches`]:
-/// that sanitization (now `conway_core::text::sanitize_control_chars`, the
-/// shared home this gate and the runtime's `rendered` seam both call)
-/// rewrites `\n`/`\r` -- two of the `SHELL_METACHARACTERS` above -- into
-/// [`SANITIZED_CONTROL_PLACEHOLDER`]. Without this gate treating the
-/// placeholder as disqualifying, `git status \n rm -rf /` would arrive as
-/// `git status <U+FFFD> rm -rf /`: the newline evidence destroyed, the gate
-/// satisfied, and the replacement char consumed as its own
-/// whitespace-delimited token by `prefix_matches` -- silently
-/// auto-approving a chained command under a `bash:git status` grant. The
-/// constant lives in `conway_core::text` so the sanitizer and this gate
-/// literally share one source of truth.
+/// See `SHELL_METACHARACTERS`'s own doc: this function is no longer part
+/// of THIS module's allow decision. It survives as a standalone predicate
+/// for `conway::gates::AllowListGate`'s own, narrower gate over the
+/// `-p`/`--allowed-tools` one-shot mode.
 pub fn contains_shell_metacharacters(command: &str) -> bool {
     command.chars().any(|c| {
         SHELL_METACHARACTERS.contains(&c) || c.is_control() || c == SANITIZED_CONTROL_PLACEHOLDER
@@ -280,17 +312,17 @@ impl PatternRule {
     }
 
     /// Whether this rule authorizes `tool` running `rendered`, assuming the
-    /// CONSERVATIVE [`RenderKind::ShellCommand`] -- i.e. the metacharacter
-    /// gate always applies, exactly as this module behaved before
-    /// [`RenderKind`] existed.
+    /// CONSERVATIVE [`RenderKind::ShellCommand`] -- i.e. this ALWAYS
+    /// returns `false`, exactly as [`Self::matches_render`] does for any
+    /// [`RenderKind::ShellCommand`] call.
     ///
     /// This is the right call when the caller has no tool declaration in
     /// hand (this module's own tests; any consumer that only has a bare
     /// string). A caller that DOES have the real tool's declaration --
     /// every production caller does -- should use [`Self::matches_render`]
     /// instead, so a `Structured`-rendering tool's wildcard/prefix grants
-    /// are not held gated for no reason. See this module's own doc for why
-    /// that distinction exists at all.
+    /// are not held refused for no reason. See this module's own doc for
+    /// why that distinction exists at all.
     pub fn matches(&self, tool: &str, rendered: &str) -> bool {
         self.matches_render(tool, rendered, RenderKind::ShellCommand)
     }
@@ -298,17 +330,16 @@ impl PatternRule {
     /// Whether this rule authorizes `tool` running `rendered`, given that
     /// tool's own [`RenderKind`] declaration.
     ///
-    /// The metacharacter gate is checked HERE, before any prefix
-    /// comparison, so every path to a pattern-based allow passes through
-    /// it -- but ONLY when `render_kind` is [`RenderKind::ShellCommand`].
+    /// The gate is checked HERE, before any prefix comparison, so every
+    /// path to a pattern-based allow passes through it -- and it is an
+    /// UNCONDITIONAL refusal whenever `render_kind` is
+    /// [`RenderKind::ShellCommand`], regardless of `rendered`'s content.
     /// For [`RenderKind::Structured`], `rendered` is never handed to a
-    /// shell, so a metacharacter in it (JSON's own `(){}`) is not
-    /// command-injection risk, and gating on it would only ever produce a
-    /// false rejection -- see this module's own doc for the full
-    /// reasoning. A `*` rule is gated too whenever the check applies at
-    /// all: "any invocation of this tool" still must not mean "any
-    /// invocation, including chained ones" for a tool whose rendering
-    /// genuinely is a shell command.
+    /// shell, so nothing here refuses it at all -- see this module's own
+    /// doc for the full reasoning. A `*` rule is refused too whenever the
+    /// gate applies: "any invocation of this tool" still must not mean
+    /// "any invocation" for a tool whose rendering genuinely is a shell
+    /// command -- it means no invocation, via this mechanism, at all.
     ///
     /// **A thin delegate, not a restatement
     ///.** This used to carry its own full copy
@@ -339,15 +370,17 @@ impl PatternRule {
 
     /// Whether this rule, used as a `deny` rule, refuses `tool` running
     /// `rendered` -- prefix comparison only, deliberately WITHOUT
-    /// [`Self::matches_render`]'s metacharacter gate, and deliberately
-    /// with no [`RenderKind`] parameter at all: a deny rule's whole job is
-    /// to be hard to evade, so it must match identically regardless of
-    /// what the matched tool's rendering happens to look like. See this
-    /// module's own doc for why gating a `deny` prefix would defeat it.
+    /// [`Self::matches_render`]'s [`RenderKind`]-based refusal, and
+    /// deliberately with no [`RenderKind`] parameter at all: a deny rule's
+    /// whole job is to be hard to evade, so it must match identically
+    /// regardless of what the matched tool's rendering happens to look
+    /// like, INCLUDING a `ShellCommand` tool. See this module's own doc
+    /// for why refusing a `deny` prefix the way `allow` is refused would
+    /// defeat it.
     ///
     /// ## Sanitizer laundering
     ///
-    /// Omitting the metacharacter gate is not the same as trusting
+    /// Being ungated on `RenderKind` is not the same as trusting
     /// `prefix_matches` to tokenize `rendered` correctly no matter what is
     /// in it. A leading tab/newline/CR/escape is invisible to every POSIX
     /// shell -- `\tcurl http://evil` runs exactly like `curl http://evil`
@@ -486,10 +519,11 @@ pub enum Select {
 pub enum When {
     /// No condition beyond `select`: every call the select matches is
     /// matched. The flat `tool:*` wildcard desugars to `Tools([tool]) +
-    /// Always`. The allow-side metacharacter gate still applies (see
-    /// [`Rule::matches_allow_render`]), so `Always` on a `ShellCommand` tool
-    /// does NOT authorize a chained command -- it is "any invocation, the
-    /// gate still gating", not "any invocation, including chained ones".
+    /// Always`. The allow-side gate still applies (see [`Rule::
+    /// matches_allow_render`]), so `Always` on a `ShellCommand` tool does
+    /// NOT authorize anything at all -- it is "any invocation, still
+    /// subject to the render-kind refusal", never "any invocation,
+    /// including a shell command".
     Always,
     /// Today's [`PatternRule`] semantics: a token-wise prefix over the call's
     /// `rendered` string. A registration error against a tool whose
@@ -506,8 +540,9 @@ pub enum When {
     /// (canonicalized once at install). An `Unconfinable` tool NEVER
     /// satisfies this (fail closed, the same asymmetry root confinement
     /// uses); a tool with `PathArgs::None` never satisfies it either (no
-    /// paths to confine). The allow-side metacharacter gate still applies
-    /// for a `ShellCommand` tool.
+    /// paths to confine). The allow-side gate still applies too: a
+    /// `ShellCommand` tool can never satisfy `PathsUnder` either, since the
+    /// gate refuses it before the path check ever runs.
     PathsUnder(String),
     /// A category condition: the call's declared [`ToolCategory`] must be
     /// in this list. Composes with `select`: a `Tools(["bash"]) + CategoryIn
@@ -524,7 +559,7 @@ pub enum When {
 #[serde(rename_all = "snake_case")]
 pub enum Then {
     /// Authorize the call without consulting the operator's gate (subject to
-    /// the allow-side metacharacter gate and root confinement). An `allow`
+    /// the allow-side `RenderKind` gate and root confinement). An `allow`
     /// rule is a durable grant; grants belong to the operator, so only
     /// operator-owned config (the trusted permissions file, or an interactive
     /// "always allow") may author one. Plugin-contributed rules may only be
@@ -570,14 +605,21 @@ impl Rule {
         }
     }
 
-    /// The allow-side metacharacter gate, as an associated fn so the broker's
+    /// The allow-side gate, as an associated fn so the broker's
     /// `paths_under` path applies it identically to the render-based path.
-    /// Unchanged in behavior from [`PatternRule::matches_render`]: a
-    /// `ShellCommand` rendering carrying any metacharacter (or any control
-    /// character, or the sanitizer's placeholder) is refused; a `Structured`
-    /// rendering is never gated here.
-    pub fn gate_allows(rendered: &str, render_kind: RenderKind) -> bool {
-        !(render_kind == RenderKind::ShellCommand && contains_shell_metacharacters(rendered))
+    ///
+    /// **Reads only the tool's static [`RenderKind`] declaration -- never
+    /// `rendered`.** A [`RenderKind::ShellCommand`] tool can never be
+    /// authorized by ANY pattern grant, full stop; a [`RenderKind::
+    /// Structured`] tool is never gated here at all. See this module's own
+    /// doc, "AMENDED" section, for why this changed from a scan of the
+    /// command's text (`contains_shell_metacharacters`) to an unconditional
+    /// refusal keyed on the tool's declaration alone: the requirement is
+    /// that conway not judge a call from its text, and `render_kind` is a
+    /// fact the tool states about itself once, not a judgment formed by
+    /// reading the particular call in front of it.
+    pub fn gate_allows(render_kind: RenderKind) -> bool {
+        render_kind != RenderKind::ShellCommand
     }
 
     /// Whether this rule, as an ALLOW rule, would authorize `(tool, category)`
@@ -602,11 +644,12 @@ impl Rule {
         if !self.select_matches(tool, category) {
             return false;
         }
-        // The hard gate, unchanged from `PatternRule::matches_render`: allow
-        // keeps it; deny skips it. Applied before any `when` predicate, and
-        // for every `when` (not just `CommandPrefix`) -- `Always` on a
-        // `ShellCommand` tool must NOT authorize a chained command.
-        if !Self::gate_allows(rendered, render_kind) {
+        // The gate: allow keeps it; deny skips it. Applied before any
+        // `when` predicate, and for every `when` (not just
+        // `CommandPrefix`) -- `Always` on a `ShellCommand` tool must NOT
+        // authorize ANY call, chained or not. `rendered` is intentionally
+        // not read here -- see `Self::gate_allows`'s own doc.
+        if !Self::gate_allows(render_kind) {
             return false;
         }
         match &self.when {
@@ -619,8 +662,9 @@ impl Rule {
 
     /// Whether this rule, as a DENY (or PROMPT) rule, matches `(tool,
     /// category)` running `rendered` -- deliberately WITHOUT the
-    /// metacharacter gate (the deny/prompt asymmetry: a `;` must not defeat a
-    /// deny/prompt the way it would defeat an allow), and with the
+    /// `RenderKind` gate (the deny/prompt asymmetry: a `ShellCommand`
+    /// rendering must not defeat a deny/prompt the way it defeats an
+    /// allow), and with the
     /// laundering fallback for `CommandPrefix` (see
     /// [`PatternRule::matches_deny`]'s own doc). Returns `false` for
     /// [`When::PathsUnder`]: the broker evaluates that clause itself.
@@ -851,17 +895,28 @@ impl PatternRule {
 mod tests {
     use super::*;
 
-    // ---- the hard gate ----
+    // ---- no allow pattern ever matches a ShellCommand tool ----
 
-    /// THE most important test in this module. A grant for `git status`
-    /// must not authorize a chained command that merely begins with it.
+    /// THE most important test in this module. A `bash:git status` grant
+    /// authorizes NOTHING -- not the chained forms it was always meant to
+    /// exclude, and not even the literal, unchained `git status` it names.
+    /// This is the headline behavior change this module's own doc
+    /// ("AMENDED" section) records: a durable pattern grant no longer
+    /// exists for a `RenderKind::ShellCommand` tool at all, so there is
+    /// nothing left to widen by chaining -- proving a previously-refused
+    /// command stays refused is necessary but not sufficient here; this
+    /// test also proves a previously-ALLOWED command (the plain `git
+    /// status`) is refused now too, which is the actual shape of this
+    /// item's fix.
     #[test]
-    fn a_chained_command_is_never_matched_even_when_its_prefix_was_granted() {
+    fn no_shell_command_is_ever_matched_by_a_pattern_grant_plain_or_chained() {
         let rule = PatternRule::parse("bash:git status").expect("valid rule");
 
         assert!(
-            rule.matches("bash", "git status"),
-            "the plain granted command must still match"
+            !rule.matches("bash", "git status"),
+            "even the exact, unchained command the rule names must no \
+             longer be auto-approved -- a durable grant for a shell \
+             command does not exist any more, not a narrower one"
         );
 
         for chained in [
@@ -876,31 +931,24 @@ mod tests {
         ] {
             assert!(
                 !rule.matches("bash", chained),
-                "a command carrying a shell metacharacter must never be \
-                 satisfied by a pattern grant: {chained:?}"
+                "a chained command must never be satisfied by a pattern \
+                 grant either: {chained:?}"
             );
         }
     }
 
-    /// Regression: a SANITIZED chained command must still be gated.
-    ///
-    /// `rendered` is sanitized for display safety (control chars -> U+FFFD)
-    /// BEFORE it reaches `matches`. That rewrite destroys `\n`/`\r` -- two
-    /// of the gate's own metacharacters -- so a gate that only looked for
-    /// the literal characters would see nothing wrong, and `prefix_matches`
-    /// would consume the replacement char as its own whitespace-delimited
-    /// token. `git status \n rm -rf /` would then be silently auto-approved
-    /// under a `bash:git status` grant.
-    ///
-    /// Both forms are pinned here: the raw string (as an unsanitized caller
-    /// would pass it) and the sanitized string (as the production
-    /// `ToolRunner` seam actually produces).
+    /// Regression, restated for the new behavior: sanitization (or the lack
+    /// of it) makes no difference, because nothing about `rendered`'s
+    /// content is read at all any more. Both the raw string (as an
+    /// unsanitized caller would pass it) and the sanitized string (as the
+    /// production `ToolRunner` seam actually produces) are pinned here,
+    /// alongside a WHOLLY benign command with no laundering involved --
+    /// all refused identically, which is the proof that the refusal is
+    /// content-independent rather than merely "still catches laundering".
     #[test]
-    fn a_sanitized_chained_command_is_still_gated() {
+    fn shell_command_refusal_is_independent_of_sanitization_or_content() {
         let rule = PatternRule::parse("bash:git status").expect("valid rule");
 
-        // The spacing variants matter: a U+FFFD flanked by spaces becomes
-        // its own token, which is the case that slipped past prefix_matches.
         for raw in [
             "git status\nrm -rf /tmp/x",
             "git status \nrm -rf /tmp/x",
@@ -911,48 +959,52 @@ mod tests {
         ] {
             assert!(
                 !rule.matches("bash", raw),
-                "raw chained command must be gated: {raw:?}"
+                "raw form must be refused: {raw:?}"
             );
 
             // The real shared sanitizer -- `conway_core::text::
-            // sanitize_control_chars`. This used to be a hand-copy kept in
-            // sync with `conway_runtime::tools::runner::sanitize_rendered`
-            // (crate layering forbade a call); the two now share the single
-            // home in `conway_core::text`, so this can no longer drift. The
-            // end-to-end test that drives the genuine pipeline seam is
-            // `a_newline_chained_command_still_reaches_the_operator_through_
-            // the_real_render_seam` in `conway/tests/permission_pattern_seam.rs`.
+            // sanitize_control_chars`, which the production `ToolRunner`
+            // seam also calls. The end-to-end test that drives the genuine
+            // pipeline seam is `a_newline_chained_command_still_reaches_
+            // the_operator_through_the_real_render_seam` in
+            // `conway/tests/permission_pattern_seam.rs`.
             let sanitized = sanitize_control_chars(raw);
             assert!(
                 !rule.matches("bash", &sanitized),
-                "SANITIZED chained command must be gated too -- the control \
-                 char was rewritten, but the command is no less chained: \
-                 {raw:?} -> {sanitized:?}"
+                "sanitized form must be refused too: {raw:?} -> {sanitized:?}"
             );
         }
 
-        // The benign command still matches, so the hardening did not simply
-        // break pattern grants outright.
+        // The formerly-benign, unchained command is refused identically --
+        // this module no longer distinguishes "benign" from "dangerous"
+        // shell command text at all, which is the point.
         assert!(
-            rule.matches("bash", "git status --short"),
-            "an ordinary granted command must still match"
+            !rule.matches("bash", "git status --short"),
+            "an ordinary command carrying no metacharacter at all must be \
+             refused exactly like a chained one -- the refusal no longer \
+             depends on content"
         );
     }
 
-    /// The gate applies to the wildcard rule too -- "any bash call" must
-    /// not become "any bash call, including chained ones".
+    /// The wildcard rule authorizes nothing for a `ShellCommand` tool
+    /// either -- "any bash call" is exactly as inert as a specific prefix.
     #[test]
-    fn the_wildcard_rule_is_gated_by_metacharacters_as_well() {
+    fn the_wildcard_rule_matches_no_shell_command_at_all() {
         let rule = PatternRule::parse("bash:*").expect("valid rule");
-        assert!(rule.matches("bash", "ls -la"));
         assert!(
-            !rule.matches("bash", "ls -la && rm -rf /"),
-            "the wildcard must not bypass the metacharacter gate"
+            !rule.matches("bash", "ls -la"),
+            "even the wildcard must not authorize an ordinary, benign command"
         );
+        assert!(!rule.matches("bash", "ls -la && rm -rf /"));
     }
 
     #[test]
     fn metacharacter_detection_covers_the_documented_set() {
+        // `contains_shell_metacharacters` is no longer part of THIS
+        // module's own allow decision (see `SHELL_METACHARACTERS`'s own
+        // doc) -- it remains unit-tested here because `conway::gates::
+        // AllowListGate` still calls it directly for the unrelated
+        // `-p`/`--allowed-tools` one-shot gate.
         for c in [";", "&", "|", "`", "$", "<", ">", "(", ")", "{", "}"] {
             assert!(
                 contains_shell_metacharacters(&format!("echo hi{c}")),
@@ -963,33 +1015,21 @@ mod tests {
         assert!(!contains_shell_metacharacters("git status --short"));
     }
 
-    /// The sanitizer's placeholder is itself a metacharacter. This is the
-    /// load-bearing property: a control character laundered into
-    /// `SANITIZED_CONTROL_PLACEHOLDER` by `conway_core::text::
-    /// sanitize_control_chars` must NOT be able to pass the gate, or the
-    /// v0.5.0 `git status \n rm -rf /` chaining hole reopens. The constant
-    /// now lives in `conway_core::text` and is re-used here precisely so
-    /// this test pins the agreement the old "keep in sync" comment asserted.
+    /// The sanitizer's placeholder is itself a metacharacter, for
+    /// [`contains_shell_metacharacters`]'s surviving caller (`conway::
+    /// gates::AllowListGate`, the `-p`/`--allowed-tools` one-shot gate --
+    /// see that function's own doc). A control character laundered into
+    /// [`SANITIZED_CONTROL_PLACEHOLDER`] by `conway_core::text::
+    /// sanitize_control_chars` must still register as disqualifying there.
     #[test]
     fn the_sanitizer_placeholder_is_treated_as_a_metacharacter() {
-        // A string that is otherwise clean but carries the placeholder the
-        // sanitizer produces for a rewritten control char.
         assert!(
             contains_shell_metacharacters("git status\u{FFFD} rm -rf /"),
-            "the sanitizer's placeholder must be gated, or a laundered \
-             control char slips past: {:?}",
-            "git status\u{FFFD} rm -rf /"
-        );
-        // And specifically, a `bash:git status` grant must NOT authorize the
-        // sanitized form of the chained command -- the end-to-end property
-        // the gate + sanitizer agreement exists to guarantee.
-        let rule = PatternRule::parse("bash:git status").expect("valid rule");
-        assert!(
-            !rule.matches("bash", "git status\u{FFFD} rm -rf /"),
-            "a sanitized chained command must not be auto-allowed"
+            "the sanitizer's placeholder must be detected, or a laundered \
+             control char slips past a caller relying on this predicate"
         );
         // Sanity: the placeholder constant is the same one the sanitizer
-        // emits -- if this ever drifts, the assertions above would still
+        // emits -- if this ever drifts, the assertion above would still
         // pass on a different char and stop protecting the real seam.
         assert_eq!(
             sanitize_control_chars("a\nb"),
@@ -1053,11 +1093,12 @@ mod tests {
         );
     }
 
-    /// `ShellCommand` is the behavior every existing gate test above already
+    /// `ShellCommand` is the behavior every existing test above already
     /// pins via the conservative `matches` -- this test only makes explicit
     /// that `matches_render(.., ShellCommand)` agrees with `matches` (which
     /// is defined IN TERMS OF `matches_render(.., ShellCommand)`), so the
-    /// two can never silently drift.
+    /// two can never silently drift. Both sides are `false` for every case
+    /// -- content no longer distinguishes them.
     #[test]
     fn shell_command_render_kind_behaves_identically_to_the_conservative_matches() {
         let rule = PatternRule::parse("bash:git status").expect("valid rule");
@@ -1066,6 +1107,10 @@ mod tests {
                 rule.matches("bash", rendered),
                 rule.matches_render("bash", rendered, RenderKind::ShellCommand),
                 "matches() and matches_render(.., ShellCommand) must never disagree: {rendered:?}"
+            );
+            assert!(
+                !rule.matches("bash", rendered),
+                "and that agreed-upon answer must be `false`, for every case: {rendered:?}"
             );
         }
     }
@@ -1088,45 +1133,74 @@ mod tests {
     }
 
     // ---- adversarial prefix cases ----
+    //
+    // A `bash`/`ShellCommand` grant no longer matches ANYTHING (see above),
+    // so prefix-matching semantics -- subcommand mismatch, token-boundary
+    // discipline, tool-name discipline -- are no longer meaningfully
+    // exercisable through it; testing them against a `bash` rule here would
+    // trivially pass without exercising `prefix_matches`'s actual logic
+    // (every case is `false` regardless). These cases move to a
+    // `RenderKind::Structured` tool, where prefix matching still functions
+    // exactly as documented, plus a direct exercise of the private
+    // `prefix_matches` helper itself so the semantics stay pinned
+    // independent of any `RenderKind`.
 
-    /// A grant for `git status` must not permit a different subcommand,
-    /// however similar.
+    /// A grant for a two-token prefix must not permit a different second
+    /// token, however similar, nor a shorter one -- proven directly against
+    /// `prefix_matches`, the function every `CommandPrefix` evaluation
+    /// (`bash`'s included, when it was still reachable) delegates to.
     #[test]
-    fn a_prefix_grant_does_not_permit_a_different_subcommand() {
-        let rule = PatternRule::parse("bash:git status").expect("valid rule");
-
-        assert!(rule.matches("bash", "git status"));
-        assert!(rule.matches("bash", "git status --short"));
-
+    fn prefix_matches_does_not_permit_a_different_or_shorter_token() {
+        assert!(prefix_matches("git status", "git status"));
+        assert!(prefix_matches("git status", "git status --short"));
         assert!(
-            !rule.matches("bash", "git push --force"),
+            !prefix_matches("git status", "git push --force"),
             "a different subcommand must not be covered"
         );
         assert!(
-            !rule.matches("bash", "git stat"),
+            !prefix_matches("git status", "git stat"),
             "a shorter token must not be covered"
         );
     }
 
     /// Token-wise, not byte-wise: `git status` must not match
-    /// `git statusfoo`, even though that string does start with it.
+    /// `git statusfoo`, even though that string does start with it -- also
+    /// proven directly against `prefix_matches`.
     #[test]
-    fn prefix_matching_respects_token_boundaries_not_raw_bytes() {
-        let rule = PatternRule::parse("bash:git status").expect("valid rule");
+    fn prefix_matches_respects_token_boundaries_not_raw_bytes() {
         assert!(
-            !rule.matches("bash", "git statusfoo"),
+            !prefix_matches("git status", "git statusfoo"),
             "a byte-prefix match would wrongly allow this"
         );
         assert!(
-            !rule.matches("bash", "gitstatus"),
+            !prefix_matches("git status", "gitstatus"),
             "token boundaries must be respected on the first token too"
         );
     }
 
+    // The identical properties, exercised through a `Structured` tool's
+    // `PatternRule` (the one `RenderKind` where a prefix grant still
+    // exists at all), are already pinned by
+    // `a_structured_tools_prefix_rule_matches_token_wise_despite_json_syntax`
+    // above.
+
+    /// A `RenderKind::Structured` grant still never matches a different
+    /// tool, and a `RenderKind::ShellCommand` grant matches no tool at
+    /// all -- the latter following trivially from "matches nothing", but
+    /// pinned explicitly so a future change narrowing the refusal by tool
+    /// name (rather than leaving it total) would be caught here.
     #[test]
     fn a_rule_never_matches_a_different_tool() {
-        let rule = PatternRule::parse("bash:git status").expect("valid rule");
-        assert!(!rule.matches("edit", "git status"));
+        let structured = PatternRule::parse("read:*").expect("valid rule");
+        assert!(!structured.matches_render(
+            "write",
+            r#"write({"path":"a"})"#,
+            RenderKind::Structured
+        ));
+
+        let shell = PatternRule::parse("bash:git status").expect("valid rule");
+        assert!(!shell.matches("edit", "git status"));
+        assert!(!shell.matches("bash", "git status"));
     }
 
     // ---- parsing ----
@@ -1193,10 +1267,10 @@ mod tests {
     }
 
     /// Deny is independent of `RenderKind` entirely -- `matches_deny` takes
-    /// no such parameter, so a `Structured` tool's JSON-dump rendering
-    /// (whose own `(){}`s would trip the ALLOW-side gate on sight, exactly
-    /// as `a_structured_tools_wildcard_matches_its_own_json_dump_rendering`
-    /// pins for the allow side) is denied without hesitation.
+    /// no such parameter, so a `Structured` tool's JSON-dump rendering is
+    /// denied without hesitation, unaffected by the ALLOW-side gate that
+    /// (via the conservative `matches`, which always assumes
+    /// `ShellCommand`) refuses the same rendering on the allow side.
     #[test]
     fn deny_matching_does_not_depend_on_render_kind() {
         let rule = PatternRule::parse("write:*").expect("valid rule");
@@ -1208,9 +1282,9 @@ mod tests {
              with no RenderKind gate in the way at all"
         );
         // Contrast: the conservative ALLOW-side `matches` refuses to even
-        // consider this rendering, because its own JSON syntax trips the
-        // metacharacter gate `matches` always applies -- proving the
-        // asymmetry is real, not just documented.
+        // consider this rendering -- it always assumes `ShellCommand`,
+        // which this module's allow gate refuses unconditionally -- proving
+        // the asymmetry is real, not just documented.
         assert!(!rule.matches("write", rendered));
     }
 
@@ -1301,22 +1375,21 @@ mod tests {
 /// offers is always one the broker would both register and match, for
 /// exactly the rendering the operator is looking at.
 ///
-/// ## `ShellCommand`: the two-token prefix
+/// ## `ShellCommand`: no offer at all
 ///
-/// Returns `None` when no sensible offer exists — an empty command, or one
-/// carrying shell metacharacters (offering a grant that the metacharacter
-/// gate would then refuse to honor would be actively confusing).
-///
-/// ### Why two tokens
-///
-/// The offer is deliberately narrow. `git status` is a useful grant;
-/// `git` alone would silently include `git push --force`, and an operator
-/// skimming a prompt could easily accept the latter believing they got the
-/// former. Two tokens captures the near-universal `<command> <subcommand>`
-/// shape (`git status`, `cargo test`, `npm run`) without reaching past it.
-///
-/// A single-token command (`ls`, `pwd`) offers just that token, since
-/// there is no subcommand to bound it with.
+/// **Always returns `None`.** A durable pattern grant no longer exists for
+/// a [`RenderKind::ShellCommand`] tool at all (see this module's own doc,
+/// "AMENDED" section) -- [`Rule::gate_allows`] refuses every one
+/// unconditionally, regardless of what the offered prefix would have
+/// named. Offering a grant this module would then always refuse to honor
+/// would be worse than merely "confusing": it is the exact shape of bug
+/// this codebase has already shipped once (`68ea9b1`, a `read:*` grant
+/// that matched nothing, ever) -- a rule the operator believes they
+/// installed doing nothing, silently. The operator's remaining options for
+/// a shell command are the ones offered elsewhere in the prompt: allow it
+/// once, deny it, prompt on it, or confine what it can reach with a
+/// containment primitive; none of those are a [`PatternRule`] this
+/// function has any business returning.
 ///
 /// ## `Structured`: the wildcard, and why NOT a prefix
 ///
@@ -1350,7 +1423,18 @@ mod tests {
 /// the point: granting more should take deliberate effort, granting less
 /// should be the default. You can always grant again; you cannot
 /// un-authorize what already ran.
-pub fn suggested_rule(tool: &str, rendered: &str, render_kind: RenderKind) -> Option<PatternRule> {
+pub fn suggested_rule(
+    tool: &str,
+    // Kept in the signature (rather than dropped) so this function's shape
+    // stays aligned with `PatternRule::matches_render`'s and every caller
+    // (the TUI's `offered_permission_rule`/permission-prompt view) keeps
+    // compiling unchanged -- see this function's own doc, "ShellCommand: no
+    // offer at all". No `RenderKind` branch reads the call's rendered text
+    // to decide the offer any more: `Structured` never did, and
+    // `ShellCommand` no longer does either.
+    _rendered: &str,
+    render_kind: RenderKind,
+) -> Option<PatternRule> {
     if render_kind == RenderKind::Structured {
         return Some(PatternRule {
             tool: tool.to_string(),
@@ -1358,19 +1442,9 @@ pub fn suggested_rule(tool: &str, rendered: &str, render_kind: RenderKind) -> Op
         });
     }
     // `ShellCommand`, and any future `RenderKind` variant (`RenderKind` is
-    // `#[non_exhaustive]`): the conservative shell-shaped offer, exactly as
-    // before -- fail toward offering less, never more.
-    if contains_shell_metacharacters(rendered) {
-        return None;
-    }
-    let tokens: Vec<&str> = rendered.split_whitespace().take(2).collect();
-    if tokens.is_empty() {
-        return None;
-    }
-    Some(PatternRule {
-        tool: tool.to_string(),
-        command_prefix: tokens.join(" "),
-    })
+    // `#[non_exhaustive]`): never offer a pattern grant. See this
+    // function's own doc.
+    None
 }
 
 /// The on-disk shape of `.conway/permissions.json`.
@@ -1936,35 +2010,26 @@ mod store_tests {
 
     // ---- V2b: the offered rule ----
 
-    /// The offer is two tokens: enough for `<command> <subcommand>`, not
-    /// enough to silently include a sibling subcommand.
+    /// **The headline offer-side fix.** No pattern is ever offered for a
+    /// `ShellCommand` call any more -- not for an ordinary two-token
+    /// command, not for a single-token command, not for an empty one, and
+    /// not for a chained one. Offering a grant this module would then
+    /// always refuse to honor would be worse than confusing; see this
+    /// function's own doc, "ShellCommand: no offer at all".
     #[test]
-    fn the_suggested_rule_is_narrow_by_default() {
-        let rule = suggested_rule("bash", "git status --short", RenderKind::ShellCommand)
-            .expect("offered");
-        assert_eq!(rule.command_prefix, "git status");
-
-        // Crucially: the offered grant does NOT cover a different
-        // subcommand. An operator accepting this prompt has not
-        // accidentally authorized `git push`.
-        assert!(rule.matches("bash", "git status --short"));
-        assert!(!rule.matches("bash", "git push --force"));
-    }
-
-    #[test]
-    fn a_single_token_command_offers_just_that_token() {
-        let rule = suggested_rule("bash", "pwd", RenderKind::ShellCommand).expect("offered");
-        assert_eq!(rule.command_prefix, "pwd");
-    }
-
-    /// Offering a grant the metacharacter gate would then refuse to honor
-    /// would be confusing, so no offer is made at all.
-    #[test]
-    fn no_rule_is_offered_for_a_command_the_gate_would_reject() {
-        assert!(
-            suggested_rule("bash", "git status && rm -rf /", RenderKind::ShellCommand).is_none()
-        );
-        assert!(suggested_rule("bash", "", RenderKind::ShellCommand).is_none());
+    fn no_pattern_is_ever_offered_for_a_shell_command() {
+        for rendered in [
+            "git status --short",
+            "pwd",
+            "",
+            "git status && rm -rf /",
+            "git status",
+        ] {
+            assert!(
+                suggested_rule("bash", rendered, RenderKind::ShellCommand).is_none(),
+                "a ShellCommand tool must never be offered a pattern grant: {rendered:?}"
+            );
+        }
     }
 
     // ---- the offer surface agrees with the evaluation surface (both
@@ -2008,7 +2073,10 @@ mod store_tests {
 
     /// The `Structured` offer does not depend on the rendering's content at
     /// all -- metacharacters in a JSON dump are not shell risk, so they
-    /// must not suppress the offer the way they do for `bash`.
+    /// must not suppress the offer (unlike `ShellCommand`, where the offer
+    /// is suppressed unconditionally, for every rendering, regardless of
+    /// content -- see `no_pattern_is_ever_offered_for_a_shell_command`
+    /// above).
     #[test]
     fn the_structured_offer_is_not_suppressed_by_metacharacters() {
         for rendered in [
@@ -2023,17 +2091,17 @@ mod store_tests {
     }
 
     /// `RenderKind` is `#[non_exhaustive]`: a future variant must get the
-    // conservative shell-shaped behavior (offer less, never more), which
-    /// Is exactly what the `_` arm delivers -- pinned here so the fallback
-    /// is a decision, not an accident.
+    /// conservative "offer nothing" behavior (offer less, never more),
+    /// which is exactly what the `_` arm delivers -- pinned here so the
+    /// fallback is a decision, not an accident.
     #[test]
-    fn the_offer_falls_back_to_the_conservative_shell_shape_for_unknown_kinds() {
-        // Both non-Structured kinds today agree; if a third kind ever
-        // appears this test keeps compiling via the same arm and keeps
-        // meaning "the conservative offer".
+    fn the_offer_falls_back_to_offering_nothing_for_unknown_kinds() {
+        // `ShellCommand` today exercises the same `_` arm any future
+        // non-`Structured` variant would fall into; if a third kind ever
+        // appears this test keeps compiling and keeps meaning "no offer".
         let kind = RenderKind::ShellCommand;
         assert!(suggested_rule("bash", "git status && rm -rf /", kind).is_none());
-        assert!(suggested_rule("bash", "git status --short", kind).is_some());
+        assert!(suggested_rule("bash", "git status --short", kind).is_none());
     }
 }
 
