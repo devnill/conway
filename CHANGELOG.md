@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`AgentMessage::Progress`** — a message kind, classifier arm, drain
+  effect, and event-emission path existed end to end for a child to report
+  mid-flight progress to its parent, but no production code path ever sent
+  one; every construction site was in a test. The deciding fact was not the
+  missing sender but where the message could go: a drained `Progress` never
+  became a record or a context segment, so the orchestrating model would
+  never have seen it even fully wired — only a human watching the parent's
+  pane would, and a child's own session-scoped event stream already carries
+  strictly more. Removed together: the `AgentMessage::Progress` and
+  `MessageKind::Progress` variants, `mailbox::classify`'s arm producing
+  `DrainEffect::Progress`, the `DrainEffect::Progress` variant itself, and
+  `agent_loop.rs`'s `drain_inbox` arm that turned a drained `Progress` into
+  an `Event::AgentProgress`. `Event::AgentProgress` itself is UNTOUCHED and
+  remains live: `session_handle.rs`'s replay path and the CLI's TUI, JSON
+  and JSONL renderers produce and consume it independently of this channel.
+  This does not close the door on mid-flight progress — a model-visible
+  version would be a new `ToolCtx` capability, not a revival of this one.
+
 ### Added
 
 - **The `"anthropic"` backend kind reads its own `extra` configuration.**

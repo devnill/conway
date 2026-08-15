@@ -332,10 +332,6 @@ pub enum DrainEffect {
     /// Already handled at enqueue time (`MailboxSender::send` trips the
     /// token directly, see the module doc) -- nothing left to do at drain.
     HardCancelAcknowledged,
-    /// Never becomes a record or a context segment (§6.2: unsolicited
-    /// child chatter in a parent's context is the "context clash" failure
-    /// mode) -- the caller emits `Event::AgentProgress` and moves on.
-    Progress { note: String },
     /// A future `AgentMessage` variant this crate doesn't yet recognize
     /// (`AgentMessage` is `#[non_exhaustive]` in `conway-core`). Treated as
     /// inert -- mirrors `tree.rs`'s `status_for` convention of mapping an
@@ -373,7 +369,6 @@ pub fn classify(msg: AgentMessage) -> DrainEffect {
             ..
         } => DrainEffect::SoftCancel { reason },
         AgentMessage::Cancel { hard: true, .. } => DrainEffect::HardCancelAcknowledged,
-        AgentMessage::Progress { note, .. } => DrainEffect::Progress { note },
         // a drained
         // `AgentMessage::Result` now persists into THIS agent's (the
         // parent's) own log, the same `DrainEffect::Persist` path
@@ -486,13 +481,6 @@ mod tests {
                 hard: true
             }),
             DrainEffect::HardCancelAcknowledged
-        ));
-        assert!(matches!(
-            classify(AgentMessage::Progress {
-                from,
-                note: "n".into()
-            }),
-            DrainEffect::Progress { .. }
         ));
         let result = AgentResult::new(from, SessionId::new(), ResultStatus::Completed, "done");
         assert!(matches!(

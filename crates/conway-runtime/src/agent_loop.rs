@@ -487,7 +487,6 @@ impl AgentLoop {
     /// A soft cancel only sets `self.pending_cancel`, consumed by the
     /// caller immediately after this returns. A hard cancel was already
     /// handled at enqueue time (`MailboxSender::send`) and is a no-op here.
-    /// `Progress` is emitted as `Event::AgentProgress` and never persisted.
     /// `Result` is persisted as
     /// `LogRecord::ChildResultRecord`, the exact same `DrainEffect::Persist`
     /// arm as `Steer` -- this is a NON-blocking notification path, entirely
@@ -503,13 +502,13 @@ impl AgentLoop {
     /// left the mailbox and cannot be recovered from there. Before cycle-2
     /// review finding M2, a `SessionStore::append` failure on message *k*
     /// early-returned via `?`, silently dropping every already-dequeued
-    /// message after it (soft cancels, progress reports, everything) with
-    /// no record and no signal. This function now keeps classifying and
-    /// applying every remaining message's *non-persist* effect (a soft
-    /// cancel still lands, a progress note is still emitted) even after a
-    /// persist failure; it stops attempting further `append` calls against
-    /// a store that has already failed once this drain (to avoid hammering
-    /// it), and surfaces the first error at the end via a `tracing::error`
+    /// message after it (soft cancels, everything) with no record and no
+    /// signal. This function now keeps classifying and applying every
+    /// remaining message's *non-persist* effect (a soft cancel still lands)
+    /// even after a persist failure; it stops attempting further `append`
+    /// calls against a store that has already failed once this drain (to
+    /// avoid hammering it), and surfaces the first error at the end via a
+    /// `tracing::error`
     /// naming exactly how many queued records could not be persisted,
     /// before returning it -- the agent is terminating either way (this
     /// error propagates through `run_inner`'s `try_rt!` into
@@ -534,11 +533,6 @@ impl AgentLoop {
                     self.pending_cancel = Some(reason);
                 }
                 mailbox::DrainEffect::HardCancelAcknowledged => {}
-                mailbox::DrainEffect::Progress { note } => {
-                    self.deps
-                        .bus
-                        .emit(self.session, self.agent_id, Event::AgentProgress { note });
-                }
                 mailbox::DrainEffect::Unknown => {}
             }
         }

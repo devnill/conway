@@ -368,7 +368,7 @@ mod tests {
             (
                 Event::MessageSent {
                     to: AgentId::new(),
-                    kind: MessageKind::Progress,
+                    kind: MessageKind::Result,
                 },
                 "message_sent",
             ),
