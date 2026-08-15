@@ -38,8 +38,8 @@
 //! pins byte-identical retry requests. Cache-hint semantics are therefore
 //! unchanged: per-candidate, computed once, never per-attempt.
 //!
-//! T-1 error-shape reconciliation (,
-//! closing): the router (conway-routing
+//! T-1 error-shape reconciliation (a decision
+//! closing an earlier gap): the router (conway-routing
 //! `DeclarativeRouter`) still constructs `RoutingError::
 //! ContextTooLarge` from its own ADVISORY declared-window check
 //! (`conway_core::capabilities::RequiredCaps`-based `satisfies`, evaluated

@@ -326,7 +326,7 @@ async fn classify_without_an_intent_role_passes_through_without_a_session_or_bac
     );
 }
 
-///, reject-vs-strip (decided: STRIP): a reply naming a def that is
+/// A settled decision on reject-vs-strip (decided: STRIP): a reply naming a def that is
 /// NOT configured must not reach the caller -- the field degrades to
 /// `None` -- while the validated recipe and prompt survive.
 #[tokio::test]

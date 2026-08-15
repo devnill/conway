@@ -1,4 +1,5 @@
-//! Acceptance tests for `PluginRegistry` and `ToolRunner` (//! architecture §4.2, §8).
+//! Acceptance tests for `PluginRegistry` and `ToolRunner` (see the extension
+//! design §4.2, §8).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -715,7 +716,7 @@ async fn head_tail_truncation_is_applied_and_recorded() {
     assert_eq!(record.original_bytes, 1000);
     // Exactly head_bytes + tail_bytes of ORIGINAL content is retained — the
     // elision marker's own bytes must not inflate the audit record
-    //.
+    // (an earlier review finding).
     assert_eq!(record.kept_bytes, 40);
     match record.policy {
         conway_core::content::TruncationPolicy::HeadTail {

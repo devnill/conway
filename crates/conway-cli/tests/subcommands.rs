@@ -232,7 +232,7 @@ async fn sessions_list_text_spawned_child_shows_spawn_not_fork() {
 
 /// Regression (JSON output), the `origin_json`-side counterpart of
 /// [`sessions_list_text_spawned_child_shows_spawn_not_fork`] -- text and
-/// JSON must agree ().
+/// JSON must agree.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sessions_list_json_spawned_child_origin_mode_is_spawn() {
     let mock =

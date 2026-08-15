@@ -327,7 +327,7 @@ async fn ask_tools_arg_maps_to_only_selector_on_child_spec() {
     // `ToolSelector::Only` straight into the captured SubagentSpec (the same
     // mapping `conway_fork`/`conway_spawn`'s `tools` arg uses at tools.rs), leaving
     // resolution/narrowing to the runtime's existing spec plumbing — the
-    // tool layer adds no plumbing of its own ().
+    // tool layer adds no plumbing of its own.
     let parent = AgentId::new();
     let outcome = AskOutcome {
         text: "curated brief".into(),

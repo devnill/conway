@@ -98,7 +98,7 @@ outcome — de-trust — has to require **zero** human action, precisely
 because a design that required one would eventually not get it.
 
 **What the operator sees instead, as actually shipped**, is narrower than
-the trust-model design's full design: a one-line transcript notice
+the full trust-model design: a one-line transcript notice
 naming the file and how many rules are waiting, and a report line after you
 run `/trust permissions` (`trusted .conway/permissions.json -- 2 allow
 rule(s) installed for this session...`). The design describes the review
@@ -135,7 +135,7 @@ the built-in tools... that would set them apart from a third-party one"*).
 govern what a plugin can make *conway* do — never what it can do to the
 machine.** That is why `fs.read`, `net`, and `exec` are deliberately absent
 from the capability vocabulary (`concepts.md`'s glossary; the design's own
-statement, the extension design). Naming them
+statement, in the extension design). Naming them
 would manufacture a false belief: an operator reading `net: none` in a
 review surface would reasonably conclude a plugin cannot reach the network,
 and conway has no mechanism that could make that true for an in-process
@@ -319,28 +319,35 @@ security boundary. Root is *what I can reach* — parent-set, narrowing only.**
 `--cwd` sets where a relative tool argument starts from and nothing more; an
 agent given `--cwd /home/alice/project` can still read or write
 `/etc/passwd` if a tool call names that absolute path. `--root` is the actual
-boundary: any tool call whose path argument resolves outside it is denied
-before the permission gate is ever consulted, and a subagent forked or
+boundary: any `conway.fs` tool call (`read`/`write`/`edit`/`cd`/`glob`/`grep`)
+whose path argument resolves outside it is denied, and a subagent forked or
 spawned from a confined root can only narrow that root further, never widen
 it. Root-agent confinement (the `--root` CLI flag, `ConwayBuilder::with_root`
-for a library embedder) landed —
+for a library embedder) landed as a later item —
 before it, only a subagent could be confined, never the root agent a human
 actually talks to. The full mechanics, including the exact ordering against
 every other permission step and a verified end-to-end transcript, are
 `docs/permissions.md`'s own "Confinement" and "Limits" sections; this page
 does not repeat them.
 
-**Where this primitive lives is a live, decided-but-not-built redirection,
-not a settled fact of the current tree.** A decision made
-2026-08-07 rules that the boundary
-should relocate from the harness-level check described above into the tool
-that performs the operation — a future `conway.fs` plugin enforcing its own
-root over its own reads and writes, closing the TOCTOU window a
-check-then-act split leaves open today. **That relocation has not
-happened.** Both items tracking it are `open`, and the amendment's own text says
-so: *"Until they land, containment still lives in `conway-core`; this entry
-states the direction, not the current tree."* Everything stated above this
-paragraph is what's actually shipped.
+**Where this primitive lives has moved.** A decision made 2026-08-07 ruled
+that the boundary should relocate from a harness-level check ahead of the
+permission gate into the tool that performs the operation.
+**That relocation has landed:** `conway.fs` now enforces its own root, read
+from per-agent plugin config, over its own `read`/`write`/`edit`/`cd`/
+`glob`/`grep` — open-relative (`conway_tools::fs::beneath`), so the
+containment check and the actual filesystem open are one syscall sequence,
+closing the TOCTOU window a check-then-act split left open before. The
+harness-level `PermissionBroker::check_root` no longer walks a declared
+path argument at all; a `read`/`write`/`edit`/`cd`/`glob`/`grep` call
+therefore reaches the permission gate BEFORE `conway.fs`'s own check runs
+(the gate may say yes to a call `conway.fs` still refuses afterward) —
+different ordering from before, same outcome: the call never actually
+executes outside the root. `bash`'s `command` remains outside every root
+check, harness- or plugin-level (see below); its OWN `cwd` argument is
+still checked directly by `PermissionBroker`, ahead of the gate, because
+`bash` belongs to a different plugin with no containment mechanism of its
+own to delegate to.
 
 **One more limit worth naming plainly, because it bears directly on the
 "full privileges" statement above: confinement narrows what a call can

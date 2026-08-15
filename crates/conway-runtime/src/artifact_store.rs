@@ -1,6 +1,6 @@
 //! `AgentArtifactWriter`: the one implementation of
-//! [`conway_core::ports::ArtifactWriter`] (//! -- the containment guard that makes it safe
-//! for a `ContextHook` to spill content to disk).
+//! [`conway_core::ports::ArtifactWriter`] (the containment guard that makes
+//! it safe for a `ContextHook` to spill content to disk).
 //!
 //! **Reuses, never restates, the exact machinery `PermissionBroker::
 //! check_root` already confines every tool's own path arguments with one

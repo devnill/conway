@@ -16,8 +16,8 @@
 //! **This bundle is a worked example, not a commitment to any of its
 //! members individually.** Today it contains two plugin entries --
 //! `conway-plugin-skeleton`, a skeleton proving nothing beyond the install
-//! mechanism (see that crate's own module doc), and `conway-plugin-history`
-//!, `/conway.history.rewind`'s real
+//! mechanism (see that crate's own module doc), and `conway-plugin-history`,
+//! `/conway.history.rewind`'s real
 //! capability. Dynamic routing is built (`conway-plugin-routing`, resolved
 //! through `router_bundle` below, not this list). Context compaction,
 //! memory, skills, MCP support, and `/checkout`/`ContextMask` are not; each

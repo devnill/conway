@@ -2,7 +2,8 @@
 //!
 //! Wires `ContextBuilder` -> `Router` -> `AttemptEngine` -> `ToolRunner` ->
 //! `SessionStore` into one turn, with budgets and terminal-result
-//! construction. `LoopDeps::subagents` is the real `Runtime` (//! `subagent.rs`), not a stub -- `ToolBatchCtx` gets a working host.
+//! construction. `LoopDeps::subagents` is the real `Runtime` (see
+//! `subagent.rs`), not a stub -- `ToolBatchCtx` gets a working host.
 //!
 //! ## mailboxes and steering
 //!
@@ -49,8 +50,9 @@
 //! `headroom.rs` this item would create) and a `RouteRequest.required.
 //! min_context` field carrying `est_tokens + headroom`. Neither exists in
 //! the committed workspace:
-//! - `HeadroomPolicy` is `conway_core::capabilities::HeadroomPolicy` (//!   already committed; relocated out of `conway-routing`'s `config` module
-//!   into `conway-core` by so this
+//! - `HeadroomPolicy` is `conway_core::capabilities::HeadroomPolicy` (already
+//!   committed; relocated out of `conway-routing`'s `config` module
+//!   into `conway-core` by a later item, so this
 //!   engine no longer needs to depend on the whole routing crate for it) —
 //!   reused directly rather than duplicated.
 //! - `conway_core::routing::RequiredCaps` has no `min_context: u32` total;
@@ -209,8 +211,8 @@ pub struct AgentSpec {
     /// `SubagentSpec::tag`'s own doc for the full "conway never interprets
     /// this" guarantee and why it is a genuinely new kind of field.
     ///
-    /// Required, not defaulting: like `ContextHookCtx::agent_path`
-    ///, `AgentSpec` derives no `Serialize`/
+    /// Required, not defaulting: like `ContextHookCtx::agent_path`,
+    /// `AgentSpec` derives no `Serialize`/
     /// `Deserialize` and has no wire format to preserve compatibility with,
     /// so there is no serialization justification for a silent default --
     /// and a field whose entire purpose is telling two otherwise-identical
@@ -528,8 +530,8 @@ impl AgentLoop {
     /// arm as `Steer` -- this is a NON-blocking notification path, entirely
     /// separate from a `conway_fork`/`conway_spawn` waiter that blocked on
     /// this specific child by id, which still resolves exclusively through
-    /// `AgentTree::await_result`; see `mailbox.rs`'s module doc
-    ///.
+    /// `AgentTree::await_result`; see `mailbox.rs`'s module doc for the
+    /// full mechanism.
     ///
     /// ## A mid-batch persist failure does not lose the rest of the batch
     ///
@@ -592,11 +594,10 @@ impl AgentLoop {
     /// request as too large for the routed model's window
     /// (`RoutingError::ContextTooLarge`) -- from either `Router::resolve`
     /// (the committed `conway_plugin_routing::DeclarativeRouter` -- an
-    /// installable engine as of, not a
+    /// installable engine as of a later item, not a
     /// dependency of this crate -- now does construct
     /// this variant, exactly when every candidate's rejection is
-    /// attributable solely to the headroom gate; decision
-    ///, closing
+    /// attributable solely to the headroom gate, closing an earlier gap
     /// -- see that crate's `router.rs` module
     /// doc) or `AttemptEngine::execute` (the T-1 backstop gate for the
     /// remaining case: a route the router admitted but whose real backend

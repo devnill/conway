@@ -7,7 +7,7 @@
 //! split out of the string by guessing where the id ends, since a plugin id
 //! may itself be chosen freely by whoever wrote the plugin.
 //!
-//! **Both call sites now exist (
+//! **Both call sites now exist (a later item
 //! wired the second one; this doc used to say neither did).**
 //! - the `[hooks]` schema's `HookEntry::event` is the *subscriber* side —
 //!   `crates/conway/src/config/merge.rs`'s own event-shape check calls
@@ -59,7 +59,7 @@
 //! out).
 
 /// The separator between a declaring plugin's id and its event's (or, since
-///, command's) own name. Decided in
+/// a later item, command's) own name. Decided in
 /// §16.6 point 1: dot, not colon (already a different wire form,
 /// `PatternRule::parse`'s `tool:prefix`) or slash (reads as a path/URI
 /// hierarchy this design does not intend).

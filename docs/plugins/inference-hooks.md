@@ -4,10 +4,10 @@
 yet.** No hook registration surface exists at all in the tree today
 (`hooks.md` point 13's status row: `Plugin` has no `hooks()` method), so
 there is nowhere for anything this page describes to attach. It's still
-worth writing now rather than after the fact — per, an inference-evaluated hook is a **first-class
+worth writing now rather than after the fact — per an earlier decision, an inference-evaluated hook is a **first-class
 supported shape**, not a workaround, and the four open questions it left
 (how fork-vs-spawn is declared, cost and attribution, determinism, mask
-production) were settled by before this
+production) were settled by a later decision before this
 set was written. What follows states those settled decisions, sourced from
 the decision record and the extension design, never
 invented for this page.
@@ -91,7 +91,7 @@ what that costs and who pays for it:
   every inference-evaluated hook design applies uniformly — a 60 s default,
   operator-raisable to a configured maximum. This was never
   permission-specific; it's a property of issuing an LLM call from inside a
-  hook, which confirmed applies to
+  hook, which an earlier decision confirmed applies to
   every inference-evaluated hook kind, not only a permission classifier.
 - **Attribution — whose budget it spends.** For an in-process hook running
   the zero-tool judge shape above, the spend lands under the hook's own

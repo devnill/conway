@@ -1,5 +1,4 @@
-//! The `HookRunner` port (, decision
-//!).
+//! The `HookRunner` port, a settled design decision.
 
 use async_trait::async_trait;
 

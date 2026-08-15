@@ -93,7 +93,7 @@ fn text_response(text: &str) -> conway_core::ports::GenerateResponse {
 /// A `Runtime` wired to one `ScriptedBackend` whose declared capability is
 /// `anthropic_like_capabilities()` — an "Anthropic-capability model" for
 /// every purpose the cache-hint post-pass cares about, without this crate
-/// depending on `conway-plugin-backends` ().
+/// depending on `conway-plugin-backends`.
 fn build_runtime(turns: usize) -> (Arc<Runtime>, Arc<ScriptedBackend>) {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
     let backend = Arc::new(

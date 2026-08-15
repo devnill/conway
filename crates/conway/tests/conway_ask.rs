@@ -1,7 +1,7 @@
 //! Acceptance tests for the `conway_ask` epic, item f: the thin-slice
 //! end-to-end proof that `conway_ask` works through the REAL runtime + REAL
 //! `SubagentPlugin` (including `AskTool`, item d), composing with
-//! `conway_spawn` (). This is the capstone: it proves the epic's goal
+//! `conway_spawn`. This is the capstone: it proves the epic's goal
 //! -- out-of-band context curation, full text not truncated, curation
 //! reasoning stays in the child, provenance preserved.
 //!
@@ -14,17 +14,17 @@
 //! transcripts (`FakeStore::read`) to prove every load-bearing property in
 //! one place:
 //!
-//! - **Full text ():** the `ToolResultRecord` for `conway_ask` carries
+//! - **Full text:** the `ToolResultRecord` for `conway_ask` carries
 //!   the child's FULL reply (`text.len() > 2000`, NOT truncated at
 //!   `DEFAULT_SUMMARY_LIMIT`).
 //! - **Curation stays in the child:** the parent's own log has NO
 //!   `LogRecord::Assistant` carrying the curation reply; the ephemeral
 //!   child's own log HAS it.
-//! - **Provenance ():** the child's `SessionId` is reachable via the
+//! - **Provenance:** the child's `SessionId` is reachable via the
 //!   `EphemeralSessionRef` artifact's `id` (the `transcript_ref`), and
 //!   `store.list(SessionFilter { include_ephemeral: true, .. })` contains it
 //!   while `store.list(SessionFilter::default())` does NOT.
-//! - **Composition ():** the parent's second turn drives
+//! - **Composition:** the parent's second turn drives
 //!   `conway_ask` -> `conway_spawn { prompt: <brief> }`,
 //!   and the spawn child's own first `UserTurn` is the brief verbatim.
 //!
@@ -388,8 +388,8 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
     );
 
     // Locate the ephemeral ask child via the session catalog. The
-    // `EphemeralSessionRef` artifact's `id` is the child's `transcript_ref`
-    // (); the catalog lookup (`SessionFilter { include_ephemeral: true }`)
+    // `EphemeralSessionRef` artifact's `id` is the child's `transcript_ref`;
+    // the catalog lookup (`SessionFilter { include_ephemeral: true }`)
     // is the other route to the same `SessionId`. Both are exercised below.
     let with_ephemeral = store
         .list(SessionFilter {

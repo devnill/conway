@@ -105,7 +105,6 @@ impl Tool for BashTool {
     /// above, which restates `PathArgs`'s own default too) for the same
     /// reason: a reader should never have to go check what the default is
     /// to know what `bash` does.
-    ///.
     fn render_kind(&self) -> RenderKind {
         RenderKind::ShellCommand
     }

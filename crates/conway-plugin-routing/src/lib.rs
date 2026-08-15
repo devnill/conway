@@ -27,14 +27,15 @@
 //! for what changes (and what doesn't) between the two configurations.
 //!
 //! `CapabilityIndex`/`CapabilityIndexBuilder` are re-exported here for
-//! source compatibility but no longer defined in this crate (//! moved them to `conway_core::ports` --
+//! source compatibility but no longer defined in this crate (a later item
+//! moved them to `conway_core::ports` --
 //! "the backend side" -- since `from_backends` reads directly off
 //! `Backend::capabilities` and nothing about the type is routing-policy
 //! specific).
 //!
 //! `BreakerSnapshot`/`CapabilitySummary`/`EntryOutcome`/`ExplainEntry`/
 //! `ExplainReport` are, likewise, re-exported here for source compatibility
-//! but no longer defined in this crate (
+//! but no longer defined in this crate (a later item
 //! moved them to `conway_core::routing`, so a `Router` supplied from outside
 //! this crate can still produce one via `conway_core::routing::MinimalRouter`
 //! -- see that type's doc for why).

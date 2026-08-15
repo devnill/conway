@@ -31,8 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 /// An unwired dispatcher (no runner installed) is a byte-for-byte no-op,
 /// matching every other observation-tier default -- the right default for
-/// every test in this file that is not itself about `child_reported`
-///.
+/// every test in this file that is not itself about `child_reported`.
 fn no_hooks() -> Arc<HookDispatcher> {
     Arc::new(HookDispatcher::new())
 }

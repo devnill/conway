@@ -459,7 +459,7 @@ pub use conway_core::routing::{
 pub use conway_core::capabilities::HeadroomPolicy;
 pub use conway_core::routing::RoutingConfig;
 
-//, same reasoning one line
+// By the same reasoning one line
 // up: `BackendFactory` joins the extension surface too, and
 // `BackendBuildContext::models` names `ModelOverrides` in its own field
 // type -- without this re-export, a third-party factory could read

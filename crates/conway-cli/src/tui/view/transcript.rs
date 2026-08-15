@@ -51,8 +51,8 @@ use crate::tui::state::{Activity, AppState, Entry, NodeStatus, ToolStatus};
 /// time to the live, in-progress `Entry::Assistant` line while `activity ==
 /// Responding`. This is a render-time decoration ONLY -- it is never baked
 /// into the stored `Entry::Assistant` text or into [`entry_lines`] output
-/// for settled entries (the clean-copy invariant, decision
-///, is RELAXED only for the actively-streaming
+/// for settled entries (the clean-copy invariant
+/// is RELAXED only for the actively-streaming
 /// line per decision D-clean-copy). See [`build_paragraph`] for the
 /// append-at-render-time mechanism that keeps settled `entry_lines` output
 /// unchanged.

@@ -190,30 +190,82 @@ impl CanonicalRoot {
     /// this root. See the module doc comment for the full algorithm and
     /// the relative-candidate decision.
     pub fn contains(&self, candidate: &Path) -> Containment {
+        // `None` from `resolve` means "couldn't decide" (relative
+        // candidate, unresolvable walk, `..` in a non-existent tail) --
+        // `Undecidable`, NEVER `Outside`: those are deliberately distinct
+        // variants (see `Containment`'s own doc), and collapsing "can't
+        // check" into "definitively outside" would be as wrong as
+        // collapsing it into "allowed" -- a caller matching on `Outside`
+        // specifically (rather than treating the two as interchangeable,
+        // which every caller in this tree does today, but the type exists
+        // so a FUTURE one need not) would be told something this method
+        // never established.
+        self.resolve(candidate)
+            .map_or(Containment::Undecidable, |resolved| {
+                if resolved.starts_with(&self.canonical) {
+                    Containment::Inside
+                } else {
+                    Containment::Outside
+                }
+            })
+    }
+
+    /// The offset-computing half of [`Self::contains`]: resolves `candidate`
+    /// exactly as `contains` does (deepest-existing-ancestor walk, `..`
+    /// rejected in a non-existent tail, `.` stripped) but returns the
+    /// resolved absolute path on success rather than collapsing it to
+    /// [`Containment`]. `None` for every case `contains` would answer
+    /// `Undecidable` for (relative candidate, unresolvable walk, `..` in a
+    /// non-existent tail). Shared by `contains` and
+    /// [`Self::relative_if_inside`] so the two can never independently
+    /// drift on what "resolved" means.
+    fn resolve(&self, candidate: &Path) -> Option<PathBuf> {
         if candidate.is_relative() {
-            return Containment::Undecidable;
+            return None;
         }
 
-        let (existing_prefix, tail) = match deepest_existing_ancestor(candidate) {
-            Ok(split) => split,
-            Err(_) => return Containment::Undecidable,
-        };
+        let (existing_prefix, tail) = deepest_existing_ancestor(candidate).ok()?;
 
         let mut clean_tail = PathBuf::new();
         for component in tail.components() {
             match component {
-                Component::ParentDir => return Containment::Undecidable,
+                Component::ParentDir => return None,
                 Component::CurDir => continue,
                 other => clean_tail.push(other.as_os_str()),
             }
         }
 
-        let resolved = existing_prefix.join(&clean_tail);
-        if resolved.starts_with(&self.canonical) {
-            Containment::Inside
-        } else {
-            Containment::Outside
+        Some(existing_prefix.join(&clean_tail))
+    }
+
+    /// Like [`Self::contains`], but on `Inside` also returns `candidate`'s
+    /// location EXPRESSED RELATIVE TO THIS ROOT, for a caller that needs to
+    /// hand a relative path to an open-relative (`openat`-style) API rooted
+    /// at this same canonical root -- see `conway_tools::fs::beneath`'s own
+    /// doc for why that caller exists and why a relative path, not the
+    /// resolved absolute one, is what it needs.
+    ///
+    /// This is a CONVENIENCE, not a trust boundary: the caller's own
+    /// open-relative walk re-resolves `candidate` independently and is what
+    /// actually enforces containment at open time (closing the TOCTOU
+    /// window between this call and that one). If a race changes the
+    /// filesystem between this call and the caller's open, the worst this
+    /// method can do is compute a relative path that no longer denotes what
+    /// it denoted here -- the caller's own walk still refuses an escape.
+    pub fn relative_if_inside(&self, candidate: &Path) -> Option<PathBuf> {
+        let resolved = self.resolve(candidate)?;
+        if !resolved.starts_with(&self.canonical) {
+            return None;
         }
+        // `strip_prefix` cannot fail here: `starts_with` above already
+        // confirmed `resolved` has `self.canonical` as a component-wise
+        // prefix.
+        Some(
+            resolved
+                .strip_prefix(&self.canonical)
+                .expect("starts_with just confirmed this prefix")
+                .to_path_buf(),
+        )
     }
 }
 
@@ -549,5 +601,79 @@ mod tests {
 
         let candidate = repo.join("new-dir").join(".").join("file.txt");
         assert_eq!(root.contains(&candidate), Containment::Inside);
+    }
+
+    // ---- relative_if_inside ----
+
+    #[test]
+    fn relative_if_inside_returns_the_offset_when_inside() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        let root = CanonicalRoot::new(&repo).unwrap();
+
+        let candidate = repo.join("new-dir").join("file.txt");
+        assert_eq!(
+            root.relative_if_inside(&candidate),
+            Some(PathBuf::from("new-dir/file.txt"))
+        );
+    }
+
+    #[test]
+    fn relative_if_inside_is_none_when_outside() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        let sibling = tmp.path().join("sibling");
+        fs::create_dir(&repo).unwrap();
+        fs::create_dir(&sibling).unwrap();
+        let root = CanonicalRoot::new(&repo).unwrap();
+
+        assert_eq!(root.relative_if_inside(&sibling.join("f.txt")), None);
+    }
+
+    #[test]
+    fn relative_if_inside_is_none_when_undecidable() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        let root = CanonicalRoot::new(&repo).unwrap();
+
+        // Relative candidate: `contains` answers `Undecidable`, and this
+        // must agree, never silently returning a bogus offset.
+        assert_eq!(
+            root.relative_if_inside(Path::new("relative/file.txt")),
+            None
+        );
+    }
+
+    /// Pins the `contains`/`resolve` split itself: an `Undecidable` case
+    /// must stay `Undecidable`, never collapse into `Outside` just because
+    /// `resolve` returns `None` for both. This is the exact regression this
+    /// item's own refactor introduced and then caught via the pre-existing
+    /// `dotdot_in_nonexistent_tail_is_rejected_not_normalized`/
+    /// `relative_candidate_is_undecidable` tests above -- this test pins it
+    /// AT the `contains`/`resolve` boundary directly, so a future
+    /// refactor of either fails here first.
+    #[test]
+    fn contains_and_relative_if_inside_agree_on_undecidable_vs_outside() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        let sibling = tmp.path().join("sibling");
+        fs::create_dir(&repo).unwrap();
+        fs::create_dir(&sibling).unwrap();
+        let root = CanonicalRoot::new(&repo).unwrap();
+
+        // Genuinely outside (fully resolvable, lands elsewhere).
+        let outside_candidate = sibling.join("f.txt");
+        assert_eq!(root.contains(&outside_candidate), Containment::Outside);
+        assert_eq!(root.relative_if_inside(&outside_candidate), None);
+
+        // Genuinely undecidable (relative -- can't even start resolving).
+        let undecidable_candidate = Path::new("relative/f.txt");
+        assert_eq!(
+            root.contains(undecidable_candidate),
+            Containment::Undecidable
+        );
+        assert_eq!(root.relative_if_inside(undecidable_candidate), None);
     }
 }

@@ -1,5 +1,5 @@
 //! Acceptance tests for the interactive-chat "pure and light" tool profile
-//! ():
+//! (a settled design decision):
 //! `SessionSpec::tools` plumbs straight through `Conway::new_session` into
 //! `RootSpec::tools`, so a session built with `ToolSelector::Except(vec![
 //! "report".into()])` announces every builtin tool EXCEPT `report` to the

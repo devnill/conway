@@ -72,24 +72,16 @@ impl Tool for ReadTool {
         check_cancel(&ctx)?;
         let args: ReadArgs = parse_args(&call)?;
         let path = resolve_path(&ctx, &args.path)?;
-        crate::fs::check_root(&ctx, &path)?;
 
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(bytes) => bytes,
+        // `[S1.5]`/(retirement): open-relative, so the
+        // containment check and the actual read are one step -- see
+        // `crate::fs::beneath`'s own doc. Unconfined (no root configured)
+        // is byte-for-byte the pre-existing `tokio::fs::read`.
+        let bytes = match crate::fs::beneath::read_file(&ctx, &path).await? {
+            crate::fs::beneath::ReadOutcome::Bytes(bytes) => bytes,
             // Model-recoverable: the model chose a path that isn't there.
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(error_text(format!(
-                    "file not found: {err} (path: {})",
-                    path.display()
-                )));
-            }
-            // Host-level (permission denied, I/O failure, ...): the crate's
-            // error discipline routes these to Err(ToolError::Io), matching
-            // edit.rs (incremental review S2, cycle 1).
-            Err(err) => {
-                return Err(ToolError::Io {
-                    detail: format!("failed to read {}: {err}", path.display()),
-                });
+            crate::fs::beneath::ReadOutcome::NotFound => {
+                return Ok(error_text(format!("file not found: {}", path.display())));
             }
         };
 

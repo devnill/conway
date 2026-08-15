@@ -447,7 +447,7 @@ async fn fork_rejects_a_from_agent_that_belongs_to_a_different_session() {
         .expect_err("a foreign session's root must be rejected");
     match err {
         ConwayError::Runtime(inner) => {
-            //, resolved: `conway_core::error::RuntimeError`
+            // Resolved in a later item: `conway_core::error::RuntimeError`
             // now has a dedicated `AgentNotInSession { agent, session }`
             // variant (see `SessionHandle::ensure_agent_in_session`'s doc)
             // rendering exactly "agent does not belong to session" -- this
@@ -1952,8 +1952,8 @@ async fn cancel_reason_reaches_the_result_when_observed_mid_request() {
 }
 
 // ---------------------------------------------------------------------
-// Graceful cancellation does NOT propagate (,
-//): `CancelMode::Graceful` stops only
+// Graceful cancellation does NOT propagate (a settled design
+// decision): `CancelMode::Graceful` stops only
 // the named target, never its descendants -- `PHILOSOPHY.md` and
 // `CancelMode`'s own doc both state this; immediate propagation already has
 // a pinning test (`conway-runtime`'s `tests/supervisor.rs`,
@@ -1978,7 +1978,7 @@ async fn cancel_reason_reaches_the_result_when_observed_mid_request() {
 /// conflate both agents' start/release signals on the very same `Notify`
 /// pair, which is exactly the ambiguity
 /// `graceful_cancel_on_a_parent_does_not_touch_a_live_childs_terminal_result`
-/// below must avoid to stay deterministic ().
+/// below must avoid to stay deterministic.
 struct NamedSlowTool {
     name: conway_core::ids::ToolName,
     started: Arc<tokio::sync::Notify>,

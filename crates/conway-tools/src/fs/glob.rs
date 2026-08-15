@@ -73,10 +73,19 @@ impl Tool for GlobTool {
     async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
         check_cancel(&ctx)?;
         let args: GlobArgs = parse_args(&call)?;
-        let root = match &args.path {
+        let requested_root = match &args.path {
             Some(p) => resolve_path(&ctx, p)?,
             None => ctx.cwd.clone(),
         };
+        // `[S1.5]`/(retirement): `glob` gained NO
+        // harness-level root check before this item either (same gap as
+        // `edit`/`grep` -- see this item's own report). Confines the search
+        // ROOT itself; the walk under it stays safe from a symlink escape
+        // via `ignore::WalkBuilder`'s own `follow_links(false)` default
+        // (`crate::fs::walk_files`, unrelated to this item) -- see
+        // `crate::fs::beneath::confine_search_root`'s own doc for exactly
+        // what this does and does not close.
+        let root = crate::fs::beneath::confine_search_root(&ctx, &requested_root).await?;
         let limit = args.limit.unwrap_or(DEFAULT_LIMIT) as usize;
 
         let matcher = match globset::GlobBuilder::new(&args.pattern)
@@ -233,5 +242,42 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments { .. }));
+    }
+
+    /// (retirement): `glob` had no
+    /// harness-independent root check before this item (the same
+    /// pre-existing gap `edit.rs`'s own pinning test names). Proves
+    /// `conway.fs` itself now refuses a search root outside the configured
+    /// root.
+    #[tokio::test]
+    async fn invoke_denies_a_search_root_outside_the_configured_root() {
+        use std::sync::Arc;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root_dir = tmp.path().join("root");
+        let outside_dir = tmp.path().join("outside");
+        std::fs::create_dir(&root_dir).unwrap();
+        std::fs::create_dir(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("f.rs"), "fn main() {}").unwrap();
+
+        let (mut ctx, _h) = test_ctx(root_dir.clone());
+        let mut values = serde_json::Map::new();
+        values.insert(
+            "conway.fs.root".to_string(),
+            serde_json::json!(root_dir.display().to_string()),
+        );
+        ctx.config = Arc::new(conway_core::ports::PluginConfig { values });
+
+        let err = GlobTool::new()
+            .invoke(
+                call(serde_json::json!({
+                    "pattern": "*.rs",
+                    "path": outside_dir.display().to_string(),
+                })),
+                ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Denied { .. }));
     }
 }

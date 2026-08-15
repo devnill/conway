@@ -558,7 +558,7 @@ pub enum AgentStatus {
 /// `Graceful` instead enqueues `AgentMessage::Cancel { hard: false, .. }`,
 /// landing at the target's next turn boundary and stopping ONLY the named
 /// agent -- it does not itself cancel descendants (that is
-///, a deliberate follow-up, not a gap in this
+/// a deliberate follow-up, not a gap in this
 /// one). A graceful cancel also cannot reach an agent parked at the resume
 /// gate (an idle `keep_alive` agent between turns, or a resumed root's very
 /// first iteration): that wait only selects on the hard cancellation token,

@@ -142,7 +142,7 @@ pub fn supervise(args: SuperviseArgs) -> JoinHandle<()> {
                         // Abort the orphan: dropping the handle would leave
                         // the task running unsupervised, free to emit a
                         // second AgentFinished when it eventually completes
-                        //.
+                        // (an earlier review finding).
                         task.abort();
                         Outcome::Synthesized(budget_exceeded(agent, session))
                     }

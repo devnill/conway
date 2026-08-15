@@ -410,7 +410,7 @@ mod tests {
         assert!(!store.is_trusted(Path::new("/anything"), "anything"));
     }
 
-    ///, question 3: pins the
+    /// From a later item, question 3: pins the
     /// deliberate DIFFERENCE from `permissions.json`'s treatment, recorded
     /// in this module's own doc -- an unrecognized key here (at either
     /// nesting level: a stray top-level field, or a stray field inside one

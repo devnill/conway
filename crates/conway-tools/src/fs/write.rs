@@ -64,9 +64,13 @@ impl Tool for WriteTool {
         check_cancel(&ctx)?;
         let args: WriteArgs = parse_args(&call)?;
         let path = resolve_path(&ctx, &args.path)?;
-        crate::fs::check_root(&ctx, &path)?;
 
-        let bytes = atomic_write(&path, &args.content).await?;
+        // `[S1.5]`/(retirement): open-relative, so the
+        // containment check and the actual write are one step -- see
+        // `crate::fs::beneath`'s own doc. Unconfined (no root configured)
+        // delegates straight to `atomic_write` below, byte-for-byte the
+        // pre-existing behavior.
+        let bytes = crate::fs::beneath::write_file_atomic(&ctx, &path, &args.content).await?;
 
         Ok(text_output(
             format!("wrote {bytes} bytes to {}", path.display()),
@@ -131,7 +135,7 @@ pub(crate) async fn atomic_write(path: &Path, content: &str) -> Result<u64, Tool
 /// other's in-flight content — the last `rename` wins whole-file
 /// (incremental review S1, cycle 1). Same-directory placement keeps the
 /// final `rename` on one filesystem (atomic, no cross-device copy).
-fn tmp_sibling(path: &Path) -> PathBuf {
+pub(crate) fn tmp_sibling(path: &Path) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let parent = path.parent().unwrap_or_else(|| Path::new("."));

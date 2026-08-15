@@ -542,7 +542,7 @@ plugin`:
 
 Everything else `docs/embedding.md`'s reachability table names as
 implementable from a facade-only crate — `PermissionGate`, `Tool`, `Plugin`,
-`ContextHook`, and, since, `Backend`
+`ContextHook`, and, since a later item, `Backend`
 via the separate `conway::backend` module — is implementable the same way:
 name the trait at the facade root, name its supporting types from the
 matching curated module, register through the builder.

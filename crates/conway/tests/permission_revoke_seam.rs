@@ -393,7 +393,20 @@ async fn revoking_a_global_rule_persists_with_no_retrust_ceremony() {
     let conway = build_conway(cwd.path(), vec![], gate.clone() as Arc<dyn PermissionGate>);
     let agent = AgentId::new();
     let report = conway.load_permission_files(cwd.path(), &env, PermissionScope::Session, agent);
-    assert!(report.notices.is_empty());
+    // Board item 01M03222QS0WQWPEHHNP9FKVXJ: a `bash:...` allow rule is
+    // permanently inert (`Rule::gate_allows` refuses every allow `when` for
+    // a `ShellCommand` tool -- see 01KZDDPC5MMD49F6JPV9CW4TVM), and the
+    // loader now says so with a notice instead of installing it silently.
+    // The rule still INSTALLS (a notice never blocks installation, unlike a
+    // registration error), so this test's own subject -- revoking it --
+    // is unaffected by the notice's presence.
+    assert_eq!(
+        report.notices.len(),
+        1,
+        "a `bash:git status` allow rule is inert and must surface a notice: {:?}",
+        report.notices
+    );
+    assert!(report.notices[0].contains("ShellCommand"));
     assert_eq!(conway.active_permission_patterns().len(), 1);
 
     let (rule, origin) = find_grant(&conway, "bash:git status");

@@ -107,7 +107,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::events::EventBus;
 
-/// The inbox capacity every real agent in the runtime uses (
+/// The inbox capacity every real agent in the runtime uses (the acceptance
 /// criterion: `Mailbox::new(capacity)` with runtime capacity 64).
 pub const RUNTIME_CAPACITY: usize = 64;
 

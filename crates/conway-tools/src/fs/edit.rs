@@ -10,7 +10,6 @@ use conway_core::ids::ToolName;
 use conway_core::ports::{PathArgs, RenderKind, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, error_text, parse_args, resolve_path, text_output};
-use crate::fs::write::atomic_write;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -71,15 +70,22 @@ impl Tool for EditTool {
             )));
         }
 
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(bytes) => bytes,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+        // `[S1.5]`/(retirement): `edit` gained
+        // NO harness-level root check before this item, at any point --
+        // `check_root` was only ever wired into `read`/`write`/`cd`. Under
+        // the (now-retired) harness pre-gate this was masked: `edit` still
+        // declares `PathArgs::Named(&["path"])`, so `PermissionBroker::
+        // check_root` confined it anyway, from OUTSIDE this file, before
+        // `invoke` ever ran. Retiring that pre-gate would have made `edit`
+        // silently unconfined were this call not added here -- see this
+        // item's own report for the full "what did the harness cover that
+        // conway.fs did not" accounting. `edit`'s write half is confined the
+        // same way, at its own `atomic_write`/`beneath::write_file_atomic`
+        // call site below.
+        let bytes = match crate::fs::beneath::read_file(&ctx, &path).await? {
+            crate::fs::beneath::ReadOutcome::Bytes(bytes) => bytes,
+            crate::fs::beneath::ReadOutcome::NotFound => {
                 return Ok(error_text(format!("file not found: {}", path.display())));
-            }
-            Err(err) => {
-                return Err(ToolError::Io {
-                    detail: format!("failed to read {}: {err}", path.display()),
-                });
             }
         };
 
@@ -115,7 +121,7 @@ impl Tool for EditTool {
             (content.replacen(&args.old_string, &args.new_string, 1), 1)
         };
 
-        atomic_write(&path, &new_content).await?;
+        crate::fs::beneath::write_file_atomic(&ctx, &path, &new_content).await?;
 
         Ok(text_output(
             format!("edited {}: {replacements} replacement(s)", path.display()),
@@ -282,5 +288,48 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments { .. }));
+    }
+
+    /// (retirement): pins the gap this
+    /// item's own report names -- before this item, `edit` was confined
+    /// ONLY by the harness-level pre-gate check (`edit` performed no root
+    /// check of its own at all). This proves `edit` is confined by
+    /// `conway.fs` itself now, independent of any harness-level mechanism.
+    #[tokio::test]
+    async fn invoke_denies_a_target_outside_the_configured_root() {
+        use std::sync::Arc;
+
+        let tmp = TempDir::new().unwrap();
+        let root_dir = tmp.path().join("root");
+        let outside_dir = tmp.path().join("outside");
+        std::fs::create_dir(&root_dir).unwrap();
+        std::fs::create_dir(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("f.txt"), "one two three").unwrap();
+
+        let (mut ctx, _h) = test_ctx(root_dir.clone());
+        let mut values = serde_json::Map::new();
+        values.insert(
+            "conway.fs.root".to_string(),
+            serde_json::json!(root_dir.display().to_string()),
+        );
+        ctx.config = Arc::new(conway_core::ports::PluginConfig { values });
+
+        let err = EditTool::new()
+            .invoke(
+                call(serde_json::json!({
+                    "path": outside_dir.join("f.txt").display().to_string(),
+                    "old_string": "two",
+                    "new_string": "TWO",
+                })),
+                ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Denied { .. }));
+        assert_eq!(
+            std::fs::read_to_string(outside_dir.join("f.txt")).unwrap(),
+            "one two three",
+            "the out-of-root file must be untouched"
+        );
     }
 }

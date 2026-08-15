@@ -40,8 +40,7 @@ pub async fn run(args: &RoutesArgs, conway: &Conway) -> conway::Result<ExitCode>
             // not the only way it can end up that way in principle (an
             // empty-chain role is a second, distinct cause) -- inferring
             // "unknown role" from bare emptiness previously made that
-            // fallback misreport every correctly-configured role as unknown
-            //.
+            // fallback misreport every correctly-configured role as unknown.
             if !conway.config().roles.contains_key(role.as_str()) {
                 let mut roles: Vec<&String> = conway.config().roles.keys().collect();
                 roles.sort();

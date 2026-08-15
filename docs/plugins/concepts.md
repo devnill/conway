@@ -11,18 +11,19 @@ forward declaration is a respectable state, and the alternative (silence
 until the last piece lands) would leave feature development without the
 normative spec it needs to build against. Every section below says plainly
 which parts exist in the tree today and which are decided-but-not-yet-built.
-Where something is unbuilt, it names the tracking it. Nothing here
+Where something is unbuilt, it names the item tracking it. Nothing here
 is aspirational in the sense of "might happen" — everything unbuilt has
 already been decided; what remains is implementation.
 
 **What exists today, in one list**, so you don't have to extract it from the
 labels below: a plugin is an in-process `Arc<dyn Plugin>` (built-in or
 supplied via `ConwayBuilder::with_plugin`/`conway::plugin`, or selected by
-id via `ConwayBuilder::install_selected`) that registers tools, and — since — may
+id via `ConwayBuilder::install_selected`) that registers tools, and — more
+recently — may
 also register TUI `commands()` and declare/fire its own `events()`;
 `ContextHook` (`before_request`/`on_overflow`) and `PermissionGate` are
 real, invoked ports with no built-in policy — you supply your own; project-
-file trust (keyed on path + content digest) is real and enforced; and, as of, a **declarative** `hooks.rules[]`
+file trust (keyed on path + content digest) is real and enforced; and, as of a later item, a **declarative** `hooks.rules[]`
 block in `settings.json` — no Rust required — really is dispatched: all
 seven core events, narrowable to one tool by a `match` field, given a
 `HookRunner` injected (`docs/plugins/authoring.md`'s "Ten minutes to a
@@ -68,11 +69,11 @@ and `PermissionGate` are real, separate ports the embedder wires in directly
 (`ConwayBuilder`), not something a `Plugin` registers. **The first rung of
 hook-first that this section used to call open is now built**: a
 declarative `hooks.rules[]` block in `settings.json` fires a configured
-command on a named event, narrowed to one tool by `match` —, dispatching all seven core events plus any
+command on a named event, narrowed to one tool by `match`, dispatching all seven core events plus any
 plugin-declared one (`docs/plugins/hooks.md` point 13's Status row is
 normative; `docs/plugins/authoring.md` is the executed walkthrough). What
-remains open under the same umbrella tracking item
-: a *plugin* registering a hook through the
+remains open under the same umbrella tracking item:
+a *plugin* registering a hook through the
 `Plugin` trait itself (as opposed to an operator writing a `hooks.rules[]`
 entry by hand), and the generalized observer/participant composition rule
 the next section describes.
@@ -108,7 +109,7 @@ numbers.
 **Not yet implemented: the generalized point vocabulary and composition.**
 The design names discrete "points" a plugin registers against —
 `tool/1`, `permission.policy/1`, `observe/1`, `context.hook/1`
- — and specifies how *more than one*
+— and specifies how *more than one*
 participant's answers compose. Today there is exactly one `PermissionGate`
 implementation per embedder (not a composed chain of policies) and exactly
 one optional `ContextHook` (not a composed set of context hooks), so the
@@ -224,7 +225,7 @@ prompt alone. It is not a hook, but it is the identical shape a hook's
 **Not yet implemented.** No hook registration surface exists yet
 (see "Hook-first" above), so there is nowhere for a `subagent_mode` field to
 attach; the `hook.fork` capability is decided but has no code representing
-it. Tracked under.
+it. Tracked under the same declarative `hooks` charter as the rest of this section.
 
 ## Language choice
 
@@ -257,7 +258,7 @@ sense — a third-party `Plugin` whose own `tools()`/`commands()`/`events()`
 happen to be backed by a script, distinct from the runtime's own built-in
 runner. Nothing today lets a `Plugin` implementor delegate its *own* trait
 methods to an external script the way `hooks.rules[]` delegates a core
-event; a plugin author still writes Rust. Tracked under.
+event; a plugin author still writes Rust. Tracked under the same declarative `hooks` charter.
 
 ## Trust, in one paragraph
 

@@ -52,7 +52,7 @@ use crate::profile::Profile;
 /// `pub(crate)`, not private: `factory.rs`'s `OpenAiCompatBackendFactory::
 /// probe_capabilities` constructs its own `CapabilityProbe` and needs this
 /// same value for `CapabilityProbe::new`'s `timeout` parameter — before
-///, that caller lived in `crates/
+/// a later item, that caller lived in `crates/
 /// conway/src/builder.rs` (a different crate) and had to maintain its own
 /// `PROBE_TIMEOUT` constant "mirroring" this one; now that the caller moved
 /// into this same crate, the duplicate constant is gone and this is the one

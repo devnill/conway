@@ -41,9 +41,12 @@ questions, and this page answers neither by omission.
 | `glob` | Finds files matching a glob pattern under a search root, gitignore-aware. | Search | Yes (`path`) | Head (32,768 bytes) | Safe |
 | `grep` | Searches file contents for a regex pattern under a search root, gitignore-aware. | Search | Yes (`path`) | Head (32,768 bytes) | Safe |
 
-Every `fs` tool declares exactly one path argument (`path`), so a
-confinement root evaluates it the same way for all six: a call resolving
-outside `--root` is denied before your permission gate is ever consulted.
+Every `fs` tool declares exactly one path argument (`path`), so `conway.fs`
+evaluates it the same way for all six: a call resolving outside `--root` is
+denied. This check runs INSIDE `conway.fs` itself now (open-relative,
+closing a symlink-swap race a separate check-then-open step could not) —
+not ahead of your permission gate, so the gate may still be consulted
+first; the call is refused regardless of what the gate answers.
 `glob`/`grep`'s `pattern`/`glob` arguments are search expressions, not
 paths, and are never handed to a root check.
 

@@ -515,7 +515,7 @@ fn build_conway_with_selection(selection: Option<PluginSelection>) -> Conway {
 /// `with_builtin_plugins` call, no `[tools]` override) yields a runtime
 /// with NO `bash` tool registered.
 ///
-/// The registry-emptiness hazard this test is written to rule out ():
+/// The registry-emptiness hazard this test is written to rule out:
 /// a build that silently registered NOTHING would also make
 /// `tool_render_kind("bash")` return `None`, passing this assertion for
 /// the WRONG reason. `fs`'s `read` tool is asserted present in the very
@@ -890,8 +890,8 @@ fn probe_on_startup_false_makes_no_network_call_true_does() {
 }
 
 /// `Conway::explain_routing` delegates to `conway_core::routing::
-/// MinimalRouter` (the no-plugin default
-///, no `with_router`/`with_router_factory` call
+/// MinimalRouter` (the no-plugin default,
+/// no `with_router`/`with_router_factory` call
 /// here), and its `entries` correspond 1:1 to the role's configured chain,
 /// in order -- the same shape the richer, capability-/health-filtered
 /// `conway-plugin-routing::RoutingExplain` produces when that plugin is

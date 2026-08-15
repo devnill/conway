@@ -692,8 +692,8 @@ fn record_role_and_content(record: &LogRecord) -> Option<(Role, Vec<ContentBlock
         LogRecord::ForkDirective { text, .. } => Some((Role::User, text_block(text))),
         LogRecord::ParentSteer { text, .. } => Some((Role::User, text_block(text))),
         LogRecord::SystemNote { text, .. } => Some((Role::System, text_block(text))),
-        // A child's result, recorded into an ancestor's own log
-        //, flows into a fork child's inherited
+        // A child's result, recorded into an ancestor's own log,
+        // flows into a fork child's inherited
         // prefix exactly like any other own volatile record kind -- same
         // treatment `ParentSteer` already gets two arms above.
         LogRecord::ChildResultRecord { result, .. } => {

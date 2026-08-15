@@ -7,7 +7,8 @@
 //! spawned) is `attach`ed to it, and its task is wrapped by
 //! [`crate::supervisor::supervise`] so a panic or a blown deadline still
 //! resolves to a terminal result instead of leaving the tree's bookkeeping
-//! stuck on `Running` forever. `impl SubagentHost for Runtime` (//! `subagent.rs`) is this crate's fork/spawn entry point; see that module's
+//! stuck on `Running` forever. `impl SubagentHost for Runtime` (see
+//! `subagent.rs`) is this crate's fork/spawn entry point; see that module's
 //! doc for the fork/spawn procedure and the self-referential-`Arc`
 //! construction this file's `new()` sets up for it. See `tree.rs`'s and
 //! `supervisor.rs`'s module docs for the guarantees this buys and the one
@@ -23,7 +24,7 @@
 //! - **`RuntimeDeps` has no `subagents` field:** `LoopDeps::subagents`
 //!   (committed) requires an `Arc<dyn SubagentHost>` for every agent
 //!   task. Rather than accept this as an injected dependency (
-//!   An earlier review found: , an embedder-supplied fake is not a real
+//!   an earlier review found: an embedder-supplied fake is not a real
 //!   dependency, and `conway_testkit::FakeSubagentHost` lives in a
 //!   test-only crate this crate's own `[dependencies]` never names (only
 //!   `[dev-dependencies]` does), so wiring it into a non-test `Runtime::new`

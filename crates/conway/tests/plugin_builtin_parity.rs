@@ -1,4 +1,4 @@
-//! C4: facade-only parity acceptance test () -- the payoff and
+//! C4: facade-only parity acceptance test -- the payoff and
 //! acceptance gate for the whole facade-parity epic (C1/C2/C3/C5).
 //!
 //! Proves that conway's own `conway_fork`/`conway_spawn`/`conway_ask`/
@@ -588,7 +588,7 @@ impl Tool for CdToolReplica {
             },
             // `CwdError` is `#[non_exhaustive]`: a future variant must map
             // to a typed `ToolError` deliberately, here too, not fall
-            // through to a panic () -- the real `cd` tool's own
+            // through to a panic -- the real `cd` tool's own
             // discipline, reproduced verbatim.
             other => ToolError::Internal {
                 detail: format!("cwd handle set failed: {other}"),

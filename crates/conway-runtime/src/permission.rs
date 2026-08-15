@@ -28,6 +28,91 @@ use conway_core::ports::{HookRunner, PathArgs, PermissionGate, RenderKind};
 use crate::context::prefix::canonical_json_bytes;
 use crate::events::EventBus;
 
+/// The already-prefixed per-agent plugin-config key `conway_tools::fs`'s
+/// `FsPlugin` reads its own confinement root under
+/// (`conway_tools::fs::mod`'s own `FULL_ROOT_CONFIG_KEY`, restated here
+/// because `conway-runtime -> conway-tools` would be a new, backward
+/// crate-layering edge this crate must not gain just for a string
+/// constant -- see that constant's own doc for the identical note in the
+/// other direction). `runtime::root::start_root` and `subagent::
+/// SubagentHost::start` both derive an entry under this key from the SAME
+/// `AgentRoot`/`SessionMeta.root`/`SubagentSpec.root` value they already
+/// resolve and validate for the (unrelated, still-live) artifact-writer
+/// confinement path (`crate::artifact_store::AgentArtifactWriter`) -- see
+/// [`derive_fs_root_config`]'s own doc for why this is a DERIVATION from an
+/// already-validated value, never a second validation.
+pub(crate) const CONWAY_FS_ROOT_CONFIG_KEY: &str = "conway.fs.root";
+
+/// Merges a `conway.fs.root` entry -- derived from `root` (this agent's
+/// OWN already-canonicalized confinement root, exactly the value
+/// `AgentRoot`/`SessionMeta.root`/`SubagentSpec.root` already carry) -- into
+/// `requested` (whatever per-agent `PluginConfig` values a caller already
+/// asked for), and returns the merged map. `None` for `root` leaves
+/// `requested` untouched (an unconfined agent gets no `conway.fs.root`
+/// entry, exactly as if this function were never called).
+///
+/// **This is what makes `--root`/`ConwayBuilder::with_root` (and a spawned
+/// child's `SubagentSpec::root`) still confine ordinary `read`/`write`/
+/// `edit`/`cd`/`glob`/`grep` calls after the retirement.** Before
+/// (`PermissionBroker::check_root`'s
+/// per-tool `PathArgs::Named` walk retired), `root` alone was sufficient --
+/// the harness checked every declared path argument against it directly,
+/// and nothing needed to tell `conway.fs` anything. Now `conway.fs`
+/// enforces its OWN root, read from PER-AGENT PLUGIN CONFIG
+/// (`conway_core::ports::Plugin::narrowable_keys`), which `root`
+/// alone does not populate -- without this derivation, an operator's
+/// `--root` (or a caller's `SubagentSpec::root`) would keep confining
+/// artifact writes (the OTHER, still-live consumer of `AgentRoot`) while
+/// SILENTLY no longer confining any ordinary tool call at all, which is
+/// exactly the regression this item's own security preamble forbids.
+///
+/// **A derivation, not a second validation.** `root` reaching this function
+/// has ALREADY been resolved, canonicalized, and (for a spawned child)
+/// narrowing-checked against its parent by the SAME caller that is about to
+/// use it for `SessionMeta.root`/`AgentLoop.root` -- this function trusts
+/// that work completely and does not repeat it. If `requested` already
+/// names [`CONWAY_FS_ROOT_CONFIG_KEY`] explicitly (a caller that set
+/// `conway.fs.root` directly via `SubagentSpec::plugin_config`, independent
+/// of `SubagentSpec::root`), that explicit value is kept: this function
+/// only FILLS IN the key when the caller left it unset, never overrides an
+/// explicit choice. The result is NOT itself narrowing-validated here --
+/// the caller's own `PluginConfig::narrow` call (already made, for
+/// unrelated reasons, at every call site this function has) validates the
+/// WHOLE merged map, including this entry, exactly like every other key.
+///
+/// **`fs_root_is_narrowable` gates the derivation entirely.** A `Runtime`
+/// with no `conway.fs`-shaped plugin installed at all (a `conway-runtime`
+/// test fixture using a minimal registry, or a real embedder who never
+/// installs `FsPlugin`) has nothing declaring [`CONWAY_FS_ROOT_CONFIG_KEY`]
+/// narrowable -- `PluginConfig::narrow` would refuse the WHOLE spawn/start
+/// outright for a key nothing recognizes, turning a caller's unrelated
+/// `--root`/`SubagentSpec::root` (whose ONLY other consumer,
+/// `AgentArtifactWriter`, needs no plugin at all) into a hard failure it
+/// never asked for. The caller passes whether ITS OWN currently-installed
+/// plugin set actually declares the key (`PluginRegistry::narrowing_rules`)
+/// -- `false` skips the derivation entirely (byte-for-byte the pre-this-
+/// function behavior: `root` still confines the artifact-writer path,
+/// simply does not reach a plugin that isn't there to be reached).
+pub(crate) fn derive_fs_root_config(
+    root: Option<&Path>,
+    requested: Option<&conway_core::ports::PluginConfig>,
+    fs_root_is_narrowable: bool,
+) -> Option<conway_core::ports::PluginConfig> {
+    let Some(root) = root else {
+        return requested.cloned();
+    };
+    if !fs_root_is_narrowable {
+        return requested.cloned();
+    }
+    let mut values = requested
+        .map(|config| config.values.clone())
+        .unwrap_or_default();
+    values
+        .entry(CONWAY_FS_ROOT_CONFIG_KEY.to_string())
+        .or_insert_with(|| serde_json::json!(root.display().to_string()));
+    Some(conway_core::ports::PluginConfig { values })
+}
+
 /// The requesting agent's identity and position in the tree, as seen by one
 /// [`PermissionBroker::decide`] call.
 ///
@@ -794,7 +879,7 @@ impl PermissionBroker {
     /// [`Self::remember_pattern`], there is no `scope` parameter: a deny
     /// rule applies to every requester in the session, unconditionally --
     /// narrowing what is authorized has no failure mode worth scoping
-    /// (, D4 §3).
+    /// (an earlier design item, D4 §3).
     pub fn remember_deny_pattern(&self, rule: PatternRule, origin: PatternOrigin) {
         // Never-`PathsUnder` desugaring, so `base` is never consulted --
         // see `remember_pattern`'s own comment and its `debug_assert!`.
@@ -867,10 +952,52 @@ impl PermissionBroker {
         true
     }
 
-    /// S5: the root-containment check. Evaluated before anything else in
-    /// [`Self::decide`] — see that method's own doc for exactly why
-    /// (structurally, this must precede every one of the four allow paths,
-    /// not live inside `PermissionGate`).
+    /// S5, NARROWED by (`AgentRoot`/`SubagentSpec::root`/`--root` confinement
+    /// finally reachable, and the per-tool `PathArgs::Named` root walk
+    /// retired). Evaluated before anything else in [`Self::decide`] — see
+    /// that method's own doc for exactly why (structurally, this must
+    /// precede every one of the four allow paths, not live inside
+    /// `PermissionGate`).
+    ///
+    /// **This function no longer checks a `PathArgs::Named` tool's own
+    /// declared path arguments at all -- that is now `conway.fs`'s job**
+    /// (`conway_tools::fs::beneath`, wired into `read`/`write`/`edit`/`cd`/
+    /// `glob`/`grep` before their I/O runs, open-relative, closing the
+    /// TOCTOU gap this function's PREDECESSOR left open by checking
+    /// `candidate` here and opening it in a SEPARATE step, in a different
+    /// crate, after an `await` on the operator's own gate). Re-checking the
+    /// same named arguments here, ahead of that plugin-level enforcement,
+    /// would be exactly the "two implementations of one boundary" P-14
+    /// exists to prevent -- see this crate's own permission module doc and
+    /// `crates/conway/tests/root_containment_seam.rs`'s own module doc for
+    /// the fuller accounting of what changed and why.
+    ///
+    /// **What this function still does, and why it cannot move to a
+    /// plugin.** A `PathArgs::Unconfinable` call (`bash`'s own free-form
+    /// shell `command`, most concretely) has no path a ROOT CHECK -- of any
+    /// kind, harness- or plugin-level -- can statically confine; `bash`
+    /// belongs to `conway.shell`, a DIFFERENT plugin than the one whose
+    /// root might matter, so `conway.fs`'s own enforcement cannot reach it
+    /// either. This is exactly the asymmetry GP-13 records: a harness-level
+    /// root APPEARS to cover every tool while actually covering only those
+    /// declaring path arguments. What this function still guarantees for
+    /// that residual case is narrower than "confined": under a confined
+    /// agent, an `Unconfinable` call is never silently auto-allowed by the
+    /// cache, a pattern grant, or `AutoAllow` mode -- it is always forced to
+    /// the operator's own `gate.check`, so a human (or whatever the
+    /// operator's `PermissionGate` implementation is) gets a chance to see
+    /// it. This is a GATE-ROUTING POLICY, not a containment check: it never
+    /// inspects `call.arguments` for the pure-`Unconfinable` remainder
+    /// (only for `checkable`, below), and it grants no guarantee that the
+    /// command itself stays inside any root.
+    ///
+    /// `checkable` (the `Unconfinable` variant's OWN sub-list of arguments
+    /// that ARE staticaly confinable, e.g. `bash`'s optional `cwd`) is still
+    /// walked here exactly as before -- this is the OTHER half of the
+    /// answer to "what did the harness cover that `conway.fs` does not":
+    /// `bash`'s `cwd` belongs to a tool `conway.fs` has never had any
+    /// jurisdiction over, so nothing but this function has ever confined
+    /// it, and nothing else confines it now.
     ///
     /// Reads `call.arguments` — **never** `call.rendered`, which has
     /// already passed through `runner.rs`'s `sanitize_rendered` and would
@@ -890,17 +1017,19 @@ impl PermissionBroker {
             AgentRoot::Confined(root) => root,
         };
 
-        // `Named` never forces the gate: a fully-confined tool whose every
-        // declared path checks out proceeds through the ordinary allow
-        // paths (cache/pattern/AutoAllow/gate) exactly as it did before
-        // this slice. `Unconfinable` ALWAYS forces the gate under a root —
+        // `None` and `Named` both proceed unconditionally now: `None` never
+        // had anything to check, and `Named`'s own containment check moved
+        // into the tool's own plugin (see this function's own doc) --
+        // re-checking it here would be the retired second implementation.
+        // `Unconfinable` is the one variant this function still has
+        // jurisdiction over: it ALWAYS forces the gate under a root --
         // regardless of whether `checkable` is empty — because the part of
-        // the call this broker cannot statically confine (e.g. `bash`'s
-        // `command`) can still reach outside the root; `checkable` is
-        // checked here in addition, not instead.
+        // the call this broker (or any plugin) cannot statically confine
+        // (e.g. `bash`'s `command`) can still reach outside the root;
+        // `checkable` is checked here in addition, not instead.
         let (names, must_reach_gate): (&[&str], bool) = match call.path_args {
             PathArgs::None => return RootDecision::Proceed,
-            PathArgs::Named(names) => (names, false),
+            PathArgs::Named(_) => return RootDecision::Proceed,
             PathArgs::Unconfinable { checkable } => (checkable, true),
             // `PathArgs` is `#[non_exhaustive]`: fail closed on any future
             // variant exactly like `PathArgs::Unconfinable { checkable: &[] }`
@@ -1211,7 +1340,7 @@ impl PermissionBroker {
     }
 
     /// The first installed `deny` rule that refuses this call, if any.
-    ///, D4 §3: checked for EVERY
+    /// An earlier design item, D4 §3: checked for EVERY
     /// requester (no `GrantScope`), via the deny/prompt evaluator
     /// ([`Rule::matches_deny_render`] for render-based `when` clauses, plus
     /// the broker's own `paths_under` resolution for [`When::PathsUnder`])
@@ -1453,7 +1582,7 @@ impl PermissionBroker {
             RootDecision::Proceed => false,
         };
 
-        //, D4 §3: the `deny` half of
+        // An earlier design item, D4 §3: the `deny` half of
         // the allow/deny asymmetry. Checked immediately after the root
         // floor and BEFORE the mode gate, the cache, pattern allows, and
         // AutoAllow -- a deny rule beats every one of those, regardless of

@@ -2,7 +2,7 @@
 //! `--fork-from` were all accepted by the CLI parser and never read by the
 //! interactive TUI's own session construction (`tui::app::App::new` built
 //! its `SessionSpec` from `role`/`keep_alive`/`tools` only) -- a
-//! renderer-only gap (): the identical `--model` flag is genuinely wired
+//! renderer-only gap: the identical `--model` flag is genuinely wired
 //! in one-shot mode (`oneshot::resolve_session`, covered by
 //! `tests/oneshot.rs`'s `model_flag_pins_and_overrides_role_chain`).
 //!
@@ -10,8 +10,8 @@
 //! [`conway_cli::tui::app::App::session_spec`], the exact associated
 //! function `App::new` calls to build the `SessionSpec` it passes to
 //! `Conway::new_session` -- rather than `oneshot::resolve_session` (which
-//! is private to `oneshot.rs`, and is a different code path besides). Per
-//!, `model_flag_pins_the_session_spec` below was confirmed to fail
+//! is private to `oneshot.rs`, and is a different code path besides).
+//! `model_flag_pins_the_session_spec` below was confirmed to fail
 //! before this item's fix: `App::new`'s inline `SessionSpec { .. }`
 //! construction never set `model` at all, so `spec.model` was always
 //! `None` regardless of `--model`.

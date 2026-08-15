@@ -342,7 +342,7 @@ fn typo_d_health_key_is_rejected_by_deny_unknown_fields() {
     );
 }
 
-/// **Breaking-change coverage (, "retire
+/// **Breaking-change coverage (a later item, "retire
 /// the health prober"): a `settings.json` naming a removed `[health].probe_*`
 /// key fails loudly, naming the key, rather than loading silently.**
 /// `probe_enabled`/`probe_interval_secs`/`probe_timeout_secs`/

@@ -590,7 +590,7 @@ async fn ask_drain_resolves_with_cancelled_status_when_parent_is_cancelled() {
         outcome.status
     );
     // No turn ever ran: no TextDeltas accumulated, zero usage -- but
-    // `transcript_ref` still names the (empty) child session ().
+    // `transcript_ref` still names the (empty) child session.
     assert_eq!(outcome.text, "");
     assert_eq!(outcome.usage, Usage::default());
     let child_session = runtime

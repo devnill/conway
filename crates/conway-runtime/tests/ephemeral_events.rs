@@ -1,5 +1,5 @@
 //! Acceptance tests for the `ephemeral: bool` field on `Event::AgentSpawned`
-//! and `Event::AgentFinished` (, the
+//! and `Event::AgentFinished` (the
 //! `conway_ask` epic's item b).
 //!
 //! Two scopes:

@@ -71,28 +71,23 @@ impl Tool for CdTool {
         check_cancel(&ctx)?;
         let args: CdArgs = parse_args(&call)?;
         let path = resolve_path(&ctx, &args.path)?;
-        crate::fs::check_root(&ctx, &path)?;
 
-        let metadata = match tokio::fs::metadata(&path).await {
-            Ok(metadata) => metadata,
+        // `[S1.5]`/(retirement): open-relative, so the
+        // containment check and the stat are one step -- see
+        // `crate::fs::beneath`'s own doc. Unconfined (no root configured)
+        // is byte-for-byte the pre-existing `tokio::fs::metadata`.
+        match crate::fs::beneath::confined_metadata(&ctx, &path).await? {
+            crate::fs::beneath::StatOutcome::Dir => {}
             // Model-recoverable: the model chose a path that isn't there.
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            crate::fs::beneath::StatOutcome::NotFound => {
                 return Ok(error_text(format!(
-                    "directory not found: {err} (path: {})",
+                    "directory not found: {}",
                     path.display()
                 )));
             }
-            // Host-level (permission denied, I/O failure, ...): matches
-            // read.rs/edit.rs's discipline for the same distinction.
-            Err(err) => {
-                return Err(ToolError::Io {
-                    detail: format!("failed to stat {}: {err}", path.display()),
-                });
+            crate::fs::beneath::StatOutcome::NotADir => {
+                return Ok(error_text(format!("not a directory: {}", path.display())));
             }
-        };
-
-        if !metadata.is_dir() {
-            return Ok(error_text(format!("not a directory: {}", path.display())));
         }
 
         check_cancel(&ctx)?;

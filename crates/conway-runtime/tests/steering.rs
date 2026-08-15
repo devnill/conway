@@ -921,7 +921,7 @@ async fn a_parent_that_did_not_await_observes_its_childs_completion() {
     // Present in the SECOND turn: THIS is the observation the acceptance
     // criterion asks for -- the parent's own next-turn context genuinely
     // carries the child's completion, with the correct provenance and
-    // content, not a parent-authored stand-in for it ().
+    // content, not a parent-authored stand-in for it.
     let new_segments = &calls[1].segments[calls[0].segments.len()..];
     let child_segment = new_segments
         .iter()

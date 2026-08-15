@@ -1,4 +1,5 @@
-//! Acceptance tests for `impl SubagentHost for Runtime` (//! architecture §4.6, §5.1, §5.2): fork/spawn, inherited context, and
+//! Acceptance tests for `impl SubagentHost for Runtime` (see the extension
+//! design §4.6, §5.1, §5.2): fork/spawn, inherited context, and
 //! session forking.
 //!
 //! Built entirely from `conway-testkit`'s fakes plus a local `CountingStore`
@@ -1462,7 +1463,7 @@ async fn tree_scopes_to_the_callers_own_subtree_not_the_whole_runtime() {
     );
 
     // An unrelated third party (a fresh, never-attached id) sees an empty
-    // subtree, not an error and not a panic () -- mirrors
+    // subtree, not an error and not a panic -- mirrors
     // `AgentTree::path`'s own "empty for unknown" convention.
     let unknown = AgentId::new();
     let unknown_view = SubagentHost::tree(&*runtime, unknown);
@@ -2316,7 +2317,7 @@ async fn spawn_with_nonexistent_root_fails_fast_with_a_clear_error() {
     }
 }
 
-/// (f2) Min-1 (): a RELATIVE root carrying a NUL byte is rejected
+/// (f2) Min-1: a RELATIVE root carrying a NUL byte is rejected
 /// through the SHARED resolution rule (`resolve_like_the_tool_will`) -- the
 /// guard the inlined "absolute -> as-is, relative -> join cwd" copies
 /// silently dropped until Min-1. Before Min-1 this root would have been
@@ -3160,7 +3161,7 @@ async fn spawn_child_declines_the_parents_agent_def_even_though_a_fork_would_inh
 // ---------------------------------------------------------------------
 
 /// Everything one `ContextHook::before_request` call observed, recorded so a
-/// test can assert on what the hook actually received () rather than on
+/// test can assert on what the hook actually received rather than on
 /// an intermediate value. `segments` deliberately captures role/content/
 /// provenance -- everything about a segment EXCEPT its own random
 /// `SegmentId` -- so two otherwise-identical turns can be compared for

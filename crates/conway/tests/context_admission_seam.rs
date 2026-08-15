@@ -47,7 +47,7 @@
 //!
 //! ## The fixture: a headroom-only rejection, not a mixed one
 //!
-//! `DeclarativeRouter::resolve` (,
+//! `DeclarativeRouter::resolve` (closed by an earlier gap item,
 //! commit `f8b8cc4`) returns `ContextTooLarge` only when EVERY candidate in
 //! the chain is rejected and each one *solely* on the headroom gate; a
 //! mixed failure (headroom plus a missing capability) falls back to

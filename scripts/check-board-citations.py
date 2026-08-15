@@ -4,7 +4,7 @@
 WHY THIS EXISTS. The tree cites board items by ULID in ~980 places. A citation
 that names a *closed* item in a pending-work sense is a dangling promise: a
 reader who follows "tracked under 01K..." finds finished work rather than the
-open question the sentence implied. Board item found
+open question the sentence implied. A human reader found
 that class by accident three times before this check existed.
 
 WHY IT IS NOT A CI GATE, stated plainly because a check whose limits are
@@ -30,12 +30,13 @@ be switched off within a week, so the pending-sense cue must sit next to the
 citation and govern it, not merely appear in the same paragraph.
 
 TWO ID NAMESPACES. Work items and record entries (decisions among them) are
-separate stores sharing one id shape. docs/plugins/hooks.md cites and as *decisions*; both
-resolve in the record store and return nothing from the work board. A resolver
+separate stores sharing one id shape. docs/plugins/hooks.md cites two record
+entries as *decisions*; both resolve in the record store and return nothing
+from the work board. A resolver
 that checked only the board would call both dangling and be wrong.
 
 A SECOND, UNRELATED CLASS THIS ALSO CHECKS: steering-shorthand leaking onto a
-user-facing page (added by). `GP-03`, `P-2`, `C-04` and similar are internal
+user-facing page. `GP-03`, `P-2`, `C-04` and similar are internal
 governance ids from `.ideate/steering/`, a directory `.gitignore` excludes on
 purpose (the same operator direction that declined vendoring the board).
 `docs/plugins/authoring.md` is read by a third-party plugin author who will
@@ -44,8 +45,8 @@ maintainer. This check runs unconditionally (no store needed, unlike the ULID
 check above) over `docs/` plus the five root pages
 measured (`README.md`, `ARCHITECTURE.md`, `PHILOSOPHY.md`, `CONTRIBUTING.md`,
 `CHANGELOG.md`) and fails on any match. It does NOT cover `crates/*/src/`
-(that surface's own regression guard is,
-"S0c" -- deliberately kept a separate item and a separate invariant, not
+(that surface's own regression guard for invariant
+"S0c" is deliberately kept a separate item, not
 widened into this one), and it does NOT cover the `T-`/`V-`/`F-`/`R-` id
 families `docs/plugins/hooks.md` still quotes (e.g. `F12`, `T7`) -- those are
 historical labels from an item's own original spec text, always paired inline
@@ -66,8 +67,8 @@ the defect one level up:
     neither regex anticipates is invisible to this check even naming a
     `done` item in a clearly pending sense.
   * **`crates/*/src/` is not rescanned for steering shorthand.** That surface
-    has its own regression guard
-    ("S0c") -- deliberately a separate invariant, not widened into this one.
+    has its own regression guard for invariant
+    ("S0c") -- deliberately kept separate, not widened into this one.
   * **`T-`/`V-`/`F-`/`R-` id families are not steering shorthand here.**
     `docs/plugins/hooks.md` still quotes some (`F12`, `T7`) as historical
     labels from an item's own original spec text, always paired inline with
@@ -211,7 +212,7 @@ def scan():
         print(
             f"\n{len(shorthand)} steering-shorthand citation(s) found -- unresolvable "
             f"for a reader without .ideate/steering/. Reference the concept instead "
-            f"(see's translation table)."
+            f"of the bare steering id."
         )
 
     stores = load_stores()
@@ -239,7 +240,7 @@ def scan():
         A pending-sense citation naming a `record` id is a defect in its own
         right: a decision is a settled ruling, so nothing can be "tracked
         under" one. That case is how `LogRecord::ContextMask`'s doc came to
-        say "Tracked by" while that id
+        say "Tracked by board item <id>" while that id
         was a decision that had since been overtaken.
         """
         if ident in board:

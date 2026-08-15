@@ -147,6 +147,7 @@ use futures::StreamExt;
 use crate::agent_loop::{AgentLoop, AgentSpec};
 use crate::context::{InheritedPrefix, SystemPromptSpec};
 use crate::mailbox::{self, Mailbox};
+use crate::permission::derive_fs_root_config;
 use crate::runtime::Runtime;
 use crate::tree::AgentNode;
 
@@ -399,13 +400,31 @@ impl SubagentHost for Runtime {
         // honored, the same "fail the whole operation, don't guess"
         // discipline `effective_root`'s own widening check just above
         // already established.
+        // (retirement) merges a derived
+        // `conway.fs.root` entry -- from THIS SAME `effective_root`,
+        // whether it came from an explicit `spec.root` or was inherited
+        // unchanged from the parent -- into whatever `spec.plugin_config`
+        // already requests, so the harness-level root-narrowing check just
+        // above and `conway.fs`'s OWN per-agent root stay in lockstep at
+        // every spawn/fork depth. See `crate::permission::
+        // derive_fs_root_config`'s own doc for why this is necessary at
+        // all (a bare `effective_root`, since the harness-level per-tool
+        // `PathArgs::Named` check retired, no longer confines a single
+        // ordinary tool call by itself) and why it is safe (a derivation
+        // from an already-narrowing-validated value, not a second
+        // validation -- the merged map below is STILL fully re-validated
+        // by `narrow` immediately after, exactly like every other key).
+        let narrowing_rules = self.loop_deps().registry.narrowing_rules();
+        let requested_plugin_config = derive_fs_root_config(
+            effective_root.as_deref(),
+            spec.plugin_config.as_ref(),
+            narrowing_rules.contains_key(crate::permission::CONWAY_FS_ROOT_CONFIG_KEY),
+        );
+
         let parent_plugin_config = self.agent_plugin_config(parent)?;
         let child_plugin_config = Arc::new(
             parent_plugin_config
-                .narrow(
-                    spec.plugin_config.as_ref(),
-                    self.loop_deps().registry.narrowing_rules(),
-                )
+                .narrow(requested_plugin_config.as_ref(), narrowing_rules)
                 .map_err(|err| {
                     invalid_spec(ConwayError::Config {
                         detail: format!("subagent plugin_config: {err}"),
@@ -1106,8 +1125,7 @@ impl SubagentHost for Runtime {
         if spec.mode != SubagentMode::Fork {
             return Err(RuntimeError::AskRequiresFork { mode: spec.mode });
         }
-        //, MOVED (decision
-        //): the `conway_ask` tool
+        // MOVED (a later decision): the `conway_ask` tool
         // (`crates/conway-tools/src/subagent/ask.rs`) always builds its
         // `SubagentSpec` with `agent_def: None` -- it has no
         // `SessionMeta`/`AgentDef` lookup surface of its own, only a

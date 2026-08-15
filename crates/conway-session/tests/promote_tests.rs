@@ -2,7 +2,7 @@
 //! one-way ephemeral→persistent header flip behind the facade's promote.
 //! Covers the guard matrix (demotion refused; non-ephemeral no-op refused;
 //! unknown session `NotFound`), the crash-atomic on-disk header rewrite
-//! with VERBATIM record-byte preservation (), the index upsert +
+//! with VERBATIM record-byte preservation, the index upsert +
 //! `persist_full` (both the in-memory `list` view and the on-disk
 //! `index.jsonl`), warm- and cold-handle paths, reopen persistence, and
 //! the purge interplay (a promoted session is no longer removable).

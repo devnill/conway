@@ -152,10 +152,10 @@ impl std::fmt::Debug for RouterBundle {
 /// none of it reaches into a sibling crate, so this port stays constructible
 /// with no new dependency.
 ///
-/// **`capability_index` (, amending
+/// **`capability_index` (a later amendment to
 /// this struct's original shape):** the struct originally omitted this
 /// field on the reasoning "a factory that wants a capability picture builds
-/// one from `backends` itself" -- true for the base guarantee
+/// one from `backends` itself" -- true for the caller's base guarantee
 /// (`CapabilityIndex::from_backends` reads `Backend::capabilities()`
 /// directly, so a factory recomputing that part independently cannot
 /// diverge from it), but incomplete for the other half of what a
@@ -211,8 +211,7 @@ impl std::fmt::Debug for RouterBuildContext<'_> {
 /// Carries a router's IDENTITY up front, so it can be named in
 /// `[plugins].install` before the router itself can be built -- building a
 /// real router needs backends and a capability picture that do not exist
-/// until much later in startup, well after `[plugins].install` is read
-///.
+/// until much later in startup, well after `[plugins].install` is read.
 ///
 /// `build` is DEFERRED (invoked only once `ctx` can actually be assembled)
 /// and FALLIBLE, returning [`ConwayError`] -- `conway-core`'s own existing

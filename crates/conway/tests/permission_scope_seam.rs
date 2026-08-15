@@ -27,7 +27,7 @@
 //! tool, entirely unaffected by that change, so `read:*` still isolates
 //! exactly the scope-narrowing property this file exists to prove.
 //!
-//! The negative cases are the point (): a per-agent grant must NOT
+//! The negative cases are the point: a per-agent grant must NOT
 //! authorize a different agent's identical call, and a per-subtree grant
 //! must NOT authorize an agent outside the subtree. Each negative case is
 //! paired with a positive control (the covered agent IS authorized without

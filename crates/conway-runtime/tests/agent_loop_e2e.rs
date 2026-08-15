@@ -547,7 +547,6 @@ fn build_loop_with_report_slot(
 /// that chain (mirroring `subagent.rs`'s own construction, not a hand-typed
 /// `vec![agent]`), and installs `context_hook` so a test can observe what a
 /// registered `ContextHook` actually receives.
-///.
 #[allow(clippy::too_many_arguments)]
 fn build_loop_with_ancestry_and_hook(
     session: SessionId,
@@ -1527,7 +1526,7 @@ async fn report_slot_is_populated_and_updates_across_turns() {
 // ---------------------------------------------------------------------
 
 /// Records every `ContextHookCtx` a registered `ContextHook` sees, so a test
-/// can assert on what the hook actually received () rather than on an
+/// can assert on what the hook actually received rather than on an
 /// intermediate value.
 struct RecordingContextHook {
     captured: Mutex<Vec<ContextHookCtx>>,
@@ -1641,7 +1640,7 @@ async fn context_hook_ctx_agent_path_equals_permission_request_agent_path_at_dep
     );
 
     // A one-level tree can't distinguish a working copy from an empty
-    // vector () -- assert this fixture is genuinely depth-four, not
+    // vector -- assert this fixture is genuinely depth-four, not
     // vacuously equal.
     assert_eq!(hook_paths[0].len(), 4);
     assert_ne!(hook_paths[0], vec![leaf]);
@@ -1898,7 +1897,7 @@ async fn context_hook_ctx_at_on_overflow_carries_agent_path_tag_and_a_working_ar
          just [agent_id]"
     );
     // A one-level tree can't distinguish a working copy from an empty
-    // vector () -- assert this fixture is genuinely depth-four.
+    // vector -- assert this fixture is genuinely depth-four.
     assert_eq!(ctx.agent_path.len(), 4);
 
     assert_eq!(

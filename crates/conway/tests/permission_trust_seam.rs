@@ -368,7 +368,7 @@ async fn an_untrusted_project_deny_rule_still_applies_immediately() {
     );
 }
 
-///, driven through the REAL
+/// An earlier item's fix, driven through the REAL
 /// production seam. A misspelled `"denys"` key must not silently install
 /// zero deny rules: the operator wrote a rule they believe blocks `curl`,
 /// and it must be reported as never having loaded, not merely absent from
@@ -551,7 +551,7 @@ async fn a_global_permissions_file_installs_with_no_trust_decision() {
     );
 }
 
-///, driven through
+/// The identical unrecognized-key refusal, driven through
 /// `Conway::trust_permission_file` itself -- the `/trust permissions`
 /// production entry point, not just `load_permission_files` (which the
 /// tests above already cover). A file naming an unrecognized top-level key

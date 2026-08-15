@@ -186,8 +186,8 @@ pub struct ContextReportEntry {
 /// assignment, fsync policy, and crash tolerance from the store. It exists
 /// as a typed convenience so callers do not hand-build the record.
 ///
-/// Callers append the report *after* the turn's assistant record (
-/// spec) so a truncated trailing line can lose a report without losing the
+/// Callers append the report *after* the turn's assistant record
+/// so a truncated trailing line can lose a report without losing the
 /// turn it describes — this function does not enforce that ordering, it is
 /// a caller discipline.
 pub async fn append_context_report<S>(

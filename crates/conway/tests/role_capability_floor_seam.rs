@@ -45,8 +45,8 @@
 //! change alone would have been exactly the kind of unreached
 //! configuration this whole item exists to prevent. Both are proven here:
 //! this file end to end through a real `Conway` (with the
-//! `conway-plugin-routing` first-party plugin installed
-//!, see `build_conway`'s own doc), and
+//! `conway-plugin-routing` first-party plugin installed --
+//! see `build_conway`'s own doc), and
 //! `crates/conway-plugin-routing/tests/router_resolution.rs`'s
 //! `role_configured_capability_floor_rejects_a_candidate_that_does_not_meet_it`
 //! / `..._admits_a_candidate_that_meets_it` directly against

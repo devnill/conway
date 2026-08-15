@@ -26,6 +26,7 @@ thiserror = { workspace = true }
 regex = { workspace = true }
 ignore = { workspace = true }
 globset = { workspace = true }
+cap-std = { workspace = true }
 # `SubagentHost::tree() -> AgentTreeSnapshot` (conway-core) carries a
 # `chrono::DateTime<Utc>`; not listed in the WI-061 dependency notes but
 # mechanically required to implement the trait's return type.
@@ -72,4 +73,9 @@ required-features = ["test-fakes"]
 [[test]]
 name = "builtins"
 path = "tests/builtins.rs"
+required-features = ["test-fakes"]
+
+[[test]]
+name = "fs_confinement"
+path = "tests/fs_confinement.rs"
 required-features = ["test-fakes"]
