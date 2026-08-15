@@ -183,8 +183,50 @@ error, not a silently ignored one.** A typo in one of these two names (or
 any key this kind does not understand) fails `build()` naming the offending
 key, rather than accepting a configuration that quietly does nothing —
 the same "an operator who bought a behaviour deserves more than silence"
-reasoning `AnthropicBackendFactory::resolve_extra` documents in its own
+reasoning `AnthropicBackendFactory::resolve_fields` documents in its own
 doc comment.
+
+**These two keys are also selectable as a reusable, named profile** — the
+same [declarative provider profiles](#declarative-provider-profiles)
+mechanism `"openai-compat"` uses, generalized so `"anthropic"` can name a
+bundle once and reuse it across several backend entries rather than
+repeating `anthropic_version`/`headers` in every one:
+
+```toml
+# .conway/profiles.toml
+[[profile]]
+id = "acme-gateway"
+anthropic_version = "2024-01-01"
+
+[profile.headers]
+"anthropic-beta" = "some-feature-flag"
+```
+
+```json
+// .conway/settings.json
+{
+  "backends": {
+    "acme": {
+      "kind": "anthropic",
+      "base_url": "https://gateway.example.com",
+      "api_key_env": "ACME_API_KEY",
+      "dialect": "acme-gateway"
+    }
+  }
+}
+```
+
+Unlike `"openai-compat"`, where `dialect` is *required* (it selects the
+whole wire-behavior profile the adapter needs to function at all), it is
+*optional* here — the Messages API has exactly one wire shape, so an
+`"anthropic"` entry naming no profile is a complete, valid configuration on
+its own, exactly as before this mechanism existed. `"anthropic"` ships no
+built-in profiles of its own (unlike `"openai-compat"`'s six) — every
+`"anthropic"` profile is one you declare. When both a selected profile and
+this entry's own inline `extra` set the same key, **`extra` wins** — the
+one precedence rule both kinds' profile support share, see
+[Precedence: profile vs. `extra` vs. defaults](#precedence-profile-vs-extra-vs-defaults)
+below.
 
 ### Kimi coding plan
 
@@ -298,9 +340,15 @@ but never gates on.
 ## Declarative provider profiles
 
 A provider profile is data, not code: `conway_plugin_backends::profile::Profile`
-parameterizes the one `openai-compat` adapter, so a new provider — or your
+parameterizes the `openai-compat` adapter, so a new provider — or your
 own local server's actual quirks — is added by writing a
 `.conway/profiles.toml` file, never by waiting on a conway release.
+`"anthropic"`'s own, much smaller profile vocabulary
+(`anthropic_version`/`headers` — [above](#wire-version-and-header-overrides))
+is selected the same way, through the same file-discovery/precedence rules
+below, but is a genuinely different set of fields — see
+[One facility, two vocabularies](#one-facility-two-vocabularies) for why a
+single `.conway/profiles.toml` cannot mix entries for both kinds.
 
 ### Discovery and precedence
 
@@ -412,6 +460,43 @@ this exists, your options are: know the precedence rules above and give
 your override an `id` that unambiguously matches (or doesn't match) a
 built-in's on purpose, or, if you're embedding conway as a library, call
 `ProfileStore::list()` directly.
+
+### One facility, two vocabularies
+
+Both kinds resolve a selected profile through the same underlying
+mechanism (`conway_plugin_backends::profile_store::ProfileStore<T>` — file
+discovery, project/global precedence, shadow-tracking, and "unknown profile
+name" error reporting are ONE implementation, not one per kind). That
+mechanism never reads a field beyond a profile's `id`, so it has no opinion
+on what `T` is — `openai-compat` resolves to its own nine-field
+`Profile`; `anthropic` resolves to a small, opaque bundle of just
+`anthropic_version`/`headers`.
+
+**One consequence worth knowing before you hit it:** a single physical
+`.conway/profiles.toml` cannot mix `"openai-compat"`-shaped entries with
+`"anthropic"`-shaped ones. Each kind parses *every* `[[profile]]` entry in a
+discovered file as its own shape, and rejects any field it doesn't
+recognize (the same loud-failure-over-silent-typo policy [above](#the-profile-fields)) — so a file containing an
+`anthropic_version` key fails to load for `"openai-compat"`, and vice
+versa. If you use both kinds, put their profiles in different files (a
+project-scoped one and a global one, say, or just two differently-named
+files if your setup discovers both).
+
+### Precedence: profile vs. `extra` vs. defaults
+
+One rule, the same for both kinds: **an explicit key in a backend entry's
+own `extra` wins over the same key in a selected profile; a key neither
+sets falls back to that kind's own hardcoded default.** A profile is a
+reusable preset; `extra` is inherently per-instance, so a per-instance
+override winning over a shared preset is what lets one backend entry
+deviate from a profile without forking it.
+
+`"openai-compat"` does not read `extra` today (its own profile fields are
+resolved as one whole bundle via `dialect`, not overlaid key-by-key), so
+this rule is currently observable through `"anthropic"` alone: a selected
+profile setting `anthropic_version = "2023-01-01"` and that entry's own
+`extra.anthropic_version = "2024-06-01"` resolves to `"2024-06-01"` — and a
+`headers` entry the profile sets but `extra` never mentions still applies.
 
 ## Writing your own adapter
 
