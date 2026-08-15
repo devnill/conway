@@ -174,31 +174,55 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   non-goals list for the OUT-OF-PROCESS subprocess transport and was
 ///   never authority for this in-process question — the extension design's
 ///   own 2026-08-09 dated status note said so.)
-///   Constructing a `ToolCtx` by hand (what those names are needed for) is
-///   test-fixture work, not the authoring surface. NOTE, corrected
-///   2026-08-10, corrected again 2026-08-15 (board item
-///   01KZVYWNA24EYMPVW3NPGBW51M, "Extract conway-testkit"): the 2026-08-10
-///   correction said this work was "served by `conway-core`'s `fakes`
-///   feature" inside this workspace and unreachable for a third party,
-///   because `crates/conway/Cargo.toml` took `conway-core` with `features =
-///   ["fakes"]` only under `[dev-dependencies]`. That gap is now closed:
-///   the doubles moved to `conway-testkit`, a crate of its own, and this
-///   facade forwards it to a crate depending only on `conway` behind this
-///   crate's own `testkit` feature (`pub mod testkit`, below `pub mod
-///   backend`) — `FakeSubagentHost`/`CollectingEventSink` are reachable as
-///   `conway::testkit::{FakeSubagentHost, CollectingEventSink}` now.
-///   What is NOT yet closed: `SubagentHandle`/`EventSinkHandle` themselves
-///   — the types `ToolCtx.subagents`/`.events` actually hold — are still
-///   not nameable through this facade at all, so wrapping one of the now-
-///   reachable doubles into a working `ToolCtx` still requires a type this
-///   module does not export. `ToolCtx` therefore still carries PART of the
-///   construction tax `ContextHookCtx` carried until
-///   `ArtifactWriteHandle::noop` closed it. Board item
-///   01KZQ3AZWG3NNJNZEJFX21MDJT ("ToolCtx carries the same construction
-///   tax ContextHookCtx just shed") owns closing the rest, and must not
-///   re-litigate this item's choice: the doubles' new home
-///   (`conway-testkit`) and how they are forwarded (a facade feature) are
-///   settled.
+///   `CwdHandle`/`SubagentHandle` stay absent for a DIFFERENT reason now
+///   than they used to (see the dated note below): assembling them by hand
+///   is no longer what a third party has to do at all.
+///   Constructing a `ToolCtx` by hand (what those names used to be needed
+///   for) is test-fixture work, not the authoring surface.
+///
+///   NOTE, corrected 2026-08-10, again 2026-08-15 (board item
+///   01KZVYWNA24EYMPVW3NPGBW51M, "Extract conway-testkit"), and again
+///   2026-08-15 (board item 01KZQ3AZWG3NNJNZEJFX21MDJT, "ToolCtx carries the
+///   same construction tax `ContextHookCtx` just shed"): the 2026-08-10
+///   correction said hand-constructing a `ToolCtx` was "served by
+///   `conway-core`'s `fakes` feature" inside this workspace and unreachable
+///   for a third party, because `crates/conway/Cargo.toml` took
+///   `conway-core` with `features = ["fakes"]` only under
+///   `[dev-dependencies]`. 01KZVYWNA24EYMPVW3NPGBW51M closed that half: the
+///   doubles moved to `conway-testkit`, a crate of its own, forwarded here
+///   behind this crate's own `testkit` feature (`pub mod testkit`, below
+///   `pub mod backend`) — `FakeSubagentHost`/`CollectingEventSink` are
+///   reachable as `conway::testkit::{FakeSubagentHost,
+///   CollectingEventSink}`. What it left open was the other half:
+///   `SubagentHandle`/`EventSinkHandle` themselves — the types
+///   `ToolCtx.subagents`/`.events` actually hold — were still not nameable
+///   through this facade, so wrapping one of the now-reachable doubles into
+///   a working `ToolCtx` still required a type this module did not export.
+///   `ToolCtx` therefore still carried PART of the construction tax
+///   `ContextHookCtx` carried until `ArtifactWriteHandle::noop` closed it.
+///
+///   01KZQ3AZWG3NNJNZEJFX21MDJT closes the rest — WITHOUT exporting either
+///   type, and without re-litigating the settled choices above (the
+///   doubles' home and how they are forwarded). `ToolCtx::for_test`
+///   (`conway_core::ports::ToolCtx::for_test`, re-exported here as an
+///   associated function on `ToolCtx` itself, so nothing new appears in
+///   this list) builds the `chdir`/`subagents` fields internally from an
+///   `AgentId` and a `cwd`, taking only `subagents`/`events` as `Arc<dyn
+///   SubagentHost>`/`Arc<dyn EventSink>` parameters — coercion targets, not
+///   named types, so passing `Arc::new(FakeSubagentHost::new(agent_id))` /
+///   `Arc::new(CollectingEventSink::new())` needs neither trait nor handle
+///   type named at the call site. That is a *different* answer than
+///   `ArtifactWriteHandle::noop`'s for the identical-looking problem, on
+///   purpose: unlike a `ContextHookCtx` fixture for a hook that never
+///   writes, a `Tool::invoke` test usually wants to assert a subagent
+///   started or an event fired, so silently defaulting both to no-ops would
+///   make the common case unwritable — `for_test` takes them as required
+///   parameters instead of defaulting them. See that constructor's own doc
+///   (`crates/conway-core/src/ports/plugin.rs`) for the full reasoning, and
+///   `conway_core::ports`'s own module doc for why this is a second,
+///   no-longer-unprecedented "kind 2" test-fixture constructor rather than
+///   the builder/`#[non_exhaustive]` combination `ToolCtx`'s own doc
+///   rejects as disproportionate for ordinary struct-literal construction.
 /// - The `SessionStore`/`HealthRegistry` implementation surfaces.
 ///   `SessionStore` because `SeqRange`/`StoreError` — needed to spell
 ///   `SessionStore::append`'s own signature — are not re-exported anywhere;

@@ -556,6 +556,15 @@ you capability handles you call methods on but never name the type of:
 stay unexported. `ctx.cancel` is the one exception (`CancellationToken` is
 exported, so a helper function can take `&CancellationToken`).
 
+Unit-testing a `Tool` means constructing one of these `ToolCtx` values
+yourself. `ToolCtx::for_test(agent_id, cwd, subagents, events)` does that
+without you ever naming `CwdHandle`/`SubagentHandle`/`EventSinkHandle` —
+pass it `Arc::new(conway::testkit::FakeSubagentHost::new(agent_id))` and
+`Arc::new(conway::testkit::CollectingEventSink::new())` (behind this crate's
+`testkit` feature), cloning each `Arc` first if you want to assert on it
+after `invoke` runs. See `docs/embedding.md`'s "Writing a plugin" section
+for the full example and the fields it defaults for you.
+
 ### Artifacts
 
 `ContextHookCtx::artifacts` is an `ArtifactWriteHandle` — a hook can write a

@@ -318,8 +318,16 @@ plugin lands in it. Instead:
 ```
 
 `ConwayConfig::plugins.install` (`PluginsConfig`) carries this list, but
-this crate never itself acts on it — the same relationship `[tui]` already
-has with `conway-cli`'s TUI. [`ConwayBuilder::install_selected`] is the one
+this crate never itself acts on it. Unlike `[tui]`, which used to be
+carried here on that same "wire shape only, no behavior" footing and
+moved out entirely (board item
+01KZVYYWZ85D1SYMCSRRZ7RAM3, "Stage 2a"): `[plugins]` stays in `ConwayConfig`
+because every consumption mode resolves it the SAME way, through
+`ConwayBuilder::install_selected` below; `[tui]` is presentation-only
+vocabulary that only `conway-cli`'s TUI ever renders, so a headless host
+linking this facade no longer has to parse or validate it at all --
+`TuiSection`/`ThemeConfig`/`ThemeStyleConfig`/`StatusLineConfig` now live in
+`crates/conway-cli/src/tui/config.rs` instead. [`ConwayBuilder::install_selected`] is the one
 call every binary or embedder makes instead of resolving that list by hand:
 hand it the plugins, router factories, and backend factories **you** link —
 already constructed, as `Vec`s — and it resolves `plugins.install` (unioned
@@ -659,19 +667,43 @@ up: `schemars` (`ToolSpec::schema`) and `serde_json`
 (`ToolCall::arguments`, `Tool::render`'s argument).
 
 `ToolCtx`'s remaining fields (`chdir`, `events`, `subagents`)
-are handles you call methods on but never need to name — their types are
-deliberately not exported. Constructing a `ToolCtx` by hand is test-fixture
-work: the port doubles those handles wrap (`FakeSubagentHost`,
-`CollectingEventSink`, ...) live in `conway-testkit` and are reachable by a
-third party through this crate's own `testkit` feature
-(`conway::testkit::{FakeSubagentHost, CollectingEventSink}` once enabled) —
-not dev-only inside this workspace the way they used to be. The handle
-TYPES themselves (`SubagentHandle`, `EventSinkHandle`) are a separate gap,
-still open: `conway::plugin` does not export them, so a full `ToolCtx`
-cannot yet be assembled through the facade alone (board item
-01KZQ3AZWG3NNJNZEJFX21MDJT). (`cancel` is the
-exception: its `CancellationToken` type IS exported, so a helper can take
-`&CancellationToken`.)
+are handles you call methods on but never need to name — their types
+(`CwdHandle`, `EventSinkHandle`, `SubagentHandle`) are deliberately not
+exported, and constructing a `ToolCtx` by hand for a unit test no longer
+requires naming any of them either. `ToolCtx::for_test(agent_id, cwd,
+subagents, events)` builds a fully-wired `ToolCtx` from an `AgentId`, a
+`cwd`, and `Arc<dyn SubagentHost>`/`Arc<dyn EventSink>` — pass it the port
+doubles those handles wrap (`FakeSubagentHost`, `CollectingEventSink`, ...),
+reachable through this crate's own `testkit` feature
+(`conway::testkit::{FakeSubagentHost, CollectingEventSink}` once enabled),
+already wrapped in an `Arc`:
+
+```rust,ignore
+use std::sync::Arc;
+use conway::plugin::ToolCtx;
+use conway::testkit::{CollectingEventSink, FakeSubagentHost};
+use conway::AgentId;
+
+let agent_id = AgentId::new();
+let subagents = Arc::new(FakeSubagentHost::new(agent_id));
+let events = Arc::new(CollectingEventSink::new());
+let ctx = ToolCtx::for_test(agent_id, "/tmp".into(), subagents.clone(), events.clone());
+// invoke the tool under test, then assert on `subagents.started()` /
+// `events.events()`.
+```
+
+`subagents`/`events` are cloned before the call above because `invoke` takes
+`ctx` by value, but each double lives behind the shared `Arc` — the clone
+kept outside `ctx` still sees every call recorded through it. Every field
+`for_test` doesn't take a parameter for is defaulted the way a test that
+doesn't care about it wants (a fresh session id, an uncancelled `cancel`,
+`chdir` seeded from `cwd`, a discarding `plugin_events`, an empty `config`)
+— override any of those with ordinary struct-update syntax, `ToolCtx {
+cancel: my_token, ..ToolCtx::for_test(..) }`, the same way you'd override a
+field on any other plain struct literal.
+(`cancel` was already the one exception to "never need to name the type":
+its `CancellationToken` type IS exported, so a helper can take
+`&CancellationToken` — unaffected by any of the above.)
 
 Register what you write through the builder:
 

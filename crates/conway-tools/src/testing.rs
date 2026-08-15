@@ -11,11 +11,18 @@
 //!    record `steer`/`cancel` calls (`conway_testkit`'s does not — it is a
 //!    no-op on both) and must fail `await_result` for an unknown agent id
 //!    (`conway_testkit`'s always synthesizes a fallback result instead).
-//! 2. `test_ctx` below builds a fully-wired `ToolCtx` in one call, which
-//!    `conway-testkit` does not attempt at all -- it stops at the
-//!    individual port doubles, since assembling a `ToolCtx` is this
-//!    crate's own concern, not a port-fake concern `conway-core`/
-//!    `conway-testkit` share.
+//! 2. `test_ctx` below still needs its OWN entry point (a `(ToolCtx,
+//!    TestHandles)` pair keyed on `cwd` alone, returning this crate's own
+//!    doubles pre-wrapped for inspection) -- `conway-testkit` stops at the
+//!    individual port doubles and does not attempt that, since a
+//!    downstream-crate-specific assembly convenience is this crate's own
+//!    concern, not a port-fake concern `conway-core`/`conway-testkit`
+//!    share. As of board item 01KZQ3AZWG3NNJNZEJFX21MDJT, THIS reason
+//!    narrowed: `test_ctx` no longer hand-assembles every `ToolCtx` field
+//!    itself -- it calls [`conway_core::ports::ToolCtx::for_test`] (the
+//!    same constructor a third party depending only on `conway` now has)
+//!    and overrides only `cancel`, so the *fields this crate's doubles
+//!    don't need to differ on* are one implementation, not two.
 //!
 //! (`conway-testkit` used to be `conway-core`'s own `fakes` feature,
 //! unreachable outside this workspace; board item 01KZVYWNA24EYMPVW3NPGBW51M
@@ -37,10 +44,7 @@ use conway_core::content::Usage;
 use conway_core::error::RuntimeError;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId};
-use conway_core::ports::{
-    CancellationToken, CwdHandle, EventSink, EventSinkHandle, PluginConfig, PluginEventHandle,
-    SubagentHandle, SubagentHost, ToolCtx,
-};
+use conway_core::ports::{CancellationToken, EventSink, SubagentHost, ToolCtx};
 
 /// An in-memory [`SubagentHost`] that only records calls and plays back
 /// scripted results. Contains no fork/spawn logic — it is a recorder.
@@ -301,6 +305,15 @@ pub struct TestHandles {
 /// an uncancelled `CancellationToken`, a [`RecordingEventSink`], a
 /// [`FakeSubagentHost`], and a default (empty) `PluginConfig` — plus the
 /// [`TestHandles`] to inspect/drive those doubles.
+///
+/// Delegates the field-by-field assembly to
+/// [`conway_core::ports::ToolCtx::for_test`] (P-14: one implementation of
+/// "build a `ToolCtx`", not two) and overrides only `cancel` — every other
+/// caller of `for_test` gets a fresh, unobservable token of its own, but
+/// this crate's own tests need the SAME token back out through
+/// [`TestHandles::cancel`] so a test can cancel it mid-invoke and observe
+/// `ctx.cancel.is_cancelled()` flip, which requires constructing it here
+/// first rather than letting `for_test` mint one no caller can reach.
 pub fn test_ctx(cwd: PathBuf) -> (ToolCtx, TestHandles) {
     let subagents = Arc::new(FakeSubagentHost::new());
     let events = Arc::new(RecordingEventSink::new());
@@ -308,20 +321,13 @@ pub fn test_ctx(cwd: PathBuf) -> (ToolCtx, TestHandles) {
     let agent_id = AgentId::new();
 
     let ctx = ToolCtx {
-        agent_id,
-        session_id: SessionId::new(),
-        chdir: CwdHandle::new(cwd.clone()),
-        cwd,
         cancel: cancel.clone(),
-        events: events.clone() as EventSinkHandle,
-        subagents: SubagentHandle::new(subagents.clone() as Arc<dyn SubagentHost>, agent_id),
-        // No test in this crate exercises a plugin's own custom-event
-        // firing ( owns that end to
-        // end, in `conway-plugin-skeleton`) -- `noop` discards whatever a
-        // tool under test fires, same as every other capability here that
-        // no `conway-tools` test needs to script.
-        plugin_events: PluginEventHandle::noop("test"),
-        config: Arc::new(PluginConfig::default()),
+        ..ToolCtx::for_test(
+            agent_id,
+            cwd,
+            subagents.clone() as Arc<dyn SubagentHost>,
+            events.clone() as Arc<dyn EventSink>,
+        )
     };
     let handles = TestHandles {
         subagents,

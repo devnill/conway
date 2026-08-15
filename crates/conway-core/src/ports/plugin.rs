@@ -17,7 +17,7 @@ use crate::content::{Artifact, ContentBlock, ToolCall, ToolSpec, TruncationPolic
 use crate::error::{CwdError, ToolError};
 use crate::event_name::{validate_event_name, EVENT_NAMESPACE_SEPARATOR};
 use crate::ids::{AgentId, LogSeq, ModelRef, SessionId, ToolName};
-use crate::ports::{ArtifactWriteHandle, EventSinkHandle, SubagentHandle};
+use crate::ports::{ArtifactWriteHandle, EventSink, EventSinkHandle, SubagentHandle, SubagentHost};
 use crate::segment::PromptSegment;
 
 /// A source of tools: a plugin declares its identity and the tools it
@@ -819,6 +819,78 @@ impl std::fmt::Debug for ToolCtx {
             .field("plugin_events", &self.plugin_events)
             .field("config", &self.config)
             .finish()
+    }
+}
+
+impl ToolCtx {
+    /// Builds a `ToolCtx` for a [`Tool::invoke`] unit test, wiring
+    /// caller-supplied `subagents`/`events` in place of the two fields that
+    /// otherwise force a hand-rolled `SubagentHost`/`EventSink` impl (board
+    /// item 01KZQ3AZWG3NNJNZEJFX21MDJT, "ToolCtx carries the same
+    /// construction tax `ContextHookCtx` just shed"; that item's own
+    /// precedent, [`ArtifactWriteHandle::noop`], is [`Self::plugin_events`]'s
+    /// analog here -- `plugin_events` already had one via
+    /// [`PluginEventHandle::noop`] before this constructor existed).
+    ///
+    /// **Deliberately NOT a silent no-op default for `subagents`/`events`,
+    /// unlike `ArtifactWriteHandle::noop`.** A `ContextHookCtx` fixture for a
+    /// hook that never writes an artifact has nothing to observe on
+    /// `artifacts`, so a no-op that discards every write is the right
+    /// default there. A `Tool::invoke` unit test is the opposite case far
+    /// more often than not -- asserting that a subagent was started
+    /// (`conway_fork`/`conway_spawn`) or that a progress event was emitted
+    /// is usually the *point* of the test, so silently swallowing both would
+    /// make the common case unwritable. This constructor therefore takes
+    /// concrete doubles as required parameters instead of defaulting them:
+    /// pass `conway_testkit::{FakeSubagentHost, CollectingEventSink}` (or
+    /// any other `SubagentHost`/`EventSink` impl) already wrapped in their
+    /// own `Arc` -- clone it first if the test wants to inspect it after
+    /// `invoke` returns, the same pattern `conway-tools`' own `test_ctx`
+    /// helper uses for its `TestHandles`.
+    ///
+    /// Every OTHER field is defaulted the way a test that doesn't care about
+    /// it wants: a fresh `session_id`, an uncancelled `cancel`, `chdir`
+    /// seeded from `cwd`, and `plugin_events` a [`PluginEventHandle::noop`]
+    /// (a plugin's own custom-event firing is exercised end to end by
+    /// `conway-plugin-skeleton`, not by a generic `Tool` fixture) and an
+    /// empty `config`. A test that needs a non-default value for any of
+    /// those still uses ordinary struct-update syntax: `ToolCtx { cancel:
+    /// my_token, ..ToolCtx::for_test(..) }` -- this constructor does not
+    /// replace literal construction (see this struct's own doc for why it
+    /// stays a plain, non-`#[non_exhaustive]` public-field struct), it only
+    /// removes the two fields a third party could not otherwise name a type
+    /// for.
+    ///
+    /// Adds no new name to `conway::plugin`'s curated facade surface --
+    /// exactly like `ArtifactWriteHandle::noop`, this is a constructor on a
+    /// type the facade already re-exports (`ToolCtx` itself), not a second
+    /// top-level export. Unconditional (not gated behind any feature), for
+    /// the same reachability reason `ArtifactWriteHandle::noop` is: a
+    /// feature gate on this crate is invisible to `conway`'s own dependents
+    /// unless the facade forwards it, and gating a constructor that performs
+    /// no I/O either way would only reproduce the gap it closes. See
+    /// `crate::ports`'s own module doc for why this is a second, no-longer-
+    /// unprecedented instance of "kind 2" (a test-fixture constructor,
+    /// backing no production call path -- `conway_runtime::tools::runner` is
+    /// still the one production construction site, and still builds every
+    /// field itself).
+    pub fn for_test(
+        agent_id: AgentId,
+        cwd: PathBuf,
+        subagents: Arc<dyn SubagentHost>,
+        events: Arc<dyn EventSink>,
+    ) -> Self {
+        Self {
+            agent_id,
+            session_id: SessionId::new(),
+            chdir: CwdHandle::new(cwd.clone()),
+            cwd,
+            cancel: CancellationToken::new(),
+            events,
+            subagents: SubagentHandle::new(subagents, agent_id),
+            plugin_events: PluginEventHandle::noop("test"),
+            config: Arc::new(PluginConfig::default()),
+        }
     }
 }
 
@@ -1797,5 +1869,177 @@ mod tests {
         fn assert_object_safe(_: &dyn PluginEventEmitter) {}
         let emitter = RecordingEmitter::default();
         assert_object_safe(&emitter);
+    }
+
+    // ---- ToolCtx::for_test ----
+
+    /// Records every `start` call; every other method is a fixed no-op or
+    /// terminates immediately, per the trait's own always-terminates
+    /// contract. Just enough to prove `ToolCtx::for_test` wires the
+    /// caller-supplied `Arc<dyn SubagentHost>` through untouched -- a
+    /// general-purpose scripted fixture is `conway-testkit`'s job
+    /// (`FakeSubagentHost`), not this crate's own (T1: this crate depends
+    /// on no workspace crate, `conway-testkit` included, so it cannot reuse
+    /// that one instead of a second, narrower double).
+    #[derive(Default)]
+    struct RecordingSubagentHost {
+        started: std::sync::Mutex<Vec<(AgentId, AgentId)>>,
+    }
+
+    #[async_trait]
+    impl SubagentHost for RecordingSubagentHost {
+        async fn start(
+            &self,
+            caller: AgentId,
+            parent: AgentId,
+            _spec: crate::agent::SubagentSpec,
+        ) -> Result<AgentId, crate::error::RuntimeError> {
+            self.started
+                .lock()
+                .expect("started lock poisoned")
+                .push((caller, parent));
+            Ok(AgentId::new())
+        }
+
+        async fn steer(
+            &self,
+            _caller: AgentId,
+            _target: AgentId,
+            _text: String,
+        ) -> Result<(), crate::error::RuntimeError> {
+            Ok(())
+        }
+
+        async fn await_result(
+            &self,
+            _caller: AgentId,
+            target: AgentId,
+        ) -> Result<crate::agent::AgentResult, crate::error::RuntimeError> {
+            Err(crate::error::RuntimeError::AgentNotFound { agent: target })
+        }
+
+        async fn cancel(
+            &self,
+            _caller: AgentId,
+            _target: AgentId,
+            _reason: String,
+            _mode: crate::agent::CancelMode,
+        ) -> Result<(), crate::error::RuntimeError> {
+            Ok(())
+        }
+
+        fn tree(&self, caller: AgentId) -> crate::agent::AgentTreeSnapshot {
+            crate::agent::AgentTreeSnapshot {
+                root: caller,
+                nodes: Vec::new(),
+                at: chrono::Utc::now(),
+            }
+        }
+
+        async fn ask(
+            &self,
+            _caller: AgentId,
+            _parent: AgentId,
+            _spec: crate::agent::SubagentSpec,
+        ) -> Result<crate::agent::AskOutcome, crate::error::RuntimeError> {
+            Ok(crate::agent::AskOutcome {
+                text: "recorded".into(),
+                usage: crate::content::Usage::default(),
+                status: crate::agent::ResultStatus::Completed,
+                transcript_ref: SessionId::new(),
+            })
+        }
+    }
+
+    /// Collects every emitted [`crate::event::Event`] -- the `ToolCtx.events`
+    /// counterpart to [`RecordingSubagentHost`] above, same reasoning (T1)
+    /// for why this crate defines its own narrow double rather than reusing
+    /// `conway-testkit::CollectingEventSink`.
+    #[derive(Default)]
+    struct RecordingEventSink {
+        events: std::sync::Mutex<Vec<crate::event::Event>>,
+    }
+
+    impl EventSink for RecordingEventSink {
+        fn emit(&self, event: crate::event::Event) {
+            self.events
+                .lock()
+                .expect("events lock poisoned")
+                .push(event);
+        }
+    }
+
+    /// The load-bearing property this constructor exists for: a third party
+    /// can build a fully-wired `ToolCtx` from nothing but an `AgentId`, a
+    /// `cwd`, and two `Arc`s it already had to construct anyway (its own
+    /// `SubagentHost`/`EventSink` doubles) -- no hand-rolled `CwdHandle`/
+    /// `SubagentHandle` assembly, and the recording doubles it passed in are
+    /// observable afterward through the clones it kept.
+    #[test]
+    fn for_test_wires_the_supplied_doubles_through_untouched() {
+        let agent_id = AgentId::new();
+        let subagents = Arc::new(RecordingSubagentHost::default());
+        let events = Arc::new(RecordingEventSink::default());
+
+        let ctx = ToolCtx::for_test(
+            agent_id,
+            PathBuf::from("/tmp/x"),
+            subagents.clone(),
+            events.clone(),
+        );
+
+        assert_eq!(ctx.agent_id, agent_id);
+        assert_eq!(ctx.cwd, PathBuf::from("/tmp/x"));
+        assert_eq!(ctx.chdir.current(), PathBuf::from("/tmp/x"));
+        assert!(!ctx.cancel.is_cancelled());
+
+        block_on(ctx.subagents.start(crate::agent::SubagentSpec::fork(
+            "do it",
+            crate::agent::Budget::default(),
+        )))
+        .unwrap();
+        assert_eq!(
+            subagents
+                .started
+                .lock()
+                .expect("started lock poisoned")
+                .len(),
+            1
+        );
+
+        ctx.events.emit(crate::event::Event::ToolProgress {
+            call_id: "tc_1".into(),
+            note: "hi".into(),
+        });
+        assert_eq!(events.events.lock().expect("events lock poisoned").len(), 1);
+    }
+
+    /// `for_test` bakes `agent_id` into the returned `SubagentHandle`
+    /// exactly like a real construction site would -- `ctx.subagents.start`
+    /// has no caller-supplied `parent`/`caller` to override it (see
+    /// `SubagentHandle`'s own doc).
+    #[test]
+    fn for_test_bakes_agent_id_into_the_subagent_handle() {
+        let agent_id = AgentId::new();
+        let subagents = Arc::new(RecordingSubagentHost::default());
+        let ctx = ToolCtx::for_test(
+            agent_id,
+            PathBuf::from("/tmp/x"),
+            subagents.clone(),
+            Arc::new(RecordingEventSink::default()),
+        );
+
+        block_on(ctx.subagents.start(crate::agent::SubagentSpec::fork(
+            "do it",
+            crate::agent::Budget::default(),
+        )))
+        .unwrap();
+
+        let started = subagents
+            .started
+            .lock()
+            .expect("started lock poisoned")
+            .clone();
+        assert_eq!(started, vec![(agent_id, agent_id)]);
     }
 }
