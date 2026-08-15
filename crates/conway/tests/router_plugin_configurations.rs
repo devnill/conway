@@ -47,10 +47,10 @@ use conway_core::capabilities::{
 };
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::error::BackendError;
-use conway_core::fakes::{FakeGate, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{BackendId, RoleAlias};
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
 use conway_plugin_routing::RoutingRouterFactory;
+use conway_testkit::{FakeGate, FakeStore, ScriptedBackend, ScriptedTurn};
 
 /// Every capability generous: the runtime's own unconditional
 /// `tool_calling >= NonStreamingOnly` floor (whenever any tool is

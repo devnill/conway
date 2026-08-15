@@ -632,7 +632,7 @@ mod tests {
     /// A minimal `Backend` that relies entirely on `admit`'s default
     /// implementation -- exercises the dialect-neutral estimator plus
     /// `check_admission` together, the same path every fake in
-    /// `conway-core::fakes` and every other test-local `Backend` in the
+    /// `conway-testkit` and every other test-local `Backend` in the
     /// workspace gets for free without writing a single line for it.
     struct DefaultAdmitBackend {
         max_context_tokens: u32,

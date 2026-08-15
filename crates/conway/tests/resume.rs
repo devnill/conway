@@ -28,12 +28,10 @@ use conway::{Conway, ConwayBuilder, ConwayError, ForkSpec, SessionSpec};
 use conway_core::agent::{PermissionDecision, ResultStatus};
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
-use conway_core::fakes::{
-    FakeBackend, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{ForkOrigin, SessionFilter, SubagentMode};
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
+use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {

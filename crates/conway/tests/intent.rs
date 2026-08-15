@@ -23,10 +23,10 @@ use conway::{AgentIntent, Conway, ConwayBuilder, ConwayError, SessionHandle, Ses
 use conway_core::agent::{PermissionDecision, SubagentMode};
 use conway_core::content::ContentBlock;
 use conway_core::error::BackendError;
-use conway_core::fakes::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::log::SessionFilter;
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
+use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 
 const CLASSIFY_TIMEOUT: Duration = Duration::from_secs(5);
 

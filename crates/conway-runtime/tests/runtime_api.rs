@@ -3,7 +3,7 @@
 //! (`start_root`, `prompt`, `cancel`, `subscribe`, `context_report`,
 //! `tree`).
 //!
-//! Built entirely from `conway-core`'s fakes plus local scripted doubles
+//! Built entirely from `conway-testkit`'s fakes plus local scripted doubles
 //! (mirroring `agent_loop_e2e.rs`'s own note: `ScriptedBackend` has no
 //! built-in response delay, so a small local `DelayedBackend` stands in
 //! wherever a test needs a window to observe "in progress" behavior) --
@@ -25,9 +25,6 @@ use conway_core::content::{
 };
 use conway_core::error::{BackendError, RuntimeError, ToolError};
 use conway_core::event::Event;
-use conway_core::fakes::{
-    FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
@@ -37,6 +34,7 @@ use conway_core::ports::{
 use conway_core::provenance::Provenance;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
+use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use futures::stream;
 use futures::StreamExt;
 
@@ -223,7 +221,7 @@ impl Plugin for FakePlugin {
 // ---------------------------------------------------------------------
 
 /// Builds a `Runtime` whose `RuntimeDeps` is constructed entirely from
-/// `conway-core` fakes (`FakeStore`, `FakeGate`, `FakeHealth`) plus
+/// `conway-testkit` fakes (`FakeStore`, `FakeGate`, `FakeHealth`) plus
 /// `FakeRouter` and the given backend/plugins -- the compile-check
 /// criterion in living form. `RuntimeDeps` has no `subagents` field:
 /// `Runtime::new` wires its own private `NoSubagentHost` stub in (see
@@ -303,7 +301,7 @@ async fn wait_for_agent_finished(
 // Tests
 // ---------------------------------------------------------------------
 
-/// `RuntimeDeps` is constructible entirely from `conway-core` fakes plus a
+/// `RuntimeDeps` is constructible entirely from `conway-testkit` fakes plus a
 /// fake router; this crate's `[dev-dependencies]` name neither
 /// `conway-plugin-backends` nor `conway-tools` (see `Cargo.toml`).
 #[tokio::test]

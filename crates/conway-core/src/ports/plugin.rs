@@ -693,10 +693,10 @@ impl PluginEventHandle {
     /// [`ToolCtx`] without caring about this capability. Mirrors
     /// [`crate::ports::ArtifactWriteHandle::noop`]'s own precedent and
     /// rationale exactly: a no-op implementation performs no I/O either
-    /// way, so it carries none of the risk that gates this crate's other
-    /// test doubles behind the `fakes` feature, and is reachable from
-    /// every crate in the workspace (`conway`'s facade does not forward
-    /// `fakes` to its own dependents).
+    /// way, so it carries none of the risk that gates `conway-testkit`'s
+    /// doubles behind that separate crate's own opt-in, and needs no
+    /// opt-in at all -- reachable from every crate in the workspace, and
+    /// from a third party depending only on `conway` too.
     pub fn noop(plugin_id: impl Into<String>) -> Self {
         Self::new(Arc::new(NoopPluginEventEmitter), plugin_id)
     }

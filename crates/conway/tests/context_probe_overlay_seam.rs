@@ -160,9 +160,9 @@ use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::content::{ContentBlock, StopReason, Usage};
-use conway_core::fakes::{FakeGate, FakeStore};
 use conway_core::ids::{BackendId, ModelId, RoleAlias};
 use conway_core::ports::{GenerateResponse, SessionStore};
+use conway_testkit::{FakeGate, FakeStore};
 use serde_json::json;
 use support::MutableCapsBackend;
 use wiremock::matchers::{method, path};

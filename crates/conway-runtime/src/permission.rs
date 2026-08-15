@@ -461,6 +461,39 @@ impl GrantScope {
     }
 }
 
+/// The facade boundary conversion (Stage 2b,
+/// board item `01KZVYZM7BZRQ54RRB8P814KV9`): `conway::Conway`'s public API
+/// (`active_structured_allow_rules`, `revoke_structured_allow_rule`) carries
+/// `conway_core::agent::GrantScope`, never this crate's own `GrantScope`,
+/// so the facade re-exports no `conway-runtime` type. This crate's internal
+/// `GrantScope` stays exactly as it was -- the broker's cache/store
+/// machinery and `covers()` (which needs the runtime-only `PermissionCtx`)
+/// are unaffected -- and converts at its own edge instead.
+impl From<GrantScope> for conway_core::agent::GrantScope {
+    fn from(scope: GrantScope) -> Self {
+        match scope {
+            GrantScope::Session => conway_core::agent::GrantScope::Session,
+            GrantScope::Agent(id) => conway_core::agent::GrantScope::Agent(id),
+            GrantScope::Subtree(id) => conway_core::agent::GrantScope::Subtree(id),
+        }
+    }
+}
+
+/// The reverse of the `From<GrantScope> for conway_core::agent::GrantScope`
+/// conversion above -- `Conway::revoke_structured_allow_rule` receives the
+/// facade-level scope from a caller and must convert it back to address
+/// `PermissionBroker::revoke_pattern_rule`, which still keys on this crate's
+/// own `GrantScope`.
+impl From<conway_core::agent::GrantScope> for GrantScope {
+    fn from(scope: conway_core::agent::GrantScope) -> Self {
+        match scope {
+            conway_core::agent::GrantScope::Session => GrantScope::Session,
+            conway_core::agent::GrantScope::Agent(id) => GrantScope::Agent(id),
+            conway_core::agent::GrantScope::Subtree(id) => GrantScope::Subtree(id),
+        }
+    }
+}
+
 /// Maps a `PermissionScope` onto the broker's internal `GrantScope`.
 ///
 /// Shared by the `AllowAlways` cache and V2's pattern grants so the two

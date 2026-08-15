@@ -95,9 +95,9 @@ use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::content::{ContentBlock, StopReason, Usage};
-use conway_core::fakes::{FakeGate, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{BackendId, RoleAlias};
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
+use conway_testkit::{FakeGate, FakeStore, ScriptedBackend, ScriptedTurn};
 
 /// The one model this fixture's role chain names. Its window
 /// (`max_context_tokens`) is the only knob that differs between the

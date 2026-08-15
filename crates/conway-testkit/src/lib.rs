@@ -1,20 +1,35 @@
-//! In-crate test doubles for every port trait, gated behind `feature =
-//! "fakes"`.
+//! Test doubles for every `conway-core` port trait: `FakeBackend`/
+//! `ScriptedBackend` (`Backend`), `FakeStore` (`SessionStore`), `FakeGate`
+//! (`PermissionGate`), `FakeRouter` (`Router`), `FakeHealth`
+//! (`HealthRegistry`), `FakeSubagentHost` (`SubagentHost`), and
+//! `CollectingEventSink` (`EventSink`).
 //!
-//! These are the only trait implementations `conway-core` contains (every
-//! other implementation lives in a dedicated crate). They exist so
-//! `conway-runtime` (and any other consumer) can be developed and tested
-//! end-to-end with zero network and zero filesystem access.
+//! These used to live inside `conway-core` itself, behind `feature =
+//! "fakes"` (board item 01KZVYS0E0H0SKPZ9BM9WYXHTB labeled that gap; board
+//! item 01KZVYWNA24EYMPVW3NPGBW51M, "Extract conway-testkit", is what moved
+//! them here). Two problems with the old location, not one:
 //!
-//! **FORWARD DECLARATION — this module is in the wrong crate, and it is
-//! scheduled to leave.** A contract crate that presents itself as ports and
-//! domain types should not also ship the doubles for those ports; today it
-//! does. The gap is not only tidiness: because `conway`'s facade enables
-//! `fakes` on `conway-core` under `[dev-dependencies]` only, a third party
-//! depending on `conway` cannot reach any of these at all, so they serve
-//! this workspace and nobody else.
-//! ("Extract conway-testkit", Stage 1b) moves them to a crate of their own
-//! and makes them reachable, and **must delete this label when it lands.**
+//! 1. A contract crate that presents itself as ports and domain types
+//!    should not also ship the doubles for those ports.
+//! 2. Worse: `conway`'s facade enabled `fakes` on `conway-core` only under
+//!    `[dev-dependencies]`, never `[dependencies]`, so a third party
+//!    depending on `conway` could not reach `FakeSubagentHost` or
+//!    `CollectingEventSink` at all -- these doubles served this workspace's
+//!    own tests and nobody else, while conway's own test suite reached
+//!    ready-made doubles a third party had to hand-roll.
+//!
+//! This crate closes both: it is a normal crate (no feature gate of its
+//! own), and `conway`'s facade forwards it to third parties behind its own
+//! `testkit` feature (`crates/conway/Cargo.toml`; re-exported as
+//! `conway::testkit` when enabled) rather than leaving it dev-only. A
+//! testkit that ships in every production build would be dead weight, so
+//! it stays opt-in -- but opt-in through a feature the facade actually
+//! forwards, not one that only this workspace's own `[dev-dependencies]`
+//! could ever enable.
+//!
+//! Depends on `conway-core` (never the reverse -- T1 in
+//! `crates/conway/tests/architecture_invariants.rs` forbids `conway-core`
+//! depending on any workspace crate, `conway-testkit` included).
 //!
 //! All state is `std::sync::{Mutex, RwLock}` — no tokio, no async runtime
 //! primitives. `#[async_trait]` methods do their work synchronously inside
@@ -27,25 +42,25 @@ use std::sync::{Mutex, RwLock};
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::agent::{
+use conway_core::agent::{
     AgentResult, AgentTreeSnapshot, AskOutcome, CancelMode, PermissionDecision, PermissionRequest,
     ResultStatus, SubagentSpec,
 };
-use crate::capabilities::{
+use conway_core::capabilities::{
     CacheMode, Capabilities, ProbeReport, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
-use crate::content::{ContentBlock, Role, SamplingParams, StopReason, Usage};
-use crate::error::{BackendError, RoutingError, RuntimeError, StoreError};
-use crate::event::Event;
-use crate::ids::{
+use conway_core::content::{ContentBlock, Role, SamplingParams, StopReason, Usage};
+use conway_core::error::{BackendError, RoutingError, RuntimeError, StoreError};
+use conway_core::event::Event;
+use conway_core::ids::{
     AgentId, BackendId, EndpointId, LogSeq, ModelId, ModelRef, RoleAlias, SeqRange, SessionId,
 };
-use crate::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
-use crate::ports::{
+use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
+use conway_core::ports::{
     Backend, BoxStream, EventSink, GenerateRequest, GenerateResponse, HealthRegistry, LiveOwner,
     PermissionGate, Router, SessionStore, StreamChunk, SubagentHost,
 };
-use crate::routing::{BreakerState, Observation, Route, RouteRequest, RoutingReason};
+use conway_core::routing::{BreakerState, Observation, Route, RouteRequest, RoutingReason};
 
 // ---------------------------------------------------------------------
 // Backend fakes

@@ -1,20 +1,29 @@
 //! In-crate test doubles: everything downstream `conway-tools` work items
 //! need to unit-test a tool with zero runtime.
 //!
-//! `conway-core` ships its own `SubagentHost`/`EventSink` fakes behind its
-//! `fakes` feature (`conway_core::fakes::{FakeSubagentHost,
-//! CollectingEventSink}`), but this crate defines its own lightweight
-//! doubles instead of depending on that feature, for two reasons binding on
-//! this work item's criteria:
+//! `conway-testkit` ships its own `SubagentHost`/`EventSink` fakes
+//! (`conway_testkit::{FakeSubagentHost, CollectingEventSink}`), but this
+//! crate defines its own lightweight doubles instead of depending on that
+//! crate, for real behavioural reasons (P-14: a shared implementation is
+//! restated only when there is one) checked against `conway-testkit`'s
+//! doubles directly, not assumed:
 //! 1. The `FakeSubagentHost` this crate's downstream tests need must also
-//!    record `steer`/`cancel` calls (conway-core's fake does not — it is a
+//!    record `steer`/`cancel` calls (`conway_testkit`'s does not — it is a
 //!    no-op on both) and must fail `await_result` for an unknown agent id
-//!    (conway-core's fake always synthesizes a fallback result instead).
-//! 2. Keeping this crate's dependency on `conway-core` at its default
-//!    feature set (no `fakes`) keeps the boundary between "port consumer"
-//!    and "port test double provider" clean; this crate's fakes have zero
-//!    extra dependencies beyond what's already required to implement the
-//!    ports themselves.
+//!    (`conway_testkit`'s always synthesizes a fallback result instead).
+//! 2. `test_ctx` below builds a fully-wired `ToolCtx` in one call, which
+//!    `conway-testkit` does not attempt at all -- it stops at the
+//!    individual port doubles, since assembling a `ToolCtx` is this
+//!    crate's own concern, not a port-fake concern `conway-core`/
+//!    `conway-testkit` share.
+//!
+//! (`conway-testkit` used to be `conway-core`'s own `fakes` feature,
+//! unreachable outside this workspace; board item 01KZVYWNA24EYMPVW3NPGBW51M
+//! extracted it into a crate of its own and made it reachable by a third
+//! party through `conway`'s `testkit` feature. That move does not change
+//! the calculus above -- reason 1 is a behavioural difference, not a
+//! reachability one, and would apply just as much to a third party building
+//! on `conway-testkit` today.)
 
 use std::collections::HashMap;
 use std::path::PathBuf;

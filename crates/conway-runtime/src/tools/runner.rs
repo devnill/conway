@@ -401,8 +401,8 @@ async fn execute_one(
                 events: Arc::new(BusSink::new(bus.clone(), session_id, agent_id)) as EventSinkHandle,
                 // The agent's OWN id is baked into the handle here -- the
                 // one place a `ToolCtx` is built for real tool dispatch
-                // (`conway-core` fakes and `conway-tools` test doubles are
-                // the only other construction sites C1). No
+                // (`conway-testkit` fakes and `conway-tools` test doubles
+                // are the only other construction sites C1). No
                 // tool this handle reaches can ever act as a different
                 // agent (structural -- see `SubagentHandle`'s own
                 // doc).

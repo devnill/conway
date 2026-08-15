@@ -14,7 +14,6 @@ use conway_core::content::{
 };
 use conway_core::error::{BackendError, RoutingError, RuntimeError};
 use conway_core::event::Event;
-use conway_core::fakes::FakeHealth;
 use conway_core::ids::{
     AgentId, BackendId, EndpointId, ModelId, ModelRef, RoleAlias, SessionId, ToolName,
 };
@@ -27,12 +26,13 @@ use conway_core::routing::{BreakerKind, BreakerState, Route, RoutingReason};
 use conway_core::segment::{CacheTtl, PromptSegment};
 use conway_runtime::attempt::{AttemptEngine, AttemptRequest};
 use conway_runtime::events::EventBus;
+use conway_testkit::FakeHealth;
 use futures::future::FutureExt;
 use futures::stream::{self, StreamExt};
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------
-// A local scripted `Backend` double that -- unlike `conway_core::fakes`'
+// A local scripted `Backend` double that -- unlike `conway_testkit`'
 // `ScriptedBackend` -- distinguishes `generate()` calls from `stream()`
 // calls, so strategy-selection and the ToolParse-retry mechanic (which
 // switches strategy mid-chain) are directly observable. `ScriptedBackend`'s

@@ -28,10 +28,10 @@ use conway_core::agent::PermissionDecision;
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::event::Event;
-use conway_core::fakes::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::SessionFilter;
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
+use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use futures_core::Stream as _;
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {

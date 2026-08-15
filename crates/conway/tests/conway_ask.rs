@@ -6,7 +6,7 @@
 //! reasoning stays in the child, provenance preserved.
 //!
 //! One integration test drives the whole slice through the real
-//! `Arc<Runtime>`-backed `Conway` (built from `conway_core::fakes` ports, the
+//! `Arc<Runtime>`-backed `Conway` (built from `conway_testkit` ports, the
 //! same construction `ask.rs`/`session_handle_subagent.rs` use -- NOT a
 //! `FakeSubagentHost`: `SubagentHost` is the real `Runtime` so `conway_ask`'s
 //! `ctx.subagents.ask` goes through `Runtime::ask`'s subscribe-before-launch,
@@ -57,10 +57,10 @@ use conway::config::schema::{
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::PermissionDecision;
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
-use conway_core::fakes::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{BackendId, ModelId, ModelRef, SeqRange, ToolName};
 use conway_core::log::{LogRecord, SessionFilter, SubagentMode};
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
+use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 
 // ---------------------------------------------------------------------
 // Harness (mirrors `ask.rs`'s own helpers)

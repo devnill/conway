@@ -23,9 +23,6 @@ use conway_core::content::{
     ContentBlock, PermissionClass, StopReason, ToolCall, ToolCategory, ToolSpec, Usage,
 };
 use conway_core::error::RoutingError;
-use conway_core::fakes::{
-    FakeGate, FakeRouter, FakeStore, FakeSubagentHost, ScriptedBackend, ScriptedTurn,
-};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
 use conway_core::log::{LogRecord, SessionMeta};
 use conway_core::ports::{
@@ -43,6 +40,9 @@ use conway_runtime::result::{validate_result_contract, ContractOutcome};
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_runtime::tools::PluginRegistry;
 use conway_runtime::tree::{AgentNode, AgentTree};
+use conway_testkit::{
+    FakeGate, FakeRouter, FakeStore, FakeSubagentHost, ScriptedBackend, ScriptedTurn,
+};
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------
@@ -235,7 +235,7 @@ fn build_loop_with_contract(
     result_contract: Option<schemars::schema::RootSchema>,
 ) -> AgentLoop {
     let bus = EventBus::new(1024);
-    let health: Arc<dyn HealthRegistry> = Arc::new(conway_core::fakes::FakeHealth::new());
+    let health: Arc<dyn HealthRegistry> = Arc::new(conway_testkit::FakeHealth::new());
     let mut backends: std::collections::HashMap<BackendId, Arc<dyn Backend>> =
         std::collections::HashMap::new();
     backends.insert(backend.id(), backend);
@@ -831,7 +831,7 @@ impl Router for RoleRouter {
 #[tokio::test]
 async fn a_spawned_childs_result_contract_is_enforced_through_subagent_host() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let health: Arc<dyn HealthRegistry> = Arc::new(conway_core::fakes::FakeHealth::new());
+    let health: Arc<dyn HealthRegistry> = Arc::new(conway_testkit::FakeHealth::new());
 
     let parent_backend = Arc::new(
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("parent turn"))])
@@ -1168,7 +1168,7 @@ fn either_flag_alone_still_validates() {
 #[tokio::test]
 async fn keep_alive_with_a_result_contract_is_refused_by_subagent_host() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let health: Arc<dyn HealthRegistry> = Arc::new(conway_core::fakes::FakeHealth::new());
+    let health: Arc<dyn HealthRegistry> = Arc::new(conway_testkit::FakeHealth::new());
     let parent_backend = Arc::new(
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("ok"))])
             .with_id(BackendId::new("parent"))

@@ -40,8 +40,8 @@ use conway_cli::cli::{Cli, OutputFormat, PermissionMode};
 use conway_cli::exit::ExitCode;
 use conway_cli::tui::app::App;
 use conway_core::agent::PermissionDecision;
-use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, ModelId};
+use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

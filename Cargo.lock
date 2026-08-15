@@ -479,6 +479,7 @@ dependencies = [
  "conway-plugin-routing",
  "conway-runtime",
  "conway-session",
+ "conway-testkit",
  "conway-tools",
  "directories",
  "futures-core",
@@ -512,6 +513,7 @@ dependencies = [
  "conway-plugin-routing",
  "conway-plugin-skeleton",
  "conway-plugin-stepguard",
+ "conway-testkit",
  "crossterm",
  "futures",
  "httparse",
@@ -551,6 +553,7 @@ dependencies = [
  "chrono",
  "conway",
  "conway-core",
+ "conway-testkit",
  "eventsource-stream",
  "futures",
  "futures-core",
@@ -577,6 +580,7 @@ version = "0.9.0"
 dependencies = [
  "conway",
  "conway-core",
+ "conway-testkit",
  "tokio",
 ]
 
@@ -587,6 +591,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "conway-core",
+ "conway-testkit",
  "futures",
  "humantime-serde",
  "serde",
@@ -602,6 +607,7 @@ version = "0.9.0"
 dependencies = [
  "conway",
  "conway-core",
+ "conway-testkit",
  "schemars",
  "serde",
  "serde_json",
@@ -629,6 +635,7 @@ dependencies = [
  "chrono",
  "conway-core",
  "conway-session",
+ "conway-testkit",
  "futures",
  "jsonschema",
  "schemars",
@@ -658,6 +665,18 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "conway-testkit"
+version = "0.9.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "chrono",
+ "conway-core",
+ "futures-core",
+ "serde_json",
 ]
 
 [[package]]

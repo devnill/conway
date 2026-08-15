@@ -138,10 +138,11 @@ mod tests {
 
     /// A minimal `Backend` double that counts `capabilities()` calls and
     /// returns a fixed value. Implemented directly (not via
-    /// `conway_core::fakes::FakeBackend`, which requires the `fakes`
-    /// feature) so this test compiles under a plain `cargo test -p
-    /// conway-core` with no extra feature flag -- matching
-    /// `backend.rs`'s own `DefaultAdmitBackend` test-helper pattern.
+    /// `conway_testkit::FakeBackend`) because `conway-testkit` depends on
+    /// `conway-core` (T1: the contract crate depends on no workspace
+    /// crate), so this crate cannot reach back up to it even in tests --
+    /// matching `backend.rs`'s own `DefaultAdmitBackend` test-helper
+    /// pattern.
     struct CountingBackend {
         id: BackendId,
         caps: Capabilities,

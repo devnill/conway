@@ -31,9 +31,9 @@ use conway::config::schema::{
 };
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::PermissionDecision;
-use conway_core::fakes::{FakeGate, FakeStore};
 use conway_core::ids::RoleAlias;
 use conway_plugin_backends::OpenAiCompatBackendFactory;
+use conway_testkit::{FakeGate, FakeStore};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

@@ -28,22 +28,6 @@
 //! This crate's public surface is defined in terms of `conway-core`'s domain
 //! types and port traits, plus the facade's own `ConwayBuilder`/`Conway`/
 //! `SessionHandle` wrappers added by later work items.
-//!
-//! **FORWARD DECLARATION — one `conway-runtime` type IS re-exported here.**
-//! This paragraph used to state flatly that none was. `pub use
-//! conway_runtime::permission::GrantScope;` appears about forty lines below,
-//! and it is load-bearing: `conway-cli` names it at eight sites to label and
-//! revoke a structured-allow rule in `/settings`, and cannot reach it any
-//! other way (`no_forbidden_deps` in `crates/conway-cli/tests/cli_surface.
-//! rs` forbids that crate depending on `conway-runtime`). Exactly one such
-//! re-export exists, pinned by the `t6_facade_has_exactly_the_one_known_
-//! runtime_reexport` guard in `crates/conway/tests/architecture_invariants.
-//! rs`, so a second fails CI.
-//!
-//! (Stage 2b) closes it, together with
-//!, which owns the consumer half — deleting the
-//! re-export alone breaks the build, so a replacement type carrying the
-//! `AgentId` has to land in the same change. **Those items must delete this label.**
 
 pub mod agents;
 mod builder;
@@ -69,8 +53,8 @@ pub use session_handle::{SessionHandle, SessionSpec, TurnHandle};
 pub use subagent_spec::{ForkSpec, SpawnSpec};
 
 pub use conway_core::agent::{
-    AgentResult, AgentTreeSnapshot, Budget, CancelMode, PermissionDecision, PermissionDecisionKind,
-    PermissionRequest, PermissionScope, ResultStatus, ToolSelector,
+    AgentResult, AgentTreeSnapshot, Budget, CancelMode, GrantScope, PermissionDecision,
+    PermissionDecisionKind, PermissionRequest, PermissionScope, ResultStatus, ToolSelector,
 };
 pub use conway_core::config::AgentDef;
 pub use conway_core::permission_mode::PermissionMode;
@@ -78,24 +62,6 @@ pub use conway_core::permission_pattern::{
     PatternOrigin, PatternRule, PermissionFile, Rule, RuleRegistrationError,
     RuleRegistrationReason, Select, Then, When,
 };
-/// A2: the scope an allow grant covers (`active_structured_allow_rules`
-/// surfaces one per rule) -- re-exported so `conway-cli` can label a
-/// structured-allow review row without depending on `conway-runtime`
-/// (`no_forbidden_deps`).
-///
-/// **FORWARD DECLARATION — this is the one re-export the crate root doc's
-/// label names, and it is the whole of that contradiction.** It is not
-/// vestigial: eight `conway-cli` sites name it through the `conway::` path
-/// (`tui/input.rs`, `tui/state.rs`, `tui/view/settings.rs`), and
-/// `conway::PermissionScope` is not a substitute -- it is a bare
-/// `Session`/`Agent`/`AgentSubtree` enum, while this type is `Session |
-/// Agent(AgentId) | Subtree(AgentId)`, and the review row exists to tell an
-/// operator WHICH agent a per-agent grant covers.
-/// (Stage 2b) and
-/// (its consumer half) replace it with a type this facade owns and **must
-/// delete this label**; records the
-/// evidence and the condition that would reopen it.
-pub use conway_runtime::permission::GrantScope;
 /// V2b: `conway-cli` reaches `parse_rules` through here (it cannot depend
 /// on `conway-core` directly -- `no_forbidden_deps`).
 pub mod permission_pattern {
@@ -210,17 +176,29 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   own 2026-08-09 dated status note said so.)
 ///   Constructing a `ToolCtx` by hand (what those names are needed for) is
 ///   test-fixture work, not the authoring surface. NOTE, corrected
-///   2026-08-10: this paragraph
-///   used to say that work was "served by `conway-core`'s `fakes`
-///   feature". That is true INSIDE this workspace and false for a third
-///   party — `crates/conway/Cargo.toml` takes `conway-core` with
-///   `features = ["fakes"]` only under `[dev-dependencies]`, so a crate
-///   depending on `conway` cannot reach `FakeSubagentHost` or
-///   `CollectingEventSink` at all. `ToolCtx` therefore carries the same
+///   2026-08-10, corrected again 2026-08-15 (board item
+///   01KZVYWNA24EYMPVW3NPGBW51M, "Extract conway-testkit"): the 2026-08-10
+///   correction said this work was "served by `conway-core`'s `fakes`
+///   feature" inside this workspace and unreachable for a third party,
+///   because `crates/conway/Cargo.toml` took `conway-core` with `features =
+///   ["fakes"]` only under `[dev-dependencies]`. That gap is now closed:
+///   the doubles moved to `conway-testkit`, a crate of its own, and this
+///   facade forwards it to a crate depending only on `conway` behind this
+///   crate's own `testkit` feature (`pub mod testkit`, below `pub mod
+///   backend`) — `FakeSubagentHost`/`CollectingEventSink` are reachable as
+///   `conway::testkit::{FakeSubagentHost, CollectingEventSink}` now.
+///   What is NOT yet closed: `SubagentHandle`/`EventSinkHandle` themselves
+///   — the types `ToolCtx.subagents`/`.events` actually hold — are still
+///   not nameable through this facade at all, so wrapping one of the now-
+///   reachable doubles into a working `ToolCtx` still requires a type this
+///   module does not export. `ToolCtx` therefore still carries PART of the
 ///   construction tax `ContextHookCtx` carried until
-///   `ArtifactWriteHandle::noop` closed it, and no equivalent exists yet
-///   for `SubagentHandle`/`EventSinkHandle`. Re-checked for `SubagentHandle`
-///   specifically when it landed: no concrete call site names it either.
+///   `ArtifactWriteHandle::noop` closed it. Board item
+///   01KZQ3AZWG3NNJNZEJFX21MDJT ("ToolCtx carries the same construction
+///   tax ContextHookCtx just shed") owns closing the rest, and must not
+///   re-litigate this item's choice: the doubles' new home
+///   (`conway-testkit`) and how they are forwarded (a facade feature) are
+///   settled.
 /// - The `SessionStore`/`HealthRegistry` implementation surfaces.
 ///   `SessionStore` because `SeqRange`/`StoreError` — needed to spell
 ///   `SessionStore::append`'s own signature — are not re-exported anywhere;
@@ -465,3 +443,21 @@ pub use conway_core::routing::RoutingConfig;
 // `&ModelOverrides` as a parameter, the identical gap `RoutingConfig`/
 // `HeadroomPolicy` closed for `RouterBuildContext` above.
 pub use conway_core::routing::ModelOverrides;
+
+/// Test doubles for every `conway-core` port trait (`FakeBackend`,
+/// `FakeStore`, `FakeGate`, `FakeRouter`, `FakeHealth`, `FakeSubagentHost`,
+/// `CollectingEventSink`, ...) -- forwarded from `conway-testkit`, a crate
+/// of its own, behind this facade's own `testkit` feature (off by default:
+/// a testkit in every production build is dead weight).
+///
+/// Board item 01KZVYWNA24EYMPVW3NPGBW51M: this is the fix for the gap
+/// `pub mod plugin`'s own doc used to describe -- `conway-core`'s doubles
+/// used to be feature-gated INSIDE that crate, and this facade enabled
+/// that gate only under `[dev-dependencies]`, so a crate depending on
+/// `conway` could never reach `FakeSubagentHost`/`CollectingEventSink` at
+/// all. Enabling `testkit` now reaches the identical doubles this
+/// workspace's own tests always could.
+#[cfg(feature = "testkit")]
+pub mod testkit {
+    pub use conway_testkit::*;
+}

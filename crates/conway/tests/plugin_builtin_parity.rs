@@ -31,11 +31,17 @@
 //! **Compile-only, not behavior-driven.** Every `invoke` body below
 //! performs the real argument parsing, spec construction, handle call, and
 //! error mapping of the built-in it replicates -- but no test here ever
-//! calls `invoke`: doing so needs a real `ToolCtx`, which needs
-//! `conway-core`'s `fakes` feature, which would reintroduce the exact
-//! dependency this file exists to prohibit (and would duplicate coverage
-//! C1's/C3's own unit tests already provide for conversion semantics and
-//! error mapping -- not this file's job). `cargo test`ing this crate still
+//! calls `invoke`: doing so needs a real `ToolCtx`. Board item
+//! 01KZVYWNA24EYMPVW3NPGBW51M ("Extract conway-testkit") moved the doubles
+//! `ToolCtx.subagents`/`.events` would need out of `conway-core`'s old
+//! `fakes` feature and into `conway::testkit`, reachable through this
+//! facade alone -- but `SubagentHandle`/`EventSinkHandle`, the wrapper
+//! types those fields actually hold, are still not exported anywhere in
+//! `conway::plugin` (board item 01KZQ3AZWG3NNJNZEJFX21MDJT owns closing
+//! that), so a full `ToolCtx` still cannot be assembled through the facade
+//! alone today (and doing so would duplicate coverage C1's/C3's own unit
+//! tests already provide for conversion semantics and error mapping -- not
+//! this file's job). `cargo test`ing this crate still
 //! type-checks every `invoke` body in full regardless (Rust type-checks
 //! impl bodies whether or not anything calls them), so the compile guard
 //! is live even though no test executes that code path -- the same

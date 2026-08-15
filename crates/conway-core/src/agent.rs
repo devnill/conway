@@ -651,7 +651,7 @@ pub enum PermissionDecision {
 pub enum PermissionScope {
     Session,
     /// The grant covers only the exact agent whose call prompted it
-    /// (`conway-runtime`'s `GrantScope::Agent`). Reachable from the TUI
+    /// (this module's own [`GrantScope::Agent`]). Reachable from the TUI
     /// permission prompt (`tui/input.rs`'s `s` scope key, applied by the
     /// `a`/`p` grant keys) and from the facade
     /// (`Conway::grant_permission_pattern`,
@@ -662,9 +662,59 @@ pub enum PermissionScope {
     Agent,
     /// The grant covers the prompting agent's whole subtree -- any
     /// requester whose `agent_path` contains it
-    /// (`conway-runtime`'s `GrantScope::Subtree`). Same reachability as
+    /// (this module's own [`GrantScope::Subtree`]). Same reachability as
     /// `Agent` above.
     AgentSubtree,
+}
+
+/// The scope an ALLOW grant was actually resolved to, once `conway-runtime`
+/// has attached the granting agent's identity (`grant_scope_for`,
+/// `crates/conway-runtime/src/permission.rs`) -- the resolved counterpart of
+/// [`PermissionScope`] above, which only names the *kind* of scope a caller
+/// requests, not which agent it resolves to for `Agent`/`AgentSubtree`.
+///
+/// Lives here rather than in `conway-runtime` (Stage 2b,
+/// board item `01KZVYZM7BZRQ54RRB8P814KV9`): the facade's own module doc
+/// denied re-exporting any `conway-runtime` type while doing exactly that
+/// for this one, and `PermissionScope` right above already named
+/// `GrantScope::Agent`/`::Subtree` by hand -- a sign the two halves of one
+/// concept were split across the wrong crate boundary. `conway-runtime`
+/// keeps its own internal `GrantScope` for the broker's cache/store
+/// machinery (`PermissionCtx`-aware `covers()` needs a runtime type this
+/// crate must not depend on -- `conway-core` sits at the bottom of the
+/// stack, T1), and converts to/from this type at its own boundary
+/// (`From` impls in `crates/conway-runtime/src/permission.rs`); `conway`'s
+/// facade (`Conway::active_structured_allow_rules`,
+/// `Conway::revoke_structured_allow_rule`) carries only this type across
+/// its public API, so `conway-cli`'s `/settings` structured-allow review
+/// row can name a per-agent grant's `AgentId` without depending on
+/// `conway-runtime` (`no_forbidden_deps`,
+/// `crates/conway-cli/tests/cli_surface.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GrantScope {
+    /// The grant applies to every requester in the session.
+    Session,
+    /// The grant covers only the exact agent it was granted to.
+    Agent(AgentId),
+    /// The grant covers the granting agent's whole subtree -- any requester
+    /// whose agent path contains it (a descendant, or the granting agent
+    /// itself).
+    Subtree(AgentId),
+}
+
+impl GrantScope {
+    /// A human-readable rendering for the review surface -- the fact a
+    /// structured-allow row needs beyond the rule and its origin: who the
+    /// grant actually covers. `Session` renders as `"session"`; the other
+    /// two name the granting `AgentId` so an operator can tell a
+    /// still-narrow per-agent grant from one that has widened.
+    pub fn describe(&self) -> String {
+        match self {
+            GrantScope::Session => "session".to_string(),
+            GrantScope::Agent(granter) => format!("agent {granter}"),
+            GrantScope::Subtree(granter) => format!("agent subtree under {granter}"),
+        }
+    }
 }
 
 /// The event-stream-facing projection of [`PermissionDecision`]

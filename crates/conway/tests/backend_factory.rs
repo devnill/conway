@@ -61,10 +61,10 @@ use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::content::{ContentBlock, SamplingParams, StopReason, Usage};
-use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{Backend, GenerateResponse};
 use conway_core::routing::{Route, RoutingReason};
+use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
 fn caps() -> Capabilities {
     Capabilities {

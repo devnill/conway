@@ -520,9 +520,9 @@ mod tests {
     use conway_core::capabilities::{
         CacheMode, Capabilities, ReliabilityTier, RequiredCaps, StructuredOutput, ToolCallSupport,
     };
-    use conway_core::fakes::FakeHealth;
     use conway_core::ids::{AgentId, BackendId, ModelId};
     use conway_core::routing::{BreakerKind, HealthConfig, RoleConfig};
+    use conway_testkit::FakeHealth;
 
     fn model_ref(backend: &str, model: &str) -> ModelRef {
         ModelRef {

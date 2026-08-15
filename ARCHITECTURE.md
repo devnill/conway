@@ -35,9 +35,9 @@ others, because all three are written against the same public API:
   permission, it fails closed: tools are denied unless explicitly named via
   `--allowed-tools`.
 
-## 2. The workspace: 6 crates, ports-and-adapters
+## 2. The workspace: 7 crates, ports-and-adapters
 
-conway is a Cargo workspace of six crates laid out as ports-and-adapters
+conway is a Cargo workspace of seven crates laid out as ports-and-adapters
 (hexagonal architecture). `conway-core` defines the domain types and every
 port trait; every other crate is either an adapter implementing those ports,
 or a consumer wiring adapters together.
@@ -49,6 +49,14 @@ conway-core        domain types + port traits. No tokio-net. No I/O *except*
                     a default build resolves roles with (§3.3); there is no
                     dedicated routing crate, and no dedicated backend-adapter
                     crate, in this fixed layout.
+conway-testkit     Test doubles for every `conway-core` port trait
+                    (`FakeBackend`, `FakeStore`, `FakeGate`, `FakeRouter`,
+                    `FakeHealth`, `FakeSubagentHost`, `CollectingEventSink`).
+                    Depends on `conway-core`, never the reverse. Not linked by
+                    default: `conway`'s facade forwards it behind its own
+                    `testkit` feature, so a crate depending only on `conway`
+                    can reach it by opting in, the same way this workspace's
+                    own test suites always could.
 conway-session     The append-only session log; transcript/prefix resolution.
 conway-tools       The tool/plugin registry and built-in tools.
 conway-runtime     The agent loop, context assembly, fork/spawn orchestration.
@@ -56,8 +64,8 @@ conway             The public facade: ConwayBuilder, Conway, SessionHandle.
 conway-cli         The `conway` binary: one-shot mode and the TUI.
 ```
 
-**Two forward declarations in that first row.** Both are labeled at their
-declaration sites in `conway-core` itself, and both are scheduled:
+**One forward declaration remains in that first row**, labeled at its
+declaration site in `conway-core` itself:
 
 - **`conway-core` does I/O today, in exactly one file.**
   `crates/conway-core/src/containment.rs` calls `std::fs::canonicalize` when
@@ -68,11 +76,13 @@ declaration sites in `conway-core` itself, and both are scheduled:
   second one starts. It closes when confinement moves into `conway.fs`, per
   §3.4 and `PHILOSOPHY.md` §1; that file's own module doc records the four
   questions that has to answer first.
-- **`conway-core` ships test doubles.** `feature = "fakes"` compiles a full
-  set of port doubles into the contract crate. Extracting them into a
-  `conway-testkit` crate would also make them reachable by a third party —
-  today they are unreachable outside this workspace, since the facade enables
-  `fakes` only under `[dev-dependencies]`.
+
+(A second forward declaration used to sit here: `conway-core` shipped test
+doubles behind `feature = "fakes"`, unreachable outside this workspace
+because the facade enabled that feature only under `[dev-dependencies]`.
+Board item 01KZVYWNA24EYMPVW3NPGBW51M closed it by extracting the doubles
+into `conway-testkit`, the row added above, and made them reachable through
+`conway`'s own forwarded `testkit` feature.)
 
 This is the fixed core layout; it does not include the first-party plugin
 tier (§2b), whose crate count grows independently of it — notably

@@ -39,11 +39,11 @@ use conway::config::schema::{
 use conway::{Conway, ConwayBuilder, PatternRule, PluginSelection, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest};
 use conway_core::content::{ContentBlock, ToolResult};
-use conway_core::fakes::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::log::LogRecord;
 use conway_core::permission_mode::PermissionMode;
 use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
+use conway_testkit::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {

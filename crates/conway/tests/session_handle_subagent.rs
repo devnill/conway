@@ -3,7 +3,7 @@
 //! `SpawnSpec`'s `From` conversions into `conway_core::agent::SubagentSpec`.
 //!
 //! Built the same way `tests/session_handle.rs` is: a real
-//! `Arc<Runtime>` assembled from `conway_core::fakes` ports, not a literal
+//! `Arc<Runtime>` assembled from `conway_testkit` ports, not a literal
 //! mock swapped in for `conway_core::ports::SubagentHost` -- `SessionHandle`
 //! holds a concrete `Arc<Runtime>` (the caller's committed struct shape, out of
 //! this item's file scope to change), so "argument identity" is verified
@@ -33,15 +33,13 @@ use conway_core::capabilities::{
 };
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
 use conway_core::error::BackendError;
-use conway_core::fakes::{
-    FakeBackend, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, RoleAlias};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
     Backend, BoxStream, GenerateRequest, GenerateResponse, SessionStore, StreamChunk,
 };
 use conway_core::provenance::Provenance;
+use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use futures_core::Stream as _;
 
 // ---------------------------------------------------------------------
@@ -1971,7 +1969,7 @@ async fn cancel_reason_reaches_the_result_when_observed_mid_request() {
 // land at, and nothing to drain the soft-cancel message from. This file
 // already hosts every other cancellation-mode test (including the
 // 415fbc5/637bbf2 additions above) against a real `AgentLoop` turn over
-// `conway_core::fakes`, which is exactly the machinery graceful cancellation
+// `conway_testkit`, which is exactly the machinery graceful cancellation
 // needs to be observed at all.
 // ---------------------------------------------------------------------
 
@@ -2192,7 +2190,7 @@ async fn graceful_cancel_on_a_parent_does_not_touch_a_live_childs_terminal_resul
 /// pins immediate propagation too, but drives `AgentTree::cancel` directly,
 /// *below* the `CancelMode` layer, so it cannot observe which mode a
 /// mode-less FACADE call (`SessionHandle::cancel`) resolves to. Only a real
-/// `AgentLoop` turn over `conway_core::fakes` -- what every test in this
+/// `AgentLoop` turn over `conway_testkit` -- what every test in this
 /// file, unlike `supervisor.rs`'s, drives -- has a turn boundary for either
 /// mode to land at.
 ///

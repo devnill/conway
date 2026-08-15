@@ -34,5 +34,10 @@ conway = { path = "../conway" }
 # the same precedent `conway-plugin-skeleton`'s own
 # `tests/skeleton_end_to_end.rs` establishes. Already a pinned workspace
 # dependency, not a new one (C-04).
-conway-core = { path = "../conway-core", features = ["fakes"] }
+conway-testkit = { path = "../conway-testkit" }
+# `conway_core::{agent, ids}`: fixture values (`PermissionDecision`,
+# `BackendId`, `ModelId`, `RoleAlias`) the end-to-end test constructs
+# directly -- already pulled in transitively via `conway-testkit` above,
+# named explicitly here since the test imports it by name (C-04).
+conway-core = { path = "../conway-core" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

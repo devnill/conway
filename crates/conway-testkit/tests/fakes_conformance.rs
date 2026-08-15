@@ -1,5 +1,4 @@
-#![cfg(feature = "fakes")]
-//! Conformance tests for the `feature = "fakes"` test doubles.
+//! Conformance tests for `conway-testkit`'s doubles.
 //!
 //! These are integration tests: they exercise the fakes exactly as a
 //! downstream crate (`conway-runtime`) would — through the public port
@@ -11,11 +10,11 @@ use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use chrono::Utc;
 
-use conway_core::fakes::{
+use conway_core::prelude::*;
+use conway_testkit::{
     CollectingEventSink, FakeBackend, FakeGate, FakeHealth, FakeRouter, FakeStore,
     FakeSubagentHost, ScriptedBackend, ScriptedTurn,
 };
-use conway_core::prelude::*;
 
 // ---------------------------------------------------------------------
 // A tiny, dependency-free executor: none of these fakes ever actually

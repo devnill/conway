@@ -20,13 +20,13 @@ use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::content::{StopReason, Usage};
-use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 #[cfg(feature = "builtin-tools")]
 use conway_core::ids::ToolName;
 use conway_core::ids::{BackendId, RoleAlias};
 use conway_core::ports::{GenerateResponse, SessionStore};
 #[cfg(feature = "builtin-tools")]
 use conway_core::ports::{Plugin, PluginManifest, RenderKind, Tool};
+use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
 /// `Conway` deliberately does not derive `Debug` (it wraps `Arc<Runtime>`,
 /// which does not either), so `Result::expect_err`/`unwrap_err` (which both

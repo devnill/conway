@@ -30,9 +30,9 @@ use conway::permission_pattern::{PatternOrigin, PatternRule};
 use conway::{Conway, ConwayBuilder, PluginSelection, RevokeOutcome, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
-use conway_core::fakes::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolName};
 use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
+use conway_testkit::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use tempfile::TempDir;
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {

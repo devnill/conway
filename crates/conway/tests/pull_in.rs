@@ -23,12 +23,12 @@ use conway::{Conway, ConwayBuilder, ConwayError, Provenance, SessionHandle, Sess
 use conway_core::agent::PermissionDecision;
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
-use conway_core::fakes::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{
     AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SeqRange, SessionId,
 };
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
+use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {

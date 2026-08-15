@@ -3,32 +3,36 @@
 //!
 //! These signatures are load-bearing (architecture §4). No default method on
 //! any port may perform I/O. The implementations `conway-core` is permitted
-//! to contain fall into three kinds, and the distinction between the second
-//! and third matters -- do not collapse them:
+//! to contain fall into two kinds:
 //!
-//! 1. The feature-gated test fakes (`feature = "fakes"`).
-//! 2. PRODUCTION FALLBACKS that answer a real call: `crate::routing`'s
+//! 1. PRODUCTION FALLBACKS that answer a real call: `crate::routing`'s
 //!    `MinimalRouter`/`AlwaysClosedHealthRegistry` , which back `Conway::explain_routing`'s
 //!    honest degenerate answer when a caller supplies its own `Router`
 //!    (`ConwayBuilder::with_router`) and there is no `conway-routing`
 //!    `DeclarativeRouter` left to project an `ExplainReport` through. These
 //!    are production code, not test doubles: real callers receive what they
 //!    compute.
-//! 3. ONE TEST-FIXTURE CONSTRUCTOR: `crate::ports::artifact`'s private
+//! 2. ONE TEST-FIXTURE CONSTRUCTOR: `crate::ports::artifact`'s private
 //!    `NoopArtifactWriter`, reachable only through
 //!    [`ArtifactWriteHandle::noop`],
 //!    which lets a `ContextHookCtx` be built for a test without implementing
 //!    `ArtifactWriter` by hand. It backs NO production call path --
 //!    `conway-runtime`'s `agent_loop` always supplies the real
-//!    `AgentArtifactWriter` -- so it is NOT a production fallback in sense 2,
+//!    `AgentArtifactWriter` -- so it is NOT a production fallback in sense 1,
 //!    and its presence is not precedent for adding another.
 //!
-//! Kinds 2 and 3 are alike in exactly one respect: both are unconditionally
-//! available rather than gated behind `feature = "fakes"`, and neither performs
-//! I/O. Kind 3 is unconditional for a specific reason rather than a general one
-//! -- `conway`'s `[dependencies]` never enables `fakes` (only its
-//! `[dev-dependencies]` do), so a gated constructor would be unreachable by the
-//! third-party author it exists to serve -- a built-in gets no privileged API.
+//! Both kinds are alike in exactly one respect: both are unconditionally
+//! available, and neither performs I/O. Kind 2 is unconditional for a
+//! specific reason: a feature-gated constructor living in THIS crate would
+//! be reachable only from inside this workspace (this crate has no facade
+//! sitting in front of it to forward a feature through), so gating it would
+//! have reproduced the exact reachability gap the full test-double set used
+//! to have -- a built-in gets no privileged API. That full set (`FakeBackend`,
+//! `FakeStore`, `FakeSubagentHost`, ...) used to be a third kind here, gated
+//! behind `feature = "fakes"` on this crate; it now lives in
+//! `conway-testkit`, a crate of its own that depends on this one (never the
+//! reverse -- T1) and that `conway`'s facade forwards to third parties
+//! behind its own `testkit` feature.
 //! Every other implementation lives in a dedicated crate.
 
 mod artifact;

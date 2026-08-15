@@ -39,5 +39,5 @@ test-clock = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-conway-core = { path = "../conway-core", features = ["fakes"] }
+conway-testkit = { path = "../conway-testkit" }
 static_assertions = { workspace = true }

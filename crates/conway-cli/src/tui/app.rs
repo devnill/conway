@@ -28,7 +28,7 @@
 //! string comparison, each running BEFORE `commands::parse` ever saw the
 //! input -- a known structural defect T9
 //! (`crates/conway/tests/architecture_invariants.rs`'s
-//! `t9_tui_has_exactly_the_four_known_parser_bypasses`) used to pin at
+//! `t9_tui_has_no_parser_bypasses`) used to pin at
 //! exactly those four by grepping this file's own source text. All four are
 //! now ordinary `commands::SlashCommand` variants, reached through the SAME
 //! single `commands::parse` + `commands::execute` call every other command
@@ -154,7 +154,7 @@ impl App {
     /// of it. `/settings`, `/trust` and `/agents` used to be intercepted
     /// HERE by direct string comparison, before `commands::parse` ever saw
     /// them; `/ask` too. T9 (`crates/conway/tests/architecture_invariants.
-    /// rs`'s `t9_tui_has_exactly_the_four_known_parser_bypasses`) used to
+    /// rs`'s `t9_tui_has_no_parser_bypasses`) used to
     /// pin that count at exactly four and now asserts it is zero.
     ///
     /// Two of the four still need a little more than a bare `commands::
@@ -422,8 +422,8 @@ mod tests {
     use conway::config::schema::HooksConfig;
     use conway::{ConwayBuilder, PermissionGate};
     use conway_core::agent::PermissionDecision;
-    use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
     use conway_core::ids::{BackendId, ModelId};
+    use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
     use super::fixtures::{
         base_config, build_conway_with_echo_backend, build_conway_with_echo_backend_and_store,

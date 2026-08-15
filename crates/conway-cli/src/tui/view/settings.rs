@@ -884,6 +884,71 @@ mod tests {
         );
     }
 
+    /// The whole point of `GrantScope::Agent`/`::Subtree` carrying an
+    /// `AgentId` (Stage 2b, board items `01KZVYZM7BZRQ54RRB8P814KV9`/
+    /// `01KZWRZ4JBAVCRCZ99BFZFF01K`): the review row must name WHICH agent a
+    /// per-agent or per-subtree grant covers, not merely that it is
+    /// narrower than the session. Two rows granted to two DIFFERENT agents
+    /// must render two DIFFERENT labels -- a regression that dropped the
+    /// `AgentId` (e.g. `GrantScope` degrading to a bare `PermissionScope`-
+    /// shaped enum, or `describe()` returning a constant `"agent"` string)
+    /// would collapse both to the same text and fail this test, unlike
+    /// `a_structured_allow_rule_with_a_narrower_scope_is_annotated` above,
+    /// which only checks the word "agent" appears.
+    #[test]
+    fn the_structured_allow_scope_annotation_names_which_agent_it_covers() {
+        let agent_a = AgentId::new();
+        let agent_b = AgentId::new();
+        assert_ne!(agent_a, agent_b, "the two granting agents must differ");
+
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.structured_allow_rules = vec![
+            (
+                a_structured_allow_rule(),
+                conway::PatternOrigin::Interactive,
+                conway::GrantScope::Agent(agent_a),
+            ),
+            (
+                a_structured_allow_rule(),
+                conway::PatternOrigin::File(std::path::PathBuf::from(
+                    "/repo/.conway/permissions.json",
+                )),
+                conway::GrantScope::Subtree(agent_b),
+            ),
+        ];
+
+        let rows = build_tree(&state).rows();
+        let labels: Vec<&str> = rows
+            .iter()
+            .filter(|r| r.label.contains("[bash, read] (any call)"))
+            .map(|r| r.label.as_str())
+            .collect();
+        assert_eq!(
+            labels.len(),
+            2,
+            "both structured rows must render: {labels:?}"
+        );
+
+        let agent_a_str = agent_a.to_string();
+        let agent_b_str = agent_b.to_string();
+        assert!(
+            labels.iter().any(|l| l.contains(&agent_a_str)),
+            "the per-agent row must name agent {agent_a_str}'s own id, not just \
+             the word \"agent\": {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains(&agent_b_str)),
+            "the per-subtree row must name agent {agent_b_str}'s own id: {labels:?}"
+        );
+        assert_ne!(
+            labels[0], labels[1],
+            "two grants to two different agents must render two different \
+             rows -- identical rows would mean the AgentId was dropped \
+             somewhere on the way from `GrantScope` to the render: {labels:?}"
+        );
+    }
+
     /// An allow section holding ONLY structured rules must not render the
     /// "no active grants" empty state (that message would be a lie), and
     /// revoke-all remains available for them.

@@ -7,7 +7,7 @@
 //! -> `SessionHandle::prompt`, exactly like every other caller (including
 //! the interactive TUI).
 //!
-//! Runs fully offline against fakes (`conway_core::fakes`), like this
+//! Runs fully offline against fakes (`conway_testkit`), like this
 //! crate's other example:
 //!
 //! ```console
@@ -45,9 +45,9 @@ use conway::config::schema::{
 };
 use conway::{ConwayBuilder, SessionSpec};
 use conway_core::agent::PermissionDecision;
-use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, ToolName};
 use conway_core::ports::SessionStore;
+use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
 /// The one-role, no-backend-table config shape `ConwayBuilder::from_parts`
 /// needs -- byte-for-byte `minimal_session.rs`'s own `minimal_config()`,
