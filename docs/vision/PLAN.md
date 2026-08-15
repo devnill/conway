@@ -105,7 +105,7 @@ to the owning domain, made in the completion report.
 | `crates/conway-core/src/path*.rs` (new) · `segment.rs` · `provenance.rs` | **D1 only** | |
 | `crates/conway-session/src/**` | **D1 only** | |
 | `crates/conway-runtime/src/context/**` | **D1 only** | |
-| `crates/conway-core/src/containment.rs` · `ports/**` · `fakes.rs` | **D2 only** | File-level split inside `conway-core`. If D1 and D2 collide on a file, **D1 wins and D2 rebases** — the path is on more critical paths than the gaps are. |
+| `crates/conway-core/src/containment.rs` · `ports/**` | **D2 only** | File-level split inside `conway-core`. If D1 and D2 collide on a file, **D1 wins and D2 rebases** — the path is on more critical paths than the gaps are. |
 | `crates/conway-tools/src/fs/**` | **D2 only** | |
 | `crates/conway-plugin-skills/` · `-memory/` · `-compaction/` · `-mcp/` · `-host/` | D3a…D3e | One new crate each, no shared files. |
 | `crates/conway-cli/src/first_party_plugins.rs` | **shared, append-only** | One `pub fn <name>_bundle()` per plugin. Never reorder or reformat existing entries. |
