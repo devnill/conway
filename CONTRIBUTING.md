@@ -127,25 +127,25 @@ whatever happened to get built.
 
 It is an exemption for that page's prose and nothing else. The conditions:
 
-- **Every present-tense claim that is not yet true is an open
+- **Every present-tense claim that is not yet true is an open board item
   carrying a falsifiable predicate.** The owner's
   ruling was that `PHILOSOPHY.md` should describe the ideal 1.0 state, not
   carry the debt required to get there, and that the debt belongs on the board
   instead. The ledger's load-bearing sentence survives in the new form: **a
-  claim not carried by an open is expected to be true right now.**
+  claim not carried by an open board item is expected to be true right now.**
   The mechanical, falsifiable part of what the ledger tracked — an `absent`
   pattern for "not built yet", a `present` pattern for "this exists", each
   failing the moment it stops being true — moved to
   [`scripts/board-claims.md`](scripts/board-claims.md), evaluated by
   [`scripts/check-design-claims.py`](scripts/check-design-claims.py) and gated
   in CI on every change; the narrative each claim used to carry as ledger prose
-  now lives on the that owns it. have ids, not numbers,
+  now lives on the board item that owns it. Board items have ids, not numbers,
   so the renumbering-on-clearance problem the ledger carried (see its own git
   history) does not recur.
 - Nothing else inherits it. `docs/`, `CHANGELOG.md`, doc comments, config keys,
   and defaults are governed by this section in full. A settings key that exists
   and does nothing is rung 1 regardless of what the philosophy page says.
-- A gap is cleared by building it (close the, and the predicate that
+- A gap is cleared by building it (close the board item, and the predicate that
   names it starts failing until someone updates or removes it in the same
   change) or by amending the page. A gap that sits open unexamined stops being
   design intent and becomes the thing this section is about.
@@ -155,7 +155,7 @@ what conway is meant to be; the tree is what it currently is. When they
 disagree, the finding is against the tree by default, and the fix is a work
 item. Editing the page to describe what the code happens to do turns a
 requirement into a mirror, and it destroys the completeness contract in the
-process: a claim quietly softened to match the tree, with no filed
+process: a claim quietly softened to match the tree, with no board item filed
 for the gap it used to name, means the gap stops existing without anyone
 deciding it should.
 
@@ -164,9 +164,9 @@ something nobody intended. Even then the bar is that the edit makes the
 requirement clearer, never that it makes the requirement easier to satisfy. If
 you cannot tell which you are doing, you are doing the second one.
 
-### Citing a, and keeping the citation honest
+### Citing a board item, and keeping the citation honest
 
-The tree cites by id in roughly 920 places. Two rules:
+The tree cites board items by id in roughly 920 places. Two rules:
 
 - **A citation that implies pending work must name something that is actually
   open.** "Tracked under `01K…`", "deferred to `01K…`", "`01K…` tracks that" —
@@ -188,7 +188,7 @@ Both stores are local-only tooling state excluded by `.gitignore`, so CI and a
 plain clone have nothing to resolve against. When the stores are missing the
 script exits **2** and prints `SKIPPED` — never 0, because a run that verified
 nothing must not report success. Run it on a maintainer checkout when you add or
-retire a citation, and when you close a that the tree cites.
+retire a citation, and when you close a board item that the tree cites.
 
 ## 3. A check is not established until it has been shown to fail
 

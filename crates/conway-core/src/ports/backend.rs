@@ -351,9 +351,16 @@ pub struct BackendBuildContext {
     ///
     /// Empty (not merely absent) when the entry set no key beyond the five
     /// typed ones -- a kind that never reads this field behaves exactly as
-    /// it did before this field was added. Neither shipped kind
-    /// (`conway_plugin_backends`'s `"anthropic"`/`"openai-compat"`) reads
-    /// it.
+    /// it did before this field was added. As of the item that made the
+    /// shipped Anthropic kind consume its own configuration,
+    /// `conway_plugin_backends`'s `"anthropic"` reads it
+    /// (`AnthropicBackendFactory::resolve_extra`: `anthropic_version` and
+    /// `headers`, with any other key a rejected, named build error --
+    /// never silently ignored). `"openai-compat"` still does not read it;
+    /// that kind's own per-provider configuration surface is `dialect` (a
+    /// profile selector), not this field -- the two kinds do not share one
+    /// `dialect`/`extra` vocabulary, see `conway_plugin_backends::factory`'s
+    /// own module doc for the finding.
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 

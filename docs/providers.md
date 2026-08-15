@@ -153,6 +153,39 @@ self-hosted shim's own token are all passed through as-is; an unusable key
 surfaces as that provider's own auth error rather than a guess on
 conway's part.
 
+### Wire version and header overrides
+
+The `"anthropic"` kind reads two keys out of its own `extra` (the same
+catch-all map described [above](#where-a-backend-is-declared) — every key
+beyond `kind`/`api_key`/`api_key_env`/`base_url`/`dialect`/`stream_tools`):
+
+| `extra` key | Effect |
+| --- | --- |
+| `anthropic_version` | Overrides the `anthropic-version` header sent with every request. Defaults to `2023-06-01` when unset — unchanged from every config written before this key existed. |
+| `headers` | An object of header name/value string pairs, sent alongside (never in place of) the two headers `AnthropicBackend` always sets (`x-api-key`, `anthropic-version`) — for a provider-specific header like `anthropic-beta`. |
+
+```json
+// .conway/settings.json
+{
+  "backends": {
+    "anthropic": {
+      "kind": "anthropic",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "anthropic_version": "2024-01-01",
+      "headers": { "anthropic-beta": "some-feature-flag" }
+    }
+  }
+}
+```
+
+**Any other key under this kind's `extra` is a rejected, named build
+error, not a silently ignored one.** A typo in one of these two names (or
+any key this kind does not understand) fails `build()` naming the offending
+key, rather than accepting a configuration that quietly does nothing —
+the same "an operator who bought a behaviour deserves more than silence"
+reasoning `AnthropicBackendFactory::resolve_extra` documents in its own
+doc comment.
+
 ### Kimi coding plan
 
 Kimi's coding plan is served over an Anthropic-compatible endpoint, so it

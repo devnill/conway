@@ -39,7 +39,12 @@ fn default_anthropic_id() -> BackendId {
     BackendId::new("anthropic")
 }
 
-fn default_anthropic_version() -> String {
+/// `pub(crate)`, not private: `crate::factory::AnthropicBackendFactory::build`
+/// reads this same default when `extra.anthropic_version` is absent from a
+/// `[backends.<id>]` entry, so the "today's constant" the wire-version
+/// configuration item promised has exactly one definition rather than two
+/// copies of the literal `"2023-06-01"` drifting apart.
+pub(crate) fn default_anthropic_version() -> String {
     "2023-06-01".to_string()
 }
 
