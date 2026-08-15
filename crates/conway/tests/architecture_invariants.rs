@@ -5,7 +5,8 @@
 //!
 //! # Why the false ones are asserted as false
 //!
-//! Three of the nine invariants do not hold yet. Each of those guards asserts
+//! Two of the nine invariants do not hold yet (T7 flipped to enforcing when
+//! Stage 2a landed). Each of those guards asserts
 //! **the current, wrong state** and names the stage that will flip it. That is
 //! deliberate and it is the part most likely to look like a mistake.
 //!
@@ -357,28 +358,30 @@ fn t6_facade_re_exports_no_runtime_type() {
 
 // ------------------------------------------------------------------- T7 ----
 
-/// **T7: the facade carries no presentation config. FALSE TODAY.**
+/// **T7: the facade carries no presentation config. TRUE as of Stage 2a.**
 ///
-/// Four ratatui-shaped types sit in the embeddable config schema, so a service
-/// or IDE with no terminal still parses and validates roughly 34 slots of
-/// theme and status-line configuration. Stage 2a
-/// moves them to `conway-cli`.
-///
-/// Pinned as: exactly these four. Fails on a fifth -- the schema growing more
-/// terminal vocabulary is precisely the drift this stage exists to stop.
+/// The four ratatui-shaped types that used to sit in the embeddable config
+/// schema (`TuiSection`, `ThemeConfig`, `ThemeStyleConfig`,
+/// `StatusLineConfig` -- roughly 34 slots of theme and status-line
+/// configuration a service or IDE with no terminal used to have to parse
+/// and validate) moved to `conway-cli` (`crates/conway-cli/src/tui/
+/// config.rs`), the one reader that renders them. This guard now enforces
+/// the target state rather than pinning the known-wrong one: it fails the
+/// moment ANY presentation-shaped type reappears in this schema, first or
+/// fifth.
 #[test]
-fn t7_facade_has_exactly_the_four_known_presentation_types() {
+fn t7_facade_has_no_presentation_types() {
     let schema = read("crates/conway/src/config/schema.rs");
 
     // Every `pub struct` in the schema, then filtered by NAME SHAPE rather
-    // than against the four known ones. Checking only the known names would
-    // produce a guard that cannot fail in the direction that matters: a FIFTH
-    // presentation type leaves the four untouched, so the set comparison would
-    // still pass and the schema would grow more terminal vocabulary silently.
+    // than against the four now-removed names -- catches a REINTRODUCED
+    // `TuiSection`/`ThemeConfig`/`StatusLineConfig` just as readily as it
+    // would catch a brand new presentation type, since both share the same
+    // name vocabulary.
     //
     // The filter is a heuristic and worth naming as one: it catches anything
     // called `*Tui*`, `*Theme*` or `*StatusLine*`, which is what every
-    // presentation type in this schema has been so far and what a new one
+    // presentation type in this schema was, historically, and what a new one
     // would realistically be called. A presentation type named entirely
     // outside that vocabulary would slip through -- accepted, because the
     // alternative (pinning the schema's TOTAL struct count) breaks on every
@@ -400,20 +403,13 @@ fn t7_facade_has_exactly_the_four_known_presentation_types() {
 
     assert_eq!(
         presentation,
-        set(&[
-            "StatusLineConfig",
-            "ThemeConfig",
-            "ThemeStyleConfig",
-            "TuiSection"
-        ]),
-        "T7 CHANGED: the facade's presentation types are no longer exactly the \
-         four known ones; found {presentation:?}.\n\
-         If one was ADDED, that is the regression this guard exists for -- the \
-         embeddable schema is growing more terminal vocabulary that every \
-         headless host must still parse. If the set is now EMPTY because Stage \
-         2a landed, this guard has done its \
-         job: assert emptiness and delete the forward-declaration label. If it \
-         SHRANK otherwise, the schema is half-migrated -- move them together."
+        BTreeSet::new(),
+        "T7 REGRESSED: the facade's config schema names a presentation-shaped type again; \
+         found {presentation:?}. Stage 2a moved every ratatui-shaped config slot to \
+         `conway-cli` (crates/conway-cli/src/tui/config.rs) precisely so a headless host \
+         never has to parse terminal vocabulary it can never render -- whatever this found \
+         either belongs there instead, or is a real fifth presentation type that should \
+         never have landed here at all."
     );
 }
 

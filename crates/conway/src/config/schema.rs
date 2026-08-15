@@ -72,11 +72,6 @@ pub struct ConwayConfig {
     pub agents: AgentsConfig,
     #[serde(default)]
     pub models: ModelsConfig,
-    /// `[tui]` (TUI-only options; the facade owns the schema, the
-    /// `conway-cli` TUI consumes it). Currently `[tui.theme]` (T1) and
-    /// `[tui.status_line]` (T3).
-    #[serde(default)]
-    pub tui: TuiSection,
     /// `[tools]` (bash ships on by default and cannot be
     /// declined). Which built-in `conway-tools` plugins
     /// `ConwayBuilder::build` auto-registers -- see [`ToolsConfig`]'s own
@@ -633,8 +628,13 @@ impl Default for ToolsConfig {
 ///
 /// **This crate carries the wire shape and does nothing else with it.**
 /// `install` is inert data as far as `ConwayBuilder::build` is concerned —
-/// it never reads this field, exactly like [`TuiSection`] immediately
-/// below is carried here but consumed only by `conway-cli`'s TUI. Whatever
+/// it never reads this field. Unlike `[tui]`, which used to be carried
+/// here on the same "wire shape only, no behavior" footing (Stage 2a moved
+/// it out entirely — see `crates/conway-cli/src/tui/config.rs` — because
+/// `[tui]` is a presentation-only vocabulary a headless embedder should
+/// never have to parse; `[plugins]` stays here because every consumption
+/// mode, TUI included, resolves it the same way through
+/// `ConwayBuilder::install_selected`). Whatever
 /// binary or embedder actually links a given first-party plugin crate
 /// reads this list itself, via [`crate::ConwayBuilder::config`], and calls
 /// `ConwayBuilder::with_plugin`/`with_backend`/`with_router` for every id
@@ -701,174 +701,6 @@ impl Default for PluginsConfig {
             default_backends: vec!["anthropic".to_string(), "openai-compat".to_string()],
         }
     }
-}
-
-/// `[tui]` (TUI-only options). The facade owns the wire shape so the same
-/// discovery/precedence/`deny_unknown_fields` machinery that governs every
-/// other section governs this one too; the `conway-cli` TUI reads
-/// `conway.config().tui.theme` at startup and builds a ratatui `Theme` from
-/// it (see `crates/conway-cli/src/tui/view/theme.rs`). The facade itself
-/// never names ratatui types -- `ThemeConfig` is a string-keyed shape so the
-/// facade need not depend on the render crate.
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct TuiSection {
-    #[serde(default)]
-    pub theme: ThemeConfig,
-    /// `[tui.status_line]` (T3): declarative status-line field order +
-    /// visibility. `fields` is the ordered list of field names to render; a
-    /// field absent from the list is hidden, and the list's order is the
-    /// render order. Unknown names are silently dropped at render time
-    /// (config is untrusted input, never a panic). Default = the
-    /// Lean line
-    /// `["session","lineage","mode","model","ctx","tokens","activity","hint"]`.
-    /// See `docs/interactive.md`'s "The status line" section for the
-    /// full field list.
-    #[serde(default)]
-    pub status_line: StatusLineConfig,
-    /// `[tui.tool_preview_lines]` (T5): the cap on collapsed tool-preview
-    /// lines in the TUI transcript. A tool entry whose stored `preview` has
-    /// more physical lines than this renders the first N lines + a dim
-    /// `… (+M lines, Ctrl-E to expand)` affordance while the entry's
-    /// `expanded` flag is `false`; the full preview renders while `true`.
-    /// The stored preview is never truncated -- the cap is render-time only.
-    /// `None` (the default) means the TUI's built-in default of 3. The TUI
-    /// clamps a loaded value to `1..=200` with a fallback to 3 on a
-    /// missing/out-of-range/bad value (config is untrusted input,
-    /// never a panic). `CONWAY_TUI__TOOL_PREVIEW_LINES=10` overrides via
-    /// env.
-    #[serde(default)]
-    pub tool_preview_lines: Option<u32>,
-    /// `[tui.history_size]` (T8): the cap on the persisted input-history
-    /// FIFO (`~/.conway/history`, or `$XDG_CONFIG_HOME/conway/history` when
-    /// set -- see `conway::config::discovery::history_file_path`). Loaded at
-    /// startup and appended to on every submit; oldest entries are evicted
-    /// once the cap is exceeded. `None` (the default) means the TUI's
-    /// built-in default of 500. The TUI clamps a loaded value to
-    /// `1..=100_000` with a fallback to 500 on a missing/out-of-range/bad
-    /// value (config is untrusted input, never a panic).
-    /// `CONWAY_TUI__HISTORY_SIZE=1000` overrides via env.
-    #[serde(default)]
-    pub history_size: Option<u32>,
-}
-
-/// `[tui.status_line]`: declarative status-line field order + visibility
-/// (T3). The `fields` list is the ordered set of field names the TUI
-/// renders, left to right; a field not in the list is hidden, and the list
-/// order is the render order. Unknown names are dropped at render time
-/// (config is untrusted input: never a panic). Defaults to the Lean line
-/// `["session","lineage","mode","model","ctx","tokens","activity","hint"]`.
-///
-/// `session`/`lineage` were added by the item that corrected a requirement
-/// miss in the TUI's T6 scroll affordance: T6 put `session`/agent-lineage
-/// content on a scroll-triggered overlay, which is application chrome, not
-/// scroll-position-dependent information, so both moved here instead (see
-/// `crates/conway-cli/src/tui/view/header.rs`'s module doc for the full
-/// story). **A pinned `fields` list written before that item shipped keeps
-/// working unchanged, but will not gain either new field** -- unknown/
-/// missing names are never an error, so an older config simply renders
-/// without them.
-///
-/// Available field names (see `docs/interactive.md`): `session`,
-/// `lineage`, `mode`, `model`, `ctx`, `tokens`, `activity`, `hint`, `git`,
-/// `cwd`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct StatusLineConfig {
-    /// Ordered field names to render. Default = Lean line.
-    pub fields: Vec<String>,
-}
-
-impl Default for StatusLineConfig {
-    fn default() -> Self {
-        Self {
-            fields: vec![
-                "session".to_string(),
-                "lineage".to_string(),
-                "mode".to_string(),
-                "model".to_string(),
-                "ctx".to_string(),
-                "tokens".to_string(),
-                "activity".to_string(),
-                "hint".to_string(),
-            ],
-        }
-    }
-}
-
-/// `[tui.theme]`: a per-named-style override table. Each entry is an
-/// `Option<ThemeStyleConfig>` -- `None` (the default for every slot) means
-/// "use the TUI's built-in default for this named style"; `Some` overlays
-/// `fg`/`bg`/`modifiers` on top of the default. The TUI resolves the
-/// strings to ratatui `Color`/`Modifier` values and maps any unparseable
-/// or out-of-range value back to the default for that slot (config
-/// is untrusted input, never a panic). Every field is `Option` so a user
-/// can override just one named style without restating the rest.
-///
-/// Field names match the `Theme` slot names in
-/// `crates/conway-cli/src/tui/view/theme.rs` one-for-one.
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct ThemeConfig {
-    pub user: Option<ThemeStyleConfig>,
-    pub assistant: Option<ThemeStyleConfig>,
-    pub assistant_marker: Option<ThemeStyleConfig>,
-    pub reasoning: Option<ThemeStyleConfig>,
-    /// T4: the `HH:MM ` timestamp prefix prepended to each entry's first
-    /// rendered line while `show_timestamps` is on.
-    pub timestamp: Option<ThemeStyleConfig>,
-    pub tool_proposed: Option<ThemeStyleConfig>,
-    pub tool_awaiting: Option<ThemeStyleConfig>,
-    pub tool_running: Option<ThemeStyleConfig>,
-    pub tool_done: Option<ThemeStyleConfig>,
-    pub tool_failed: Option<ThemeStyleConfig>,
-    pub agent_starting: Option<ThemeStyleConfig>,
-    pub agent_running: Option<ThemeStyleConfig>,
-    pub agent_awaiting: Option<ThemeStyleConfig>,
-    pub agent_finished: Option<ThemeStyleConfig>,
-    pub agent_failed: Option<ThemeStyleConfig>,
-    pub agent_cancelled: Option<ThemeStyleConfig>,
-    pub notice: Option<ThemeStyleConfig>,
-    pub error: Option<ThemeStyleConfig>,
-    pub fatal_error: Option<ThemeStyleConfig>,
-    pub dim: Option<ThemeStyleConfig>,
-    pub focused: Option<ThemeStyleConfig>,
-    pub selected: Option<ThemeStyleConfig>,
-    pub emphasized: Option<ThemeStyleConfig>,
-    pub border_normal: Option<ThemeStyleConfig>,
-    pub border_warning: Option<ThemeStyleConfig>,
-    pub border_danger: Option<ThemeStyleConfig>,
-    pub border_accent: Option<ThemeStyleConfig>,
-    pub status_mode: Option<ThemeStyleConfig>,
-    pub status_dim: Option<ThemeStyleConfig>,
-    pub spinner: Option<ThemeStyleConfig>,
-    /// T6: the sticky context header shown above the transcript while it
-    /// overflows the viewport (`session · focused agent · model · ctx%`).
-    pub header: Option<ThemeStyleConfig>,
-    /// T6: the floating "jump to bottom" footer pill shown over the bottom
-    /// row of the transcript while scrolled up (`!follow_tail`).
-    pub scroll_footer: Option<ThemeStyleConfig>,
-    /// T7: the `/help` keybinding overlay's block border.
-    pub help_border: Option<ThemeStyleConfig>,
-    /// T7: the key/chord column in the `/help` keybinding overlay's rows
-    /// (e.g. `Ctrl-E`, `PageUp/PageDown`).
-    pub help_key: Option<ThemeStyleConfig>,
-}
-
-/// One `[tui.theme.<name>]` entry: foreground/background color names plus a
-/// modifier tag list. All fields are optional -- a `None`/empty field means
-/// "leave the named style's default for that channel untouched". The TUI
-/// parses `fg`/`bg` as ratatui color names (`"cyan"`, `"dark_gray"`,
-/// `"#ff00ff"`, ...) and `modifiers` as ratatui modifier names
-/// (`"bold"`, `"dim"`, `"italic"`, `"reversed"`, ...); any unrecognized
-/// value falls back to the default -- config is untrusted input -- never a panic.
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct ThemeStyleConfig {
-    pub fg: Option<String>,
-    pub bg: Option<String>,
-    #[serde(default)]
-    pub modifiers: Vec<String>,
 }
 
 /// `[hooks]` -- an operator-declared list of "when this event happens, run

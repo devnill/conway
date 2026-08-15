@@ -16,6 +16,7 @@
 
 pub mod app;
 pub mod commands;
+pub mod config;
 pub mod gate;
 pub mod history;
 pub mod input;
@@ -38,6 +39,26 @@ use crate::exit::ExitCode;
 
 use app::App;
 use gate::GateReceiver;
+
+/// This TUI's own liveness-heartbeat cadence: how often [`run`] refreshes
+/// the store's cross-process liveness marker while it holds one.
+const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The freshness threshold [`Conway::sweep_stale_modal_asks`] is called
+/// with -- 4× [`HEARTBEAT_INTERVAL`], so a few missed beats under load do
+/// not flip a live owner to "stale". **Computed here, not read back off
+/// `conway` (Stage 2a):** `Conway::sweep_stale_modal_asks` used to hardcode
+/// this exact ratio ("4× the TUI's 15s heartbeat") as a facade constant --
+/// a presentation detail (this module's own refresh cadence) baked into
+/// engine configuration, the same category of defect the rest of Stage 2a
+/// moves `TuiSection` and its siblings out of `conway` to fix. Only this
+/// module knows its own heartbeat interval, so only this module computes
+/// the threshold derived from it; `sweep_stale_modal_asks` now takes it as
+/// a plain argument with no facade-side default at all.
+fn sweep_live_threshold() -> chrono::Duration {
+    chrono::Duration::from_std(HEARTBEAT_INTERVAL * 4)
+        .expect("4x a 15s interval fits in a chrono::Duration")
+}
 
 /// Entry point. Deviates from the module notes' literal two-argument
 /// `tui::run(cli, conway)` form by one argument -- see this crate's
@@ -84,7 +105,7 @@ pub async fn run(
     // keeps it fresh while we run; `clear_live_owner` on exit lets a
     // subsequent cold start reap immediately instead of waiting for the
     // marker to go stale.
-    let _ = conway.sweep_stale_modal_asks().await;
+    let _ = conway.sweep_stale_modal_asks(sweep_live_threshold()).await;
 
     enable_raw_mode().map_err(ConwayError::Io)?;
     // T8: bracketed paste alongside the alternate screen -- one `execute!`
@@ -118,16 +139,16 @@ pub async fn run(
 
     // Publish our liveness marker (after the sweep, so the sweep never saw
     // it) and start a heartbeat task so a second process starting against
-    // this store sees a fresh marker and defers its sweep. 15s interval <<
-    // 60s `SWEEP_LIVE_THRESHOLD`, so a few missed beats under load do not
-    // flip us to "stale". No early returns after this point: the cleanup
-    // below (clear marker + abort heartbeat) runs on every exit from
-    // `app.run`.
+    // this store sees a fresh marker and defers its sweep. `HEARTBEAT_INTERVAL`
+    // (15s) << `sweep_live_threshold()` (60s, 4x it), so a few missed beats
+    // under load do not flip us to "stale". No early returns after this
+    // point: the cleanup below (clear marker + abort heartbeat) runs on
+    // every exit from `app.run`.
     let pid = std::process::id();
     let _ = conway.heartbeat_live_owner(pid).await;
     let heartbeat_conway = conway.clone();
     let heartbeat = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
         loop {
             interval.tick().await;
             let _ = heartbeat_conway.heartbeat_live_owner(pid).await;
@@ -142,7 +163,7 @@ pub async fn run(
     // blocking-pool `rename` already dispatched before `abort` could in
     // theory still land — if it does, the orphaned marker goes stale (this
     // process is exiting) and the next startup's sweep reaps it within
-    // `SWEEP_LIVE_THRESHOLD`; that race is the acceptable residual under
+    // `sweep_live_threshold()`; that race is the acceptable residual under
     // the S1 scope. Best-effort both: a failure here must never mask the
     // app's own result.
     heartbeat.abort();

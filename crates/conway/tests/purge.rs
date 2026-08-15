@@ -16,7 +16,6 @@ use std::time::Duration;
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-    TuiSection,
 };
 use conway::{AskOrigin, Conway, ConwayBuilder, ConwayError, SessionHandle, SessionSpec};
 use conway_core::agent::PermissionDecision;
@@ -67,7 +66,6 @@ fn base_config() -> ConwayConfig {
         health: HealthSection::default(),
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
-        tui: TuiSection::default(),
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
@@ -387,7 +385,7 @@ async fn sweep_reaps_modal_ask_residue_but_never_tool_ask_or_untagged_sessions()
     );
 
     let purged = restarted
-        .sweep_stale_modal_asks()
+        .sweep_stale_modal_asks(chrono::Duration::seconds(60))
         .await
         .expect("the sweep must succeed");
     assert_eq!(purged, 1, "exactly the modal-ask leftover must be reaped");
@@ -441,7 +439,7 @@ async fn sweep_skips_a_modal_ask_child_that_is_still_live_in_the_tree() {
     );
 
     let purged = conway
-        .sweep_stale_modal_asks()
+        .sweep_stale_modal_asks(chrono::Duration::seconds(60))
         .await
         .expect("the sweep must succeed");
 
@@ -501,7 +499,7 @@ async fn sweep_defers_when_a_fresh_live_owner_marker_is_present() {
         .expect("publishing the other process's marker");
 
     let purged = restarted
-        .sweep_stale_modal_asks()
+        .sweep_stale_modal_asks(chrono::Duration::seconds(60))
         .await
         .expect("the sweep must succeed");
     assert_eq!(
@@ -528,14 +526,18 @@ async fn sweep_reaps_when_the_live_owner_marker_is_stale() {
     let store: Arc<dyn SessionStore> = fake.clone();
     let (restarted, child_session) = restarted_with_modal_ask_residue(store.clone()).await;
 
-    // pid 999 but heartbeat 120s ago, past the 60s `SWEEP_LIVE_THRESHOLD`.
+    // pid 999 but heartbeat 120s ago, past the 60s threshold this test
+    // passes explicitly (Stage 2a: the threshold is caller-supplied, not a
+    // facade constant -- see the new test immediately below this one for
+    // the case where a DIFFERENT, caller-chosen threshold changes the
+    // outcome).
     fake.set_live_owner(Some(LiveOwner {
         pid: 999,
         heartbeat: chrono::Utc::now() - chrono::Duration::seconds(120),
     }));
 
     let purged = restarted
-        .sweep_stale_modal_asks()
+        .sweep_stale_modal_asks(chrono::Duration::seconds(60))
         .await
         .expect("the sweep must succeed");
     assert_eq!(
@@ -546,6 +548,58 @@ async fn sweep_reaps_when_the_live_owner_marker_is_stale() {
         .meta(&child_session)
         .await
         .expect_err("the reaped residue must be gone");
+    assert!(matches!(err, StoreError::NotFound { .. }));
+}
+
+/// **Stage 2a: `live_threshold` is genuinely caller-supplied, not a
+/// relocated constant.** The SAME marker (heartbeat 20s old) is "fresh"
+/// under the pre-Stage-2a hardcoded default (60s, still exercised by every
+/// other test in this file above) and "stale" under a caller-chosen 10s
+/// threshold -- a single fixed heartbeat age, two different callers, two
+/// different, observed sweep OUTCOMES (deferred vs. reaped), which is what
+/// proves the parameter actually drives behavior rather than merely being
+/// accepted and ignored. If this test used only one threshold value it
+/// could pass even with the argument stored but never consulted.
+#[tokio::test]
+async fn sweep_stale_modal_asks_threshold_is_caller_supplied_not_a_relocated_constant() {
+    let fake = Arc::new(FakeStore::new());
+    let store: Arc<dyn SessionStore> = fake.clone();
+    let (restarted, child_session) = restarted_with_modal_ask_residue(store.clone()).await;
+
+    // pid 999, heartbeat 20s old -- inside the pre-Stage-2a 60s default,
+    // outside a caller-chosen 10s threshold.
+    fake.set_live_owner(Some(LiveOwner {
+        pid: 999,
+        heartbeat: chrono::Utc::now() - chrono::Duration::seconds(20),
+    }));
+
+    let purged_under_60s = restarted
+        .sweep_stale_modal_asks(chrono::Duration::seconds(60))
+        .await
+        .expect("the sweep must succeed");
+    assert_eq!(
+        purged_under_60s, 0,
+        "a 20s-old marker is FRESH under a 60s threshold -- the sweep must defer"
+    );
+    store
+        .meta(&child_session)
+        .await
+        .expect("deferred under the 60s threshold: the residue must still be present");
+
+    let purged_under_10s = restarted
+        .sweep_stale_modal_asks(chrono::Duration::seconds(10))
+        .await
+        .expect("the sweep must succeed");
+    assert_eq!(
+        purged_under_10s, 1,
+        "the SAME 20s-old marker is STALE under a caller-supplied 10s threshold -- the sweep \
+         must reap it. A hardcoded-60s implementation (the pre-Stage-2a shape) would defer \
+         here too and fail this assertion."
+    );
+    let err = store
+        .meta(&child_session)
+        .await
+        .expect_err("reaped under the 10s threshold: the residue must be gone");
     assert!(matches!(err, StoreError::NotFound { .. }));
 }
 
@@ -561,7 +615,7 @@ async fn sweep_reaps_when_no_live_owner_marker_is_present() {
     // No marker set — as on a cold start against a store whose last owner
     // cleared its marker, or one that never had an owner.
     let purged = restarted
-        .sweep_stale_modal_asks()
+        .sweep_stale_modal_asks(chrono::Duration::seconds(60))
         .await
         .expect("the sweep must succeed");
     assert_eq!(

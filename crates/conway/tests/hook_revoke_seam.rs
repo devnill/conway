@@ -30,7 +30,6 @@ use async_trait::async_trait;
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HookEntry, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-    TuiSection,
 };
 use conway::{Conway, ConwayBuilder, HookRuleView, PluginSelection};
 use conway_core::agent::{PermissionDecision, PermissionRequest};
@@ -94,7 +93,6 @@ fn base_config(cwd: &Path, hooks: HooksConfig) -> ConwayConfig {
         health: HealthSection::default(),
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
-        tui: TuiSection::default(),
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
         hooks,

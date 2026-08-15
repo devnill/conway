@@ -1,7 +1,7 @@
 //! The bottom status line (T3): a single, always-visible plain line -- no
 //! border -- summarizing the focused agent's turn at a glance. The line is
 //! an ordered, configurable set of fields driven by `[tui.status_line]` in
-//! `settings.json` (schema: `conway::config::schema::StatusLineConfig`).
+//! `settings.json` (schema: `crate::tui::config::StatusLineConfig`).
 //! Each field renders only when it is both listed in the configured `fields`
 //! order AND has data to show (e.g. `git` is omitted when not in a repo,
 //! `model` is omitted before the first `ModelDecision`).
@@ -175,6 +175,7 @@ use super::agents;
 use super::theme::Theme;
 use conway::{AgentId, PermissionMode};
 
+use crate::tui::config::StatusLineConfig;
 use crate::tui::state::{should_animate, Activity, AppState, Mode, SPINNER_FRAMES};
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
@@ -286,7 +287,7 @@ impl StatusLineField {
 /// the same `StatusLineConfig`), so fixing it here covers both sources
 /// uniformly without needing a second enforcement point at config load.
 fn resolve_fields(
-    config: &conway::config::schema::StatusLineConfig,
+    config: &StatusLineConfig,
     permission_mode: PermissionMode,
 ) -> Vec<StatusLineField> {
     let mut parsed: Vec<StatusLineField> = config
@@ -299,10 +300,7 @@ fn resolve_fields(
         // than rendering a blank line (bad input never produces a
         // broken UI -- it falls back to defaults). The Lean order already
         // includes `mode`, so the forced-in step below is a no-op here.
-        return resolve_fields(
-            &conway::config::schema::StatusLineConfig::default(),
-            permission_mode,
-        );
+        return resolve_fields(&StatusLineConfig::default(), permission_mode);
     }
     if permission_mode != PermissionMode::Prompt && !parsed.contains(&StatusLineField::Mode) {
         parsed.push(StatusLineField::Mode);
@@ -969,7 +967,6 @@ fn compact_tokens(n: u64) -> String {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use conway::config::schema::StatusLineConfig;
     use conway::AgentId;
 
     use super::*;
@@ -2160,6 +2157,13 @@ mod tests {
     /// path can ALSO produce a `fields` list missing `mode`, not just a
     /// hand-pinned `settings.json`, and that the fix at the render layer
     /// (not the config layer) covers both sources uniformly.
+    ///
+    /// Stage 2a: `[tui]` no longer reaches this crate through
+    /// `conway::config::load`'s own `ConwayConfig` (that schema does not
+    /// define the key any more) -- this reads it back the same way
+    /// `crate::tui::config::load` does, via `conway::config::
+    /// merged_document`, proving the env-var reach survived the type's
+    /// move just as the file-based path does.
     #[test]
     fn env_var_fields_override_can_omit_mode_and_the_fix_still_covers_it() {
         let xdg_dir = tempfile::tempdir().expect("tempdir");
@@ -2176,17 +2180,22 @@ mod tests {
             "CONWAY_TUI__STATUS_LINE__FIELDS".to_string(),
             "session,hint".to_string(),
         );
-        let outcome = conway::config::load(conway::config::LoadOptions {
+        let mut merged = conway::config::merged_document(&conway::config::LoadOptions {
             cwd: cwd_dir.path().to_path_buf(),
             explicit_path: None,
             env,
             cli_overrides: conway::config::CliOverrides::default(),
             model_metadata_refresh: false,
         })
-        .expect("load must succeed");
+        .expect("merged_document must succeed");
+        let tui: crate::tui::config::TuiSection = merged
+            .as_object_mut()
+            .and_then(|obj| obj.remove("tui"))
+            .map(|v| serde_json::from_value(v).expect("[tui] must parse"))
+            .expect("CONWAY_TUI__STATUS_LINE__FIELDS must produce a [tui] key");
 
         assert_eq!(
-            outcome.config.tui.status_line.fields,
+            tui.status_line.fields,
             vec!["session".to_string(), "hint".to_string()],
             "the env override must actually produce a `fields` list \
              omitting `mode` -- proving this is a reachable real config, \
@@ -2194,7 +2203,7 @@ mod tests {
         );
 
         let mut state = AppState::new(AgentId::new());
-        state.status_line_config = outcome.config.tui.status_line;
+        state.status_line_config = tui.status_line;
         state.permission_mode = PermissionMode::AutoAllow;
         let line = status_line(&state);
         assert!(

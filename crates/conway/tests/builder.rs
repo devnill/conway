@@ -9,7 +9,7 @@ use conway::config::schema::BackendEntry;
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig, TuiSection,
+    ToolsConfig,
 };
 use conway::{Conway, ConwayBuilder, ConwayError, SessionSpec};
 // Only named by the `builtin-tools`-gated tests below.
@@ -129,7 +129,6 @@ fn base_config() -> ConwayConfig {
         health: HealthSection::default(),
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
-        tui: TuiSection::default(),
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),

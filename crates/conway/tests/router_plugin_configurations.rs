@@ -38,7 +38,7 @@ use std::sync::Arc;
 use conway::config::schema::{
     AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
     ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig, TuiSection,
+    ToolsConfig,
 };
 use conway::{Conway, ConwayBuilder, EntryOutcome, RoutingReason, SessionSpec};
 use conway_core::agent::{PermissionDecision, ResultStatus};
@@ -124,7 +124,6 @@ fn base_config(
             metadata_path,
             probe_on_startup: false,
         },
-        tui: TuiSection::default(),
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),

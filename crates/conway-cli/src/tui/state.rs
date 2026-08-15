@@ -26,10 +26,11 @@ use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use conway::{
-    config::schema::StatusLineConfig, AgentId, AgentIntent, AgentResult, Envelope, Event, LogSeq,
-    PermissionMode, ResultStatus, SegmentId, SubagentMode, Usage,
+    AgentId, AgentIntent, AgentResult, Envelope, Event, LogSeq, PermissionMode, ResultStatus,
+    SegmentId, SubagentMode, Usage,
 };
 
+use super::config::StatusLineConfig;
 use super::gate::PendingPrompt;
 
 mod agent_panel;
@@ -496,7 +497,7 @@ pub struct AppState {
     /// this; `None` means "do not render the cwd field".
     pub cwd_display: Option<String>,
     /// T3: the resolved `[tui.status_line]` config (ordered field names +
-    /// visibility). Set at `App::new` from `conway.config().tui.status_line`;
+    /// visibility). Set at `App::new` from `crate::tui::config::load`;
     /// `AppState::new` defaults to the Lean line. The status-line renderer
     /// reads this to decide which fields to render and in what order.
     pub status_line_config: StatusLineConfig,
@@ -507,7 +508,7 @@ pub struct AppState {
     /// while `Entry::Tool::expanded` is `false`; the full preview renders
     /// while `expanded` is `true`. The stored `preview` is NEVER truncated
     /// -- the cap is render-time only. Set at `App::new` from
-    /// `conway.config().tui.tool_preview_lines` via
+    /// `crate::tui::config::load`'s `tool_preview_lines` via
     /// [`clamp_tool_preview_lines`] (config is untrusted: clamped to `1..=200` with a
     /// fallback to the default of 3 on a missing/out-of-range/bad value,
     /// never a panic).

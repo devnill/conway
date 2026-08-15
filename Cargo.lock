@@ -520,6 +520,7 @@ dependencies = [
  "nix",
  "predicates",
  "ratatui",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

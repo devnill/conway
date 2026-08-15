@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
 use conway::{ConwayBuilder, SessionSpec};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
@@ -53,7 +53,6 @@ fn config_with_one_shot_preset() -> ConwayConfig {
         health: HealthSection::default(),
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
-        tui: TuiSection::default(),
         tools: ToolsConfig {
             builtin_plugins: Vec::new(),
         },

@@ -14,12 +14,15 @@ pub mod schema;
 pub mod trust;
 
 pub use discovery::discover;
-pub use merge::{apply_cli, load, load_ignoring_xdg, validate, CliOverrides, LoadOptions};
+pub use merge::{
+    apply_cli, load, load_ignoring_xdg, merged_document, validate, CliOverrides, LoadOptions,
+};
 pub use model_metadata::ModelMetadata;
 pub use schema::ConwayConfig;
 
 /// The result of [`load`]: the validated config plus any non-fatal
-/// warnings (currently only headroom-vs-context-window warnings).
+/// warnings (headroom-vs-context-window, and -- Stage 2a -- a `[tui]`
+/// section present but no longer understood by this schema).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoadOutcome {
     pub config: ConwayConfig,
@@ -43,6 +46,17 @@ pub enum WarningCode {
     /// smallest `max_context_tokens` reachable through its chain, per
     /// loaded model metadata.
     HeadroomExceedsContext,
+    /// A top-level `[tui]` section (or a `CONWAY_TUI__*` environment
+    /// variable) is present in the merged document, but `ConwayConfig` no
+    /// longer defines that key (Stage 2a moved `TuiSection` and its
+    /// presentation-shaped siblings to `conway-cli`, the one reader that
+    /// renders them). `load`/`load_ignoring_xdg` accept the rest of the
+    /// document and discard `[tui]` rather than hard-failing the whole
+    /// load on it -- the accepted-and-ignored-with-a-warning choice
+    /// recorded for this migration; see `merge::merged_document`'s own doc
+    /// for the escape hatch `conway-cli` uses to still read and act on
+    /// `[tui]` itself.
+    PresentationConfigIgnored,
 }
 
 #[cfg(test)]
