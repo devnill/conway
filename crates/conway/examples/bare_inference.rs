@@ -84,20 +84,28 @@ fn config_with_tools(tools: ToolsConfig) -> ConwayConfig {
         //
         // The crate's OWN shipped preset for exactly this situation,
         // `presets::default_permissions_for_one_shot` (allow-list mode, an
-        // empty `allowed_tools`), looked like the answer -- until it turned
-        // out to be a second, sharper blocker instead: `config::merge::
-        // validate`'s check 3 hard-rejects `mode = "allowlist"` paired with
-        // an EMPTY `allowed_tools` (`"requires a non-empty allowed_tools
-        // list"`), and `ConwayBuilder::build` always calls that validator
-        // (`config::merge::apply_cli`, its own step 1) even for a config
-        // built via `from_parts`. `default_permissions_for_one_shot` and
-        // `merge::validate` disagree about whether an empty `allowed_tools`
-        // is legal -- so the preset this crate ships specifically for a
-        // tool-free build cannot itself build, unconditionally, for any
-        // caller who uses it unmodified. Reported, not fixed here (see this
-        // item's own report); worked around below with `PermissionMode::
-        // Deny` instead, which needs no list and is exactly as inert given
-        // zero tools are ever registered.
+        // empty `allowed_tools`), could NOT be used when this example was
+        // first written: `config::merge::validate`'s check 3 rejected
+        // `mode = "allowlist"` paired with an EMPTY `allowed_tools`, and
+        // `ConwayBuilder::build` always re-validates (`apply_cli`, its own
+        // step 1) even for a config built via `from_parts` -- so the preset
+        // this crate ships specifically for a tool-free build could not
+        // itself build, for any caller who used it unmodified.
+        //
+        // That was a real defect and it is FIXED (board item
+        // `01M01EM4QSB204FZSANJB3XH78`). Check 3 now runs only in the strict
+        // `validate` entry point behind `config::load` -- where its job is
+        // catching a typo in a human-authored settings file, which is the
+        // only path its own test ever exercised -- and is skipped in
+        // `apply_cli`, where the config was either already validated on load
+        // or assembled deliberately in Rust. `presets::
+        // default_permissions_for_one_shot` builds now, and
+        // `tests/preset_one_shot_permissions_build.rs` pins that.
+        //
+        // This example keeps `PermissionMode::Deny` anyway, deliberately:
+        // with zero tools registered the two are exactly as inert, and
+        // `Deny` states the intent without depending on how an empty
+        // allow-list is interpreted. Either is correct here.
         permissions: PermissionsConfig {
             mode: PermissionMode::Deny,
             allowed_tools: Vec::new(),
