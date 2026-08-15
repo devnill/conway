@@ -399,7 +399,31 @@ rule for a forked/spawned child's contract (a call-site `result_contract`
 argument to `conway_fork`/`conway_spawn` wins over the spawning `AgentDef`'s
 own).
 
-### Built-in plugin selection (bash is opt-in)
+**`ForkSpec`/`SpawnSpec::result_contract` — both fork paths honor it.** A
+result contract on a forked/spawned child is not exclusive to root
+sessions: `ForkSpec::result_contract`/`SpawnSpec::result_contract` carry the
+identical `Option<schemars::schema::RootSchema>`, enforced by the same
+finish-boundary mechanism, for `SessionHandle::fork`/`::spawn` (a *live*
+agent forking/spawning another). `Conway::fork_from` — the *facade* path
+that branches a fresh, drivable session off an arbitrary point in a
+**persisted** session's history, rather than off a live agent's current
+head — honors `ForkSpec::result_contract` too:
+
+```rust
+let contract = conway::compile_output_schema(serde_json::json!({
+    "type": "object",
+    "required": ["answer"],
+    "properties": { "answer": { "type": "string" } }
+}))?;
+
+let mut spec = ForkSpec::new("continue from here");
+spec.result_contract = Some(contract);
+let child = conway.fork_from(parent_session, at_seq, spec).await?;
+```
+
+`Conway::resume` has no result-contract override surface at all — it takes
+only the `SessionId` to reattach, with no per-call spec of any kind to carry
+one on.
 
 `build()` no longer registers all four `conway-tools` built-ins
 unconditionally. `fs`, `subagent`, and `report` are still on by default;

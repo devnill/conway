@@ -398,12 +398,14 @@ async fn output_schema_malformed_schema_is_a_usage_error_with_zero_requests() {
     assert!(mock.requests().is_empty(), "no request must have been sent");
 }
 
-/// `--output-schema` combined with `--resume`/`--fork-from` is a usage
-/// error, not a silent drop: neither facade path accepts a caller-supplied
-/// result-contract override today (see `oneshot::resolve_session`'s own
-/// doc for why).
+/// `--output-schema` combined with `--resume` is STILL a usage error:
+/// `Conway::resume` takes only a bare `SessionId`, no facade parameter of
+/// any kind to carry a caller-supplied result contract through (see
+/// `oneshot::resolve_session`'s own doc, reconciliation #6, for why this is
+/// unaffected by board item `01M03FQDF33AZ8G258516EDWQD`, which lifted the
+/// IDENTICAL-looking restriction for `--fork-from` below).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn output_schema_is_a_usage_error_with_resume_and_fork_from() {
+async fn output_schema_is_a_usage_error_with_resume() {
     let mock = MockBackend::start(Script(vec![
         report_call(serde_json::json!({"answer": "42"})),
         plain_text_turn("done"),
@@ -429,18 +431,157 @@ async fn output_schema_is_a_usage_error_with_resume_and_fork_from() {
     );
     assert_eq!(resume_out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&resume_out.stderr).contains("--resume"));
+}
 
-    let fork_out = run_conway(
+// ---------------------------------------------------------------------
+// `--output-schema` + `--fork-from` (board item
+// `01M03FQDF33AZ8G258516EDWQD`): the restriction is LIFTED --
+// `ForkSpec::result_contract` is now honored by `Conway::fork_from`
+// (`conway_runtime::runtime::ResumeSpec` gained the field), so a schema
+// combined with `--fork-from` is no longer refused and is genuinely
+// enforced against the forked child's own structured result.
+// ---------------------------------------------------------------------
+
+/// Positive half: a `--fork-from` child whose `structured` result satisfies
+/// `--output-schema` completes normally -- proves the combination is no
+/// longer a usage error and that the schema reaches the CHILD's own turn
+/// (the parent run carries no schema at all).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn output_schema_with_fork_from_completes_when_the_child_conforms() {
+    let mock = MockBackend::start(Script(vec![
+        // Parent's own single turn: no `report` involved, no contract.
+        plain_text_turn("root turn"),
+        // Forked child's turn: satisfies the schema on the first attempt.
+        report_call(serde_json::json!({"answer": "42"})),
+        plain_text_turn("done"),
+    ]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+    let schema_path = write_schema(&fixture, "answer", &answer_schema());
+
+    let parent = conway::SessionId::new();
+    let first = run_conway(&["-p", "hi", "--session", &parent.to_string()], &fixture);
+    assert!(
+        first.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let (fork_out, value) = run_json(
         &[
             "-p",
-            "hi",
+            "branch this",
+            "--output-format",
+            "json",
             "--output-schema",
             &schema_path,
             "--fork-from",
-            &sid.to_string(),
+            &parent.to_string(),
+            "--allowed-tools",
+            "report",
         ],
         &fixture,
     );
-    assert_eq!(fork_out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&fork_out.stderr).contains("--fork-from"));
+
+    assert_eq!(
+        fork_out.status.code(),
+        Some(0),
+        "--output-schema + --fork-from must no longer be a usage error -- stderr: {}",
+        String::from_utf8_lossy(&fork_out.stderr)
+    );
+    let value = value.expect("json output");
+    assert_eq!(value["status"]["status"], "completed");
+    assert_eq!(
+        value["structured"],
+        serde_json::json!({"answer": "42"}),
+        "the forked child's conforming structured result must reach the caller unedited: {value}"
+    );
+}
+
+/// VERIFICATION ANCHOR (this item's own): a `--fork-from` child whose
+/// `structured` result does NOT satisfy `--output-schema` is rejected by
+/// name, exactly like the flag-free path's own
+/// `schema_rejected_after_one_corrective_retry_then_fails_named` -- proving
+/// the contract is genuinely ENFORCED on the facade fork path, not merely
+/// accepted without error. A conforming-output test alone (the one above)
+/// would already have passed before this item, with the field still
+/// silently ignored -- only a non-conforming child can prove enforcement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn output_schema_with_fork_from_rejects_a_nonconforming_child_by_name() {
+    let mock = MockBackend::start(Script(vec![
+        // Parent's own single turn.
+        plain_text_turn("root turn"),
+        // Forked child, first attempt: no `answer` key at all.
+        report_call(serde_json::json!({"wrong_field": true})),
+        plain_text_turn("let me try again"),
+        // Forked child, second attempt: still non-conforming.
+        report_call(serde_json::json!({"still_wrong": 1})),
+        plain_text_turn("still working"),
+    ]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+    let schema_path = write_schema(&fixture, "answer", &answer_schema());
+
+    let parent = conway::SessionId::new();
+    let first = run_conway(&["-p", "hi", "--session", &parent.to_string()], &fixture);
+    assert!(
+        first.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let (fork_out, value) = run_json(
+        &[
+            "-p",
+            "branch this",
+            "--output-format",
+            "json",
+            "--output-schema",
+            &schema_path,
+            "--fork-from",
+            &parent.to_string(),
+            "--allowed-tools",
+            "report",
+        ],
+        &fixture,
+    );
+
+    // Named failure, not success and not a silent pass-through: exit code 1
+    // (`ExitCode::AgentFailed` -- `exit.rs`'s `ResultStatus::Rejected` arm).
+    assert_eq!(
+        fork_out.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&fork_out.stderr)
+    );
+    let value = value.expect("json output");
+    assert_eq!(
+        value["status"]["status"], "rejected",
+        "a non-conforming forked child's structured result must terminate as Rejected, not \
+         Completed -- proving the contract is enforced, not merely accepted and dropped: {value}"
+    );
+    let missing = value["status"]["missing"]
+        .as_array()
+        .expect("Rejected carries a `missing` array");
+    let missing_text = missing
+        .iter()
+        .map(|v| v.as_str().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        missing_text.contains("answer"),
+        "the rejection reasons must name the missing `answer` property: {missing_text}"
+    );
+
+    // Parent's own turn, then exactly one corrective retry on the child:
+    // three requests total (root turn, child's first report+check pair
+    // collapses the "check" into the SAME accounting
+    // `schema_rejected_after_one_corrective_retry_then_fails_named` uses --
+    // one root request plus the child's four).
+    assert_eq!(
+        mock.requests().len(),
+        5,
+        "root turn (1) + child's report/check/retry-report/check (4) = 5, got: {:?}",
+        mock.requests()
+    );
 }

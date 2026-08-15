@@ -847,6 +847,120 @@ async fn fork_from_returns_a_drivable_child_whose_prompt_succeeds() {
     );
 }
 
+/// VERIFICATION ANCHOR (board item `01M03FQDF33AZ8G258516EDWQD`): a
+/// `ForkSpec::result_contract` set on the FACADE `fork_from` path is
+/// enforced, proven by a child that never satisfies it being rejected by
+/// name -- not by a conforming child round-tripping (that would already
+/// have passed before this item, with the field silently ignored: the
+/// child's own `AgentSpec::result_contract` would have been `None`
+/// regardless of what `spec.result_contract` carried).
+///
+/// The child's two scripted turns never call `report`, so its `structured`
+/// resolves to `null` (`conway-runtime`'s `validate_result_contract`'s own
+/// null-treatment) -- and the contract below requires an object with a
+/// `answer` property, which `null` can never satisfy. Mirrors
+/// `agent_defs.rs`'s `def_result_contract_is_enforced_end_to_end_retry_
+/// then_reject` (the identical "child never calls report" shape), but
+/// through `Conway::fork_from`'s `ForkSpec::result_contract` (a call-site
+/// contract) rather than an `AgentDef`'s own declared one.
+///
+/// **Before this item:** `crate::fork_child::fork_child` built a
+/// `conway_runtime::runtime::ResumeSpec` with no field to carry
+/// `spec.result_contract` through at all, so this same child would have
+/// completed with `ResultStatus::Completed` -- the contract silently never
+/// reaching the live `AgentSpec` `AgentLoop::run_inner` enforces it against.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fork_from_child_with_a_result_contract_it_cannot_satisfy_is_rejected_named() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(text_response("parent ack")),
+            // Child's first attempt: no `report` call at all, so
+            // `structured` resolves to `null` -- the contract below cannot
+            // match it, granting one corrective retry.
+            ScriptedTurn::Respond(text_response("child attempt 1")),
+            // Second attempt: still no `report` call, still `null` -- the
+            // retry is already spent, so this is terminal.
+            ScriptedTurn::Respond(text_response("child attempt 2")),
+        ])
+        .with_id(BackendId::new("fake")),
+    );
+    let conway = build_conway_with_backend(store.clone(), backend.clone());
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+    let turn = handle
+        .prompt("parent turn text")
+        .await
+        .expect("prompt should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), turn.result())
+        .await
+        .expect("result() must not hang")
+        .expect("result() should succeed");
+    let at = store.head(&handle.id()).await.expect("head should succeed");
+
+    let contract: schemars::schema::RootSchema = serde_json::from_value(serde_json::json!({
+        "type": "object",
+        "required": ["answer"],
+        "properties": {"answer": {"type": "string"}}
+    }))
+    .unwrap();
+    let mut spec = ForkSpec::new("picking up from here");
+    spec.result_contract = Some(contract);
+
+    let child = conway
+        .fork_from(handle.id(), at, spec)
+        .await
+        .expect("fork_from should succeed");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let child_turn = child
+        .prompt("child turn text")
+        .await
+        .expect("prompt on a fork_from child must succeed");
+    let result = tokio::time::timeout(Duration::from_secs(5), child_turn.result())
+        .await
+        .expect("result() must not hang")
+        .expect("result() should succeed");
+
+    match &result.status {
+        ResultStatus::Rejected { missing } => {
+            // `null` fails the schema's own `"type": "object"` check before
+            // `jsonschema` ever descends into `required` -- so the reported
+            // reason names the type mismatch, not the missing `answer`
+            // property specifically (`missing` is still non-empty and
+            // NAMED, which is the criterion: never a bare "it failed").
+            assert!(
+                !missing.is_empty(),
+                "the rejection must name what failed, not just that it failed"
+            );
+            assert!(
+                missing.iter().any(|m| m.contains("object")),
+                "expected the rejection to name the type mismatch against `null`, got: \
+                 {missing:?}"
+            );
+        }
+        other => panic!(
+            "expected the child's structured result to be rejected against the fork-site \
+             contract, got {other:?} -- if this is Completed, `ForkSpec::result_contract` was \
+             never applied on the facade fork path at all"
+        ),
+    }
+
+    // Exactly one corrective retry: three requests total (parent, child
+    // attempt 1, child attempt 2) -- never fewer (no retry granted) and
+    // never more (retried forever instead of terminating).
+    let calls = backend.calls();
+    assert_eq!(
+        calls.len(),
+        3,
+        "parent (1) + child's two attempts (2) = 3, calls: {calls:?}"
+    );
+}
+
 /// At fork depth >= 2: a grandchild forked from a fork child inherits
 /// the WHOLE ancestor chain (root's turn, then the intermediate child's own
 /// turn), not just its immediate parent's. Exercises `resume_root`'s

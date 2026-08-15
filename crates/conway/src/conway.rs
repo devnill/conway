@@ -995,6 +995,12 @@ impl Conway {
                 tools: None,
                 budget: self.default_budget(),
                 cwd: None,
+                // `resume` takes only a `SessionId` -- no per-call spec to
+                // source a contract from, so this is always `None`, exactly
+                // as before `ResumeSpec::result_contract` existed. See that
+                // field's own doc for the caller that CAN supply `Some`
+                // (`Conway::fork_from`, via `ForkSpec::result_contract`).
+                result_contract: None,
             })
             .await
             .map_err(|err| match err {
@@ -1096,13 +1102,30 @@ impl Conway {
     /// live agent task); this method only creates the child's session file.
     ///
     /// Reuses [`ForkSpec`] rather than a parallel type, per the
-    /// binding notes. `directive`/`result_contract` still have
-    /// no session-level counterpart -- `conway_core::log::SessionMeta`
-    /// carries none of them, and there is no live child turn here to attach
-    /// a `LogRecord::ForkDirective` to (the child session is *created* with
-    /// zero records, store-side, exactly as before) -- so only `agent_def`
-    /// and `role` are consulted for the persisted `SessionMeta`, as
-    /// overrides onto the parent's own values.
+    /// binding notes. `directive` still has no session-level counterpart --
+    /// `conway_core::log::SessionMeta` carries none, and there is no live
+    /// child turn here to attach a `LogRecord::ForkDirective` to (the child
+    /// session is *created* with zero records, store-side, exactly as
+    /// before) -- so only `agent_def` and `role` are consulted for the
+    /// persisted `SessionMeta`, as overrides onto the parent's own values.
+    ///
+    /// **`result_contract` IS honored (board item
+    /// `01M03FQDF33AZ8G258516EDWQD`, closing a real gap disclosed by an
+    /// earlier item):** unlike `directive`, a result contract is not
+    /// session-metadata at all -- it lives on the live agent's own
+    /// `AgentSpec` and is enforced at natural-completion time
+    /// (`conway_runtime::agent_loop::AgentLoop::run_inner`), the exact
+    /// mechanism [`SessionHandle::fork`](crate::SessionHandle::fork)'s live
+    /// path already exercises via `SubagentSpec::result_contract`. Before
+    /// this item, this method silently dropped `spec.result_contract`
+    /// instead: `crate::fork_child::fork_child` built a `conway_runtime::
+    /// runtime::ResumeSpec` with no field to carry it, so a caller that set
+    /// [`ForkSpec::result_contract`] and called `fork_from` got a child with
+    /// no contract, with nothing failing. `ResumeSpec::result_contract` (its
+    /// own doc has the gap's full history) now closes that: `spec.
+    /// result_contract` is passed straight through to `fork_child`'s
+    /// `ForkChildRequest`, which threads it into the `ResumeSpec` this
+    /// method's live registration below already builds.
     ///
     /// **Live registration:** after the store-side fork below, this
     /// method now also calls `Runtime::resume_root` over the freshly created
@@ -1193,6 +1216,7 @@ impl Conway {
                 role: spec.role,
                 tools: spec.tools,
                 budget: spec.budget,
+                result_contract: spec.result_contract,
             },
         )
         .await

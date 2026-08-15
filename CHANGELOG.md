@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ForkSpec::result_contract` is now honoured by `Conway::fork_from`**, not
+  only by `SessionHandle::fork`'s live path. A contract set on the facade
+  fork path previously reached no enforcement at all — silently, because
+  `fork_child` built a `ResumeSpec` with no field to carry it. `ResumeSpec`
+  now carries one and threads it into the *same* `AgentSpec::result_contract`
+  enforcement `RootSpec` and `SubagentSpec` already use, rather than
+  inventing a third mechanism. `--output-schema` composes with `--fork-from`
+  accordingly; `--resume` still refuses it, for the different and still-real
+  reason that `Conway::resume` takes only a `SessionId` and has no parameter
+  to carry one.
+- **`ProcessHookRunner` no longer ties reaping a hook's exit status to
+  draining its stdout/stderr in the same `tokio::join!`.** `unix::drive` ran
+  the stdin write, both output drains and `child.wait()` in one four-way
+  join; it now joins the three pipe futures and reaps sequentially, matching
+  the shape `conway-plugin-subprocess` already uses. Kept as a strictly safer
+  ordering that removes an unnecessary coupling — **not** on the strength of
+  a reproduced failure: an extensive controlled investigation could not
+  reproduce a hang or any latency difference between the two shapes on the
+  hardware available. This suite also gains its first
+  `#[tokio::test(flavor = "multi_thread")]` test, closing a real coverage gap
+  — every prior test ran current-thread, while `conway-cli`'s own
+  `#[tokio::main]` is multi-thread.
+
 ### Added
 
 - **A shipped `conway` binary can gain a tool without a rebuild: subprocess

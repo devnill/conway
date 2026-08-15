@@ -122,6 +122,7 @@ fn resume_spec(session: SessionId) -> ResumeSpec {
         tools: None,
         budget: Budget::default(),
         cwd: None,
+        result_contract: None,
     }
 }
 
