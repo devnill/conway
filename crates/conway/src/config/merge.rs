@@ -598,9 +598,9 @@ fn cli_overrides_to_value(cli: &CliOverrides) -> Value {
 ///
 /// This is the STRICT entry point (check 3 included, see that check's own
 /// doc for why): the right choice for a config a human might have typed by
-/// hand, notably [`load_impl`]'s own call site (behind [`load`]/
+/// hand, notably `load_impl`'s own call site (behind [`load`]/
 /// [`load_ignoring_xdg`]). [`apply_cli`] deliberately calls
-/// [`validate_impl`] with check 3 skipped instead of this function -- see
+/// `validate_impl` with check 3 skipped instead of this function -- see
 /// its own doc.
 ///
 /// Note: conway does not validate the *shape* of an API key. Whether a

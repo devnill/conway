@@ -9,14 +9,14 @@
 //! module notes' guidance to avoid a real-PTY test.
 //!
 //! **This item (board): split out of a single 3,492-line file.** `App`
-//! itself -- its fields, [`App::submit`] (the pre-`commands::parse`
+//! itself -- its fields, `App::submit` (the pre-`commands::parse`
 //! dispatch entry point) -- is the one thing every seam below shares, so it
-//! stays here, alongside [`SubmitOutcome`]. `App::session_spec`/`App::new`
-//! (construction) live in [`startup`]; the event loop itself, [`App::run`],
-//! lives in [`run`]; plugin-command execution in [`plugin_cmd`];
-//! focus-switching in [`focus`]; terminal-size-derived scrolling in
-//! [`viewport`]; `Ctrl-C`/quit handling in [`shutdown`]; the `/ask` modal's
-//! own async completion in [`ask`]. Each submodule's own methods are
+//! stays here, alongside `SubmitOutcome`. `App::session_spec`/`App::new`
+//! (construction) live in `startup`; the event loop itself, `App::run`,
+//! lives in `run`; plugin-command execution in `plugin_cmd`;
+//! focus-switching in `focus`; terminal-size-derived scrolling in
+//! `viewport`; `Ctrl-C`/quit handling in `shutdown`; the `/ask` modal's
+//! own async completion in `ask`. Each submodule's own methods are
 //! additional `impl App` blocks -- ordinary Rust, not a language feature --
 //! so this split is purely organizational: `App` is exactly the same type,
 //! with exactly the same fields and methods, as before it moved.
