@@ -5,7 +5,7 @@
 //!
 //! # Why the false ones are asserted as false
 //!
-//! Four of the nine invariants do not hold yet. Each of those guards asserts
+//! Three of the nine invariants do not hold yet. Each of those guards asserts
 //! **the current, wrong state** and names the stage that will flip it. That is
 //! deliberate and it is the part most likely to look like a mistake.
 //!
@@ -182,27 +182,29 @@ fn t2_core_io_is_confined_to_the_one_known_file() {
 
 // ------------------------------------------------------------------- T3 ----
 
-/// **T3: `conway-core` ships no test doubles. FALSE TODAY.**
+/// **T3: `conway-core` ships no test doubles. TRUE as of board item
+/// `01KZVYWNA24EYMPVW3NPGBW51M`.**
 ///
-/// `fakes.rs` is 969 lines of doubles inside the contract crate, behind
-/// `feature = "fakes"`. Stage 1b extracts them
-/// into `conway-testkit`.
+/// `fakes.rs` (979 lines of doubles) moved out of the contract crate into
+/// `conway-testkit`, a crate of its own -- and, unlike the old
+/// `[dev-dependencies]`-only `fakes` feature, one `conway`'s facade forwards
+/// to third parties (its own `testkit` feature). `conway-core`'s manifest no
+/// longer declares a `fakes` feature, and its `src/lib.rs` no longer names
+/// one.
 ///
-/// Pinned as: the doubles exist, are feature-gated, and there is exactly one
-/// such module. Fails if a second appears, or if the gate is removed -- which
-/// would put doubles in every consumer's production build.
+/// Pinned as: no `fakes`-named feature and no `fakes`-named module anywhere
+/// in `conway-core`. Fails if either reappears -- which would mean the
+/// doubles moved back into the contract crate, or a vestigial feature name
+/// survived the move.
 #[test]
-fn t3_core_doubles_are_the_one_known_gated_module() {
+fn t3_core_ships_no_test_doubles() {
     let lib = read("crates/conway-core/src/lib.rs");
     assert!(
-        lib.contains("#[cfg(feature = \"fakes\")]") && lib.contains("pub mod fakes;"),
-        "T3 CHANGED: `conway-core`'s doubles module is no longer declared as a \
-         `fakes`-gated `pub mod fakes;`.\n\
-         If Stage 1b landed and the module \
-         is gone, this guard has done its job: replace it with an assertion \
-         that no doubles module exists in the contract crate at all. If the \
-         GATE was removed but the module remains, that is a regression -- \
-         ungated doubles ship into every consumer's production build."
+        !lib.contains("fakes"),
+        "T3 BROKEN: `crates/conway-core/src/lib.rs` names `fakes` again -- \
+         the contract crate must not declare a test-doubles module or \
+         feature. Test doubles for `conway-core`'s ports belong in \
+         `conway-testkit`, not here."
     );
 
     let features = manifest("conway-core");
@@ -212,10 +214,10 @@ fn t3_core_doubles_are_the_one_known_gated_module() {
         .map(|t| t.contains_key("fakes"))
         .unwrap_or(false);
     assert!(
-        declared,
-        "T3 BROKEN: `conway-core` declares `pub mod fakes` behind \
-         `feature = \"fakes\"` but does not declare that feature. The module \
-         is unreachable and the gate is a fiction."
+        !declared,
+        "T3 BROKEN: `conway-core`'s manifest declares a `fakes` feature \
+         again -- it was removed when the doubles moved to `conway-testkit`; \
+         it must not come back."
     );
 }
 
@@ -309,28 +311,29 @@ fn t5_facade_gates_its_adapters_behind_features() {
 
 // ------------------------------------------------------------------- T6 ----
 
-/// **T6: the facade exposes no `conway-runtime` type publicly. FALSE TODAY.**
+/// **T6: the facade exposes no `conway-runtime` type publicly. HOLDS TODAY.**
 ///
-/// `crates/conway/src/lib.rs` re-exports `conway_runtime::permission::
-/// GrantScope` roughly forty lines below a module doc that used to deny doing
+/// `crates/conway/src/lib.rs` used to re-export `conway_runtime::permission::
+/// GrantScope` roughly forty lines below a module doc that denied doing
 /// exactly this -- one file contradicting itself. Stage 2b
-/// resolves it the tree's way: the re-export
-/// goes, because an audit resolves a mismatch in the code rather than the
-/// page.
+/// (board item `01KZVYZM7BZRQ54RRB8P814KV9`) closed it the tree's way: the
+/// re-export is gone, because an audit resolves a mismatch in the code
+/// rather than the page.
 ///
-/// **But not by deletion alone** (
-/// settled this;). The re-export has a
-/// real consumer: `conway-cli` names `conway::GrantScope` at eight sites to
-/// label and revoke a structured-allow rule, and cannot reach it another way
-/// (`no_forbidden_deps`). `conway::PermissionScope` is not a substitute --
-/// it carries no `AgentId`. Stage 2b must land a facade- or core-owned
-/// replacement and move those call sites in the same change;
-/// owns that half.
+/// The re-export had a real consumer -- `conway-cli` names `conway::
+/// GrantScope` at eight sites to label and revoke a structured-allow rule,
+/// and cannot reach it another way (`no_forbidden_deps`) -- so deletion
+/// alone would have broken the build. `conway_core::agent::GrantScope`
+/// (board item `01KZWRZ4JBAVCRCZ99BFZFF01K`) is the replacement: it carries
+/// the same `AgentId` the runtime's own `GrantScope` does, `conway::Conway`'s
+/// structured-allow methods convert to/from it at the facade boundary
+/// (`crates/conway-runtime/src/permission.rs`'s `From` impls), and all eight
+/// `conway-cli` sites moved onto it in the same change.
 ///
-/// Pinned as: exactly one such re-export, and it is that one. Fails on a
-/// second -- which would turn a single known contradiction into a pattern.
+/// Pinned as: empty. Fails if a `conway_runtime` re-export is reintroduced --
+/// which would turn a closed contradiction back into an open one.
 #[test]
-fn t6_facade_has_exactly_the_one_known_runtime_reexport() {
+fn t6_facade_re_exports_no_runtime_type() {
     let lib = read("crates/conway/src/lib.rs");
     let reexports: Vec<&str> = lib
         .lines()
@@ -339,15 +342,16 @@ fn t6_facade_has_exactly_the_one_known_runtime_reexport() {
         .collect();
     assert_eq!(
         reexports,
-        vec!["pub use conway_runtime::permission::GrantScope;"],
-        "T6 CHANGED: the facade's public re-exports of `conway_runtime` types \
-         are no longer exactly [GrantScope]; found {reexports:?}.\n\
-         If one was ADDED, that is a regression -- the module doc in this very \
-         file denies exposing runtime types, and every addition widens a \
-         contradiction Stage 2b is trying to close. If the list is now EMPTY \
-         because Stage 2b landed, this \
-         guard has done its job: assert emptiness and delete the \
-         forward-declaration label on the module doc."
+        Vec::<&str>::new(),
+        "T6 BROKEN: the facade publicly re-exports `conway_runtime` type(s) \
+         again; found {reexports:?}.\n\
+         The module doc in this very file denies exposing runtime types, and \
+         Stage 2b (board item `01KZVYZM7BZRQ54RRB8P814KV9`) closed the one \
+         known contradiction by deleting the `GrantScope` re-export and \
+         replacing it with `conway_core::agent::GrantScope`. Do not \
+         reintroduce a `conway-runtime` re-export here -- convert at the \
+         facade boundary instead, the way `Conway::active_structured_allow_rules` \
+         and `Conway::revoke_structured_allow_rule` do."
     );
 }
 
@@ -490,7 +494,7 @@ fn t8_router_authoring_exception_is_intact_and_deliberate() {
 /// modal or state-refreshing command is easiest to add as "just one more
 /// special case" beside wherever the last one landed.
 #[test]
-fn t9_tui_has_exactly_the_four_known_parser_bypasses() {
+fn t9_tui_has_no_parser_bypasses() {
     let app = read("crates/conway-cli/src/tui/app.rs");
     let bypasses: BTreeSet<String> = app
         .lines()

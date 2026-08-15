@@ -62,8 +62,9 @@ briefly blocks that task; if you care, run it via `spawn_blocking` instead.
 ## A minimal example
 
 `crates/conway/examples/minimal_session.rs` is a complete, runnable example
-— it imports only facade re-exports plus `conway_core::fakes` (a dev-only
-test double), so it needs no config file, no credentials, and no network:
+— it imports only facade re-exports plus `conway_testkit` (a dev-only
+test double crate), so it needs no config file, no credentials, and no
+network:
 
 ```console
 cargo run -p conway --example minimal_session
@@ -659,9 +660,16 @@ up: `schemars` (`ToolSpec::schema`) and `serde_json`
 
 `ToolCtx`'s remaining fields (`chdir`, `events`, `subagents`)
 are handles you call methods on but never need to name — their types are
-deliberately not exported, and constructing a `ToolCtx` by hand is
-test-fixture work, served by `conway-core`'s `fakes` feature inside this
-workspace rather than by the authoring surface. (`cancel` is the
+deliberately not exported. Constructing a `ToolCtx` by hand is test-fixture
+work: the port doubles those handles wrap (`FakeSubagentHost`,
+`CollectingEventSink`, ...) live in `conway-testkit` and are reachable by a
+third party through this crate's own `testkit` feature
+(`conway::testkit::{FakeSubagentHost, CollectingEventSink}` once enabled) —
+not dev-only inside this workspace the way they used to be. The handle
+TYPES themselves (`SubagentHandle`, `EventSinkHandle`) are a separate gap,
+still open: `conway::plugin` does not export them, so a full `ToolCtx`
+cannot yet be assembled through the facade alone (board item
+01KZQ3AZWG3NNJNZEJFX21MDJT). (`cancel` is the
 exception: its `CancellationToken` type IS exported, so a helper can take
 `&CancellationToken`.)
 

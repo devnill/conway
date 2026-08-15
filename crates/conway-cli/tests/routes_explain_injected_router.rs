@@ -14,7 +14,7 @@
 //! calls `conway_cli::commands::routes::run` directly against a `Conway`
 //! built with `ConwayBuilder::from_parts(..).with_router(..)`, reusing the
 //! same fake-port pattern `conway_cli::tui::app`'s own in-crate test module
-//! already uses (`conway_core::fakes::{FakeBackend, FakeGate, FakeRouter,
+//! already uses (`conway_testkit::{FakeBackend, FakeGate, FakeRouter,
 //! FakeStore}`).
 
 use std::collections::BTreeMap;
@@ -29,8 +29,8 @@ use conway::{Conway, ConwayBuilder, PermissionGate};
 use conway_cli::commands::routes::{run, RoutesAction, RoutesArgs};
 use conway_cli::exit::ExitCode;
 use conway_core::agent::PermissionDecision;
-use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, ModelId};
+use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
 /// A `ConwayConfig` declaring `role` (with a real chain entry) plus
 /// `"empty-chain"` (present in `[roles]` but with an EMPTY chain), otherwise

@@ -84,13 +84,13 @@ use conway_core::content::{
     TruncationPolicy, Usage,
 };
 use conway_core::error::{BackendError, ToolError};
-use conway_core::fakes::{FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
     Backend, BoxStream, GenerateRequest, GenerateResponse, PermissionGate, PluginManifest,
     StreamChunk, ToolCtx, ToolOutput,
 };
+use conway_testkit::{FakeGate, FakeRouter, FakeStore};
 use futures_core::Stream;
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {

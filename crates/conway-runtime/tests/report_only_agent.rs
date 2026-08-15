@@ -30,9 +30,6 @@ use conway_core::capabilities::{
 use conway_core::content::{
     ContentBlock, PermissionClass, StopReason, ToolCall, ToolCategory, ToolSpec, Usage,
 };
-use conway_core::fakes::{
-    FakeGate, FakeRouter, FakeStore, FakeSubagentHost, ScriptedBackend, ScriptedTurn,
-};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
 use conway_core::log::{LogRecord, SessionMeta};
 use conway_core::ports::{
@@ -48,6 +45,9 @@ use conway_runtime::permission::PermissionBroker;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_runtime::tools::PluginRegistry;
 use conway_runtime::tree::{AgentNode, AgentTree};
+use conway_testkit::{
+    FakeGate, FakeRouter, FakeStore, FakeSubagentHost, ScriptedBackend, ScriptedTurn,
+};
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------
@@ -243,7 +243,7 @@ fn build_loop(
     result_contract: Option<schemars::schema::RootSchema>,
 ) -> AgentLoop {
     let bus = EventBus::new(1024);
-    let health: Arc<dyn HealthRegistry> = Arc::new(conway_core::fakes::FakeHealth::new());
+    let health: Arc<dyn HealthRegistry> = Arc::new(conway_testkit::FakeHealth::new());
     let mut backends: std::collections::HashMap<BackendId, Arc<dyn Backend>> =
         std::collections::HashMap::new();
     backends.insert(backend.id(), backend);
@@ -686,7 +686,7 @@ fn runtime_with_plugins(
     let runtime = Runtime::new(RuntimeDeps {
         store: store.clone(),
         router: route(),
-        health: Arc::new(conway_core::fakes::FakeHealth::new()),
+        health: Arc::new(conway_testkit::FakeHealth::new()),
         backends,
         plugins,
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),

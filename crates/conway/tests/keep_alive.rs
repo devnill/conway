@@ -42,9 +42,9 @@ use conway::{Conway, ConwayBuilder, Plugin, SessionSpec, Tool};
 use conway_core::agent::{Budget, PermissionDecision, ResultStatus};
 use conway_core::content::ContentBlock;
 use conway_core::event::Event;
-use conway_core::fakes::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
+use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 
 /// How long a test sleeps after `new_session` to give an idle keep_alive
 /// session's agent loop a moment to actually reach its idle-await gate

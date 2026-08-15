@@ -49,11 +49,11 @@ use conway::{
 };
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
-use conway_core::fakes::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::permission_mode::PermissionMode;
 use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
+use conway_testkit::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use tempfile::TempDir;
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
@@ -144,7 +144,7 @@ fn base_config() -> ConwayConfig {
 
 /// Records every `PermissionRequest` it receives and always answers with a
 /// fixed `decision` -- see `permission_pattern_seam.rs`'s identical fixture
-/// for why this (rather than `conway_core::fakes::FakeGate` alone) is the
+/// for why this (rather than `conway_testkit::FakeGate` alone) is the
 /// right shape: a test that expects the gate to be BYPASSED needs to see
 /// zero requests, and a test that expects it to be REACHED needs to see the
 /// decision actually take effect (never executed for real if it denies).

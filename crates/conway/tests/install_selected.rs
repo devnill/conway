@@ -34,9 +34,9 @@ use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::content::{StopReason, Usage};
-use conway_core::fakes::{FakeBackend, FakeGate, FakeHealth, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, RoleAlias};
 use conway_core::ports::GenerateResponse;
+use conway_testkit::{FakeBackend, FakeGate, FakeHealth, FakeRouter, FakeStore};
 
 fn caps() -> Capabilities {
     Capabilities {

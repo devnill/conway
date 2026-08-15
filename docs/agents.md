@@ -22,6 +22,19 @@ forked at the same point share an identical prefix, and because it's a
 literal byte-prefix, a backend that does prompt-caching reuses it — the
 economics get better with more forking, not worse.
 
+**"The same point" means the same assistant turn.** N sibling forks
+requested as N tool calls in ONE reply all read the parent's transcript
+before any of them is dispatched, so they open with byte-identical bytes and
+a caching backend serves N-1 of them from cache. Fork once, wait for that
+child to finish or otherwise let the reply close, then fork again in a
+LATER reply, and the second fork reads a transcript that has moved on in
+the meantime — at minimum by the first fork's own tool result, often more —
+so it no longer shares a cache-eligible prefix with the first. Same
+children, same intent, a materially different bill, decided entirely by
+whether the forks were batched into one reply. To get the fan-out
+discount, request every sibling fork together, in one reply — see
+`await`'s own description below for the tool-call shape this takes.
+
 **There is no partial-inheritance knob, and there will not be one.** You
 cannot ask a child to inherit "some" of the parent's context. If you want a
 child that knows about part of what its parent knows, the answer is to
@@ -121,7 +134,21 @@ settles it before any argument is filled in, and it keeps each tool's
 for `conway_spawn`). Both take the same remaining arguments: `prompt`, and
 optional `agent_def`/`role`/`budget`/`tools`/`result_contract`, plus `await`
 (default `true`) to block for the child's result or return its `agent_id`
-immediately for fan-out. `conway_ask` is a narrower, fork-only shorthand —
+immediately for fan-out.
+
+**For `conway_fork`, the fan-out discount above ("the same point means the
+same assistant turn") only materializes if every sibling fork is issued as
+its own tool call within ONE reply** — `await: false` on each is how a
+model returns immediately instead of blocking on each child in turn, but
+`await` alone does not batch anything: three `await: false` forks spread
+across three separate replies still pay full price each, exactly like
+three blocking ones would. `await` only controls whether THIS call blocks;
+whether siblings share a cached prefix is controlled entirely by whether
+they were requested together. `conway_spawn` has no equivalent caveat: a
+spawned child inherits none of the caller's transcript by design, so its
+request never carries anything for a turn boundary to affect either way.
+
+`conway_ask` is a narrower, fork-only shorthand —
 no `agent_def`/`role` argument — that returns the child's full reply text
 rather than a structured `AgentResult`, meant for drafting or curating
 context out-of-band without spending the caller's own window on the

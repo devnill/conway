@@ -76,7 +76,7 @@ pub fn isolated_env() -> HashMap<String, String> {
 /// construction — and, therefore, after `ConwayBuilder::build()` has
 /// already taken its one-time `CapabilityIndex::from_backends` snapshot.
 /// Every other in-tree `Backend` double bakes its capabilities in at
-/// construction (`conway_core::fakes::FakeBackend::with_capabilities`,
+/// construction (`conway_testkit::FakeBackend::with_capabilities`,
 /// `ScriptedBackend::with_capabilities`), which cannot express the one
 /// divergence the architecture still permits: the router's index is a
 /// point-in-time read (`builder.rs` step 5), while
@@ -141,9 +141,9 @@ impl Backend for MutableCapsBackend {
 }
 
 /// A minimal, `Send`, already-ready `Stream` over a fixed `Vec<StreamChunk>`
-/// — `conway-core`'s own `VecStream` (in `fakes.rs`) is private to that
-/// module, and this crate has no dependency on `futures`/`futures-util` to
-/// reach for a combinator instead.
+/// — `conway-testkit`'s own `VecStream` is private to that crate, and this
+/// crate has no dependency on `futures`/`futures-util` to reach for a
+/// combinator instead.
 fn futures_util_free_stream(
     items: Vec<StreamChunk>,
 ) -> impl futures_core::Stream<Item = Result<StreamChunk, BackendError>> + Send + 'static {

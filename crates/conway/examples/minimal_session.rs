@@ -8,7 +8,7 @@
 //!
 //! works with no config file, no credentials, and no network. It doubles as
 //! a smoke test of the public `conway` facade: it imports only re-exports
-//! from the `conway` crate, plus `conway_core::fakes` (a dev-only test
+//! from the `conway` crate, plus `conway_testkit` (a dev-only test
 //! helper) for the stand-in ports -- no internal crates.
 //!
 //! For a REAL session, drop the fake wiring and start from
@@ -27,9 +27,9 @@ use conway::config::schema::{
 };
 use conway::{ConwayBuilder, SessionSpec};
 use conway_core::agent::PermissionDecision;
-use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::SessionStore;
+use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
 /// A minimal config: one role, no configured backends. The fake router
 /// below supplies the route directly, so no backend table is needed here --

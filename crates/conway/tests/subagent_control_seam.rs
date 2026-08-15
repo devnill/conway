@@ -42,12 +42,12 @@ use conway_core::capabilities::{
 };
 use conway_core::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
 use conway_core::error::BackendError;
-use conway_core::fakes::{FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
     Backend, BoxStream, GenerateRequest, GenerateResponse, PermissionGate, StreamChunk,
 };
+use conway_testkit::{FakeGate, FakeRouter, FakeStore};
 use futures_core::Stream;
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
@@ -111,9 +111,9 @@ fn base_config() -> ConwayConfig {
 }
 
 /// A `futures_core::Stream` over a fixed, already-computed sequence of
-/// items -- copied from `conway_core::fakes`' identical private helper
-/// (`VecStream`), since this crate has no `fakes`-feature dependency on
-/// that module and `ScriptedBackend`'s own script is prepared upfront
+/// items -- copied from `conway_testkit`'s identical private helper
+/// (`VecStream`), which that crate does not export, and
+/// `ScriptedBackend`'s own script is prepared upfront
 /// (see the module doc for why that does not fit this file's need).
 struct VecStream<T> {
     items: VecDeque<T>,
@@ -130,7 +130,7 @@ impl<T: Unpin> Stream for VecStream<T> {
 }
 
 /// A backend whose script is a queue of CLOSURES, each evaluated lazily at
-/// the moment it is popped -- unlike `conway_core::fakes::ScriptedBackend`
+/// the moment it is popped -- unlike `conway_testkit::ScriptedBackend`
 /// (a fixed `Vec<GenerateResponse>` prepared entirely upfront), this lets a
 /// later turn's response reference state (here: a sibling's real,
 /// runtime-assigned `AgentId`) that only becomes known partway through the

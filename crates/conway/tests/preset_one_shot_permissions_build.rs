@@ -13,7 +13,7 @@
 //! actually build -- nothing there drives it through `ConwayBuilder::build`.
 //! This test instead builds a real `Conway` from the preset, unmodified, and
 //! drives one turn through it end to end, fully offline against
-//! `conway_core::fakes` (no API key, no live provider) -- the same shape as
+//! `conway_testkit` (no API key, no live provider) -- the same shape as
 //! `examples/bare_inference.rs`.
 
 use std::collections::BTreeMap;
@@ -24,9 +24,9 @@ use conway::config::schema::{
     PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
 use conway::{ConwayBuilder, SessionSpec};
-use conway_core::fakes::{FakeBackend, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::SessionStore;
+use conway_testkit::{FakeBackend, FakeRouter, FakeStore};
 
 /// The one-role, no-backend-table, no-tools config shape `bare_inference.rs`
 /// also uses, except `permissions` here is the crate's OWN shipped preset,

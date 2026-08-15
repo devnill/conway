@@ -48,8 +48,9 @@
 //!
 //! `ThirdPartyBackend::generate`/`::stream`/`::probe` perform no I/O of any
 //! kind -- there is no real dialect to reach, so this crate does not
-//! borrow `conway-core`'s `fakes` feature (unreachable here regardless: no
-//! `conway-core` dependency exists to enable it on) or `wiremock`. It
+//! borrow `conway-testkit`'s doubles (reachable only via `conway`'s own
+//! `testkit` feature, which this crate does not enable -- there is no
+//! `conway-testkit` dependency here at all) or `wiremock`. It
 //! writes its own trivial, hand-rolled responses, which is itself part of
 //! the proof that the public surface is sufficient: nothing in
 //! `conway::backend` was needed to make that decision for it.
@@ -117,7 +118,7 @@ pub const GREETING_KEY: &str = "greeting";
 /// hand-written -- exactly the shape a real stranger's own adapter for an
 /// in-process or otherwise network-free dialect would take, and the shape
 /// this crate's own module doc explains it deliberately is not borrowing
-/// from `conway-core::fakes` for.
+/// from `conway-testkit` for.
 pub struct ThirdPartyBackend {
     id: BackendId,
     max_context_tokens: u32,

@@ -464,8 +464,7 @@ out structurally.
 **Everything goes through `commands::parse`.** `SlashCommand::Plugin { full_name,
 args }` is an ordinary variant of the same closed enum every built-in command
 is (there is no second, parser-bypassing surface for this point — see
-`crates/conway/tests/architecture_invariants.rs`'s `t9_tui_has_exactly_
-the_four_known_parser_bypasses`, unaffected by this point). `parse` recognizes
+`crates/conway/tests/architecture_invariants.rs`'s `t9_tui_has_no_parser_bypasses`, unaffected by this point). `parse` recognizes
 only the SHAPE of a plugin command (a command word containing the namespace
 separator) — staying pure and state-free, consistent with every other arm —
 and defers resolving whether that name is actually installed to `execute`,

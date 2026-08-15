@@ -48,12 +48,12 @@ use conway_core::content::{
     ContentBlock, PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy,
 };
 use conway_core::error::ToolError;
-use conway_core::fakes::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, SeqRange, ToolName};
 use conway_core::log::{LogRecord, SessionFilter};
 use conway_core::ports::{
     Backend, GenerateResponse, PluginManifest, SessionStore, ToolCtx, ToolOutput,
 };
+use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {

@@ -4,7 +4,7 @@
 //! post-restart reports back, and `Runtime::context_report` continues to
 //! serve the live/last-turn value it always has.
 //!
-//! Built entirely from `conway-core`'s fakes plus local scripted doubles
+//! Built entirely from `conway-testkit`'s fakes plus local scripted doubles
 //! (mirrors `runtime_api.rs`'s and `subagent_fork_spawn.rs`'s own practice)
 //! -- this file does not depend on `conway-plugin-backends` or `conway-tools`.
 
@@ -23,9 +23,6 @@ use conway_core::content::{
 };
 use conway_core::error::{RuntimeError, ToolError};
 use conway_core::event::Event;
-use conway_core::fakes::{
-    FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SeqRange, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
@@ -35,6 +32,7 @@ use conway_core::ports::{
 use conway_core::provenance::Provenance;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
+use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use futures::StreamExt;
 
 // ---------------------------------------------------------------------

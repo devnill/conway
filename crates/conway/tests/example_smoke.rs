@@ -19,9 +19,9 @@ use conway::config::schema::{
 };
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::PermissionDecision;
-use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::SessionStore;
+use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
 const T: Duration = Duration::from_secs(5);
 

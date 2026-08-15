@@ -35,10 +35,10 @@ use conway::config::schema::{
 use conway::{Conway, ConwayBuilder, HookRuleView, PluginSelection};
 use conway_core::agent::{PermissionDecision, PermissionRequest};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
-use conway_core::fakes::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
+use conway_testkit::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use tempfile::TempDir;
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {

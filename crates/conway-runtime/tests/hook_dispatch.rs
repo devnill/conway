@@ -35,7 +35,6 @@ use conway_core::agent::{Budget, PermissionDecision, SubagentSpec};
 use conway_core::capabilities::HeadroomPolicy;
 use conway_core::content::{ContentBlock, PermissionClass, ToolCall, ToolCategory, ToolSpec};
 use conway_core::error::{HookFailure, ToolError};
-use conway_core::fakes::{FakeGate, FakeHealth, FakeRouter, FakeStore, FakeSubagentHost};
 use conway_core::hook::{HookAnswer, HookInvocation};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
 use conway_core::ports::{
@@ -49,6 +48,7 @@ use conway_runtime::hook_dispatch::{
 use conway_runtime::permission::{AgentRoot, PermissionBroker};
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_runtime::tools::{PluginRegistry, ToolBatchCtx, ToolRunner};
+use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, FakeSubagentHost};
 use tokio_util::sync::CancellationToken as TokioCancellationToken;
 
 /// A `HookRunner` that records every event name it saw and then FAILS.
@@ -345,7 +345,7 @@ fn build_runtime_with_store() -> (Arc<Runtime>, Arc<FakeStore>) {
     let fake = Arc::new(FakeStore::new());
     let store: Arc<dyn SessionStore> = fake.clone();
     let backend = Arc::new(
-        conway_core::fakes::ScriptedBackend::new(Default::default()).with_id(BackendId::new("b")),
+        conway_testkit::ScriptedBackend::new(Default::default()).with_id(BackendId::new("b")),
     );
     let model = ModelRef {
         backend: backend.id(),

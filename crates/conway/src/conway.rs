@@ -713,7 +713,7 @@ impl Conway {
     /// active allow [`conway_core::permission_pattern::Rule`] the flat form
     /// cannot express (`paths_under`, `categories`, `category_in`, multiple
     /// tools), paired with its origin and the
-    /// [`conway_runtime::permission::GrantScope`] it was granted at --
+    /// [`crate::GrantScope`] it was granted at --
     /// mirroring [`Self::active_permission_patterns`], which drops these
     /// rules by construction (`Rule::to_pattern_rule` returns `None` for
     /// them). The scope rides along because an allow rule is the one rule
@@ -722,14 +722,26 @@ impl Conway {
     /// `(rule, origin)` pair is also exactly the identity
     /// [`Self::revoke_structured_allow_rule`] addresses, so a row built
     /// from this list can name itself back for revocation.
+    ///
+    /// Returns [`conway_core::agent::GrantScope`], not
+    /// `conway_runtime::permission::GrantScope` -- the facade's own module
+    /// doc denies exposing `conway-runtime` types publicly (Stage 2b,
+    /// board item `01KZVYZM7BZRQ54RRB8P814KV9`), so the runtime's internal
+    /// scope is converted here, at the boundary, via the `From` impl in
+    /// `crates/conway-runtime/src/permission.rs`.
     pub fn active_structured_allow_rules(
         &self,
     ) -> Vec<(
         conway_core::permission_pattern::Rule,
         conway_core::permission_pattern::PatternOrigin,
-        conway_runtime::permission::GrantScope,
+        conway_core::agent::GrantScope,
     )> {
-        self.rt.permission_broker().active_structured_allow_rules()
+        self.rt
+            .permission_broker()
+            .active_structured_allow_rules()
+            .into_iter()
+            .map(|(rule, origin, scope)| (rule, origin, scope.into()))
+            .collect()
     }
 
     /// The structured half of the prompt review list: every active prompt
@@ -999,17 +1011,24 @@ impl Conway {
     /// rewritten TRUSTED PROJECT file is re-trusted for its new, strictly
     /// narrower bytes, the same explicit-action narrowing exception D4
     /// §5/§9 admits for the flat path.
+    ///
+    /// Takes [`conway_core::agent::GrantScope`], not
+    /// `conway_runtime::permission::GrantScope` -- see
+    /// [`Self::active_structured_allow_rules`]'s doc for why; converted
+    /// back to the runtime's own type here, at the boundary, before
+    /// addressing `PermissionBroker::revoke_pattern_rule`.
     pub fn revoke_structured_allow_rule(
         &self,
         env: &std::collections::HashMap<String, String>,
         rule: &conway_core::permission_pattern::Rule,
         origin: &conway_core::permission_pattern::PatternOrigin,
-        scope: &conway_runtime::permission::GrantScope,
+        scope: &conway_core::agent::GrantScope,
     ) -> RevokeOutcome {
+        let rt_scope: conway_runtime::permission::GrantScope = (*scope).into();
         if !self
             .rt
             .permission_broker()
-            .revoke_pattern_rule(rule, origin, scope)
+            .revoke_pattern_rule(rule, origin, &rt_scope)
         {
             return RevokeOutcome::NotFound;
         }
@@ -1850,7 +1869,7 @@ impl Conway {
     /// **Defense-in-depth bounds check (disclosed):** `SessionStore::fork`'s
     /// own committed implementation (`conway-session`'s `fork_impl`) already
     /// rejects `at > head` with `StoreError::SeqOutOfRange{ requested, head
-    /// }` -- but `conway_core::fakes::FakeStore` (a `SessionStore` impl this
+    /// }` -- but `conway_testkit::FakeStore` (a `SessionStore` impl this
     /// crate depends on but does not own; out of this item's file scope to
     /// change) does not enforce that bound. Rather than let this method's
     /// behavior depend on which `SessionStore` backs a given `Conway`, the

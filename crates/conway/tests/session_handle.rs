@@ -12,11 +12,11 @@ use conway::config::schema::{
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::{Budget, PermissionDecision, ResultStatus};
 use conway_core::event::Event;
-use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{AgentId, BackendId, LogSeq, SessionId};
 use conway_core::log::{LogRecord, SessionMeta};
 use conway_core::ports::SessionStore;
 use conway_core::provenance::Provenance;
+use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 use futures_core::Stream as _;
 
 fn assert_clone_send_sync<T: Clone + Send + Sync>() {}

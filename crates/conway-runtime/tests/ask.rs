@@ -5,7 +5,7 @@
 //! `SessionMeta` (and thus `AgentSpawned`/`AgentFinished`).
 //!
 //! These tests deliberately use a small local backend (`AskBackend`) rather
-//! than `conway_core::fakes::ScriptedBackend` so each turn's response can
+//! than `conway_testkit::ScriptedBackend` so each turn's response can
 //! carry MULTIPLE `ContentBlock::Text` blocks -- which `run_stream`
 //! (`attempt.rs`) emits as one `Event::TextDelta` per block -- AND a
 //! per-turn pre-response delay, which lets the sibling-finish test inject a
@@ -24,7 +24,6 @@ use conway_core::capabilities::{HeadroomPolicy, ProbeReport};
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::error::BackendError;
 use conway_core::event::Event;
-use conway_core::fakes::{FakeGate, FakeHealth, FakeRouter};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{
     Backend, BoxStream, GenerateRequest, GenerateResponse, Router, SessionStore, StreamChunk,
@@ -33,6 +32,7 @@ use conway_core::ports::{
 use conway_core::provenance::Provenance;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
+use conway_testkit::{FakeGate, FakeHealth, FakeRouter};
 use futures::{stream, StreamExt};
 use tokio::time::sleep;
 
@@ -97,7 +97,7 @@ impl AskTurn {
 /// turn sleeps for its configured `delay` before producing its response, so a
 /// test can stage events from multiple agents in a deterministic order. The
 /// stream path emits one `StreamChunk::TextDelta` per `ContentBlock::Text`
-/// (then `StreamChunk::Done`), exactly mirroring `conway_core::fakes`'
+/// (then `StreamChunk::Done`), exactly mirroring `conway_testkit`'
 /// `decompose_to_chunks` -- so `run_stream` (`attempt.rs`) emits one
 /// `Event::TextDelta` per text block, the shape `Runtime::ask`'s drain
 /// concatenates.
@@ -156,7 +156,7 @@ impl Backend for AskBackend {
     ) -> Result<BoxStream<'static, Result<StreamChunk, BackendError>>, BackendError> {
         let response = self.generate(req).await?;
         // One TextDelta per text block, then Done -- mirrors
-        // `conway_core::fakes::decompose_to_chunks` (private there).
+        // `conway_testkit::decompose_to_chunks` (private there).
         let mut chunks: Vec<Result<StreamChunk, BackendError>> = response
             .content
             .iter()
@@ -195,7 +195,7 @@ fn build_runtime_with_backend(backend: Arc<dyn Backend>, bus: Arc<EventBus>) -> 
     let router: Arc<dyn Router> = Arc::new(FakeRouter::single(model));
     let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
     backends.insert(backend.id(), backend);
-    let store: Arc<dyn SessionStore> = Arc::new(conway_core::fakes::FakeStore::new());
+    let store: Arc<dyn SessionStore> = Arc::new(conway_testkit::FakeStore::new());
 
     Runtime::new(RuntimeDeps {
         store,
@@ -635,7 +635,7 @@ fn build_runtime_with_backend_and_defs(
     let router: Arc<dyn Router> = Arc::new(FakeRouter::single(model));
     let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
     backends.insert(backend.id(), backend);
-    let store: Arc<dyn SessionStore> = Arc::new(conway_core::fakes::FakeStore::new());
+    let store: Arc<dyn SessionStore> = Arc::new(conway_testkit::FakeStore::new());
 
     Runtime::new(RuntimeDeps {
         store,

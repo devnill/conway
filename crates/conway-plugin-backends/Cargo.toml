@@ -52,9 +52,9 @@ schemars = { workspace = true }
 # supports (dev-dependencies are excluded from the normal build graph a
 # consumer of either crate ever compiles).
 conway = { path = "../conway" }
-# `conway_core::fakes::{FakeGate, FakeStore}` -- the credential-free fake
+# `conway_testkit::{FakeGate, FakeStore}` -- the credential-free fake
 # family `tests/builder_end_to_end.rs` uses for every port BESIDES the
-# backend under test (already a pinned workspace dependency via
-# `[dependencies]`'s own `conway-core` entry above; this adds the `fakes`
-# feature for test builds only, C-04).
-conway-core = { path = "../conway-core", features = ["fakes"] }
+# backend under test. `conway-core` itself is already a pinned dependency
+# via `[dependencies]` above, unconditionally -- this crate is the
+# `conway-testkit` edge only (C-04).
+conway-testkit = { path = "../conway-testkit" }

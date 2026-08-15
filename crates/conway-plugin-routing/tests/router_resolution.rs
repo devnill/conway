@@ -19,7 +19,7 @@
 //! see `mixed_headroom_and_capability_failure_stays_no_candidate` below for
 //! that discrimination's own dedicated coverage.
 //!
-//! Uses `conway_core::fakes::FakeHealth` rather than `BreakerRegistry` +
+//! Uses `conway_testkit::FakeHealth` rather than `BreakerRegistry` +
 //! `TestClock`: the amendment's notes suggest the latter, but `TestClock` is
 //! only public behind the `test-clock` feature (`#[cfg(any(test, feature =
 //! "test-clock"))]` in `breaker.rs`), which this crate does not enable for
@@ -38,12 +38,12 @@ use conway_core::capabilities::{
     ToolCallSupport,
 };
 use conway_core::error::RoutingError;
-use conway_core::fakes::FakeHealth;
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{HealthRegistry, Router};
 use conway_core::routing::{
     BreakerKind, BreakerState, HealthConfig, RouteRequest, RoutingConfig, RoutingReason,
 };
+use conway_testkit::FakeHealth;
 
 use conway_plugin_routing::{CapabilityIndex, DeclarativeRouter};
 

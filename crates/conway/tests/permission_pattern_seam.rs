@@ -37,9 +37,9 @@ use conway::config::schema::{
 use conway::{Conway, ConwayBuilder, PatternRule, PluginSelection, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::ContentBlock;
-use conway_core::fakes::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
+use conway_testkit::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {
@@ -104,7 +104,7 @@ fn base_config() -> ConwayConfig {
 }
 
 /// Records every `PermissionRequest` it receives and always answers with a
-/// fixed `decision`. Unlike `conway_core::fakes::FakeGate`, this combines
+/// fixed `decision`. Unlike `conway_testkit::FakeGate`, this combines
 /// recording with a non-`AllowOnce` decision -- needed here because a call
 /// this test EXPECTS to reach the gate (`git push --force`, a chained
 /// command) must never actually execute; `Deny` proves it reached the

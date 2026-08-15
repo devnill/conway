@@ -2,9 +2,9 @@
 //! ContextBuilder -> Router -> AttemptEngine -> ToolRunner -> SessionStore
 //! wiring, budgets, and terminal-result construction.
 //!
-//! Uses local scripted doubles throughout (`conway_core::fakes::FakeBackend`
+//! Uses local scripted doubles throughout (`conway_testkit::FakeBackend`
 //! has no per-id scripting support, and `ScriptedBackend::with_id` does not
-//! exist) rather than the shared `conway-core` fakes wherever per-call
+//! exist) rather than the shared `conway-testkit` fakes wherever per-call
 //! recording or ordering instrumentation is needed.
 
 use std::collections::{HashMap, VecDeque};
@@ -25,7 +25,6 @@ use conway_core::content::{
 };
 use conway_core::error::{BackendError, RoutingError, StoreError};
 use conway_core::event::Event;
-use conway_core::fakes::{FakeGate, FakeHealth, FakeStore, FakeSubagentHost};
 use conway_core::ids::{
     AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId, ToolName,
 };
@@ -46,6 +45,7 @@ use conway_runtime::events::EventBus;
 use conway_runtime::permission::PermissionBroker;
 use conway_runtime::tools::PluginRegistry;
 use conway_runtime::tree::{AgentNode, AgentTree};
+use conway_testkit::{FakeGate, FakeHealth, FakeStore, FakeSubagentHost};
 use futures::future::FutureExt;
 use futures::stream::{self, StreamExt};
 use tokio_util::sync::CancellationToken;
@@ -112,7 +112,7 @@ fn tool_call_response(call_id: &str, tool: &str, args: serde_json::Value) -> Gen
 // ---------------------------------------------------------------------
 // A local scripted `Backend` double that records every request and,
 // optionally, appends a marker to a shared ordering log on every call --
-// `conway_core::fakes::ScriptedBackend` records requests but has no id
+// `conway_testkit::ScriptedBackend` records requests but has no id
 // customization (`with_id` does not exist) and no ordering hook.
 // ---------------------------------------------------------------------
 

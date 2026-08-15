@@ -26,7 +26,6 @@ use conway_core::agent::{Budget, PermissionDecision, ResultStatus};
 use conway_core::capabilities::HeadroomPolicy;
 use conway_core::content::{ContentBlock, StopReason, ToolResult, Usage};
 use conway_core::event::Event;
-use conway_core::fakes::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
@@ -34,6 +33,7 @@ use conway_core::ports::{
 };
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime, RuntimeDeps};
+use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend};
 use futures::StreamExt;
 
 /// An ordinary, un-self-checking `ContextHook` -- see this file's own doc.
@@ -165,7 +165,7 @@ async fn a_bare_hook_registered_via_set_context_hook_still_cannot_ship_incoheren
     // of this half is just a real session with a real head record to
     // append after.
     let backend1 = Arc::new(ScriptedBackend::new(vec![
-        conway_core::fakes::ScriptedTurn::Respond(conway_core::ports::GenerateResponse {
+        conway_testkit::ScriptedTurn::Respond(conway_core::ports::GenerateResponse {
             content: vec![ContentBlock::Text {
                 text: "hi".to_string(),
             }],

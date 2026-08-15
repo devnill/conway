@@ -20,6 +20,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default wire version is unchanged (`2023-06-01`). See
   [`docs/providers.md`](docs/providers.md#wire-version-and-header-overrides).
 
+### Changed
+
+- **`conway_fork`'s `await` schema description now says what its own
+  fan-out claim depends on.** Sibling `conway_fork` calls only share a
+  provider prefix cache if they are issued as separate tool calls within
+  ONE reply — the property `PHILOSOPHY.md`'s "Working with the cache" and
+  this crate's own cache test (`fanout_prefix_sharing.rs`) already
+  establish. `await`'s description previously said only "`false` returns
+  the agent_id immediately for fan-out" and never that spreading forks
+  across separate replies forfeits the shared prefix entirely, even with
+  `await: false` on every one of them. No behavior changed: this is a
+  model-facing description fix — a declaration site was claiming less than
+  the behaviour it described — for a property that was already true and
+  already silent. `docs/agents.md` gains the same caveat, and a
+  new negative-case test (`crates/conway/tests/fanout_prefix_sharing.rs`)
+  proves the cross-turn case does NOT share what the same-turn case does,
+  alongside the existing positive-case test. `conway_spawn`'s identical
+  `await` wording is unchanged and does not need this caveat: a spawned
+  child inherits no transcript at all, so nothing about it is
+  turn-boundary-sensitive.
+
 ### Fixed
 
 - **`conway sessions` and `conway routes` no longer require a permission
@@ -126,6 +147,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   all four dimensions, which are turn-scoped and which are lifetime-scoped and
   why, the config block, and the fact that a child never inherits its parent's
   budget.
+
+### Added
+
+- **`conway-testkit`**, a new crate: test doubles for every `conway-core`
+  port trait (`FakeBackend`, `ScriptedBackend`, `FakeStore`, `FakeGate`,
+  `FakeRouter`, `FakeHealth`, `FakeSubagentHost`, `CollectingEventSink`),
+  moved out of `conway-core`'s old `fakes.rs`. `conway` gains a new
+  `testkit` feature (off by default) that forwards it, re-exported as
+  `conway::testkit` when enabled — a crate depending only on `conway` can
+  now reach `FakeSubagentHost`/`CollectingEventSink` and the rest, which it
+  could not before: the old `fakes` feature lived on `conway-core` and
+  `conway`'s facade enabled it only under `[dev-dependencies]`, so this
+  workspace's own tests reached ready-made doubles a third party had to
+  hand-implement `SubagentHost`/`EventSink` to get.
+
+### Removed
+
+- **`conway-core`'s `fakes` feature and `fakes.rs`.** Superseded by
+  `conway-testkit`, above. `crates/conway-core/tests/fakes_conformance.rs`
+  moved to `crates/conway-testkit/tests/fakes_conformance.rs` unchanged in
+  substance.
 
 ## [0.9.0] — 2026-08-13
 

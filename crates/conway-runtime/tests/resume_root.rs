@@ -2,7 +2,7 @@
 //! already-persisted session's agent as live, without `store.create`-ing a
 //! new session and without appending an initial prompt.
 //!
-//! Mirrors `runtime_api.rs`'s harness (built entirely from `conway-core`'s
+//! Mirrors `runtime_api.rs`'s harness (built entirely from `conway-testkit`'s
 //! fakes) but constructs a *second* `Runtime` sharing the *same* backing
 //! `Arc<dyn SessionStore>` as the first, to prove `resume_root` works across
 //! a fresh runtime instance -- the "process restart" shape the work item's
@@ -17,13 +17,11 @@ use conway_core::capabilities::HeadroomPolicy;
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::event::Event;
-use conway_core::fakes::{
-    FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::ports::{Backend, Router, SessionStore};
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime, RuntimeDeps};
+use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use futures::StreamExt;
 
 fn text_response(text: &str) -> conway_core::ports::GenerateResponse {

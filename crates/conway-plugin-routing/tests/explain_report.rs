@@ -17,12 +17,12 @@ use conway_core::capabilities::{
     ToolCallSupport,
 };
 use conway_core::error::RoutingError;
-use conway_core::fakes::FakeHealth;
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{HealthRegistry, Router};
 use conway_core::routing::{
     BreakerKind, BreakerState, HealthConfig, RouteRequest, RoutingConfig, RoutingReason,
 };
+use conway_testkit::FakeHealth;
 
 use conway_plugin_routing::{CapabilityIndex, DeclarativeRouter, EntryOutcome, RoutingExplain};
 

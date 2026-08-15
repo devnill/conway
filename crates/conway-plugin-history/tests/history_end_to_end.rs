@@ -37,8 +37,8 @@ use conway::config::schema::{
 use conway::plugin::{Command, CommandCtx, CommandOutcome, Plugin as _};
 use conway::{Conway, ConwayBuilder, LogSeq, PermissionGate};
 use conway_core::agent::PermissionDecision;
-use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, ModelId, RoleAlias};
+use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
 use conway_plugin_history::{HistoryPlugin, COMMAND_NAME, PLUGIN_ID};
 

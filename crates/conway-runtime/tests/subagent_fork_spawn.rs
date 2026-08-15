@@ -1,7 +1,7 @@
 //! Acceptance tests for `impl SubagentHost for Runtime` (//! architecture §4.6, §5.1, §5.2): fork/spawn, inherited context, and
 //! session forking.
 //!
-//! Built entirely from `conway-core`'s fakes plus a local `CountingStore`
+//! Built entirely from `conway-testkit`'s fakes plus a local `CountingStore`
 //! decorator (mirrors `runtime_api.rs`'s and `agent_loop_e2e.rs`'s own
 //! practice of small local test doubles) -- this file does not depend on
 //! `conway-plugin-backends` or `conway-tools`.
@@ -19,16 +19,13 @@ use conway_core::agent::{
     ToolSelector,
 };
 use conway_core::capabilities::{
-    Capabilities, CacheMode, HeadroomPolicy, ProbeReport, ReliabilityTier, RequiredCaps,
+    CacheMode, Capabilities, HeadroomPolicy, ProbeReport, ReliabilityTier, RequiredCaps,
     StructuredOutput, ToolCallSupport,
 };
 use conway_core::config::AgentDef;
 use conway_core::content::{ContentBlock, Role, SamplingParams, StopReason, Usage};
 use conway_core::error::{BackendError, RuntimeError, SubagentError, ToolError};
 use conway_core::event::Event;
-use conway_core::fakes::{
-    FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{ForkOrigin, SessionFilter, SessionMeta};
 use conway_core::ports::{
@@ -39,6 +36,7 @@ use conway_core::provenance::Provenance;
 use conway_core::routing::{HealthConfig, MinimalRouter, RoleConfig, RoutingConfig};
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime, RuntimeDeps};
+use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use futures::StreamExt;
 
 // ---------------------------------------------------------------------
@@ -3695,7 +3693,10 @@ fn build_runtime_with_panicking_reviewer(turns: usize) -> (Arc<Runtime>, Arc<Scr
 
     let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
     backends.insert(planner_backend.id(), planner_backend.clone());
-    backends.insert(panicking_backend.id(), panicking_backend as Arc<dyn Backend>);
+    backends.insert(
+        panicking_backend.id(),
+        panicking_backend as Arc<dyn Backend>,
+    );
 
     let mut defs = HashMap::new();
     defs.insert("reviewer".to_string(), reviewer_def());

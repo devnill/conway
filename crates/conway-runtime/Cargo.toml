@@ -40,6 +40,6 @@ chrono = { workspace = true }
 schemars = { workspace = true }
 
 [dev-dependencies]
-conway-core = { path = "../conway-core", features = ["fakes"] }
+conway-testkit = { path = "../conway-testkit" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 tempfile = { workspace = true }

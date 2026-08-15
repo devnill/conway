@@ -2,7 +2,7 @@
 //! bounded inbox, turn-boundary drain, overflow policy, both steering
 //! directions, and the/ double-`AgentFinished` fix.
 //!
-//! Built entirely from `conway-core`'s fakes (mirroring `agent_loop_e2e.rs`'s
+//! Built entirely from `conway-testkit`'s fakes (mirroring `agent_loop_e2e.rs`'s
 //! and `runtime_api.rs`'s own harness style) -- this file does not depend on
 //! `conway-plugin-backends` or `conway-tools`.
 
@@ -22,9 +22,6 @@ use conway_core::content::{
 };
 use conway_core::error::ToolError;
 use conway_core::event::Event;
-use conway_core::fakes::{
-    FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
 use conway_core::ids::{
     AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId, ToolName,
 };
@@ -42,6 +39,7 @@ use conway_runtime::mailbox::{self, Mailbox, MailboxSender};
 use conway_runtime::permission::PermissionBroker;
 use conway_runtime::tools::{PluginRegistry, ToolRunner};
 use conway_runtime::tree::{AgentNode, AgentTree};
+use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use futures::future::FutureExt;
 use futures::stream::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -256,8 +254,7 @@ fn build_loop(
         broker,
         bus.clone(),
     ));
-    let subagents: Arc<dyn SubagentHost> =
-        Arc::new(conway_core::fakes::FakeSubagentHost::new(agent));
+    let subagents: Arc<dyn SubagentHost> = Arc::new(conway_testkit::FakeSubagentHost::new(agent));
     let tree = Arc::new(AgentTree::new(bus.clone()));
 
     let deps = Arc::new(LoopDeps {

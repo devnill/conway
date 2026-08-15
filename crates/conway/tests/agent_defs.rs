@@ -34,7 +34,6 @@ mod result_contract_via_def {
     };
     use conway_core::content::{ContentBlock, StopReason, Usage};
     use conway_core::error::RoutingError;
-    use conway_core::fakes::{FakeGate, FakeHealth, FakeStore, ScriptedBackend, ScriptedTurn};
     use conway_core::ids::{AgentId, BackendId, ModelId, RoleAlias};
     use conway_core::log::LogRecord;
     use conway_core::ports::{
@@ -43,6 +42,7 @@ mod result_contract_via_def {
     use conway_core::routing::{Route, RouteRequest, RoutingReason};
     use conway_runtime::events::EventBus;
     use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
+    use conway_testkit::{FakeGate, FakeHealth, FakeStore, ScriptedBackend, ScriptedTurn};
 
     use super::{dir_with_fixtures, load_agent_defs};
 

@@ -27,9 +27,9 @@ use conway::config::schema::{
 use conway::{Conway, ConwayBuilder, SessionSpec, SpawnSpec, ToolSelector};
 use conway_core::agent::PermissionDecision;
 use conway_core::content::{ContentBlock, StopReason, Usage};
-use conway_core::fakes::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::GenerateResponse;
+use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {

@@ -41,7 +41,10 @@ schemars = { workspace = true }
 # router) to drive this plugin's tool through a real turn end to end,
 # exactly the precedent `conway`'s own `tests/plugin_surface.rs` and
 # `interactive_tools.rs` already establish for exercising a plugin through
-# the runtime with zero network. Already a pinned workspace dependency, not
-# a new one (C-04).
-conway-core = { path = "../conway-core", features = ["fakes"] }
+# the runtime with zero network. `conway-core` is needed alongside
+# `conway-testkit` because the test also constructs plain domain-type
+# fixtures (`PermissionDecision`, `ContentBlock`, ids) that are not doubles
+# at all -- neither is a new dependency to the workspace (C-04).
+conway-core = { path = "../conway-core" }
+conway-testkit = { path = "../conway-testkit" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

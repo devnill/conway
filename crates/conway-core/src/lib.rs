@@ -14,12 +14,6 @@
 //! ("Retire the harness-level confinement root once conway.fs enforces its
 //! own", under Stage 1.5) closes it by moving confinement out of this crate,
 //! and **must delete this label when it lands.**
-//!
-//! **FORWARD DECLARATION — test doubles ship here today.** `feature =
-//! "fakes"` compiles [`fakes`], a full set of port doubles, into this
-//! contract crate. ("Extract
-//! conway-testkit", Stage 1b) moves them to their own crate, and **must
-//! delete this label when it lands.**
 
 pub mod agent;
 pub mod capabilities;
@@ -30,8 +24,6 @@ pub mod error;
 pub mod event;
 pub mod event_name;
 pub mod failure;
-#[cfg(feature = "fakes")]
-pub mod fakes;
 pub mod hook;
 pub mod ids;
 pub mod log;

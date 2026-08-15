@@ -6,13 +6,14 @@
 //! BUILD failure here, not a runtime assertion.
 //!
 //! **This file must never import `conway_core`, and does not enable
-//! `conway-core`'s `fakes` feature** — neither is available to a third
-//! party (the same rule `plugin_surface.rs`/`plugin_builtin_parity.rs`
+//! `conway`'s `testkit` feature either** — a `Backend` implementation needs
+//! neither (the same rule `plugin_surface.rs`/`plugin_builtin_parity.rs`
 //! state for themselves).
 //!
 //! Unlike `plugin_builtin_parity.rs` (compile-only: its replicas are never
-//! actually invoked, since a real `ToolCtx` needs `conway-core`'s `fakes`
-//! feature), `StubBackend` below really runs end to end.
+//! actually invoked, since a real `ToolCtx` needs handle types
+//! `conway::plugin` does not export -- see that file's own doc), `StubBackend`
+//! below really runs end to end.
 //! `generate`/`stream`/`probe` perform no network I/O by construction —
 //! there is no real dialect to reach, so calling them for real here is
 //! possible, and doing so is a stronger proof than a compile-only one: it

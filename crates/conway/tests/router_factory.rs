@@ -42,9 +42,9 @@ use conway_core::capabilities::{
 };
 use conway_core::content::{StopReason, Usage};
 use conway_core::error::ConwayError as CoreConwayError;
-use conway_core::fakes::{FakeBackend, FakeGate, FakeHealth, FakeRouter, FakeStore};
 use conway_core::ids::BackendId;
 use conway_core::ports::GenerateResponse;
+use conway_testkit::{FakeBackend, FakeGate, FakeHealth, FakeRouter, FakeStore};
 
 fn caps() -> Capabilities {
     Capabilities {

@@ -24,9 +24,10 @@
 //!   (committed) requires an `Arc<dyn SubagentHost>` for every agent
 //!   task. Rather than accept this as an injected dependency (
 //!   An earlier review found: , an embedder-supplied fake is not a real
-//!   dependency, and `conway_core::fakes::FakeSubagentHost` is gated behind
-//!   `feature = "fakes"`, reserved for test-shaped consumers, so wiring it
-//!   into a non-test `Runtime::new` would be a layering violation either
+//!   dependency, and `conway_testkit::FakeSubagentHost` lives in a
+//!   test-only crate this crate's own `[dependencies]` never names (only
+//!   `[dev-dependencies]` does), so wiring it into a non-test `Runtime::new`
+//!   would be a layering violation either
 //!   way), `Runtime::new` now builds the real `subagent::WeakRuntimeHost`
 //!   from its own `Weak<Runtime>`, replacing the `NoSubagentHost`
 //!   stub this item originally shipped (every method of which returned a
@@ -142,7 +143,7 @@ mod root;
 pub use root::{ResumeSpec, RootSpec};
 
 /// Every port-shaped dependency the runtime needs, injected by the facade
-/// (or, in tests, built entirely from `conway-core`'s fakes). Nothing here
+/// (or, in tests, built entirely from `conway-testkit`'s fakes). Nothing here
 /// is constructed by this crate: backends, plugins, the store, the router,
 /// the permission gate, and the subagent host are all supplied by the
 /// caller.

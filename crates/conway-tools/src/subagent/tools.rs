@@ -102,7 +102,14 @@ struct ForkArgs {
     /// JSON Schema the child's structured result must satisfy
     #[serde(default)]
     result_contract: Option<serde_json::Value>,
-    /// False returns the agent_id immediately for fan-out
+    /// `false` returns the agent_id immediately for fan-out. Forks issued
+    /// in the SAME reply, as several tool calls in one turn, inherit a
+    /// byte-identical context and cost far less together, since a provider
+    /// serves the shared portion from cache; forking one at a time across
+    /// separate replies does not get this discount -- each pays close to
+    /// full price, since the context has moved on by the time the next
+    /// fork reads it. To fan out cheaply, request every sibling fork
+    /// together, in one reply, rather than one per reply.
     #[serde(default = "default_await", rename = "await")]
     await_flag: bool,
 }
@@ -131,6 +138,14 @@ struct SpawnArgs {
     /// JSON Schema the child's structured result must satisfy
     #[serde(default)]
     result_contract: Option<serde_json::Value>,
+    // Deliberately UNCHANGED from `ForkArgs::await_flag`'s pre-existing
+    // wording (board 01KZHDZKQXNYJME2CA3K52RNNY): a spawn's context "has no
+    // inherited prefix at all, by design" (`conway-runtime::subagent`'s own
+    // module doc), so a spawned child's request never carries any of the
+    // parent's transcript for turn-boundary timing to affect -- the
+    // same-reply-vs-separate-replies caveat added to `ForkArgs::await_flag`
+    // above is specific to `conway_fork`'s inherited context and does not
+    // apply here.
     /// False returns the agent_id immediately for fan-out
     #[serde(default = "default_await", rename = "await")]
     await_flag: bool,

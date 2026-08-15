@@ -52,10 +52,10 @@ use conway::{Conway, ConwayBuilder, Plugin as _, SessionSpec};
 use conway_core::agent::PermissionDecision;
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
 use conway_core::error::HookFailure;
-use conway_core::fakes::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, SeqRange, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, SessionStore};
+use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 
 use conway_plugin_skeleton::{SkeletonPlugin, PLUGIN_ID, PONG_DISPATCHED_EVENT, TOOL_NAME};
 

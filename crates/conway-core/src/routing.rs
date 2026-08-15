@@ -474,8 +474,10 @@ pub struct ModelOverrides {
 // ---------------------------------------------------------------------
 // Minimal fallback implementations.
 //
-// `crate::ports`'s own module doc reserves `conway-core` for feature-gated
-// test fakes plus "every other implementation lives in a dedicated crate".
+// `crate::ports`'s own module doc reserves `conway-core` for production
+// fallbacks plus one no-op test-fixture constructor, "every other
+// implementation lives in a dedicated crate" (the full test-double set now
+// lives in `conway-testkit`, not here).
 // These two types are the narrow, deliberate exception: `MinimalRouter` and
 // `AlwaysClosedHealthRegistry` are production code, not test doubles -- they
 // back `Conway::explain_routing`'s honest degenerate answer when the caller
@@ -486,10 +488,9 @@ pub struct ModelOverrides {
 // ---------------------------------------------------------------------
 
 /// A `HealthRegistry` that always reports `Closed` and records nothing.
-/// Not a test double (`crate::fakes::FakeHealth`, gated behind `feature =
-/// "fakes"`, is that): this is the honest production answer for a caller
-/// that has no real breaker state to consult at all, per the module note
-/// above.
+/// Not a test double (`conway_testkit::FakeHealth` is that): this is the
+/// honest production answer for a caller that has no real breaker state to
+/// consult at all, per the module note above.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AlwaysClosedHealthRegistry;
 

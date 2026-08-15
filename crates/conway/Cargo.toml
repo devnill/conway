@@ -39,12 +39,25 @@ jsonl-store = ["dep:conway-session"]
 # `config::model_metadata` does not trip `unexpected_cfgs` under `-D
 # warnings`; the actual client implementation is a later work item's scope.
 metadata-refresh = []
+# Board item 01KZVYWNA24EYMPVW3NPGBW51M: forwards `conway-testkit` (fakes
+# for every `conway-core` port trait) to a crate depending only on
+# `conway` -- re-exported as `conway::testkit` when enabled (`src/lib.rs`).
+# NOT default: a testkit that ships in every production build is dead
+# weight. But unlike `conway-core`'s old `fakes` feature (enabled only
+# under this crate's own `[dev-dependencies]`, so no third party could ever
+# turn it on), this one lives in `[dependencies]` as an optional dep gated
+# by this feature -- a crate depending on `conway` can write
+# `conway = { version = "..", features = ["testkit"] }` and reach it. This
+# is the fix for the inversion the item's spec named: conway's own tests
+# reached ready-made doubles a third party could not reach at all.
+testkit = ["dep:conway-testkit"]
 
 [dependencies]
 conway-core = { path = "../conway-core" }
 conway-runtime = { path = "../conway-runtime" }
 conway-session = { path = "../conway-session", optional = true }
 conway-tools = { path = "../conway-tools", optional = true }
+conway-testkit = { path = "../conway-testkit", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
@@ -73,7 +86,14 @@ blake3 = { workspace = true }
 # T5). Already a workspace dependency used by four other crates, so this adds
 # nothing new to the tree.
 toml = { workspace = true }
-conway-core = { path = "../conway-core", features = ["fakes"] }
+# Dev-only, unconditional: this crate's own test suite always has the
+# doubles available with no extra flag, the same way it did before the
+# doubles moved out of `conway-core`. The `testkit` feature above (an
+# OPTIONAL `[dependencies]` entry) is the separate, opt-in path a third
+# party reaches the identical crate through -- this line does not replace
+# that one; the two exist for different audiences (this workspace's own
+# tests vs. an external consumer).
+conway-testkit = { path = "../conway-testkit" }
 # Board item 01KZFC43J1J06BM4CCWKCKHSNV: `conway` itself no longer depends on
 # the routing engine ([dependencies], above, has no such edge -- that's the
 # whole point of this crate becoming a first-party plugin). This

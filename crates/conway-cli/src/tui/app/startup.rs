@@ -336,8 +336,8 @@ mod tests {
 
     use conway::{ConwayBuilder, PermissionGate};
     use conway_core::agent::PermissionDecision;
-    use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
     use conway_core::ids::{BackendId, ModelId};
+    use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
     use super::super::fixtures::{build_conway_with_echo_backend, minimal_cli};
     use super::App;
