@@ -384,6 +384,7 @@ fn root_spec() -> RootSpec {
         prompt: None,
         keep_alive: false,
         model: None,
+        system_prompt_override: None,
     }
 }
 

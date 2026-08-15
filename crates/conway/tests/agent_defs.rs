@@ -171,6 +171,7 @@ mod result_contract_via_def {
                 prompt: Some("go".to_string()),
                 keep_alive: false,
                 model: None,
+                system_prompt_override: None,
             })
             .await
             .unwrap();

@@ -208,13 +208,14 @@ pub struct Runtime {
     agents: RwLock<HashMap<AgentId, AgentHandle>>,
     tree: Arc<AgentTree>,
     /// Ancestry resolution for the fork path (`subagent.rs`) --
-    /// `conway_session::TranscriptResolver`, one instance per runtime so
-    /// sibling forks share memoized prefixes (see that type's own module
-    /// doc). Not part of `RuntimeDeps`: it needs no injected configuration
-    /// beyond a cache capacity, and adding a field to `RuntimeDeps` would
-    /// be a breaking change to the already-committed, criterion-pinned
-    /// surface for a value this crate can construct unconditionally itself.
-    resolver: Arc<conway_session::TranscriptResolver>,
+    /// `conway_core::transcript::TranscriptResolver`, one instance per
+    /// runtime so sibling forks share memoized prefixes (see that type's own
+    /// module doc). Not part of `RuntimeDeps`: it needs no injected
+    /// configuration beyond a cache capacity, and adding a field to
+    /// `RuntimeDeps` would be a breaking change to the already-committed,
+    /// criterion-pinned surface for a value this crate can construct
+    /// unconditionally itself.
+    resolver: Arc<conway_core::transcript::TranscriptResolver>,
 }
 
 /// Entry count for `Runtime`'s `TranscriptResolver` cache. No criterion
@@ -299,7 +300,7 @@ impl Runtime {
         let builder = Arc::new(ContextBuilder::new());
         let plugin_config = Arc::new(PluginConfig::default());
         let tree = Arc::new(AgentTree::new(event_bus.clone()));
-        let resolver = Arc::new(conway_session::TranscriptResolver::new(
+        let resolver = Arc::new(conway_core::transcript::TranscriptResolver::new(
             TRANSCRIPT_CACHE_CAPACITY,
         ));
 
@@ -370,7 +371,7 @@ impl Runtime {
         &self.tree
     }
 
-    pub(crate) fn resolver(&self) -> &Arc<conway_session::TranscriptResolver> {
+    pub(crate) fn resolver(&self) -> &Arc<conway_core::transcript::TranscriptResolver> {
         &self.resolver
     }
 
@@ -486,13 +487,14 @@ impl Runtime {
         self.hooks.hooks_snapshot()
     }
 
-    /// Test-only accessor (mirrors `conway_session::TranscriptResolver::
-    /// peek_prefix`'s own `#[doc(hidden)] pub` test seam): lets integration
-    /// tests assert `Arc::ptr_eq` sibling-fork sharing directly against the
-    /// runtime's own resolver instance, the same guarantee `conway-session`'s
-    /// test suite already proves at the resolver level in isolation.
+    /// Test-only accessor (mirrors `conway_core::transcript::
+    /// TranscriptResolver::peek_prefix`'s own `#[doc(hidden)] pub` test
+    /// seam): lets integration tests assert `Arc::ptr_eq` sibling-fork
+    /// sharing directly against the runtime's own resolver instance, the
+    /// same guarantee `conway-session`'s test suite already proves at the
+    /// resolver level in isolation.
     #[doc(hidden)]
-    pub fn resolver_for_test(&self) -> &Arc<conway_session::TranscriptResolver> {
+    pub fn resolver_for_test(&self) -> &Arc<conway_core::transcript::TranscriptResolver> {
         self.resolver()
     }
 
@@ -823,7 +825,7 @@ impl Runtime {
     /// already holds turns with real `ContextReportRecord`s. Where
     /// `context_report` would silently return `empty_report` in that case,
     /// this method instead falls back to the most recently PERSISTED report
-    /// (`conway_session::provenance::load_all_context_reports`, ascending
+    /// (`conway_core::provenance::load_all_context_reports`, ascending
     /// seq order, so the last element is the newest) -- one store read, only
     /// on the cold path, never on the hot "already has a live report" one.
     ///
@@ -857,7 +859,7 @@ impl Runtime {
         }
         let session = self.resolve_session(agent).await?;
         let reports =
-            conway_session::provenance::load_all_context_reports(self.store.as_ref(), &session)
+            conway_core::provenance::load_all_context_reports(self.store.as_ref(), &session)
                 .await
                 .map_err(RuntimeError::Store)?;
         Ok(reports

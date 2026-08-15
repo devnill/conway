@@ -30,7 +30,7 @@
 //! For a root agent or a spawned child it is `None` and every turn's
 //! `ContextInput::inherited` stays `None`, exactly as before. For a fork
 //! child, `subagent.rs`'s `SubagentHost::start` resolves it exactly once
-//! (via `conway_session::TranscriptResolver`, at fork time, before any of
+//! (via `conway_core::transcript::TranscriptResolver`, at fork time, before any of
 //! the child's own records exist) and this loop simply clones it into
 //! every turn's `ContextInput` unchanged -- see the field's own doc for why
 //! no turn-boundary re-resolution is needed or correct.
@@ -316,7 +316,7 @@ pub struct AgentLoop {
     pub cancel: CancellationToken,
     /// `Some` for a fork child, resolved exactly once by `subagent.rs`'s
     /// `SubagentHost::start` at fork time via
-    /// `conway_session::TranscriptResolver` and never recomputed afterward
+    /// `conway_core::transcript::TranscriptResolver` and never recomputed afterward
     /// -- the parent's prefix at the fork point is immutable by
     /// construction (a later parent append only extends records the fork
     /// already excluded), so there is no turn-boundary event that could

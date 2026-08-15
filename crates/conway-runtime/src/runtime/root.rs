@@ -67,6 +67,18 @@ pub struct RootSpec {
     /// `start_root` prefers this over the `agent_def`-sourced pin when
     /// present -- see that method's own doc for the precedence.
     pub model: Option<ModelRef>,
+    /// Replaces the `[0] SystemPrompt` segment's text outright when `Some`,
+    /// regardless of whether `agent_def` also resolves to a known def --
+    /// `start_root` still resolves `agent_def` for `role`/`tools`/`model`
+    /// exactly as before, only the system-prompt TEXT is swapped. `None`
+    /// (every caller before this field existed) preserves the prior
+    /// behavior exactly: the resolved `agent_def`'s own `system_prompt`, or
+    /// no `SystemPrompt` segment at all when there is no `agent_def`.
+    /// `conway-cli`'s `--system-prompt`/`--append-system-prompt` are this
+    /// field's one caller today (`conway::Conway::new_session`, from
+    /// `SessionSpec::system_prompt_override`) -- see that field's own doc
+    /// for how the two flags combine into the single string landing here.
+    pub system_prompt_override: Option<String>,
 }
 
 /// The specification for re-registering a persisted session's agent as a
@@ -136,10 +148,23 @@ impl Runtime {
             .or_else(|| agent_def.and_then(|d| d.role.clone()))
             .unwrap_or_else(|| RoleAlias::new("default"));
 
-        let system_prompt = agent_def.map(|d| crate::context::SystemPromptSpec {
-            agent_def: d.name.clone(),
-            text: d.system_prompt.clone(),
-        });
+        // `spec.system_prompt_override` (`--system-prompt`/
+        // `--append-system-prompt`) wins outright when present -- see
+        // `RootSpec::system_prompt_override`'s own doc. `agent_def` is
+        // still resolved above regardless, for `role`/`tools`/`model`
+        // below; only the system-prompt TEXT is swapped here.
+        let system_prompt = match &spec.system_prompt_override {
+            Some(text) => Some(crate::context::SystemPromptSpec {
+                agent_def: agent_def
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| "cli-override".to_string()),
+                text: text.clone(),
+            }),
+            None => agent_def.map(|d| crate::context::SystemPromptSpec {
+                agent_def: d.name.clone(),
+                text: d.system_prompt.clone(),
+            }),
+        };
         // Skills are deliberately empty here -- see the module doc's
         // reconciliation note (no SkillDef registry is injected).
         let skills = Vec::new();
@@ -451,7 +476,7 @@ impl Runtime {
     /// already exists) and does NOT append an initial `UserTurn` — the
     /// caller's continuation prompt arrives via a subsequent
     /// [`Runtime::prompt`] call. `AgentLoop` re-resolves the full effective
-    /// transcript from the store on every turn (`conway_session`'s
+    /// transcript from the store on every turn (`conway_core::transcript`'s
     /// `TranscriptResolver`), so "continue from where it left off" falls out
     /// of that existing mechanism once this agent is registered — this
     /// method's job is registration, not transcript replay.

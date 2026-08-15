@@ -75,6 +75,57 @@ pub struct Cli {
     #[arg(long)]
     pub model: Option<String>,
 
+    /// Run as this named agent definition (`.conway/agents/<name>.md`,
+    /// `conway::agents::load_agent_defs`) instead of the bare, no-persona
+    /// default -- its `system_prompt`, `role`, `model`, and `tools`
+    /// selector all apply, each still overridable by its own flag
+    /// (`--role-override`, `--model`, `--system-prompt`/
+    /// `--append-system-prompt`). An unknown name is a usage error naming
+    /// the directory searched, not a silent no-op. Not supported with
+    /// `--resume` (a resumed session's agent definition is fixed by the
+    /// session it continues); combines cleanly with `--fork-from`.
+    #[arg(long, value_name = "NAME")]
+    pub agent: Option<String>,
+
+    /// Replace the effective system prompt outright. With `--agent`
+    /// absent, this is what stops a one-shot run from being the built-in
+    /// coding agent at all: the run gets exactly this text (and no other
+    /// framing) as its system prompt. Combine with `--append-system-prompt`
+    /// to add more after it. Not supported with `--resume`/`--fork-from`
+    /// (a usage error): a continued session's system prompt is fixed by
+    /// the session it continues, not by this invocation.
+    #[arg(long, value_name = "TEXT")]
+    pub system_prompt: Option<String>,
+
+    /// Append to the effective system prompt: `--agent`'s own (when
+    /// `--system-prompt` is absent and `--agent` is given), `--system-
+    /// prompt`'s text (when both are given), or -- with neither -- this
+    /// becomes the entire system prompt by itself. Same `--resume`/
+    /// `--fork-from` restriction as `--system-prompt`.
+    #[arg(long, value_name = "TEXT")]
+    pub append_system_prompt: Option<String>,
+
+    /// Ceiling on agent turns (steps) this run may take before it is
+    /// stopped with `ResultStatus::BudgetExceeded`. Absent: the configured
+    /// `[limits].max_steps` (default 40). Not supported with `--resume`/
+    /// `--fork-from` in this release (a usage error) -- neither facade path
+    /// accepts a caller-supplied budget override yet.
+    #[arg(long, value_name = "N")]
+    pub max_turns: Option<u32>,
+
+    /// Ceiling on total tokens spent this run may take. Absent: the
+    /// configured `[limits].max_tokens` (`0` there means unlimited). Same
+    /// `--resume`/`--fork-from` restriction as `--max-turns`.
+    #[arg(long, value_name = "N")]
+    pub max_tokens: Option<u32>,
+
+    /// Wall-clock ceiling, in seconds, counted from the moment this run
+    /// starts. Absent: the configured `[limits].deadline_secs` (`0` there
+    /// means no deadline). Same `--resume`/`--fork-from` restriction as
+    /// `--max-turns`.
+    #[arg(long, value_name = "SECONDS")]
+    pub max_seconds: Option<u64>,
+
     /// Use (creating if new) a specific session id.
     #[arg(long, conflicts_with_all = ["resume", "fork_from"])]
     pub session: Option<String>,
@@ -124,6 +175,21 @@ pub enum Command {
     Sessions(SessionsArgs),
     /// Inspect routing decisions.
     Routes(RoutesArgs),
+    /// Anything that is not one of the built-in subcommands above falls
+    /// through here instead of failing to parse -- clap's own
+    /// `external_subcommand` idiom (the same shape `cargo` uses to dispatch
+    /// `cargo foo` to a `cargo-foo` binary). `commands::plugin::run`
+    /// resolves the first token against every installed plugin's own
+    /// `conway::plugin::Plugin::commands()`, namespaced
+    /// `<plugin-id>.<command-name>` -- the identical full-name scheme the
+    /// TUI's `/`-prefixed dispatch already uses
+    /// (`tui::commands::CommandRegistry::build`), reused rather than
+    /// reinvented. An unresolved name is a usage error, not a silent
+    /// no-op: this variant existing does not mean anything typed here is
+    /// accepted, only that resolution is deferred to plugin lookup instead
+    /// of clap's static set.
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 /// `--output-format`: how one-shot mode renders the event stream.

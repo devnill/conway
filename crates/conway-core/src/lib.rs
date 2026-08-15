@@ -34,10 +34,11 @@ pub mod provenance;
 pub mod routing;
 pub mod segment;
 pub mod text;
+pub mod transcript;
 
 pub mod prelude {
     pub use crate::{
         agent::*, capabilities::*, config::*, content::*, error::*, event::*, ids::*, log::*,
-        ports::*, provenance::*, routing::*, segment::*,
+        ports::*, provenance::*, routing::*, segment::*, transcript::*,
     };
 }

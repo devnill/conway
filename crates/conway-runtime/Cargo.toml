@@ -9,7 +9,6 @@ description = "Agent engine: event bus, agent loop/tree, context assembly, tool 
 
 [dependencies]
 conway-core = { path = "../conway-core" }
-conway-session = { path = "../conway-session" }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time", "fs"] }
 tokio-util = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
@@ -41,5 +40,12 @@ schemars = { workspace = true }
 
 [dev-dependencies]
 conway-testkit = { path = "../conway-testkit" }
+# Test-only edge, not an architectural one (T4 in
+# `crates/conway/tests/architecture_invariants.rs` checks `[dependencies]`
+# only): `tests/context_report_persistence.rs` exercises the moved
+# `conway_core::provenance` helpers through `conway_session`'s re-export as
+# well as through this crate's own `context::report` wrapper, to prove both
+# paths agree. Board item 01KZVYVTVWRH20R6VJ6G3SWTJ6, "Stage 1a".
+conway-session = { path = "../conway-session" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 tempfile = { workspace = true }

@@ -95,12 +95,48 @@
 //!    -- the now-single-outcome-shape `resolve_session` dropped its
 //!    former `SessionOutcome::Done` branch entirely (nothing produces it
 //!    any more).
+//! 4. **`--agent`/`--system-prompt`/`--append-system-prompt`/budget
+//!    flags.** `SessionSpec` (`conway`) had `agent_def`/`budget` fields
+//!    already but no facade-reachable way to inject a raw, literal system
+//!    prompt independent of any named agent definition -- the mechanism
+//!    the D4 finding's "stop every one-shot run from being the built-in
+//!    coding agent" line names directly. `SessionSpec` gained a new
+//!    `system_prompt_override: Option<String>` field, threaded through
+//!    `Conway::new_session` into a new `RootSpec::system_prompt_override`
+//!    (`conway-runtime`), which wins over any `agent_def`-derived text when
+//!    `Some` -- see that field's own doc for the exact precedence. Wired
+//!    into two of `resolve_session`'s three arms only (flag-free and
+//!    `--session`): `--resume` has no facade parameter to carry an
+//!    override through at all (`Conway::resume` takes only a `SessionId`),
+//!    and `--fork-from`'s `ForkSpec` has no literal-text field (only
+//!    `agent_def: Option<String>`, a NAMED def) -- both combinations are
+//!    therefore usage errors rather than a silent drop, checked up front in
+//!    `resolve_session` before either flag's value is ever read. `--agent`
+//!    itself is more permissive: `ForkSpec::agent_def` already exists and
+//!    is wired for real (a fork can select a different named persona,
+//!    exactly as fresh sessions can); only `--resume` refuses `--agent`,
+//!    for the same "no facade parameter" reason. Budget flags
+//!    (`--max-turns`/`--max-tokens`/`--max-seconds`) are scoped
+//!    identically to the system-prompt flags (flag-free and `--session`
+//!    only, usage error with `--resume`/`--fork-from`) for the same
+//!    reason: neither `Conway::resume` nor this module's `ForkSpec`
+//!    construction accepts a caller override today. `--agent`'s own name is
+//!    validated eagerly, via `conway::agents::load_agent_defs` (already
+//!    `pub` on the facade) against the same directory
+//!    `ConwayBuilder::build` itself resolved (`conway.config().agents.dir`,
+//!    joined against `conway.config().cwd` the same way `conway::builder`'s
+//!    private `resolve_path` does -- duplicated here in miniature since
+//!    that helper is not exported) -- an unknown name is a usage error
+//!    naming the directory searched, never a silent no-op.
 
 use std::io::{IsTerminal, Read};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use conway::gates::AllowListGate;
-use conway::{AgentResult, Conway, Event, ForkSpec, RoleAlias, SessionHandle, SessionSpec};
+use conway::{
+    AgentDef, AgentResult, Budget, Conway, Event, ForkSpec, RoleAlias, SessionHandle, SessionSpec,
+};
 use futures::StreamExt;
 
 use crate::cli::{Cli, PermissionMode};
@@ -207,6 +243,44 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
 /// conflicting flags): in every arm that returns `Err`, no agent ever
 /// started.
 async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHandle> {
+    // Up-front usage-error guards for the two flag groups this module's
+    // doc comment, reconciliation #4, says are not wired for `--resume`/
+    // `--fork-from` -- checked before either flag's value (or `--agent`'s
+    // own validity) is ever read, so an operator combining them gets a
+    // named reason, never a silent drop.
+    let system_prompt_requested = cli.system_prompt.is_some() || cli.append_system_prompt.is_some();
+    let budget_requested =
+        cli.max_turns.is_some() || cli.max_tokens.is_some() || cli.max_seconds.is_some();
+    let continuing = cli.resume.is_some() || cli.fork_from.is_some();
+    if system_prompt_requested && continuing {
+        return Err(usage_error(
+            "--system-prompt/--append-system-prompt are not supported with --resume or \
+             --fork-from: a continued session's system prompt is fixed by the session it \
+             continues, not by this invocation",
+        ));
+    }
+    if budget_requested && continuing {
+        return Err(usage_error(
+            "--max-turns/--max-tokens/--max-seconds are not supported with --resume or \
+             --fork-from in this release: neither facade path accepts a caller-supplied \
+             budget override yet",
+        ));
+    }
+    if cli.agent.is_some() && cli.resume.is_some() {
+        return Err(usage_error(
+            "--agent is not supported with --resume: a resumed session's agent definition is \
+             fixed by the session it continues",
+        ));
+    }
+
+    // Loaded (and, for `--agent`, validated) once, up front, so every arm
+    // below sees the identical, already-checked value -- an unknown
+    // `--agent` name is caught here regardless of which arm would
+    // otherwise have run.
+    let agent_def = load_agent_def(cli, conway)?;
+    let system_prompt_override = resolve_system_prompt_override(cli, agent_def.as_ref());
+    let budget = resolve_budget(cli, conway);
+
     match (&cli.session, &cli.resume, &cli.fork_from) {
         (None, None, None) => {
             let role = cli
@@ -218,6 +292,9 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
                 role,
                 cwd: cli.cwd.clone(),
                 model,
+                agent_def: cli.agent.clone(),
+                system_prompt_override,
+                budget,
                 ..SessionSpec::default()
             };
             conway.new_session(spec).await
@@ -251,6 +328,9 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
                 role,
                 cwd: cli.cwd.clone(),
                 model,
+                agent_def: cli.agent.clone(),
+                system_prompt_override,
+                budget,
                 ..SessionSpec::default()
             };
             conway
@@ -323,6 +403,13 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
                 .map(|r| RoleAlias::new(r.clone()));
             let mut spec = ForkSpec::new(String::new());
             spec.role = role;
+            // `--agent` genuinely wires here (unlike `--system-prompt`/
+            // budget -- see this module's doc comment, reconciliation #4):
+            // `ForkSpec::agent_def` already exists and, per its own doc,
+            // overrides the forked child's system prompt/tools/model pin
+            // with the named def's, exactly the same "select a persona"
+            // capability `--agent` gives a fresh session.
+            spec.agent_def = cli.agent.clone();
             conway
                 .fork_from(parent, at, spec)
                 .await
@@ -333,6 +420,117 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
             "--session, --resume, and --fork-from are mutually exclusive",
         )),
     }
+}
+
+/// The directory `--agent` searches, mirroring `conway::builder`'s own
+/// private `resolve_path(&cwd, &config.agents.dir)` -- not itself exported
+/// (`ConwayBuilder::build` resolves it internally, once, at build time),
+/// so this is a small, deliberate duplicate rather than a new dependency on
+/// a private helper. `conway.config()` is the already-loaded, already-
+/// merged config this `Conway` was built from (defaults < XDG < project <
+/// env < `--config`/CLI), so this reads the SAME effective `[agents].dir`
+/// `ConwayBuilder::build` itself used to populate the `agent_defs` registry
+/// `--agent` ultimately resolves against.
+fn resolve_agents_dir(conway: &Conway) -> PathBuf {
+    let config = conway.config();
+    if config.agents.dir.is_absolute() {
+        config.agents.dir.clone()
+    } else {
+        config.cwd.join(&config.agents.dir)
+    }
+}
+
+/// Loads and validates `cli.agent` (`None` when the flag was not given, in
+/// which case this is a no-op returning `Ok(None)`): an unknown name is a
+/// usage error naming the directory searched, not a silent no-op. Returns
+/// the loaded [`AgentDef`] itself (not just a validity bool) so callers
+/// (namely [`resolve_system_prompt_override`]) can read its own
+/// `system_prompt` as the base text for `--append-system-prompt`, without a
+/// second directory scan.
+fn load_agent_def(cli: &Cli, conway: &Conway) -> conway::Result<Option<AgentDef>> {
+    let Some(name) = &cli.agent else {
+        return Ok(None);
+    };
+    let dir = resolve_agents_dir(conway);
+    let mut defs = conway::agents::load_agent_defs(&dir)?;
+    match defs.remove(name.as_str()) {
+        Some(def) => Ok(Some(def)),
+        None => Err(usage_error(format!(
+            "--agent {name}: no agent definition named `{name}` found in {} (looked for \
+             `{name}.md`)",
+            dir.display()
+        ))),
+    }
+}
+
+/// Combines `--system-prompt`/`--append-system-prompt` into the single
+/// string [`RootSpec::system_prompt_override`] (`conway-runtime`) takes, or
+/// `None` when neither flag was given (preserving the pre-existing,
+/// `agent_def`-alone behavior exactly). `agent_def` is `--agent`'s own
+/// already-loaded, already-validated def (from [`load_agent_def`]) -- its
+/// `system_prompt` is the base `--append-system-prompt` appends to when
+/// `--system-prompt` itself is absent.
+fn resolve_system_prompt_override(cli: &Cli, agent_def: Option<&AgentDef>) -> Option<String> {
+    if cli.system_prompt.is_none() && cli.append_system_prompt.is_none() {
+        return None;
+    }
+    let base = cli
+        .system_prompt
+        .clone()
+        .or_else(|| agent_def.map(|d| d.system_prompt.clone()));
+    Some(match (base, &cli.append_system_prompt) {
+        (Some(b), Some(a)) => format!("{b}\n\n{a}"),
+        (Some(b), None) => b,
+        (None, Some(a)) => a.clone(),
+        (None, None) => unreachable!(
+            "checked above: at least one of cli.system_prompt/cli.append_system_prompt is Some"
+        ),
+    })
+}
+
+/// Builds a [`Budget`] from `--max-turns`/`--max-tokens`/`--max-seconds`,
+/// or `None` when none of the three was given -- preserving the
+/// pre-existing behavior exactly (`SessionSpec::budget: None` falls back to
+/// `Conway::new_session`'s own `self.default_budget()`, config-sourced).
+/// When at least one flag IS given, this starts from that SAME config
+/// baseline (`conway.config().limits`, replicating `Conway::
+/// default_budget`'s own `0`-means-unset mapping, not exported either) and
+/// overrides only the specific dimension(s) named -- so `--max-turns 5`
+/// alone still respects a configured `[limits].max_tokens`/
+/// `deadline_secs`, rather than silently clearing them.
+fn resolve_budget(cli: &Cli, conway: &Conway) -> Option<Budget> {
+    if cli.max_turns.is_none() && cli.max_tokens.is_none() && cli.max_seconds.is_none() {
+        return None;
+    }
+    let limits = &conway.config().limits;
+    let mut budget = Budget {
+        max_steps: limits.max_steps,
+        deadline: if limits.deadline_secs == 0 {
+            None
+        } else {
+            Some(chrono::Utc::now() + chrono::Duration::seconds(limits.deadline_secs as i64))
+        },
+        max_tokens: if limits.max_tokens == 0 {
+            None
+        } else {
+            Some(limits.max_tokens)
+        },
+        max_tool_calls: if limits.max_tool_calls == 0 {
+            None
+        } else {
+            Some(limits.max_tool_calls)
+        },
+    };
+    if let Some(turns) = cli.max_turns {
+        budget.max_steps = turns;
+    }
+    if let Some(tokens) = cli.max_tokens {
+        budget.max_tokens = Some(tokens);
+    }
+    if let Some(secs) = cli.max_seconds {
+        budget.deadline = Some(chrono::Utc::now() + chrono::Duration::seconds(secs as i64));
+    }
+    Some(budget)
 }
 
 /// Resolves the prompt text: `--print <text>` if non-empty, else stdin read
@@ -403,6 +601,12 @@ mod tests {
             permission_mode: mode,
             role_override: None,
             model: None,
+            agent: None,
+            system_prompt: None,
+            append_system_prompt: None,
+            max_turns: None,
+            max_tokens: None,
+            max_seconds: None,
             session: None,
             resume: None,
             fork_from: None,

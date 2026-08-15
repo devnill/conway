@@ -224,50 +224,48 @@ fn t3_core_ships_no_test_doubles() {
 
 // ------------------------------------------------------------------- T4 ----
 
-/// **T4: `conway-runtime` depends on `conway-core` only. FALSE TODAY.**
+/// **T4: `conway-runtime` depends on `conway-core` only. HOLDS as of board
+/// item `01KZVYVTVWRH20R6VJ6G3SWTJ6` ("Stage 1a").**
 ///
-/// The runtime has a hard edge to `conway-session`, the JSONL adapter, for two
-/// things that are not JSONL-specific at all: `TranscriptResolver` and the
-/// `provenance::*_context_report` helpers. Stage 1a
-/// moves both into core and cuts the edge.
+/// The runtime used to carry a hard edge to `conway-session`, the JSONL
+/// adapter, for two things that were never JSONL-specific:
+/// `TranscriptResolver` and the `provenance::*_context_report` helpers. Both
+/// moved into `conway-core` (`transcript::TranscriptResolver` and
+/// `provenance::{append_context_report, load_context_report,
+/// load_all_context_reports}`), and `crates/conway-runtime/Cargo.toml` no
+/// longer names `conway-session` in `[dependencies]` -- only in
+/// `[dev-dependencies]`, which this guard deliberately does not check (see
+/// `internal_deps`'s own doc).
 ///
-/// Pinned as: exactly one forbidden edge, and it is that one. Fails if the
-/// runtime reaches for a second adapter -- which is how this becomes
-/// unpickable.
+/// Pinned as: no workspace dependency but `conway-core`. Fails if the
+/// runtime reaches for any adapter again.
 #[test]
-fn t4_runtime_has_exactly_the_one_known_adapter_edge() {
+fn t4_runtime_depends_on_core_only() {
     let deps = internal_deps("conway-runtime");
     assert_eq!(
         deps,
-        set(&["conway-core", "conway-session"]),
-        "T4 CHANGED: `conway-runtime`'s workspace dependencies are no longer \
-         {{conway-core, conway-session}}; found {deps:?}.\n\
-         If an edge was ADDED, that is a regression: the runtime is meant to \
-         depend on the contract crate alone, and each new adapter edge is one \
-         more thing Stage 1a has to unpick. If `conway-session` is GONE \
-         because Stage 1a landed, this \
-         guard has done its job: tighten it to {{conway-core}} and turn T4 on \
-         for real."
+        set(&["conway-core"]),
+        "T4 BROKEN: `conway-runtime`'s workspace dependencies are no longer \
+         {{conway-core}}; found {deps:?}.\n\
+         The runtime is meant to depend on the contract crate alone -- an \
+         adapter edge here (e.g. `conway-session`) is exactly the coupling \
+         Stage 1a (board item 01KZVYVTVWRH20R6VJ6G3SWTJ6) removed. Move \
+         whatever is not JSONL-specific into `conway-core` instead of \
+         depending on the adapter that happens to host it."
     );
 }
 
 // ------------------------------------------------------------------- T5 ----
 
 /// **T5: the facade depends on core + runtime, adapters only as honest
-/// features. HOLDS IN SHAPE; ONE FEATURE NAME IS A FICTION.**
+/// features. HOLDS.**
 ///
-/// The shape is right: `conway-session` and `conway-tools` are both `optional`
-/// and gated behind `jsonl-store` and `builtin-tools`. What makes
-/// `jsonl-store` dishonest is T4 -- because `conway-runtime` depends on
-/// `conway-session` unconditionally, turning the feature off does not unlink
-/// the JSONL crate. It governs default *wiring*, not linkage.
-///
-/// So this guard pins the shape, and the fiction is fixed by Stage 1a
-/// rather than here. The two are deliberately
-/// coupled: when T4 flips, this becomes true without being touched. That
-/// item also owns deleting the forward-declaration labels the feature now
-/// carries in `crates/conway/Cargo.toml`, `src/builder.rs`, and
-/// `src/session_handle.rs`.
+/// `conway-session` and `conway-tools` are both `optional` and gated behind
+/// `jsonl-store` and `builtin-tools`. As of board item
+/// `01KZVYVTVWRH20R6VJ6G3SWTJ6` ("Stage 1a", which also flipped T4),
+/// `jsonl-store` is no longer just default wiring: `conway-runtime` no
+/// longer depends on `conway-session` unconditionally, so turning the
+/// feature off genuinely unlinks the JSONL crate now.
 #[test]
 fn t5_facade_gates_its_adapters_behind_features() {
     let m = manifest("conway");

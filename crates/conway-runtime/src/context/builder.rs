@@ -138,7 +138,7 @@ pub struct InheritedPrefix {
     /// fork depth >= 2, `records` is the WHOLE effective transcript up to the
     /// fork point (a fork inherits all of it: root's own records, then every
     /// intermediate ancestor's own records in turn, through the immediate
-    /// parent's), per `conway_session::TranscriptResolver`'s "inherited prefix
+    /// parent's), per `conway_core::transcript::TranscriptResolver`'s "inherited prefix
     /// always flows through in full" contract — but every one of those records,
     /// however deep its true origin, is stamped with this single `from` when
     /// `ContextBuilder` turns `records` into `Provenance::Inherited` segments
@@ -146,7 +146,7 @@ pub struct InheritedPrefix {
     /// fork depth >= 2", for the full rationale). Recovering true per-record
     /// authorship at arbitrary depth would require per-record session tracking
     /// that does not exist upstream (in `conway_core::log::LogRecord` or in
-    /// `conway_session`'s resolver) — out of this item's scope; queued as a
+    /// `conway_core::transcript`'s resolver) — out of this item's scope; queued as a
     /// refinement question rather than attempted here (coordinator ruling,
     /// rework).
     pub from: SessionId,

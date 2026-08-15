@@ -61,6 +61,17 @@ pub struct SessionSpec {
     pub model: Option<ModelRef>,
     pub cwd: Option<PathBuf>,
     pub budget: Option<Budget>,
+    /// Replaces (`Some`) the root agent's own resolved system-prompt text
+    /// outright -- `agent_def` above is still resolved for `role`/`tools`/
+    /// `model` as usual; only the system-prompt segment's TEXT is swapped.
+    /// `None` (the default) preserves the pre-existing behavior: the
+    /// resolved `agent_def`'s own `system_prompt`, or no system-prompt
+    /// segment at all when `agent_def` is also `None`. `conway-cli`'s
+    /// `--system-prompt`/`--append-system-prompt` are this field's
+    /// motivating caller -- see `RootSpec::system_prompt_override`
+    /// (`conway-runtime`), which this passes straight through via
+    /// `Conway::new_session`.
+    pub system_prompt_override: Option<String>,
     pub labels: Vec<String>,
     /// Opt-in multi-turn keep-alive: passed straight through to
     /// `RootSpec::keep_alive` (`conway_runtime::runtime::RootSpec` -- see
@@ -567,29 +578,20 @@ impl SessionHandle {
 
     /// The *effective* transcript for `agent`: its own records, prefixed by
     /// its full fork ancestry (recursively resolved), matching
-    /// `conway_session::TranscriptResolver::resolve`'s semantics.
+    /// `conway_core::transcript::TranscriptResolver::resolve`'s semantics.
     ///
     /// **Reconciliation (disclosed):** this item's binding notes name
-    /// `conway_session::TranscriptResolver` as the mechanism. It cannot be
-    /// used directly here: `crates/conway/Cargo.toml` (out of this
-    /// item's file scope) gates this crate's own direct `conway-session`
-    /// dependency behind the optional `jsonl-store` feature -- which is a
-    /// gate on NAMING `conway_session::` from this crate, not on linking it,
-    /// since `conway-runtime` depends on it unconditionally (forward
-    /// declaration, board). The reconciliation
-    /// below is unaffected either way: `SessionHandle` is core surface
-    /// and must stay feature-independent (this item's own test matrix runs
-    /// `--no-default-features`). Depending on `conway_session::` here
-    /// unconditionally would not compile under that configuration; gating
-    /// just this method behind `#[cfg(feature = "jsonl-store")]` would
-    /// silently remove a criterion-mandated method under a feature
-    /// combination nothing else requires it to disappear under. Instead,
-    /// this method (and its private helper, `resolve_prefix`) reimplements
+    /// `TranscriptResolver` as the mechanism (at the time, `conway_session::
+    /// TranscriptResolver`; since board item `01KZVYVTVWRH20R6VJ6G3SWTJ6`,
+    /// `conway_core::transcript::TranscriptResolver`, always available since
+    /// `conway-core` has no features). It is still not used directly here:
+    /// `SessionHandle` is core surface and must stay allocation-cheap per
+    /// call rather than own a persistent, per-instance cache. Instead, this
+    /// method (and its private helper, `resolve_prefix`) reimplements
     /// `TranscriptResolver`'s ancestry walk directly against
-    /// `conway_core::ports::SessionStore` (always available, unconditional
-    /// port trait) -- the same algorithm, without that type's LRU
-    /// memoization (sibling forks each re-walk their shared prefix; a
-    /// correctness/performance tradeoff, not a correctness gap).
+    /// `conway_core::ports::SessionStore` -- the same algorithm, without
+    /// that type's LRU memoization (sibling forks each re-walk their shared
+    /// prefix; a correctness/performance tradeoff, not a correctness gap).
     ///
     /// Also resolves `agent` to its owning `SessionId` first
     /// (`Runtime::agent_session`/`resolve_session`, the only existing
@@ -637,7 +639,7 @@ impl SessionHandle {
         self.resolve_prefix(session, head).await
     }
 
-    /// Mirrors `conway_session::TranscriptResolver::resolve_prefix`: walks
+    /// Mirrors `conway_core::transcript::TranscriptResolver::resolve_prefix`: walks
     /// `session`'s fork ancestry (via `SessionMeta.origin`) up to a root,
     /// bounding each ancestor at its own fork point, then concatenates from
     /// the root down, ending with `session`'s own records up to `upto`.

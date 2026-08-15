@@ -17,6 +17,11 @@ chrono = { workspace = true }
 blake3 = { workspace = true }
 schemars = { workspace = true }
 ulid = { workspace = true }
+# `transcript::TranscriptResolver`'s memoization cache (board item
+# 01KZVYVTVWRH20R6VJ6G3SWTJ6, "Stage 1a"): an external, non-workspace crate,
+# so it does not touch the T1 no-workspace-dependency invariant this crate
+# otherwise holds.
+lru = { workspace = true }
 
 [dev-dependencies]
 static_assertions = { workspace = true }
