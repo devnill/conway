@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One kind-agnostic profile facility, not a second per-kind store.**
+  `openai-compat`'s declarative profile machinery is lifted to
+  `conway_plugin_backends::profile_store::ProfileStore<T>` over a small
+  `Profiled` trait, owning only what is not dialect-specific: file
+  discovery layering, shadow-tracking, and one typed
+  `ConfigError::UnknownProfile`. It never reads a field beyond `id`, so it
+  structurally cannot become dialect-aware. `"anthropic"` gains real
+  profile selection through the same mechanism — `[backends.<id>].dialect`,
+  optional for this kind, names a reusable `.conway/profiles.toml` bundle
+  of `anthropic_version`/`headers` — under one documented precedence rule
+  shared by both kinds: an explicit `extra` key wins over a selected
+  profile, and unset keys fall to the kind's own default. A structural test
+  pins that exactly one profile-store type exists. `docs/providers.md`
+  records the finding that one physical profile file cannot mix entries for
+  both kinds, because each kind's parser validates every entry in a
+  discovered file as its own shape — the price of the facility staying
+  genuinely kind-agnostic.
+
+### Changed
+
 - **Presentation config left the embeddable schema.** `TuiSection`,
   `ThemeConfig`, `ThemeStyleConfig` and `StatusLineConfig` — roughly 34
   terminal-shaped configuration slots — moved from `conway::config::schema`

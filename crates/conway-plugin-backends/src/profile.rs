@@ -53,9 +53,26 @@
 //! scanning, non-streaming-only tool support, no structured output, and
 //! `Unknown` reliability — mirroring the existing dialects' own documented
 //! "conservative when unverified" convention.
-
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+//!
+//! # S4b: storage/selection/merge-order/error-reporting moved to `crate::profile_store`
+//!
+//! `ProfileStore`/`ProfileOrigin`/`LoadedProfile` used to be defined in this
+//! module, hardcoded to hold `Profile` values. They are now `crate::
+//! profile_store::{ProfileStore<T>, ProfileOrigin, LoadedProfile<T>}` —
+//! generic, kind-agnostic, shared with `"anthropic"`'s own profile support
+//! (`crate::factory::AnthropicBackendFactory`, via `crate::profile_store::
+//! ProfileBundle`) — see that module's own doc for why one generic facility
+//! replaces what would otherwise become a second per-kind store. `Profile`
+//! itself is unchanged: every field, every default, `ProfileRaw`'s
+//! `deny_unknown_fields`, `TryFrom<ProfileRaw>`'s empty-id rejection — all
+//! identical to before this item. What changed is only that `Profile` now
+//! implements `crate::profile_store::Profiled` (this module's own answer to
+//! "how do I parse a `[[profile]]` source string, and what is my selection
+//! key") instead of a `ProfileStore` hardcoded to it, and `ProfileStore` here
+//! is a type alias (plus one inherent-impl `built_ins()` constructor) over
+//! the generic type, so every existing call site (`ProfileStore::built_ins()`,
+//! `.get(id) -> Option<&Profile>`, `.merge_file(path)`, `.list()`, `.len()`,
+//! `.is_empty()`) compiles unchanged.
 
 use conway_core::capabilities::{
     CacheMode, CacheTtl, ReliabilityTier, StructuredOutput, ToolCallSupport,
@@ -63,8 +80,9 @@ use conway_core::capabilities::{
 use serde::Deserialize;
 
 use crate::capabilities::DialectDefaults;
-use crate::config::{ConfigError, Dialect};
+use crate::config::Dialect;
 use crate::model_metadata::{StructuredOutputSpec, ToolCallSupportSpec};
+use crate::profile_store::Profiled;
 use crate::tool_calls::ToolCallStyle;
 
 fn default_chat_path() -> String {
@@ -289,32 +307,20 @@ struct ProfileFile {
     profile: Vec<Profile>,
 }
 
-/// Where a loaded [`Profile`] came from — the "what is loaded" surface this
-/// module's `ProfileStore::list` exposes, following the same principle
-/// `conway_runtime::permission`'s `active_patterns()` establishes for
-/// permission rules: a rule set (here, a wire-behavior set) nobody can
-/// inspect is a trap.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProfileOrigin {
-    /// One of the profiles embedded in this crate at compile time
-    /// (`BUILT_IN_PROFILES`).
-    BuiltIn,
-    /// Loaded from a file at this path (project- or global-scoped
-    /// `.conway/profiles.toml`; see `conway::config::discovery`).
-    File(PathBuf),
-}
+/// S4b: `Profile`'s own answer to `crate::profile_store::Profiled` —
+/// unchanged parsing (`ProfileFile`/`toml::from_str`, the exact
+/// `#[serde(try_from = "ProfileRaw")]` deserialization this module already
+/// ran before this item), now behind the trait the kind-agnostic facility
+/// dispatches through rather than a hardcoded `ProfileStore::parse`.
+impl Profiled for Profile {
+    fn id(&self) -> &str {
+        &self.id
+    }
 
-/// One entry in a [`ProfileStore`]: the resolved [`Profile`] plus where it
-/// came from, and — when it replaced an already-loaded entry with the same
-/// `id` — where *that* one came from. Overriding a profile (a project file
-/// shadowing a built-in, or a global file shadowing) is a deliberate,
-/// supported mechanism; `shadows` is what keeps that override visible
-/// rather than silent.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LoadedProfile {
-    pub profile: Profile,
-    pub origin: ProfileOrigin,
-    pub shadows: Option<ProfileOrigin>,
+    fn parse_source(source: &str) -> Result<Vec<Self>, String> {
+        let file: ProfileFile = toml::from_str(source).map_err(|err| err.to_string())?;
+        Ok(file.profile)
+    }
 }
 
 /// The five dialects this crate shipped before declarative provider
@@ -454,16 +460,22 @@ kind = "implicit_prefix"
 min_prefix_tokens = 256
 "#;
 
-/// A resolved set of [`Profile`]s: the compile-time `BUILT_IN_PROFILES`
-/// plus zero or more user-supplied files layered over them, each entry
-/// tracking its [`ProfileOrigin`] — the "what is loaded" inspection surface
-/// (`list`).
-#[derive(Debug, Clone, Default)]
-pub struct ProfileStore {
-    entries: BTreeMap<String, LoadedProfile>,
-}
+/// S4b: a resolved set of [`Profile`]s — the compile-time
+/// `BUILT_IN_PROFILES` plus zero or more user-supplied files layered over
+/// them, each entry tracking its origin ([`ProfileOrigin`], re-exported
+/// below) — the "what is loaded" inspection surface (`list`). A type ALIAS
+/// over `crate::profile_store::ProfileStore<Profile>`, the ONE generic
+/// profile facility, rather than a second store definition: see
+/// `crate::profile_store`'s own module doc for why. Every method this
+/// module's callers already use (`built_ins`, `get`, `merge_file`, `list`,
+/// `len`, `is_empty`) still resolves — `built_ins` via the inherent impl
+/// immediately below (specialized to `Profile`, which orphan rules permit
+/// since both the generic type and `Profile` are local to this crate); the
+/// rest are the generic type's own methods, unchanged in signature.
+pub type ProfileStore = crate::profile_store::ProfileStore<Profile>;
+pub use crate::profile_store::{LoadedProfile, ProfileOrigin};
 
-impl ProfileStore {
+impl crate::profile_store::ProfileStore<Profile> {
     /// The compile-time-embedded built-in profiles (see
     /// `BUILT_IN_PROFILES`), every entry's origin `ProfileOrigin::BuiltIn`.
     ///
@@ -472,93 +484,7 @@ impl ProfileStore {
     /// possible runtime/user-input state (mirrors
     /// `ModelMetadataStore::defaults`'s identical `.expect()`).
     pub fn built_ins() -> Self {
-        let profiles =
-            Self::parse(BUILT_IN_PROFILES).expect("BUILT_IN_PROFILES must parse and validate");
-        let mut entries = BTreeMap::new();
-        for profile in profiles {
-            entries.insert(
-                profile.id.clone(),
-                LoadedProfile {
-                    profile,
-                    origin: ProfileOrigin::BuiltIn,
-                    shadows: None,
-                },
-            );
-        }
-        Self { entries }
-    }
-
-    fn parse(content: &str) -> Result<Vec<Profile>, String> {
-        let file: ProfileFile = toml::from_str(content).map_err(|err| err.to_string())?;
-        Ok(file.profile)
-    }
-
-    /// Reads `path` as a `[[profile]]` array-of-tables TOML file and layers
-    /// its entries over `self`, `id`-for-`id`; a same-`id` entry replaces
-    /// the existing one and records its previous origin in
-    /// [`LoadedProfile::shadows`] (visible shadowing — never silent).
-    ///
-    /// A nonexistent path returns `self` unchanged, not an error — every
-    /// discovered profile file path is optional (mirrors
-    /// `ModelMetadataStore::load`'s identical "missing is not an error"
-    /// contract). Any other I/O failure, or a syntactically/structurally
-    /// invalid file (including an unrecognized field — see the module doc's
-    /// `deny_unknown_fields` reasoning), is `Err(ConfigError::Profile { .. })`
-    /// naming `path` and the detail (which, for a bad field, names that
-    /// field).
-    pub fn merge_file(mut self, path: &Path) -> Result<Self, ConfigError> {
-        let content = match std::fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(self),
-            Err(err) => {
-                return Err(ConfigError::Profile {
-                    path: path.display().to_string(),
-                    detail: err.to_string(),
-                });
-            }
-        };
-        let profiles = Self::parse(&content).map_err(|detail| ConfigError::Profile {
-            path: path.display().to_string(),
-            detail,
-        })?;
-        for profile in profiles {
-            let shadows = self
-                .entries
-                .get(&profile.id)
-                .map(|prev| prev.origin.clone());
-            self.entries.insert(
-                profile.id.clone(),
-                LoadedProfile {
-                    profile,
-                    origin: ProfileOrigin::File(path.to_path_buf()),
-                    shadows,
-                },
-            );
-        }
-        Ok(self)
-    }
-
-    /// Looks up a profile by id (built-in or loaded).
-    pub fn get(&self, id: &str) -> Option<&Profile> {
-        self.entries.get(id).map(|loaded| &loaded.profile)
-    }
-
-    /// Every loaded profile, in id order — the mandatory "what is loaded"
-    /// surface: a caller can always ask which profiles exist and where each
-    /// came from (built-in, or which file, and what it shadowed).
-    pub fn list(&self) -> Vec<&LoadedProfile> {
-        self.entries.values().collect()
-    }
-
-    /// Number of loaded profiles.
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Whether no profile is loaded (never true for a store starting from
-    /// [`ProfileStore::built_ins`]).
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        Self::from_source(BUILT_IN_PROFILES).expect("BUILT_IN_PROFILES must parse and validate")
     }
 }
 
@@ -640,6 +566,7 @@ impl Dialect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ConfigError;
 
     #[test]
     fn built_ins_parse_and_cover_every_fixed_dialect_and_kimi() {

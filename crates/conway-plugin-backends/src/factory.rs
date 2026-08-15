@@ -36,31 +36,46 @@
 //! item's job -- see `PluginsConfig::default_backends`'s own doc for the
 //! exact default value and precedence).
 //!
-//! # `dialect` does NOT mean the same thing for both kinds -- a finding, not
-//! # a fix
+//! # S4b: one profile facility, `dialect` still means something different
+//! # per kind -- by design, not by omission
 //!
-//! Determined before the `extra`-reading work below (the "declaration this
-//! closes" item's own instruction): for `"openai-compat"`, `ctx.dialect` is
-//! REQUIRED and selects an entire [`crate::profile::Profile`] -- a whole wire-
-//! behavior/baseline-capability bundle (chat path, tool-call parsing style,
-//! cache mode, multi-block flattening, six more fields) resolved against a
-//! [`crate::profile::ProfileStore`] this crate owns end to end
-//! ([`OpenAiCompatBackendFactory::resolve_profile`]). For `"anthropic"`,
-//! `ctx.dialect` is not merely unread by accident -- there is no profile
-//! concept for this kind to select AT ALL: the Anthropic Messages API has
-//! exactly one wire shape, [`crate::anthropic::AnthropicBackend`] owns no
-//! `Profile`/`ProfileStore`/`Dialect` machinery, and nothing in this crate
-//! would even know what to resolve `ctx.dialect`'s string value against for
-//! this kind. `AnthropicBackendFactory::build` (below) still never reads it.
+//! The item this one depends on found that `dialect` spanned two
+//! vocabularies with nothing shared between them: "which of six pre-declared
+//! wire-behavior bundles" for `"openai-compat"`, versus "no such question
+//! exists" for `"anthropic"` (the Messages API has exactly one wire shape).
+//! **Lifting the storage/selection/merge-order/error-reporting machinery to
+//! one kind-agnostic facility (`crate::profile_store`) does not erase that
+//! difference, and was never supposed to** -- the facility's whole point is
+//! that it does not know what a profile's fields mean, so it cannot force
+//! two kinds with genuinely different vocabularies to pretend they share
+//! one.
 //!
-//! So the same field name spans two different vocabularies: "which of six
-//! pre-declared wire-behavior bundles" for one kind, versus "no such
-//! question exists" for the other. That is the shared-name defect the next
-//! item in this chain (lifting the profile machinery to one kind-agnostic
-//! facility) needs to know about BEFORE assuming a single `dialect`
-//! vocabulary applies across every kind -- it does not, today, and nothing
-//! in this item changes that (out of scope: no Anthropic-shaped profile
-//! store is built here, only `extra` is read and validated).
+//! What DID change: both kinds now resolve a selected profile through the
+//! SAME generic type (`crate::profile_store::ProfileStore<T>`), each with
+//! its own `T` --
+//! [`crate::profile::Profile`] for `"openai-compat"` (unchanged: nine
+//! wire-behavior/capability fields, `ctx.dialect` still REQUIRED, still
+//! resolved via [`OpenAiCompatBackendFactory::resolve_profile`]), and
+//! [`crate::profile_store::ProfileBundle`] for `"anthropic"` (new in this
+//! item: `ctx.dialect`, when set, is OPTIONAL and selects a named,
+//! reusable, file-loadable bundle of the same two keys `extra` already
+//! validates inline -- `anthropic_version`/`headers` -- see
+//! [`AnthropicBackendFactory::resolve_profile`]). Anthropic ships no
+//! built-in profiles of its own yet (`ProfileBundle` has no compile-time
+//! source the way `crate::profile::BUILT_IN_PROFILES` does) -- that is
+//! explicitly the next item's job (S4c), which builds an Anthropic
+//! profile SET on top of the selection mechanism landing here, not the
+//! mechanism itself.
+//!
+//! Both kinds' `build()` now also apply the ONE documented precedence rule
+//! (`crate::profile_store::apply_precedence`: explicit `extra` wins
+//! key-for-key over a selected profile's value for the same key) before
+//! validating the merged result -- `"anthropic"` is the kind that actually
+//! exercises this today, since `"openai-compat"`'s own `Profile` fields are
+//! strongly typed data resolved as a whole bundle, not an overlay map
+//! `ctx.extra` could sensibly patch key-by-key; that asymmetry is recorded
+//! here rather than papered over by inventing an `extra` reader
+//! `"openai-compat"` has no use for.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -73,6 +88,7 @@ use conway_core::ports::{Backend, BackendBuildContext, BackendFactory};
 use crate::config::{AnthropicConfig, OpenAiCompatConfig, SecretString};
 use crate::probe::{CapabilityProbe, DISCOVERY_TIMEOUT};
 use crate::profile::{Profile, ProfileStore};
+use crate::profile_store::{self, ProfileBundle};
 
 /// This crate's published Anthropic-dialect kind id -- the `[backends.<id>]
 /// .kind` value that selects [`AnthropicBackendFactory`]. Unchanged from the
@@ -90,47 +106,99 @@ pub const OPENAI_COMPAT_KIND: &str = "openai-compat";
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AnthropicBackendFactory;
 
-/// `[backends.<id>].extra` keys this kind understands. Anything else in
-/// `ctx.extra` is a rejected, named error -- see
-/// [`AnthropicBackendFactory::resolve_extra`]'s own doc for why silent
+/// `[backends.<id>].extra` (and, since S4b, a resolved profile's fields --
+/// see [`AnthropicBackendFactory::resolve_profile`]) keys this kind
+/// understands. Anything else is a rejected, named error -- see
+/// [`AnthropicBackendFactory::resolve_fields`]'s own doc for why silent
 /// acceptance is not this kind's default.
 const ANTHROPIC_EXTRA_KEY_ANTHROPIC_VERSION: &str = "anthropic_version";
 const ANTHROPIC_EXTRA_KEY_HEADERS: &str = "headers";
 
-/// `ctx.extra`, resolved and validated: this kind's answer to "read your own
-/// configuration and validate your own keys" (see [`AnthropicBackendFactory
-/// ::resolve_extra`]).
+/// The precedence-merged result of `ctx.extra` and a resolved profile's
+/// fields (`crate::profile_store::apply_precedence`), validated: this kind's
+/// answer to "read your own configuration and validate your own keys" (see
+/// [`AnthropicBackendFactory::resolve_fields`]).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct AnthropicExtra {
-    /// `extra.anthropic_version`, when present -- overrides
+struct AnthropicFields {
+    /// The merged map's `anthropic_version`, when present -- overrides
     /// [`crate::config::default_anthropic_version`], the SAME default
     /// literal `AnthropicConfigRaw` itself falls back to when a directly-
     /// deserialized [`AnthropicConfig`] omits the field, so a facade-built
     /// backend and a directly-constructed one agree on what "unset" means.
     anthropic_version: Option<String>,
-    /// `extra.headers`, flattened to `BTreeMap<String, String>` -- sent
-    /// alongside (never in place of) `x-api-key`/`anthropic-version` by
-    /// [`crate::anthropic::AnthropicBackend::apply_extra_headers`]. Empty
-    /// when `extra` set no `headers` key, which is exactly today's request
-    /// shape.
+    /// The merged map's `headers`, flattened to `BTreeMap<String, String>`
+    /// -- sent alongside (never in place of) `x-api-key`/`anthropic-version`
+    /// by [`crate::anthropic::AnthropicBackend::apply_extra_headers`]. Empty
+    /// when neither a selected profile nor `extra` set a `headers` key,
+    /// which is exactly today's request shape.
     headers: BTreeMap<String, String>,
 }
 
 impl AnthropicBackendFactory {
-    /// Validates `extra` against [`ANTHROPIC_EXTRA_KEY_ANTHROPIC_VERSION`]/
+    /// S4b: this kind's own (currently empty) compile-time built-in
+    /// profile set -- unlike `"openai-compat"`'s six built-ins
+    /// (`crate::profile::BUILT_IN_PROFILES`), `ProfileBundle` has no
+    /// compile-time source for this kind yet. That is S4c's job, landing
+    /// on top of the selection mechanism this item establishes, not this
+    /// item's own: see this module's own doc.
+    fn built_in_profiles() -> profile_store::ProfileStore<ProfileBundle> {
+        profile_store::ProfileStore::empty()
+    }
+
+    /// Resolves `ctx.dialect`, when set, to a [`ProfileBundle`] against
+    /// [`Self::built_in_profiles`] layered under every file in
+    /// `ctx.profile_file_paths` -- the SAME generic facility, and the SAME
+    /// file list, [`OpenAiCompatBackendFactory::resolve_profile_store`]
+    /// already resolves against for the other kind: proof the facility is
+    /// genuinely shared, not merely typed the same (this module's own doc).
+    ///
+    /// `Ok(None)` when `ctx.dialect` is unset -- unlike `"openai-compat"`,
+    /// selecting a profile is OPTIONAL for this kind: the Messages API has
+    /// exactly one wire shape, so an `"anthropic"` entry naming no profile
+    /// is not a degenerate config the way a dialect-less `"openai-compat"`
+    /// one is (`OpenAiCompatBackendFactory::build`'s own required-dialect
+    /// check, below). An unknown name is still a typed, named
+    /// [`ConwayError::Config`] -- [`profile_store::ProfileStore::resolve`]'s
+    /// own contract, wrapped here with this backend's id for context.
+    fn resolve_profile(ctx: &BackendBuildContext) -> Result<Option<ProfileBundle>, ConwayError> {
+        let Some(name) = ctx.dialect.as_deref() else {
+            return Ok(None);
+        };
+        let mut store = Self::built_in_profiles();
+        for path in &ctx.profile_file_paths {
+            store = store.merge_file(path).map_err(|e| ConwayError::Config {
+                detail: format!(
+                    "failed to load provider profiles from {}: {e}",
+                    path.display()
+                ),
+            })?;
+        }
+        store
+            .resolve(name)
+            .cloned()
+            .map(Some)
+            .map_err(|e| ConwayError::Config {
+                detail: format!("backend '{}': {e}", ctx.id),
+            })
+    }
+
+    /// Validates `fields` -- [`profile_store::apply_precedence`]'s output,
+    /// the resolved profile (if any) with `ctx.extra` overriding key-for-key
+    /// -- against [`ANTHROPIC_EXTRA_KEY_ANTHROPIC_VERSION`]/
     /// [`ANTHROPIC_EXTRA_KEY_HEADERS`], the only two keys this kind
-    /// understands. **An unrecognized key is a named [`ConwayError::Config`],
-    /// never silently ignored** -- the same "top of the harm ladder" reasoning
+    /// understands, wherever in that merge a key came from. **An
+    /// unrecognized key is a named [`ConwayError::Config`], never silently
+    /// ignored** -- the same "top of the harm ladder" reasoning
     /// [`OpenAiCompatBackendFactory::resolve_profile`] already applies to an
     /// unknown `dialect`: an operator who sets a key that does nothing gets
     /// silence indistinguishable from success, which is strictly worse than a
     /// loud rejection naming exactly what was misspelled or unsupported.
-    fn resolve_extra(
+    fn resolve_fields(
         id: &conway_core::ids::BackendId,
-        extra: &BTreeMap<String, serde_json::Value>,
-    ) -> Result<AnthropicExtra, ConwayError> {
-        let mut resolved = AnthropicExtra::default();
-        for (key, value) in extra {
+        fields: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<AnthropicFields, ConwayError> {
+        let mut resolved = AnthropicFields::default();
+        for (key, value) in fields {
             match key.as_str() {
                 ANTHROPIC_EXTRA_KEY_ANTHROPIC_VERSION => {
                     let version = value.as_str().ok_or_else(|| ConwayError::Config {
@@ -183,20 +251,24 @@ impl BackendFactory for AnthropicBackendFactory {
     /// Builds an [`crate::anthropic::AnthropicBackend`] from `ctx` -- exactly
     /// what `crates/conway/src/builder.rs`'s own (now-removed)
     /// `build_anthropic` assembled directly, plus: an empty `ctx.base_url`
-    /// falls back to Anthropic's own hosted endpoint (`ctx.dialect` is still
-    /// unused by this kind -- there is no "dialect" concept for the
-    /// Anthropic wire format, see this module's doc for the finding that
-    /// backs that claim), and `ctx.api_key` (empty when `None`) is validated
-    /// by [`AnthropicConfig::validate`] before construction, so a missing
-    /// key is a named [`ConwayError::Config`], never a panic or a silent
-    /// empty credential reaching the wire. `ctx.extra` is resolved through
-    /// `Self::resolve_extra` (crate-private) BEFORE any of that -- an
-    /// unrecognized key fails the build before `base_url`/`api_key` are
+    /// falls back to Anthropic's own hosted endpoint, and `ctx.api_key`
+    /// (empty when `None`) is validated by [`AnthropicConfig::validate`]
+    /// before construction, so a missing key is a named
+    /// [`ConwayError::Config`], never a panic or a silent empty credential
+    /// reaching the wire. Since S4b: `ctx.dialect`, when set, resolves a
+    /// named [`ProfileBundle`] (`Self::resolve_profile`); its fields are
+    /// merged with `ctx.extra` by the ONE precedence rule
+    /// (`profile_store::apply_precedence`: explicit `extra` wins key-for-key)
+    /// and the merged result is resolved through `Self::resolve_fields`
+    /// (crate-private) BEFORE any of the above -- an unrecognized key, or an
+    /// unknown profile name, fails the build before `base_url`/`api_key` are
     /// even inspected.
     fn build(&self, ctx: BackendBuildContext) -> Result<Arc<dyn Backend>, ConwayError> {
         use crate::anthropic::AnthropicBackend;
 
-        let extra = Self::resolve_extra(&ctx.id, &ctx.extra)?;
+        let profile = Self::resolve_profile(&ctx)?;
+        let merged_fields = profile_store::apply_precedence(profile.as_ref(), &ctx.extra);
+        let extra = Self::resolve_fields(&ctx.id, &merged_fields)?;
 
         let base_url = if ctx.base_url.is_empty() {
             url::Url::parse("https://api.anthropic.com")
@@ -250,8 +322,9 @@ impl BackendFactory for AnthropicBackendFactory {
 pub struct OpenAiCompatBackendFactory;
 
 impl OpenAiCompatBackendFactory {
-    /// Resolves a full [`ProfileStore`]: this crate's own compile-time
-    /// [`ProfileStore::built_ins`] layered under every file in
+    /// Resolves a full [`ProfileStore`] (a `crate::profile_store::
+    /// ProfileStore<Profile>`, S4b's generic facility): this crate's own
+    /// compile-time [`ProfileStore::built_ins`] layered under every file in
     /// `ctx.profile_file_paths`, in order -- the exact assembly
     /// `crates/conway/src/builder.rs`'s own (now-removed)
     /// `load_provider_profiles` performed, just relocated: the FACADE still
@@ -279,7 +352,13 @@ impl OpenAiCompatBackendFactory {
     /// to their snake_case built-in profile ids first -- preserving every
     /// existing config file unchanged -- then looked up verbatim; every
     /// other string (`"openai"`, `"ollama"`, `"kimi"`, or any id a
-    /// `.conway/profiles.toml` file declares) is looked up as-is.
+    /// `.conway/profiles.toml` file declares) is looked up as-is. The
+    /// kebab-case translation is THIS kind's own naming convention, not the
+    /// facility's -- `profiles.resolve` (below) never sees `raw`, only the
+    /// already-translated `canonical`, so an unknown-name error is the ONE
+    /// wording [`profile_store::ProfileStore::resolve`] produces for every
+    /// kind, wrapped here with this backend's id for context (the identical
+    /// pattern `AnthropicBackendFactory::resolve_profile` now uses).
     fn resolve_profile(
         id: &conway_core::ids::BackendId,
         raw: &str,
@@ -292,13 +371,10 @@ impl OpenAiCompatBackendFactory {
             other => other,
         };
         profiles
-            .get(canonical)
+            .resolve(canonical)
             .cloned()
-            .ok_or_else(|| ConwayError::Config {
-                detail: format!(
-                    "backend '{id}': unknown dialect/profile '{raw}' (no built-in or loaded \
-                     profile named '{canonical}')"
-                ),
+            .map_err(|e| ConwayError::Config {
+                detail: format!("backend '{id}': {e}"),
             })
     }
 }

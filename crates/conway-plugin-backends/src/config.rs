@@ -109,6 +109,15 @@ pub enum ConfigError {
     /// "file does not exist" as `Ok(self)` unchanged.
     #[error("failed to load provider profiles from {path}: {detail}")]
     Profile { path: String, detail: String },
+    /// S4b: `crate::profile_store::ProfileStore::resolve` found no loaded
+    /// profile (built-in or file-loaded) named `id` — the ONE "unknown
+    /// profile name" error every kind that selects a profile produces,
+    /// rather than each hand-rolling its own wording (`crate::profile_store`'s
+    /// own module doc). A kind's factory wraps this with backend-instance
+    /// context (`"backend '{ctx.id}': {this}"`); the profile name itself is
+    /// always this variant's own concern.
+    #[error("unknown profile '{id}' (no built-in or loaded profile named '{id}')")]
+    UnknownProfile { id: String },
 }
 
 /// Raw wire shape for [`AnthropicConfig`]. Exists so deserialization routes

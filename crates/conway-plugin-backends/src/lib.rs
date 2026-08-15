@@ -35,6 +35,7 @@ pub mod model_metadata;
 pub mod openai_compat;
 pub mod probe;
 pub mod profile;
+pub mod profile_store;
 pub mod tool_calls;
 
 pub use factory::{
