@@ -748,6 +748,9 @@ impl Default for PluginsConfig {
 /// an argv vector, `timeout_ms`) rather than inventing a third config
 /// vocabulary for "run this command": an operator who has already
 /// configured a `[hooks].rules[]` entry recognizes this shape on sight.
+/// The `transport` field (board item `01M03VJHG1WFECFJB4ZH3CKWDX`) selects
+/// one-shot exec (the default, unchanged) or a persistent NDJSON JSON-RPC
+/// channel -- see [`SubprocessTransport`]'s own doc.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SubprocessPluginEntry {
@@ -766,9 +769,22 @@ pub struct SubprocessPluginEntry {
     pub command: Vec<String>,
     /// Milliseconds any single spawn (manifest discovery, or one `tool/1`
     /// call) is allowed to run before the reading binary/embedder kills
-    /// it. Same default and reasoning as [`HookEntry::timeout_ms`].
+    /// it. Same default and reasoning as [`HookEntry::timeout_ms`]. For the
+    /// persistent transport this is a PER-CALL deadline on the framed read,
+    /// not a session-wide idle kill.
     #[serde(default = "default_hook_timeout_ms")]
     pub timeout_ms: u64,
+    /// Which transport `tool/1` calls use. Defaults to
+    /// [`SubprocessTransport::OneShot`] (existing behavior unchanged); set
+    /// to [`SubprocessTransport::Persistent`] for a long-lived NDJSON
+    /// JSON-RPC channel (board item `01M03VJHG1WFECFJB4ZH3CKWDX`). This is
+    /// a config-layer mirror of
+    /// `conway_plugin_subprocess::SubprocessTransport` (this crate does not
+    /// depend on the plugin crate, so the two are duplicated by the same
+    /// `SubprocessPluginEntry`/`SubprocessPluginSpec` split that already
+    /// exists); `conway-cli`'s loader maps between them.
+    #[serde(default)]
+    pub transport: SubprocessTransport,
 }
 
 impl Default for SubprocessPluginEntry {
@@ -777,8 +793,39 @@ impl Default for SubprocessPluginEntry {
             id: String::new(),
             command: Vec::new(),
             timeout_ms: default_hook_timeout_ms(),
+            transport: SubprocessTransport::default(),
         }
     }
+}
+
+/// The transport a `[plugins].subprocess[]` entry's `tool/1` calls use --
+/// one-shot exec (the original slice, every call spawns fresh) or a
+/// persistent NDJSON JSON-RPC channel (board item
+/// `01M03VJHG1WFECFJB4ZH3CKWDX`). **Default stays one-shot** so existing
+/// behavior is unchanged; an operator opts IN to persistent with
+/// `"transport": "persistent"`.
+///
+/// `tool.spec/1` discovery stays one-shot under BOTH variants -- the
+/// persistent channel carries only `tool/1` (the plugin crate's `wire`
+/// module's own doc states why that sidesteps the manifest-`id` /
+/// JSON-RPC-`id` collision). This is a config-layer mirror of
+/// `conway_plugin_subprocess::SubprocessTransport`; see
+/// [`SubprocessPluginEntry::transport`] for the duplication rationale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubprocessTransport {
+    /// One-shot exec: every `tool/1` call spawns the command fresh. The
+    /// default, so existing behavior is unchanged.
+    #[default]
+    OneShot,
+    /// Persistent NDJSON JSON-RPC: spawn the command ONCE, keep it alive
+    /// across many `tool/1` calls. See `docs/plugins/subprocess-plugins.md`
+    /// for the persistent shape, its failure modes, and the trust
+    /// disclosure (a persistent subprocess holds a long-lived, unsandboxed
+    /// process the operator named in config -- the same footing as a
+    /// `[hooks].rules[].command`, held for longer, with the larger
+    /// exposure that implies).
+    Persistent,
 }
 
 /// `[hooks]` -- an operator-declared list of "when this event happens, run

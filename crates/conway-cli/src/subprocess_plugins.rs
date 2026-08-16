@@ -40,8 +40,11 @@
 
 use std::sync::Arc;
 
+use conway::config::schema::SubprocessTransport as ConfigTransport;
 use conway::{ConwayBuilder, ConwayError};
-use conway_plugin_subprocess::{SubprocessPlugin, SubprocessPluginSpec};
+use conway_plugin_subprocess::{
+    SubprocessPlugin, SubprocessPluginSpec, SubprocessTransport as PluginTransport,
+};
 
 /// Discovers and attaches every `[plugins].subprocess[]` entry in
 /// `builder`'s own config, in list order. A discovery failure (spawn,
@@ -57,10 +60,15 @@ pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
     let entries = builder.config().plugins.subprocess.clone();
     let mut builder = builder;
     for entry in entries {
+        let transport = match entry.transport {
+            ConfigTransport::OneShot => PluginTransport::OneShot,
+            ConfigTransport::Persistent => PluginTransport::Persistent,
+        };
         let spec = SubprocessPluginSpec {
             config_id: entry.id.clone(),
             command: entry.command,
             timeout_ms: entry.timeout_ms,
+            transport,
         };
         let plugin = SubprocessPlugin::discover(spec)
             .await

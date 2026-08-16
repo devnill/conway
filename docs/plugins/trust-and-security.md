@@ -58,6 +58,26 @@ only the named entrypoint file, and an interpreter entrypoint whose real
 code sits in an adjacent tree would defeat a single-digest check. Gate it
 behind whatever loads a plugin off-process, not before.
 
+**A persistent subprocess plugin (board item `01M03VJHG1WFECFJB4ZH3CKWDX`,
+`"transport": "persistent"`) is a larger exposure, not a larger capability
+grant.** A persistent subprocess plugin holds a long-lived, unsandboxed
+process the operator named in config — the same footing as a
+`[hooks].rules[].command`, held for longer, with the larger exposure that
+implies. An operator who would not paste an unknown command into a hook
+rule should not paste one into a persistent subprocess plugin entry
+either. The child can do exactly what the one-shot child could do — it
+just does it for longer, accumulates state across calls, and can fail in
+new ways (die mid-session, write a partial frame, stall on a blocked
+pipe); none of those are trust-mechanism gaps, they are liveness/safety
+problems the persistent transport's failure handling solves (see
+[`subprocess-plugins.md`](subprocess-plugins.md)'s "The persistent
+transport" section). The deferred digest-keyed `plugin` trust subject
+above addresses a DIFFERENT threat — verifying the binary on disk is the
+one the operator reviewed — that is identical for one-shot and persistent;
+going persistent does not change the digest-trust calculus, so it does
+not need the deferred mechanism to land safely, and this transport builds
+no parallel trust mechanism of its own.
+
 **Why the directory form is rejected.** A directory-scoped trust decision
 made about `/repo` stays valid for whatever `/repo` becomes — a `git pull`
 that changes the committed `permissions.json` rides the trust decision made

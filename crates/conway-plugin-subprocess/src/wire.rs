@@ -3,8 +3,8 @@
 //! tool call) -- and the answers this host requires back. See `lib.rs`'s
 //! own module doc for why these are the same point names `docs/plugins/
 //! hooks.md` points 1/2 already use, and for the disclosed one-shot-exec
-//! transport this crate builds instead of the design's persistent
-//! connection.
+//! transport this crate builds alongside the persistent NDJSON transport
+//! the later board item `01M03VJHG1WFECFJB4ZH3CKWDX` adds.
 //!
 //! **Deliberately explicit, never untagged.** A `tool/1` answer's success
 //! and failure shapes are told apart by a REQUIRED `"ok"` boolean, not by
@@ -16,6 +16,24 @@
 //! deterministically classified by its own `ok` field in
 //! [`parse_tool_result`] -- there is no ambiguous JSON shape this parser
 //! can misclassify.
+//!
+//! **Persistent framing reuses this vocabulary, does not parallel it.** The
+//! persistent NDJSON transport (see `lib.rs`'s `session` module) carries
+//! ONLY `tool/1` over the long-lived channel -- `tool.spec/1` discovery
+//! stays one-shot, by design (the spec for item `01M03VJHG1WFECFJB4ZH3CKWDX`
+//! says so explicitly: "keep it for discovery ... or as a fallback; the
+//! persistent channel is for repeated `tool/1` calls"). That sidesteps the
+//! one real wire collision a persistent envelope would otherwise force: a
+//! JSON-RPC correlation `id` (a number) against the manifest's own `id`
+//! field (the plugin's string identity). On the persistent channel the
+//! request is the one-shot `tool/1` body (`op`, `tool`, `call_id`,
+//! `arguments` -- the SAME field names [`Request::ToolV1`] already uses)
+//! plus a JSON-RPC `id`, and the response is the one-shot `tool/1` answer
+//! (`ok`, `blocks`, `is_error`, `artifacts`, `error` -- the SAME
+//! [`RawToolResult`] fields) plus the echoed `id`; see
+//! [`PersistentToolRequest`] / [`PersistentToolResponse`]. Nothing here
+//! invents a second content-block or error vocabulary -- `blocks` and
+//! `error` are reused verbatim from the one-shot shape.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +41,8 @@ use conway::plugin::{Artifact, ContentBlock, PermissionClass, ToolCategory, Tool
 
 /// One outgoing request this host ever sends, tagged by its own `"op"`
 /// field on the wire -- `{"op":"tool.spec/1"}` or `{"op":"tool/1", ...}`.
+/// Used by the one-shot path; the persistent path wraps the `tool/1` body
+/// in [`PersistentToolRequest`] (same fields plus a JSON-RPC `id`).
 #[derive(Serialize)]
 #[serde(tag = "op")]
 pub(crate) enum Request {
@@ -34,6 +54,51 @@ pub(crate) enum Request {
         call_id: String,
         arguments: serde_json::Value,
     },
+}
+
+/// A `tool/1` request framed for the persistent NDJSON transport -- the
+/// one-shot [`Request::ToolV1`] body (`op`, `tool`, `call_id`,
+/// `arguments` -- the SAME field names, NOT a parallel vocabulary) plus a
+/// JSON-RPC `id` this host assigns for correlation. Serialized to one line
+/// (`serde_json::to_vec` then `\n`) on the child's stdin; see `session`'s
+/// own module doc for the NDJSON framing decision.
+#[derive(Serialize)]
+pub(crate) struct PersistentToolRequest {
+    /// JSON-RPC correlation id, assigned monotonically by
+    /// `PersistentSession`. Echoed back in [`PersistentToolResponse::id`];
+    /// a response whose `id` does not match the outstanding request is a
+    /// protocol error (the session is marked dead, fail-closed).
+    pub id: u64,
+    /// The one-shot `tool/1` op tag, emitted verbatim (`"tool/1"`) -- NOT a
+    /// second op vocabulary, the literal value [`Request::ToolV1`] serializes.
+    pub op: &'static str,
+    pub tool: String,
+    pub call_id: String,
+    pub arguments: serde_json::Value,
+}
+
+impl PersistentToolRequest {
+    /// The constant op tag this host emits for a persistent `tool/1`
+    /// request -- the literal `"tool/1"`, the same value
+    /// [`Request::ToolV1`] serializes via its `#[serde(rename = "tool/1")]`.
+    pub const OP: &'static str = "tool/1";
+
+    /// Builds a persistent `tool/1` request from the same fields the one-shot
+    /// path builds [`Request::ToolV1`] from, plus a correlation `id`.
+    pub(crate) fn tool_v1(
+        id: u64,
+        tool: String,
+        call_id: String,
+        arguments: serde_json::Value,
+    ) -> Self {
+        Self {
+            id,
+            op: Self::OP,
+            tool,
+            call_id,
+            arguments,
+        }
+    }
 }
 
 /// The `tool.spec/1` answer: this subprocess's own declared identity and
@@ -115,6 +180,46 @@ struct RawToolResult {
     error: Option<WireToolError>,
 }
 
+impl RawToolResult {
+    /// Classifies this unclassified answer into a [`WireToolResult`]. The
+    /// IDENTICAL logic [`parse_tool_result`] (one-shot) and
+    /// [`parse_persistent_tool_response`] (persistent NDJSON) both run, just
+    /// on different framings of the same `RawToolResult` body -- factored
+    /// here so the two framings cannot drift apart.
+    fn classify(self) -> Result<WireToolResult, String> {
+        if self.ok {
+            Ok(WireToolResult::Ok {
+                blocks: self.blocks,
+                is_error: self.is_error,
+                artifacts: self.artifacts,
+            })
+        } else {
+            match self.error {
+                Some(err) => Ok(WireToolResult::Err(err)),
+                None => Err("\"ok\": false was returned with no \"error\" object".to_string()),
+            }
+        }
+    }
+}
+
+/// A `tool/1` response framed for the persistent NDJSON transport -- the
+/// one-shot [`RawToolResult`] body (`ok`, `blocks`, `is_error`, `artifacts`,
+/// `error` -- the SAME fields, NOT a parallel vocabulary) plus the echoed
+/// JSON-RPC `id`. Deserialized from one `\n`-delimited line on the child's
+/// stdout; see [`parse_persistent_tool_response`].
+#[derive(Deserialize)]
+pub(crate) struct PersistentToolResponse {
+    /// The echoed correlation id; must match the outstanding request's
+    /// [`PersistentToolRequest::id`] -- a mismatch is a protocol error,
+    /// not silently re-routed.
+    pub id: u64,
+    /// The one-shot `tool/1` answer body, flattened in so `ok`/`blocks`/
+    /// `is_error`/`artifacts`/`error` sit alongside `id` on the same JSON
+    /// object (the wire shape `{"id":N, "ok":true, "blocks":[...], ...}`).
+    #[serde(flatten)]
+    raw: RawToolResult,
+}
+
 /// A `tool/1` call's classified answer -- success (a
 /// [`conway::plugin::ToolOutput`]'s own three fields, minus truncation:
 /// `crate::SubprocessTool::invoke` always applies
@@ -176,23 +281,27 @@ impl WireToolErrorKind {
     }
 }
 
-/// Deserializes and classifies one `tool/1` answer. `Err(String)` covers
-/// both "not valid JSON" and "valid JSON, `ok: false`, but no `error`
-/// object" -- both are the identical caller-facing outcome
+/// Deserializes and classifies one `tool/1` answer (one-shot path).
+/// `Err(String)` covers both "not valid JSON" and "valid JSON, `ok: false`,
+/// but no `error` object" -- both are the identical caller-facing outcome
 /// (`SubprocessPluginError::UnparseableAnswer`/`ToolError::Internal`, per
 /// call site), so this function does not distinguish them further.
 pub(crate) fn parse_tool_result(bytes: &[u8]) -> Result<WireToolResult, String> {
     let raw: RawToolResult = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
-    if raw.ok {
-        Ok(WireToolResult::Ok {
-            blocks: raw.blocks,
-            is_error: raw.is_error,
-            artifacts: raw.artifacts,
-        })
-    } else {
-        match raw.error {
-            Some(err) => Ok(WireToolResult::Err(err)),
-            None => Err("\"ok\": false was returned with no \"error\" object".to_string()),
-        }
-    }
+    raw.classify()
+}
+
+/// Deserializes and classifies one persistent NDJSON `tool/1` response line
+/// -- the one-shot [`parse_tool_result`] shape plus a JSON-RPC `id`. Returns
+/// the echoed `id` (for correlation against the outstanding request) and
+/// the classified [`WireToolResult`]. `Err(String)` covers "not valid
+/// JSON", "missing `id`", and "`ok: false` with no `error` object" -- each a
+/// typed failure at the call site (a malformed frame is a parse error, not
+/// a deadlock, per item `01M03VJHG1WFECFJB4ZH3CKWDX`'s acceptance criterion 4).
+pub(crate) fn parse_persistent_tool_response(
+    bytes: &[u8],
+) -> Result<(u64, WireToolResult), String> {
+    let resp: PersistentToolResponse =
+        serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
+    Ok((resp.id, resp.raw.classify()?))
 }
