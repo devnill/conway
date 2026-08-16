@@ -197,6 +197,115 @@ pub trait Plugin: Send + Sync + 'static {
     fn context_hooks(&self) -> Vec<Arc<dyn ContextHook>> {
         Vec::new()
     }
+
+    /// Zero or more NARROWING permission rules this plugin contributes --
+    /// the in-process / host-side projection of a plugin's declared
+    /// permission policy (the wire form is `permission.policy/1`, board item
+    /// `01M03VKJG7JJ0JEKY265WA7MJ7`; see `docs/plugins/hooks.md` point 8).
+    /// The default returns none, the SAME zero-cost-default precedent
+    /// [`Self::commands`]/[`Self::events`]/[`Self::observers`]/
+    /// [`Self::narrowable_keys`]/[`Self::context_hooks`] established above:
+    /// every existing `Plugin` implementor keeps compiling unmodified, and a
+    /// build with no policy-contributing plugin installs nothing.
+    ///
+    /// **Narrowing-only, by type construction.** [`PluginPermissionVerdict`]
+    /// has no `Allow` variant -- a plugin may `Deny` a call outright, force
+    /// it to the operator's gate with `Prompt`, or `Abstain` (no opinion).
+    /// It can never WIDEN what the operator authorized. This is the
+    /// narrowing-only (no `Allow`) shape `docs/plugins/hooks.md` point 8's own
+    /// `NarrowingPolicy` prescribes, extended with `Prompt` for this spec's
+    /// `Dangerous`->prompt mapping -- `NarrowingPolicy` itself is `Deny`|`Abstain`
+    /// (no `Prompt`); the full `NarrowingPolicy`/`DecidingPolicy` per-call
+    /// inference chain remains design-only (see hooks.md point 8). "May only
+    /// narrow" is a property of the return type a plugin cannot talk its way
+    /// around, not a runtime flag the broker has to remember to check. The
+    /// broker installs `Deny`/`Prompt`
+    /// rules as `PatternOrigin::Plugin` deny/prompt rules (the SAME
+    /// admission `remember_deny_rule`/`remember_prompt_rule` already
+    /// provide); `Abstain` installs nothing.
+    ///
+    /// **Subordination to the operator -- the load-bearing boundary.** The
+    /// operator's own `permissions.json`/`PermissionMode` STILL wins over a
+    /// plugin-contributed rule: a plugin `Deny` is checked at the SAME tier
+    /// as an operator `Deny` (most-restrictive-wins, before every allow
+    /// path); a plugin `Prompt` forces the gate, but the operator's `Deny`
+    /// and plan-mode denial fire FIRST and outrank it; and there is no
+    /// plugin `Allow` to widen anything the operator denied. A plugin
+    /// declaring `Abstain` for a tool the operator independently marked
+    /// dangerous (an operator `Deny` rule, or a `Plan`-mode category
+    /// refusal) leaves the operator's decision standing -- the wire policy
+    /// cannot widen. `crates/conway-runtime/src/permission.rs`'s
+    /// `plugin_permission_subordination_*` tests pin this.
+    ///
+    /// `tool` is matched as an exact tool name (the SAME
+    /// [`crate::permission_pattern::Select::Tools`] exact-match a flat
+    /// `tool:*` rule uses), scoped to THIS plugin's own declared tools in
+    /// practice -- the host does not enforce that scoping here (a rule
+    /// naming a tool no installed plugin declares simply never matches),
+    /// but a plugin authoring a rule for a tool it does not own is a
+    /// authoring bug, not a security boundary.
+    fn permission_rules(&self) -> Vec<PluginPermissionRule> {
+        Vec::new()
+    }
+}
+
+/// One NARROWING permission rule a plugin contributes via
+/// [`Plugin::permission_rules`] -- a per-tool verdict the host's
+/// `PermissionBroker` consults for that tool's calls. See that method's own
+/// doc for the subordination boundary (operator wins; wire policy is
+/// advisory-under-enforcement, narrowing only) and the type-level
+/// "no `Allow` variant" proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginPermissionRule {
+    /// The tool name this rule scopes to, matched exactly (the identical
+    /// match `Select::Tools([tool])` uses). A rule naming a tool this plugin
+    /// does not own is an authoring bug, not a security boundary -- the host
+    /// does not enforce ownership here.
+    pub tool: String,
+    /// The narrowing verdict. `Deny` -> the broker installs a
+    /// `PatternOrigin::Plugin` deny rule; `Prompt` -> a prompt rule (forces
+    /// the gate); `Abstain` -> installs nothing (no opinion).
+    pub verdict: PluginPermissionVerdict,
+    /// A free-text reason the plugin authors the rule with. Parsed from the
+    /// wire and surfaced at the plugin layer -- `SubprocessPlugin::permission_rules`
+    /// exposes it and the integration tests assert it round-trips -- but NOT yet
+    /// carried into the broker's rendered denial: the broker renders a `Deny` via
+    /// `Rule::describe` (the select/when label) with no `PatternOrigin::Plugin`
+    /// attribution and no per-rule reason text. Threading the reason (and the
+    /// plugin attribution) into the denial/prompt surface is an unbundled
+    /// follow-up, the same class of gap as `PermissionBroker::decide`'s own "why
+    /// the operator is being asked" rendering. `Abstain` installs nothing, so the
+    /// reason is unused there regardless.
+    pub reason: String,
+}
+
+/// The verdict a [`PluginPermissionRule`] carries -- NARROWING-only, by type
+/// construction: there is no `Allow` variant, so a plugin can never widen
+/// what the operator authorized. This is the narrowing-only (no `Allow`)
+/// shape `docs/plugins/hooks.md` point 8's `NarrowingPolicy` prescribes
+/// ("may only narrow" is a property of the return type, not a runtime flag),
+/// extended with `Prompt` for this spec's `Dangerous`->prompt mapping --
+/// `NarrowingPolicy` itself is `Deny`|`Abstain` (no `Prompt`), and the full
+/// `NarrowingPolicy`/`DecidingPolicy` per-call inference chain remains
+/// design-only (see hooks.md point 8). See [`Plugin::permission_rules`]'s own
+/// doc for the subordination boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginPermissionVerdict {
+    /// Refuse the call outright, before any allow path is consulted. Maps
+    /// to a `PatternOrigin::Plugin` deny rule at the broker's deny tier
+    /// (step 2 of `PermissionBroker::decide`'s ordering -- before plan-mode,
+    /// the cache, pattern-allow, and `AutoAllow`).
+    Deny,
+    /// Force the call to the operator's gate even in `AutoAllow` mode and
+    /// even over a matching `allow` grant. Maps to a `PatternOrigin::Plugin`
+    /// prompt rule (step 4 -- sets `must_reach_gate`, skipping the
+    /// cache/pattern-allow/`AutoAllow` shortcuts). The operator's own
+    /// denial/plan-mode refusal still fires FIRST and outranks this.
+    Prompt,
+    /// No opinion -- the plugin contributes no rule for this tool, and the
+    /// operator's own `permissions.json`/`PermissionMode` decides alone.
+    /// Installs nothing.
+    Abstain,
 }
 
 /// One [`PluginConfig`] key a plugin declares narrowable in per-agent

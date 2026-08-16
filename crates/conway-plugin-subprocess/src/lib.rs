@@ -13,27 +13,35 @@
 //! SECOND lifecycle for `tool/1` alongside the original one-shot exec: a
 //! persistent NDJSON JSON-RPC channel (board item
 //! `01M03VJHG1WFECFJB4ZH3CKWDX`, see `session`'s own module doc). Still
-//! nothing beyond `tool/1` itself: no `permission.policy/1`, no
-//! `context.hook/1`, no `observe/1`, no capability handshake beyond the
-//! `PluginManifest::required_host_caps` the wire now CARRIES (board item
-//! `01M03VJXARFHSDAGHFXGCWKJTY`: a subprocess plugin declares its required
-//! host caps in `WireManifest::required_host_caps`, mapped into
+//! nothing beyond `tool/1` itself and the session-scoped
+//! `permission.policy/1` declaration: no `context.hook/1`, no `observe/1`,
+//! no capability handshake beyond the `PluginManifest::required_host_caps`
+//! the wire now CARRIES (board item `01M03VJXARFHSDAGHFXGCWKJTY`: a
+//! subprocess plugin declares its required host caps in
+//! `WireManifest::required_host_caps`, mapped into
 //! `PluginManifest::required_host_caps` here and consulted by the `conway`
 //! builder at registration -- a cap the host lacks refuses the plugin; an
-//! unknown cap tag fails closed at parse). No live `permission.policy/1`
-//! negotiation round-trips a cap request at call time; the declaration is
-//! static, gated once at build. The persistent transport DOES now run an
-//! `initialize/1` version-negotiation handshake at session open (board item
-//! `01M03VK7MRPSAVWMW7YNYPRPGT`): `PersistentSession::initialize` exchanges
-//! one `initialize/1` request/response with the plugin BEFORE any `tool/1`
-//! call, applies `docs/plugins/compatibility.md`'s version-negotiation table
-//! (refuse on major mismatch or unsatisfied `minor_min`; accept otherwise;
-//! unknown fields in the plugin's answer ignored-and-counted), and records
-//! the plugin's declared per-point versions for the later wire-point items
-//! to consult. One-shot discovery (`tool.spec/1`) stays handshake-free --
-//! the handshake is a persistent-transport concern. No live
-//! `permission.policy/1` negotiation round-trips a cap request at call time;
-//! the declaration is static, gated once at build.
+//! unknown cap tag fails closed at parse). The persistent transport DOES
+//! now run an `initialize/1` version-negotiation handshake at session open
+//! (board item `01M03VK7MRPSAVWMW7YNYPRPGT`): `PersistentSession::
+//! initialize` exchanges one `initialize/1` request/response with the
+//! plugin BEFORE any `tool/1` call, applies `docs/plugins/compatibility.md`'s
+//! version-negotiation table (refuse on major mismatch or unsatisfied
+//! `minor_min`; accept otherwise; unknown fields in the plugin's answer
+//! ignored-and-counted), and records the plugin's declared per-point
+//! versions for the later wire-point items to consult. Immediately AFTER
+//! the handshake, `PersistentSession::request_permission_policy` (board
+//! item `01M03VKJG7JJ0JEKY265WA7MJ7`) exchanges ONE `permission.policy/1`
+//! request/response -- the plugin declares per-tool NARROWING verdicts
+//! (`deny`/`prompt`/`abstain`, NO `allow` by type construction: a plugin
+//! may only narrow, never widen), which the `conway` facade installs as
+//! `PatternOrigin::Plugin` deny/prompt rules in the `PermissionBroker`,
+//! advisory-under-enforcement and subordinate to the operator's own
+//! `permissions.json`/`PermissionMode`. A plugin declaring the point at an
+//! unsupported version is REFUSED at discover (participant rule); a plugin
+//! that does not declare it loads normally and contributes no wire policy.
+//! One-shot discovery (`tool.spec/1`) stays handshake-free -- the handshake
+//! and policy exchange are persistent-transport concerns.
 //!
 //! **Transport: one-shot exec (default) AND a persistent NDJSON channel.**
 //! `docs/plugins/hooks.md`'s own point 9 doc and the decision record both
@@ -88,8 +96,9 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use conway::plugin::{
-    async_trait, PathArgs, Plugin, PluginManifest, RenderKind, Tool, ToolCall, ToolCtx, ToolError,
-    ToolName, ToolOutput, ToolSpec, TruncationPolicy,
+    async_trait, PathArgs, Plugin, PluginManifest, PluginPermissionRule, PluginPermissionVerdict,
+    RenderKind, Tool, ToolCall, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec,
+    TruncationPolicy,
 };
 
 mod session;
@@ -627,6 +636,20 @@ impl SubprocessPlugin {
                 // `Drop` kills the process group), never orphaned.
                 let session = PersistentSession::spawn(&spec).await?;
                 session.initialize().await?;
+                // The one-time `permission.policy/1` declaration exchange
+                // (board item `01M03VKJG7JJ0JEKY265WA7MJ7`), AFTER
+                // `initialize/1` succeeds and BEFORE the session is wrapped
+                // in `Arc` / any `tool/1` call can run. Version negotiation
+                // is against the per-point record `initialize` just
+                // produced: a plugin declaring `permission.policy/1` at an
+                // unsupported version is REFUSED here (participant rule,
+                // `HandshakeRefused` naming the version mismatch); a plugin
+                // that does not declare the point loads normally and
+                // contributes no wire policy. A malformed policy answer is
+                // `HandshakeMalformed`, fail-closed (never silently no-op).
+                // On any failure the just-spawned child is dropped (its
+                // `Drop` kills the process group), never orphaned.
+                session.request_permission_policy().await?;
                 Some(Arc::new(session))
             }
         };
@@ -661,6 +684,39 @@ impl SubprocessPlugin {
     pub fn point_version(&self, point: &str) -> Option<u32> {
         self.session.as_ref().and_then(|s| s.point_version(point))
     }
+
+    /// The per-tool permission policy this plugin declared over
+    /// `permission.policy/1` at persistent-session open (board item
+    /// `01M03VKJG7JJ0JEKY265WA7MJ7`), as the host-side
+    /// [`PluginPermissionRule`]s the `conway` facade installs in the
+    /// `PermissionBroker` as `PatternOrigin::Plugin` deny/prompt rules.
+    /// Empty for the one-shot transport (no handshake, no policy exchange),
+    /// for a persistent plugin that did not declare the point (it contributes
+    /// no wire policy), or before `discover` has run the one-time exchange.
+    ///
+    /// **Narrowing-only by construction.** The wire shape has no `allow`
+    /// verdict (a plugin may `deny`/`prompt`/`abstain`, never widen), so the
+    /// [`PluginPermissionVerdict`] this returns never carries an `Allow` --
+    /// the operator's own `permissions.json`/`PermissionMode` STILL wins over
+    /// any plugin declaration. See `Plugin::permission_rules`'s own trait
+    /// doc for the subordination boundary.
+    pub fn permission_rules(&self) -> Vec<PluginPermissionRule> {
+        self.session
+            .as_ref()
+            .map(|s| s.permission_rules())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| PluginPermissionRule {
+                tool: r.tool,
+                verdict: match r.verdict {
+                    wire::WirePermissionVerdict::Deny => PluginPermissionVerdict::Deny,
+                    wire::WirePermissionVerdict::Prompt => PluginPermissionVerdict::Prompt,
+                    wire::WirePermissionVerdict::Abstain => PluginPermissionVerdict::Abstain,
+                },
+                reason: r.reason,
+            })
+            .collect()
+    }
 }
 
 impl Plugin for SubprocessPlugin {
@@ -670,6 +726,17 @@ impl Plugin for SubprocessPlugin {
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         self.tools.clone()
+    }
+
+    /// The per-tool NARROWING permission rules this subprocess plugin
+    /// declared over `permission.policy/1` at persistent-session open (board
+    /// item `01M03VKJG7JJ0JEKY265WA7MJ7`). See [`Self::permission_rules`]'s
+    /// own doc for the wire→host projection and the subordination boundary
+    /// (operator wins; wire policy is advisory-under-enforcement, narrowing
+    /// only). The default `Vec::new()` is what every other `Plugin`
+    /// implementor still returns.
+    fn permission_rules(&self) -> Vec<PluginPermissionRule> {
+        SubprocessPlugin::permission_rules(self)
     }
 }
 

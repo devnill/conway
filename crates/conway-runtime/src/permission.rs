@@ -1842,7 +1842,7 @@ mod tests {
     use conway_core::agent::PermissionRequest;
     use conway_core::error::HookFailure;
     use conway_core::hook::HookAnswer;
-    use conway_core::permission_pattern::{PatternOrigin, PatternRule};
+    use conway_core::permission_pattern::{PatternOrigin, PatternRule, Select};
 
     use super::*;
 
@@ -2323,5 +2323,290 @@ mod tests {
         assert!(matches!(read_outcome, PermissionOutcome::Deny { .. }));
         assert!(matches!(bash_outcome, PermissionOutcome::Deny { .. }));
         assert_eq!(gate.call_count(), 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // `permission.policy/1` subordination composition (board item
+    // `01M03VKJG7JJ0JEKY265WA7MJ7`). A plugin's declared policy reaches the
+    // broker as `PatternOrigin::Plugin` deny/prompt rules -- installed by
+    // `ConwayBuilder::build` from each plugin's `Plugin::permission_rules()`.
+    // These tests prove the LOAD-BEARING subordination property at the real
+    // `PermissionBroker::decide` seam: a plugin may NARROW (deny / force the
+    // gate) but may NEVER WIDEN past the operator's own
+    // `permissions.json`/`PermissionMode`. The wire half (the policy
+    // genuinely reaching the host over the persistent transport and being
+    // stored in this shape) is proven in `conway-plugin-subprocess`'s
+    // `tests/permission_policy.rs`; these tests take the broker-side
+    // installation that the `conway` facade performs and assert the
+    // `decide()` outcomes.
+    // ---------------------------------------------------------------------
+
+    /// A `Plugin::permission_rules()`-shaped deny rule, the exact `Rule` the
+    /// `conway` facade installs for a `PluginPermissionVerdict::Deny`
+    /// verdict: `Select::Tools([tool]) + When::Always + Then::Deny`,
+    /// `PatternOrigin::Plugin`. The placeholder `/` is inert for
+    /// `When::Always` (the facade uses it too).
+    fn plugin_deny_rule(tool: &str) -> Rule {
+        Rule {
+            select: Select::Tools(vec![tool.to_string()]),
+            when: When::Always,
+            then: Then::Deny,
+        }
+    }
+
+    /// The prompt twin of [`plugin_deny_rule`]: `Then::Prompt`,
+    /// `PatternOrigin::Plugin`.
+    fn plugin_prompt_rule(tool: &str) -> Rule {
+        Rule {
+            select: Select::Tools(vec![tool.to_string()]),
+            when: When::Always,
+            then: Then::Prompt,
+        }
+    }
+
+    /// An operator-authored deny rule (the SAME shape, but
+    /// `PatternOrigin::Interactive` -- the origin an operator's own
+    /// `permissions.json` / interactive grant uses, NOT a plugin). Used to
+    /// model "the operator independently marked this tool dangerous" in the
+    /// subordination tests below.
+    fn operator_deny_rule(tool: &str) -> Rule {
+        Rule {
+            select: Select::Tools(vec![tool.to_string()]),
+            when: When::Always,
+            then: Then::Deny,
+        }
+    }
+
+    /// **A plugin `Prompt` verdict forces the operator's gate even under
+    /// `AutoAllow`.** This is acceptance criterion 1's first half: a plugin
+    /// declaring its tool dangerous (mapped to `prompt`) causes an approval
+    /// prompt -- the call is NOT silently auto-allowed. `AutoAllow` is the
+    /// mode a plugin's prompt matters most in (no human already in the
+    /// loop); proving it here is the load-bearing case.
+    #[tokio::test]
+    async fn plugin_prompt_forces_the_gate_even_under_autoallow() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        broker.set_mode(PermissionMode::AutoAllow);
+        // The facade installs a plugin's `prompt` verdict as a
+        // `PatternOrigin::Plugin` prompt rule.
+        assert!(
+            broker.remember_prompt_rule(
+                plugin_prompt_rule("greet"),
+                PatternOrigin::Plugin,
+                Path::new("/"),
+            ),
+            "the prompt rule installs"
+        );
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &call_for_tool("c1", "greet")).await;
+
+        assert_eq!(
+            outcome,
+            PermissionOutcome::Allow,
+            "the gate grants AllowOnce"
+        );
+        assert_eq!(
+            gate.call_count(),
+            1,
+            "a plugin prompt must force the gate even under AutoAllow -- not auto-allowed"
+        );
+    }
+
+    /// **A plugin `Deny` verdict blocks the call even under `AutoAllow`.**
+    /// Acceptance criterion 1's "or deny" alternative: a plugin declaring
+    /// its tool dangerous (mapped to `deny`) refuses the call outright,
+    /// before the gate is ever consulted.
+    #[tokio::test]
+    async fn plugin_deny_blocks_the_call_even_under_autoallow() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        broker.set_mode(PermissionMode::AutoAllow);
+        assert!(
+            broker.remember_deny_rule(
+                plugin_deny_rule("greet"),
+                PatternOrigin::Plugin,
+                Path::new("/"),
+            ),
+            "the deny rule installs"
+        );
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &call_for_tool("c1", "greet")).await;
+
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "a plugin deny must block the call: {outcome:?}"
+        );
+        assert_eq!(
+            gate.call_count(),
+            0,
+            "the gate is never consulted for a deny"
+        );
+    }
+
+    /// **LOAD-BEARING: an operator `Deny` beats a plugin `Abstain` -- the
+    /// wire policy cannot widen.** A plugin declaring `Safe` (mapped to
+    /// `abstain` -- no opinion, installs nothing) for a tool the operator
+    /// INDEPENDENTLY marked dangerous (an operator `deny` rule) STAYS
+    /// denied. The operator wins; the plugin's abstain narrows nothing AND
+    /// widens nothing. This is the subordination test the spec names as
+    /// load-bearing.
+    #[tokio::test]
+    async fn operator_deny_beats_plugin_abstain_the_wire_policy_cannot_widen() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        broker.set_mode(PermissionMode::AutoAllow);
+        // The operator independently marked `greet` dangerous.
+        assert!(
+            broker.remember_deny_rule(
+                operator_deny_rule("greet"),
+                PatternOrigin::Interactive,
+                Path::new("/"),
+            ),
+            "the operator deny rule installs"
+        );
+        // The plugin declared `abstain` for `greet` -- the facade installs
+        // NOTHING for an abstain verdict (no rule added). Nothing to install
+        // here mirrors that exactly.
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &call_for_tool("c1", "greet")).await;
+
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "the operator's deny stands -- a plugin abstain cannot widen it: {outcome:?}"
+        );
+        assert_eq!(gate.call_count(), 0, "denied before the gate");
+    }
+
+    /// **LOAD-BEARING: an operator `Deny` beats a plugin `Prompt`.** Even
+    /// when the plugin asks for an approval prompt, the operator's own deny
+    /// fires FIRST (step 2 of `decide`) and the plugin's prompt (step 4)
+    /// is never reached -- the call is denied, not prompted. The operator
+    /// wins; the plugin can narrow (ask) but cannot widen past an operator
+    /// denial.
+    #[tokio::test]
+    async fn operator_deny_beats_plugin_prompt() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        broker.set_mode(PermissionMode::AutoAllow);
+        // The plugin asks for a prompt on `greet`.
+        assert!(
+            broker.remember_prompt_rule(
+                plugin_prompt_rule("greet"),
+                PatternOrigin::Plugin,
+                Path::new("/"),
+            ),
+            "the plugin prompt rule installs"
+        );
+        // The operator independently denied `greet` -- installed AFTER the
+        // plugin rule to prove ORDER does not matter (most-restrictive-wins:
+        // a deny beats a prompt regardless of installation order).
+        assert!(
+            broker.remember_deny_rule(
+                operator_deny_rule("greet"),
+                PatternOrigin::Interactive,
+                Path::new("/"),
+            ),
+            "the operator deny rule installs"
+        );
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &call_for_tool("c1", "greet")).await;
+
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "the operator deny wins over the plugin prompt -- denied, not prompted: {outcome:?}"
+        );
+        assert_eq!(
+            gate.call_count(),
+            0,
+            "the operator deny fires before the gate; the plugin prompt never forces a prompt"
+        );
+    }
+
+    /// **Plan-mode denial beats a plugin `Prompt`.** The operator selected
+    /// `Plan` mode (which denies a non-permitted category); a plugin prompt
+    /// for a tool in that category does NOT override the mode -- the call
+    /// is denied, not prompted. The operator's mode wins; the plugin
+    /// narrows but cannot widen past a mode refusal.
+    #[tokio::test]
+    async fn plan_mode_denial_beats_plugin_prompt() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        broker.set_mode(PermissionMode::Plan);
+        assert!(
+            broker.remember_prompt_rule(
+                plugin_prompt_rule("bash"),
+                PatternOrigin::Plugin,
+                Path::new("/"),
+            ),
+            "the plugin prompt rule installs"
+        );
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        // The plugin prompt rule is for `bash` -- the SAME tool the call uses
+        // -- so `prompt_matches` (step 4) WOULD match and set `must_reach_gate`
+        // if it ran. `bash_call` is `Execute`, which `Plan` mode denies at step
+        // 3, BEFORE the prompt step. The test only pins the boundary if the
+        // prompt actually matches; a non-matching tool (e.g. `greet`) would
+        // leave the outcome to plan mode alone and pass vacuously.
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "plan mode denies Execute; a matching plugin prompt cannot widen past the mode refusal: {outcome:?}"
+        );
+        assert_eq!(
+            gate.call_count(),
+            0,
+            "plan mode fires before the gate; the matching plugin prompt never forces a prompt"
+        );
+    }
+
+    /// **A plugin cannot install an `Allow` rule -- the structural guard.**
+    /// `remember_pattern_rule` (the allow admission) rejects
+    /// `PatternOrigin::Plugin` + `Then::Allow` outright, returning `false`.
+    /// This is the broker-boundary guard `docs/plugins/hooks.md` point 8's
+    /// own "may only narrow" property rests on -- a future plugin transport
+    /// that reuses `PatternOrigin::Plugin` to call the allow path with
+    /// `Then::Allow` is refused at the broker boundary, never silently
+    /// installed. The `PluginPermissionVerdict` type has no `Allow` variant
+    /// (so the facade never even reaches this guard), but this test pins
+    /// the guard itself: the invariant rests on a guard, not on the absence
+    /// of a transport.
+    #[test]
+    fn a_plugin_cannot_install_an_allow_rule() {
+        let broker = PermissionBroker::new(
+            RecordingGate::new() as Arc<dyn PermissionGate>,
+            EventBus::new(64),
+        );
+        let allow_rule = Rule {
+            select: Select::Tools(vec!["greet".to_string()]),
+            when: When::Always,
+            then: Then::Allow,
+        };
+        assert!(
+            !broker.remember_pattern_rule(
+                allow_rule,
+                PermissionScope::Session,
+                AgentId::new(),
+                PatternOrigin::Plugin,
+                Path::new("/"),
+            ),
+            "a Plugin-origin Allow rule is refused at the broker boundary -- the wire policy cannot widen"
+        );
     }
 }

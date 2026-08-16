@@ -83,6 +83,19 @@ pub(crate) const HOST_WIRE_MAJOR: u32 = 1;
 /// require.
 pub(crate) const HOST_WIRE_MINOR: u32 = 1;
 
+/// The `permission.policy/1` version this host speaks over the persistent
+/// transport (board item `01M03VKJG7JJ0JEKY265WA7MJ7`). A plugin declares
+/// its own version for this point in its `initialize/1` answer's `points`
+/// array; this host consults that record via
+/// `PersistentSession::point_version` to decide per-point
+/// refuse-vs-degrade per `docs/plugins/compatibility.md`'s table. This point
+/// is a PARTICIPANT point: a plugin that declares it at a version this host
+/// does not support is REFUSED (not degraded), naming the version mismatch;
+/// a plugin that does not declare it at all loads normally and contributes
+/// no wire policy (advertising a point means the host speaks it, not that
+/// the host requires it).
+pub(crate) const HOST_PERMISSION_POLICY_VERSION: u32 = 1;
+
 /// One outgoing request this host ever sends, tagged by its own `"op"`
 /// field on the wire -- `{"op":"tool.spec/1"}` or `{"op":"tool/1", ...}`.
 /// Used by the one-shot path; the persistent path wraps the `tool/1` body
@@ -624,11 +637,16 @@ pub(crate) struct PersistentInitializeRequest {
     pub wire_major: u32,
     pub wire_minor: u32,
     /// The wire points this host speaks over the persistent channel. Today
-    /// ONLY `tool/1` -- `permission.policy/1`, `observe/1`, `status/1`, and
+    /// `tool/1` and `permission.policy/1` -- `observe/1`, `status/1`, and
     /// `context.hook/1` are LATER items, so they are NOT advertised here. A
     /// plugin's per-point version records (see [`InitializeAnswer::points`])
     /// are consulted by those later items to decide per-point refuse-vs-
-    /// degrade; this host advertises only what it speaks now.
+    /// degrade; this host advertises only what it speaks now. Advertising a
+    /// point means the host SPEAKS it, not that the host REQUIRES it -- a
+    /// plugin that declares a subset (e.g. `tool/1` only) loads normally
+    /// and the absent point's behavior is "the plugin contributes nothing
+    /// there"; the participant refusal is VERSION-gated (both speak the
+    /// point at incompatible versions), not presence-gated.
     pub points: Vec<&'static str>,
 }
 
@@ -639,9 +657,10 @@ impl PersistentInitializeRequest {
     /// Builds the one-time `initialize/1` request this host sends at
     /// persistent-session open. `host.version` is this crate's own
     /// `CARGO_PKG_VERSION` -- informational only, never branched on. The
-    /// advertised `points` is `["tool/1"]` (the only persistent wire point
-    /// this host speaks today); `wire_major`/`wire_minor` are
-    /// [`HOST_WIRE_MAJOR`]/[`HOST_WIRE_MINOR`].
+    /// advertised `points` is `["tool/1", "permission.policy/1"]` (the
+    /// persistent wire points this host speaks today -- `permission.policy/1`
+    /// added by board item `01M03VKJG7JJ0JEKY265WA7MJ7`); `wire_major`/
+    /// `wire_minor` are [`HOST_WIRE_MAJOR`]/[`HOST_WIRE_MINOR`].
     pub(crate) fn new(id: u64) -> Self {
         Self {
             id,
@@ -652,7 +671,7 @@ impl PersistentInitializeRequest {
             },
             wire_major: HOST_WIRE_MAJOR,
             wire_minor: HOST_WIRE_MINOR,
-            points: vec!["tool/1"],
+            points: vec!["tool/1", "permission.policy/1"],
         }
     }
 }
@@ -820,6 +839,236 @@ pub(crate) fn parse_persistent_initialize_response(
     })
 }
 
+// ----- permission.policy/1: the one-time permission-policy declaration a
+//       persistent plugin makes at session open, AFTER `initialize/1`
+//       succeeds (board item `01M03VKJG7JJ0JEKY265WA7MJ7`). Rides the SAME
+//       id-correlated NDJSON framing `initialize/1` and `tool/1` use (via
+//       `PersistentSession::framed_round_trip`); NO second reader. The
+//       plugin declares per-tool NARROWING verdicts (deny/prompt/abstain --
+//       NO `allow`, by type construction: a plugin may only narrow, never
+//       widen); the host stores them and the `conway` facade installs them
+//       as `PatternOrigin::Plugin` deny/prompt rules in the
+//       `PermissionBroker`, subordinate to the operator's own config.
+//
+// **Wire shape (disclosed here, the authority for this item):**
+//
+// Host -> plugin request (one NDJSON line):
+//   {"id":N,"op":"permission.policy/1"}
+//
+// Plugin -> host response:
+//   {"id":N,"ok":true,
+//    "rules":[{"tool":"<name>","verdict":"deny|prompt|abstain","reason":"..."}, ...]}
+//
+// `ok:false` carries an `"error"` string instead. Unknown FIELDS in the
+// answer are IGNORED-AND-COUNTED (the compatibility table's accept branch /
+// forward-compat rule), never rejected -- the answer is deserialized as a
+// `serde_json::Value` first, the known fields pulled out, the remaining keys
+// counted and surfaced via `tracing::debug!` in the caller. An unknown
+// `verdict` TAG (a string this host does not recognize, sent by a NEWER
+// plugin) FAILS CLOSED as `Malformed` -- this point is a PARTICIPANT point
+// (per `docs/plugins/compatibility.md`), and a verdict the host cannot
+// classify is structural malformation, not a degrade-to-most-restrictive
+// case (unlike the `ToolCategory`/`PermissionClass` degrade table): a
+// plugin sending an unknown verdict is making a declaration the host cannot
+// honestly interpret, and guessing `deny` would silence a real
+// incompatibility rather than naming it. A structurally-invalid answer
+// (missing `ok`, `ok:false` with no `error`, a non-array `rules`, a
+// per-rule entry missing `tool`/`verdict`) fails CLOSED -- mirroring
+// `parse_persistent_initialize_response`'s discipline.
+
+/// A `permission.policy/1` request framed for the persistent NDJSON
+/// transport -- one JSON-RPC object per line, correlated by `id` like
+/// [`PersistentToolRequest`]/[`PersistentInitializeRequest`]. Sent ONCE at
+/// session open, AFTER `initialize/1` succeeds and BEFORE any `tool/1` call;
+/// see `session::PersistentSession::request_permission_policy`. Carries no
+/// payload: the request asks "what is your policy?", and the plugin's
+/// answer is a session-scoped static declaration (per-tool verdicts), not a
+/// per-call evaluation.
+#[derive(Serialize)]
+pub(crate) struct PersistentPermissionPolicyRequest {
+    /// JSON-RPC correlation id, assigned by
+    /// `PersistentSession::request_permission_policy`. Echoed back in the
+    /// plugin's answer; a mismatch is a protocol error.
+    pub id: u64,
+    /// The constant op tag this host emits for a permission-policy request
+    /// -- `"permission.policy/1"`.
+    pub op: &'static str,
+}
+
+impl PersistentPermissionPolicyRequest {
+    /// The constant op tag this host emits for a `permission.policy/1`
+    /// request.
+    pub const OP: &'static str = "permission.policy/1";
+
+    /// Builds the one-time `permission.policy/1` request this host sends
+    /// after `initialize/1` succeeds.
+    pub(crate) fn new(id: u64) -> Self {
+        Self { id, op: Self::OP }
+    }
+}
+
+/// The verdict vocabulary a `permission.policy/1` answer carries -- the
+/// wire form of [`conway::plugin::PluginPermissionVerdict`]. NARROWING-only
+/// by construction: there is no `allow` variant, so a plugin declaring its
+/// policy over the wire can never widen what the operator authorized. An
+/// unknown TAG (a string this host does not recognize, sent by a NEWER
+/// plugin) FAILS CLOSED in the parser -- see the module-level doc above for
+/// why this participant point does not degrade an unknown verdict to the
+/// most restrictive value the way the `ToolCategory`/`PermissionClass` table
+/// does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WirePermissionVerdict {
+    Deny,
+    Prompt,
+    Abstain,
+}
+
+/// One per-tool rule in a `permission.policy/1` answer -- the wire form of
+/// [`conway::plugin::PluginPermissionRule`]. `tool` is matched exactly (the
+/// identical match `Select::Tools([tool])` uses); `reason` is the
+/// operator-readable text carried into the broker's rendered denial for a
+/// `deny` verdict (unused for `abstain`).
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct WirePermissionRule {
+    pub tool: String,
+    pub verdict: WirePermissionVerdict,
+    /// Defaulted to empty so a plugin that omits it parses -- a `deny`
+    /// without a reason is still a valid (if unhelpful) denial, and
+    /// defaulting the field is the safe direction (the verdict narrows
+    /// either way). An `abstain` carrying a `reason` simply ignores it.
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// The parsed `permission.policy/1` answer: the per-tool rules the plugin
+/// declared. Stored on `PersistentSession` for the session's lifetime and
+/// read by `SubprocessPlugin::permission_rules` (the `Plugin` trait method
+/// the `conway` facade consults to install `PatternOrigin::Plugin` rules).
+#[derive(Debug)]
+pub(crate) struct PermissionPolicyAnswer {
+    pub id: u64,
+    pub rules: Vec<WirePermissionRule>,
+    /// The number of unknown fields the plugin's answer carried -- ignored
+    /// and counted, NOT rejected (the compatibility table's accept branch).
+    pub unknown_field_count: usize,
+}
+
+/// The typed failure of [`parse_persistent_permission_policy_response`].
+/// Mirrors [`InitializeParseError`]'s split so the caller
+/// (`PersistentSession::request_permission_policy`) maps the two
+/// categorically-different failure modes onto two different
+/// `crate::SubprocessPluginError` variants:
+///
+/// - [`PermissionPolicyParseError::Malformed`] -- the answer is structurally
+///   broken (not JSON / not an object / missing or non-boolean `ok` /
+///   `ok:false` with no `error` string / a non-number `id` / a non-array
+///   `rules` / a per-rule entry missing `tool` or `verdict` / an unknown
+///   `verdict` tag). FAILS CLOSED as `HandshakeMalformed` -- a plugin
+///   sending a malformed policy answer cannot be trusted to recover, and
+///   silently no-op-ing would hide a real incompatibility (acceptance
+///   criterion 3: fail-closed, never silently no-op).
+/// - [`PermissionPolicyParseError::Refused`] -- the plugin DELIBERATELY
+///   answered `ok:false` WITH an `error` string: it declined to declare a
+///   policy. Maps to `HandshakeRefused`.
+///
+/// `From<String>` wraps any plain `String` error as `Malformed`, so the many
+/// `.ok_or_else(|| "...".to_string())?` sites in the parser body need no
+/// change -- `?` auto-wraps a `String` into `Malformed`. Only the `ok:false`
+/// site constructs `Refused` explicitly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PermissionPolicyParseError {
+    Malformed(String),
+    Refused(String),
+}
+
+impl From<String> for PermissionPolicyParseError {
+    fn from(s: String) -> Self {
+        Self::Malformed(s)
+    }
+}
+
+/// Deserializes and classifies one persistent NDJSON `permission.policy/1`
+/// response line. Mirrors [`parse_persistent_initialize_response`]'s
+/// discipline: unknown FIELDS are ignored-and-counted (the compatibility
+/// table's accept branch); structural malformation (missing `ok`, `ok:false`
+/// with no `error`, a non-number `id`, a non-array `rules`, a per-rule entry
+/// missing `tool`/`verdict`, an unknown `verdict` tag) fails CLOSED as
+/// `Malformed`; a deliberate `ok:false` WITH an `error` string is `Refused`.
+pub(crate) fn parse_persistent_permission_policy_response(
+    bytes: &[u8],
+) -> Result<PermissionPolicyAnswer, PermissionPolicyParseError> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "permission.policy answer is not a JSON object".to_string())?;
+
+    let ok = obj
+        .get("ok")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| "permission.policy answer missing or non-boolean `ok` field".to_string())?;
+    if !ok {
+        return Err(match obj.get("error").and_then(|v| v.as_str()) {
+            Some(err) => PermissionPolicyParseError::Refused(format!(
+                "plugin refused permission.policy/1: {err}"
+            )),
+            None => PermissionPolicyParseError::Malformed(
+                "`ok:false` was returned with no `error` string".to_string(),
+            ),
+        });
+    }
+
+    let id = obj
+        .get("id")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "permission.policy answer missing or non-number `id` field".to_string())?;
+
+    // `rules`: an array of {tool, verdict, reason?}. An empty array is
+    // VALID -- a plugin that declares `permission.policy/1` but contributes
+    // no rules is saying "I have no per-tool policy," the same as abstaining
+    // on every tool; it is NOT malformation. Each entry must be structurally
+    // valid (a missing/non-string `tool` or a missing/non-string `verdict`
+    // is structural malformation, fail closed); an unknown `verdict` TAG
+    // fails closed at the per-entry `WirePermissionRule` deserialize (serde
+    // rejects the unknown variant -- the NARROWING direction, naming the
+    // incompatibility rather than guessing).
+    let rules_arr = obj
+        .get("rules")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "permission.policy answer missing or non-array `rules` field".to_string())?;
+    let mut rules = Vec::with_capacity(rules_arr.len());
+    for (i, entry) in rules_arr.iter().enumerate() {
+        let rule: WirePermissionRule = serde_json::from_value(entry.clone()).map_err(|err| {
+            // Trim the serde reason at ", expected" so the detail does not
+            // carry the full list of known variant names (long) -- mirroring
+            // `partition_blocks`'s own trim. "unknown variant `quantum`" and
+            // "missing field `tool`" both survive the trim intact.
+            let reason_full = err.to_string();
+            let reason = reason_full
+                .split(", expected")
+                .next()
+                .unwrap_or(&reason_full)
+                .to_string();
+            format!("permission.policy answer `rules[{i}]` is malformed: {reason}")
+        })?;
+        if rule.tool.is_empty() {
+            return Err(
+                format!("permission.policy answer `rules[{i}]` has an empty `tool`").into(),
+            );
+        }
+        rules.push(rule);
+    }
+
+    let known = ["id", "ok", "rules"];
+    let unknown_field_count = obj.keys().filter(|k| !known.contains(&k.as_str())).count();
+
+    Ok(PermissionPolicyAnswer {
+        id,
+        rules,
+        unknown_field_count,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -912,5 +1161,125 @@ mod tests {
     fn initialize_answer_non_number_major_fails_closed() {
         let bytes = br#"{"id":1,"ok":true,"major":"nope","minor_min":1,"points":[]}"#;
         parse_persistent_initialize_response(bytes).expect_err("a non-number major fails closed");
+    }
+
+    // ----- permission.policy/1 parser tests (board item
+    //       `01M03VKJG7JJ0JEKY265WA7MJ7`). Mirrors the initialize-parser
+    //       test discipline: accept-branch-with-unknown-field counts;
+    //       structural malformation fails closed; `ok:false`-with-error is
+    //       Refused; an unknown verdict tag fails closed (participant point,
+    //       not a degrade case).
+
+    /// A well-formed answer with deny/prompt/abstain rules and an unknown
+    /// extra field parses, the verdicts are classified correctly, and the
+    /// unknown field is COUNTED (not rejected) -- the compatibility table's
+    /// accept branch.
+    #[test]
+    fn permission_policy_answer_with_rules_parses_and_counts_unknown_fields() {
+        let bytes = br#"{"id":2,"ok":true,"rules":[{"tool":"greet","verdict":"deny","reason":"no"},{"tool":"bash","verdict":"prompt"},{"tool":"read","verdict":"abstain"}],"future":"bonus"}"#;
+        let answer =
+            parse_persistent_permission_policy_response(bytes).expect("well-formed answer");
+        assert_eq!(answer.id, 2);
+        assert_eq!(answer.rules.len(), 3);
+        assert_eq!(answer.rules[0].tool, "greet");
+        assert_eq!(answer.rules[0].verdict, WirePermissionVerdict::Deny);
+        assert_eq!(answer.rules[0].reason, "no");
+        assert_eq!(answer.rules[1].verdict, WirePermissionVerdict::Prompt);
+        assert_eq!(
+            answer.rules[1].reason, "",
+            "omitted reason defaults to empty"
+        );
+        assert_eq!(answer.rules[2].verdict, WirePermissionVerdict::Abstain);
+        assert_eq!(
+            answer.unknown_field_count, 1,
+            "the one unknown field is counted"
+        );
+    }
+
+    /// An empty `rules` array is VALID -- a plugin declaring the point but
+    /// contributing no rules is saying "I have no per-tool policy," the same
+    /// as abstaining on every tool. Not malformation.
+    #[test]
+    fn permission_policy_answer_with_empty_rules_is_accepted() {
+        let bytes = br#"{"id":2,"ok":true,"rules":[]}"#;
+        let answer = parse_persistent_permission_policy_response(bytes).expect("empty rules ok");
+        assert_eq!(answer.rules.len(), 0);
+    }
+
+    /// `ok:false` WITH an `error` string is the plugin DELIBERATELY
+    /// declining -- `Refused`, not `Malformed`.
+    #[test]
+    fn permission_policy_answer_ok_false_with_error_is_refused() {
+        let bytes = br#"{"id":2,"ok":false,"error":"I do not speak permission.policy/1"}"#;
+        let err = parse_persistent_permission_policy_response(bytes)
+            .expect_err("ok:false with error is a refusal");
+        match err {
+            PermissionPolicyParseError::Refused(detail) => {
+                assert!(
+                    detail.contains("refused permission.policy/1"),
+                    "names the point: {detail}"
+                );
+                assert!(
+                    detail.contains("I do not speak permission.policy/1"),
+                    "carries the plugin's reason: {detail}"
+                );
+            }
+            other => panic!("ok:false with error is Refused, got {other:?}"),
+        }
+    }
+
+    /// `ok:false` with NO `error` string is a contract violation --
+    /// `Malformed`, fail closed.
+    #[test]
+    fn permission_policy_answer_ok_false_with_no_error_is_malformed() {
+        let bytes = br#"{"id":2,"ok":false,"rules":[]}"#;
+        let err = parse_persistent_permission_policy_response(bytes)
+            .expect_err("ok:false with no error fails closed");
+        assert!(matches!(err, PermissionPolicyParseError::Malformed(_)));
+    }
+
+    /// An unknown `verdict` tag fails CLOSED as `Malformed` -- this is a
+    /// PARTICIPANT point, and a verdict the host cannot classify is
+    /// structural malformation, not a degrade-to-most-restrictive case.
+    #[test]
+    fn permission_policy_answer_unknown_verdict_tag_fails_closed() {
+        let bytes = br#"{"id":2,"ok":true,"rules":[{"tool":"greet","verdict":"quantum"}]}"#;
+        let err = parse_persistent_permission_policy_response(bytes)
+            .expect_err("an unknown verdict tag must fail closed");
+        match err {
+            PermissionPolicyParseError::Malformed(detail) => {
+                assert!(
+                    detail.contains("rules[0]"),
+                    "names the offending entry: {detail}"
+                );
+            }
+            other => panic!("unknown verdict is Malformed, got {other:?}"),
+        }
+    }
+
+    /// A per-rule entry missing `tool` is structural malformation -- fail
+    /// closed.
+    #[test]
+    fn permission_policy_answer_rule_missing_tool_fails_closed() {
+        let bytes = br#"{"id":2,"ok":true,"rules":[{"verdict":"deny"}]}"#;
+        parse_persistent_permission_policy_response(bytes)
+            .expect_err("a rule missing `tool` must fail closed");
+    }
+
+    /// An empty `tool` string is structural malformation -- a rule that
+    /// names no tool cannot be installed and is not silently dropped.
+    #[test]
+    fn permission_policy_answer_rule_with_empty_tool_fails_closed() {
+        let bytes = br#"{"id":2,"ok":true,"rules":[{"tool":"","verdict":"deny"}]}"#;
+        parse_persistent_permission_policy_response(bytes)
+            .expect_err("an empty tool name must fail closed");
+    }
+
+    /// A non-array `rules` is structural malformation -- fail closed.
+    #[test]
+    fn permission_policy_answer_non_array_rules_fails_closed() {
+        let bytes = br#"{"id":2,"ok":true,"rules":"not-an-array"}"#;
+        parse_persistent_permission_policy_response(bytes)
+            .expect_err("a non-array rules field must fail closed");
     }
 }

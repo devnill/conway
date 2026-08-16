@@ -891,3 +891,183 @@ for line in sys.stdin:
         sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
     sys.stdout.flush()
 "#;
+
+// ---------------------------------------------------------------------
+// permission.policy/1 fixtures (board item `01M03VKJG7JJ0JEKY265WA7MJ7`).
+// Every fixture below answers `initialize/1` declaring BOTH `tool/1` and
+// `permission.policy/1` (so the host exchanges the policy after the
+// handshake), then answers `permission.policy/1` with the shape the named
+// case exercises. A fixture that declares the point at an unsupported
+// version never gets a `permission.policy/1` request -- the host refuses at
+// discover before sending one.
+// ---------------------------------------------------------------------
+
+/// A persistent-transport fixture that declares `permission.policy/1` at
+/// version 1 and answers with a NARROWING policy: `greet` -> `prompt` (force
+/// the operator's gate), `bash` -> `deny` (refuse outright), `read` ->
+/// `abstain`. The host stores the rules and `SubprocessPlugin::
+/// permission_rules` surfaces them as `PluginPermissionRule`s the `conway`
+/// facade installs as `PatternOrigin::Plugin` deny/prompt rules.
+pub const PERSISTENT_POLICY_OK_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+def manifest():
+    return {
+        "id": "acme.policy-ok",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "greet",
+            "description": "Greets the caller by name.",
+            "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+POLICY = [
+    {"tool": "greet", "verdict": "prompt", "reason": "greet should be approved"},
+    {"tool": "bash", "verdict": "deny", "reason": "bash is refused by this plugin"},
+    {"tool": "read", "verdict": "abstain"},
+]
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}, {"name": "permission.policy/1", "version": 1}]}) + "\n")
+    elif op == "permission.policy/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "rules": POLICY}) + "\n")
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    elif op == "tool/1":
+        args = req.get("arguments", {})
+        name = args.get("name", "")
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "blocks": [{"type": "text", "text": f"hello, {name}"}], "is_error": False}) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
+"#;
+
+/// Declares `permission.policy/1` at version 2 (the host speaks version 1)
+/// -- the host must REFUSE to load with a typed `HandshakeRefused` naming the
+/// version mismatch (the participant rule). The fixture never receives a
+/// `permission.policy/1` request because the host refuses before sending
+/// one.
+pub const PERSISTENT_POLICY_VERSION_MISMATCH_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+def manifest():
+    return {
+        "id": "acme.policy-ver",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "greet",
+            "description": "Greets the caller by name.",
+            "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}, {"name": "permission.policy/1", "version": 2}]}) + "\n")
+    elif op == "permission.policy/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "rules": []}) + "\n")
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    elif op == "tool/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "blocks": [{"type": "text", "text": "hi"}], "is_error": False}) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
+"#;
+
+/// Declares `permission.policy/1` at version 1 but answers with a structurally
+/// malformed body (`rules` is not an array) -- the host must fail CLOSED with
+/// a typed `HandshakeMalformed`, never silently no-op (acceptance criterion 3).
+pub const PERSISTENT_POLICY_MALFORMED_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+def manifest():
+    return {
+        "id": "acme.policy-bad",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "greet",
+            "description": "Greets the caller by name.",
+            "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}, {"name": "permission.policy/1", "version": 1}]}) + "\n")
+    elif op == "permission.policy/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "rules": "not-an-array"}) + "\n")
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    elif op == "tool/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "blocks": [{"type": "text", "text": "hi"}], "is_error": False}) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
+"#;
+
+/// Declares `permission.policy/1` at version 1 but answers `ok:false` (the
+/// plugin deliberately declines to declare a policy) -- surfaces as
+/// `HandshakeRefused`, the categorical twin of `initialize/1`'s own
+/// `ok:false`-with-error refusal.
+pub const PERSISTENT_POLICY_REFUSED_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+def manifest():
+    return {
+        "id": "acme.policy-no",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "greet",
+            "description": "Greets the caller by name.",
+            "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}, {"name": "permission.policy/1", "version": 1}]}) + "\n")
+    elif op == "permission.policy/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": "I decline to declare a policy"}) + "\n")
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    elif op == "tool/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "blocks": [{"type": "text", "text": "hi"}], "is_error": False}) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
+"#;
