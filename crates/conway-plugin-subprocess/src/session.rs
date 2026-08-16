@@ -30,8 +30,11 @@
 //! the value to the matching pending sender. This shape is built now so a
 //! LATER item can add notifications (`observe/1`) alongside requests
 //! without redesigning framing -- a line carrying no matching `id` would
-//! be a notification; today (no notifications yet) such a line is a
-//! malformed frame and fails closed, by design.
+//! be a notification. Board item `01M03VKQ738DTGHHK2C4RWXC0E` wires exactly
+//! that: a no-`id` line is now an inbound NOTIFICATION routed to a bounded
+//! channel (drop+warn on overflow, never kills the session -- observer-class),
+//! not a malformed frame. The `status/1` notification is the first occupant;
+//! the handler task parses `op` and stores the latest contribution per `key`.
 //!
 //! **`initialize/1` handshake at session open (board item
 //! `01M03VK7MRPSAVWMW7YNYPRPGT`).** Before any `tool/1` call, the host
@@ -133,20 +136,47 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
-use tokio::sync::{oneshot, Mutex as AsyncMutex};
+use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 use tokio::time::timeout;
 
-use conway::plugin::ToolError;
+use conway::plugin::{Event, EventSink, EventSinkHandle, ToolError};
 
 use crate::unix::kill_group;
 use crate::wire::{
-    parse_persistent_initialize_response, parse_persistent_permission_policy_response,
-    parse_persistent_tool_response, InitializeParseError, PermissionPolicyAnswer,
-    PermissionPolicyParseError, PersistentInitializeRequest, PersistentPermissionPolicyRequest,
-    PersistentToolRequest, WirePermissionRule, WireToolResult, HOST_PERMISSION_POLICY_VERSION,
+    build_observe_notification, parse_persistent_initialize_response,
+    parse_persistent_observe_response, parse_persistent_permission_policy_response,
+    parse_persistent_status_declare_response, parse_persistent_tool_response,
+    parse_status_notification, InitializeParseError, ObserveParseError, PermissionPolicyAnswer,
+    PermissionPolicyParseError, PersistentInitializeRequest, PersistentObserveRequest,
+    PersistentPermissionPolicyRequest, PersistentStatusDeclareRequest, PersistentToolRequest,
+    StatusDeclaration, StatusDeclareParseError, WirePermissionRule, WireStatusContribution,
+    WireToolResult, HOST_OBSERVE_VERSION, HOST_PERMISSION_POLICY_VERSION, HOST_STATUS_VERSION,
     HOST_WIRE_MAJOR, HOST_WIRE_MINOR,
 };
 use crate::{SubprocessPluginError, SubprocessPluginSpec};
+
+/// Bounded capacity of the inbound notification channel (board item
+/// `01M03VKQ738DTGHHK2C4RWXC0E`): a plugin pushes `status/1` (and, in future,
+/// other one-way no-`id` notifications) onto this channel; the reader does a
+/// NON-blocking `try_send`, so a plugin that floods notifications faster than
+/// the handler drains hits `Full` and the line is DROPPED with a
+/// `tracing::warn!` -- never blocks the host turn, never kills the session
+/// (observer-class). Sized to absorb a reasonable burst without dropping under
+/// normal pacing; a pathological producer degrades lossy-with-notice, the
+/// identical discipline `conway::EventStream` guarantees a slow event consumer.
+const NOTIFICATION_CHANNEL_CAPACITY: usize = 256;
+
+/// Bounded capacity of the outbound observe channel (board item
+/// `01M03VKQ738DTGHHK2C4RWXC0E`): the host fans `Event`s onto this channel via
+/// the plugin's `EventSink` (a NON-blocking `try_send`), and a writer task
+/// drains it and serializes each `Event` as an `observe/1` notification line
+/// onto the plugin's stdin. A slow plugin (one not draining its stdin) makes
+/// the writer's `write_all` block; the writer bounds each write by
+/// `timeout_ms` and, on a write failure/timeout, stops forwarding and marks
+/// the observe path broken -- the channel then fills and the `EventSink`'s own
+/// `try_send` drops+warns, so the host turn NEVER blocks on a slow plugin read
+/// loop. Lossy-with-notice, mirroring `conway::EventStream`.
+const OBSERVE_CHANNEL_CAPACITY: usize = 256;
 
 /// State shared between the [`PersistentSession`] handle and the long-lived
 /// reader task: the outstanding-request table (keyed by JSON-RPC `id`), the
@@ -172,6 +202,26 @@ struct Shared {
     /// mode -- a typed `SubprocessPluginError::SessionDied` or
     /// `MalformedFrame` -- rather than a generic "session died".
     death: Mutex<Option<SubprocessPluginError>>,
+    /// Inbound notification channel (board item `01M03VKQ738DTGHHK2C4RWXC0E`):
+    /// the reader task routes any no-`id` stdout line here via a NON-blocking
+    /// `try_send` (drop+warn on `Full`, never blocks the host turn, never
+    /// kills the session -- observer-class). The notification handler task
+    /// drains the receiver, parses `op`, and stores a `status/1` line's
+    /// contribution in [`Shared::status`]; an unknown `op` is dropped with a
+    /// `tracing::warn!`. This is NOT touched by `kill_all` -- a notification
+    /// is an observer-class line and must not tear down the session even when
+    /// the session dies for an unrelated reason (the handler task simply ends
+    /// when the sender half drops on session drop).
+    notifications: mpsc::Sender<serde_json::Value>,
+    /// The latest status contribution per `key`, pushed by the notification
+    /// handler task from inbound `status/1` no-`id` lines (board item
+    /// `01M03VKQ738DTGHHK2C4RWXC0E`). A later line for the same `key`
+    /// overwrites an earlier one (per `docs/plugins/hooks.md` point 12's "a
+    /// stale value expires at snapshot time" shape -- the ttl/expiry RENDER
+    /// path itself stays design-only). Read by [`PersistentSession::
+    /// status_contributions`] for the `Plugin::status_contributions` trait
+    /// method -- a point-in-time snapshot, NOT a build-time declaration.
+    status: Mutex<HashMap<String, WireStatusContribution>>,
 }
 
 impl Shared {
@@ -215,7 +265,18 @@ pub struct PersistentSession {
     /// Behind an async mutex so the timeout path can `kill_group` it
     /// while a `round_trip` write may be in flight.
     child: AsyncMutex<Option<Child>>,
-    stdin: AsyncMutex<ChildStdin>,
+    /// The child's stdin write half, shared between `framed_round_trip`
+    /// (id-correlated `tool/1`/`initialize/1`/point-engagement requests) and
+    /// the observe writer task (one-way `observe/1` notifications, board item
+    /// `01M03VKQ738DTGHHK2C4RWXC0E`). Behind an `Arc<AsyncMutex>` so the
+    /// observe writer (a separate task) can share it with `framed_round_trip`
+    /// WITHOUT interleaving lines -- the mutex serializes every write, so an
+    /// observe notification and a `tool/1` request never corrupt each other's
+    /// framing. A pathological observe write that holds the lock past
+    /// `timeout_ms` is bounded by `framed_round_trip`'s OWN write deadline
+    /// (which kills the group on timeout), so the shared lock cannot hang a
+    /// `tool/1` call indefinitely.
+    stdin: Arc<AsyncMutex<ChildStdin>>,
     next_id: AtomicU64,
     shared: Arc<Shared>,
     /// The plugin's declared per-point versions, recorded ONCE by
@@ -238,10 +299,99 @@ pub struct PersistentSession {
     /// [`Self::request_permission_policy`]'s own doc for the
     /// version-negotiation behavior).
     permission_policy: Mutex<Vec<WirePermissionRule>>,
+    /// The status.declare/1 per-key declarations the plugin made at session
+    /// open (board item `01M03VKQ738DTGHHK2C4RWXC0E`), recorded ONCE by
+    /// [`Self::request_status_declare`]. Empty until the one-time exchange
+    /// populates it -- which runs ONLY when the plugin declared the point at
+    /// a supported version (an unsupported version DEGRADES -- load without
+    /// the point, warn; a plugin that does not declare it contributes no
+    /// status and this stays empty). Stored for the facade surface; the
+    /// ttl/expiry RENDER path itself stays design-only (point 12).
+    status_declarations: Mutex<Vec<StatusDeclaration>>,
+    /// The observe engagement state (board item `01M03VKQ738DTGHHK2C4RWXC0E`):
+    /// `Some` only when the plugin declared `observe/1` at a supported
+    /// version AND the one-time engagement exchange succeeded, holding the
+    /// bounded `Event` sender the [`ObserveAdapter`] `EventSink` pushes onto
+    /// and the writer task drains, plus the `broken` flag a write
+    /// failure/timeout sets so the adapter stops enqueuing. `None` for a
+    /// plugin that did not declare the point, declared it at an unsupported
+    /// version (DEGRADE), or before the one-time exchange has run.
+    observe_state: Mutex<Option<ObserveState>>,
     /// Kept (never awaited) so the tasks are not leaked: they end on
     /// stdout/stderr EOF or when the session is killed.
     _reader_handle: tokio::task::JoinHandle<()>,
     _stderr_handle: tokio::task::JoinHandle<()>,
+    /// The inbound notification handler task (board item
+    /// `01M03VKQ738DTGHHK2C4RWXC0E`): drains [`Shared::notifications`],
+    /// parses `op`, and stores `status/1` contributions in
+    /// [`Shared::status`]. Kept (never awaited) so it is not leaked; it ends
+    /// when the sender half drops (session drop) or the receiver errors.
+    _notification_handle: tokio::task::JoinHandle<()>,
+}
+
+/// The observe engagement state stored on [`PersistentSession`] (board item
+/// `01M03VKQ738DTGHHK2C4RWXC0E`). Held in a `Mutex<Option<Self>>` so
+/// [`PersistentSession::observe_sink`] can build an [`ObserveAdapter`] from
+/// the sender without re-running the engagement exchange.
+struct ObserveState {
+    /// Bounded channel the `EventSink` pushes `Event`s onto (`try_send`,
+    /// drop+warn on `Full`) and the writer task drains. When the writer task
+    /// ends (write failure/timeout, or session drop), the sender half errors
+    /// `Closed` and the adapter sets `broken` so it stops enqueuing.
+    tx: mpsc::Sender<Event>,
+    /// Set by the writer task on a write failure/timeout (the observe path is
+    /// broken -- stop forwarding) and by the adapter on a `Closed` send. Once
+    /// true, the adapter drops events silently rather than retrying `try_send`
+    /// every `emit` -- a single warn at the break site names the degradation.
+    broken: Arc<AtomicBool>,
+    /// The writer task handle, kept so it is not leaked; it ends on drain
+    /// completion (the session is dropped and the adapter stops sending) or a
+    /// write failure/timeout.
+    _writer: tokio::task::JoinHandle<()>,
+}
+
+/// An [`EventSink`] that bridges the host's live `Event` stream onto a
+/// subprocess plugin's stdin as `observe/1` notifications (board item
+/// `01M03VKQ738DTGHHK2C4RWXC0E`). The host's forwarding task (a subscriber of
+/// the runtime's `EventBus`, installed by the `conway` facade) calls
+/// [`EventSink::emit`] for each `Envelope`'s `Event`; this adapter does a
+/// NON-blocking `try_send` onto a bounded channel the observe writer task
+/// drains. Lossy-with-notice by construction: a `Full` channel drops the event
+/// with a `tracing::warn!` (never blocks the host turn); a `Closed` channel
+/// (writer gone) sets `broken` and drops silently thereafter.
+struct ObserveAdapter {
+    tx: mpsc::Sender<Event>,
+    broken: Arc<AtomicBool>,
+    config_id: String,
+}
+
+impl EventSink for ObserveAdapter {
+    fn emit(&self, event: Event) {
+        if self.broken.load(Ordering::Relaxed) {
+            // The observe writer already stopped (write failure/timeout, or
+            // the channel closed). Drop silently -- the break was warned once
+            // at its cause site, so a per-event warn here would only spam.
+            return;
+        }
+        match self.tx.try_send(event) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!(
+                    config_id = %self.config_id,
+                    "observe/1 notification channel full; dropping an Event \
+                     (lossy-with-notice: a slow plugin read loop must not stall \
+                     the host turn, per the observe/1 contract)"
+                );
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                // The writer task ended (observe path broken). Set the flag so
+                // every subsequent `emit` takes the early `broken` return
+                // rather than retrying `try_send` (which would keep hitting
+                // `Closed`).
+                self.broken.store(true, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 impl PersistentSession {
@@ -297,10 +447,21 @@ impl PersistentSession {
             let stdout = child.stdout.take().expect("piped stdout");
             let stderr = child.stderr.take().expect("piped stderr");
 
+            // The inbound notification channel (board item
+            // `01M03VKQ738DTGHHK2C4RWXC0E`): the reader routes no-`id` lines
+            // here; the handler task drains it and stores `status/1`
+            // contributions. Bounded + `try_send` so a flooding plugin degrades
+            // lossy-with-notice (drop+warn) rather than blocking the reader or
+            // killing the session.
+            let (notif_tx, notif_rx) =
+                mpsc::channel::<serde_json::Value>(NOTIFICATION_CHANNEL_CAPACITY);
+
             let shared = Arc::new(Shared {
                 pending: Mutex::new(HashMap::new()),
                 dead: AtomicBool::new(false),
                 death: Mutex::new(None),
+                notifications: notif_tx,
+                status: Mutex::new(HashMap::new()),
             });
 
             // The long-lived NDJSON reader: reads stdout line-by-line and
@@ -359,16 +520,38 @@ impl PersistentSession {
                             let id = match id {
                                 Some(id) => id,
                                 None => {
-                                    // No correlation `id` on the wire. Today
-                                    // there are no notifications, so this is
-                                    // a malformed frame, not a notification.
-                                    reader_shared.kill_all(SubprocessPluginError::MalformedFrame {
-                                        config_id: reader_config_id.clone(),
-                                        detail: format!(
-                                            "wrote a response with no JSON-RPC `id` field: {value}"
-                                        ),
-                                    });
-                                    return;
+                                    // No correlation `id` on the wire: an
+                                    // inbound one-way NOTIFICATION (board item
+                                    // `01M03VKQ738DTGHHK2C4RWXC0E` -- the
+                                    // `status/1` push is the first occupant).
+                                    // Route to the bounded notification channel
+                                    // via a NON-blocking `try_send`: on `Full`,
+                                    // DROP the line with a `tracing::warn!`
+                                    // (lossy-with-notice -- a flooding plugin
+                                    // must not stall the host turn); on
+                                    // `Closed`, the handler task has ended
+                                    // (session dropping) -- drop silently.
+                                    // NEVER `kill_all`: an observer-class line
+                                    // must not tear down the session, the
+                                    // OPPOSITE of the old malformed-frame
+                                    // behavior. Keep reading the next line.
+                                    match reader_shared.notifications.try_send(value) {
+                                        Ok(()) => {}
+                                        Err(mpsc::error::TrySendError::Full(_)) => {
+                                            tracing::warn!(
+                                                config_id = %reader_config_id,
+                                                "inbound notification channel full; dropping a \
+                                                 no-id line (lossy-with-notice: a flooding plugin \
+                                                 must not stall the host turn, per the observer rule)"
+                                            );
+                                        }
+                                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                                            // Handler task gone (session
+                                            // dropping) -- drop silently and
+                                            // keep reading until EOF.
+                                        }
+                                    }
+                                    continue;
                                 }
                             };
                             let tx = {
@@ -410,18 +593,63 @@ impl PersistentSession {
                 let _ = tokio::io::copy(&mut reader, &mut sink).await;
             });
 
+            // The inbound notification handler task (board item
+            // `01M03VKQ738DTGHHK2C4RWXC0E`): drains the notification channel
+            // the reader routes no-`id` lines onto, parses `op`, and stores a
+            // `status/1` line's contribution in `Shared::status` (latest per
+            // `key`). An unknown `op` (or a structurally-invalid `status/1`
+            // body) is dropped with a `tracing::warn!` -- observer-class,
+            // degrade, NEVER fails the session. A separate task from the
+            // reader so parsing/storing never blocks stdout reading (the
+            // bounded channel + `try_send` enforce that boundary).
+            let handler_shared = shared.clone();
+            let handler_config_id = spec.config_id.clone();
+            let notification_handle = tokio::spawn(async move {
+                let mut rx = notif_rx;
+                while let Some(value) = rx.recv().await {
+                    let op = value.get("op").and_then(|v| v.as_str()).unwrap_or("");
+                    if op == "status/1" {
+                        match parse_status_notification(&value) {
+                            Ok(contrib) => {
+                                let mut status =
+                                    handler_shared.status.lock().expect("status map poisoned");
+                                status.insert(contrib.key.clone(), contrib);
+                            }
+                            Err(detail) => {
+                                tracing::warn!(
+                                    config_id = %handler_config_id,
+                                    %detail,
+                                    "dropping a malformed status/1 notification (observer-class: \
+                                     degrade, never fails the session)"
+                                );
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            config_id = %handler_config_id,
+                            op = %op,
+                            "dropping an unknown no-id notification (observer-class: degrade, \
+                             never fails the session)"
+                        );
+                    }
+                }
+            });
+
             Ok(Self {
                 config_id: spec.config_id.clone(),
                 pgid,
                 timeout_ms: spec.timeout_ms,
                 child: AsyncMutex::new(Some(child)),
-                stdin: AsyncMutex::new(stdin),
+                stdin: Arc::new(AsyncMutex::new(stdin)),
                 next_id: AtomicU64::new(1),
                 shared,
                 point_versions: Mutex::new(HashMap::new()),
                 permission_policy: Mutex::new(Vec::new()),
+                status_declarations: Mutex::new(Vec::new()),
+                observe_state: Mutex::new(None),
                 _reader_handle: reader_handle,
                 _stderr_handle: stderr_handle,
+                _notification_handle: notification_handle,
             })
         }
     }
@@ -965,6 +1193,388 @@ impl PersistentSession {
             *policy = answer.rules.clone();
         }
         Ok(answer.rules)
+    }
+
+    /// The one-time `observe/1` engagement exchange (board item
+    /// `01M03VKQ738DTGHHK2C4RWXC0E`), run ONCE at persistent-session open,
+    /// AFTER [`Self::request_permission_policy`] succeeds. An OBSERVER point:
+    /// the engagement asks the plugin "what do you want to observe?" and the
+    /// plugin's answer is its SELECTOR (`["*"]` or a list of `Event` tags).
+    /// Rides the SAME id-correlated NDJSON framing `initialize/1` and
+    /// `tool/1` use (via [`Self::framed_round_trip`]); NO second reader. The
+    /// one-way `observe/1` NOTIFICATIONS themselves (host -> plugin, no `id`)
+    /// ride the RAW writer -- a writer task spawned here serializes each
+    /// matching `Event` as `{"op":"observe/1",...}\n` onto the plugin's stdin
+    /// under the shared stdin lock.
+    ///
+    /// **Version negotiation via [`Self::point_version`]** (the record
+    /// `initialize/1` produced), per `docs/plugins/compatibility.md`'s
+    /// observer-vs-participant table -- the OPPOSITE of
+    /// `permission.policy/1`'s participant refusal:
+    ///
+    /// - Plugin did NOT declare `observe/1` (`point_version` is `None`) ->
+    ///   load NORMALLY, contribute no observe sink (advertising != requiring).
+    ///   Returns `Ok(())` with no state installed.
+    /// - Plugin declared it at an UNSUPPORTED version (`!= [
+    ///   HOST_OBSERVE_VERSION]`) -> DEGRADE: `tracing::warn!` naming BOTH
+    ///   versions, load WITHOUT the point, return `Ok(())`. NEVER
+    ///   `HandshakeRefused` -- an observer cannot fail the run by
+    ///   construction, so the host loads the plugin regardless and simply
+    ///   does not engage the point.
+    /// - Plugin declared it at the SUPPORTED version -> exchange the
+    ///   engagement request/response, store the selector, spawn the writer
+    ///   task, and install the [`ObserveState`] the [`ObserveAdapter`]
+    ///   `EventSink` reads.
+    ///
+    /// A structurally-invalid answer (missing `ok`, `ok:false` with no
+    /// `error`, a non-array `events`, a non-string entry) and a deliberate
+    /// `ok:false`-with-error BOTH DEGRADE: `tracing::warn!`, return `Ok(())`,
+    /// load WITHOUT the point -- observer-class, never fail the session. An
+    /// `id` mismatch on the engagement response ALSO degrades (warn, no
+    /// engage) rather than failing closed: the response is still
+    /// observer-class even though it rode an id-correlated frame. ONLY a
+    /// TRANSPORT-level failure during the engagement
+    /// ([`SubprocessPluginError::SessionDied`]/[`TimedOut`] from
+    /// [`Self::framed_round_trip`]) propagates as `Err` -- a dead/stuck
+    /// session is a transport failure, not an observer degrade, and the
+    /// caller (`discover`) surfaces it (the just-spawned child is dropped,
+    /// its `Drop` kills the group, never orphaned).
+    ///
+    /// [`SessionDied`]: SubprocessPluginError::SessionDied
+    /// [`TimedOut`]: SubprocessPluginError::TimedOut
+    pub(crate) async fn request_observe(&self) -> Result<(), SubprocessPluginError> {
+        // Version negotiation -- observer rule: None -> no observe; an
+        // unsupported version -> DEGRADE (warn, return Ok), the OPPOSITE of
+        // permission.policy/1's REFUSE.
+        let version = match self.point_version(PersistentObserveRequest::OP) {
+            None => return Ok(()),
+            Some(v) => v,
+        };
+        if version != HOST_OBSERVE_VERSION {
+            tracing::warn!(
+                config_id = %self.config_id,
+                point = "observe/1",
+                host_version = HOST_OBSERVE_VERSION,
+                plugin_version = version,
+                "plugin declared observe/1 at an unsupported version; degrading -- loading \
+                 WITHOUT the observe point (observer rule: degrade, not refuse -- the OPPOSITE \
+                 of permission.policy/1's participant refusal)"
+            );
+            return Ok(());
+        }
+
+        if self.is_dead() {
+            return Err(self
+                .death_error()
+                .unwrap_or_else(|| SubprocessPluginError::SessionDied {
+                    config_id: self.config_id.clone(),
+                    detail: "session died before observe/1 could be sent".into(),
+                }));
+        }
+
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request = PersistentObserveRequest::new(id);
+        let mut json = serde_json::to_vec(&request).map_err(|err| {
+            SubprocessPluginError::HandshakeMalformed {
+                config_id: self.config_id.clone(),
+                detail: format!("failed to serialize observe/1 request: {err}"),
+            }
+        })?;
+        json.push(b'\n');
+
+        // A transport-level failure (SessionDied/TimedOut) propagates as Err;
+        // the caller surfaces it and the child is dropped, never orphaned.
+        let value = self.framed_round_trip(id, json).await?;
+
+        // Parse + classify the engagement response. EVERY parse failure
+        // DEGRADES (observer-class): warn, return Ok, load WITHOUT the point.
+        let bytes = serde_json::to_vec(&value).map_err(|err| {
+            SubprocessPluginError::HandshakeMalformed {
+                config_id: self.config_id.clone(),
+                detail: format!("failed to re-serialize observe/1 response: {err}"),
+            }
+        })?;
+        let (selector, unknown_field_count) = match parse_persistent_observe_response(&bytes) {
+            Ok(t) => t,
+            Err(ObserveParseError::Malformed(detail)) => {
+                tracing::warn!(
+                    config_id = %self.config_id,
+                    point = "observe/1",
+                    %detail,
+                    "plugin sent a malformed observe/1 answer; degrading -- loading WITHOUT \
+                     the observe point (observer-class: an observer cannot fail the run)"
+                );
+                return Ok(());
+            }
+            Err(ObserveParseError::Refused(detail)) => {
+                tracing::warn!(
+                    config_id = %self.config_id,
+                    point = "observe/1",
+                    %detail,
+                    "plugin declined observe/1 (ok:false); degrading -- loading WITHOUT the \
+                     observe point (observer-class: a declined observer is not a session failure)"
+                );
+                return Ok(());
+            }
+        };
+
+        // Correlate the echoed `id` -- a mismatch degrades (warn, no engage)
+        // rather than failing closed: the response is observer-class even
+        // though it rode an id-correlated frame.
+        let resp_id = value.get("id").and_then(|v| v.as_u64());
+        if resp_id != Some(id) {
+            tracing::warn!(
+                config_id = %self.config_id,
+                point = "observe/1",
+                expected_id = id,
+                observed_id = ?resp_id,
+                "observe/1 response id did not match the request; degrading -- loading WITHOUT \
+                 the observe point (observer-class: an id mismatch on an observer engagement \
+                 degrades, not fails closed)"
+            );
+            return Ok(());
+        }
+
+        if unknown_field_count > 0 {
+            tracing::debug!(
+                unknown_field_count = unknown_field_count,
+                config_id = %self.config_id,
+                "observe/1 answer carried unknown fields; ignored and counted (forward-compat)"
+            );
+        }
+
+        // Spawn the observe writer task: drains the bounded `Event` channel
+        // the `ObserveAdapter` pushes onto, filters each `Event` by the
+        // declared selector, and serializes the survivor as an `observe/1`
+        // notification line onto the plugin's stdin under the SHARED stdin
+        // lock (so observe and `tool/1` writes never interleave). Each write
+        // is bounded by `timeout_ms`; on a write failure/timeout the writer
+        // stops forwarding and sets `broken` (lossy-with-notice: the channel
+        // then fills and the adapter drops+warns, never blocking the host
+        // turn). A pathological write holding the stdin lock past `timeout_ms`
+        // is bounded by `framed_round_trip`'s OWN write deadline, which kills
+        // the group on timeout -- the shared lock cannot hang a `tool/1` call.
+        let (ev_tx, ev_rx) = mpsc::channel::<Event>(OBSERVE_CHANNEL_CAPACITY);
+        let broken = Arc::new(AtomicBool::new(false));
+        let writer_stdin = self.stdin.clone();
+        let writer_timeout = self.timeout_ms;
+        let writer_config_id = self.config_id.clone();
+        let writer_broken = broken.clone();
+        let writer_handle = tokio::spawn(async move {
+            let mut rx = ev_rx;
+            while let Some(event) = rx.recv().await {
+                let line = match build_observe_notification(&event, &selector) {
+                    Some(line) => line,
+                    None => continue, // filtered out by the selector, or serialize failure
+                };
+                let write_result = timeout(Duration::from_millis(writer_timeout), async {
+                    let mut stdin = writer_stdin.lock().await;
+                    stdin.write_all(&line).await?;
+                    stdin.flush().await?;
+                    Ok::<(), std::io::Error>(())
+                })
+                .await;
+                match write_result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        writer_broken.store(true, Ordering::Relaxed);
+                        tracing::warn!(
+                            config_id = %writer_config_id,
+                            error = %err,
+                            "observe/1 notification write failed; stopping the observe forwarding \
+                             task (lossy-with-notice: the host turn is unaffected; the session's \
+                             own tool/1 write deadline handles a genuinely dead stdin)"
+                        );
+                        return;
+                    }
+                    Err(_elapsed) => {
+                        writer_broken.store(true, Ordering::Relaxed);
+                        tracing::warn!(
+                            config_id = %writer_config_id,
+                            after_ms = writer_timeout,
+                            "observe/1 notification write did not complete within the per-write \
+                             deadline; stopping the observe forwarding task (lossy-with-notice: \
+                             a slow plugin read loop must not stall the host turn)"
+                        );
+                        return;
+                    }
+                }
+            }
+        });
+
+        {
+            let mut obs = self.observe_state.lock().expect("observe_state poisoned");
+            *obs = Some(ObserveState {
+                tx: ev_tx,
+                broken,
+                _writer: writer_handle,
+            });
+        }
+        Ok(())
+    }
+
+    /// The one-time `status.declare/1` engagement exchange (board item
+    /// `01M03VKQ738DTGHHK2C4RWXC0E`), run ONCE at persistent-session open,
+    /// AFTER [`Self::request_observe`]. An OBSERVER point: the engagement asks
+    /// the plugin "what status keys will you push?" and the plugin's answer is
+    /// its per-key declaration metadata (`{ key, max_len?, ttl_ms? }`). Rides
+    /// the SAME id-correlated NDJSON framing; NO second reader. The one-way
+    /// `status/1` NOTIFICATIONS themselves (plugin -> host, no `id`) ride the
+    /// RAW reader -- the existing reader task routes no-`id` lines to the
+    /// notification channel, and the handler task stores the latest
+    /// contribution per `key` in [`Shared::status`].
+    ///
+    /// **Version negotiation** -- identical observer rule to
+    /// [`Self::request_observe`]: `None` -> load normally, no status surface;
+    /// an unsupported version -> DEGRADE (warn, load without the point); the
+    /// supported version -> exchange, store the declarations. A malformed or
+    /// refused answer, and an `id` mismatch, ALL degrade (warn, return `Ok`)
+    /// -- observer-class, never fail the session. ONLY a transport-level
+    /// failure ([`SubprocessPluginError::SessionDied`]/[`TimedOut`]) from
+    /// [`Self::framed_round_trip`] propagates as `Err`.
+    ///
+    /// The declarations are stored on `self.status_declarations` for the
+    /// facade surface; the ttl/expiry RENDER path itself stays design-only
+    /// (`docs/plugins/hooks.md` point 12).
+    ///
+    /// [`SessionDied`]: SubprocessPluginError::SessionDied
+    /// [`TimedOut`]: SubprocessPluginError::TimedOut
+    pub(crate) async fn request_status_declare(&self) -> Result<(), SubprocessPluginError> {
+        // Version negotiation -- observer rule (same as request_observe).
+        let version = match self.point_version(PersistentStatusDeclareRequest::OP) {
+            None => return Ok(()),
+            Some(v) => v,
+        };
+        if version != HOST_STATUS_VERSION {
+            tracing::warn!(
+                config_id = %self.config_id,
+                point = "status.declare/1",
+                host_version = HOST_STATUS_VERSION,
+                plugin_version = version,
+                "plugin declared status.declare/1 at an unsupported version; degrading -- \
+                 loading WITHOUT the status point (observer rule: degrade, not refuse)"
+            );
+            return Ok(());
+        }
+
+        if self.is_dead() {
+            return Err(self
+                .death_error()
+                .unwrap_or_else(|| SubprocessPluginError::SessionDied {
+                    config_id: self.config_id.clone(),
+                    detail: "session died before status.declare/1 could be sent".into(),
+                }));
+        }
+
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request = PersistentStatusDeclareRequest::new(id);
+        let mut json = serde_json::to_vec(&request).map_err(|err| {
+            SubprocessPluginError::HandshakeMalformed {
+                config_id: self.config_id.clone(),
+                detail: format!("failed to serialize status.declare/1 request: {err}"),
+            }
+        })?;
+        json.push(b'\n');
+
+        let value = self.framed_round_trip(id, json).await?;
+
+        let bytes = serde_json::to_vec(&value).map_err(|err| {
+            SubprocessPluginError::HandshakeMalformed {
+                config_id: self.config_id.clone(),
+                detail: format!("failed to re-serialize status.declare/1 response: {err}"),
+            }
+        })?;
+        let (decls, unknown_field_count) = match parse_persistent_status_declare_response(&bytes) {
+            Ok(t) => t,
+            Err(StatusDeclareParseError::Malformed(detail)) => {
+                tracing::warn!(
+                    config_id = %self.config_id,
+                    point = "status.declare/1",
+                    %detail,
+                    "plugin sent a malformed status.declare/1 answer; degrading -- loading \
+                     WITHOUT the status point (observer-class)"
+                );
+                return Ok(());
+            }
+            Err(StatusDeclareParseError::Refused(detail)) => {
+                tracing::warn!(
+                    config_id = %self.config_id,
+                    point = "status.declare/1",
+                    %detail,
+                    "plugin declined status.declare/1 (ok:false); degrading -- loading WITHOUT \
+                     the status point (observer-class)"
+                );
+                return Ok(());
+            }
+        };
+
+        let resp_id = value.get("id").and_then(|v| v.as_u64());
+        if resp_id != Some(id) {
+            tracing::warn!(
+                config_id = %self.config_id,
+                point = "status.declare/1",
+                expected_id = id,
+                observed_id = ?resp_id,
+                "status.declare/1 response id did not match the request; degrading -- loading \
+                 WITHOUT the status point (observer-class: an id mismatch degrades, not fails \
+                 closed)"
+            );
+            return Ok(());
+        }
+
+        if unknown_field_count > 0 {
+            tracing::debug!(
+                unknown_field_count = unknown_field_count,
+                config_id = %self.config_id,
+                "status.declare/1 answer carried unknown fields; ignored and counted (forward-compat)"
+            );
+        }
+
+        {
+            let mut decl = self
+                .status_declarations
+                .lock()
+                .expect("status_declarations poisoned");
+            *decl = decls;
+        }
+        Ok(())
+    }
+
+    /// An [`EventSinkHandle`] the host fans the runtime's live `Event` stream
+    /// onto so this plugin can OBSERVE host events over its session -- the
+    /// host-side half of the `observe/1` wire point (board item
+    /// `01M03VKQ738DTGHHK2C4RWXC0E`). `None` when the plugin did not declare
+    /// `observe/1`, declared it at an unsupported version (DEGRADE), or before
+    /// [`Self::request_observe`] has run. The sink pushes to a bounded channel
+    /// the observe writer task drains (lossy-with-notice, never blocks the
+    /// host turn); see [`ObserveAdapter`]'s own doc.
+    pub(crate) fn observe_sink(&self) -> Option<EventSinkHandle> {
+        let obs = self.observe_state.lock().expect("observe_state poisoned");
+        obs.as_ref().map(|state| {
+            Arc::new(ObserveAdapter {
+                tx: state.tx.clone(),
+                broken: state.broken.clone(),
+                config_id: self.config_id.clone(),
+            }) as EventSinkHandle
+        })
+    }
+
+    /// A point-in-time snapshot of the status contributions this plugin is
+    /// CURRENTLY pushing -- the host-side half of the `status.declare/1` /
+    /// `status/1` wire point (board item `01M03VKQ738DTGHHK2C4RWXC0E`). Reads
+    /// [`Shared::status`], which the notification handler task updates from
+    /// inbound no-`id` `status/1` lines (latest per `key`). Empty for a plugin
+    /// that did not declare the point, declared it at an unsupported version
+    /// (DEGRADE), or has not yet pushed any `status/1` notifications. NOT a
+    /// build-time declaration -- a polled snapshot of an asynchronous push.
+    pub(crate) fn status_contributions(&self) -> Vec<WireStatusContribution> {
+        self.shared
+            .status
+            .lock()
+            .expect("status map poisoned")
+            .values()
+            .cloned()
+            .collect()
     }
 
     fn remove_pending(&self, id: u64) {

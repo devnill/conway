@@ -56,12 +56,12 @@
 //! compatibility table's convergence rule, and it is what lets a host and
 //! plugin co-evolve across versions.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
 use conway::plugin::{
-    Artifact, ContentBlock, HostCapability, PermissionClass, ToolCategory, ToolError,
+    Artifact, ContentBlock, HostCapability, PermissionClass, ResultStatus, ToolCategory, ToolError,
 };
 
 /// The wire-protocol major version this host speaks over the persistent
@@ -95,6 +95,28 @@ pub(crate) const HOST_WIRE_MINOR: u32 = 1;
 /// no wire policy (advertising a point means the host speaks it, not that
 /// the host requires it).
 pub(crate) const HOST_PERMISSION_POLICY_VERSION: u32 = 1;
+
+/// The `observe/1` version this host speaks over the persistent transport
+/// (board item `01M03VKQ738DTGHHK2C4RWXC0E`). A plugin declares its own
+/// version for this point in its `initialize/1` answer's `points` array; this
+/// host consults that record via `PersistentSession::point_version` to decide
+/// per-point engage-vs-degrade per `docs/plugins/compatibility.md`'s table.
+/// This point is an OBSERVER point: a plugin that declares it at a version
+/// this host does not support is DEGRADED (loaded WITHOUT the point, with a
+/// `tracing::warn!` naming both versions) -- the observer rule, the OPPOSITE
+/// of the participant refusal `permission.policy/1` uses. A plugin that does
+/// not declare it at all loads normally and contributes no observe
+/// subscription (advertising a point means the host speaks it, not that the
+/// host requires it).
+pub(crate) const HOST_OBSERVE_VERSION: u32 = 1;
+
+/// The `status.declare/1` version this host speaks over the persistent
+/// transport (board item `01M03VKQ738DTGHHK2C4RWXC0E`). Same
+/// version-negotiation shape as [`HOST_OBSERVE_VERSION`]: an OBSERVER point,
+/// DEGRADED on an unsupported version (load without the point, warn) rather
+/// than refused. A plugin that does not declare it loads normally and the
+/// host routes no `status/1` notifications for it.
+pub(crate) const HOST_STATUS_VERSION: u32 = 1;
 
 /// One outgoing request this host ever sends, tagged by its own `"op"`
 /// field on the wire -- `{"op":"tool.spec/1"}` or `{"op":"tool/1", ...}`.
@@ -637,16 +659,18 @@ pub(crate) struct PersistentInitializeRequest {
     pub wire_major: u32,
     pub wire_minor: u32,
     /// The wire points this host speaks over the persistent channel. Today
-    /// `tool/1` and `permission.policy/1` -- `observe/1`, `status/1`, and
-    /// `context.hook/1` are LATER items, so they are NOT advertised here. A
+    /// `tool/1`, `permission.policy/1`, `observe/1`, and `status.declare/1`
+    /// -- `context.hook/1` is a LATER item, so it is NOT advertised here. A
     /// plugin's per-point version records (see [`InitializeAnswer::points`])
-    /// are consulted by those later items to decide per-point refuse-vs-
-    /// degrade; this host advertises only what it speaks now. Advertising a
-    /// point means the host SPEAKS it, not that the host REQUIRES it -- a
-    /// plugin that declares a subset (e.g. `tool/1` only) loads normally
-    /// and the absent point's behavior is "the plugin contributes nothing
-    /// there"; the participant refusal is VERSION-gated (both speak the
-    /// point at incompatible versions), not presence-gated.
+    /// are consulted by the later wire-point items to decide per-point
+    /// refuse-vs-degrade; this host advertises only what it speaks now.
+    /// Advertising a point means the host SPEAKS it, not that the host
+    /// REQUIRES it -- a plugin that declares a subset (e.g. `tool/1` only)
+    /// loads normally and the absent point's behavior is "the plugin
+    /// contributes nothing there"; the participant refusal is VERSION-gated
+    /// (both speak the point at incompatible versions), not presence-gated,
+    /// and the observer points (`observe/1`, `status.declare/1`) DEGRADE
+    /// rather than refuse even on a version mismatch.
     pub points: Vec<&'static str>,
 }
 
@@ -657,9 +681,11 @@ impl PersistentInitializeRequest {
     /// Builds the one-time `initialize/1` request this host sends at
     /// persistent-session open. `host.version` is this crate's own
     /// `CARGO_PKG_VERSION` -- informational only, never branched on. The
-    /// advertised `points` is `["tool/1", "permission.policy/1"]` (the
-    /// persistent wire points this host speaks today -- `permission.policy/1`
-    /// added by board item `01M03VKJG7JJ0JEKY265WA7MJ7`); `wire_major`/
+    /// advertised `points` is `["tool/1", "permission.policy/1",
+    /// "observe/1", "status.declare/1"]` (the persistent wire points this
+    /// host speaks today -- `permission.policy/1` added by board item
+    /// `01M03VKJG7JJ0JEKY265WA7MJ7`; `observe/1` and `status.declare/1` added
+    /// by board item `01M03VKQ738DTGHHK2C4RWXC0E`); `wire_major`/
     /// `wire_minor` are [`HOST_WIRE_MAJOR`]/[`HOST_WIRE_MINOR`].
     pub(crate) fn new(id: u64) -> Self {
         Self {
@@ -671,7 +697,12 @@ impl PersistentInitializeRequest {
             },
             wire_major: HOST_WIRE_MAJOR,
             wire_minor: HOST_WIRE_MINOR,
-            points: vec!["tool/1", "permission.policy/1"],
+            points: vec![
+                "tool/1",
+                "permission.policy/1",
+                "observe/1",
+                "status.declare/1",
+            ],
         }
     }
 }
@@ -1069,6 +1100,422 @@ pub(crate) fn parse_persistent_permission_policy_response(
     })
 }
 
+// ----- observe/1 + status.declare/1 / status/1 (board item
+//       `01M03VKQ738DTGHHK2C4RWXC0E`). Two OBSERVER-class wire points over the
+//       persistent NDJSON transport, both ONE-WAY (no JSON-RPC `id`, no
+//       response) once engaged, both DEGRADE on an unsupported version (the
+//       observer rule, the OPPOSITE of `permission.policy/1`'s participant
+//       refusal). `observe/1` is host -> plugin (the host emits matching
+//       `Event`s as outbound no-`id` notifications on the plugin's stdin);
+//       `status.declare/1` / `status/1` is plugin -> host (the plugin pushes
+//       status notifications as inbound no-`id` lines on its stdout). The
+//       one-time engagement exchange for each rides the SAME id-correlated
+//       NDJSON framing `initialize/1` and `tool/1` use (via
+//       `PersistentSession::framed_round_trip`); NO second reader. The
+//       one-way notifications themselves ride the RAW writer/reader, NOT
+//       `framed_round_trip`.
+//
+// **Wire shapes (disclosed here, the authority for this item):**
+//
+// observe/1 engagement (host -> plugin request, plugin -> host response):
+//   {"id":N,"op":"observe/1"}
+//   {"id":N,"ok":true,"events":["turn_started",...] | ["*"]}
+// `ok:false` carries an `"error"` string instead (the plugin declines to
+// observe -- degrade, load without the point). Unknown FIELDS in the answer
+// are ignored-and-counted (the compatibility table's accept branch). The
+// `events` array is the plugin's SELECTOR: `["*"]` subscribes to every event;
+// any other list subscribes to exactly the named `Event` tags. An unknown tag
+// in the selector (one this host's `Event` enum does not produce) is IGNORED
+// with a `tracing::warn!` -- the one enum-versioning case where "ignore" is
+// correct, because an observer changes nothing by construction. A structurally
+// invalid answer (missing `ok`, `ok:false` with no `error`, a non-array
+// `events`, a non-string entry) DEGRADES too (warn, load without the point):
+// an observer cannot fail the run by construction, so the host loads the
+// plugin regardless and simply does not engage the point.
+//
+// observe/1 notification (host -> plugin, one-way, no `id`):
+//   {"op":"observe/1",...the Event's own flattened fields...}\n
+// The `Event` is serialized via its own `#[serde(tag = "event")]` shape and
+// the `"op":"observe/1"` field is merged in alongside its fields, so one
+// notification is one flat JSON object per line. The host filters by the
+// plugin's declared selector BEFORE serializing; an `Event` whose tag the
+// plugin did not select is never written. `Event::Lagged { skipped }` is
+// forwarded regardless of the selector (it is the lossy-with-notice notice a
+// slow consumer needs, mirroring `conway::EventStream`'s discipline).
+//
+// status.declare/1 engagement (host -> plugin request, plugin -> host
+// response):
+//   {"id":N,"op":"status.declare/1"}
+//   {"id":N,"ok":true,"keys":[{"key":"build","max_len":80,"ttl_ms":5000},...]}
+// `ok:false` carries an `"error"` string instead (decline -> degrade). Same
+// ignore-and-count / degrade-on-malformation discipline as observe/1.
+//
+// status/1 notification (plugin -> host, one-way, no `id`):
+//   {"op":"status/1","key":"<key>","status":"<ResultStatus tag>","value":"<text>"}\n
+// The host's reader routes ANY no-`id` line to a bounded notification channel
+// (drop+warn on overflow, never blocks the host turn); a handler task parses
+// `op` and, for `op == "status/1"`, maps `status` to a `ResultStatus`. An
+// unknown `ResultStatus` tag degrades to `ResultStatus::Failed` (the
+// compatibility table's `ResultStatus` row, never `Completed`); a missing
+// `op` / unknown `op` / structurally-invalid notification is dropped with a
+// `tracing::warn!` (observer-class, degrade -- never fails the session).
+
+/// An `observe/1` request framed for the persistent NDJSON transport -- one
+/// JSON-RPC object per line, correlated by `id` like the other persistent
+/// requests. Sent ONCE at session open, AFTER `initialize/1` and
+/// `permission.policy/1` succeed; see
+/// `session::PersistentSession::request_observe`. Carries no payload: the
+/// request asks "what do you want to observe?", and the plugin's answer is its
+/// selector.
+#[derive(Serialize)]
+pub(crate) struct PersistentObserveRequest {
+    pub id: u64,
+    pub op: &'static str,
+}
+
+impl PersistentObserveRequest {
+    pub const OP: &'static str = "observe/1";
+
+    pub(crate) fn new(id: u64) -> Self {
+        Self { id, op: Self::OP }
+    }
+}
+
+/// A `status.declare/1` request framed for the persistent NDJSON transport.
+/// Sent ONCE at session open, AFTER `observe/1`; see
+/// `session::PersistentSession::request_status_declare`. Carries no payload:
+/// the request asks "what status keys will you push?", and the plugin's answer
+/// is its per-key declaration metadata.
+#[derive(Serialize)]
+pub(crate) struct PersistentStatusDeclareRequest {
+    pub id: u64,
+    pub op: &'static str,
+}
+
+impl PersistentStatusDeclareRequest {
+    pub const OP: &'static str = "status.declare/1";
+
+    pub(crate) fn new(id: u64) -> Self {
+        Self { id, op: Self::OP }
+    }
+}
+
+/// The selector a plugin declares in its `observe/1` answer -- which host
+/// `Event`s it wants to receive as notifications. `All` subscribes to every
+/// event; `Tags` subscribes to exactly the named `Event` tags. An unknown tag
+/// (one this host's `Event` enum does not produce) is KEPT in the set as
+/// declared -- the host simply never has a matching event to forward, and the
+/// selector entry is silently inert (warned once at engagement so the
+/// degradation is auditable). This is the host-side half of "an unknown
+/// `Event` tag is IGNORED": the plugin ASKED for something the host does not
+/// produce, and the host loads normally without ever having a match to send.
+#[derive(Clone, Debug)]
+pub(crate) enum ObserveSelector {
+    All,
+    Tags(HashSet<String>),
+}
+
+impl ObserveSelector {
+    /// `true` if an `Event` whose serialized `event` tag is `tag` should be
+    /// forwarded to the plugin. `Event::Lagged` is ALWAYS forwarded
+    /// regardless of the selector -- it is the lossy-with-notice notice a
+    /// slow consumer needs, mirroring `conway::EventStream`'s own
+    /// unconditional `Lagged` passthrough.
+    pub(crate) fn matches(&self, tag: &str) -> bool {
+        if tag == "lagged" {
+            return true;
+        }
+        match self {
+            ObserveSelector::All => true,
+            ObserveSelector::Tags(set) => set.contains(tag),
+        }
+    }
+}
+
+/// The typed failure of [`parse_persistent_observe_response`]. Observer
+/// points DEGRADE rather than fail closed, so the caller
+/// (`PersistentSession::request_observe`) maps EVERY variant onto "load
+/// without the point, `tracing::warn!`" -- there is no `Refused`-vs-
+/// `Malformed` split to drive two different `SubprocessPluginError` variants
+/// the way the participant points do. The split exists only so the warn
+/// message can honestly distinguish "the plugin declined" (`Refused`) from
+/// "the plugin is broken" (`Malformed`), the same honesty
+/// `initialize/1`'s own split provides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ObserveParseError {
+    /// The answer is structurally broken (not JSON / not an object / missing
+    /// or non-boolean `ok` / `ok:false` with no `error` / a non-array
+    /// `events` / a non-string entry). DEGRADE: load without the point.
+    Malformed(String),
+    /// The plugin DELIBERATELY answered `ok:false` WITH an `error` string: it
+    /// declined to observe. DEGRADE: load without the point.
+    Refused(String),
+}
+
+impl From<String> for ObserveParseError {
+    fn from(s: String) -> Self {
+        Self::Malformed(s)
+    }
+}
+
+/// Deserializes and classifies one persistent NDJSON `observe/1` response
+/// line. Returns the plugin's declared [`ObserveSelector`]. Unknown FIELDS are
+/// ignored-and-counted (surfaced via `tracing::debug!` in the caller, not
+/// here). EVERY failure mode DEGRADES: a structurally-invalid answer is
+/// [`ObserveParseError::Malformed`], a deliberate `ok:false`-with-error is
+/// [`ObserveParseError::Refused`], and the caller maps both onto "load without
+/// the point, warn" -- an observer cannot fail the run by construction.
+pub(crate) fn parse_persistent_observe_response(
+    bytes: &[u8],
+) -> Result<(ObserveSelector, usize), ObserveParseError> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "observe/1 answer is not a JSON object".to_string())?;
+
+    let ok = obj
+        .get("ok")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| "observe/1 answer missing or non-boolean `ok` field".to_string())?;
+    if !ok {
+        return Err(match obj.get("error").and_then(|v| v.as_str()) {
+            Some(err) => ObserveParseError::Refused(format!("plugin refused observe/1: {err}")),
+            None => ObserveParseError::Malformed(
+                "`ok:false` was returned with no `error` string".to_string(),
+            ),
+        });
+    }
+
+    // `events`: an array of string tags. `["*"]` -> All; any other list ->
+    // Tags(set). An empty array is Tags(empty) -- a plugin that declares
+    // observe/1 but selects nothing is saying "I want no events," an inert
+    // but valid selector (not malformation). A non-string entry is structural
+    // malformation -> degrade (Malformed).
+    let events_arr = obj
+        .get("events")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "observe/1 answer missing or non-array `events` field".to_string())?;
+    let mut tags: HashSet<String> = HashSet::with_capacity(events_arr.len());
+    let mut all = false;
+    for (i, entry) in events_arr.iter().enumerate() {
+        let tag = entry
+            .as_str()
+            .ok_or_else(|| format!("observe/1 answer `events[{i}]` is not a string"))?;
+        if tag == "*" {
+            all = true;
+        } else {
+            tags.insert(tag.to_string());
+        }
+    }
+    let selector = if all {
+        ObserveSelector::All
+    } else {
+        ObserveSelector::Tags(tags)
+    };
+
+    let known = ["id", "ok", "events"];
+    let unknown_field_count = obj.keys().filter(|k| !known.contains(&k.as_str())).count();
+    Ok((selector, unknown_field_count))
+}
+
+/// One per-key declaration in a `status.declare/1` answer -- the metadata a
+/// plugin declares for a status key it will push via `status/1` notifications
+/// (per `docs/plugins/hooks.md` point 12: `{ max_len, ttl_ms }`). The host
+/// stores these for the facade surface; the ttl/expiry RENDER path itself
+/// stays design-only (point 12's "Status" row).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub(crate) struct StatusDeclaration {
+    pub key: String,
+    #[serde(default)]
+    pub max_len: Option<u64>,
+    #[serde(default)]
+    pub ttl_ms: Option<u64>,
+}
+
+/// The typed failure of [`parse_persistent_status_declare_response`].
+/// Identical discipline to [`ObserveParseError`]: every variant DEGRADES (load
+/// without the point, warn); the split only distinguishes "declined"
+/// (`Refused`) from "broken" (`Malformed`) for an honest warn message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StatusDeclareParseError {
+    Malformed(String),
+    Refused(String),
+}
+
+impl From<String> for StatusDeclareParseError {
+    fn from(s: String) -> Self {
+        Self::Malformed(s)
+    }
+}
+
+/// Deserializes and classifies one persistent NDJSON `status.declare/1`
+/// response line. Returns the per-key declarations and the unknown-field
+/// count. Every failure mode DEGRADES (observer point): a structurally
+/// invalid answer is [`StatusDeclareParseError::Malformed`], a deliberate
+/// `ok:false`-with-error is [`StatusDeclareParseError::Refused`], and the
+/// caller maps both onto "load without the point, warn".
+pub(crate) fn parse_persistent_status_declare_response(
+    bytes: &[u8],
+) -> Result<(Vec<StatusDeclaration>, usize), StatusDeclareParseError> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "status.declare/1 answer is not a JSON object".to_string())?;
+
+    let ok = obj
+        .get("ok")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| "status.declare/1 answer missing or non-boolean `ok` field".to_string())?;
+    if !ok {
+        return Err(match obj.get("error").and_then(|v| v.as_str()) {
+            Some(err) => {
+                StatusDeclareParseError::Refused(format!("plugin refused status.declare/1: {err}"))
+            }
+            None => StatusDeclareParseError::Malformed(
+                "`ok:false` was returned with no `error` string".to_string(),
+            ),
+        });
+    }
+
+    // `keys`: an array of {key, max_len?, ttl_ms?}. An empty array is VALID --
+    // a plugin that declares the point but contributes no keys is saying "I
+    // have no status to push," the same inert-but-valid shape an empty
+    // observe selector takes. Each entry must carry a non-empty `key` string;
+    // a missing/empty/non-string `key` is structural malformation -> degrade.
+    let keys_arr = obj
+        .get("keys")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "status.declare/1 answer missing or non-array `keys` field".to_string())?;
+    let mut decls = Vec::with_capacity(keys_arr.len());
+    for (i, entry) in keys_arr.iter().enumerate() {
+        let decl: StatusDeclaration = serde_json::from_value(entry.clone()).map_err(|err| {
+            let reason_full = err.to_string();
+            let reason = reason_full
+                .split(", expected")
+                .next()
+                .unwrap_or(&reason_full)
+                .to_string();
+            format!("status.declare/1 answer `keys[{i}]` is malformed: {reason}")
+        })?;
+        if decl.key.is_empty() {
+            return Err(format!("status.declare/1 answer `keys[{i}]` has an empty `key`").into());
+        }
+        decls.push(decl);
+    }
+
+    let known = ["id", "ok", "keys"];
+    let unknown_field_count = obj.keys().filter(|k| !known.contains(&k.as_str())).count();
+    Ok((decls, unknown_field_count))
+}
+
+/// One status contribution parsed from an inbound no-`id` `status/1`
+/// notification line -- the wire form of [`conway::plugin::PluginStatusContribution`].
+/// `status` is the already-degraded [`ResultStatus`] (an unknown wire tag
+/// became `ResultStatus::Failed` at parse time, per the compatibility table).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WireStatusContribution {
+    pub key: String,
+    pub status: ResultStatus,
+    pub value: String,
+}
+
+/// Maps a wire `status` string tag to a [`ResultStatus`], degrading an
+/// UNKNOWN tag to `ResultStatus::Failed` (the compatibility table's
+/// `ResultStatus` row -- never `Completed`). The `value` string populates the
+/// variant's own text field where one exists (`Failed::error`,
+/// `Cancelled::reason`, `BudgetExceeded::limit`); for `Completed` and
+/// `Rejected` it is carried alongside unchanged. `#[serde(other)]` is
+/// deliberately NOT used on `ResultStatus` (it is `#[non_exhaustive]`): an
+/// unknown tag is NAMED via the `Failed` variant's `error` string so the
+/// degradation is auditable, rather than silently captured.
+pub(crate) fn parse_status_notification(
+    value: &serde_json::Value,
+) -> Result<WireStatusContribution, String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "status/1 notification is not a JSON object".to_string())?;
+    let key = obj
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "status/1 notification missing or non-string `key`".to_string())?
+        .to_string();
+    if key.is_empty() {
+        return Err("status/1 notification has an empty `key`".to_string());
+    }
+    let status_tag = obj
+        .get("status")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "status/1 notification missing or non-string `status`".to_string())?;
+    let value_str = obj
+        .get("value")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let status = match status_tag {
+        "completed" => ResultStatus::Completed,
+        "failed" => ResultStatus::Failed {
+            error: value_str.clone(),
+        },
+        "cancelled" => ResultStatus::Cancelled {
+            reason: value_str.clone(),
+        },
+        "budget_exceeded" => ResultStatus::BudgetExceeded {
+            limit: value_str.clone(),
+        },
+        "rejected" => ResultStatus::Rejected {
+            missing: Vec::new(),
+        },
+        unknown => {
+            tracing::warn!(
+                unknown_status = %unknown,
+                degraded_to = "failed",
+                key = %key,
+                "unknown ResultStatus tag in a status/1 notification from a subprocess plugin; \
+                 degrading to Failed (never Completed), per the compatibility table"
+            );
+            ResultStatus::Failed {
+                error: format!("unknown status tag: {unknown}"),
+            }
+        }
+    };
+    Ok(WireStatusContribution {
+        key,
+        status,
+        value: value_str,
+    })
+}
+
+/// Builds the outbound no-`id` `observe/1` notification line for one `Event`:
+/// `{"op":"observe/1",...the Event's own flattened fields...}\n`. The `Event`
+/// is serialized via its own `#[serde(tag = "event")]` shape, the `"event"`
+/// tag is checked against `selector` (an `Event` whose tag the plugin did not
+/// select returns `None` -- the caller drops it silently; `Event::Lagged` is
+/// ALWAYS forwarded regardless of the selector, per [`ObserveSelector::
+/// matches`]), then `"op"` is merged into the resulting object so one
+/// notification is one flat JSON object per line. Returns `None` if the
+/// `Event` is filtered out OR fails to serialize (should not happen for any
+/// constructed `Event`, but fail-safe: drop at the caller rather than
+/// panicking the host turn).
+pub(crate) fn build_observe_notification(
+    event: &conway::plugin::Event,
+    selector: &ObserveSelector,
+) -> Option<Vec<u8>> {
+    let mut value = serde_json::to_value(event).ok()?;
+    let tag = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
+    if !selector.matches(tag) {
+        return None;
+    }
+    if let Some(obj) = value.as_object_mut() {
+        // `op` is inserted LAST so it never collides with an `Event` field
+        // name (no `Event` variant carries a field named `op`).
+        obj.insert("op".to_string(), serde_json::json!("observe/1"));
+    }
+    let mut bytes = serde_json::to_vec(&value).ok()?;
+    bytes.push(b'\n');
+    Some(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1281,5 +1728,214 @@ mod tests {
         let bytes = br#"{"id":2,"ok":true,"rules":"not-an-array"}"#;
         parse_persistent_permission_policy_response(bytes)
             .expect_err("a non-array rules field must fail closed");
+    }
+
+    // ----- observe/1 + status.declare/1 / status/1 parser tests (board item
+    //       `01M03VKQ738DTGHHK2C4RWXC0E`). Every failure mode DEGRADES (the
+    //       parsers classify Malformed vs Refused so the caller's warn message
+    //       is honest, but the caller maps BOTH onto "load without the point");
+    //       an unknown `ResultStatus` wire tag degrades to `Failed` (never
+    //       `Completed`); the selector keeps an unknown tag inert (the
+    //       host-side half of "an unknown `Event` tag is IGNORED").
+
+    /// A `["*"]` selector parses to `ObserveSelector::All`; unknown extra
+    /// fields are counted (accept branch / forward-compat), not rejected.
+    #[test]
+    fn observe_answer_star_selector_is_all_with_unknown_fields_counted() {
+        let bytes = br#"{"id":3,"ok":true,"events":["*"],"future":"x"}"#;
+        let (selector, unknown) =
+            parse_persistent_observe_response(bytes).expect("accept-branch observe answer");
+        assert!(matches!(selector, ObserveSelector::All), "['*'] -> All");
+        assert_eq!(unknown, 1, "the one unknown field is counted, not rejected");
+    }
+
+    /// A tag-list selector parses to `ObserveSelector::Tags` with exactly the
+    /// named tags; `Event::Lagged` is always matched regardless of the set.
+    #[test]
+    fn observe_answer_tag_list_selector_keeps_named_tags_and_matches_lagged() {
+        let bytes = br#"{"id":3,"ok":true,"events":["turn_started","agent_finished"]}"#;
+        let (selector, _) =
+            parse_persistent_observe_response(bytes).expect("tag-list observe answer");
+        match &selector {
+            ObserveSelector::Tags(set) => {
+                assert!(set.contains("turn_started"));
+                assert!(set.contains("agent_finished"));
+                assert_eq!(set.len(), 2);
+            }
+            other => panic!("expected Tags, got {other:?}"),
+        }
+        // Lagged is ALWAYS forwarded (lossy-with-notice notice), even when the
+        // selector did not name it.
+        assert!(selector.matches("lagged"));
+        assert!(selector.matches("turn_started"));
+        assert!(!selector.matches("model_decision"));
+        // An unknown tag the plugin named but the host does not produce is
+        // kept in the set -- the host simply never has a match to forward, so
+        // it is silently inert (the host-side half of "ignore").
+        let bytes2 = br#"{"id":3,"ok":true,"events":["quantum_event"]}"#;
+        let (selector2, _) =
+            parse_persistent_observe_response(bytes2).expect("unknown-tag selector");
+        match &selector2 {
+            ObserveSelector::Tags(set) => assert!(set.contains("quantum_event")),
+            other => panic!("expected Tags, got {other:?}"),
+        }
+        assert!(!selector2.matches("turn_started"), "unknown tag is inert");
+    }
+
+    /// `ok:false` WITH an `error` string is a deliberate decline ->
+    /// `Refused` (the caller degrades, loading without the point).
+    #[test]
+    fn observe_answer_ok_false_with_error_is_refused() {
+        let bytes = br#"{"id":3,"ok":false,"error":"I do not observe"}"#;
+        let err = parse_persistent_observe_response(bytes).expect_err("ok:false is not Ok");
+        match err {
+            ObserveParseError::Refused(detail) => {
+                assert!(
+                    detail.contains("I do not observe"),
+                    "carries the plugin's reason: {detail}"
+                )
+            }
+            other => panic!("ok:false-with-error is Refused, got {other:?}"),
+        }
+    }
+
+    /// `ok:false` with NO `error` is a contract violation -> `Malformed`.
+    #[test]
+    fn observe_answer_ok_false_with_no_error_is_malformed() {
+        let bytes = br#"{"id":3,"ok":false}"#;
+        let err = parse_persistent_observe_response(bytes).expect_err("ok:false no error");
+        assert!(matches!(err, ObserveParseError::Malformed(_)));
+    }
+
+    /// A non-array `events` is structural malformation -> `Malformed`.
+    #[test]
+    fn observe_answer_non_array_events_is_malformed() {
+        let bytes = br#"{"id":3,"ok":true,"events":"turn_started"}"#;
+        parse_persistent_observe_response(bytes)
+            .expect_err("a non-array events field is malformed");
+    }
+
+    /// A status.declare/1 answer with two keys parses both declarations.
+    #[test]
+    fn status_declare_answer_parses_per_key_declarations() {
+        let bytes = br#"{"id":4,"ok":true,"keys":[{"key":"build","max_len":80,"ttl_ms":5000},{"key":"lint"}]}"#;
+        let (decls, _) = parse_persistent_status_declare_response(bytes)
+            .expect("accept-branch status.declare answer");
+        assert_eq!(decls.len(), 2);
+        assert_eq!(decls[0].key, "build");
+        assert_eq!(decls[0].max_len, Some(80));
+        assert_eq!(decls[0].ttl_ms, Some(5000));
+        assert_eq!(decls[1].key, "lint");
+        assert_eq!(decls[1].max_len, None, "max_len is optional");
+        assert_eq!(decls[1].ttl_ms, None, "ttl_ms is optional");
+    }
+
+    /// A status.declare/1 `ok:false`-with-error is a deliberate decline ->
+    /// `Refused` (the caller degrades).
+    #[test]
+    fn status_declare_answer_ok_false_with_error_is_refused() {
+        let bytes = br#"{"id":4,"ok":false,"error":"no status to push"}"#;
+        let err = parse_persistent_status_declare_response(bytes).expect_err("ok:false is not Ok");
+        match err {
+            StatusDeclareParseError::Refused(detail) => {
+                assert!(
+                    detail.contains("no status to push"),
+                    "carries reason: {detail}"
+                )
+            }
+            other => panic!("ok:false-with-error is Refused, got {other:?}"),
+        }
+    }
+
+    /// A status.declare/1 entry with an empty `key` is structural malformation
+    /// -> `Malformed`.
+    #[test]
+    fn status_declare_answer_empty_key_is_malformed() {
+        let bytes = br#"{"id":4,"ok":true,"keys":[{"key":""}]}"#;
+        parse_persistent_status_declare_response(bytes).expect_err("an empty key is malformed");
+    }
+
+    /// A known `ResultStatus` tag maps to the matching variant; the `value`
+    /// string populates the variant's own text field.
+    #[test]
+    fn status_notification_known_tag_maps_to_variant() {
+        let val =
+            serde_json::json!({"op":"status/1","key":"build","status":"failed","value":"red"});
+        let contrib = parse_status_notification(&val).expect("known failed tag");
+        assert_eq!(contrib.key, "build");
+        assert_eq!(contrib.value, "red");
+        assert_eq!(
+            contrib.status,
+            ResultStatus::Failed {
+                error: "red".into()
+            }
+        );
+
+        let val2 =
+            serde_json::json!({"op":"status/1","key":"lint","status":"completed","value":"green"});
+        let contrib2 = parse_status_notification(&val2).expect("known completed tag");
+        assert_eq!(contrib2.status, ResultStatus::Completed);
+    }
+
+    /// An UNKNOWN `ResultStatus` tag degrades to `ResultStatus::Failed`
+    /// (never `Completed`), carrying the unknown tag in the `error` string so
+    /// the degradation is auditable -- the compatibility table's
+    /// `ResultStatus` row.
+    #[test]
+    fn status_notification_unknown_tag_degrades_to_failed() {
+        let val = serde_json::json!({"op":"status/1","key":"build","status":"quantum","value":"?"});
+        let contrib = parse_status_notification(&val).expect("unknown tag degrades, not errors");
+        match contrib.status {
+            ResultStatus::Failed { error } => {
+                assert!(error.contains("quantum"), "names the unknown tag: {error}")
+            }
+            other => panic!("unknown tag degrades to Failed, got {other:?} (never Completed)"),
+        }
+    }
+
+    /// A status/1 notification missing `key` or `status` is structurally
+    /// invalid -> `Err` (the caller drops it with a warn, observer-class).
+    #[test]
+    fn status_notification_missing_field_is_err() {
+        let no_key = serde_json::json!({"op":"status/1","status":"completed","value":"ok"});
+        parse_status_notification(&no_key).expect_err("missing key is invalid");
+        let no_status = serde_json::json!({"op":"status/1","key":"build","value":"ok"});
+        parse_status_notification(&no_status).expect_err("missing status is invalid");
+    }
+
+    /// `build_observe_notification` produces a flat object with `op` merged
+    /// alongside the `Event`'s own `event`-tagged fields, `\n`-terminated; a
+    /// selector that does not match the tag returns `None`.
+    #[test]
+    fn build_observe_notification_merges_op_and_filters_by_selector() {
+        let event = conway::plugin::Event::TurnStarted { turn: 7 };
+        let all = ObserveSelector::All;
+        let line = build_observe_notification(&event, &all).expect("All selector forwards");
+        let s = std::str::from_utf8(&line).unwrap();
+        assert!(s.ends_with('\n'), "newline-terminated");
+        assert!(s.contains("\"op\":\"observe/1\""), "op merged in: {s}");
+        assert!(
+            s.contains("\"event\":\"turn_started\""),
+            "event tag retained: {s}"
+        );
+        assert!(s.contains("\"turn\":7"), "event field retained: {s}");
+
+        // A selector that did not name `turn_started` filters it out.
+        let tags =
+            ObserveSelector::Tags(std::collections::HashSet::from(["agent_finished".into()]));
+        assert!(
+            build_observe_notification(&event, &tags).is_none(),
+            "filtered out"
+        );
+
+        // Lagged is ALWAYS forwarded regardless of the selector.
+        let lagged = conway::plugin::Event::Lagged { skipped: 3 };
+        let line = build_observe_notification(&lagged, &tags).expect("Lagged always forwarded");
+        let s = std::str::from_utf8(&line).unwrap();
+        assert!(
+            s.contains("\"event\":\"lagged\""),
+            "lagged tag present: {s}"
+        );
+        assert!(s.contains("\"skipped\":3"), "skipped field present: {s}");
     }
 }

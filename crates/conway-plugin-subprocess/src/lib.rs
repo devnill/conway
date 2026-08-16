@@ -13,8 +13,10 @@
 //! SECOND lifecycle for `tool/1` alongside the original one-shot exec: a
 //! persistent NDJSON JSON-RPC channel (board item
 //! `01M03VJHG1WFECFJB4ZH3CKWDX`, see `session`'s own module doc). Still
-//! nothing beyond `tool/1` itself and the session-scoped
-//! `permission.policy/1` declaration: no `context.hook/1`, no `observe/1`,
+//! nothing beyond `tool/1` itself, the session-scoped
+//! `permission.policy/1` declaration, the one-way `observe/1` observer sink
+//! (board item `01M03VKQ738DTGHHK2C4RWXC0E`), and the `status.declare/1` /
+//! `status/1` status push (same item): no `context.hook/1`,
 //! no capability handshake beyond the `PluginManifest::required_host_caps`
 //! the wire now CARRIES (board item `01M03VJXARFHSDAGHFXGCWKJTY`: a
 //! subprocess plugin declares its required host caps in
@@ -96,9 +98,9 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use conway::plugin::{
-    async_trait, PathArgs, Plugin, PluginManifest, PluginPermissionRule, PluginPermissionVerdict,
-    RenderKind, Tool, ToolCall, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec,
-    TruncationPolicy,
+    async_trait, EventSinkHandle, PathArgs, Plugin, PluginManifest, PluginPermissionRule,
+    PluginPermissionVerdict, PluginStatusContribution, RenderKind, Tool, ToolCall, ToolCtx,
+    ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
 
 mod session;
@@ -650,6 +652,32 @@ impl SubprocessPlugin {
                 // On any failure the just-spawned child is dropped (its
                 // `Drop` kills the process group), never orphaned.
                 session.request_permission_policy().await?;
+                // The one-time `observe/1` engagement (board item
+                // `01M03VKQ738DTGHHK2C4RWXC0E`), AFTER
+                // `permission.policy/1`. An OBSERVER point: a plugin
+                // declaring `observe/1` at a SUPPORTED version exchanges its
+                // selector and the host spawns a writer task that forwards
+                // matching `Event`s as no-`id` notifications on the plugin's
+                // stdin; an UNSUPPORTED version DEGRADES (warn, load without
+                // the point) -- the observer rule, the OPPOSITE of
+                // `permission.policy/1`'s participant refusal; a plugin that
+                // does not declare the point loads normally and contributes
+                // no observe sink. A malformed/refused engagement answer ALSO
+                // degrades (observer-class, never fails the session). ONLY a
+                // transport-level death during the engagement propagates as
+                // `Err` (the just-spawned child is dropped, never orphaned).
+                session.request_observe().await?;
+                // The one-time `status.declare/1` engagement (board item
+                // `01M03VKQ738DTGHHK2C4RWXC0E`), AFTER `observe/1`. Same
+                // observer rule: a SUPPORTED version exchanges the plugin's
+                // per-key declarations and the host's reader routes inbound
+                // no-`id` `status/1` lines to a bounded notification channel
+                // (drop+warn, never blocks the host turn); an UNSUPPORTED
+                // version DEGRADES; a plugin that does not declare the point
+                // loads normally and contributes no status. A malformed/
+                // refused answer degrades; only a transport-level death
+                // propagates as `Err`.
+                session.request_status_declare().await?;
                 Some(Arc::new(session))
             }
         };
@@ -717,6 +745,47 @@ impl SubprocessPlugin {
             })
             .collect()
     }
+
+    /// An [`EventSinkHandle`] the host fans the runtime's live `Event` stream
+    /// onto so this plugin can OBSERVE host events over its persistent session
+    /// -- the host-side half of the `observe/1` wire point (board item
+    /// `01M03VKQ738DTGHHK2C4RWXC0E`, see `docs/plugins/hooks.md` point 11).
+    /// `None` for the one-shot transport (no handshake, no observe
+    /// engagement), a persistent plugin that did not declare the point, a
+    /// persistent plugin that declared it at an unsupported version (DEGRADE --
+    /// loaded without the point), or before `discover` has run the one-time
+    /// engagement. The sink is lossy-with-notice (bounded channel, drop+warn
+    /// on overflow, never blocks the host turn); see `session::ObserveAdapter`'s
+    /// own doc for the discipline and the `Event::Lagged` passthrough.
+    pub fn observe_sink(&self) -> Option<EventSinkHandle> {
+        self.session.as_ref().and_then(|s| s.observe_sink())
+    }
+
+    /// A point-in-time snapshot of the status contributions this plugin is
+    /// CURRENTLY pushing -- the host-side half of the `status.declare/1` /
+    /// `status/1` wire point (board item `01M03VKQ738DTGHHK2C4RWXC0E`, see
+    /// `docs/plugins/hooks.md` point 12). Reads the session's per-key status
+    /// store, which the notification handler task updates from inbound no-`id`
+    /// `status/1` lines. Empty for the one-shot transport, a plugin that did
+    /// not declare the point, a plugin that declared it at an unsupported
+    /// version (DEGRADE), or before any `status/1` notifications have arrived.
+    /// An unknown `ResultStatus` wire tag the plugin pushes was already
+    /// degraded to `ResultStatus::Failed` at parse time (the compatibility
+    /// table's `ResultStatus` row, never `Completed`); see
+    /// `wire::parse_status_notification`'s own doc.
+    pub fn status_contributions(&self) -> Vec<PluginStatusContribution> {
+        self.session
+            .as_ref()
+            .map(|s| s.status_contributions())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| PluginStatusContribution {
+                key: c.key,
+                status: c.status,
+                value: c.value,
+            })
+            .collect()
+    }
 }
 
 impl Plugin for SubprocessPlugin {
@@ -737,6 +806,25 @@ impl Plugin for SubprocessPlugin {
     /// implementor still returns.
     fn permission_rules(&self) -> Vec<PluginPermissionRule> {
         SubprocessPlugin::permission_rules(self)
+    }
+
+    /// The `observe/1` sink this persistent plugin engaged at session open
+    /// (board item `01M03VKQ738DTGHHK2C4RWXC0E`). See
+    /// [`Self::observe_sink`]'s own doc for the degrade boundary (unsupported
+    /// version -> `None`, load without the point) and the one-way,
+    /// lossy-with-notice discipline. The default `None` is what every other
+    /// `Plugin` implementor still returns.
+    fn observe_sink(&self) -> Option<EventSinkHandle> {
+        SubprocessPlugin::observe_sink(self)
+    }
+
+    /// The `status/1` contributions this persistent plugin is currently
+    /// pushing (board item `01M03VKQ738DTGHHK2C4RWXC0E`). See
+    /// [`Self::status_contributions`]'s own doc for the polled-snapshot
+    /// discipline and the unknown-tag-degrades-to-`Failed` rule. The default
+    /// empty `Vec` is what every other `Plugin` implementor still returns.
+    fn status_contributions(&self) -> Vec<PluginStatusContribution> {
+        SubprocessPlugin::status_contributions(self)
     }
 }
 
