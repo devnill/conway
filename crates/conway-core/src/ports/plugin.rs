@@ -152,6 +152,51 @@ pub trait Plugin: Send + Sync + 'static {
     fn narrowable_keys(&self) -> Vec<NarrowingRule> {
         Vec::new()
     }
+
+    /// Zero or more [`ContextHook`]s this plugin installs -- per-request
+    /// context curation (segment edit/drop/replace, tool-announcement
+    /// narrowing) that runs before every LLM request. The default returns
+    /// none, the SAME zero-cost-default precedent [`Self::commands`]/
+    /// [`Self::events`]/[`Self::observers`]/[`Self::narrowable_keys`]
+    /// established above: every existing `Plugin` implementor keeps
+    /// compiling unmodified, and a build with no curating plugin installed
+    /// leaves the runtime's context hook unset -- byte-identical to never
+    /// calling `ConwayBuilder::with_context_hook` at all.
+    ///
+    /// **Why this is a `Plugin` method rather than only a `ConwayBuilder`
+    /// setter.** `ConwayBuilder::with_context_hook` remains the lower-level
+    /// surface -- an embedder with a standalone hook and no plugin still
+    /// uses it directly. But before this method, a plugin-contributed tool
+    /// ([`Self::tools`]) had no way to ALSO contribute the context curation
+    /// that tool's value proposition often depends on: progressive skill
+    /// disclosure, for instance, is a `ContextHook` that narrows a
+    /// `Provenance::Skill` segment to a one-line index PLUS a `read_skill`
+    /// tool that fetches the full body on demand, and the two only make
+    /// sense installed together. Requiring a plugin author to also reach
+    /// for a separate builder setter their consumer might forget to call
+    /// would have been exactly the kind of privileged channel GP-03 rules
+    /// out -- a first-party plugin needing a hook a third party cannot
+    /// reach through the same `with_plugin` surface. This method closes
+    /// that gap: a plugin's hooks install through the SAME `with_plugin`/
+    /// `install_selected` surface its tools do, and `ConwayBuilder::build`
+    /// composes every installed plugin's hooks (plus any
+    /// `with_context_hook`-injected one) into the single
+    /// `Runtime::set_context_hook` call the runtime actually reads.
+    ///
+    /// **Composition, stated for the multi-plugin case.** The runtime holds
+    /// one context hook; the builder therefore chains multiple contributed
+    /// hooks in installation order (an injected `with_context_hook` hook
+    /// first, then each plugin's hooks in `with_plugin`/`install_selected`
+    /// order), feeding each hook's returned payload to the next. This is
+    /// the same "every downstream consumer sees the post-hook payload"
+    /// property `agent_loop`'s own hook call site already guarantees for a
+    /// single hook, extended to a chain by construction. A hook that wants
+    /// to opt out of chaining narrows only its own segments and leaves the
+    /// rest untouched, which composes cleanly with a sibling that narrows
+    /// different segments.
+    fn context_hooks(&self) -> Vec<Arc<dyn ContextHook>> {
+        Vec::new()
+    }
 }
 
 /// One [`PluginConfig`] key a plugin declares narrowable in per-agent

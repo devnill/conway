@@ -1,0 +1,47 @@
+[package]
+name = "conway-plugin-skills"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin (board item 01M03GMNB3P048G72M158XPDG2): progressive skill disclosure -- narrows full-body Provenance::Skill context segments to a one-line index and offers a read_skill tool that fetches the full body on demand"
+
+# Versioned WITH the workspace, like every other first-party plugin. This
+# crate carries none of `conway-core`'s strict-semver discipline
+# (ARCHITECTURE.md §2), because that discipline exists for the crate
+# third-party plugins depend on, and from `conway`'s own point of view this
+# is just another consumer of the public `conway::plugin` surface -- the
+# identical footing `conway-plugin-skeleton`/`conway-plugin-stepguard`/
+# `conway-plugin-history` already establish.
+
+[dependencies]
+# The ONLY workspace crate this plugin depends on -- the public facade, the
+# exact surface a third-party plugin author gets (GP-03/P-6). `Plugin`,
+# `Tool`, `ContextHook`, `ContextPayload`, `Provenance`, `SkillDef`, and
+# `skills::load_skill_defs` are all reachable through `conway`/
+# `conway::plugin` alone, which is what makes this plugin a genuine test of
+# that surface rather than a privileged built-in wearing a plugin's clothes.
+conway = { path = "../conway" }
+# Data-type crates whose types appear in public `Tool`/`Plugin` method
+# signatures (`ToolSpec::schema`, `ToolCall::arguments`) but are
+# deliberately NOT re-exported by `conway::plugin` (see that module's own
+# doc: "name them in your own Cargo.toml, at the same version conway
+# uses") -- a plugin author's own dependency, not conway's. Both are
+# already pinned `[workspace.dependencies]` used throughout this tree, so
+# this is not a new dependency to the workspace (C-04).
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+# Test-only: builds a real `Conway` (fake backend/store/gate/router) to
+# drive this plugin's hook + tool through a real turn end to end -- the
+# same precedent `conway-plugin-skeleton`'s own
+# `tests/skeleton_end_to_end.rs` establishes. Already pinned workspace
+# dependencies, not new ones (C-04).
+conway-core = { path = "../conway-core" }
+conway-testkit = { path = "../conway-testkit" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tempfile = { workspace = true }

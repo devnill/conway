@@ -60,6 +60,15 @@ pub use conway_core::agent::{
     PermissionDecisionKind, PermissionRequest, PermissionScope, ResultStatus, ToolSelector,
 };
 pub use conway_core::config::AgentDef;
+/// Re-exported so a crate depending only on `conway` (the facade -- the
+/// surface a third-party plugin author gets, per GP-03) can name the type
+/// `conway::skills::load_skill_defs` returns in its own signature. A plugin
+/// that consumes skill defs (e.g. `conway-plugin-skills`' progressive-
+/// disclosure hook/tool) needs to name `SkillDef` to construct itself from
+/// a loaded skills map; without this re-export it would have to depend on
+/// `conway-core` directly, the exact shortcut the plugin tier's "facade
+/// only" discipline exists to avoid.
+pub use conway_core::config::SkillDef;
 pub use conway_core::permission_mode::PermissionMode;
 pub use conway_core::permission_pattern::{
     PatternOrigin, PatternRule, PermissionFile, Rule, RuleRegistrationError,
