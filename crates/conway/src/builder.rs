@@ -1276,6 +1276,16 @@ impl ConwayBuilder {
         let skill_defs = skills::load_skill_defs(&skills_dir)?;
 
         // 12. Runtime::new.
+        //
+        // Collect each installed plugin's own `Plugin::context_hooks()`
+        // contributions BEFORE `resolved_plugins` is moved into
+        // `RuntimeDeps` below. Composed with any
+        // `with_context_hook`-injected hook after construction -- see the
+        // `set_context_hook` call below for the composition order.
+        let plugin_context_hooks: Vec<Arc<dyn ContextHook>> = resolved_plugins
+            .iter()
+            .flat_map(|p| p.context_hooks())
+            .collect();
         let event_bus = EventBus::new(EVENT_BUS_CAPACITY);
         let rt = Runtime::new(RuntimeDeps {
             store: store.clone(),
@@ -1292,10 +1302,23 @@ impl ConwayBuilder {
         // `RuntimeDeps` has no `context_hook` field (out of that
         // item's file scope to add -- see `conway_runtime::runtime`'s
         // module doc), so registration happens post-construction via this
-        // dedicated setter. `context_hook: None` (no `with_context_hook`
-        // call) sets the runtime's hook to `None`, identical to never
-        // calling this method at all.
-        rt.set_context_hook(context_hook);
+        // dedicated setter.
+        //
+        // The single hook the runtime accepts is composed here from TWO
+        // sources, in this order: (1) an embedder's explicit
+        // `with_context_hook`-injected hook (if any), then (2) every
+        // installed plugin's own `Plugin::context_hooks()` contributions,
+        // in `with_plugin`/`install_selected` install order. `None` overall
+        // (no injected hook AND no plugin contributed one) sets the
+        // runtime's hook to `None`, identical to never calling this method
+        // at all -- the zero-cost default `Plugin::context_hooks`'s empty
+        // default preserves for every plugin that does not opt in.
+        let mut composed: Vec<Arc<dyn ContextHook>> = Vec::new();
+        if let Some(injected) = context_hook {
+            composed.push(injected);
+        }
+        composed.extend(plugin_context_hooks);
+        rt.set_context_hook(compose_context_hooks(composed));
         // mirrors the `context_hook`
         // wiring immediately above -- `hook_runner: None` (no
         // `with_hook_runner` call) sets the broker's runner to `None`,
@@ -1404,6 +1427,98 @@ fn resolve_path(cwd: &Path, p: &Path) -> PathBuf {
         p.to_path_buf()
     } else {
         cwd.join(p)
+    }
+}
+
+/// Composes zero or more plugin-/embedder-contributed [`ContextHook`]s into
+/// the single `Option<Arc<dyn ContextHook>>` the runtime accepts.
+///
+/// - Empty -> `None`: the runtime's hook stays unset, byte-identical to
+///   never calling `with_context_hook` / no curating plugin installed.
+/// - One -> that hook directly: no wrapper, so `GuardedContextHook` wraps
+///   exactly the one hook the caller contributed (the common case -- e.g.
+///   a single `conway.skills` install).
+/// - More than one -> a [`ChainedContextHook`] that runs them in order,
+///   feeding each hook's returned payload to the next (`before_request`),
+///   and on `on_overflow` runs each in order returning the first `Some`.
+///
+/// This is the composition `Plugin::context_hooks`'s own doc names: an
+/// embedder's `with_context_hook` hook first, then each plugin's hooks in
+/// install order. It keeps the `with_context_hook` surface working for a
+/// standalone hook while letting plugins contribute curation through the
+/// SAME `with_plugin`/`install_selected` surface -- no privileged channel.
+fn compose_context_hooks(hooks: Vec<Arc<dyn ContextHook>>) -> Option<Arc<dyn ContextHook>> {
+    match hooks.len() {
+        0 => None,
+        1 => Some(hooks.into_iter().next().expect("len == 1")),
+        _ => Some(Arc::new(ChainedContextHook::new(hooks))),
+    }
+}
+
+/// Runs a chain of [`ContextHook`]s in order, feeding each hook's
+/// `before_request` output to the next. `on_overflow` runs each hook in
+/// order on the payload and returns the first `Some` (a hook that returns
+/// `None` defers to the next; the final `None` falls through to the hard
+/// `ContextTooLarge`, exactly as a single hook's default does).
+///
+/// Only constructed by [`compose_context_hooks`] when more than one hook is
+/// present; the one-hook case installs that hook directly, so this type's
+/// chaining logic is exercised only when an embedder AND a plugin (or two
+/// plugins) each contribute a hook.
+struct ChainedContextHook {
+    hooks: Vec<Arc<dyn ContextHook>>,
+}
+
+impl ChainedContextHook {
+    fn new(hooks: Vec<Arc<dyn ContextHook>>) -> Self {
+        Self { hooks }
+    }
+}
+
+#[async_trait::async_trait]
+impl ContextHook for ChainedContextHook {
+    async fn before_request(
+        &self,
+        ctx: &conway_core::ports::ContextHookCtx,
+        mut payload: conway_core::ports::ContextPayload,
+    ) -> conway_core::ports::ContextPayload {
+        for hook in &self.hooks {
+            payload = hook.before_request(ctx, payload).await;
+        }
+        payload
+    }
+
+    async fn on_overflow(
+        &self,
+        ctx: &conway_core::ports::ContextHookCtx,
+        mut payload: conway_core::ports::ContextPayload,
+        overflow: conway_core::ports::OverflowInfo,
+    ) -> Option<conway_core::ports::ContextPayload> {
+        // Each hook gets a chance to shrink the payload; a hook that
+        // returns `None` (the default -- "I can't help") simply defers to
+        // the next, which may shrink different segments. The chain returns
+        // `Some` iff at least one hook shrank, else `None` (the hard
+        // `ContextTooLarge`, exactly as a single hook's default does).
+        let mut shrunk = false;
+        for hook in &self.hooks {
+            // `on_overflow` takes `payload` by value and returns `Option`,
+            // so a `None` ("I can't help") would consume the payload and
+            // leave nothing for the next hook. Clone for each call so a
+            // hook that abstains does not foreclose on a later sibling
+            // that could shrink different segments -- the rare multi-hook
+            // overflow path pays one `ContextPayload` clone per hook,
+            // acceptable for a path that only runs on a T-1 rejection.
+            let result = hook.on_overflow(ctx, payload.clone(), overflow).await;
+            if let Some(transformed) = result {
+                payload = transformed;
+                shrunk = true;
+            }
+        }
+        if shrunk {
+            Some(payload)
+        } else {
+            None
+        }
     }
 }
 

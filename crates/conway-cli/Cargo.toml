@@ -28,6 +28,15 @@ conway-plugin-skeleton = { path = "../conway-plugin-skeleton" }
 # for `conway-plugin-skeleton`.
 conway-plugin-history = { path = "../conway-plugin-history" }
 conway-plugin-stepguard = { path = "../conway-plugin-stepguard" }
+# Board item 01M03GMNB3P048G72M158XPDG2: progressive skill disclosure -- a
+# `ContextHook` that narrows full-body `Provenance::Skill` segments to a
+# one-line index plus a `read_skill` tool. Resolved through the SAME
+# `[plugins].install` mechanism and the same `src/first_party_plugins.rs`
+# choke point as the lines above; NOT installed by default. Its
+# `ContextHook` installs via `Plugin::context_hooks` (the SAME
+# `with_plugin`/`install_selected` surface its tool uses), so
+# `[plugins].install = ["conway.skills"]` is the whole of the wiring.
+conway-plugin-skills = { path = "../conway-plugin-skills" }
 # Board item 01KZFC43J1J06BM4CCWKCKHSNV: the routing engine `conway` itself
 # used to compile in directly is now a first-party plugin too, resolved
 # through the SAME `[plugins].install` mechanism and the same `src/

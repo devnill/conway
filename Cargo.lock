@@ -549,6 +549,7 @@ dependencies = [
  "conway-plugin-history",
  "conway-plugin-routing",
  "conway-plugin-skeleton",
+ "conway-plugin-skills",
  "conway-plugin-stepguard",
  "conway-plugin-subprocess",
  "conway-testkit",
@@ -652,6 +653,21 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "conway-plugin-skills"
+version = "0.9.0"
+dependencies = [
+ "async-trait",
+ "conway",
+ "conway-core",
+ "conway-testkit",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 

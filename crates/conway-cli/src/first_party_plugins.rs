@@ -90,11 +90,31 @@ use conway::{BackendFactory, ConwayBuilder, ConwayError, RouterFactory};
 
 /// Every first-party plugin this binary links, in no particular order.
 /// `Vec<Arc<dyn Plugin>>` rather than a `HashMap` keyed by id: the bundle
-/// is tiny (one entry today), and resolving by a linear scan over each
-/// candidate's own `PluginManifest::id` is the same style `conway`'s own
+/// is tiny, and resolving by a linear scan over each candidate's own
+/// `PluginManifest::id` is the same style `conway`'s own
 /// `presets::builtin_plugins()` uses for the built-in bundle -- no second
 /// registry idiom introduced for a one-plugin list.
-fn bundle() -> Vec<Arc<dyn Plugin>> {
+///
+/// `cwd` is the same `ConwayConfig::cwd` the facade's own `build()` resolves
+/// `.conway/skills` against, passed in so `conway.skills` can load its own
+/// copy of the on-disk skill table via the SAME public
+/// `conway::skills::load_skill_defs` the builder uses (no privileged
+/// channel -- see `conway_plugin_skills`'s own module doc). A missing
+/// skills directory yields an empty-skills plugin (narrows nothing, serves
+/// "no such skill" for every call); a MALFORMED skill file falls back to
+/// the same empty shape HERE rather than failing the bundle construction,
+/// because `ConwayBuilder::build` independently loads the same directory
+/// and fails LOUDLY on a malformed `SKILL.md` -- so a genuinely broken
+/// skill never reaches a turn with a silently-empty plugin, it fails the
+/// build first. The fallback only ever triggers for a directory this
+/// binary can read but the timing of `bundle()` happens to race with --
+/// never observed in practice, and safe by construction if it did.
+fn bundle(cwd: &std::path::Path) -> Vec<Arc<dyn Plugin>> {
+    let skills_plugin =
+        conway_plugin_skills::SkillsPlugin::from_dir(&cwd.join(".conway").join("skills"))
+            .unwrap_or_else(|_| {
+                conway_plugin_skills::SkillsPlugin::new(Arc::new(std::collections::HashMap::new()))
+            });
     vec![
         Arc::new(conway_plugin_skeleton::SkeletonPlugin),
         // `/conway.history.rewind`
@@ -113,6 +133,16 @@ fn bundle() -> Vec<Arc<dyn Plugin>> {
         // it so. Opt-in like every other member of this bundle, so a default
         // build observes nothing.
         Arc::new(conway_plugin_stepguard::StepGuardPlugin::new()),
+        // `conway.skills` -- progressive skill disclosure (board item
+        // `01M03GMNB3P048G72M158XPDG2`): narrows full-body
+        // `Provenance::Skill` context segments to a one-line index and
+        // offers `read_skill` for the full body on demand. Opt-in like
+        // every other member of this bundle; its `ContextHook` installs
+        // through `Plugin::context_hooks` (the SAME `with_plugin`/
+        // `install_selected` surface its tool uses), so `[plugins].install
+        // = ["conway.skills"]` is the whole of the wiring -- no separate
+        // `with_context_hook` call.
+        Arc::new(skills_plugin),
     ]
 }
 
@@ -177,7 +207,8 @@ fn backend_bundle() -> Vec<Arc<dyn BackendFactory>> {
 /// CLI-specific: which plugin/router-factory/backend-factory CRATES this
 /// binary links at all.
 pub fn install(builder: ConwayBuilder) -> Result<ConwayBuilder, ConwayError> {
-    builder.install_selected(bundle(), router_bundle(), backend_bundle())
+    let cwd = builder.config().cwd.clone();
+    builder.install_selected(bundle(&cwd), router_bundle(), backend_bundle())
 }
 
 /// The subset of `bundle` actually selected by `conway`'s own
@@ -203,7 +234,8 @@ pub fn install(builder: ConwayBuilder) -> Result<ConwayBuilder, ConwayError> {
 /// they are, mechanically, two call sites.
 pub fn installed_plugins(conway: &conway::Conway) -> Vec<Arc<dyn Plugin>> {
     let install = &conway.config().plugins.install;
-    bundle()
+    let cwd = conway.config().cwd.clone();
+    bundle(&cwd)
         .into_iter()
         .filter(|plugin| install.contains(&plugin.manifest().id))
         .collect()
@@ -258,7 +290,12 @@ mod tests {
     /// about `install_selected`'s own behaviour.
     #[test]
     fn bundle_carries_the_skeleton_plugin_under_its_published_id() {
-        let found = bundle()
+        // `bundle` takes `cwd` only to load `conway.skills`'s on-disk table;
+        // a nonexistent dir yields an empty-skills plugin (the module doc's
+        // safe fallback), so a temp dir with no `.conway/skills` is fine for
+        // this wiring-only check.
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let found = bundle(&cwd)
             .iter()
             .any(|p| p.manifest().id == conway_plugin_skeleton::PLUGIN_ID);
         assert!(
