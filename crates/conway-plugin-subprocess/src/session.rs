@@ -58,6 +58,27 @@
 //! items (permission.policy, observe, status, context.hook) to consult
 //! WITHOUT re-negotiating.
 //!
+//! **`permission.policy/1` declaration immediately after the handshake
+//! (board item `01M03VKJG7JJ0JEKY265WA7MJ7`).** Right after `initialize/1`
+//! succeeds, `PersistentSession::request_permission_policy` exchanges ONE
+//! `permission.policy/1` request/response over the SAME id-correlated
+//! NDJSON framing (NO second reader). Version negotiation is against the
+//! per-point record `initialize` just produced: a plugin declaring the
+//! point at a SUPPORTED version exchanges its per-tool NARROWING policy
+//! (`deny`/`prompt`/`abstain` -- NO `allow`, by type construction: a plugin
+//! may only narrow, never widen); an UNSUPPORTED version REFUSES the plugin
+//! at discover (`HandshakeRefused` naming the mismatch -- the participant
+//! rule); a plugin that does NOT declare the point loads NORMALLY and
+//! contributes no wire policy (advertising a point means the host speaks
+//! it, not that it requires it). The declared rules are stored on the
+//! session and surfaced via `SubprocessPlugin::permission_rules` (the
+//! `Plugin` trait method the `conway` facade installs as `PatternOrigin::
+//! Plugin` deny/prompt rules in the `PermissionBroker`, advisory-under-
+//! enforcement and subordinate to the operator's own config). A malformed
+//! policy answer is `HandshakeMalformed`, fail-closed (never silently
+//! no-op); the just-spawned child is dropped on any failure (its `Drop`
+//! kills the group), never orphaned.
+//!
 //! **Failure handling -- fail-closed uniformly, mirroring
 //! [`crate::SubprocessPluginError`]'s discipline.** A session that dies
 //! mid-call (the child exits nonzero, or closes stdout) surfaces a typed
@@ -119,9 +140,11 @@ use conway::plugin::ToolError;
 
 use crate::unix::kill_group;
 use crate::wire::{
-    parse_persistent_initialize_response, parse_persistent_tool_response, InitializeParseError,
-    PersistentInitializeRequest, PersistentToolRequest, WireToolResult, HOST_WIRE_MAJOR,
-    HOST_WIRE_MINOR,
+    parse_persistent_initialize_response, parse_persistent_permission_policy_response,
+    parse_persistent_tool_response, InitializeParseError, PermissionPolicyAnswer,
+    PermissionPolicyParseError, PersistentInitializeRequest, PersistentPermissionPolicyRequest,
+    PersistentToolRequest, WirePermissionRule, WireToolResult, HOST_PERMISSION_POLICY_VERSION,
+    HOST_WIRE_MAJOR, HOST_WIRE_MINOR,
 };
 use crate::{SubprocessPluginError, SubprocessPluginSpec};
 
@@ -203,6 +226,18 @@ pub struct PersistentSession {
     /// refuse-vs-degrade WITHOUT re-negotiating. Empty until a successful
     /// handshake populates it.
     point_versions: Mutex<HashMap<String, u32>>,
+    /// The per-tool permission policy the plugin declared over
+    /// `permission.policy/1` at session open (board item
+    /// `01M03VKJG7JJ0JEKY265WA7MJ7`), recorded ONCE by
+    /// [`Self::request_permission_policy`] and read by
+    /// [`Self::permission_rules`]. Empty until the one-time
+    /// `permission.policy/1` exchange populates it -- which itself runs
+    /// ONLY when the plugin declared the point at a supported version (a
+    /// plugin that does not declare `permission.policy/1` contributes no
+    /// wire policy and this stays empty; see
+    /// [`Self::request_permission_policy`]'s own doc for the
+    /// version-negotiation behavior).
+    permission_policy: Mutex<Vec<WirePermissionRule>>,
     /// Kept (never awaited) so the tasks are not leaked: they end on
     /// stdout/stderr EOF or when the session is killed.
     _reader_handle: tokio::task::JoinHandle<()>,
@@ -384,6 +419,7 @@ impl PersistentSession {
                 next_id: AtomicU64::new(1),
                 shared,
                 point_versions: Mutex::new(HashMap::new()),
+                permission_policy: Mutex::new(Vec::new()),
                 _reader_handle: reader_handle,
                 _stderr_handle: stderr_handle,
             })
@@ -770,6 +806,165 @@ impl PersistentSession {
     pub fn point_version(&self, point: &str) -> Option<u32> {
         let pv = self.point_versions.lock().expect("point_versions poisoned");
         pv.get(point).copied()
+    }
+
+    /// The per-tool permission policy the plugin declared over
+    /// `permission.policy/1` at session open (board item
+    /// `01M03VKJG7JJ0JEKY265WA7MJ7`), recorded ONCE by
+    /// [`Self::request_permission_policy`]. Empty for a plugin that did not
+    /// declare the point (it contributes no wire policy) or before the
+    /// one-time exchange has run. `SubprocessPlugin::permission_rules`
+    /// delegates here -- the `Plugin` trait method the `conway` facade
+    /// consults to install `PatternOrigin::Plugin` deny/prompt rules in the
+    /// `PermissionBroker`, advisory-under-enforcement and subordinate to
+    /// the operator's own config.
+    pub(crate) fn permission_rules(&self) -> Vec<WirePermissionRule> {
+        self.permission_policy
+            .lock()
+            .expect("permission_policy poisoned")
+            .clone()
+    }
+
+    /// The one-time `permission.policy/1` declaration exchange (board item
+    /// `01M03VKJG7JJ0JEKY265WA7MJ7`), run ONCE at persistent-session open,
+    /// AFTER [`Self::initialize`] succeeds and BEFORE any `tool/1` call. A
+    /// session-scoped static declaration (per-tool narrowing verdicts), not
+    /// a per-call evaluation -- the request carries no payload, the plugin's
+    /// answer is the policy. Rides the SAME id-correlated NDJSON framing
+    /// `initialize/1` and `tool/1` use (via [`Self::framed_round_trip`]); NO
+    /// second reader.
+    ///
+    /// **Version negotiation via [`Self::point_version`]** (the record
+    /// `initialize/1` produced), per `docs/plugins/compatibility.md`'s
+    /// participant-vs-observer table:
+    ///
+    /// - Plugin declared `permission.policy/1` at a SUPPORTED version
+    ///   (`== [`HOST_PERMISSION_POLICY_VERSION`]`) -> exchange the policy,
+    ///   store the rules, enforce as advisory. Unknown FIELDS in the answer
+    ///   are ignored-and-counted (the table's accept branch / forward-compat
+    ///   rule), surfaced via `tracing::debug!`.
+    /// - Plugin declared it at an UNSUPPORTED version -> REFUSE to load
+    ///   ([`SubprocessPluginError::HandshakeRefused`]), naming BOTH the
+    ///   host's and the plugin's versions -- the participant rule: a plugin
+    ///   speaking a point at an incompatible version is refused, never
+    ///   silently never-run. Surfaces at `discover` as `ToolError::Internal`
+    ///   via [`SubprocessPluginError::into_tool_error`].
+    /// - Plugin did NOT declare `permission.policy/1` (`point_version` is
+    ///   `None`) -> the plugin contributes no wire policy; LOAD NORMALLY and
+    ///   enforce the operator's config alone. **Advertising a point means
+    ///   the host speaks it, not that the host requires it**; a plugin
+    ///   speaking a subset is fine, and the participant refusal is
+    ///   VERSION-gated (both speak the point at incompatible versions), not
+    ///   presence-gated.
+    ///
+    /// A structurally-invalid answer (missing `ok`, `ok:false` with no
+    /// `error`, an unknown `verdict` tag, a per-rule entry missing
+    /// `tool`/`verdict`) is [`SubprocessPluginError::HandshakeMalformed`],
+    /// fail-closed (acceptance criterion 3: never silently no-op). A plugin
+    /// that closes stdout without answering surfaces as [`SessionDied`]; a
+    /// plugin that never answers within `timeout_ms` surfaces as
+    /// [`TimedOut`] -- both via [`Self::framed_round_trip`], never a hang.
+    ///
+    /// [`SessionDied`]: SubprocessPluginError::SessionDied
+    /// [`TimedOut`]: SubprocessPluginError::TimedOut
+    pub(crate) async fn request_permission_policy(
+        &self,
+    ) -> Result<Vec<WirePermissionRule>, SubprocessPluginError> {
+        // Version negotiation against the record `initialize/1` produced.
+        // `None` (the plugin did not declare the point) is NOT an error: the
+        // plugin contributes no wire policy, and the operator's config alone
+        // is enforced. This is the "advertising != requiring" rule -- a
+        // plugin speaking a subset of the host's points loads normally.
+        let version = match self.point_version(PersistentPermissionPolicyRequest::OP) {
+            None => return Ok(Vec::new()),
+            Some(v) => v,
+        };
+        if version != HOST_PERMISSION_POLICY_VERSION {
+            return Err(SubprocessPluginError::HandshakeRefused {
+                config_id: self.config_id.clone(),
+                condition: "permission.policy/1 version mismatch".into(),
+                detail: format!(
+                    "host speaks permission.policy/1 version {HOST_PERMISSION_POLICY_VERSION} but \
+                     plugin declared version {version} (participant point: an incompatible version \
+                     is refused, never silently never-run)"
+                ),
+            });
+        }
+
+        if self.is_dead() {
+            return Err(self
+                .death_error()
+                .unwrap_or_else(|| SubprocessPluginError::SessionDied {
+                    config_id: self.config_id.clone(),
+                    detail: "session died before permission.policy/1 could be sent".into(),
+                }));
+        }
+
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request = PersistentPermissionPolicyRequest::new(id);
+        let mut json = serde_json::to_vec(&request).map_err(|err| {
+            SubprocessPluginError::HandshakeMalformed {
+                config_id: self.config_id.clone(),
+                detail: format!("failed to serialize permission.policy/1 request: {err}"),
+            }
+        })?;
+        json.push(b'\n');
+
+        let value = self.framed_round_trip(id, json).await?;
+
+        let bytes = serde_json::to_vec(&value).map_err(|err| {
+            SubprocessPluginError::HandshakeMalformed {
+                config_id: self.config_id.clone(),
+                detail: format!("failed to re-serialize permission.policy response: {err}"),
+            }
+        })?;
+        let answer: PermissionPolicyAnswer = parse_persistent_permission_policy_response(&bytes)
+            .map_err(|e| match e {
+                PermissionPolicyParseError::Malformed(detail) => {
+                    SubprocessPluginError::HandshakeMalformed {
+                        config_id: self.config_id.clone(),
+                        detail,
+                    }
+                }
+                PermissionPolicyParseError::Refused(detail) => {
+                    SubprocessPluginError::HandshakeRefused {
+                        config_id: self.config_id.clone(),
+                        condition: "ok false".into(),
+                        detail,
+                    }
+                }
+            })?;
+
+        // Correlate the echoed `id` -- a mismatch is a protocol error, fail
+        // closed (mirroring `initialize`'s id check).
+        if answer.id != id {
+            return Err(SubprocessPluginError::HandshakeMalformed {
+                config_id: self.config_id.clone(),
+                detail: format!(
+                    "permission.policy response id {} did not match request id {id}",
+                    answer.id
+                ),
+            });
+        }
+
+        if answer.unknown_field_count > 0 {
+            tracing::debug!(
+                unknown_field_count = answer.unknown_field_count,
+                config_id = %self.config_id,
+                "permission.policy/1 answer carried unknown fields; ignored and counted \
+                 (forward-compat: a newer plugin's extra field does not break an older host)"
+            );
+        }
+
+        // Store the declared policy for the session's lifetime.
+        {
+            let mut policy = self
+                .permission_policy
+                .lock()
+                .expect("permission_policy poisoned");
+            *policy = answer.rules.clone();
+        }
+        Ok(answer.rules)
     }
 
     fn remove_pending(&self, id: u64) {

@@ -312,8 +312,9 @@ pub mod plugin {
         ArtifactWriteHandle, ArtifactWriter, CancellationToken, Command, CommandCtx,
         CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, HookRunner,
         HostCapability, ObservedCall, ObserverAnswer, ObserverCtx, ObserverNote, OverflowInfo,
-        PathArgs, Plugin, PluginConfig, PluginEventHandle, PluginManifest, RegisteredObserver,
-        RenderKind, Tool, ToolCtx, ToolObserver, ToolOutput,
+        PathArgs, Plugin, PluginConfig, PluginEventHandle, PluginManifest, PluginPermissionRule,
+        PluginPermissionVerdict, RegisteredObserver, RenderKind, Tool, ToolCtx, ToolObserver,
+        ToolOutput,
     };
     pub use conway_core::provenance::Provenance;
     pub use conway_core::segment::PromptSegment;

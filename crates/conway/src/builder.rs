@@ -125,11 +125,12 @@ use std::sync::Arc;
 
 use conway_core::capabilities::{HeadroomPolicy, ReliabilityTier};
 use conway_core::ids::{BackendId, ModelRef};
+use conway_core::permission_pattern::{PatternOrigin, Rule, Select, Then, When};
 use conway_core::ports::CapabilityIndex;
 use conway_core::ports::{
     Backend, BackendBuildContext, BackendFactory, ContextHook, HealthRegistry, HookRunner,
-    PermissionGate, Plugin, Router, RouterBuildContext, RouterBundle, RouterFactory,
-    RoutingExplainer, SessionStore,
+    PermissionGate, Plugin, PluginPermissionRule, PluginPermissionVerdict, Router,
+    RouterBuildContext, RouterBundle, RouterFactory, RoutingExplainer, SessionStore,
 };
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::events::EventBus;
@@ -1310,6 +1311,22 @@ impl ConwayBuilder {
             .iter()
             .flat_map(|p| p.context_hooks())
             .collect();
+        // Collect each installed plugin's own `Plugin::permission_rules()`
+        // contributions BEFORE `resolved_plugins` is moved into `RuntimeDeps`
+        // below (board item `01M03VKJG7JJ0JEKY265WA7MJ7`). Installed into the
+        // broker as `PatternOrigin::Plugin` deny/prompt rules AFTER
+        // `Runtime::new` -- the SAME collect-before-move, install-after-construct
+        // shape `plugin_context_hooks` immediately above establishes for
+        // context hooks. Narrowing-only by type construction
+        // (`PluginPermissionVerdict` has no `Allow` variant), so a plugin
+        // can never widen what the operator authorized; the operator's own
+        // `permissions.json`/`PermissionMode` STILL wins (a plugin `Deny` is
+        // checked at the same deny tier; a plugin `Prompt` forces the gate
+        // but the operator's `Deny`/plan-mode refusal fires first).
+        let plugin_permission_rules: Vec<PluginPermissionRule> = resolved_plugins
+            .iter()
+            .flat_map(|p| p.permission_rules())
+            .collect();
         let event_bus = EventBus::new(EVENT_BUS_CAPACITY);
         let rt = Runtime::new(RuntimeDeps {
             store: store.clone(),
@@ -1430,6 +1447,54 @@ impl ConwayBuilder {
         rt.set_pre_tool_use_hooks(pre_tool_use_specs);
         rt.set_observation_hook_runner(hook_runner);
         rt.set_observation_hooks(observation_specs);
+
+        // Install each plugin's `permission_rules()` contributions as
+        // `PatternOrigin::Plugin` deny/prompt rules in the broker (board
+        // item `01M03VKJG7JJ0JEKY265WA7MJ7`). A `Deny` verdict -> a deny
+        // rule at the broker's deny tier (step 2 of `PermissionBroker::
+        // decide`'s ordering -- before plan-mode, the cache, pattern-allow,
+        // and `AutoAllow`); a `Prompt` verdict -> a prompt rule (step 4 --
+        // sets `must_reach_gate`, forcing the operator's gate); an `Abstain`
+        // verdict installs nothing. `When::Always` means the rule matches
+        // every call to the named tool regardless of rendered args, so
+        // `base` (the `PathsUnder` canonicalization root) is never
+        // consulted -- the placeholder `/` is inert, the same way
+        // `remember_pattern`'s own `debug_assert!` pins it. There is no
+        // `Allow` path here (a plugin cannot contribute one -- see
+        // `Plugin::permission_rules`'s trait doc), so `remember_pattern_rule`'s
+        // `PatternOrigin::Plugin` allow-rejection guard is never even
+        // reached: the narrowing-only verdict type makes widening
+        // structurally impossible, and the operator's own
+        // `permissions.json`/`PermissionMode` still wins.
+        let broker = rt.permission_broker();
+        for rule in &plugin_permission_rules {
+            let structured = Rule {
+                select: Select::Tools(vec![rule.tool.clone()]),
+                when: When::Always,
+                then: match rule.verdict {
+                    PluginPermissionVerdict::Deny => Then::Deny,
+                    PluginPermissionVerdict::Prompt => Then::Prompt,
+                    PluginPermissionVerdict::Abstain => continue,
+                },
+            };
+            match rule.verdict {
+                PluginPermissionVerdict::Deny => {
+                    broker.remember_deny_rule(
+                        structured,
+                        PatternOrigin::Plugin,
+                        std::path::Path::new("/"),
+                    );
+                }
+                PluginPermissionVerdict::Prompt => {
+                    broker.remember_prompt_rule(
+                        structured,
+                        PatternOrigin::Plugin,
+                        std::path::Path::new("/"),
+                    );
+                }
+                PluginPermissionVerdict::Abstain => {}
+            }
+        }
 
         Ok(Conway::new(
             rt,
