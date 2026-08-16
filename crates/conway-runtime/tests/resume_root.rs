@@ -94,6 +94,7 @@ fn resume_spec(session: SessionId) -> ResumeSpec {
         budget: Budget::default(),
         cwd: None,
         result_contract: None,
+        keep_alive: false,
     }
 }
 

@@ -2416,6 +2416,7 @@ async fn resume_root_preserves_persisted_root_unchanged() {
             budget: Budget::default(),
             cwd: None,
             result_contract: None,
+            keep_alive: false,
         })
         .await
         .unwrap();
@@ -2477,6 +2478,7 @@ async fn resume_root_cwd_override_outside_persisted_root_fails() {
             budget: Budget::default(),
             cwd: Some(outside_dir.path().to_path_buf()),
             result_contract: None,
+            keep_alive: false,
         })
         .await
         .unwrap_err();

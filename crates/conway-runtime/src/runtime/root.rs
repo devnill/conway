@@ -202,6 +202,48 @@ pub struct ResumeSpec {
     /// `ForkChildRequest::result_contract` is the one caller that can supply
     /// `Some`.
     pub result_contract: Option<schemars::schema::RootSchema>,
+    /// Opt-in multi-turn keep-alive for a resumed/forked agent -- the
+    /// `ResumeSpec` counterpart of [`RootSpec::keep_alive`], threaded
+    /// straight into `AgentSpec::keep_alive` (see that field's own doc for
+    /// the `ResumeGate` re-arming mechanism that makes a `keep_alive` agent
+    /// idle for its next prompt instead of terminating on natural
+    /// completion).
+    ///
+    /// **Closes a real gap (board item `01M03KZXR1KF77YRAW4W4GE6KK`):**
+    /// before this field existed, `resume_root` hardcoded
+    /// `AgentSpec::keep_alive: false`, so `conway::Conway::fork_from` -- the
+    /// ONE caller of `resume_root` that receives a fresh, per-call spec
+    /// (`ForkSpec`) with its own `keep_alive` field already on it --
+    /// silently dropped the flag: `ForkSpec::keep_alive(true)` round-tripped
+    /// through `From<ForkSpec> for SubagentSpec` (honored on the live
+    /// `SessionHandle::fork` path) but was never even read by
+    /// `crate::fork_child::fork_child` (`conway`'s own module), which built a
+    /// `ResumeSpec` with no way to carry it through. A caller that set
+    /// `keep_alive(true)` on a `fork_from` got a one-shot child that
+    /// terminated on its first completed turn, with no error -- a silent
+    /// behavioural difference between two ways of doing the same thing.
+    ///
+    /// **Re-arming semantics (the design decision the spec demanded before
+    /// wiring):** `resume_root` always sets `ResumeGate::awaiting_prompt:
+    /// true` up front (see the `resume_gate` field literal below), so a
+    /// resumed/forked agent idles until its caller's FIRST `prompt` rather
+    /// than racing the persisted transcript. `keep_alive`'s end-of-turn
+    /// re-arming (`AgentLoop::run_inner`'s natural-completion branch sets
+    /// `awaiting_prompt: true` and `continue`s when `AgentSpec::keep_alive`
+    /// is `true`) composes with that initial gate cleanly -- BOTH set
+    /// `awaiting_prompt: true` and wait on the SAME `notify`, so there is no
+    /// second mechanism and no conflict: the first-turn gate ensures the
+    /// child never runs before the caller's first prompt, and `keep_alive`
+    /// ensures the child never finishes after a completed turn. The previous
+    /// item left this field out not because of a real interaction problem
+    /// but to reason about it separately; that reasoning confirms the
+    /// composition is safe. `false` (the `Conway::resume` caller, which has
+    /// no per-call spec and so always passes `false` here, preserving that
+    /// binding's existing one-shot behaviour exactly) is the only value that
+    /// can reach this field for a genuine resume; `fork_from`'s
+    /// `ForkChildRequest::keep_alive` is the one caller that can supply
+    /// `true`.
+    pub keep_alive: bool,
 }
 
 impl Runtime {
@@ -887,12 +929,16 @@ impl Runtime {
             // `crate::fork_child::fork_child`'s `ForkChildRequest`, so it no
             // longer silently drops a contract set on the facade fork path.
             result_contract: spec.result_contract,
-            // Out of scope for this item: only a freshly `start_root`ed
-            // agent can opt into keep-alive today (`RootSpec::keep_alive`).
-            // `ResumeSpec` has no counterpart field, so a resumed root
-            // always terminates on its first `Completed` turn, same as
-            // before keep-alive existed.
-            keep_alive: false,
+            // `ResumeSpec::keep_alive` -- see that field's own doc (board
+            // item `01M03KZXR1KF77YRAW4W4GE6KK`) for the gap this closes:
+            // `conway::Conway::resume` always passes `false` here (it has no
+            // per-call spec to source the flag from, preserving the one-shot
+            // resume behaviour exactly), but `conway::Conway::fork_from` --
+            // the other `resume_root` caller -- now threads its own
+            // `ForkSpec::keep_alive` through `crate::fork_child::fork_child`'s
+            // `ForkChildRequest`, so a `keep_alive(true)` fork_from child no
+            // longer silently terminates on its first completed turn.
+            keep_alive: spec.keep_alive,
             // A resumed root has no `SubagentSpec` to source a consumer tag
             // from either -- same as
             // `start_root`.

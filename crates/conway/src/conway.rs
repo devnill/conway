@@ -1001,6 +1001,13 @@ impl Conway {
                 // field's own doc for the caller that CAN supply `Some`
                 // (`Conway::fork_from`, via `ForkSpec::result_contract`).
                 result_contract: None,
+                // `resume` takes only a `SessionId` -- no per-call spec to
+                // source a keep-alive flag from, so this is always `false`,
+                // exactly as before `ResumeSpec::keep_alive` existed
+                // (preserving `resume`'s existing one-shot behavior). See
+                // that field's own doc for the caller that CAN supply `true`
+                // (`Conway::fork_from`, via `ForkSpec::keep_alive`).
+                keep_alive: false,
             })
             .await
             .map_err(|err| match err {
@@ -1127,6 +1134,31 @@ impl Conway {
     /// `ForkChildRequest`, which threads it into the `ResumeSpec` this
     /// method's live registration below already builds.
     ///
+    /// **`keep_alive` IS honored too (board item
+    /// `01M03KZXR1KF77YRAW4W4GE6KK`, the second sibling of the same bug):**
+    /// `ForkSpec::keep_alive(true)` threads through `ForkChildRequest` into
+    /// `ResumeSpec::keep_alive` and onward into the live
+    /// `AgentSpec::keep_alive`, so a forked child idles for its next prompt
+    /// after each completed turn instead of terminating -- the same
+    /// mechanism [`SessionHandle::fork`](crate::SessionHandle::fork)'s live
+    /// path already exercises via `SubagentSpec::keep_alive`. Before this
+    /// item, the flag was silently dropped (`resume_root` hardcoded
+    /// `false`), so a caller that set `keep_alive(true)` got a one-shot
+    /// child with no error.
+    ///
+    /// **`plugin_config` IS honored too (same item, the third sibling):**
+    /// `ForkSpec::plugin_config` threads through `ForkChildRequest` into
+    /// `fork_child`'s re-validation --
+    /// [`conway_runtime::runtime::Runtime::narrow_plugin_config_for_fork`]
+    /// narrows the parent's persisted config by the requested override
+    /// against the currently installed plugins' rules, refusing any widening,
+    /// and the re-validated value is PERSISTED onto the child's
+    /// `SessionMeta::plugin_config` (so a subsequent `resume` re-derives the
+    /// same narrowed value). Before this item, the request was silently
+    /// dropped (`fork_child` always inherited `parent_meta.plugin_config`),
+    /// so a child forked with a narrowed `conway.fs` root silently got the
+    /// parent's -- a confinement boundary quietly failing to narrow.
+    ///
     /// **Live registration:** after the store-side fork below, this
     /// method now also calls `Runtime::resume_root` over the freshly created
     /// child session -- the same mechanism [`Conway::resume`] uses -- so the
@@ -1217,6 +1249,8 @@ impl Conway {
                 tools: spec.tools,
                 budget: spec.budget,
                 result_contract: spec.result_contract,
+                keep_alive: spec.keep_alive,
+                plugin_config: spec.plugin_config,
             },
         )
         .await

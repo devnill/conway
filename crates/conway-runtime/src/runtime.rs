@@ -717,6 +717,66 @@ impl Runtime {
         self.registry.tools_metadata()
     }
 
+    /// Computes a fork child's EFFECTIVE per-agent plugin config by narrowing
+    /// the parent's PERSISTED config (`parent_plugin_config`) by the caller's
+    /// requested override (`requested`) -- the facade-fork-path mirror of
+    /// `SubagentHost::start`'s live-fork narrowing in `subagent.rs` (board
+    /// item `01M03KZXR1KF77YRAW4W4GE6KK`, closing the second sibling of the
+    /// `result_contract` contract bug).
+    ///
+    /// **Why this lives on `Runtime` and not in `conway`'s `fork_child`:**
+    /// the narrowing re-validates against the CURRENTLY installed plugins'
+    /// declared narrowing rules (`PluginRegistry::narrowing_rules`) and
+    /// `conway.fs`'s `conway.fs.root` derivation (`derive_fs_root_config`),
+    /// both `pub(crate)` -- the facade crate cannot reach them, and exposing
+    /// them publicly would widen the runtime's surface for one caller.
+    /// Keeping the computation here means the facade fork path uses the SAME
+    /// validating function the live path already uses, not a second, looser
+    /// copy -- the "re-validate, not carry" discipline board item
+    /// `01M0321414SVRD60HEP074AFHG` established for the resume path.
+    ///
+    /// **Never widens.** `PluginConfig::narrow` refuses a requested value
+    /// that would widen what the parent already carries
+    /// (`PluginConfigError::WouldWiden`) and a key no installed plugin
+    /// declares narrowable (`PluginConfigError::NotNarrowable`); both surface
+    /// as a typed `RuntimeError::InvalidSpec` naming the offending key, so
+    /// `fork_from` itself fails rather than persisting a child with a
+    /// silently-dropped or silently-widened config. A `conway.fs.root`
+    /// derived from `child_root` is merged into the request first (mirroring
+    /// `subagent.rs`'s identical derivation), so a fork inheriting the
+    /// parent's root and a fork narrowing `conway.fs`'s own root stay in
+    /// lockstep. `child_root` for a `fork_from` is always the parent's
+    /// persisted root (`ForkSpec` exposes no `root` override -- a fork
+    /// inherits the forker's entire context), so the derived entry, when
+    /// present, matches what the child's `SessionMeta::root` already says.
+    ///
+    /// The returned value is what `fork_child` PERSISTS onto the child's
+    /// `SessionMeta::plugin_config`; `resume_root`'s own existing
+    /// re-validation against the process-wide global config then re-validates
+    /// THAT persisted value a second time -- never trusting it verbatim, the
+    /// same defence-in-depth `resume_root` already applies to every resumed
+    /// session.
+    pub fn narrow_plugin_config_for_fork(
+        &self,
+        parent_plugin_config: &conway_core::ports::PluginConfig,
+        requested: Option<&conway_core::ports::PluginConfig>,
+        child_root: Option<&std::path::Path>,
+    ) -> Result<conway_core::ports::PluginConfig, RuntimeError> {
+        let narrowing_rules = self.loop_deps().registry.narrowing_rules();
+        let requested = crate::permission::derive_fs_root_config(
+            child_root,
+            requested,
+            narrowing_rules.contains_key(crate::permission::CONWAY_FS_ROOT_CONFIG_KEY),
+        );
+        parent_plugin_config
+            .narrow(requested.as_ref(), narrowing_rules)
+            .map_err(|err| {
+                crate::subagent::invalid_spec(ConwayError::Config {
+                    detail: format!("fork plugin_config: {err}"),
+                })
+            })
+    }
+
     /// Appends a `LogRecord::UserTurn` to `agent`'s session before returning
     /// (persist-before-act), then emits the live `Event::UserTurn` twin (this
     /// item) so a subscriber on the event stream sees the SAME occurrence
