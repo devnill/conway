@@ -27,15 +27,24 @@ describe elsewhere in this set. Three things are deliberately narrower here,
 each disclosed rather than silently assumed:
 
 - **Transport.** The design's own eventual shape is a long-lived,
-  persistent NDJSON JSON-RPC connection. This slice is one-shot exec instead
-  — the SAME shape `conway_tools::hook_runner::ProcessHookRunner` already
-  uses for `[hooks].rules[].command`: spawn fresh, write one JSON request to
-  stdin, read one JSON response from stdout, tear the process down. No
-  process outlives a single request. This is cheaper to build, cannot leak
-  a wedged long-lived child, and costs an author nothing a one-shot script
-  cannot already pay — see [`concepts.md`](concepts.md)'s "Language choice"
-  section for the per-spawn cost this same trade-off already prices (10ms
-  for a shell script, 200–400ms for Python).
+  persistent NDJSON JSON-RPC connection. Two transports now ship (board item
+  `01M03VJHG1WFECFJB4ZH3CKWDX` added the persistent one alongside the
+  original one-shot):
+  - **One-shot exec (the default).** The SAME shape
+    `conway_tools::hook_runner::ProcessHookRunner` already uses for
+    `[hooks].rules[].command`: spawn fresh, write one JSON request to stdin,
+    read one JSON response from stdout, tear the process down. No process
+    outlives a single request. This is cheaper to build, cannot leak a
+    wedged long-lived child, and costs an author nothing a one-shot script
+    cannot already pay — see [`concepts.md`](concepts.md)'s "Language
+    choice" section for the per-spawn cost this same trade-off already
+    prices (10ms for a shell script, 200–400ms for Python).
+  - **Persistent NDJSON JSON-RPC (opt-in).** Spawn the command ONCE, keep it
+    alive across many `tool/1` calls, frame requests/responses as one JSON
+    object per line (`\n`-delimited) over the child's stdin/stdout. Only
+    `tool/1` rides this channel — `tool.spec/1` discovery stays one-shot
+    under both transports (see "The persistent transport" below for the
+    framing decision, the failure modes, and the trust statement).
 - **Points.** Only `tool.spec/1` (declaration) and `tool/1` (execution) are
   wired. `permission.policy/1`, `context.hook/1`, `observe/1`, and
   `PluginManifest::required_host_caps` are still exactly as
@@ -173,6 +182,74 @@ around by inventing a parallel mechanism.
 If you would not paste an unfamiliar shell command into `[hooks].rules[]`,
 do not paste one into `[plugins].subprocess[]` either.
 
+## The persistent transport
+
+The persistent NDJSON transport (board item `01M03VJHG1WFECFJB4ZH3CKWDX`) is
+an opt-in alternative to one-shot exec, for a plugin with genuine per-call
+state or a per-spawn cost that matters at the scale it is called. It is
+**off by default** — set `"transport": "persistent"` on the entry:
+
+```json
+{
+  "plugins": {
+    "subprocess": [
+      { "id": "acme-mcp", "command": ["/path/to/mcp-bridge.py"], "timeout_ms": 5000, "transport": "persistent" }
+    ]
+  }
+}
+```
+
+### Framing
+
+NDJSON — one JSON-RPC object per line, `\n`-delimited, over the child's
+stdin/stdout. The persistent channel carries ONLY `tool/1`: a request is
+the one-shot `tool/1` body (`op`, `tool`, `call_id`, `arguments` — the SAME
+field names as above) plus a JSON-RPC `id` this host assigns for
+correlation, and the response is the one-shot `tool/1` answer (`ok`,
+`blocks`, `is_error`, `artifacts`, `error`) plus the echoed `id`. Nothing
+here invents a second content-block or error vocabulary. `tool.spec/1`
+discovery stays one-shot under both transports — that sidesteps the one
+real wire collision a persistent envelope would otherwise force (a
+JSON-RPC correlation `id`, a number, against the manifest's own `id`, the
+plugin's string identity).
+
+### Failure modes — fail-closed, uniformly
+
+| What happens | What conway does |
+|---|---|
+| The session's child exits (nonzero or otherwise) or closes stdout mid-call | A typed `SessionDied` error naming the plugin and the failure mode — never a hang. **No automatic reconnect:** a plugin that died has lost whatever session state it had; the death is surfaced and you must re-`discover` (restart) to spawn a fresh child. |
+| A `tool/1` call does not answer within `timeout_ms` | The process group is killed (graceful SIGTERM-then-SIGKILL) and a typed `TimedOut` is reported. `timeout_ms` is a **per-call** deadline on the framed read, NOT a session-wide idle kill — a session that legitimately sits idle between calls is left alone. |
+| An unterminated or malformed frame (no newline, invalid JSON, a partial line then EOF) | A typed `MalformedFrame` parse error, not a deadlock. The session is marked dead afterward — a plugin that garbles its framing cannot be trusted to recover. |
+| A response's `id` does not match the outstanding request | A typed `SessionDied` (protocol error); the session is marked dead. |
+
+stderr is drained concurrently for the session's lifetime (a plugin that
+writes to stderr with nobody reading it cannot block) and **discarded** —
+no log/event sink is wired, mirroring the one-shot path. When the session is
+dropped, the process group is killed (best-effort SIGKILL on the group plus
+`kill_on_drop` on the leader) so a long-lived child is never orphaned.
+
+### Trust — read this before you set `"transport": "persistent"`
+
+A persistent subprocess plugin holds a long-lived, unsandboxed process the
+operator named in config — the same footing as a `[hooks].rules[].command`,
+held for longer, with the larger exposure that implies. An operator who
+would not paste an unknown command into a hook rule should not paste one
+into a persistent subprocess plugin entry either.
+
+This is a **larger exposure**, not a larger **capability grant**: the child
+can do exactly what the one-shot child could do — it just does it for
+longer, accumulates state across calls, and can fail in new ways (die
+mid-session, write a partial frame, stall on a blocked pipe). None of those
+are trust-mechanism gaps; they are the liveness/safety problems the failure
+handling above solves. The deferred digest-keyed `plugin` trust subject
+(board item `01KZHVFCN6ZEAXV7K5JHRQN1YB`) addresses a DIFFERENT threat —
+verifying the binary on disk is the one the operator reviewed — that is
+identical for one-shot and persistent. Going persistent does not change the
+digest-trust calculus, so it does not need the deferred mechanism to land
+safely, and this transport builds no parallel trust mechanism of its own.
+See [`trust-and-security.md`](trust-and-security.md) for the persistent-
+exposure entry in that page's inventory.
+
 ## Configuring one
 
 ```json
@@ -189,7 +266,10 @@ do not paste one into `[plugins].subprocess[]` either.
 shell string, matching `[hooks].rules[].command`'s own shape and reasoning
 (no shell-quoting ambiguity between what you wrote and what actually gets
 spawned). `timeout_ms` defaults to 5000, the same default and reasoning
-`[hooks].rules[].timeout_ms` uses.
+`[hooks].rules[].timeout_ms` uses. `transport` defaults to `"one_shot"`
+(the behavior above); set it to `"persistent"` for the long-lived NDJSON
+JSON-RPC channel — see "The persistent transport" above for what that
+changes and the trust statement that goes with it.
 
 **Empty by default.** No subprocess plugin is ever spawned unless named
 here — the same "nothing in this tier runs unasked" rule
@@ -262,12 +342,10 @@ elif op == "tool/1":
 - **`permission.policy/1`, `context.hook/1`, `observe/1`.** Only
   `tool.spec/1`/`tool/1` are wired. A subprocess plugin cannot yet
   contribute a permission policy, edit context, or observe events —
-  `hooks.md`'s own tables for those points are unchanged by this page.
-- **The persistent-connection transport.** This slice is one-shot exec,
-  disclosed above. A future item may add the long-lived NDJSON JSON-RPC
-  shape the original design sketched, if a stated need (e.g. a plugin with
-  genuine per-call state, or per-spawn cost that matters at the scale it's
-  called) shows the one-shot cost is wrong for it.
+  `hooks.md`'s own tables for those points are unchanged by this page. The
+  persistent transport's JSON-RPC `id` correlation table is built so a
+  later item can add `observe/1` notifications alongside requests without
+  redesigning framing, but no notifications are wired yet.
 - **A `plugin` trust subject.** Deliberately not built here — see "Trust"
   above.
 - **Backends, routers, capability negotiation.** None of the three is

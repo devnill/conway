@@ -9,33 +9,34 @@
 //! process plugin that declares one tool, is spawned by a config entry,
 //! answers one call, and is torn down. No backend, no router, no capability
 //! negotiation."* This crate is exactly that slice, generalized to any
-//! number of declared tools (nothing here assumes exactly one) but nothing
-//! beyond it: no `permission.policy/1`, no `context.hook/1`, no
-//! `observe/1`, no persistent connection, no capability handshake against
+//! number of declared tools (nothing here assumes exactly one), now with a
+//! SECOND lifecycle for `tool/1` alongside the original one-shot exec: a
+//! persistent NDJSON JSON-RPC channel (board item
+//! `01M03VJHG1WFECFJB4ZH3CKWDX`, see `session`'s own module doc). Still
+//! nothing beyond `tool/1` itself: no `permission.policy/1`, no
+//! `context.hook/1`, no `observe/1`, no capability handshake against
 //! `PluginManifest::required_host_caps` (still declared, still consulted by
 //! nobody, unchanged from `crates/conway-core/src/ports/plugin.rs`'s own
 //! disclosure).
 //!
-//! **Transport: one-shot exec, not the long-lived NDJSON JSON-RPC design.**
+//! **Transport: one-shot exec (default) AND a persistent NDJSON channel.**
 //! `docs/plugins/hooks.md`'s own point 9 doc and the decision record both
-//! describe the eventual remote transport as a persistent connection. This
-//! crate deliberately does NOT build that. The hard rule governing this
-//! item says plainly: "the existing one-shot hook runner
-//! (`conway-tools`'s `ProcessHookRunner`) already solves exactly this
-//! problem -- read it and reuse its shape rather than inventing a second
-//! process lifecycle." This crate follows that instruction literally: every
-//! RPC this host makes -- one for `tool.spec/1` (manifest discovery, once,
-//! at [`SubprocessPlugin::discover`]) and one per `tool/1` call (at
-//! `SubprocessTool::invoke`) -- spawns the configured command FRESH,
-//! writes one JSON request object to its stdin, reads one JSON response
-//! object from its stdout, and tears the process down. No process outlives
-//! a single request. This is a genuine, disclosed narrowing of the
-//! decision record's own described transport, not an oversight: it is
-//! simpler, it cannot leak a wedged long-lived child, and it costs an
-//! author nothing a one-shot script cannot already pay (`docs/plugins/
-//! concepts.md`'s own "Language choice" section already prices a one-shot
-//! spawn at 10-400ms, and a `tool/1` call is not typically issued once per
-//! tool-call-per-token the way `pre_tool_use` is).
+//! describe the eventual remote transport as a persistent connection. The
+//! original slice (board item `01KZY8PATND84AKY0J376E3DWV`) deliberately did
+//! NOT build that -- every RPC spawned the command fresh, the identical
+//! shape `conway-tools`'s `ProcessHookRunner` already uses, so no process
+//! outlives a single request. Board item `01M03VJHG1WFECFJB4ZH3CKWDX` adds
+//! the persistent transport as a SECOND lifecycle, opt-in per
+//! [`SubprocessPluginSpec::transport`]; the one-shot path is NOT deleted
+//! (discovery `tool.spec/1` stays one-shot under both, and one-shot remains
+//! the default so existing behavior is unchanged). The persistent path --
+//! [`PersistentSession`] -- spawns the configured command ONCE, keeps it
+//! alive across many `tool/1` calls, frames requests/responses as
+//! newline-delimited JSON objects over the child's stdin/stdout, and tears
+//! it down only on drop or fatal error. See `session`'s own module doc for
+//! the NDJSON framing decision, the JSON-RPC `id` correlation discipline,
+//! and the fail-closed failure handling (dead session, per-call timeout,
+//! malformed frame).
 //!
 //! **The wire vocabulary is real, not invented for this crate.** The two
 //! request kinds are named `tool.spec/1` and `tool/1` -- the exact point
@@ -75,8 +76,10 @@ use conway::plugin::{
     ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
 
+mod session;
 mod wire;
 
+pub use session::PersistentSession;
 pub use wire::{WireManifest, WireTool, WireToolError, WireToolErrorKind, WireToolResult};
 
 /// Applied when a [`SubprocessPluginSpec`] does not name its own
@@ -87,9 +90,36 @@ pub use wire::{WireManifest, WireTool, WireToolError, WireToolErrorKind, WireToo
 /// cannot silently stall an agent turn indefinitely.
 pub const DEFAULT_TIMEOUT_MS: u64 = 5000;
 
+/// The transport a [`SubprocessPluginSpec`] uses for `tool/1` calls --
+/// one-shot exec (the original slice, every call spawns fresh) or a
+/// persistent NDJSON JSON-RPC channel (one long-lived child, board item
+/// `01M03VJHG1WFECFJB4ZH3CKWDX`). **Default stays one-shot** so existing
+/// behavior is unchanged; a plugin opts IN to persistent by setting
+/// [`SubprocessPluginSpec::transport`] to [`Self::Persistent`].
+///
+/// `tool.spec/1` discovery stays one-shot under BOTH variants -- the
+/// persistent channel carries only `tool/1` (see `wire`'s own module doc
+/// for why that sidesteps the manifest-`id` / JSON-RPC-`id` collision).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SubprocessTransport {
+    /// One-shot exec: every `tool/1` call spawns the command fresh, writes
+    /// one JSON request, reads one JSON response, tears the process down.
+    /// The original slice (board item `01KZY8PATND84AKY0J376E3DWV`); the
+    /// default, so existing behavior is unchanged.
+    #[default]
+    OneShot,
+    /// Persistent NDJSON JSON-RPC: spawn the command ONCE, keep it alive
+    /// across many `tool/1` calls, frame requests/responses as one JSON
+    /// object per line. See `session`'s own module doc for the framing
+    /// decision, the correlation discipline, and the fail-closed failure
+    /// handling.
+    Persistent,
+}
+
 /// One operator-configured subprocess plugin entry: the command to spawn,
-/// and how long any single spawn (discovery, or one `tool/1` call) is
-/// allowed to run before this host kills it.
+/// how long any single spawn (discovery, or one `tool/1` call) is
+/// allowed to run before this host kills it, and which transport the
+/// `tool/1` calls use.
 ///
 /// **Trust, stated where the capability is defined, not only in the module
 /// doc.** `command` is an argv vector (program, then its arguments) --
@@ -115,18 +145,28 @@ pub struct SubprocessPluginSpec {
     /// Milliseconds any single spawn -- the one discovery call, or one
     /// `tool/1` call -- is allowed to run before this host kills the
     /// process group and fails closed. Defaults to [`DEFAULT_TIMEOUT_MS`]
-    /// when constructed via [`SubprocessPluginSpec::new`].
+    /// when constructed via [`SubprocessPluginSpec::new`]. For the
+    /// persistent transport this is a PER-CALL deadline on the framed
+    /// read, NOT a session-wide idle kill (a session that sits idle
+    /// between calls is left alone).
     pub timeout_ms: u64,
+    /// Which transport `tool/1` calls use. Defaults to
+    /// [`SubprocessTransport::OneShot`] (existing behavior unchanged); set
+    /// to [`SubprocessTransport::Persistent`] for a long-lived NDJSON
+    /// JSON-RPC channel.
+    pub transport: SubprocessTransport,
 }
 
 impl SubprocessPluginSpec {
-    /// A spec with [`DEFAULT_TIMEOUT_MS`]. Use the struct literal directly
-    /// to override `timeout_ms`.
+    /// A spec with [`DEFAULT_TIMEOUT_MS`] and the one-shot transport
+    /// (existing behavior). Use the struct literal directly to override
+    /// `timeout_ms` or `transport`.
     pub fn new(config_id: impl Into<String>, command: Vec<String>) -> Self {
         Self {
             config_id: config_id.into(),
             command,
             timeout_ms: DEFAULT_TIMEOUT_MS,
+            transport: SubprocessTransport::default(),
         }
     }
 }
@@ -175,10 +215,53 @@ pub enum SubprocessPluginError {
     /// an in-process `Plugin`, applied here to a wire-declared one.
     #[error("plugin '{config_id}' declared an invalid manifest: {detail}")]
     InvalidManifest { config_id: String, detail: String },
+    /// A persistent session's child process died mid-call: it exited
+    /// (nonzero or otherwise), or closed its stdout, before answering the
+    /// outstanding `tool/1` request. **Fail-closed, no automatic reconnect**
+    /// (board item `01M03VJHG1WFECFJB4ZH3CKWDX`): a plugin that died has
+    /// lost whatever session state it had; the death is surfaced and the
+    /// caller must re-`discover` to spawn a fresh child. A subsequent call
+    /// on the same dead session fails fast with this variant.
+    #[error("plugin '{config_id}' session died: {detail}")]
+    SessionDied { config_id: String, detail: String },
+    /// A persistent session received an unterminated or malformed frame on
+    /// stdout: a line that is not valid JSON, a partial line then EOF (no
+    /// trailing newline), or a response with no JSON-RPC `id`. A typed
+    /// parse error, not a deadlock (acceptance criterion 4). The session is
+    /// marked dead after this -- a plugin that garbles its framing cannot be
+    /// trusted to recover, fail-closed.
+    #[error("plugin '{config_id}' sent a malformed frame: {detail}")]
+    MalformedFrame { config_id: String, detail: String },
+}
+
+impl SubprocessPluginError {
+    /// Maps this host-level error onto the `ToolError` variant the runtime
+    /// sees, mirroring the one-shot path's own split: a parse/manifest
+    /// failure (`UnparseableAnswer`/`InvalidManifest`/`MalformedFrame`) is
+    /// `ToolError::Internal` (an operator-readable "the plugin is broken"),
+    /// and every other failure (spawn, timeout, nonzero exit, session
+    /// death) is `ToolError::Io` (a transport-level failure), each carrying
+    /// this error's own `Display` so an operator can tell a broken plugin
+    /// apart from a legitimately-declined call.
+    pub(crate) fn into_tool_error(self) -> ToolError {
+        match self {
+            SubprocessPluginError::UnparseableAnswer { .. }
+            | SubprocessPluginError::InvalidManifest { .. }
+            | SubprocessPluginError::MalformedFrame { .. } => ToolError::Internal {
+                detail: self.to_string(),
+            },
+            SubprocessPluginError::Spawn { .. }
+            | SubprocessPluginError::TimedOut { .. }
+            | SubprocessPluginError::NonzeroExit { .. }
+            | SubprocessPluginError::SessionDied { .. } => ToolError::Io {
+                detail: self.to_string(),
+            },
+        }
+    }
 }
 
 #[cfg(unix)]
-mod unix {
+pub(crate) mod unix {
     //! **Deliberately duplicated, not reused, from `conway-tools`'s
     //! `crate::process::unix::kill_group`.** That module is `mod process;`
     //! (private) in `crates/conway-tools/src/lib.rs`, unreachable from
@@ -189,7 +272,14 @@ mod unix {
     //! by name rather than silently reinvented; see this item's completion
     //! report for the follow-up this leaves ("expose `conway_tools::
     //! process` publicly so a third reuse doesn't have to duplicate again
-    //! either").
+    //! either"). This module is `pub(crate)` so `session.rs` (the persistent
+    //! transport, board item `01M03VJHG1WFECFJB4ZH3CKWDX`) reuses this SAME
+    //! `kill_group` for its graceful per-call-timeout kill -- a third reuse
+    //! of the identical sequence, still WITHOUT widening
+    //! `conway_tools::process`'s visibility (out of this item's owned
+    //! paths). The persistent path's `Drop`-time cleanup uses a synchronous
+    //! `nix::sys::signal::kill(-pgid, SIGKILL)` directly (`Drop` cannot
+    //! `await` `kill_group`); see `session::PersistentSession::drop`.
 
     use nix::sys::signal::{kill, Signal};
     use nix::unistd::Pid;
@@ -456,12 +546,26 @@ impl SubprocessPlugin {
         };
 
         let spec = Arc::new(spec);
+        // For the persistent transport, spawn the long-lived child ONCE
+        // here and share it across every tool on this plugin. Discovery
+        // itself stays one-shot (the `tool.spec/1` call above) -- the
+        // persistent channel carries only `tool/1` (see `wire`'s own module
+        // doc for why that sidesteps the manifest-`id` / JSON-RPC-`id`
+        // collision). A spawn failure here fails the WHOLE build, the same
+        // posture a discovery spawn failure already has.
+        let session: Option<Arc<PersistentSession>> = match spec.transport {
+            SubprocessTransport::OneShot => None,
+            SubprocessTransport::Persistent => {
+                Some(Arc::new(PersistentSession::spawn(&spec).await?))
+            }
+        };
         let tools: Vec<Arc<dyn Tool>> = specs
             .into_iter()
             .map(|tool_spec| {
                 Arc::new(SubprocessTool {
                     spec: tool_spec,
                     process_spec: spec.clone(),
+                    session: session.clone(),
                 }) as Arc<dyn Tool>
             })
             .collect();
@@ -483,12 +587,21 @@ impl Plugin for SubprocessPlugin {
     }
 }
 
-/// One tool a [`SubprocessPlugin`] declared, answered by re-spawning
-/// `process_spec.command` fresh for every [`Tool::invoke`] call -- module
-/// doc's "no process outlives a single request".
+/// One tool a [`SubprocessPlugin`] declared. `tool/1` calls are answered
+/// one of two ways, selected per-[`SubprocessPluginSpec`] (default
+/// one-shot): by re-spawning `process_spec.command` fresh for every call
+/// (one-shot, module doc's "no process outlives a single request"), OR by
+/// dispatching over the shared `session`'s long-lived NDJSON channel
+/// (persistent, board item `01M03VJHG1WFECFJB4ZH3CKWDX`).
 struct SubprocessTool {
     spec: ToolSpec,
     process_spec: Arc<SubprocessPluginSpec>,
+    /// `Some` only when [`SubprocessPluginSpec::transport`] is
+    /// [`SubprocessTransport::Persistent`]; every tool on this plugin
+    /// shares the SAME `Arc<PersistentSession>` (and thus the same child
+    /// process -- the load-bearing property acceptance criterion 1
+    /// asserts).
+    session: Option<Arc<PersistentSession>>,
 }
 
 #[async_trait]
@@ -515,41 +628,58 @@ impl Tool for SubprocessTool {
     /// [`SubprocessPluginError`] in both cases so an operator can tell a
     /// broken plugin apart from a legitimately-declined call
     /// (`WireToolResult::Err` maps to a specific `ToolError` variant
-    /// instead, see below).
+    /// instead, see below). The persistent path adds `SessionDied` and
+    /// `MalformedFrame` to that set, all surfaced through `ToolError::Io`
+    /// /`ToolError::Internal` so a dead/misbehaving session is told apart
+    /// from a legitimately-declined call the same way.
     async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
         if ctx.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
 
-        let request = wire::Request::ToolV1 {
-            tool: self.spec.name.to_string(),
-            call_id: call.call_id.clone(),
-            arguments: call.arguments,
-        };
-        let payload = serde_json::to_vec(&request).map_err(|err| ToolError::Internal {
-            detail: format!("failed to serialize tool/1 request: {err}"),
-        })?;
-
-        let stdout = spawn_one_shot(&self.process_spec, &payload)
-            .await
-            .map_err(|err| ToolError::Io {
-                detail: err.to_string(),
+        // Dispatch over the persistent NDJSON channel when the spec
+        // declared it; otherwise the original one-shot exec path. The
+        // `WireToolResult` classification is IDENTICAL on both paths (the
+        // persistent channel reuses the one-shot `tool/1` answer shape,
+        // see `wire`'s own module doc) -- only the transport differs.
+        let result = if let Some(session) = &self.session {
+            session
+                .tool_round_trip(
+                    self.spec.name.to_string(),
+                    call.call_id.clone(),
+                    call.arguments,
+                )
+                .await?
+        } else {
+            let request = wire::Request::ToolV1 {
+                tool: self.spec.name.to_string(),
+                call_id: call.call_id.clone(),
+                arguments: call.arguments,
+            };
+            let payload = serde_json::to_vec(&request).map_err(|err| ToolError::Internal {
+                detail: format!("failed to serialize tool/1 request: {err}"),
             })?;
 
-        if ctx.cancel.is_cancelled() {
-            // The subprocess answered, but the caller no longer wants the
-            // result -- report cancellation, not a stale success, matching
-            // `Tool::invoke`'s own POST condition ("honors ctx.cancel").
-            return Err(ToolError::Cancelled);
-        }
+            let stdout = spawn_one_shot(&self.process_spec, &payload)
+                .await
+                .map_err(|err| ToolError::Io {
+                    detail: err.to_string(),
+                })?;
 
-        let result =
+            if ctx.cancel.is_cancelled() {
+                // The subprocess answered, but the caller no longer wants the
+                // result -- report cancellation, not a stale success, matching
+                // `Tool::invoke`'s own POST condition ("honors ctx.cancel").
+                return Err(ToolError::Cancelled);
+            }
+
             wire::parse_tool_result(stdout.trim_ascii()).map_err(|detail| ToolError::Internal {
                 detail: format!(
                     "plugin '{}' produced an unparseable tool/1 answer: {detail}",
                     self.process_spec.config_id
                 ),
-            })?;
+            })?
+        };
 
         match result {
             WireToolResult::Ok {
