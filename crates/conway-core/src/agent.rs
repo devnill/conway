@@ -108,7 +108,7 @@ fn truncate_to_char_limit(mut s: String, max_chars: usize) -> String {
 
 /// How an agent's run ended.
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ResultStatus {
     Completed,

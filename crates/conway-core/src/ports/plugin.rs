@@ -247,6 +247,107 @@ pub trait Plugin: Send + Sync + 'static {
     fn permission_rules(&self) -> Vec<PluginPermissionRule> {
         Vec::new()
     }
+
+    /// An [`EventSinkHandle`] the host fans the runtime's live `Event`
+    /// stream onto so this plugin can OBSERVE host events over its session --
+    /// the host-side half of the `observe/1` wire point (board item
+    /// `01M03VKQ738DTGHHK2C4RWXC0E`, see `docs/plugins/hooks.md` point 11).
+    /// `None` (the default) for every `Plugin` implementor that does not
+    /// speak `observe/1`: an in-process plugin, a one-shot subprocess plugin,
+    /// or a persistent subprocess plugin that did not declare the point at a
+    /// supported version. The SAME zero-cost-default precedent
+    /// [`Self::permission_rules`] establishes above -- every existing
+    /// implementor keeps compiling unmodified, and a build with no observing
+    /// plugin spawns no forwarding task.
+    ///
+    /// **One-way, lossy-with-notice, observer-class.** The sink the plugin
+    /// returns receives `Event`s the host fan-outs from the runtime's
+    /// `EventBus`; the host's forwarding task is a SUBSCRIBER of that bus, so
+    /// a slow plugin falls behind the bus's broadcast buffer and sees
+    /// `Event::Lagged` rather than stalling any producer -- the identical
+    /// lossy-with-notice discipline `conway::EventStream`
+    /// (`crates/conway/src/event_stream.rs`) already guarantees an embedder's
+    /// own stream, mirrored here for a plugin. The sink itself pushes to a
+    /// bounded queue and drops+warns on overflow, so the host turn NEVER
+    /// blocks on a slow plugin read loop. There is no reply channel: an
+    /// observer changes nothing by construction
+    /// (`docs/plugins/compatibility.md`'s "Observers vs participants"), so an
+    /// unknown `Event` tag the plugin receives is IGNORED (the one
+    /// enum-versioning case where "ignore" is the right answer), and a plugin
+    /// that never reads its stdin notifications cannot fail the run -- the
+    /// worst it can do is fall behind and see `Event::Lagged`.
+    ///
+    /// **Advertising a point means the host speaks it, not that the host
+    /// requires it.** A plugin that does not declare `observe/1` in its
+    /// `initialize/1` answer loads normally and contributes no observe sink;
+    /// a plugin that declares it at an UNSUPPORTED version DEGRADES (the host
+    /// surfaces a `tracing::warn!` naming both versions and loads the plugin
+    /// WITHOUT that point) -- the observer rule, the OPPOSITE of the
+    /// participant refusal `permission.policy/1` uses. See
+    /// `crates/conway-plugin-subprocess`'s `session` module for the
+    /// version-negotiation behavior.
+    fn observe_sink(&self) -> Option<EventSinkHandle> {
+        None
+    }
+
+    /// Zero or more status contributions this plugin is CURRENTLY pushing --
+    /// the host-side half of the `status.declare/1` / `status/1` wire point
+    /// (board item `01M03VKQ738DTGHHK2C4RWXC0E`, see `docs/plugins/hooks.md`
+    /// point 12). The default returns none, the SAME zero-cost-default
+    /// precedent [`Self::permission_rules`]/[`Self::observe_sink`] establish
+    /// above: every existing `Plugin` implementor keeps compiling unmodified,
+    /// and a build with no status-declaring plugin surfaces nothing.
+    ///
+    /// **A polled snapshot of an asynchronous push.** A persistent subprocess
+    /// plugin pushes `status/1` notifications as inbound no-`id` NDJSON lines
+    /// on its stdout; the host's reader routes those to a bounded notification
+    /// channel (drop+warn on overflow, never blocks the host turn) and stores
+    /// the latest contribution per `key` on the session. This method returns a
+    /// POINT-IN-TIME snapshot of that store -- it is NOT a build-time
+    /// declaration. An unknown `crate::agent::ResultStatus` tag the plugin
+    /// pushes degrades to `crate::agent::ResultStatus::Failed` (the
+    /// compatibility table's `ResultStatus` row), never `Completed`; a missing
+    /// or structurally-invalid notification is dropped with a `tracing::warn!`
+    /// (observer-class, degrade -- never fails the session).
+    ///
+    /// **What is built vs design-only.** The WIRE half is built: the
+    /// notification channel, the parser, the degrade-on-unknown-tag rule, the
+    /// per-key store, and this trait surface. The TUI status-line RENDER path
+    /// that would display a plugin's contributed status alongside conway's own
+    /// computed state remains DESIGN-ONLY (see `docs/plugins/hooks.md` point
+    /// 12's own "Status" row); this method is the surface a future render path
+    /// will read, exposed now so the wire half has a reachable consumer.
+    fn status_contributions(&self) -> Vec<PluginStatusContribution> {
+        Vec::new()
+    }
+}
+
+/// One status contribution a plugin pushes via `status/1` notifications --
+/// the host-side projection of a `{ key, status, value }` wire line (board
+/// item `01M03VKQ738DTGHHK2C4RWXC0E`). See `Plugin::status_contributions`'s
+/// own doc for the polled-snapshot / lossy-with-notice discipline and the
+/// degrade-on-unknown-tag rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginStatusContribution {
+    /// The plugin-authored key this contribution is filed under (e.g.
+    /// `"build"`). The host stores the LATEST contribution per key -- a later
+    /// `status/1` line for the same `key` overwrites an earlier one, matching
+    /// `docs/plugins/hooks.md` point 12's "a stale value expires at snapshot
+    /// time" shape (the ttl/expiry render path itself stays design-only).
+    pub key: String,
+    /// The status the plugin pushed, with an unknown wire tag already degraded
+    /// to `crate::agent::ResultStatus::Failed` at parse time (the
+    /// compatibility table's `ResultStatus` row, never `Completed`). A plugin
+    /// pushing `"completed"` surfaces `crate::agent::ResultStatus::Completed`;
+    /// a plugin pushing an unknown tag surfaces
+    /// `crate::agent::ResultStatus::Failed` carrying the unknown tag in its
+    /// `error` string, so the degradation is auditable.
+    pub status: crate::agent::ResultStatus,
+    /// The plugin-authored free-text value carried alongside `status`. Reused
+    /// as the `error`/`reason`/`limit` string for the `ResultStatus` variants
+    /// that carry one (`Failed`/`Cancelled`/`BudgetExceeded`); ignored for
+    /// variants that carry none (`Completed`/`Rejected`).
+    pub value: String,
 }
 
 /// One NARROWING permission rule a plugin contributes via

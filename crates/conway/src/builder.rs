@@ -129,8 +129,9 @@ use conway_core::permission_pattern::{PatternOrigin, Rule, Select, Then, When};
 use conway_core::ports::CapabilityIndex;
 use conway_core::ports::{
     Backend, BackendBuildContext, BackendFactory, ContextHook, HealthRegistry, HookRunner,
-    PermissionGate, Plugin, PluginPermissionRule, PluginPermissionVerdict, Router,
-    RouterBuildContext, RouterBundle, RouterFactory, RoutingExplainer, SessionStore,
+    PermissionGate, Plugin, PluginPermissionRule, PluginPermissionVerdict,
+    PluginStatusContribution, Router, RouterBuildContext, RouterBundle, RouterFactory,
+    RoutingExplainer, SessionStore,
 };
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::events::EventBus;
@@ -1327,7 +1328,81 @@ impl ConwayBuilder {
             .iter()
             .flat_map(|p| p.permission_rules())
             .collect();
+        // Collect each installed plugin's own `Plugin::status_contributions()`
+        // and `Plugin::observe_sink()` contributions BEFORE `resolved_plugins`
+        // is moved into `RuntimeDeps` below (board item
+        // `01M03VKQ738DTGHHK2C4RWXC0E`). The status contributions are a
+        // build-time SNAPSHOT (collected at session-open, before any
+        // `status/1` notifications have arrived -- typically empty); the live
+        // surface a future render path polls is the trait method itself, but
+        // the runtime does not retain the plugins (`PluginRegistry` consumes
+        // them), so this snapshot is the facade's own reachable record. The
+        // observe sinks are installed as `EventBus` subscribers: one forwarding
+        // task per sink drives a `bus.subscribe()` stream and calls
+        // `sink.emit(envelope.event)` for each envelope, so a persistent
+        // subprocess plugin that engaged `observe/1` receives matching `Event`s
+        // as notifications on its stdin. Lossy-with-notice by construction
+        // (the bus's broadcast buffer drops for a slow subscriber, surfacing
+        // `Event::Lagged`; the sink's own bounded channel drops+warns too).
+        let plugin_status_contributions: Vec<PluginStatusContribution> = resolved_plugins
+            .iter()
+            .flat_map(|p| p.status_contributions())
+            .collect();
+        let observe_sinks: Vec<conway_core::ports::EventSinkHandle> = resolved_plugins
+            .iter()
+            .filter_map(|p| p.observe_sink())
+            .collect();
         let event_bus = EventBus::new(EVENT_BUS_CAPACITY);
+        // Spawn one forwarding task per observe sink BEFORE the `event_bus` Arc
+        // is moved into `RuntimeDeps` (a clone is taken for the task(s)). The
+        // tasks are spawned on the CURRENT tokio runtime if one is running
+        // (`Handle::try_current`); if `build()` is called outside a runtime
+        // (a library embedder not yet inside `tokio::main`), the forwarding is
+        // SKIPPED -- the plugins load normally and serve `tool/1`, but receive
+        // no `observe/1` notifications. That is an honest degradation, not a
+        // panic: `tokio::spawn` would panic outside a runtime, so the guard
+        // avoids forcing a runtime on every embedder. The CLI and every
+        // `#[tokio::test]` run inside a runtime, so the common path engages.
+        // The spawned tasks are DETACHED (their `JoinHandle`s are dropped).
+        // Each task DROPS its cloned `Arc<EventBus>` ref right after
+        // `subscribe()` (the returned `EventStream` holds only a
+        // `broadcast::Receiver`, not a borrow of the `Arc`), so the task does
+        // NOT pin the `EventBus` (its `broadcast::Sender`) alive for its own
+        // lifetime. The stream therefore ends -- and the task exits -- when the
+        // `EventBus` is dropped (the `Runtime` is dropped, when the last
+        // `Arc<Runtime>` held by every `Conway` clone goes away and the last
+        // `Sender` goes with it): the task is bounded by the runtime's lifetime,
+        // not leaked. (Holding the `Arc` for the task's whole life would keep
+        // the `Sender` alive, the channel would never close, the stream would
+        // never end, and the task would leak for the runtime's lifetime.)
+        if !observe_sinks.is_empty() {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                for sink in observe_sinks {
+                    let bus_clone = event_bus.clone();
+                    handle.spawn(async move {
+                        // `subscribe()` borrows `bus_clone` and yields a
+                        // `Receiver`-only stream; drop our strong `Arc` ref
+                        // immediately so we do not keep the `EventBus` (its
+                        // `Sender`) alive for the task's whole life (see the
+                        // comment above the loop for the leak that would
+                        // otherwise result).
+                        let mut stream = bus_clone.subscribe();
+                        drop(bus_clone);
+                        use tokio_stream::StreamExt;
+                        while let Some(envelope) = stream.next().await {
+                            sink.emit(envelope.event);
+                        }
+                    });
+                }
+            } else {
+                tracing::warn!(
+                    "ConwayBuilder::build was called outside a tokio runtime; {} plugin observe \
+                     sink(s) will NOT receive Event notifications (degrade: plugins load and serve \
+                     tool/1 but observe/1 forwarding is skipped)",
+                    observe_sinks.len()
+                );
+            }
+        }
         let rt = Runtime::new(RuntimeDeps {
             store: store.clone(),
             router,
@@ -1504,6 +1579,7 @@ impl ConwayBuilder {
             warnings,
             metadata,
             root,
+            plugin_status_contributions,
         ))
     }
 }

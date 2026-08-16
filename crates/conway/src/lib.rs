@@ -273,7 +273,7 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   what makes `use conway::plugin::*` sufficient to write an impl.
 pub mod plugin {
     pub use async_trait::async_trait;
-    pub use conway_core::agent::Fact;
+    pub use conway_core::agent::{Fact, ResultStatus};
     pub use conway_core::content::{
         Artifact, ArtifactKind, ContentBlock, PermissionClass, Role, ToolCall, ToolCategory,
         ToolSpec, TruncationPolicy,
@@ -281,6 +281,7 @@ pub mod plugin {
     pub use conway_core::error::{
         ArtifactWriteError, CwdError, HookFailure, SubagentError, ToolError,
     };
+    pub use conway_core::event::Event;
     /// The SAME core-vs-plugin
     /// namespace rule `conway_core::event_name::validate_event_name`
     /// already enforces for plugin-declared events, reused (not
@@ -310,11 +311,11 @@ pub mod plugin {
     pub use conway_core::ports::EventDecl;
     pub use conway_core::ports::{
         ArtifactWriteHandle, ArtifactWriter, CancellationToken, Command, CommandCtx,
-        CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, HookRunner,
-        HostCapability, ObservedCall, ObserverAnswer, ObserverCtx, ObserverNote, OverflowInfo,
-        PathArgs, Plugin, PluginConfig, PluginEventHandle, PluginManifest, PluginPermissionRule,
-        PluginPermissionVerdict, RegisteredObserver, RenderKind, Tool, ToolCtx, ToolObserver,
-        ToolOutput,
+        CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, EventSink,
+        EventSinkHandle, HookRunner, HostCapability, ObservedCall, ObserverAnswer, ObserverCtx,
+        ObserverNote, OverflowInfo, PathArgs, Plugin, PluginConfig, PluginEventHandle,
+        PluginManifest, PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution,
+        RegisteredObserver, RenderKind, Tool, ToolCtx, ToolObserver, ToolOutput,
     };
     pub use conway_core::provenance::Provenance;
     pub use conway_core::segment::PromptSegment;

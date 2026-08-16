@@ -103,9 +103,28 @@ pub struct Conway {
     /// contract. Consulted once per [`Self::new_session`] call, exactly like
     /// `self.config.cwd`.
     root: Option<std::path::PathBuf>,
+    /// A build-time snapshot of every installed plugin's
+    /// `Plugin::status_contributions()` (board item `01M03VKQ738DTGHHK2C4RWXC0E`).
+    /// Collected in `ConwayBuilder::build` BEFORE the plugins are moved into
+    /// `RuntimeDeps` -- so this is a snapshot taken at session-open, before any
+    /// `status/1` notifications have arrived (typically empty). The LIVE
+    /// surface a future TUI status-line render path will poll is the
+    /// `Plugin::status_contributions` trait method itself (a polled snapshot of
+    /// the session's per-key store); this field is the build-time record the
+    /// facade can hand back WITHOUT re-reaching the (consumed) plugins --
+    /// honest about being a snapshot, not a live view.
+    plugin_status_contributions: Vec<conway_core::ports::PluginStatusContribution>,
 }
 
 impl Conway {
+    // `Conway::new` is a crate-internal constructor called from exactly one
+    // site (`ConwayBuilder::build`); its argument list grew to eight when the
+    // facade began carrying the plugin status contributions the
+    // `status.declare/1` wire point collects (board item
+    // `01M03VKQ738DTGHHK2C4RWXC0E`). Clippy's default ceiling of seven is a
+    // smell worth a note, not a refactor worth bundling unrelated fields into
+    // a throwaway struct that would only obscure the single call site.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         rt: Arc<Runtime>,
         config: ConwayConfig,
@@ -114,6 +133,7 @@ impl Conway {
         warnings: Vec<ConfigWarning>,
         model_metadata: ModelMetadata,
         root: Option<std::path::PathBuf>,
+        plugin_status_contributions: Vec<conway_core::ports::PluginStatusContribution>,
     ) -> Self {
         Self {
             rt,
@@ -123,7 +143,19 @@ impl Conway {
             warnings: Arc::new(warnings),
             model_metadata: Arc::new(model_metadata),
             root,
+            plugin_status_contributions,
         }
+    }
+
+    /// A build-time snapshot of every installed plugin's status contributions
+    /// (board item `01M03VKQ738DTGHHK2C4RWXC0E`). See the field's own doc for
+    /// why this is a snapshot (collected at session-open, before any
+    /// `status/1` notifications arrive -- typically empty) rather than a live
+    /// view; the live surface a render path will poll is the
+    /// `Plugin::status_contributions` trait method. Exposed now so the wire
+    /// half has a reachable facade consumer, scoped honestly to what it is.
+    pub fn plugin_status_contributions(&self) -> &[conway_core::ports::PluginStatusContribution] {
+        &self.plugin_status_contributions
     }
 
     /// Non-fatal warnings surfaced by `config::load` (currently only

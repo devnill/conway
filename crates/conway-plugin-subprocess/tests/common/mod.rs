@@ -1071,3 +1071,280 @@ for line in sys.stdin:
         sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
     sys.stdout.flush()
 "#;
+
+// ---------------------------------------------------------------------
+// observe/1 + status.declare/1 / status/1 fixtures (board item
+// `01M03VKQ738DTGHHK2C4RWXC0E`). Every fixture below answers
+// `initialize/1` declaring `tool/1` plus the observer point(s) the named
+// case exercises, then answers the engagement request(s). An observe
+// fixture records every `observe/1` notification it receives on stdin to a
+// file whose path the test sets in the `OBSERVE_LOG` env var (the child
+// inherits the parent's env) -- the load-bearing proof the plugin actually
+// received the host's one-way notifications. A status fixture PUSHES
+// `status/1` no-`id` lines on stdout right after answering
+// `status.declare/1`, including an UNKNOWN `ResultStatus` tag so the
+// degrade-to-`Failed` rule is exercised end-to-end.
+// ---------------------------------------------------------------------
+
+/// A persistent-transport fixture that declares `observe/1` at version 1 and
+/// subscribes with selector `["*"]` (every `Event`). Every `observe/1`
+/// notification the plugin receives on stdin (a no-`id` line whose `op` is
+/// `"observe/1"`) is appended to the file named by the `OBSERVE_LOG` env var,
+/// one JSON object per line -- the load-bearing proof the host's one-way
+/// notifications actually reached the plugin. The fixture keeps serving
+/// `tool/1` for `greet` so the test can prove the session is still alive
+/// AFTER receiving notifications (an observer must not error the session).
+/// `tool.spec/1` discovery still answers so the one-shot discovery path
+/// succeeds.
+pub const PERSISTENT_OBSERVE_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json, os
+
+def manifest():
+    return {
+        "id": "acme.observe",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "greet",
+            "description": "Greets the caller by name.",
+            "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+log_path = os.environ.get("OBSERVE_LOG")
+
+def record(obj):
+    if log_path:
+        with open(log_path, "a") as f:
+            f.write(json.dumps(obj) + "\n")
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}, {"name": "observe/1", "version": 1}]}) + "\n")
+    elif op == "observe/1":
+        # Distinguish the ENGAGEMENT (carries an `id`, answer with the
+        # selector) from a one-way NOTIFICATION (no `id`, record it WITHOUT
+        # answering -- an unknown `event` tag is recorded too, the plugin
+        # ignores it, the session stays alive).
+        if "id" in req:
+            sys.stdout.write(json.dumps({"id": rid, "ok": True, "events": ["*"]}) + "\n")
+        else:
+            record(req)
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    elif op == "tool/1":
+        args = req.get("arguments", {})
+        name = args.get("name", "")
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "blocks": [{"type": "text", "text": f"hello, {name}"}], "is_error": False}) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
+"#;
+
+/// Declares `observe/1` at version 2 (the host speaks version 1) -- the host
+/// must DEGRADE (load WITHOUT the point, warn), NOT refuse. The fixture never
+/// receives an `observe/1` engagement request because the host does not send
+/// one for an unsupported version. It still serves `tool/1` so the test can
+/// assert the plugin LOADED and serves calls despite the degrade.
+pub const PERSISTENT_OBSERVE_VERSION_MISMATCH_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+def manifest():
+    return {
+        "id": "acme.observe-ver",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "greet",
+            "description": "Greets the caller by name.",
+            "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}, {"name": "observe/1", "version": 2}]}) + "\n")
+    elif op == "observe/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "events": ["*"]}) + "\n")
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    elif op == "tool/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "blocks": [{"type": "text", "text": "hi"}], "is_error": False}) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
+"#;
+
+/// A persistent-transport fixture that declares `observe/1` at version 1 and
+/// subscribes with a `Tags` selector `["turn_started"]` -- ONLY the
+/// `turn_started` tag (plus the always-forwarded `lagged`). Every `observe/1`
+/// notification the plugin receives on stdin is appended to the file named by
+/// the `OBSERVE_TAGS_LOG` env var (a DISTINCT env var from the `["*"]`
+/// fixture's `OBSERVE_LOG`, so the two tests cannot clobber each other's log
+/// path when they run in parallel). The host filters by the declared selector
+/// BEFORE forwarding -- a non-matching `Event` is dropped at the host and never
+/// reaches this stdin -- so the number of lines the plugin records is the
+/// proof the filter ran end-to-end. Keeps serving `tool/1` for `greet` so the
+/// test can prove the session is still alive AFTER a non-matching event was
+/// filtered.
+pub const PERSISTENT_OBSERVE_TAGS_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json, os
+
+def manifest():
+    return {
+        "id": "acme.observe-tags",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "greet",
+            "description": "Greets the caller by name.",
+            "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+log_path = os.environ.get("OBSERVE_TAGS_LOG")
+
+def record(obj):
+    if log_path:
+        with open(log_path, "a") as f:
+            f.write(json.dumps(obj) + "\n")
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}, {"name": "observe/1", "version": 1}]}) + "\n")
+    elif op == "observe/1":
+        # Distinguish the ENGAGEMENT (carries an `id`, answer with the
+        # selector) from a one-way NOTIFICATION (no `id`, record it). A
+        # Tags selector `["turn_started"]`: the host forwards ONLY
+        # `turn_started` (and the always-forwarded `lagged`); every other
+        # `Event` tag is filtered out at the host and never reaches here.
+        if "id" in req:
+            sys.stdout.write(json.dumps({"id": rid, "ok": True, "events": ["turn_started"]}) + "\n")
+        else:
+            record(req)
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    elif op == "tool/1":
+        args = req.get("arguments", {})
+        name = args.get("name", "")
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "blocks": [{"type": "text", "text": f"hello, {name}"}], "is_error": False}) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
+"#;
+
+/// A persistent-transport fixture that declares `status.declare/1` at version
+/// 1 and, immediately AFTER answering the engagement, PUSHES two `status/1`
+/// no-`id` notifications on stdout: `{"key":"build","status":"completed",
+/// "value":"green"}` (a KNOWN tag) and `{"key":"lint","status":"quantum",
+/// "value":"?"}` (an UNKNOWN `ResultStatus` tag the host must degrade to
+/// `Failed`). The host's reader routes both to the notification channel and
+/// the handler stores them; the test polls `status_contributions()` and
+/// asserts `build` -> `Completed` and `lint` -> `Failed` (degraded, never
+/// `Completed`). The fixture keeps serving `tool/1` so the test can prove the
+/// session is still alive after pushing notifications.
+pub const PERSISTENT_STATUS_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json, time
+
+def manifest():
+    return {
+        "id": "acme.status",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "greet",
+            "description": "Greets the caller by name.",
+            "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}, {"name": "status.declare/1", "version": 1}]}) + "\n")
+    elif op == "status.declare/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "keys": [{"key": "build", "max_len": 80, "ttl_ms": 5000}, {"key": "lint"}]}) + "\n")
+        sys.stdout.flush()
+        # PUSH the status/1 notifications NOW (no `id`, one-way). A tiny
+        # sleep lets the host's reader + handler drain them before the test
+        # polls.
+        sys.stdout.write(json.dumps({"op": "status/1", "key": "build", "status": "completed", "value": "green"}) + "\n")
+        sys.stdout.write(json.dumps({"op": "status/1", "key": "lint", "status": "quantum", "value": "?"}) + "\n")
+        sys.stdout.flush()
+        time.sleep(0.05)
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    elif op == "tool/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "blocks": [{"type": "text", "text": "hi"}], "is_error": False}) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
+"#;
+
+/// Declares `status.declare/1` at version 2 (the host speaks version 1) -- the
+/// host must DEGRADE (load WITHOUT the point, warn), NOT refuse. The fixture
+/// never receives a `status.declare/1` engagement request and pushes no
+/// `status/1` notifications. It still serves `tool/1` so the test can assert
+/// the plugin LOADED despite the degrade.
+pub const PERSISTENT_STATUS_VERSION_MISMATCH_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+def manifest():
+    return {
+        "id": "acme.status-ver",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "greet",
+            "description": "Greets the caller by name.",
+            "schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}, {"name": "status.declare/1", "version": 2}]}) + "\n")
+    elif op == "status.declare/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "keys": []}) + "\n")
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    elif op == "tool/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "blocks": [{"type": "text", "text": "hi"}], "is_error": False}) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
+"#;
