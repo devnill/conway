@@ -22,6 +22,7 @@ pub mod commands;
 pub mod diag;
 pub mod exit;
 pub mod first_party_plugins;
+pub mod mcp_plugins;
 mod model_pin;
 pub mod oneshot;
 pub mod render;

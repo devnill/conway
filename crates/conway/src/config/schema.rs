@@ -728,6 +728,38 @@ pub struct PluginsConfig {
     /// otherwise be misleading for THIS particular field.
     #[serde(default)]
     pub subprocess: Vec<SubprocessPluginEntry>,
+    /// **DISCLOSED, PROMINENTLY FLAGGED addition (board item
+    /// `01M03GPNF0KN59FHAEEAEY2JD3`, the MCP-over-stdio client plugin): an
+    /// external MCP server named by an operator's `settings.json`, spawned as
+    /// a persistent child process, whose declared tools (`tools/list`) appear
+    /// as ordinary `conway::plugin::Tool`s.** The conway harness is the MCP
+    /// CLIENT; the named command is the MCP SERVER. Resolved by
+    /// `crates/conway-cli/src/mcp_plugins.rs` -- a SEPARATE choke point from
+    /// both `first_party_plugins::install` (closed candidate set) and
+    /// `subprocess_plugins::install` (conway-wire host): the MCP client is the
+    /// SAME shape as the subprocess tier (operator names a command in config;
+    /// the CLI discovers it async before `build()`; attaches via
+    /// `with_plugin`), but speaks a DIFFERENT wire protocol (JSON-RPC 2.0, not
+    /// conway wire), so it has its own loader and its own plugin crate
+    /// (`conway-plugin-mcp`).
+    ///
+    /// **Empty by default**, the identical "nothing in this tier runs
+    /// unasked" rule `install` and `subprocess` state: no MCP server is ever
+    /// spawned unless an operator names one here.
+    ///
+    /// **Trust, stated here because this is the field that grants the
+    /// capability.** A `[plugins].mcp[]` entry is code THIS process executes
+    /// with the operator's own privileges, on the IDENTICAL footing
+    /// `[hooks].rules[].command` and `[plugins].subprocess[]` already have
+    /// (`conway_plugin_mcp`'s own crate doc has the full argument). Board item
+    /// `01KZHVFCN6ZEAXV7K5JHRQN1YB` (a digest-keyed `plugin` trust subject)
+    /// is under a STANDING OPERATOR DEFERRAL and is NOT built here -- naming
+    /// an MCP server here is exactly as trusted, and exactly as unaudited, as
+    /// naming a `[hooks].rules[].command` already is today. This is a genuine
+    /// widening of what a `settings.json` can make a shipped binary execute,
+    /// disclosed rather than smuggled in as an "inert wire shape" claim.
+    #[serde(default)]
+    pub mcp: Vec<McpPluginEntry>,
 }
 
 impl Default for PluginsConfig {
@@ -736,6 +768,7 @@ impl Default for PluginsConfig {
             install: Vec::new(),
             default_backends: vec!["anthropic".to_string(), "openai-compat".to_string()],
             subprocess: Vec::new(),
+            mcp: Vec::new(),
         }
     }
 }
@@ -826,6 +859,67 @@ pub enum SubprocessTransport {
     /// `[hooks].rules[].command`, held for longer, with the larger
     /// exposure that implies).
     Persistent,
+}
+
+/// One `[plugins].mcp[]` entry: an external MCP server, spawned as a
+/// persistent child process and spoken to as a JSON-RPC 2.0 CLIENT (board
+/// item `01M03GPNF0KN59FHAEEAEY2JD3`) -- see [`PluginsConfig::mcp`]'s own doc
+/// for the full trust/reachability disclosure this field carries.
+///
+/// **Deliberately mirrors [`SubprocessPluginEntry`]'s own shape** (`id`,
+/// `command` as an argv vector, `timeout_ms`) rather than inventing a fourth
+/// config vocabulary for "run this command": an operator who has already
+/// configured a `[plugins].subprocess[]` entry recognizes this shape on sight.
+/// The `env` field (acceptance 3 -- credential/connection-lifecycle scoping
+/// is EXPLICIT, not left to implicit env inheritance) is the one addition: an
+/// MCP server often needs credentials (an API key the server forwards to its
+/// upstream model provider), and naming them here makes the child's env
+/// ADDITIVE on the parent's rather than relying on whatever the parent
+/// happens to have set -- the identical shape a `[hooks].rules[]` entry's env
+/// carries.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct McpPluginEntry {
+    /// This entry's stable, operator-chosen identity -- used only in error
+    /// messages a reading binary/embedder produces (which configured entry
+    /// failed to spawn/handshake/time out). **Not** validated against the
+    /// server's own `serverInfo.name` (the server names that itself, over the
+    /// wire, once spawned) -- the two are allowed to differ, the identical
+    /// relationship `SubprocessPluginEntry::id`'s own doc states.
+    pub id: String,
+    /// The command to spawn (the external MCP server), argv-shaped (program,
+    /// then its arguments) -- never a single shell string, the same shape and
+    /// reasoning [`SubprocessPluginEntry::command`]'s own doc gives.
+    pub command: Vec<String>,
+    /// Milliseconds any single framed JSON-RPC round-trip (`initialize`,
+    /// `tools/list`, or one `tools/call`) is allowed to run before the reading
+    /// binary/embedder kills the process group. Same default and reasoning as
+    /// [`SubprocessPluginEntry::timeout_ms`]. A PER-CALL deadline, not a
+    /// session-wide idle kill.
+    #[serde(default = "default_hook_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Explicit environment pairs the child inherits IN ADDITION to the parent
+    /// process's own env -- acceptance 3 (credential/connection-lifecycle
+    /// scoping is EXPLICIT, not left to implicit env inheritance). Empty by
+    /// default: the child inherits the parent env unchanged, the same default
+    /// a hook command has. Name credentials here (e.g. an API key the MCP
+    /// server forwards to its upstream provider) rather than relying on the
+    /// parent process having them set -- the child gets the parent env PLUS
+    /// these, the identical additive shape a `[hooks].rules[]` entry's env
+    /// carries.
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+}
+
+impl Default for McpPluginEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            command: Vec::new(),
+            timeout_ms: default_hook_timeout_ms(),
+            env: Vec::new(),
+        }
+    }
 }
 
 /// `[hooks]` -- an operator-declared list of "when this event happens, run

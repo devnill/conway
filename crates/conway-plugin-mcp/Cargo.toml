@@ -1,0 +1,63 @@
+[package]
+name = "conway-plugin-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "An MCP-over-stdio client plugin (board item 01M03GPNF0KN59FHAEEAEY2JD3): a Plugin implementation that speaks JSON-RPC 2.0 as a CLIENT, spawning an operator-configured external MCP server as a persistent child process once at discovery time, completing the initialize handshake, and exposing every tool the server declares (tools/list) as an ordinary conway::plugin::Tool whose invoke calls tools/call over the same persistent stdio"
+
+# A sibling transport to `conway-plugin-subprocess`, NOT a layering on it.
+# `conway-plugin-subprocess`'s `PersistentSession` speaks conway's OWN wire
+# protocol (`initialize/1`, `tool.spec/1`, `tool/1`, ...); MCP speaks a
+# DIFFERENT protocol (JSON-RPC 2.0: `initialize`, `notifications/initialized`,
+# `tools/list`, `tools/call`, capability structs). So this crate owns its OWN
+# lightweight `McpSession` that reuses the PATTERN `PersistentSession` proves
+# out -- spawn once + `kill_on_drop(true)` child, a long-lived reader task
+# routing inbound lines by JSON-RPC `id` via a pending table, a
+# `framed_round_trip` that writes one line and awaits the matching reply, a
+# stderr drain, and Drop-time group SIGKILL -- but parses JSON-RPC 2.0, not
+# conway wire. See `src/session.rs`'s own module doc for the full design
+# decision. This crate does NOT depend on `conway-plugin-subprocess`.
+
+[dependencies]
+# The public facade -- the exact `conway::plugin` surface a third-party plugin
+# AUTHOR gets (GP-03/P-6), the identical choice `conway-plugin-subprocess`
+# makes. This crate implements `Plugin`/`Tool` against that surface only; it
+# does not reach into `conway-core` or `conway-runtime` directly, for the same
+# reason `conway-plugin-subprocess` does not: the whole point is that an MCP
+# client plugin needs nothing more privileged than what any other plugin
+# author already has.
+conway = { path = "../conway" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
+# Audit logging for the unknown-content-block degradation (an MCP server may
+# return a content block type this host does not know -- `text`/`image` are
+# mapped; anything else is dropped+warned, mirroring
+# `conway-plugin-subprocess`'s drop+count+surface discipline). Already a
+# workspace dependency, the same use `conway-plugin-subprocess` makes of it.
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util", "time", "rt", "sync", "macros"] }
+
+[target.'cfg(unix)'.dependencies]
+# The identical SIGTERM-then-SIGKILL process-group kill primitive
+# `conway-plugin-subprocess`'s own `unix` module duplicates (itself a
+# documented duplicate of `conway_tools::process::unix::kill_group`, whose
+# module is private and out of this item's owned paths). Duplicated here again
+# rather than shared: `conway_tools::process` stays private, and this crate
+# does not depend on `conway-plugin-subprocess` (the two transports are
+# siblings, not a layering -- see the package doc above). Same ~15-line
+# sequence, cited by name.
+nix = { workspace = true, features = ["signal", "process"] }
+
+[dev-dependencies]
+# Test-only: the doubles a `ToolCtx::for_test` call needs (the identical
+# pattern `conway-plugin-subprocess`'s own `tests/mechanism.rs` uses). Neither
+# is a new dependency to the workspace (C-04).
+conway-core = { path = "../conway-core" }
+conway-testkit = { path = "../conway-testkit" }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
