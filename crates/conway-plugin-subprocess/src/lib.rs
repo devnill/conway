@@ -14,10 +14,15 @@
 //! persistent NDJSON JSON-RPC channel (board item
 //! `01M03VJHG1WFECFJB4ZH3CKWDX`, see `session`'s own module doc). Still
 //! nothing beyond `tool/1` itself: no `permission.policy/1`, no
-//! `context.hook/1`, no `observe/1`, no capability handshake against
-//! `PluginManifest::required_host_caps` (still declared, still consulted by
-//! nobody, unchanged from `crates/conway-core/src/ports/plugin.rs`'s own
-//! disclosure).
+//! `context.hook/1`, no `observe/1`, no capability handshake beyond the
+//! `PluginManifest::required_host_caps` the wire now CARRIES (board item
+//! `01M03VJXARFHSDAGHFXGCWKJTY`: a subprocess plugin declares its required
+//! host caps in `WireManifest::required_host_caps`, mapped into
+//! `PluginManifest::required_host_caps` here and consulted by the `conway`
+//! builder at registration -- a cap the host lacks refuses the plugin; an
+//! unknown cap tag fails closed at parse). No live `permission.policy/1`
+//! negotiation round-trips a cap request at call time; the declaration is
+//! static, gated once at build.
 //!
 //! **Transport: one-shot exec (default) AND a persistent NDJSON channel.**
 //! `docs/plugins/hooks.md`'s own point 9 doc and the decision record both
@@ -542,7 +547,7 @@ impl SubprocessPlugin {
             id: manifest.id.clone(),
             version: manifest.version.clone(),
             tools: specs.iter().map(|s| s.name.clone()).collect(),
-            required_host_caps: Vec::new(),
+            required_host_caps: manifest.required_host_caps.clone(),
         };
 
         let spec = Arc::new(spec);

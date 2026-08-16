@@ -50,6 +50,8 @@ mod tests {
         let plugin = ReportPlugin::new();
         let manifest = plugin.manifest();
         assert_eq!(manifest.id, "conway.report");
+        // The report plugin needs nothing the host might lack -- it emits a
+        // report through `ToolCtx`, no host-capability gate applies.
         assert!(manifest.required_host_caps.is_empty());
 
         let names: Vec<String> = plugin

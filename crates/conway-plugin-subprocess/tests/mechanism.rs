@@ -171,6 +171,72 @@ print(json.dumps({"id": "acme.dup", "version": "0.1.0", "tools": [tool, tool]}))
 }
 
 // ---------------------------------------------------------------------
+// Discovery -- `required_host_caps` on the wire (board item
+// `01M03VJXARFHSDAGHFXGCWKJTY`)
+// ---------------------------------------------------------------------
+
+/// A `tool.spec/1` manifest declaring a KNOWN `required_host_caps` value
+/// (`["subagent"]`) loads, and the declared cap is mapped verbatim into
+/// `PluginManifest::required_host_caps`. (Whether the host then OFFERS the
+/// cap is the `conway` builder's gate, proven in `crates/conway/tests/
+/// builder.rs`; this proves only that the wire carries the field and
+/// `discover` maps it.)
+#[tokio::test]
+async fn discover_maps_a_declared_known_host_cap_into_the_manifest() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec = common::spec_for(dir.path(), "cap.py", common::CAP_REQUIRED_PLUGIN);
+
+    let plugin = SubprocessPlugin::discover(spec)
+        .await
+        .expect("a manifest declaring a known required_host_caps value must load");
+    let manifest = plugin.manifest();
+    assert_eq!(manifest.id, "acme.needs-subagent");
+    assert_eq!(
+        manifest.required_host_caps,
+        vec![conway::plugin::HostCapability::Subagent],
+        "the declared cap maps verbatim into PluginManifest::required_host_caps"
+    );
+}
+
+/// A `tool.spec/1` manifest declaring an UNKNOWN `required_host_caps` tag
+/// (`"quantum-cap"`) FAILS CLOSED at parse -- a capability requirement is a
+/// GATE, not a value that degrades, so an unknown cap tag surfaces as
+/// `SubprocessPluginError::UnparseableAnswer` and the plugin is refused,
+/// unlike the `ToolCategory`/`PermissionClass`/`ContentBlock` degradation
+/// table (an unknown TAG there degrades to the most restrictive value).
+#[tokio::test]
+async fn discover_fails_closed_on_an_unknown_required_host_cap_tag() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec = common::spec_for(dir.path(), "unknown_cap.py", common::UNKNOWN_CAP_PLUGIN);
+
+    let err = SubprocessPlugin::discover(spec)
+        .await
+        .expect_err("an unknown required_host_caps tag must fail closed, never degrade");
+    assert!(
+        matches!(err, SubprocessPluginError::UnparseableAnswer { .. }),
+        "expected UnparseableAnswer for an unknown cap tag, got {err:?}"
+    );
+}
+
+/// A `tool.spec/1` manifest that OMITS `required_host_caps` entirely still
+/// loads (`#[serde(default)]` parses the omitted field as empty -- "needs
+/// nothing the host might lack"), so existing plugins that predate the field
+/// are unaffected. The built-in `GREET_PLUGIN` fixture omits the field.
+#[tokio::test]
+async fn discover_loads_a_manifest_omitting_required_host_caps_as_empty() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec = common::spec_for(dir.path(), "greet.py", common::GREET_PLUGIN);
+
+    let plugin = SubprocessPlugin::discover(spec)
+        .await
+        .expect("a manifest omitting required_host_caps must load (#[serde(default)])");
+    assert!(
+        plugin.manifest().required_host_caps.is_empty(),
+        "an omitted required_host_caps field deserializes to empty"
+    );
+}
+
+// ---------------------------------------------------------------------
 // Invocation -- `tool/1`
 // ---------------------------------------------------------------------
 

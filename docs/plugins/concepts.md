@@ -331,8 +331,16 @@ separate, later work.
   bounded, fail-closed, composed order-independently.
 - **Capability** — a named permission a plugin requests from the host
   (`PluginManifest::required_host_caps`) and the host separately grants,
-  never implied by trust alone. Declared today; not yet consumed anywhere in
-  the tree — no code reads `required_host_caps` to gate anything.
+  never implied by trust alone. Consumed: the `conway` builder consults
+  `required_host_caps` at registration (the manifest-validation seam),
+  comparing each declared cap against `conway::HostCaps::from_config` and
+  refusing a plugin whose cap the host lacks with
+  `PluginError::MissingHostCapability`. The cap set is a closed,
+  `#[non_exhaustive]` `HostCapability` enum (not a free-form `Vec<String>`):
+  `subagent` (offered by the `conway` runtime's always-present
+  `SubagentHost`) and `persistent_transport` (offered iff a
+  `[plugins].subprocess[]` entry is configured `persistent`). Empty
+  `required_host_caps` means "needs nothing the host might lack."
 - **Trust subject** — the specific thing a trust decision is made about: in
   the full design, `(kind, id, content-digest)`; built today for exactly one
   kind, `(absolute path, content-digest)` for a project's `permissions.json`.

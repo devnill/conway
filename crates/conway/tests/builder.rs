@@ -25,7 +25,7 @@ use conway_core::ids::ToolName;
 use conway_core::ids::{BackendId, RoleAlias};
 use conway_core::ports::{GenerateResponse, SessionStore};
 #[cfg(feature = "builtin-tools")]
-use conway_core::ports::{Plugin, PluginManifest, RenderKind, Tool};
+use conway_core::ports::{HostCapability, Plugin, PluginManifest, RenderKind, Tool};
 use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
 /// `Conway` deliberately does not derive `Debug` (it wraps `Arc<Runtime>`,
@@ -474,6 +474,119 @@ fn duplicate_injected_plugin_id_is_rejected() {
         ConwayError::Build { message } => {
             assert!(message.contains("duplicate plugin id"), "{message}");
             assert!(message.contains("conway.fs"), "{message}");
+        }
+        other => panic!("expected Build error, got {other:?}"),
+    }
+}
+
+// -----------------------------------------------------------------------
+// Host-capability gate (board item 01M03VJXARFHSDAGHFXGCWKJTY):
+// `PluginManifest::required_host_caps` is now consulted at the
+// manifest-validation seam in `ConwayBuilder::build`. A plugin whose declared
+// cap the host offers loads; one whose declared cap the host LACKS is refused
+// at build with a `PluginError::MissingHostCapability`-sourced build error
+// naming both the plugin and the cap. The unit-level check
+// (`conway::HostCaps::check_manifest`) is covered in `host_caps`'s own tests;
+// these are the builder-level end-to-end regressions that confirm the gate is
+// wired into `build()` itself.
+// -----------------------------------------------------------------------
+
+/// A minimal no-op `Plugin` that declares a single required host cap, used to
+/// exercise the build-time host-capability gate. Distinct from `DummyPlugin`
+/// (which declares no caps) so the two concerns stay legible at the call site.
+#[cfg(feature = "builtin-tools")]
+struct CapPlugin {
+    id: &'static str,
+    required_caps: Vec<HostCapability>,
+}
+
+#[cfg(feature = "builtin-tools")]
+impl Plugin for CapPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: self.id.to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![],
+            required_host_caps: self.required_caps.clone(),
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![]
+    }
+}
+
+/// Acceptance 1: a plugin whose `required_host_caps` names a cap the host
+/// HAS loads normally. The `conway` runtime always offers `Subagent` (it
+/// provides a `SubagentHost` unconditionally), so a plugin requiring
+/// `subagent` builds successfully alongside the built-ins.
+#[cfg(feature = "builtin-tools")]
+#[test]
+fn plugin_requiring_a_cap_the_host_offers_builds() {
+    let cfg = base_config();
+    let backend = fake_backend("fake");
+    let store = Arc::new(FakeStore::new());
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    let _conway: Conway = ConwayBuilder::from_parts(cfg)
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(fake_router())
+        .with_plugin(Arc::new(CapPlugin {
+            id: "test.needs-subagent",
+            required_caps: vec![HostCapability::Subagent],
+        }))
+        .build()
+        .expect("a plugin requiring a cap the host offers (Subagent) must build");
+}
+
+/// Acceptance 2: a plugin whose `required_host_caps` names a cap the host
+/// LACKS is refused at build with a `PluginError::MissingHostCapability`-
+/// sourced build error naming both the plugin and the cap. `base_config()`
+/// has no `[plugins].subprocess[]` entries, so the host offers no
+/// `PersistentTransport` -- a plugin requiring it is refused.
+#[cfg(feature = "builtin-tools")]
+#[test]
+fn plugin_requiring_a_cap_the_host_lacks_is_refused_naming_both() {
+    let cfg = base_config();
+    let backend = fake_backend("fake");
+    let store = Arc::new(FakeStore::new());
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    let result = ConwayBuilder::from_parts(cfg)
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(fake_router())
+        .with_plugin(Arc::new(CapPlugin {
+            id: "test.needs-persistent",
+            required_caps: vec![HostCapability::PersistentTransport],
+        }))
+        .build();
+    let err = expect_build_err(
+        result,
+        "a plugin requiring a cap the host lacks (PersistentTransport) must be refused",
+    );
+
+    match err {
+        ConwayError::Build { message } => {
+            // The message is the `PluginError::MissingHostCapability`'s
+            // Display ("plugin {plugin} requires missing host capability
+            // {capability}") -- it names BOTH the plugin id and the cap's
+            // snake_case wire string.
+            assert!(
+                message.contains("test.needs-persistent"),
+                "build error must name the plugin: {message}"
+            );
+            assert!(
+                message.contains("persistent_transport"),
+                "build error must name the missing cap: {message}"
+            );
+            assert!(
+                message.contains("missing host capability"),
+                "build error must be the MissingHostCapability shape: {message}"
+            );
         }
         other => panic!("expected Build error, got {other:?}"),
     }

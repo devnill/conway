@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use conway_core::ports::{Plugin, PluginManifest, Tool};
+use conway_core::ports::{HostCapability, Plugin, PluginManifest, Tool};
 
 pub mod ask;
 pub mod control;
@@ -46,7 +46,14 @@ impl Plugin for SubagentPlugin {
             id: "conway.subagent".into(),
             version: env!("CARGO_PKG_VERSION").into(),
             tools: self.tools.iter().map(|t| t.spec().name).collect(),
-            required_host_caps: Vec::new(),
+            // `conway_fork`/`conway_spawn`/`conway_ask` fork/spawn child
+            // sessions through `ToolCtx::subagents` (a `SubagentHost`) -- a
+            // capability a host could plausibly lack, so this built-in
+            // declares it. The `conway` runtime always provides a
+            // `SubagentHost`, so the host always offers `Subagent` and this
+            // built-in loads; a host that lacked it would refuse this plugin
+            // at registration with `PluginError::MissingHostCapability`.
+            required_host_caps: vec![HostCapability::Subagent],
         }
     }
 
@@ -64,7 +71,9 @@ mod tests {
         let plugin = SubagentPlugin::new();
         let manifest = plugin.manifest();
         assert_eq!(manifest.id, "conway.subagent");
-        assert!(manifest.required_host_caps.is_empty());
+        // The subagent plugin declares the `Subagent` host cap (it forks/spawns
+        // child sessions); the host always offers it, so this loads.
+        assert_eq!(manifest.required_host_caps, vec![HostCapability::Subagent]);
 
         let mut names: Vec<String> = plugin
             .tools()

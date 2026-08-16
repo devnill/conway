@@ -771,13 +771,82 @@ impl Default for PathArgs {
     }
 }
 
+/// A host capability a plugin may declare it requires (via
+/// [`PluginManifest::required_host_caps`]) and the host separately grants at
+/// build time (via `conway::HostCaps`), never implied by trust alone.
+///
+/// **A closed, `#[non_exhaustive]` vocabulary, not a free-form `Vec<String>`
+/// the host never validates.** A plugin names a cap from this enum; the host
+/// compares the declared set against what it actually offers and refuses
+/// registration (a `PluginError::MissingHostCapability`) for any cap the host
+/// lacks -- see `conway::HostCaps` (in the `conway` facade) and the
+/// registration-seam check in `ConwayBuilder::build`. `#[non_exhaustive]` so
+/// future caps add without breaking downstream; an unknown tag on the wire
+/// (a newer plugin naming a cap this host's enum doesn't have) FAILS CLOSED
+/// (deserialization error -> the plugin is refused), the NARROWING/safe
+/// direction -- consistent with the unknown-tag item
+/// `01M03VJPRT8629CYR8JK4A8JPF`'s "structural malformation fails closed" line.
+///
+/// The initial set is MINIMAL -- each variant maps to something real a built-in
+/// or host genuinely uses, not a speculative cap padded to look complete:
+/// - [`HostCapability::Subagent`] -- fork/spawn a child session through a
+///   `SubagentHost`. The `conway.subagent` built-in (`conway-tools`'s
+///   `subagent` plugin) uses this; the `conway` runtime always provides a
+///   `SubagentHost`, so the host always offers this cap.
+/// - [`HostCapability::PersistentTransport`] -- the persistent NDJSON
+///   `tool/1` channel (`conway-plugin-subprocess`'s `SubprocessTransport::
+///   Persistent`). The host offers this cap iff at least one
+///   `[plugins].subprocess[]` entry is configured with `"transport":
+///   "persistent"`; a plugin requiring it against a one-shot-only host is
+///   refused.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostCapability {
+    /// Fork/spawn a child session through a `SubagentHost`. Required by the
+    /// `conway.subagent` built-in; offered by the `conway` runtime (which
+    /// always provides a `SubagentHost`).
+    Subagent,
+    /// A persistent NDJSON `tool/1` channel to a subprocess plugin. Offered
+    /// iff at least one `[plugins].subprocess[]` entry is configured with
+    /// `SubprocessTransport::Persistent`; a plugin requiring it against a
+    /// one-shot-only host is refused at registration.
+    PersistentTransport,
+}
+
+impl HostCapability {
+    /// The wire string for this cap -- the `#[serde(rename_all =
+    /// "snake_case")]` name, the same value `to_string()` returns and
+    /// the only form a plugin author puts on the wire. Centralized so the
+    /// snake_case name lives in exactly one place, not restated per use.
+    pub fn as_wire_str(&self) -> &'static str {
+        match self {
+            HostCapability::Subagent => "subagent",
+            HostCapability::PersistentTransport => "persistent_transport",
+        }
+    }
+}
+
+impl std::fmt::Display for HostCapability {
+    /// The wire string (see [`Self::as_wire_str`]) -- slots into
+    /// `PluginError::MissingHostCapability { capability: String }`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_wire_str())
+    }
+}
+
 /// A plugin's static identity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub id: String,
     pub version: String,
     pub tools: Vec<ToolName>,
-    pub required_host_caps: Vec<String>,
+    /// Host capabilities this plugin requires the host to offer. An empty vec
+    /// means "needs nothing the host might lack" (the common case). Any cap
+    /// the host does NOT offer -> `PluginError::MissingHostCapability` at
+    /// registration (`ConwayBuilder::build`), naming both the plugin and the
+    /// cap. See [`HostCapability`] for the closed vocabulary.
+    pub required_host_caps: Vec<HostCapability>,
 }
 
 /// A plugin's untyped configuration values, as loaded and handed down by the

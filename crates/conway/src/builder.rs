@@ -143,6 +143,7 @@ use crate::config::{self, CliOverrides, ConfigWarning, LoadOptions};
 use crate::conway::Conway;
 use crate::error::{ConwayError, Result};
 use crate::gates;
+use crate::host_caps::HostCaps;
 #[cfg(feature = "builtin-tools")]
 use crate::presets;
 use crate::skills;
@@ -1239,6 +1240,29 @@ impl ConwayBuilder {
                 });
             }
             resolved_plugins.push(plugin);
+        }
+
+        // 10a. Host-capability gate (board item
+        //      `01M03VJXARFHSDAGHFXGCWKJTY`): each installed plugin's
+        //      `PluginManifest::required_host_caps` is compared against what
+        //      THIS host offers (`HostCaps::from_config`), right where the
+        //      duplicate-plugin-id check above already runs -- the manifest-
+        //      validation seam. A cap the host does NOT offer is a
+        //      `PluginError::MissingHostCapability` naming both the plugin
+        //      and the cap, surfaced as a build error (mirroring the
+        //      duplicate-id error's `ConwayError::Build` shape one step above).
+        //      Empty `required_host_caps` (the common case -- "needs nothing
+        //      the host might lack") is always satisfied. The check lives in
+        //      the builder, NOT in `PluginRegistry::from_plugins`, so
+        //      `conway-core`'s surface is unchanged.
+        let host_caps = HostCaps::from_config(&config);
+        for plugin in &resolved_plugins {
+            let manifest = plugin.manifest();
+            host_caps
+                .check_manifest(&manifest)
+                .map_err(|err| ConwayError::Build {
+                    message: err.to_string(),
+                })?;
         }
 
         // 10b. Every installed plugin's own declared custom events (board

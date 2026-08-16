@@ -230,6 +230,8 @@ mod tests {
         let plugin = FsPlugin::new();
         let manifest = plugin.manifest();
         assert_eq!(manifest.id, "conway.fs");
+        // The fs plugin needs nothing the host might lack -- it reads/writes
+        // the filesystem through `ToolCtx`, no host-capability gate applies.
         assert!(manifest.required_host_caps.is_empty());
 
         let mut names: Vec<String> = plugin
