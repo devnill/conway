@@ -33,6 +33,31 @@
 //! be a notification; today (no notifications yet) such a line is a
 //! malformed frame and fails closed, by design.
 //!
+//! **`initialize/1` handshake at session open (board item
+//! `01M03VK7MRPSAVWMW7YNYPRPGT`).** Before any `tool/1` call, the host
+//! exchanges ONE `initialize/1` request/response with the plugin over the
+//! SAME id-correlated NDJSON framing -- the request is a line with its own
+//! JSON-RPC `id`, the plugin's answer carries the echoed `id`, and the
+//! existing reader task routes it by `id` through the SAME pending table (NO
+//! second reader; the handshake reuses `tool_round_trip`'s framing via the
+//! shared `PersistentSession::framed_round_trip` helper). The host sends
+//! its `wire_major`/`wire_minor` and the points it speaks (today
+//! `["tool/1"]`); the plugin answers its own `major`, the minimum `minor` it
+//! requires (`minor_min`), and the per-point versions it declares. The host
+//! then applies `docs/plugins/compatibility.md`'s version-negotiation table:
+//! refuse on `major` mismatch or unsatisfied `minor_min`
+//! (`SubprocessPluginError::HandshakeRefused`); accept otherwise; unknown
+//! fields in the plugin's answer are IGNORED-AND-COUNTED (the table's accept
+//! branch / forward-compat rule), never rejected. A structurally-invalid
+//! answer is `SubprocessPluginError::HandshakeMalformed` (fail closed). The
+//! handshake runs in `SubprocessPlugin::discover` BEFORE the session is
+//! wrapped in `Arc`, so a refusal surfaces at discover time and the
+//! just-spawned child is dropped (its `Drop` kills the group), never
+//! orphaned. The plugin's declared per-point versions are stored on the
+//! session (`PersistentSession::point_version`) for the later wire-point
+//! items (permission.policy, observe, status, context.hook) to consult
+//! WITHOUT re-negotiating.
+//!
 //! **Failure handling -- fail-closed uniformly, mirroring
 //! [`crate::SubprocessPluginError`]'s discipline.** A session that dies
 //! mid-call (the child exits nonzero, or closes stdout) surfaces a typed
@@ -93,7 +118,11 @@ use tokio::time::timeout;
 use conway::plugin::ToolError;
 
 use crate::unix::kill_group;
-use crate::wire::{parse_persistent_tool_response, PersistentToolRequest, WireToolResult};
+use crate::wire::{
+    parse_persistent_initialize_response, parse_persistent_tool_response, InitializeParseError,
+    PersistentInitializeRequest, PersistentToolRequest, WireToolResult, HOST_WIRE_MAJOR,
+    HOST_WIRE_MINOR,
+};
 use crate::{SubprocessPluginError, SubprocessPluginSpec};
 
 /// State shared between the [`PersistentSession`] handle and the long-lived
@@ -166,6 +195,14 @@ pub struct PersistentSession {
     stdin: AsyncMutex<ChildStdin>,
     next_id: AtomicU64,
     shared: Arc<Shared>,
+    /// The plugin's declared per-point versions, recorded ONCE by
+    /// [`PersistentSession::initialize`] from the `initialize/1` handshake
+    /// answer, keyed by point name (e.g. `"tool/1"`). Read by later
+    /// wire-point items (permission.policy, observe, status, context.hook)
+    /// via [`PersistentSession::point_version`] to decide per-point
+    /// refuse-vs-degrade WITHOUT re-negotiating. Empty until a successful
+    /// handshake populates it.
+    point_versions: Mutex<HashMap<String, u32>>,
     /// Kept (never awaited) so the tasks are not leaked: they end on
     /// stdout/stderr EOF or when the session is killed.
     _reader_handle: tokio::task::JoinHandle<()>,
@@ -346,6 +383,7 @@ impl PersistentSession {
                 stdin: AsyncMutex::new(stdin),
                 next_id: AtomicU64::new(1),
                 shared,
+                point_versions: Mutex::new(HashMap::new()),
                 _reader_handle: reader_handle,
                 _stderr_handle: stderr_handle,
             })
@@ -370,63 +408,68 @@ impl PersistentSession {
         self.shared.dead.load(Ordering::Acquire)
     }
 
+    /// The typed death reason (if the session is dead), as a
+    /// [`SubprocessPluginError`]. `None` when the session is not dead (or the
+    /// death reason was not recorded -- should not happen, but a caller falls
+    /// back to a generic `SessionDied` in that case). The handshake's
+    /// `initialize` method uses this directly (it returns
+    /// `SubprocessPluginError`, not `ToolError`); `tool_round_trip` and the
+    /// dead-session fast paths map it onto `ToolError` via
+    /// [`SubprocessPluginError::into_tool_error`] through [`Self::death_tool_error`].
+    fn death_error(&self) -> Option<SubprocessPluginError> {
+        let death = self.shared.death.lock().expect("death lock poisoned");
+        // Clone the error: `SubprocessPluginError` is `Clone` (every
+        // variant is `String`s).
+        death.as_ref().cloned()
+    }
+
     /// The typed death reason (if the session is dead), mapped onto the
     /// `ToolError` variant the runtime sees. `None` when the session is not
     /// dead (or the death reason was not recorded -- should not happen, but
     /// a caller falls back to a generic `SessionDied` in that case).
     fn death_tool_error(&self) -> Option<ToolError> {
-        let death = self.shared.death.lock().expect("death lock poisoned");
-        death.as_ref().map(|err| {
-            // Clone the error: `SubprocessPluginError` is `Clone` (every
-            // variant is `String`s).
-            err.clone().into_tool_error()
-        })
+        self.death_error().map(|err| err.into_tool_error())
     }
 
-    /// One `tool/1` round-trip over the persistent channel: assigns a
-    /// JSON-RPC `id`, writes the framed request line, and awaits the
-    /// correlated response, bounded by `spec.timeout_ms` (a per-call
-    /// deadline, NOT a session-wide idle kill). Returns the classified
-    /// [`WireToolResult`]. Fail-closed on every failure mode -- dead
-    /// session, write failure, timeout, malformed frame, or an `id`
-    /// mismatch -- never a hang and never a silent retry.
-    pub(crate) async fn tool_round_trip(
+    /// The shared id-correlated NDJSON round-trip both `tool/1` and
+    /// `initialize/1` use: registers a oneshot sender in the pending table
+    /// under `id` (double-checking dead under the lock so a death between the
+    /// caller's `is_dead` check and the insert still fails closed), writes the
+    /// already-serialized `\n`-terminated `json` request line under the
+    /// per-call write deadline, then awaits the correlated response under the
+    /// per-call read deadline. Returns the routed raw [`serde_json::Value`] on
+    /// success; the CALLER parses + classifies it (with
+    /// [`parse_persistent_tool_response`] or
+    /// [`parse_persistent_initialize_response`]) and checks the echoed `id`.
+    ///
+    /// Fail-closed on every failure mode -- dead session, write failure,
+    /// per-call timeout, or the reader dropping the sender (session died
+    /// mid-call) -- never a hang and never a silent retry. The write deadline
+    /// is the load-bearing property the wedge regression pins: a child that
+    /// stops draining stdin while staying alive makes `write_all` block once
+    /// the OS pipe buffer fills, and this deadline bounds that block (the
+    /// `kill_group_now` SIGKILL unblocks the hung write via the broken pipe).
+    /// Returns [`SubprocessPluginError`] (not `ToolError`) so the handshake's
+    /// `initialize` can surface it directly; `tool_round_trip` maps it onto
+    /// `ToolError` via [`SubprocessPluginError::into_tool_error`].
+    async fn framed_round_trip(
         &self,
-        tool: String,
-        call_id: String,
-        arguments: serde_json::Value,
-    ) -> Result<WireToolResult, ToolError> {
-        if self.is_dead() {
-            return Err(self.death_tool_error().unwrap_or_else(|| {
-                SubprocessPluginError::SessionDied {
-                    config_id: self.config_id.clone(),
-                    detail: "session is no longer alive (re-discover to spawn a fresh one)".into(),
-                }
-                .into_tool_error()
-            }));
-        }
-
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let request = PersistentToolRequest::tool_v1(id, tool, call_id, arguments);
-        let mut json = serde_json::to_vec(&request).map_err(|err| ToolError::Internal {
-            detail: format!("failed to serialize persistent tool/1 request: {err}"),
-        })?;
-        json.push(b'\n');
-
+        id: u64,
+        json: Vec<u8>,
+    ) -> Result<serde_json::Value, SubprocessPluginError> {
         let (tx, rx) = oneshot::channel::<serde_json::Value>();
         {
             let mut pending = self.shared.pending.lock().expect("pending poisoned");
             // Double-check dead under the lock so a death between the
-            // `is_dead` check above and the insert still fails closed
+            // caller's `is_dead` check and the insert still fails closed
             // (the reader would have drained `pending` via `kill_all`).
             if self.is_dead() {
                 drop(pending);
-                return Err(self.death_tool_error().unwrap_or_else(|| {
+                return Err(self.death_error().unwrap_or_else(|| {
                     SubprocessPluginError::SessionDied {
                         config_id: self.config_id.clone(),
                         detail: "session died while this call was being registered".into(),
                     }
-                    .into_tool_error()
                 }));
             }
             pending.insert(id, tx);
@@ -464,7 +507,7 @@ impl PersistentSession {
                     detail,
                 };
                 self.shared.kill_all(err.clone());
-                return Err(err.into_tool_error());
+                return Err(err);
             }
             Err(_elapsed) => {
                 // The write did not complete within the per-call deadline:
@@ -476,52 +519,23 @@ impl PersistentSession {
                 return Err(SubprocessPluginError::TimedOut {
                     config_id: self.config_id.clone(),
                     after_ms: self.timeout_ms,
-                }
-                .into_tool_error());
+                });
             }
         }
 
         // Await the correlated response, bounded by the per-call timeout.
         match timeout(Duration::from_millis(self.timeout_ms), rx).await {
-            Ok(Ok(value)) => {
-                // Parse + classify the response, then correlate the echoed
-                // `id` against the request's. A parse error is a malformed
-                // frame (the reader already parsed once to route; this
-                // second parse is the structural classification + id check).
-                let bytes = serde_json::to_vec(&value).map_err(|err| ToolError::Internal {
-                    detail: format!("failed to re-serialize persistent response: {err}"),
-                })?;
-                let (resp_id, result) =
-                    parse_persistent_tool_response(&bytes).map_err(|detail| {
-                        // A malformed response frame kills the session, fail-closed.
-                        let err = SubprocessPluginError::MalformedFrame {
-                            config_id: self.config_id.clone(),
-                            detail,
-                        };
-                        self.shared.kill_all(err.clone());
-                        err.into_tool_error()
-                    })?;
-                if resp_id != id {
-                    let err = SubprocessPluginError::SessionDied {
-                        config_id: self.config_id.clone(),
-                        detail: format!("response id {resp_id} did not match request id {id}"),
-                    };
-                    self.shared.kill_all(err.clone());
-                    return Err(err.into_tool_error());
-                }
-                Ok(result)
-            }
+            Ok(Ok(value)) => Ok(value),
             Ok(Err(_canceled)) => {
                 // The reader dropped the sender -- the session died while we
                 // were waiting. `kill_all` already recorded the typed death
                 // reason; surface THAT, not a generic "session died".
-                Err(self.death_tool_error().unwrap_or_else(|| {
-                    SubprocessPluginError::SessionDied {
+                Err(self
+                    .death_error()
+                    .unwrap_or_else(|| SubprocessPluginError::SessionDied {
                         config_id: self.config_id.clone(),
                         detail: "the session died before it answered this call".into(),
-                    }
-                    .into_tool_error()
-                }))
+                    }))
             }
             Err(_elapsed) => {
                 // Per-call timeout: remove the pending entry, kill the
@@ -531,10 +545,231 @@ impl PersistentSession {
                 Err(SubprocessPluginError::TimedOut {
                     config_id: self.config_id.clone(),
                     after_ms: self.timeout_ms,
-                }
-                .into_tool_error())
+                })
             }
         }
+    }
+
+    /// One `tool/1` round-trip over the persistent channel: assigns a
+    /// JSON-RPC `id`, writes the framed request line, and awaits the
+    /// correlated response, bounded by `spec.timeout_ms` (a per-call
+    /// deadline, NOT a session-wide idle kill). Returns the classified
+    /// [`WireToolResult`]. Fail-closed on every failure mode -- dead
+    /// session, write failure, timeout, malformed frame, or an `id`
+    /// mismatch -- never a hang and never a silent retry.
+    pub(crate) async fn tool_round_trip(
+        &self,
+        tool: String,
+        call_id: String,
+        arguments: serde_json::Value,
+    ) -> Result<WireToolResult, ToolError> {
+        if self.is_dead() {
+            return Err(self.death_tool_error().unwrap_or_else(|| {
+                SubprocessPluginError::SessionDied {
+                    config_id: self.config_id.clone(),
+                    detail: "session is no longer alive (re-discover to spawn a fresh one)".into(),
+                }
+                .into_tool_error()
+            }));
+        }
+
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request = PersistentToolRequest::tool_v1(id, tool, call_id, arguments);
+        let mut json = serde_json::to_vec(&request).map_err(|err| ToolError::Internal {
+            detail: format!("failed to serialize persistent tool/1 request: {err}"),
+        })?;
+        json.push(b'\n');
+
+        let value = self
+            .framed_round_trip(id, json)
+            .await
+            .map_err(SubprocessPluginError::into_tool_error)?;
+
+        // Parse + classify the response, then correlate the echoed `id`
+        // against the request's. A parse error is a malformed frame (the
+        // reader already parsed once to route; this second parse is the
+        // structural classification + id check).
+        let bytes = serde_json::to_vec(&value).map_err(|err| ToolError::Internal {
+            detail: format!("failed to re-serialize persistent response: {err}"),
+        })?;
+        let (resp_id, result) = parse_persistent_tool_response(&bytes).map_err(|detail| {
+            // A malformed response frame kills the session, fail-closed.
+            let err = SubprocessPluginError::MalformedFrame {
+                config_id: self.config_id.clone(),
+                detail,
+            };
+            self.shared.kill_all(err.clone());
+            err.into_tool_error()
+        })?;
+        if resp_id != id {
+            let err = SubprocessPluginError::SessionDied {
+                config_id: self.config_id.clone(),
+                detail: format!("response id {resp_id} did not match request id {id}"),
+            };
+            self.shared.kill_all(err.clone());
+            return Err(err.into_tool_error());
+        }
+        Ok(result)
+    }
+
+    /// The one-time `initialize/1` version-negotiation handshake (board item
+    /// `01M03VK7MRPSAVWMW7YNYPRPGT`), exchanged ONCE at persistent-session
+    /// open BEFORE any `tool/1` call. Rides the SAME id-correlated NDJSON
+    /// framing `tool_round_trip` uses (via [`Self::framed_round_trip`]); NO second
+    /// reader -- the existing reader routes the answer by `id` through the
+    /// SAME pending table. Sends this host's `wire_major`/`wire_minor` and
+    /// the points it speaks (today `["tool/1"]`), receives the plugin's own
+    /// `major`/`minor_min`/per-point versions, then applies
+    /// `docs/plugins/compatibility.md`'s version-negotiation table:
+    ///
+    /// - `plugin.major != HOST_WIRE_MAJOR` -> [`HandshakeRefused`] ("major
+    ///   mismatch"), naming both majors.
+    /// - `plugin.minor_min > HOST_WIRE_MINOR` -> [`HandshakeRefused`] ("minor_min
+    ///   unsatisfied"), naming the required minor and the host's minor.
+    /// - else -> accept. Unknown FIELDS in the plugin's answer were already
+    ///   ignored-and-counted by [`parse_persistent_initialize_response`] (the
+    ///   table's accept branch / forward-compat rule); the plugin's declared
+    ///   per-point versions are stored on `self.point_versions` for later
+    ///   wire-point items to read via [`Self::point_version`].
+    ///
+    /// A structurally-invalid answer (missing `ok`, `ok:false` with no error,
+    /// a non-number where a number was expected) is [`HandshakeMalformed`],
+    /// fail-closed. A plugin that closes stdout without answering surfaces as
+    /// [`SessionDied`] (the reader's EOF `kill_all`); a plugin that never
+    /// answers within `timeout_ms` surfaces as [`TimedOut`] -- both via
+    /// [`Self::framed_round_trip`], never a hang. On any failure the just-spawned
+    /// session is dropped by `discover`'s `?`, and its `Drop` kills the
+    /// process group, so the child is never orphaned.
+    ///
+    /// `host.version` is put on the wire for the plugin to read but NEVER
+    /// branched on here -- the negotiation compares ONLY `major` and
+    /// `minor_min`. A host version bump does not change the negotiation
+    /// outcome (see `tests/handshake.rs`'s host-version-is-informational
+    /// test).
+    ///
+    /// [`HandshakeRefused`]: SubprocessPluginError::HandshakeRefused
+    /// [`HandshakeMalformed`]: SubprocessPluginError::HandshakeMalformed
+    /// [`SessionDied`]: SubprocessPluginError::SessionDied
+    /// [`TimedOut`]: SubprocessPluginError::TimedOut
+    pub(crate) async fn initialize(&self) -> Result<(), SubprocessPluginError> {
+        if self.is_dead() {
+            return Err(self
+                .death_error()
+                .unwrap_or_else(|| SubprocessPluginError::SessionDied {
+                    config_id: self.config_id.clone(),
+                    detail: "session died before initialize could be sent".into(),
+                }));
+        }
+
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request = PersistentInitializeRequest::new(id);
+        let mut json = serde_json::to_vec(&request).map_err(|err| {
+            SubprocessPluginError::HandshakeMalformed {
+                config_id: self.config_id.clone(),
+                detail: format!("failed to serialize initialize/1 request: {err}"),
+            }
+        })?;
+        json.push(b'\n');
+
+        let value = self.framed_round_trip(id, json).await?;
+
+        let bytes = serde_json::to_vec(&value).map_err(|err| {
+            SubprocessPluginError::HandshakeMalformed {
+                config_id: self.config_id.clone(),
+                detail: format!("failed to re-serialize initialize response: {err}"),
+            }
+        })?;
+        let answer = parse_persistent_initialize_response(&bytes).map_err(|e| match e {
+            // A structurally-broken answer: the plugin is broken, not
+            // declining. Fail closed as HandshakeMalformed.
+            InitializeParseError::Malformed(detail) => SubprocessPluginError::HandshakeMalformed {
+                config_id: self.config_id.clone(),
+                detail,
+            },
+            // A deliberate `ok:false` WITH an `error` string: the plugin
+            // declined initialize. Surface as HandshakeRefused so the
+            // operator-facing variant honestly distinguishes "the plugin
+            // declined" from "the plugin is broken" -- the same split the
+            // version-mismatch rows below already use HandshakeRefused for.
+            InitializeParseError::Refused(detail) => SubprocessPluginError::HandshakeRefused {
+                config_id: self.config_id.clone(),
+                condition: "ok false".into(),
+                detail,
+            },
+        })?;
+
+        // Correlate the echoed `id` -- a mismatch is a protocol error, fail
+        // closed (mirroring `tool_round_trip`'s id check).
+        if answer.id != id {
+            return Err(SubprocessPluginError::HandshakeMalformed {
+                config_id: self.config_id.clone(),
+                detail: format!(
+                    "initialize response id {} did not match request id {id}",
+                    answer.id
+                ),
+            });
+        }
+
+        // Surface the unknown-field count (the compatibility table's accept
+        // branch / forward-compat rule) at the session level so the log names
+        // WHICH plugin carried the extra fields -- a newer plugin's extra
+        // field does not break an older host; the count is auditable
+        // out-of-band, never rejected.
+        if answer.unknown_field_count > 0 {
+            tracing::debug!(
+                unknown_field_count = answer.unknown_field_count,
+                config_id = %self.config_id,
+                "initialize/1 answer carried unknown fields; ignored and counted \
+                 (forward-compat: a newer plugin's extra field does not break an older host)"
+            );
+        }
+
+        // Apply the compatibility table (version-negotiation rows).
+        if answer.major != HOST_WIRE_MAJOR {
+            return Err(SubprocessPluginError::HandshakeRefused {
+                config_id: self.config_id.clone(),
+                condition: "major mismatch".into(),
+                detail: format!(
+                    "host wire_major {HOST_WIRE_MAJOR} != plugin major {} (incompatible frame \
+                     vocabulary -- a major bump covers method names / envelope semantics, the \
+                     two sides cannot agree on what a frame means)",
+                    answer.major
+                ),
+            });
+        }
+        if answer.minor_min > HOST_WIRE_MINOR {
+            return Err(SubprocessPluginError::HandshakeRefused {
+                config_id: self.config_id.clone(),
+                condition: "minor_min unsatisfied".into(),
+                detail: format!(
+                    "plugin requires wire_minor >= {} but host wire_minor is {HOST_WIRE_MINOR} \
+                     (plugin needs a feature this host does not have)",
+                    answer.minor_min
+                ),
+            });
+        }
+
+        // Accept: record the plugin's declared per-point versions for the
+        // later wire-point items (permission.policy, observe, status,
+        // context.hook) to consult WITHOUT re-negotiating.
+        {
+            let mut pv = self.point_versions.lock().expect("point_versions poisoned");
+            *pv = answer.points;
+        }
+        Ok(())
+    }
+
+    /// The plugin's declared version for a wire point (e.g. `"tool/1"`),
+    /// recorded ONCE by `initialize` from the `initialize/1` handshake
+    /// answer. `None` before a successful handshake, or for a point the
+    /// plugin did not declare. Later wire-point items
+    /// (`permission.policy/1`, `observe/1`, `status/1`, `context.hook/1`)
+    /// consult this to decide per-point refuse-vs-degrade per
+    /// `docs/plugins/compatibility.md`'s participant-vs-observer table rows,
+    /// WITHOUT re-negotiating.
+    pub fn point_version(&self, point: &str) -> Option<u32> {
+        let pv = self.point_versions.lock().expect("point_versions poisoned");
+        pv.get(point).copied()
     }
 
     fn remove_pending(&self, id: u64) {

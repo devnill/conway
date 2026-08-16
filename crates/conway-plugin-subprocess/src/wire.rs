@@ -56,11 +56,32 @@
 //! compatibility table's convergence rule, and it is what lets a host and
 //! plugin co-evolve across versions.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use conway::plugin::{
     Artifact, ContentBlock, HostCapability, PermissionClass, ToolCategory, ToolError,
 };
+
+/// The wire-protocol major version this host speaks over the persistent
+/// transport (board item `01M03VK7MRPSAVWMW7YNYPRPGT`). `major` covers the
+/// frame vocabulary and envelope semantics (method names, error-code ranges)
+/// -- a mismatch with a plugin's declared `major` is a hard refusal (the two
+/// sides cannot agree on what a frame even means). Established here because
+/// NO wire-version constants existed before this item; disclosed as `1`, the
+/// first version. Bumping it is a breaking change that refuses every plugin
+/// built against an older major on load.
+pub(crate) const HOST_WIRE_MAJOR: u32 = 1;
+
+/// The wire-protocol minor version this host speaks. `minor` is additive only
+/// -- new methods, new optional fields, new capability names, new `Event`
+/// variants (see `docs/plugins/compatibility.md`'s versioning table). A plugin
+/// declares the minimum minor it requires (`minor_min`); this host accepts any
+/// plugin whose `minor_min` is `<=` this constant. Established here at `1`,
+/// the first version; bump it when this host gains a feature a plugin might
+/// require.
+pub(crate) const HOST_WIRE_MINOR: u32 = 1;
 
 /// One outgoing request this host ever sends, tagged by its own `"op"`
 /// field on the wire -- `{"op":"tool.spec/1"}` or `{"op":"tool/1", ...}`.
@@ -538,4 +559,358 @@ pub(crate) fn parse_persistent_tool_response(
     let resp: PersistentToolResponse =
         serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
     Ok((resp.id, resp.raw.classify()?))
+}
+
+// ----- initialize/1: the one-time version-negotiation handshake exchanged
+//       ONCE at persistent-session open, BEFORE any tool/1 call (board item
+//       `01M03VK7MRPSAVWMW7YNYPRPGT`). Rides the SAME id-correlated NDJSON
+//       framing as tool/1 -- the request is one JSON-RPC object per line with
+//       its own `id`, the response carries the echoed `id`, and the existing
+//       reader task routes it by `id` through the SAME pending table (no
+//       second reader). See `session`'s own module doc for the framing-reuse
+//       decision.
+//
+// **Wire shape (disclosed here, the authority for this item):**
+//
+// Host -> plugin request (one NDJSON line):
+//   {"id":N,"op":"initialize/1",
+//    "host":{"name":"conway","version":"<conway crate version>"},
+//    "wire_major":<HOST_WIRE_MAJOR>,"wire_minor":<HOST_WIRE_MINOR>,
+//    "points":["tool/1"]}
+//
+// Plugin -> host response:
+//   {"id":N,"ok":true,
+//    "major":<P_MAJOR>,"minor_min":<P_MINOR_MIN>,
+//    "points":[{"name":"tool/1","version":1},...]}
+//
+// `ok:false` carries an `"error"` string instead. Unknown fields in the
+// plugin's answer are IGNORED-AND-COUNTED (the compatibility table's accept
+// branch / forward-compat rule: a newer plugin's extra field does not break
+// an older host), NEVER rejected -- the answer is deserialized as a
+// `serde_json::Value` first, the known fields are pulled out, the remaining
+// keys are counted and surfaced via `tracing::debug!`. A structurally-invalid
+// answer (missing `ok`, `ok:false` with no error, a non-number where a number
+// was expected) fails CLOSED -- mirroring `RawToolResult::classify`'s own
+// "structural malformation fails closed; only KNOWN-shape unknown-FIELD is
+// ignored-and-counted" line. `host.version` is put on the wire for the plugin
+// to read but NEVER branched on by this host (informational only -- see
+// `compatibility.md`'s versioning section).
+
+/// The `host` object this host sends in its `initialize/1` request:
+/// `{"name":"conway","version":"<crate version>"}`. `name` is the constant
+/// `"conway"`; `version` is this crate's own `CARGO_PKG_VERSION` (the conway
+/// workspace version), put on the wire for the plugin to read but NEVER
+/// compared by this host -- a TUI-only release does not have to move the
+/// protocol, and nothing here is size-of-conway-version-shaped.
+#[derive(Serialize)]
+pub(crate) struct InitializeHost {
+    pub name: &'static str,
+    pub version: &'static str,
+}
+
+/// An `initialize/1` request framed for the persistent NDJSON transport --
+/// one JSON-RPC object per line, correlated by `id` like
+/// [`PersistentToolRequest`]. Sent ONCE at session open, before any `tool/1`
+/// call; see `session::PersistentSession::initialize`.
+#[derive(Serialize)]
+pub(crate) struct PersistentInitializeRequest {
+    /// JSON-RPC correlation id, assigned by `PersistentSession::initialize`.
+    /// Echoed back in the plugin's answer; a mismatch is a protocol error.
+    pub id: u64,
+    /// The constant op tag this host emits for an initialize request --
+    /// `"initialize/1"`.
+    pub op: &'static str,
+    pub host: InitializeHost,
+    pub wire_major: u32,
+    pub wire_minor: u32,
+    /// The wire points this host speaks over the persistent channel. Today
+    /// ONLY `tool/1` -- `permission.policy/1`, `observe/1`, `status/1`, and
+    /// `context.hook/1` are LATER items, so they are NOT advertised here. A
+    /// plugin's per-point version records (see [`InitializeAnswer::points`])
+    /// are consulted by those later items to decide per-point refuse-vs-
+    /// degrade; this host advertises only what it speaks now.
+    pub points: Vec<&'static str>,
+}
+
+impl PersistentInitializeRequest {
+    /// The constant op tag this host emits for an `initialize/1` request.
+    pub const OP: &'static str = "initialize/1";
+
+    /// Builds the one-time `initialize/1` request this host sends at
+    /// persistent-session open. `host.version` is this crate's own
+    /// `CARGO_PKG_VERSION` -- informational only, never branched on. The
+    /// advertised `points` is `["tool/1"]` (the only persistent wire point
+    /// this host speaks today); `wire_major`/`wire_minor` are
+    /// [`HOST_WIRE_MAJOR`]/[`HOST_WIRE_MINOR`].
+    pub(crate) fn new(id: u64) -> Self {
+        Self {
+            id,
+            op: Self::OP,
+            host: InitializeHost {
+                name: "conway",
+                version: env!("CARGO_PKG_VERSION"),
+            },
+            wire_major: HOST_WIRE_MAJOR,
+            wire_minor: HOST_WIRE_MINOR,
+            points: vec!["tool/1"],
+        }
+    }
+}
+
+/// The plugin's `initialize/1` answer, parsed and classified from one NDJSON
+/// line on stdout. Carries the plugin's own `major`, the minimum `minor` it
+/// requires (`minor_min`), and the per-point versions it declares -- the
+/// records later wire-point items (permission.policy, observe, status,
+/// context.hook) consult to decide per-point refuse-vs-degrade WITHOUT
+/// re-negotiating. `unknown_field_count` is the number of fields the plugin's
+/// answer carried that this host did not recognize (forward-compat: a newer
+/// plugin's extra field does not break an older host -- ignored-and-counted,
+/// surfaced via `tracing::debug!` in the `initialize` caller
+/// (`session::PersistentSession::initialize`), not in the parser itself).
+#[derive(Debug)]
+pub(crate) struct InitializeAnswer {
+    pub id: u64,
+    pub major: u32,
+    pub minor_min: u32,
+    /// The per-point versions the plugin declared, keyed by point name (e.g.
+    /// `"tool/1"`). Stored on `PersistentSession` after a successful handshake
+    /// so later items can read it without re-negotiating; see
+    /// `PersistentSession::point_version`.
+    pub points: HashMap<String, u32>,
+    /// The number of unknown fields the plugin's answer carried -- ignored and
+    /// counted, NOT rejected (the compatibility table's accept branch).
+    pub unknown_field_count: usize,
+}
+
+/// The typed failure of [`parse_persistent_initialize_response`]. Splits the
+/// two categorically-different failure modes the caller
+/// (`PersistentSession::initialize`) maps onto two different
+/// `crate::SubprocessPluginError` variants:
+///
+/// - [`InitializeParseError::Malformed`] -- the answer is structurally broken
+///   (not JSON / not an object / missing or non-boolean `ok` / `ok:false` with
+///   no `error` string / a non-number `id`/`major`/`minor_min` / a bad
+///   `points` entry). The plugin is broken, not declining. Maps to
+///   `HandshakeMalformed`.
+/// - [`InitializeParseError::Refused`] -- the plugin DELIBERATELY answered
+///   `ok:false` WITH an `error` string: it declined initialize. The plugin is
+///   incompatible-by-choice, not broken. Maps to `HandshakeRefused`.
+///
+/// `From<String>` wraps any plain `String` error as `Malformed`, so the many
+/// `.ok_or_else(|| "...".to_string())?` sites in the parser body need no
+/// change -- `?` auto-wraps a `String` into `Malformed`. Only the `ok:false`
+/// site constructs `Refused` explicitly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InitializeParseError {
+    Malformed(String),
+    Refused(String),
+}
+
+impl From<String> for InitializeParseError {
+    fn from(s: String) -> Self {
+        Self::Malformed(s)
+    }
+}
+
+/// Deserializes and classifies one persistent NDJSON `initialize/1` response
+/// line. Mirrors [`parse_persistent_tool_response`]'s discipline, but splits
+/// the failure mode the tool parser leaves undifferentiated: returns
+/// [`InitializeParseError::Malformed`] for "not valid JSON", "missing `id`",
+/// "missing/non-boolean `ok`", "`ok:false` with no `error` string", or a
+/// structurally-invalid `points` entry (each a typed failure at the call site
+/// -> `SubprocessPluginError::HandshakeMalformed`, fail-closed), and
+/// [`InitializeParseError::Refused`] for a deliberate `ok:false` WITH an
+/// `error` string (-> `HandshakeRefused`). Unknown FIELDS in the answer are
+/// NOT an error: they are counted into
+/// [`InitializeAnswer::unknown_field_count`] and surfaced via
+/// `tracing::debug!` in the `initialize` caller, per the compatibility
+/// table's accept branch.
+pub(crate) fn parse_persistent_initialize_response(
+    bytes: &[u8],
+) -> Result<InitializeAnswer, InitializeParseError> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "initialize answer is not a JSON object".to_string())?;
+
+    // `ok` is REQUIRED -- a missing or non-boolean `ok` is structural
+    // malformation, fail closed (mirroring RawToolResult::classify).
+    let ok = obj
+        .get("ok")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| "initialize answer missing or non-boolean `ok` field".to_string())?;
+    if !ok {
+        // `ok:false` is the plugin DELIBERATELY declining initialize -- a
+        // refusal, categorically distinct from a structurally-broken answer.
+        // It MUST carry an `error` string explaining why (mirroring
+        // `RawToolResult::classify`'s "`ok:false` with no `error` object"
+        // fail-closed line): a refusal WITH a reason is `Refused`, while
+        // `ok:false` with no (or non-string) `error` is a contract violation
+        // -- the plugin said no but broke the shape that says how -- and is
+        // `Malformed`, fail-closed. The caller (`PersistentSession::initialize`)
+        // maps `Refused` onto `HandshakeRefused` and `Malformed` onto
+        // `HandshakeMalformed`, so the operator-facing variant honestly
+        // distinguishes "the plugin declined" from "the plugin is broken".
+        return Err(match obj.get("error").and_then(|v| v.as_str()) {
+            Some(err) => InitializeParseError::Refused(format!("plugin refused initialize: {err}")),
+            None => InitializeParseError::Malformed(
+                "`ok:false` was returned with no `error` string".to_string(),
+            ),
+        });
+    }
+
+    let id = obj
+        .get("id")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "initialize answer missing or non-number `id` field".to_string())?;
+    let major = obj
+        .get("major")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32)
+        .ok_or_else(|| "initialize answer missing or non-number `major` field".to_string())?;
+    let minor_min = obj
+        .get("minor_min")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32)
+        .ok_or_else(|| "initialize answer missing or non-number `minor_min` field".to_string())?;
+
+    // `points`: an array of {"name": string, "version": number}. Each entry
+    // must be structurally valid (a missing/non-string `name` or a
+    // missing/non-number `version` is structural malformation, fail closed).
+    let points_arr = obj
+        .get("points")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "initialize answer missing or non-array `points` field".to_string())?;
+    let mut points = HashMap::with_capacity(points_arr.len());
+    for (i, entry) in points_arr.iter().enumerate() {
+        let pobj = entry
+            .as_object()
+            .ok_or_else(|| format!("initialize answer `points[{i}]` is not an object"))?;
+        let name = pobj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("initialize answer `points[{i}]` missing or non-string `name`"))?
+            .to_string();
+        let version = pobj
+            .get("version")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32)
+            .ok_or_else(|| {
+                format!("initialize answer `points[{i}]` missing or non-number `version`")
+            })?;
+        points.insert(name, version);
+    }
+
+    // Unknown FIELDS are ignored-and-counted (the compatibility table's
+    // accept branch / forward-compat rule). The set of known keys is fixed
+    // by the wire shape above; any key outside it is a newer plugin's extra
+    // field. The count is returned in [`InitializeAnswer::unknown_field_count`]
+    // so the caller (`PersistentSession::initialize`) can surface it via
+    // `tracing::debug!` with the plugin's `config_id` attached; it is NEVER
+    // rejected here.
+    let known = ["id", "ok", "major", "minor_min", "points"];
+    let unknown_field_count = obj.keys().filter(|k| !known.contains(&k.as_str())).count();
+
+    Ok(InitializeAnswer {
+        id,
+        major,
+        minor_min,
+        points,
+        unknown_field_count,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A well-formed accept-branch answer with an unknown extra field parses
+    /// successfully, and the unknown field is COUNTED (not rejected) -- the
+    /// compatibility table's accept branch / forward-compat rule. This is the
+    /// load-bearing assertion for acceptance criterion 4: the count is
+    /// surfaced in a debug/log path (`tracing::debug!` in
+    /// `PersistentSession::initialize`, not in this parser), and the answer
+    /// is ACCEPTED.
+    #[test]
+    fn initialize_answer_with_unknown_field_is_accepted_and_counted() {
+        let bytes = br#"{"id":1,"ok":true,"major":1,"minor_min":1,"points":[{"name":"tool/1","version":1}],"future_field":"bonus","another":42}"#;
+        let answer = parse_persistent_initialize_response(bytes).expect("accept-branch answer");
+        assert_eq!(answer.id, 1);
+        assert_eq!(answer.major, 1);
+        assert_eq!(answer.minor_min, 1);
+        assert_eq!(
+            answer.points.get("tool/1").copied(),
+            Some(1),
+            "the tool/1 point version is recorded"
+        );
+        assert_eq!(
+            answer.unknown_field_count, 2,
+            "the two unknown fields (`future_field`, `another`) are counted, not rejected"
+        );
+    }
+
+    /// A missing `ok` is structural malformation -- fail closed, not accepted,
+    /// and classified `Malformed` (the plugin is broken, not declining).
+    #[test]
+    fn initialize_answer_missing_ok_fails_closed_as_malformed() {
+        let bytes = br#"{"id":1,"major":1,"minor_min":1,"points":[]}"#;
+        let err = parse_persistent_initialize_response(bytes).expect_err("missing ok fails closed");
+        match err {
+            InitializeParseError::Malformed(detail) => assert!(
+                detail.contains("ok"),
+                "the malformed detail names the missing field: {detail}"
+            ),
+            other => panic!("missing ok is Malformed, got {other:?}"),
+        }
+    }
+
+    /// `ok:false` with no `error` string is a CONTRACT VIOLATION (the shape
+    /// requires `ok:false` to carry `error`) -- structural malformation, fail
+    /// closed, classified `Malformed` (the plugin said no but broke the shape
+    /// that says how). Mirrors `RawToolResult::classify`'s identical line.
+    #[test]
+    fn initialize_answer_ok_false_with_no_error_is_malformed() {
+        let bytes = br#"{"id":1,"ok":false,"major":1,"minor_min":1,"points":[]}"#;
+        let err =
+            parse_persistent_initialize_response(bytes).expect_err("ok:false with no error fails");
+        match err {
+            InitializeParseError::Malformed(detail) => assert!(
+                detail.contains("error"),
+                "the malformed detail names the missing error string: {detail}"
+            ),
+            other => panic!("ok:false with no error is Malformed, got {other:?}"),
+        }
+    }
+
+    /// `ok:false` WITH a valid `error` string is the plugin DELIBERATELY
+    /// declining initialize -- a refusal, not malformation. Classified `Refused`
+    /// carrying the plugin's stated reason, so the caller can surface it as
+    /// `HandshakeRefused` (the plugin is incompatible-by-choice, not broken).
+    #[test]
+    fn initialize_answer_ok_false_with_error_is_refused() {
+        let bytes =
+            br#"{"id":1,"ok":false,"error":"I do not support initialize/1","major":1,"minor_min":1,"points":[]}"#;
+        let err = parse_persistent_initialize_response(bytes)
+            .expect_err("ok:false with an error is a refusal");
+        match err {
+            InitializeParseError::Refused(detail) => {
+                assert!(
+                    detail.contains("refused initialize"),
+                    "the refused detail names the refusal: {detail}"
+                );
+                assert!(
+                    detail.contains("I do not support initialize/1"),
+                    "the refused detail carries the plugin's stated reason: {detail}"
+                );
+            }
+            other => panic!("ok:false with error is Refused, got {other:?}"),
+        }
+    }
+
+    /// A non-number `major` is structural malformation -- fail closed.
+    #[test]
+    fn initialize_answer_non_number_major_fails_closed() {
+        let bytes = br#"{"id":1,"ok":true,"major":"nope","minor_min":1,"points":[]}"#;
+        parse_persistent_initialize_response(bytes).expect_err("a non-number major fails closed");
+    }
 }

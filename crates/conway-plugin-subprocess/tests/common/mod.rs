@@ -178,7 +178,10 @@ for line in sys.stdin:
     req = json.loads(line)
     op = req.get("op")
     rid = req.get("id")
-    if op == "tool.spec/1":
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}]}) + "\n")
+        sys.stdout.flush()
+    elif op == "tool.spec/1":
         sys.stdout.write(json.dumps(manifest()) + "\n")
     elif op == "tool/1":
         tool = req.get("tool")
@@ -226,7 +229,10 @@ for line in sys.stdin:
     req = json.loads(line)
     op = req.get("op")
     rid = req.get("id")
-    if op == "tool.spec/1":
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}]}) + "\n")
+        sys.stdout.flush()
+    elif op == "tool.spec/1":
         sys.stdout.write(json.dumps(manifest()) + "\n")
     elif op == "tool/1":
         resp = {"id": rid, "ok": True, "blocks": [{"type": "text", "text": str(os.getpid())}], "is_error": False}
@@ -264,7 +270,10 @@ for line in sys.stdin:
     req = json.loads(line)
     op = req.get("op")
     rid = req.get("id")
-    if op == "tool.spec/1":
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}]}) + "\n")
+        sys.stdout.flush()
+    elif op == "tool.spec/1":
         sys.stdout.write(json.dumps(manifest()) + "\n")
         sys.stdout.flush()
     elif op == "tool/1":
@@ -305,7 +314,10 @@ for line in sys.stdin:
     req = json.loads(line)
     op = req.get("op")
     rid = req.get("id")
-    if op == "tool.spec/1":
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}]}) + "\n")
+        sys.stdout.flush()
+    elif op == "tool.spec/1":
         sys.stdout.write(json.dumps(manifest()) + "\n")
         sys.stdout.flush()
     elif op == "tool/1":
@@ -340,7 +352,11 @@ for line in sys.stdin:
         continue
     req = json.loads(line)
     op = req.get("op")
-    if op == "tool.spec/1":
+    if op == "initialize/1":
+        rid = req.get("id")
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}]}) + "\n")
+        sys.stdout.flush()
+    elif op == "tool.spec/1":
         sys.stdout.write(json.dumps(manifest()) + "\n")
         sys.stdout.flush()
     elif op == "tool/1":
@@ -377,7 +393,11 @@ for line in sys.stdin:
         continue
     req = json.loads(line)
     op = req.get("op")
-    if op == "tool.spec/1":
+    if op == "initialize/1":
+        rid = req.get("id")
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}]}) + "\n")
+        sys.stdout.flush()
+    elif op == "tool.spec/1":
         sys.stdout.write(json.dumps(manifest()) + "\n")
         sys.stdout.flush()
     elif op == "tool/1":
@@ -473,22 +493,16 @@ elif op == "tool/1":
 pub const PERSISTENT_WEDGE_ON_WRITE_PLUGIN: &str = r#"#!/usr/bin/env python3
 import sys, json, time
 
-# Read a small prefix only: a `tool.spec/1` discovery request (~22 bytes, and
-# the one-shot discovery path closes stdin so this read returns it whole) fits
-# and parses; a large `tool/1` request does not, and `json.loads` raises below.
-chunk = sys.stdin.read(100)
-try:
-    req = json.loads(chunk)
-except Exception:
-    # Incomplete JSON -> a large tool/1 request the host is still writing.
-    # WEDGE: stop draining stdin, stay alive, keep stdout open. The host's
-    # write_all fills the pipe buffer and blocks -- the hang the per-call
-    # write deadline exists to bound.
-    time.sleep(3600)
-    sys.exit(0)
-
+# The persistent transport now sends `initialize/1` as the FIRST line of the
+# session (board item 01M03VK7MRPSAVWMW7YNYPRPGT). Read that one line in full
+# (it is small -- well under a pipe buffer) and answer it so the handshake
+# completes and the host proceeds to the `tool/1` call this fixture wedges on.
+first = sys.stdin.readline()
+req = json.loads(first)
 op = req.get("op")
 if op == "tool.spec/1":
+    # One-shot discovery path: the host closes stdin after writing the
+    # discovery request, so this is the only line. Answer the manifest.
     sys.stdout.write(json.dumps({
         "id": "acme.wedge",
         "version": "0.1.0",
@@ -501,8 +515,27 @@ if op == "tool.spec/1":
         }],
     }) + "\n")
     sys.stdout.flush()
+    sys.exit(0)
+elif op == "initialize/1":
+    sys.stdout.write(json.dumps({"id": req.get("id"), "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}]}) + "\n")
+    sys.stdout.flush()
 else:
     time.sleep(3600)
+    sys.exit(0)
+
+# Now read a SMALL prefix only for the next request: a large `tool/1` does not
+# fit, `json.loads` raises, and we WEDGE -- stop draining stdin, stay alive,
+# keep stdout open. The host's `write_all` fills the pipe buffer and blocks --
+# the hang the per-call write deadline exists to bound.
+chunk = sys.stdin.read(100)
+try:
+    req = json.loads(chunk)
+except Exception:
+    # Incomplete JSON -> a large tool/1 request the host is still writing.
+    time.sleep(3600)
+    sys.exit(0)
+# A small tool/1 (if any) -- still wedge rather than answer.
+time.sleep(3600)
 "#;
 
 /// A persistent-transport fixture that returns a `tool/1` answer mixing a
@@ -535,7 +568,10 @@ for line in sys.stdin:
     req = json.loads(line)
     op = req.get("op")
     rid = req.get("id")
-    if op == "tool.spec/1":
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}]}) + "\n")
+        sys.stdout.flush()
+    elif op == "tool.spec/1":
         sys.stdout.write(json.dumps(manifest()) + "\n")
     elif op == "tool/1":
         resp = {
@@ -621,4 +657,237 @@ elif op == "tool/1":
         "blocks": [{"type": "text", "text": "frobbed"}],
         "is_error": False,
     }))
+"#;
+
+// ----- initialize/1 handshake fixtures (board item 01M03VK7MRPSAVWMW7YNYPRPGT)
+//       Each fixture is a persistent-transport line loop that handles
+//       `tool.spec/1` (the one-shot discovery path -- the host closes stdin
+//       after writing the discovery request, so the loop runs once and exits
+//       on EOF), `initialize/1` (the one-time persistent-session handshake),
+//       and `tool/1` (the persistent call). The `initialize/1` answer is what
+//       each fixture varies to cover the version-negotiation table's rows.
+
+/// The accept-branch fixture: answers `initialize/1` with matching `major=1`,
+/// `minor_min=1`, the `tool/1` point version, AND an UNKNOWN extra field
+/// (`"future_field": "bonus"`) -- proving the compatibility table's accept
+/// branch / forward-compat rule: a newer plugin's extra field is ignored-and-
+/// counted, NOT rejected (acceptance criterion 1 AND criterion 4 share this
+/// fixture -- criterion 1 proves the session opens and `tool/1` proceeds;
+/// criterion 4's "counted/surfaced" assertion is pinned by the unit test
+/// `wire::tests::initialize_answer_with_unknown_field_is_accepted_and_counted`).
+/// `tool/1` for `greet` replies `"hello, <name>"` so criterion 1's "proceeds
+/// to serve tool/1 calls" is asserted end-to-end.
+pub const PERSISTENT_HANDSHAKE_OK_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+def manifest():
+    return {
+        "id": "acme.handshake-ok",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "greet",
+            "description": "Greets the caller by name.",
+            "schema": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        # Accept branch: matching major, satisfied minor_min, AND an unknown
+        # extra field (`future_field`) -- ignored-and-counted by the host.
+        resp = {
+            "id": rid, "ok": True, "major": 1, "minor_min": 1,
+            "points": [{"name": "tool/1", "version": 1}],
+            "future_field": "bonus",
+        }
+        sys.stdout.write(json.dumps(resp) + "\n")
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    elif op == "tool/1":
+        tool = req.get("tool")
+        args = req.get("arguments", {})
+        if tool == "greet":
+            name = args.get("name", "")
+            resp = {"id": rid, "ok": True, "blocks": [{"type": "text", "text": f"hello, {name}"}], "is_error": False}
+        else:
+            resp = {"id": rid, "ok": False, "error": {"kind": "invalid_arguments", "detail": f"unknown tool {tool}"}}
+        sys.stdout.write(json.dumps(resp) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
+"#;
+
+/// The major-mismatch fixture: answers `initialize/1` with `major=2` (the
+/// host's `HOST_WIRE_MAJOR` is `1`) -- acceptance criterion 2: the host must
+/// REFUSE to load with a typed `HandshakeRefused` naming both majors and
+/// "major mismatch". One-shot discovery (`tool.spec/1`) still succeeds so the
+/// refusal is specifically the handshake's, not a discovery failure.
+pub const PERSISTENT_HANDSHAKE_MAJOR_MISMATCH_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+def manifest():
+    return {
+        "id": "acme.handshake-major",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "frob",
+            "description": "a tool the host will never call (major mismatch refuses load)",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 2, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}]}) + "\n")
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
+"#;
+
+/// The unsatisfied-minor_min fixture: answers `initialize/1` with `major=1`
+/// but `minor_min=2` (the host's `HOST_WIRE_MINOR` is `1`) -- acceptance
+/// criterion 3: the host must REFUSE to load with a typed `HandshakeRefused`
+/// naming the required minor and the host's minor.
+pub const PERSISTENT_HANDSHAKE_MINOR_MIN_TOO_HIGH_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+def manifest():
+    return {
+        "id": "acme.handshake-minor",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "frob",
+            "description": "a tool the host will never call (minor_min unsatisfied refuses load)",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 2, "points": [{"name": "tool/1", "version": 1}]}) + "\n")
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
+"#;
+
+/// The close-without-answering fixture: reads the `initialize/1` request then
+/// exits (closing stdout) WITHOUT answering -- acceptance criterion 5: the
+/// host must fail closed with a typed error within `timeout_ms`, never hang.
+/// The reader task's EOF path `kill_all`s the session as `SessionDied`, the
+/// initialize sender is dropped, and `framed_round_trip` surfaces the typed
+/// death reason. One-shot discovery still answers `tool.spec/1` so the
+/// failure is specifically the handshake's.
+pub const PERSISTENT_HANDSHAKE_NO_ANSWER_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+def manifest():
+    return {
+        "id": "acme.handshake-no-answer",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "frob",
+            "description": "a tool the host will never call (no initialize answer)",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    if op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+        sys.stdout.flush()
+    elif op == "initialize/1":
+        # Close stdout without answering -- the host must fail closed within
+        # timeout_ms, never hang.
+        sys.exit(0)
+    else:
+        sys.exit(0)
+"#;
+
+/// The host-version-is-informational fixture: answers `initialize/1`
+/// correctly (major=1, minor_min=1) AND reads the `host.version` the host
+/// sent, reflecting it back as the `tool/1` text result -- the hazard test:
+/// `host.version` is on the wire (the plugin receives it) but is NEVER
+/// branched on by the host's negotiation (which compares ONLY `major` and
+/// `minor_min`). The negotiation outcome ("load") is the same regardless of
+/// what version string the host sent; this fixture proves the version reaches
+/// the plugin, and the load succeeds. The structural guarantee -- that
+/// `initialize` never compares `host.version` -- is in the code:
+/// `PersistentSession::initialize` references `HOST_WIRE_MAJOR`/
+/// `HOST_WIRE_MINOR` only; `host.version` is serialized into the request by
+/// `PersistentInitializeRequest::new` and never read back.
+pub const PERSISTENT_HANDSHAKE_REFLECTS_HOST_VERSION_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+host_version_seen = None
+
+def manifest():
+    return {
+        "id": "acme.handshake-reflect",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "echo",
+            "description": "reflects the host.version seen at initialize",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        host_version_seen = req.get("host", {}).get("version")
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}]}) + "\n")
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    elif op == "tool/1":
+        resp = {"id": rid, "ok": True, "blocks": [{"type": "text", "text": str(host_version_seen)}], "is_error": False}
+        sys.stdout.write(json.dumps(resp) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
 "#;

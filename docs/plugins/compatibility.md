@@ -10,11 +10,13 @@ Depends on [`concepts.md`](concepts.md) for vocabulary. Most of what this
 page states concretely applies to the FULL wire protocol, which remains a
 design spike beyond a thin, disclosed slice: `tool.spec/1`/`tool/1`
 (one-shot exec) are real and enforced today — see
-[`subprocess-plugins.md`](subprocess-plugins.md) — while the persistent-
-connection transport and every other point (`permission.policy/1`,
-`context.hook/1`, `observe/1`) are not. Every claim
-below says plainly whether it describes something enforced in the tree today
-or a decided rule for the transport once it lands, the same labeling
+[`subprocess-plugins.md`](subprocess-plugins.md) — and the persistent NDJSON
+transport is real and enforced too, now including an `initialize/1`
+version-negotiation handshake at session open (see the disclosure below the
+table). The remaining wire points (`permission.policy/1`,
+`context.hook/1`, `observe/1`, `status/1`) are not yet implemented. Every
+claim below says plainly whether it describes something enforced in the tree
+today or a decided rule for the transport once it lands, the same labeling
 discipline [`hooks.md`](hooks.md) uses throughout.
 
 ## Versioning
@@ -193,17 +195,53 @@ an unknown ENUM TAG degrades to the most restrictive value; a missing or
 structurally-invalid FIELD (a non-string where a string was expected, a
 missing required `ok`, an `ok:false` with no `error`, an empty manifest
 id, a non-compiling schema) STILL fails closed. A future implementation
-that widens past `tool.spec/1`/`tool/1` (the persistent transport, the
-`permission.policy/1`/`context.hook/1`/`observe/1` points) is the one the
-REMAINING table rows (`TruncationPolicy`, `Event`, `ResultStatus`,
-`ToolSelector`) and the version-negotiation handshake below are written
-for. No `initialize` handshake, no `WireManifest`, no per-point version
-negotiation exists in the tree — `concepts.md`'s "Hook-first" section and
-[`hooks.md`](hooks.md) point 1 both state the same thing from their own
-angles. It is documented here, concretely, because a reader building
-against this reference needs the rule the same way `hooks.md` documents
-`permission.policy/1`'s contract ahead of its implementation: labeled,
-decided, and precise enough to implement without re-litigating.
+that widens past `tool.spec/1`/`tool/1` (the `permission.policy/1`/
+`context.hook/1`/`observe/1` points) is the one the REMAINING table rows
+(`TruncationPolicy`, `Event`, `ResultStatus`, `ToolSelector`) are written
+for.
+
+**The version-negotiation handshake table above is NOW ENFORCED for the
+persistent NDJSON transport** (board item
+`01M03VK7MRPSAVWMW7YNYPRPGT`), as of that item. A persistent-transport
+subprocess plugin is greeted with one `initialize/1` request/response at
+session open, BEFORE any `tool/1` call: the host sends its
+`wire_major`/`wire_minor` and the points it speaks (today `["tool/1"]`);
+the plugin answers its own `major`, the minimum `minor` it requires
+(`minor_min`), and the per-point versions it declares. The host then
+applies this table — refuse on `major` mismatch or unsatisfied `minor_min`
+(a typed `HandshakeRefused` naming both versions); accept otherwise;
+unknown FIELDS in the plugin's answer ignored-and-counted (surfaced via
+`tracing::debug!`), never rejected (the table's accept branch / forward-
+compat rule: a newer plugin's extra field does not break an older host).
+A structurally-invalid answer (missing `ok`, `ok:false` with no error, a
+non-number where a number was expected) fails closed as `HandshakeMalformed`;
+a plugin that closes without answering fails closed as `SessionDied` within
+`timeout_ms`, never hangs. The plugin's declared per-point versions are
+recorded on the session for the later wire-point items
+(`permission.policy/1`, `observe/1`, `status/1`, `context.hook/1`) to
+consult WITHOUT re-negotiating — those points themselves remain FUTURE
+items, not yet implemented. `host.version` (the conway crate version) is
+put on the wire for the plugin to read but NEVER branched on by the
+negotiation — informational only, per the paragraph above.
+
+**One-shot discovery (`tool.spec/1`) stays handshake-free** — the
+handshake is a persistent-transport concern, and `tool.spec/1` discovery
+remains a one-shot exec under both transports (see `subprocess-plugins.md`).
+The `WireManifest` that `tool.spec/1` answers DOES exist in the tree (it
+carries `required_host_caps` as of board item
+`01M03VJXARFHSDAGHFXGCWKJTY`, mapped into `PluginManifest::required_host_caps`
+and gated at the builder seam); the `initialize` handshake exists for the
+persistent transport as of this item; per-point version NEGOTIATION records
+are produced by the handshake and held on the session, but the per-point
+wire points themselves (`permission.policy/1`, `observe/1`, `status/1`,
+`context.hook/1`) and the REMAINING table rows (`TruncationPolicy`,
+`Event`, `ResultStatus`, `ToolSelector`) are still future work.
+`concepts.md`'s "Hook-first" section and [`hooks.md`](hooks.md) point 1
+both state the same thing from their own angles. It is documented here,
+concretely, because a reader building against this reference needs the
+rule the same way `hooks.md` documents `permission.policy/1`'s contract
+ahead of its implementation: labeled, decided, and precise enough to
+implement without re-litigating.
 
 **Decision** (settling the hook-first
 redirect's four open questions) bears on this page only through what it

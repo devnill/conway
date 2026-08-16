@@ -22,7 +22,18 @@
 //! builder at registration -- a cap the host lacks refuses the plugin; an
 //! unknown cap tag fails closed at parse). No live `permission.policy/1`
 //! negotiation round-trips a cap request at call time; the declaration is
-//! static, gated once at build.
+//! static, gated once at build. The persistent transport DOES now run an
+//! `initialize/1` version-negotiation handshake at session open (board item
+//! `01M03VK7MRPSAVWMW7YNYPRPGT`): `PersistentSession::initialize` exchanges
+//! one `initialize/1` request/response with the plugin BEFORE any `tool/1`
+//! call, applies `docs/plugins/compatibility.md`'s version-negotiation table
+//! (refuse on major mismatch or unsatisfied `minor_min`; accept otherwise;
+//! unknown fields in the plugin's answer ignored-and-counted), and records
+//! the plugin's declared per-point versions for the later wire-point items
+//! to consult. One-shot discovery (`tool.spec/1`) stays handshake-free --
+//! the handshake is a persistent-transport concern. No live
+//! `permission.policy/1` negotiation round-trips a cap request at call time;
+//! the declaration is static, gated once at build.
 //!
 //! **Transport: one-shot exec (default) AND a persistent NDJSON channel.**
 //! `docs/plugins/hooks.md`'s own point 9 doc and the decision record both
@@ -237,6 +248,32 @@ pub enum SubprocessPluginError {
     /// trusted to recover, fail-closed.
     #[error("plugin '{config_id}' sent a malformed frame: {detail}")]
     MalformedFrame { config_id: String, detail: String },
+    /// The `initialize/1` handshake (board item `01M03VK7MRPSAVWMW7YNYPRPGT`)
+    /// REFUSED the plugin at session open: the plugin's declared `major` did
+    /// not match this host's `wire_major`, or its `minor_min` exceeded this
+    /// host's `wire_minor`. `condition` names which row of the compatibility
+    /// table failed (`"major mismatch"` or `"minor_min unsatisfied"`); `detail`
+    /// names BOTH versions (the host's and the plugin's) so an operator can
+    /// see the disagreement. The plugin is refused at `discover` time, BEFORE
+    /// any `tool/1` call runs -- a policy that silently never runs is the
+    /// worst outcome, so an incompatible plugin fails closed here, not at
+    /// first use.
+    #[error("plugin '{config_id}' refused by initialize handshake ({condition}): {detail}")]
+    HandshakeRefused {
+        config_id: String,
+        condition: String,
+        detail: String,
+    },
+    /// The `initialize/1` handshake answer was structurally invalid: missing
+    /// `ok`, `ok:false` with no `error`, a non-number where a number was
+    /// expected, or a `points` entry missing its `name`/`version`. FAILS
+    /// CLOSED -- mirroring `MalformedFrame`/`UnparseableAnswer`'s own
+    /// "structural malformation fails closed" discipline. Only a KNOWN-shape
+    /// answer carrying unknown FIELDS is accepted (ignored-and-counted, see
+    /// `wire::parse_persistent_initialize_response`); a structurally-invalid
+    /// answer is this variant, not the accept branch.
+    #[error("plugin '{config_id}' sent a malformed initialize answer: {detail}")]
+    HandshakeMalformed { config_id: String, detail: String },
 }
 
 impl SubprocessPluginError {
@@ -252,7 +289,9 @@ impl SubprocessPluginError {
         match self {
             SubprocessPluginError::UnparseableAnswer { .. }
             | SubprocessPluginError::InvalidManifest { .. }
-            | SubprocessPluginError::MalformedFrame { .. } => ToolError::Internal {
+            | SubprocessPluginError::MalformedFrame { .. }
+            | SubprocessPluginError::HandshakeRefused { .. }
+            | SubprocessPluginError::HandshakeMalformed { .. } => ToolError::Internal {
                 detail: self.to_string(),
             },
             SubprocessPluginError::Spawn { .. }
@@ -441,6 +480,17 @@ async fn spawn_one_shot(
 pub struct SubprocessPlugin {
     manifest: PluginManifest,
     tools: Vec<Arc<dyn Tool>>,
+    /// The persistent session, when [`SubprocessPluginSpec::transport`] is
+    /// [`SubprocessTransport::Persistent`]; `None` for one-shot. Held here so
+    /// the per-point version records the `initialize/1` handshake produced
+    /// (board item `01M03VK7MRPSAVWMW7YNYPRPGT`) are reachable through the
+    /// plugin via [`SubprocessPlugin::point_version`] WITHOUT re-negotiating
+    /// -- the shape later wire-point items (permission.policy, observe,
+    /// status, context.hook) consult to decide per-point refuse-vs-degrade.
+    /// Every `SubprocessTool` on this plugin shares the SAME `Arc` (and thus
+    /// the same child process); this is a second `Arc` clone, not a second
+    /// session.
+    session: Option<Arc<PersistentSession>>,
 }
 
 impl std::fmt::Debug for SubprocessPlugin {
@@ -452,6 +502,7 @@ impl std::fmt::Debug for SubprocessPlugin {
         f.debug_struct("SubprocessPlugin")
             .field("manifest", &self.manifest)
             .field("tool_count", &self.tools.len())
+            .field("persistent", &self.session.is_some())
             .finish()
     }
 }
@@ -561,7 +612,22 @@ impl SubprocessPlugin {
         let session: Option<Arc<PersistentSession>> = match spec.transport {
             SubprocessTransport::OneShot => None,
             SubprocessTransport::Persistent => {
-                Some(Arc::new(PersistentSession::spawn(&spec).await?))
+                // Spawn the long-lived child, THEN run the one-time
+                // `initialize/1` handshake BEFORE wrapping in `Arc` and
+                // before any `tool/1` call can run (board item
+                // `01M03VK7MRPSAVWMW7YNYPRPGT`). `spawn` stays focused on
+                // process spawning + task wiring; `initialize` does the
+                // one-time version-negotiation round-trip over the SAME
+                // id-correlated NDJSON framing `tool/1` uses. A handshake
+                // refusal (`HandshakeRefused`/`HandshakeMalformed`) or a
+                // transport-level death during the handshake (`SessionDied`/
+                // `TimedOut`) surfaces here from `discover`, so an
+                // incompatible plugin is refused at discover time, not at
+                // first use -- and the just-spawned child is dropped (its
+                // `Drop` kills the process group), never orphaned.
+                let session = PersistentSession::spawn(&spec).await?;
+                session.initialize().await?;
+                Some(Arc::new(session))
             }
         };
         let tools: Vec<Arc<dyn Tool>> = specs
@@ -578,7 +644,22 @@ impl SubprocessPlugin {
         Ok(Self {
             manifest: plugin_manifest,
             tools,
+            session,
         })
+    }
+
+    /// The plugin's declared version for a wire point (e.g. `"tool/1"`),
+    /// recorded ONCE by the `initialize/1` handshake at persistent-session
+    /// open (board item `01M03VK7MRPSAVWMW7YNYPRPGT`). `None` for the
+    /// one-shot transport (no handshake), before a successful handshake, or
+    /// for a point the plugin did not declare. Later wire-point items
+    /// (`permission.policy/1`, `observe/1`, `status/1`, `context.hook/1`)
+    /// consult this to decide per-point refuse-vs-degrade per
+    /// `docs/plugins/compatibility.md`'s participant-vs-observer table rows,
+    /// WITHOUT re-negotiating -- the records are produced once, here, and
+    /// held for the session's lifetime.
+    pub fn point_version(&self, point: &str) -> Option<u32> {
+        self.session.as_ref().and_then(|s| s.point_version(point))
     }
 }
 
