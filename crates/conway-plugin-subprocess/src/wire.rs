@@ -35,6 +35,27 @@
 //! invents a second content-block or error vocabulary -- `blocks` and
 //! `error` are reused verbatim from the one-shot shape.
 
+//! **Graceful unknown-tag degradation, not fail-closed.** Board item
+//! `01M03VJPRT8629CYR8JK4A8JPF` retrofits the per-enum degradation table in
+//! `docs/plugins/compatibility.md` onto this slice's deserialization: an
+//! unknown `ToolCategory` tag degrades to `Execute` (the category plan mode
+//! already denies — the most restrictive), an unknown `PermissionClass` tag
+//! degrades to `Dangerous`, and an unknown `ContentBlock` type in a `tool/1`
+//! answer is dropped, counted, and surfaced (a summary `ContentBlock::Text`
+//! naming each dropped block's type tag AND its parse reason is appended, and
+//! `is_error` is set so the host knows the output is incomplete). Each
+//! unknown tag is NAMED via a `tracing::warn!` at the point of degradation
+//! so the convergence is auditable — `#[serde(other)]` is deliberately NOT
+//! used because it would silently capture future variants this host SHOULD
+//! refuse (these enums are `#[non_exhaustive]`), widening rather than
+//! narrowing. The line, stated once here and at each custom deserializer:
+//! **an unknown ENUM TAG degrades to the most restrictive value; a missing
+//! or structurally-invalid FIELD (a non-string where a string was expected,
+//! a missing required `ok`, an `ok:false` with no `error`, an empty
+//! manifest id, a non-compiling schema) fails closed.** That is the
+//! compatibility table's convergence rule, and it is what lets a host and
+//! plugin co-evolve across versions.
+
 use serde::{Deserialize, Serialize};
 
 use conway::plugin::{Artifact, ContentBlock, PermissionClass, ToolCategory, ToolError};
@@ -153,13 +174,21 @@ pub struct WireTool {
     /// allow" hazard `conway_core::ports::plugin::PathArgs`'s own doc
     /// argues against for a different field. A manifest that omits this is
     /// a parse error (`SubprocessPluginError::UnparseableAnswer`), not a
-    /// silently-applied default.
+    /// silently-applied default. An unknown enum TAG (a string this host
+    /// does not recognize, sent by a NEWER plugin) degrades to `Dangerous`
+    /// via `deserialize_permission_class` — the most restrictive value,
+    /// never a silently-permissive one.
+    #[serde(deserialize_with = "deserialize_permission_class")]
     pub permission: PermissionClass,
     /// Required for the identical reason `permission` is: a category is
     /// declarative metadata the runtime and any future UI already treat as
     /// meaningful (e.g. `ToolCategory::Delegate` gates fork/spawn-shaped
     /// behavior elsewhere in the tree), so an omission should fail loud,
-    /// not silently resolve to whichever variant happens to be first.
+    /// not silently resolve to whichever variant happens to be first. An
+    /// unknown enum TAG (a string this host does not recognize, sent by a
+    /// NEWER plugin) degrades to `Execute` via `deserialize_tool_category`
+    /// — the category plan mode already denies, the most restrictive value.
+    #[serde(deserialize_with = "deserialize_tool_category")]
     pub category: ToolCategory,
 }
 
@@ -167,11 +196,20 @@ pub struct WireTool {
 /// [`parse_tool_result`] decides which of [`WireToolResult`]'s two meanings
 /// it carries -- see this module's own doc for why this two-step shape
 /// (struct first, classify second) replaces an untagged enum.
+///
+/// `blocks` is held as raw `serde_json::Value`s here, NOT as typed
+/// `ContentBlock`s, so that [`RawToolResult::classify`] can partition known
+/// blocks from unknown block types and SURFACE the dropped count (see
+/// [`partition_blocks`]) -- a typed `Vec<ContentBlock>` here would silently
+/// skip unknown variants via serde, losing the count the compatibility table
+/// requires be surfaced. The top-level `ok`/`error` fields stay typed: a
+/// missing `ok` or an `ok:false` with no `error` is STRUCTURAL malformation
+/// and fails closed (see this module's own doc for the line).
 #[derive(Deserialize)]
 struct RawToolResult {
     ok: bool,
     #[serde(default)]
-    blocks: Vec<ContentBlock>,
+    blocks: Vec<serde_json::Value>,
     #[serde(default)]
     is_error: bool,
     #[serde(default)]
@@ -186,17 +224,191 @@ impl RawToolResult {
     /// [`parse_persistent_tool_response`] (persistent NDJSON) both run, just
     /// on different framings of the same `RawToolResult` body -- factored
     /// here so the two framings cannot drift apart.
+    ///
+    /// On the success path, `blocks` is partitioned into known
+    /// `ContentBlock`s and the blocks that did not parse as one; any
+    /// unparseable block is dropped, counted, and surfaced -- a
+    /// `ContentBlock::Text` summary naming each dropped block's TYPE TAG and
+    /// its parse REASON is APPENDED to the kept blocks, and `is_error` is set
+    /// so the host knows the output is incomplete. The summary names the
+    /// reason (not just the tag) so an operator sees the ACTUAL condition --
+    /// an unknown block TYPE vs. a known type that missed a required field --
+    /// rather than a blanket "unknown type" label that would misname a known
+    /// tag like `text`. The call still SUCCEEDS (returns `WireToolResult::Ok`),
+    /// preserving the known blocks the plugin DID send -- the compatibility
+    /// table's "drop+count+surface" rule, not a whole-answer parse failure.
     fn classify(self) -> Result<WireToolResult, String> {
         if self.ok {
+            let (known_blocks, dropped) = partition_blocks(self.blocks);
+            let any_dropped = !dropped.is_empty();
+            let is_error = self.is_error || any_dropped;
+            let mut blocks = known_blocks;
+            if any_dropped {
+                // Surface the drop in the ONLY channel that reaches the
+                // caller today: a summary content block in the kept output,
+                // plus the `is_error` flag. The observe/1 wire point (a
+                // dedicated status channel) is a LATER item; using it would
+                // invent a parallel mechanism this slice does not have. The
+                // summary NAMES each dropped block's type tag AND its parse
+                // reason so the degradation is auditable in-band, not silent
+                // -- and so a known type with a missing field is not misnamed
+                // an "unknown type".
+                let detail = dropped
+                    .iter()
+                    .map(|d| format!("{}: {}", d.tag, d.reason))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                let summary = format!(
+                    "subprocess plugin returned {} content block(s) that could not be \
+                     parsed as a known content block and were dropped ({}); the known \
+                     blocks are preserved",
+                    dropped.len(),
+                    detail
+                );
+                blocks.push(ContentBlock::Text { text: summary });
+            }
             Ok(WireToolResult::Ok {
-                blocks: self.blocks,
-                is_error: self.is_error,
+                blocks,
+                is_error,
                 artifacts: self.artifacts,
             })
         } else {
             match self.error {
                 Some(err) => Ok(WireToolResult::Err(err)),
                 None => Err("\"ok\": false was returned with no \"error\" object".to_string()),
+            }
+        }
+    }
+}
+
+/// A block that could not be parsed as a known [`ContentBlock`], captured
+/// for the surfaced summary: the `"type"` tag the plugin sent (or
+/// `"<missing type>"` if absent) and the parse REASON. The reason
+/// distinguishes an unknown block TYPE (a tag this host does not recognize,
+/// the compatibility table's "drop+count+surface" case) from a KNOWN type
+/// with structurally-invalid fields (a per-block shape issue, not a
+/// whole-answer structural malformation) -- so the summary names the ACTUAL
+/// condition instead of a blanket "unknown type" label that would misname a
+/// known tag like `text` that merely missed a required field.
+struct DroppedBlock {
+    tag: String,
+    reason: String,
+}
+
+/// Partitions raw JSON block values into known `ContentBlock`s and the
+/// blocks that did not deserialize as one. A value that deserializes as a
+/// `ContentBlock` is kept; a value that does not -- an unknown block TYPE
+/// (the compatibility table's "drop+count+surface" case) OR a known type
+/// with structurally-invalid fields (a per-block issue, not a whole-answer
+/// structural malformation) -- is dropped and captured as a [`DroppedBlock`]
+/// for the surfaced summary. Each dropped block is also NAMED via
+/// `tracing::warn!` so the degradation is auditable out-of-band.
+fn partition_blocks(raw: Vec<serde_json::Value>) -> (Vec<ContentBlock>, Vec<DroppedBlock>) {
+    let mut known = Vec::with_capacity(raw.len());
+    let mut dropped = Vec::new();
+    for value in raw {
+        match ContentBlock::deserialize(value.clone()) {
+            Ok(block) => known.push(block),
+            Err(err) => {
+                let tag = value
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("<missing type>")
+                    .to_string();
+                // Trim the serde reason at ", expected" so the summary does
+                // not carry the full list of known variant names (long, and
+                // already implied by the tag). "unknown variant `quantum`"
+                // and "missing field `text`" both survive the trim intact.
+                let reason_full = err.to_string();
+                let reason = reason_full
+                    .split(", expected")
+                    .next()
+                    .unwrap_or(&reason_full)
+                    .to_string();
+                dropped.push(DroppedBlock { tag, reason });
+                let last = dropped.last().expect("just pushed");
+                tracing::warn!(
+                    block_type = %last.tag,
+                    dropped_so_far = dropped.len(),
+                    reason = %last.reason,
+                    "a content block from a subprocess plugin tool/1 answer could not be \
+                     parsed as a known ContentBlock; dropping it and surfacing the count"
+                );
+            }
+        }
+    }
+    (known, dropped)
+}
+
+// ----- Custom enum-tag deserializers: degrade unknown TAGS, fail closed on
+//       structurally-invalid VALUES. See this module's own doc for the line.
+//       `#[serde(other)]` is deliberately NOT used on these `#[non_exhaustive]`
+//       enums: it would silently capture future variants this host SHOULD
+//       refuse, widening rather than narrowing. Each deserializer below NAMES
+//       the unknown tag via `tracing::warn!` so the degradation is auditable.
+
+/// Deserializes a `ToolCategory` from its wire string, degrading an unknown
+/// TAG to `ToolCategory::Execute` (the category plan mode already denies --
+/// the most restrictive value, per `docs/plugins/compatibility.md`'s wire
+/// table). A non-STRING value (null, a number, an object) is structural
+/// malformation and fails closed, NOT degraded -- the line is "unknown enum
+/// tag degrades; structurally-invalid field fails closed".
+fn deserialize_tool_category<'de, D>(deserializer: D) -> Result<ToolCategory, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match ToolCategory::deserialize(value.clone()) {
+        Ok(category) => Ok(category),
+        Err(_) => {
+            // Unknown TAG (a string this host does not recognize, sent by a
+            // NEWER plugin) -> degrade to Execute, the most restrictive
+            // value. A non-string (null/number/object/array) -> fail closed.
+            if let Some(tag) = value.as_str() {
+                tracing::warn!(
+                    unknown_category = %tag,
+                    degraded_to = "execute",
+                    "unknown ToolCategory tag from a subprocess plugin manifest; \
+                     degrading to the most restrictive value (Execute)"
+                );
+                Ok(ToolCategory::Execute)
+            } else {
+                Err(D::Error::custom(format!(
+                    "expected a ToolCategory string, got non-string value: {value}"
+                )))
+            }
+        }
+    }
+}
+
+/// Deserializes a `PermissionClass` from its wire string, degrading an
+/// unknown TAG to `PermissionClass::Dangerous` (the most restrictive value,
+/// per `docs/plugins/compatibility.md`'s wire table). A non-STRING value
+/// (null, a number, an object) is structural malformation and fails closed.
+fn deserialize_permission_class<'de, D>(deserializer: D) -> Result<PermissionClass, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match PermissionClass::deserialize(value.clone()) {
+        Ok(class) => Ok(class),
+        Err(_) => {
+            // Unknown TAG -> degrade to Dangerous, the most restrictive
+            // value. A non-string -> fail closed.
+            if let Some(tag) = value.as_str() {
+                tracing::warn!(
+                    unknown_permission = %tag,
+                    degraded_to = "dangerous",
+                    "unknown PermissionClass tag from a subprocess plugin manifest; \
+                     degrading to the most restrictive value (Dangerous)"
+                );
+                Ok(PermissionClass::Dangerous)
+            } else {
+                Err(D::Error::custom(format!(
+                    "expected a PermissionClass string, got non-string value: {value}"
+                )))
             }
         }
     }

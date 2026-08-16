@@ -131,10 +131,19 @@ plan mode the day it is added, without anyone remembering to update this
 file."* This is the shipped instance of "unknown fails to the most
 restrictive value" the wire-level rule below generalizes.
 
-### The wire protocol, once it exists — decided design, not yet code
+### The wire protocol — decided design, partially honored by the one-shot slice
 
-the wire-vocabulary design settles the rules a future
-out-of-process plugin transport must follow. Concrete, and cited here so a
+the wire-vocabulary design settles the rules an out-of-process plugin
+transport must follow. The `tool.spec/1`/`tool/1` slice now honors the
+per-enum degradation rows for `ToolCategory`, `PermissionClass`, and
+`ContentBlock` (see the disclosure below the table). `ToolCategory` and
+`PermissionClass` degrade on the **discovery** path (`tool.spec/1`, which is
+always one-shot by design); `ContentBlock` degrades on the **`tool/1`
+answer** path, which is shared by the one-shot and the persistent NDJSON
+transports (both route a `tool/1` answer through the same `classify`), so an
+unknown block type is dropped, counted, and surfaced on either transport.
+The remaining rows and the version-negotiation handshake are decided design
+for the wider transport that lands later. Concrete, and cited here so a
 future implementation is built against a decision, not a vibe:
 
 | Enum | Unknown tag means, per the design |
@@ -164,17 +173,32 @@ appears in a future handshake as informational only (`host: { name,
 version }`), never branched on — a TUI-only release does not have to move
 the protocol, and nothing here is size-of-conway-version-shaped.
 
-**None of the wire-level table above is enforced by any code today — not
-even by the thin `tool.spec/1`/`tool/1` slice that now exists**
-([`subprocess-plugins.md`](subprocess-plugins.md)). That slice fails
-CLOSED on any unknown tag or malformed field (a hard parse error, the same
-uniform failure every other malformed answer produces), rather than the
-graceful per-enum degradation this table specifies (`execute` for an
-unknown `ToolCategory`, and so on) — a future implementation that widens
-past `tool.spec/1`/`tool/1` is the one this table's convergence rules are
-written for, not this slice. No
-`initialize` handshake, no `WireManifest`, no per-point version negotiation
-exists in the tree — `concepts.md`'s "Hook-first" section and
+**The wire-level table above is NOW honored by the `tool.spec/1`/`tool/1`
+slice that exists today**
+([`subprocess-plugins.md`](subprocess-plugins.md)), as of board item
+`01M03VJPRT8629CYR8JK4A8JPF`. Previously that slice failed CLOSED on any
+unknown tag or malformed field (a hard parse error, the same uniform
+failure every other malformed answer produces); it now degrades unknown
+ENUM TAGS per this table — an unknown `ToolCategory` -> `execute`, an
+unknown `PermissionClass` -> `dangerous`, an unknown `ContentBlock` type
+in a `tool/1` answer -> drop the block, count it, and surface it (a
+summary `ContentBlock::Text` naming the dropped count and the unknown type
+tags is appended to the kept blocks, and `is_error` is set so the host
+knows the output is incomplete). Each degradation NAMES the unknown tag
+via `tracing::warn!`, so the convergence is auditable; `#[serde(other)]`
+is deliberately NOT used on the `#[non_exhaustive]` enums because it would
+silently capture future variants this host SHOULD refuse, widening rather
+than narrowing. The line, stated in the code at each custom deserializer:
+an unknown ENUM TAG degrades to the most restrictive value; a missing or
+structurally-invalid FIELD (a non-string where a string was expected, a
+missing required `ok`, an `ok:false` with no `error`, an empty manifest
+id, a non-compiling schema) STILL fails closed. A future implementation
+that widens past `tool.spec/1`/`tool/1` (the persistent transport, the
+`permission.policy/1`/`context.hook/1`/`observe/1` points) is the one the
+REMAINING table rows (`TruncationPolicy`, `Event`, `ResultStatus`,
+`ToolSelector`) and the version-negotiation handshake below are written
+for. No `initialize` handshake, no `WireManifest`, no per-point version
+negotiation exists in the tree — `concepts.md`'s "Hook-first" section and
 [`hooks.md`](hooks.md) point 1 both state the same thing from their own
 angles. It is documented here, concretely, because a reader building
 against this reference needs the rule the same way `hooks.md` documents
