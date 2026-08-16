@@ -13,7 +13,9 @@ use conway::{Conway, ConwayBuilder, PermissionGate};
 
 use conway_cli::cli::{Cli, Command};
 use conway_cli::exit::ExitCode;
-use conway_cli::{commands, diag, first_party_plugins, oneshot, subprocess_plugins, tui};
+use conway_cli::{
+    commands, diag, first_party_plugins, mcp_plugins, oneshot, subprocess_plugins, tui,
+};
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -219,6 +221,15 @@ async fn build_conway(
     // resolution mechanism (no closed candidate set, always spawns) and
     // why it is awaited rather than folded into `install_selected`.
     let builder = subprocess_plugins::install(builder).await?;
+    // The MCP-over-stdio client plugin tier (board item
+    // 01M03GPNF0KN59FHAEEAEY2JD3): a THIRD, sibling choke point -- see
+    // `mcp_plugins`'s own module doc for why this is distinct from BOTH
+    // `first_party_plugins` (closed candidate set) and `subprocess_plugins`
+    // (conway wire). Same shape (operator names a command; the CLI discovers
+    // it async before `build()`; attaches via `with_plugin`), different wire
+    // protocol (JSON-RPC 2.0, MCP). Awaited for the identical reason
+    // `subprocess_plugins::install` is -- the handshake spawns a real process.
+    let builder = mcp_plugins::install(builder).await?;
     builder.build()
 }
 

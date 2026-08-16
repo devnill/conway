@@ -63,6 +63,16 @@ conway-plugin-backends = { path = "../conway-plugin-backends" }
 # own doc for the full wiring and the trust disclosure this dependency
 # carries.
 conway-plugin-subprocess = { path = "../conway-plugin-subprocess" }
+# Board item 01M03GPNF0KN59FHAEEAEY2JD3: the MCP-over-stdio CLIENT plugin. A
+# sibling host mechanism to `conway-plugin-subprocess` above -- like it, this
+# crate's own tools are NOT compiled in at all; it is a HOST mechanism (a
+# `Plugin` that speaks JSON-RPC 2.0 as a CLIENT to an external MCP server named
+# in `settings.json`), resolved through `src/mcp_plugins.rs`, a SEPARATE
+# choke point from `subprocess_plugins.rs` (the two speak DIFFERENT wire
+# protocols -- JSON-RPC 2.0 vs conway wire). See that module's own doc for the
+# full wiring and the trust disclosure this dependency carries (identical
+# footing to `conway-plugin-subprocess` above).
+conway-plugin-mcp = { path = "../conway-plugin-mcp" }
 clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }

@@ -97,6 +97,7 @@ fn base_config() -> ConwayConfig {
             install: vec![],
             default_backends: vec![],
             subprocess: vec![],
+            mcp: vec![],
         },
         hooks: HooksConfig::default(),
     }
