@@ -386,6 +386,74 @@ for line in sys.stdin:
         sys.exit(0)
 "#;
 
+/// A one-shot fixture that declares a tool with UNKNOWN `category` and
+/// `permission` string tags (`"deploy"` and `"yolo"` -- neither is a variant
+/// this host knows). Board item `01M03VJPRT8629CYR8JK4A8JPF`: discovery must
+/// LOAD the tool, degrading `category` to `ToolCategory::Execute` and
+/// `permission` to `PermissionClass::Dangerous` (the most restrictive
+/// values), NOT fail closed on the unknown tags. `tool/1` answers normally so
+/// the same fixture also proves the loaded tool still invokes.
+pub const UNKNOWN_TAG_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+req = json.loads(sys.stdin.read())
+op = req.get("op")
+
+if op == "tool.spec/1":
+    print(json.dumps({
+        "id": "acme.unknown-tags",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "frob",
+            "description": "declares unknown category/permission tags",
+            "schema": {"type": "object"},
+            "category": "deploy",
+            "permission": "yolo",
+        }],
+    }))
+elif op == "tool/1":
+    print(json.dumps({
+        "ok": True,
+        "blocks": [{"type": "text", "text": "frobbed"}],
+        "is_error": False,
+    }))
+"#;
+
+/// A one-shot fixture whose `tool/1` answer mixes a KNOWN content block
+/// (`{"type":"text","text":"kept"}`) with an UNKNOWN block type
+/// (`{"type":"quantum","data":...}`). Board item `01M03VJPRT8629CYR8JK4A8JPF`:
+/// the call must SUCCEED with the known block, and the dropped unknown block
+/// must be surfaced -- the host appends a summary `ContentBlock::Text`
+/// naming the dropped count and the unknown type tag, and sets `is_error`.
+pub const UNKNOWN_BLOCK_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+req = json.loads(sys.stdin.read())
+op = req.get("op")
+
+if op == "tool.spec/1":
+    print(json.dumps({
+        "id": "acme.unknown-block",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "mix",
+            "description": "returns a known and an unknown block type",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }))
+elif op == "tool/1":
+    print(json.dumps({
+        "ok": True,
+        "blocks": [
+            {"type": "text", "text": "kept"},
+            {"type": "quantum", "data": "future block this host does not know"},
+        ],
+        "is_error": False,
+    }))
+"#;
+
 /// A persistent-transport fixture that WEDGES on a large `tool/1` request --
 /// the regression fixture for the unbounded-write hang an adversarial review
 /// surfaced: a child that stops draining stdin while staying alive (stdout
@@ -435,4 +503,52 @@ if op == "tool.spec/1":
     sys.stdout.flush()
 else:
     time.sleep(3600)
+"#;
+
+/// A persistent-transport fixture that returns a `tool/1` answer mixing a
+/// KNOWN `text` block with an UNKNOWN `quantum` block type -- the
+/// persistent-channel proof that the `ContentBlock` drop+count+surface
+/// degradation (which lives in the shared `RawToolResult::classify`) applies
+/// over the NDJSON transport too, not only the one-shot path. The manifest
+/// uses only known tags so discovery is clean; the unknown tag appears only
+/// in the `tool/1` answer body.
+pub const PERSISTENT_UNKNOWN_BLOCK_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+def manifest():
+    return {
+        "id": "acme.mix",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "mix",
+            "description": "returns a known block and an unknown block type",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+    elif op == "tool/1":
+        resp = {
+            "id": rid,
+            "ok": True,
+            "blocks": [
+                {"type": "text", "text": "kept"},
+                {"type": "quantum", "q": "?"},
+            ],
+            "is_error": False,
+        }
+        sys.stdout.write(json.dumps(resp) + "\n")
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+    sys.stdout.flush()
 "#;

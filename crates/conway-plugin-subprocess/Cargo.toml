@@ -28,6 +28,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
 thiserror = { workspace = true }
+# Audit logging for graceful unknown-tag degradation (board item
+# `01M03VJPRT8629CYR8JK4A8JPF`): when a NEWER plugin sends an enum tag this
+# host does not know, the wire deserializer degrades to the most restrictive
+# value and emits a `tracing::warn!` NAMING the unknown tag, so the
+# degradation is auditable without inventing a parallel status mechanism (the
+# observe/1 wire point is a LATER item). Already a workspace dependency
+# (`conway-runtime`, `conway-plugin-backends`, etc. use it the same way).
+tracing = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "time", "rt", "sync", "macros"] }
 
 [target.'cfg(unix)'.dependencies]
