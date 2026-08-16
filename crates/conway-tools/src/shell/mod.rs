@@ -51,6 +51,8 @@ mod tests {
         let plugin = ShellPlugin::new();
         let manifest = plugin.manifest();
         assert_eq!(manifest.id, "conway.shell");
+        // The shell plugin needs nothing the host might lack -- it runs a
+        // command through `ToolCtx`, no host-capability gate applies.
         assert!(manifest.required_host_caps.is_empty());
 
         let names: Vec<String> = plugin

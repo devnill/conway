@@ -46,10 +46,15 @@ each disclosed rather than silently assumed:
     under both transports (see "The persistent transport" below for the
     framing decision, the failure modes, and the trust statement).
 - **Points.** Only `tool.spec/1` (declaration) and `tool/1` (execution) are
-  wired. `permission.policy/1`, `context.hook/1`, `observe/1`, and
-  `PluginManifest::required_host_caps` are still exactly as
-  design-only/unconsumed as [`hooks.md`](hooks.md)'s own tables state —
-  nothing here widens any of them.
+  wired. `permission.policy/1`, `context.hook/1`, `observe/1` are still exactly
+  as design-only/unconsumed as [`hooks.md`](hooks.md)'s own tables state —
+  nothing here widens any of them. `PluginManifest::required_host_caps` is the
+  exception: the `tool.spec/1` wire answer now CARRIES it (board item
+  `01M03VJXARFHSDAGHFXGCWKJTY` -- `WireManifest::required_host_caps`,
+  `#[serde(default)]`, unknown cap tags fail closed at parse), and the
+  `conway` builder consults it at registration to refuse a plugin whose
+  declared cap the host lacks. See [`hooks.md`](hooks.md) point 1 for the
+  full consumed-status disclosure.
 - **Trust.** No new trust mechanism was built. See "Trust" below.
 
 ## The wire protocol

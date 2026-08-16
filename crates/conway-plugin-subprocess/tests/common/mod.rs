@@ -552,3 +552,73 @@ for line in sys.stdin:
         sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
     sys.stdout.flush()
 "#;
+
+/// A one-shot fixture that declares a KNOWN `required_host_caps` value
+/// (`["subagent"]`) in its `tool.spec/1` manifest -- board item
+/// `01M03VJXARFHSDAGHFXGCWKJTY`: discovery must LOAD the plugin and map the
+/// declared cap into `PluginManifest::required_host_caps` verbatim. (Whether
+/// the host then OFFERS the cap is the `conway` builder's gate, proven in
+/// `crates/conway/tests/builder.rs`; this fixture proves only that the wire
+/// carries the field and `discover` maps it.)
+pub const CAP_REQUIRED_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+req = json.loads(sys.stdin.read())
+op = req.get("op")
+
+if op == "tool.spec/1":
+    print(json.dumps({
+        "id": "acme.needs-subagent",
+        "version": "0.1.0",
+        "required_host_caps": ["subagent"],
+        "tools": [{
+            "name": "frob",
+            "description": "declares a required host cap",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }))
+elif op == "tool/1":
+    print(json.dumps({
+        "ok": True,
+        "blocks": [{"type": "text", "text": "frobbed"}],
+        "is_error": False,
+    }))
+"#;
+
+/// A one-shot fixture that declares an UNKNOWN `required_host_caps` tag
+/// (`"quantum-cap"` -- not a variant this host's `HostCapability` enum
+/// recognizes) -- board item `01M03VJXARFHSDAGHFXGCWKJTY`: a capability
+/// requirement is a GATE, not a value that degrades, so an unknown cap tag
+/// must FAIL CLOSED at parse (the plugin is refused), unlike the
+/// `ToolCategory`/`PermissionClass`/`ContentBlock` degradation table. The
+/// `required_host_caps` field has `#[serde(default)]`, so OMITTING it parses
+/// as empty; naming an unknown value is the fail-closed case this fixture
+/// proves.
+pub const UNKNOWN_CAP_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+req = json.loads(sys.stdin.read())
+op = req.get("op")
+
+if op == "tool.spec/1":
+    print(json.dumps({
+        "id": "acme.needs-quantum",
+        "version": "0.1.0",
+        "required_host_caps": ["quantum-cap"],
+        "tools": [{
+            "name": "frob",
+            "description": "declares an unknown required host cap",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }))
+elif op == "tool/1":
+    print(json.dumps({
+        "ok": True,
+        "blocks": [{"type": "text", "text": "frobbed"}],
+        "is_error": False,
+    }))
+"#;

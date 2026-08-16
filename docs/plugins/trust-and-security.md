@@ -172,13 +172,19 @@ control's slot, and that is worse than no documentation at all.**
 
 Two things this bears on directly, so a reader does not have to infer them:
 
-- **`PluginManifest::required_host_caps` is declared and consumed nowhere.**
-  Every constructor in the tree — every built-in tool, the first-party
-  plugin skeleton, every test fixture — passes an empty vector, and no code
-  anywhere reads the field to gate anything (`docs/plugins/hooks.md`'s point
-  1, confirmed by exhaustive grep, not inference). Nothing in this page or
-  the rest of the set should be read as implying the field currently limits
-  what a plugin can do; today it limits nothing.
+- **`PluginManifest::required_host_caps` is now consumed at registration.**
+  The `conway` builder consults the field (the manifest-validation seam) and
+  refuses a plugin whose declared cap the host does not offer with
+  `PluginError::MissingHostCapability`. The cap set is a closed
+  `HostCapability` enum (`subagent`, `persistent_transport`), not a
+  free-form `Vec<String>` the host never validates; empty means "needs
+  nothing the host might lack." A declared cap the host lacks refuses the
+  plugin at build, before it is ever invoked -- a narrowing gate, not an
+  enforcement mechanism against a loaded plugin (this page's own
+  "declared-but-unenforced capability is worse than no documentation" line
+  still applies to anything beyond this gate: conway does not police what a
+  loaded plugin does, only whether the host can offer what it declared it
+  needs).
 - **No self-reported-intent field exists in the tree today.** The design
   proposes a segregated `disclosures` map on a future manifest
   — free text like `"network":

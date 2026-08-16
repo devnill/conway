@@ -50,22 +50,32 @@ Every point gets all nine fields:
 | Ordering | Tool names must be unique across every registered plugin; a collision is a build-time error (`ConwayBuilder::build`) naming both plugins, never a silent last-registration-wins |
 | Status | **Implemented**, in-process (`Plugin::manifest`/`Plugin::tools`, `crates/conway-core/src/ports/plugin.rs`, exercised by `crates/conway/tests/plugin_surface.rs` and `crates/conway/tests/plugin_builtin_parity.rs`). **The wire projection is now ALSO implemented, as a thin, disclosed slice**: `tool.spec/1` (`conway_plugin_subprocess::wire::WireManifest`/`WireTool`) is a real, one-shot-exec request a `SubprocessPlugin` sends once at `SubprocessPlugin::discover`, projecting `PluginManifest`/`ToolSpec` over JSON — see [`subprocess-plugins.md`](subprocess-plugins.md) for the full contract. Narrower than the design's own persistent-connection shape (disclosed on that page) |
 
-**`required_host_caps` is declared and consulted nowhere.** Every constructor
-of `PluginManifest` in the tree — every built-in tool
-(`crates/conway-tools/src/{fs,shell,subagent,report}/mod.rs`), the first-party
-plugin skeleton (`crates/conway-plugin-skeleton/src/lib.rs`), and every test
-fixture — passes `required_host_caps: vec![]` or `Vec::new()`, and no code
-anywhere reads the field to gate anything. This is a declared field with zero
-consumers, not a partially-wired capability system: the glossary entry in
-`concepts.md` already states it ("Declared today; not yet consumed anywhere
-in the tree"), and this document confirms it by exhaustive grep, not
-inference. It needs a forward-declaration label of its own distinct from the hook-first
-surface it will eventually gate through — **nothing currently names
-"consume `PluginManifest::required_host_caps`."** The declarative `hooks`
-charter is not it — none of its nine children
-builds a capability grant/request handshake — so it is not cited here as
-tracked work, only noted as the surface such a handshake would eventually
-need to gate through, whenever an item is filed for it.
+**`required_host_caps` is now consulted at registration.** A plugin declares
+what it needs (a `Vec<HostCapability>` -- a closed, `#[non_exhaustive]` enum
+in `crates/conway-core/src/ports/plugin.rs`, not a free-form `Vec<String>`
+the host never validates); the host separately grants, never implied by
+trust alone. The `conway` builder consults the field once per installed
+plugin at the manifest-validation seam (right where the duplicate-plugin-id
+check already runs, `crates/conway/src/builder.rs`), comparing each declared
+cap against what THIS host offers (`conway::HostCaps::from_config`); a cap
+the host does NOT offer is a `PluginError::MissingHostCapability` naming both
+the plugin and the cap, and the plugin is refused -- the narrowing direction
+(a plugin declares what it needs; the host refuses to load it if the host
+can't provide it). Empty `required_host_caps` (the common case -- "needs
+nothing the host might lack") is always satisfied. The initial cap set is
+minimal, each variant mapped to something real: `subagent` (fork/spawn a
+child session; required by the `conway.subagent` built-in, offered by the
+`conway` runtime which always provides a `SubagentHost`) and
+`persistent_transport` (the persistent NDJSON `tool/1` channel; offered iff
+at least one `[plugins].subprocess[]` entry is configured `persistent` -- a
+plugin requiring it against a one-shot-only host is refused). The wire
+projection carries the field too: `conway_plugin_subprocess::wire::
+WireManifest::required_host_caps` (`#[serde(default)]`, an unknown cap tag
+fails closed at parse -- a capability requirement is a gate, not a value
+that degrades). The glossary entry in `concepts.md` now states it is consumed
+("consulted at registration, never implied by trust alone"). This is no
+longer a declared field with zero consumers; it is a capability gate wired
+into the build.
 
 ### 2. Tool execution — `Tool::invoke`
 

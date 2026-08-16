@@ -37,6 +37,7 @@ mod error;
 mod event_stream;
 mod fork_child;
 pub mod gates;
+mod host_caps;
 mod intent;
 mod output_schema;
 mod permissions;
@@ -49,6 +50,7 @@ pub use builder::{ConwayBuilder, PluginSelection};
 pub use conway::{Conway, HookRuleView};
 pub use error::{ConwayError, Result};
 pub use event_stream::EventStream;
+pub use host_caps::HostCaps;
 pub use intent::AgentIntent;
 pub use output_schema::compile_output_schema;
 pub use permissions::{PermissionLoadReport, RevokeOutcome, TrustPermissionReport};
@@ -309,9 +311,9 @@ pub mod plugin {
     pub use conway_core::ports::{
         ArtifactWriteHandle, ArtifactWriter, CancellationToken, Command, CommandCtx,
         CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, HookRunner,
-        ObservedCall, ObserverAnswer, ObserverCtx, ObserverNote, OverflowInfo, PathArgs, Plugin,
-        PluginConfig, PluginEventHandle, PluginManifest, RegisteredObserver, RenderKind, Tool,
-        ToolCtx, ToolObserver, ToolOutput,
+        HostCapability, ObservedCall, ObserverAnswer, ObserverCtx, ObserverNote, OverflowInfo,
+        PathArgs, Plugin, PluginConfig, PluginEventHandle, PluginManifest, RegisteredObserver,
+        RenderKind, Tool, ToolCtx, ToolObserver, ToolOutput,
     };
     pub use conway_core::provenance::Provenance;
     pub use conway_core::segment::PromptSegment;

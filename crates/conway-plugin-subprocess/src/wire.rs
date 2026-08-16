@@ -58,7 +58,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use conway::plugin::{Artifact, ContentBlock, PermissionClass, ToolCategory, ToolError};
+use conway::plugin::{
+    Artifact, ContentBlock, HostCapability, PermissionClass, ToolCategory, ToolError,
+};
 
 /// One outgoing request this host ever sends, tagged by its own `"op"`
 /// field on the wire -- `{"op":"tool.spec/1"}` or `{"op":"tool/1", ...}`.
@@ -150,6 +152,26 @@ pub struct WireManifest {
     /// subprocess plugin with nothing to offer" is a build-time error, not
     /// a silent no-op registration.
     pub tools: Vec<WireTool>,
+    /// Host capabilities this subprocess plugin requires the host to offer
+    /// (board item `01M03VJXARFHSDAGHFXGCWKJTY`). `#[serde(default)]` so an
+    /// existing plugin that omits the field parses as empty ("needs nothing
+    /// the host might lack"). An UNKNOWN cap tag (a string this host's
+    /// `HostCapability` enum does not recognize, sent by a NEWER plugin)
+    /// FAILS CLOSED -- serde rejects it, the `WireManifest` fails to parse,
+    /// and the plugin is refused (`SubprocessPluginError::UnparseableAnswer`)
+    /// -- the NARROWING/safe direction, consistent with the unknown-tag item
+    /// `01M03VJPRT8629CYR8JK4A8JPF`'s "structural malformation fails closed"
+    /// line. No degrade path for unknown host-caps (unlike the
+    /// `ToolCategory`/`PermissionClass`/`ContentBlock` degradation table):
+    /// a capability requirement is a gate, and silently degrading a cap a
+    /// plugin NEEDS into one it does not would load a plugin the host cannot
+    /// support. The accepted cap values are mapped into
+    /// [`conway::plugin::PluginManifest::required_host_caps`], which the
+    /// `conway` builder consults at registration to refuse a plugin whose
+    /// declared cap the host lacks (e.g. `persistent_transport` against a
+    /// one-shot-only host).
+    #[serde(default)]
+    pub required_host_caps: Vec<HostCapability>,
 }
 
 /// One tool a [`WireManifest`] declares -- the wire projection of
