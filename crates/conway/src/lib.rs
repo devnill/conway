@@ -456,16 +456,19 @@ pub use conway_core::routing::{AttemptFailure, BreakerKind, BreakerState, Routin
 /// carrying a third copy. Pure, no policy.
 pub use conway_core::canon::canonical_json_bytes;
 
-/// The first-class context path vocabulary (DESIGN-context-path §2.1–§2.6,
-/// §4.1–§4.2): pure value types and the model-free `SelectionKey`. Re-exported
-/// so a facade-only crate can name `RecordRef`/`PathNode`/`PathSelection`/
-/// `SelectionKey`/`PathOp`/`CostEstimate`/`PathError` without depending on
-/// `conway-core` directly. The validating constructors (`default_path`,
-/// `derive`, `derive_reordered`), the `PathStore` port, head resolution and
+/// The first-class context path vocabulary + refusing constructors
+/// (DESIGN-context-path §2.1–§2.9, §4.1–§4.2): pure value types, the
+/// model-free `SelectionKey`, `ValidatedPath` and its `derive`/
+/// `derive_reordered` constructors, and `Derivation`. Re-exported so a
+/// facade-only crate can name `RecordRef`/`PathNode`/`PathSelection`/
+/// `SelectionKey`/`PathOp`/`CostEstimate`/`PathError`/`ValidatedPath`/
+/// `Derivation` without depending on `conway-core` directly. The tolerant
+/// constructor (`default_path`), the `PathStore` port, head resolution and
 /// assembly land in later sub-units and live elsewhere.
 pub use conway_core::path::{
-    CostEstimate, DivergenceKind, HarnessDrop, NodeProvenance, NodeStamp, OpLabel, Orphan,
-    PathError, PathNode, PathOp, PathSelection, RecordRef, SelectionKey, Selector,
+    CostEstimate, Derivation, DivergenceKind, HarnessDrop, NodeProvenance, NodeStamp, OpLabel,
+    Orphan, PathError, PathNode, PathOp, PathSelection, RecordRef, SelectionKey, Selector,
+    ValidatedPath,
 };
 
 // Amended by:

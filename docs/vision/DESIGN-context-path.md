@@ -498,11 +498,17 @@ function over today's behaviour. Against §8.2's test: two reasonable people
 implementing "include everything, in order" produce the same thing, so it is mechanism.
 
 > **`conway-core`, `conway-session` and `conway-runtime` ship exactly one path
-> constructor, and it excludes nothing. They construct `PathOp::Omit` / `PathOp::Move`
-> nowhere outside tests.**
+> constructor, and it excludes nothing. The path constructors (`default_path`,
+> `derive`, `derive_reordered`) emit no `PathOp` internally — they receive ops from
+> curators. The one place core *does* construct `Omit` / `Include` / `Move` is
+> `offers_for` (§4.1: "the harness offers; it never picks"), which builds repair
+> *suggestions* handed to a curator — not path-constructor output. They construct
+> `PathOp::Restamp` nowhere outside tests (no curator exists yet).**
 
 Enforced by extending `crates/conway/tests/enum_variant_construction_guard.rs` to
-`PathOp`. Vigilance is not a mechanism; a failing test is.
+`PathOp`: the guard catches the variant that stays inert (`Restamp`, allowlisted +
+disclosed as not-yet-implemented until a curator constructs it); `Omit` / `Include` /
+`Move` pass as constructed. Vigilance is not a mechanism; a failing test is.
 
 One standing exception, named so it is not quietly widened:
 `drop_unanswered_tool_calls` **is** core code that removes records. Justified solely by
