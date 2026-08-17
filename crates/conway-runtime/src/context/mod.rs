@@ -5,6 +5,7 @@
 
 pub mod builder;
 pub(crate) mod hook_guard;
+pub mod path;
 pub mod prefix;
 pub mod report;
 pub mod script_hook;

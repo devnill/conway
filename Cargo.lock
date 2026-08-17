@@ -752,6 +752,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "conway-core",
+ "conway-testkit",
  "lru",
  "proptest",
  "serde",

@@ -543,6 +543,38 @@ fn render_would_orphan(orphans: &[Orphan]) -> String {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// §3  ResolvedPath — the expanded, record-resolved path (D1-3c)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// A fully-expanded, record-resolved path: the expanded node list zipped with
+/// its already-read `Arc<LogRecord>`s, in render order (DESIGN §3). Produced by
+/// `resolve_path` (conway-session); consumed by assembly (D1-3d).
+///
+/// This is the value `ContextInput` will gain in place of `inherited`/`head`/
+/// `own` — but NOT in this item: D1-3d owns that wiring, and the byte-identity
+/// proof against unregenerated goldens. Here it only exists as the return type
+/// of `resolve_path`, with no consumers yet, so the seam is in place without
+/// disturbing a single wire byte.
+pub struct ResolvedPath {
+    /// The expanded node list zipped with its already-read records, in render
+    /// order. The records are cloned out of the resolver's memoised
+    /// `Arc<[LogRecord]>` into fresh `Arc<LogRecord>`s (see `resolve_path`'s
+    /// doc: `Arc::ptr_eq` does NOT hold across siblings with the current cache
+    /// shape; D1-3d may restructure the cache if assembly needs shared `Arc`s).
+    /// Within a single `ResolvedPath`, `derive`/`default_path` reuse these
+    /// `Arc`s without cloning (a path family shares them).
+    pub nodes: Vec<(PathNode, Arc<LogRecord>)>,
+}
+
+impl std::fmt::Debug for ResolvedPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedPath")
+            .field("len", &self.nodes.len())
+            .finish_non_exhaustive()
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // §2.8 + §2.9  ValidatedPath + Derivation
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -553,10 +585,13 @@ fn render_would_orphan(orphans: &[Orphan]) -> String {
 /// that declares harness incoherence rather than refusing.
 ///
 /// Carries the prefix-EXPANDED node list zipped with the already-read records
-/// (the same `Arc<LogRecord>` the resolver produced, preserving sibling
-/// sharing — `derive` never clones a `LogRecord`). Derived paths are always
-/// coherent, so `derive`/`derive_reordered` build with `incoherence: Vec::new()`;
-/// only `default_path` declares incoherence.
+/// (`derive` never clones a `LogRecord` — it reuses the `Arc<LogRecord>`s it
+/// is handed, so a path family shares them). Cross-sibling `Arc::ptr_eq` does
+/// NOT hold with the current resolver cache shape (records are cloned out of
+/// an `Arc<[LogRecord]>` into fresh `Arc`s at resolve time — see
+/// `ResolvedPath`); D1-3d may restructure the cache if assembly needs it.
+/// Derived paths are always coherent, so `derive`/`derive_reordered` build
+/// with `incoherence: Vec::new()`; only `default_path` declares incoherence.
 ///
 /// `Eq` is manual, not derived: `LogRecord` is `PartialEq` but not `Eq` (some
 /// variants carry `serde_json::Value`/`f64`-shaped fields), so `Arc<LogRecord>`
@@ -595,6 +630,14 @@ impl ValidatedPath {
         self.nodes.iter().map(|(n, r)| (n, r))
     }
 
+    /// Incoherence the constructor tolerated rather than refused (DESIGN
+    /// §4.1). Empty for derived paths; `default_path` declares here. Render-
+    /// time repair (D1-3e) reconciles `drop_unanswered_tool_calls`'s drops
+    /// against this declaration.
+    pub fn incoherence(&self) -> &[HarnessDrop] {
+        &self.incoherence
+    }
+
     /// The model-free identity of this path's selection —
     /// `SelectionKey::from_nodes` over the expanded node list (DESIGN §2.3).
     /// Equal expanded node lists hash equal, regardless of how they were
@@ -617,6 +660,22 @@ impl ValidatedPath {
     /// an orphaning candidate.
     pub fn derive_reordered(&self, ops: &[PathOp]) -> Result<Derivation, PathError> {
         self.apply(ops, true)
+    }
+
+    /// The §2.8 constructor that includes everything: runs the three-rule
+    /// coherence validator in DECLARE mode — orphans are tolerated and recorded
+    /// as `HarnessDrop` in the path's `incoherence`, never refused (DESIGN §4.1).
+    /// This is the ONLY way to build a `ValidatedPath` that may carry declared
+    /// incoherence; `derive`/`derive_reordered` refuse it.
+    ///
+    /// Whatever incoherence is present was caused by the harness (a fork cut
+    /// mid-batch; a session killed between an assistant append and its
+    /// results), not by a curator, so it cannot be refused. The declaration is
+    /// what distinguishes the tolerant constructor from the refusing one, and
+    /// is what render-time repair (D1-3e) reconciles against.
+    pub fn default_path(nodes: Vec<(PathNode, Arc<LogRecord>)>) -> Self {
+        let incoherence = declare_incoherence(&nodes);
+        Self::from_resolved(nodes, incoherence)
     }
 
     /// Shared core of [`derive`](Self::derive) / [`derive_reordered`](Self::derive_reordered).
@@ -847,17 +906,23 @@ fn extract_calls_results(record: &LogRecord) -> Vec<Extracted> {
 /// rule-2 orphan whose omitted half is also absent from `base` is inherited
 /// incoherence, not a new one, and is skipped.
 pub(crate) fn validate_coherence(base: &ValidatedPath, candidate: &[PathNode]) -> Vec<Orphan> {
-    // 1. Build the base pairing map: call_id -> (call_node, result_node).
+    // 1. Build the base pairing map: call_id -> (call_node, result_node), and
+    // the first-occurrence index maps the rule-3 base-side skip needs to
+    // detect a base's own ri < ci inversion (DESIGN §4.1, D1-3c Part 4).
     let mut base_call: HashMap<String, RecordRef> = HashMap::new();
     let mut base_result: HashMap<String, RecordRef> = HashMap::new();
-    for (n, rec) in base.nodes() {
+    let mut base_call_idx: HashMap<String, usize> = HashMap::new();
+    let mut base_result_idx: HashMap<String, usize> = HashMap::new();
+    for (i, (n, rec)) in base.nodes().enumerate() {
         for ext in extract_calls_results(rec) {
             match ext.half {
                 Half::Call => {
-                    base_call.insert(ext.call_id, n.record);
+                    base_call.insert(ext.call_id.clone(), n.record);
+                    base_call_idx.entry(ext.call_id).or_insert(i);
                 }
                 Half::Result => {
-                    base_result.insert(ext.call_id, n.record);
+                    base_result.insert(ext.call_id.clone(), n.record);
+                    base_result_idx.entry(ext.call_id).or_insert(i);
                 }
             }
         }
@@ -939,18 +1004,23 @@ pub(crate) fn validate_coherence(base: &ValidatedPath, candidate: &[PathNode]) -
             if ri < ci {
                 // Rule 3: result appears before its call.
                 //
-                // Asymmetry note: rules 1 and 2 skip an orphan when the base
-                // itself lacks the missing half (inherited incoherence the
-                // derivation did not introduce). Rule 3 has no analogous
-                // base-side check yet. That is unreachable today -- the only
-                // `ValidatedPath` bases are coherent (no `default_path`
-                // constructor exists, D1-3c), so a rule-3 orphan can only arise
-                // from a `derive_reordered` Move the curator made, which IS a
-                // derivation-introduced orphan. Once `default_path` can declare
-                // a rule-3 incoherence (a malformed log with a result at a
-                // lower seq than its call), `derive(&[])` on that base must NOT
-                // refuse -- an empty derivation introduces nothing
-                // (D1-3c/D1-3d). Add the base-side `ri < ci` skip then.
+                // Base-side skip (mirrors rules 1 and 2 above): rules 1/2 skip
+                // an orphan when the base ITSELF lacks the missing half
+                // (inherited incoherence the derivation did not introduce).
+                // Rule 3's analogue: skip when the base ITSELF has the same
+                // `ri < ci` inversion for that `call_id` — the base already
+                // declared this rule-3 incoherence (a `default_path` that
+                // tolerated a malformed log with a result at a lower seq than
+                // its call); the derivation inherited it, did not introduce
+                // it. An empty `derive(&[])` on such a base must NOT refuse
+                // (DESIGN §4.1, D1-3c Part 4).
+                let base_has_inversion = matches!(
+                    (base_call_idx.get(cid), base_result_idx.get(cid)),
+                    (Some(&bci), Some(&bri)) if bri < bci
+                );
+                if base_has_inversion {
+                    continue;
+                }
                 let call_node = cand_call_node[cid];
                 let result_node = cand_result_node[cid];
                 orphans.push(Orphan {
@@ -964,6 +1034,78 @@ pub(crate) fn validate_coherence(base: &ValidatedPath, candidate: &[PathNode]) -
         }
     }
     orphans
+}
+
+/// Run the three coherence rules (DESIGN §4.1) over a single node list in
+/// DECLARE mode — the tolerant counterpart of [`validate_coherence`]. Instead
+/// of returning [`Orphan`]s for refusal (which `derive` does), this converts
+/// each orphan to a [`HarnessDrop`] so [`ValidatedPath::default_path`] can
+/// *declare* the incoherence a fork cut or a killed session left behind rather
+/// than refusing it (DESIGN §4.1: "whatever incoherence is present was caused
+/// by the harness").
+///
+/// The declared `incoherence` is exactly the set of orphans a `derive(&[])` on
+/// this base would otherwise refuse — which is why the rule-3 base-side skip
+/// (Part 4) is load-bearing: once `default_path` can declare a rule-3
+/// incoherence, `derive(&[])` on that base must NOT refuse, and the skip makes
+/// it so.
+///
+/// All three rules produce a [`HarnessDrop`] keyed by the `call_id` that
+/// identifies the broken pair:
+/// - Rule 1 (call with no result): the `call_id` comes from the `ToolUse`.
+/// - Rule 2 (result with no call): the CALL is absent, but the result's
+///   `call_id` field still names the broken pair — that is the `call_id`
+///   declared. (There is no call to *drop* at render time, but the declaration
+///   records the incoherence so D1-3e's reconciliation can surface it.)
+/// - Rule 3 (result before call): the shared `call_id` of the reordered pair.
+pub(crate) fn declare_incoherence(nodes: &[(PathNode, Arc<LogRecord>)]) -> Vec<HarnessDrop> {
+    // Build call/result first-occurrence index maps, keyed by call_id.
+    let mut call_idx: HashMap<String, usize> = HashMap::new();
+    let mut result_idx: HashMap<String, usize> = HashMap::new();
+    for (i, (_, rec)) in nodes.iter().enumerate() {
+        for ext in extract_calls_results(rec) {
+            match ext.half {
+                Half::Call => {
+                    call_idx.entry(ext.call_id).or_insert(i);
+                }
+                Half::Result => {
+                    result_idx.entry(ext.call_id).or_insert(i);
+                }
+            }
+        }
+    }
+
+    // All call_ids from either half, deduped and sorted for stable output.
+    let mut cids: Vec<String> = call_idx
+        .keys()
+        .cloned()
+        .chain(result_idx.keys().cloned())
+        .collect();
+    cids.sort();
+    cids.dedup();
+
+    let mut drops: Vec<HarnessDrop> = Vec::new();
+    for cid in &cids {
+        let call_present = call_idx.contains_key(cid);
+        let result_present = result_idx.contains_key(cid);
+        let is_orphan = if call_present && !result_present {
+            // Rule 1: call present, result absent.
+            true
+        } else if !call_present && result_present {
+            // Rule 2: result present, call absent. The call_id comes from the
+            // result's own `call_id` field (see the function doc).
+            true
+        } else if call_present && result_present {
+            // Rule 3: both present, result before call.
+            result_idx[cid] < call_idx[cid]
+        } else {
+            false
+        };
+        if is_orphan {
+            drops.push(HarnessDrop::new(cid.clone()));
+        }
+    }
+    drops
 }
 
 /// Repair offers for a set of orphans (DESIGN §4.1: "the harness offers; it
@@ -1046,7 +1188,9 @@ fn record_content_char_len(record: &LogRecord) -> usize {
         | LogRecord::AgentResultRecord { .. }
         | LogRecord::ChildResultRecord { .. }
         | LogRecord::ContextReportRecord { .. }
-        | LogRecord::ContextMask { .. } => 0,
+        | LogRecord::ContextMask { .. }
+        | LogRecord::ContextPathSet { .. }
+        | LogRecord::ContextPathNamed { .. } => 0,
     }
 }
 
@@ -1698,6 +1842,41 @@ mod tests {
         assert_eq!(o.result_node, result_n.record);
     }
 
+    /// §4.1 rule 3 base-side skip (D1-3c Part 4): a base whose OWN node list
+    /// has a result-before-call inversion (a `default_path` that declared the
+    /// incoherence) must NOT produce a rule-3 orphan for an empty derivation
+    /// candidate — the derivation introduced nothing. `derive(&[])` on such a
+    /// base succeeds.
+    #[test]
+    fn validate_coherence_rule_3_inherited_from_base_is_skipped() {
+        let s = SessionId::new();
+        let call_n = node(s, 6, NodeStamp::Own, Selector::DefaultRule, &at(5));
+        let result_n = node(s, 7, NodeStamp::Own, Selector::DefaultRule, &at(6));
+        // Base with a rule-3 inversion: result at index 0, call at index 1.
+        let base = vp_with(vec![
+            (result_n.clone(), tool_result(7, "tc_3", "read")),
+            (call_n.clone(), assistant_call(6, "tc_3", "read")),
+        ]);
+        // Empty derivation: candidate = base's own nodes in the same order.
+        let orphans = validate_coherence(&base, &[result_n.clone(), call_n.clone()]);
+        assert!(
+            orphans.is_empty(),
+            "inherited rule-3 inversion must be skipped, got {orphans:?}"
+        );
+        // And `derive(&[])` must succeed (not refuse).
+        let deriv = base
+            .derive(&[])
+            .expect("empty derive on a rule-3 base must succeed");
+        assert_eq!(
+            deriv
+                .path
+                .nodes()
+                .map(|(n, _)| n.record)
+                .collect::<Vec<_>>(),
+            vec![result_n.record, call_n.record]
+        );
+    }
+
     /// §4.1: two independent orphaned pairs in one candidate are both reported,
     /// in candidate order, with the right fields per orphan.
     #[test]
@@ -2196,5 +2375,53 @@ mod tests {
         let nodes: Vec<PathNode> = base.nodes().map(|(n, _)| n.clone()).collect();
         let expected = SelectionKey::from_nodes(&nodes);
         assert_eq!(base.key(), expected);
+    }
+
+    // -- default_path / declare_incoherence (D1-3c Part 3a) -----------------
+
+    /// `default_path` on a coherent node list declares no incoherence — the
+    /// identity case over today's behaviour (DESIGN §5).
+    #[test]
+    fn default_path_on_a_coherent_list_declares_nothing() {
+        let (base, _call_n, _result_n) = pair_base();
+        let pairs: Vec<(PathNode, Arc<LogRecord>)> = base
+            .nodes()
+            .map(|(n, r)| (n.clone(), Arc::clone(r)))
+            .collect();
+        let path = ValidatedPath::default_path(pairs);
+        assert!(
+            path.incoherence.is_empty(),
+            "coherent list declares nothing"
+        );
+    }
+
+    /// `default_path` on a call-without-result (rule 1) declares exactly one
+    /// `HarnessDrop` for the orphaned `call_id`, rather than refusing.
+    #[test]
+    fn default_path_declares_a_rule_1_orphan_as_incoherence() {
+        let s = SessionId::new();
+        let call_n = node(s, 6, NodeStamp::Own, Selector::DefaultRule, &at(0));
+        let pairs = vec![(call_n.clone(), Arc::new(assistant_call(6, "tc_3", "read")))];
+        let path = ValidatedPath::default_path(pairs);
+        assert_eq!(path.incoherence, vec![HarnessDrop::new("tc_3")]);
+    }
+
+    /// `default_path` on a result-before-call (rule 3) declares the
+    /// incoherence, and `derive(&[])` on that base succeeds (the rule-3
+    /// base-side skip from Part 4 makes the empty derivation not refuse).
+    #[test]
+    fn default_path_declares_rule_3_and_empty_derive_succeeds() {
+        let s = SessionId::new();
+        let call_n = node(s, 6, NodeStamp::Own, Selector::DefaultRule, &at(0));
+        let result_n = node(s, 7, NodeStamp::Own, Selector::DefaultRule, &at(1));
+        let pairs = vec![
+            (result_n.clone(), Arc::new(tool_result(7, "tc_3", "read"))),
+            (call_n.clone(), Arc::new(assistant_call(6, "tc_3", "read"))),
+        ];
+        let path = ValidatedPath::default_path(pairs);
+        assert_eq!(path.incoherence, vec![HarnessDrop::new("tc_3")]);
+        // Empty derivation does not introduce anything → succeeds.
+        path.derive(&[])
+            .expect("empty derive on a declared rule-3 base must succeed");
     }
 }

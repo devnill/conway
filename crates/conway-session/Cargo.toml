@@ -22,3 +22,4 @@ tokio = { workspace = true, features = ["fs", "sync", "time", "rt", "io-util"] }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+conway-testkit = { path = "../conway-testkit" }
