@@ -11,8 +11,7 @@ pub mod report;
 pub mod script_hook;
 
 pub use builder::{
-    ContextBuilder, ContextInput, HeadSegment, InheritedPrefix, SkillFragment, SystemPromptSpec,
-    TOKEN_ESTIMATOR,
+    ContextBuilder, ContextInput, InheritedPrefix, SkillFragment, SystemPromptSpec, TOKEN_ESTIMATOR,
 };
 pub use hook_guard::GuardedContextHook;
 pub use prefix::prefix_key;

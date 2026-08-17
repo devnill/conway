@@ -33,10 +33,13 @@ use conway_core::capabilities::{CacheMode, HeadroomPolicy};
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef};
+use conway_core::ids::{LogSeq, SessionId};
+use conway_core::log::LogRecord;
 use conway_core::ports::{Backend, GenerateResponse, HealthRegistry, Plugin, Router, SessionStore};
 use conway_core::provenance::Provenance;
 use conway_core::segment::CacheTtl;
-use conway_runtime::context::{ContextBuilder, ContextInput, HeadSegment, SkillFragment};
+use conway_runtime::context::path::path_from_legacy;
+use conway_runtime::context::{ContextBuilder, ContextInput, SkillFragment};
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
@@ -260,11 +263,17 @@ fn skill_body_is_carried_verbatim_into_assembled_segment() {
         system_prompt: None,
         skills: vec![fragment],
         tools: vec![],
-        inherited: None,
-        head: HeadSegment::Prompt {
-            text: "go".to_string(),
-        },
-        own: Arc::from(Vec::new()),
+        path: path_from_legacy(
+            None,
+            &[LogRecord::UserTurn {
+                seq: LogSeq(0),
+                ts: chrono::Utc::now(),
+                text: "go".to_string(),
+                prov: Provenance::UserPrompt,
+            }],
+            SessionId::new(),
+        )
+        .unwrap(),
         cache_ttl: CacheTtl::FiveMinutes,
     };
     let (segments, _report) = ContextBuilder::new()

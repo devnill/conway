@@ -99,6 +99,7 @@ use conway_core::content::{ContentBlock, Role, ToolResult, ToolSpec};
 use conway_core::error::RuntimeError;
 use conway_core::ids::{AgentId, ModelId, PrefixKey, SegmentId, SeqRange, SessionId};
 use conway_core::log::LogRecord;
+use conway_core::path::{NodeStamp, ResolvedPath};
 use conway_core::provenance::{ContextReport, ContextReportEntry, Provenance};
 use conway_core::segment::{CacheHint, CacheTtl, PromptSegment};
 
@@ -155,18 +156,19 @@ pub struct InheritedPrefix {
     pub records: Arc<[LogRecord]>,
 }
 
-/// The segment that follows the static/inherited prefix: either a fork
-/// directive (Fork mode) or the whole prompt (Spawn mode, or a root
-/// agent's first turn).
-#[derive(Clone, Debug)]
-pub enum HeadSegment {
-    ForkDirective { text: String, by: AgentId },
-    Prompt { text: String },
-}
-
 /// Pure input to [`ContextBuilder::build`] — already-resolved records, no
 /// store dependency. Ancestry resolution (`TranscriptResolver`) is the
 /// caller's job; this builder never touches a store.
+///
+/// The resolved context path (`path`) is the assembled, record-resolved node
+/// list (DESIGN §3): inherited nodes stamped `Inherited { from }`, the head
+/// node stamped `Head`, own nodes stamped `Own`. The builder iterates the
+/// nodes in render order and maps each through the stamp-selected function
+/// (`record_role_and_content` + `Provenance::Inherited` for `Inherited`,
+/// `own_segment` for `Head`/`Own`), so byte-identity is mechanical. A
+/// [`ResolvedPath`] is produced by `path_from_legacy` (today, a transitional
+/// translation of the legacy `inherited`/`head`/`own` triple) or, later, by
+/// `resolve_default_path` once the fork-child no-head ancestry walk is fixed.
 ///
 /// `turn` is not part of the spec's illustrative struct but is
 /// required to populate `ContextReport::turn`; added here since
@@ -180,9 +182,7 @@ pub struct ContextInput {
     pub system_prompt: Option<SystemPromptSpec>,
     pub skills: Vec<SkillFragment>,
     pub tools: Vec<ToolSpec>,
-    pub inherited: Option<InheritedPrefix>,
-    pub head: HeadSegment,
-    pub own: Arc<[LogRecord]>,
+    pub path: ResolvedPath,
     pub cache_ttl: CacheTtl,
 }
 
@@ -316,47 +316,41 @@ impl ContextBuilder {
         ));
         let a_index = segments.len() - 1;
 
-        // [3] InheritedPrefix* — one segment per record, order preserved;
-        // breakpoint B attaches to the last one, if any exist (resolved
-        // below, AFTER `drop_unanswered_tool_calls` may have removed
-        // segments, so the index can never be stale).
-        if let Some(inherited) = &input.inherited {
-            for record in inherited.records.iter() {
-                let Some((role, content)) = record_role_and_content(record) else {
-                    continue;
-                };
-                let seq = record
-                    .seq()
-                    .expect("inherited records always carry a seq (Header never appears here)");
-                segments.push(PromptSegment::new(
-                    role,
-                    content,
-                    Provenance::Inherited {
-                        from: inherited.from,
-                        seq_range: SeqRange::new(seq, Some(seq.succ())),
-                    },
-                ));
-            }
-        }
-
-        // [4] ForkDirective | Prompt
-        match &input.head {
-            HeadSegment::ForkDirective { text, by } => segments.push(PromptSegment::new(
-                Role::User,
-                text_block(text),
-                Provenance::ForkDirective { by: *by },
-            )),
-            HeadSegment::Prompt { text } => segments.push(PromptSegment::new(
-                Role::User,
-                text_block(text),
-                Provenance::UserPrompt,
-            )),
-        }
-
-        // [5..] own records — volatile.
-        for record in input.own.iter() {
-            if let Some((role, content, provenance)) = own_segment(record) {
-                segments.push(PromptSegment::new(role, content, provenance));
+        // [3..] the context path — one segment per node, in render order
+        // (DESIGN §3). Each node's `stamp` selects the mapping function:
+        // `Inherited { from }` → `record_role_and_content` +
+        // `Provenance::Inherited { from, seq_range: (seq, seq+1) }`;
+        // `Head`/`Own` → `own_segment` (which derives provenance from the
+        // record kind — the head's `UserPrompt`/`ForkDirective` and every
+        // own volatile record's kind-derived provenance). This mapping IS the
+        // byte-identity proof against today's three-block assembly: an
+        // inherited node reproduces the old [3] loop's per-record
+        // `Inherited` segment exactly; the head node reproduces the old [4]
+        // `HeadSegment` match exactly (a `UserTurn` → `UserPrompt`, a
+        // `ForkDirective` → `ForkDirective { by }`); each own node reproduces
+        // the old [5..] `own_segment` call exactly. Breakpoint B is resolved
+        // AFTER `drop_unanswered_tool_calls` below, so the index is never
+        // stale.
+        for (node, record) in &input.path.nodes {
+            match node.stamp {
+                NodeStamp::Inherited { from } => {
+                    let Some((role, content)) = record_role_and_content(record) else {
+                        continue;
+                    };
+                    segments.push(PromptSegment::new(
+                        role,
+                        content,
+                        Provenance::Inherited {
+                            from,
+                            seq_range: SeqRange::new(node.record.seq, Some(node.record.seq.succ())),
+                        },
+                    ));
+                }
+                NodeStamp::Head | NodeStamp::Own => {
+                    if let Some((role, content, provenance)) = own_segment(record) {
+                        segments.push(PromptSegment::new(role, content, provenance));
+                    }
+                }
             }
         }
 
@@ -1001,8 +995,12 @@ pub(crate) fn attach_cache_hints(
 #[cfg(test)]
 mod estimator_tests {
     use super::*;
+    use chrono::Utc;
     use conway_core::content::Role;
+    use conway_core::ids::LogSeq;
     use conway_core::provenance::Provenance;
+
+    use crate::context::path::path_from_legacy;
 
     /// The formula this heuristic replaced: the whole content
     /// array's JSON serialization, divided by 4. Reproduced here (not
@@ -1179,9 +1177,17 @@ mod estimator_tests {
             system_prompt: None,
             skills: vec![],
             tools: tools.clone(),
-            inherited: None,
-            head: HeadSegment::Prompt { text: "hi".into() },
-            own: Arc::from(vec![]),
+            path: path_from_legacy(
+                None,
+                &[LogRecord::UserTurn {
+                    seq: LogSeq(0),
+                    ts: Utc::now(),
+                    text: "hi".into(),
+                    prov: Provenance::UserPrompt,
+                }],
+                SessionId::new(),
+            )
+            .unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
         };
         let (segments, report) = ContextBuilder::new().build(&input).unwrap();
@@ -1208,6 +1214,8 @@ mod own_segment_provenance_tests {
     use super::*;
     use chrono::Utc;
     use conway_core::ids::LogSeq;
+
+    use crate::context::path::path_from_legacy;
 
     fn user_turn(prov: Provenance) -> LogRecord {
         LogRecord::UserTurn {
@@ -1258,11 +1266,20 @@ mod own_segment_provenance_tests {
             system_prompt: None,
             skills: vec![],
             tools: vec![],
-            inherited: None,
-            head: HeadSegment::Prompt {
-                text: "parent prompt".into(),
-            },
-            own: Arc::from(vec![user_turn(Provenance::MergedAsk { from })]),
+            path: path_from_legacy(
+                None,
+                &[
+                    LogRecord::UserTurn {
+                        seq: LogSeq(0),
+                        ts: Utc::now(),
+                        text: "parent prompt".into(),
+                        prov: Provenance::UserPrompt,
+                    },
+                    user_turn(Provenance::MergedAsk { from }),
+                ],
+                SessionId::new(),
+            )
+            .unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
         };
 
@@ -1289,9 +1306,19 @@ mod own_segment_provenance_tests {
     }
 
     fn merged_prompt_content(input: &ContextInput) -> Vec<ContentBlock> {
-        match &input.head {
-            HeadSegment::Prompt { text } => text_block(text),
-            _ => unreachable!("this test's head is always a Prompt"),
+        // The head node is a UserTurn whose text is the "parent prompt";
+        // own_segment renders it as a single Text block. The old shape read
+        // this out of `input.head` (`HeadSegment::Prompt { text }`); the path
+        // carries the same record as its Head-stamped node.
+        let (_node, record) = input
+            .path
+            .nodes
+            .iter()
+            .find(|(n, _)| n.stamp == NodeStamp::Head)
+            .expect("this test's path always has a Head node");
+        match record.as_ref() {
+            LogRecord::UserTurn { text, .. } => text_block(text),
+            _ => unreachable!("this test's head is always a UserTurn"),
         }
     }
 }
@@ -1302,8 +1329,33 @@ mod breakpoint_indices_tests {
     use chrono::Utc;
     use conway_core::ids::{LogSeq, SessionId};
 
+    use crate::context::path::path_from_legacy;
+
+    fn inherited_prefix(from: SessionId) -> InheritedPrefix {
+        InheritedPrefix {
+            from,
+            seq_range: SeqRange::new(LogSeq(0), Some(LogSeq(0).succ())),
+            records: Arc::from(vec![LogRecord::UserTurn {
+                seq: LogSeq(0),
+                ts: Utc::now(),
+                text: "inherited turn".into(),
+                prov: Provenance::UserPrompt,
+            }]),
+        }
+    }
+
+    fn head_log() -> Vec<LogRecord> {
+        vec![LogRecord::UserTurn {
+            seq: LogSeq(0),
+            ts: Utc::now(),
+            text: "head".into(),
+            prov: Provenance::UserPrompt,
+        }]
+    }
+
     fn input_with_inherited() -> ContextInput {
         let from = SessionId::new();
+        let inherited = inherited_prefix(from);
         ContextInput {
             agent_id: AgentId::new(),
             turn: 0,
@@ -1312,20 +1364,7 @@ mod breakpoint_indices_tests {
             system_prompt: None,
             skills: vec![],
             tools: vec![],
-            inherited: Some(InheritedPrefix {
-                from,
-                seq_range: SeqRange::new(LogSeq(0), Some(LogSeq(0).succ())),
-                records: Arc::from(vec![LogRecord::UserTurn {
-                    seq: LogSeq(0),
-                    ts: Utc::now(),
-                    text: "inherited turn".into(),
-                    prov: Provenance::UserPrompt,
-                }]),
-            }),
-            head: HeadSegment::Prompt {
-                text: "head".into(),
-            },
-            own: Arc::from(vec![]),
+            path: path_from_legacy(Some(&inherited), &head_log(), SessionId::new()).unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
         }
     }
@@ -1351,12 +1390,22 @@ mod breakpoint_indices_tests {
         ));
     }
 
-    /// No `InheritedPrefix` at all -> B is `None`, A still resolves to the
-    /// unconditional `ToolSchemas` segment.
+    /// No inherited prefix at all -> B is `None`, A still resolves to the
+    /// unconditional `ToolSchemas` segment. (Old shape set `input.inherited =
+    /// None`; the new shape builds a path with no inherited nodes.)
     #[test]
     fn b_is_none_without_an_inherited_prefix() {
-        let mut input = input_with_inherited();
-        input.inherited = None;
+        let input = ContextInput {
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode: CacheMode::None,
+            system_prompt: None,
+            skills: vec![],
+            tools: vec![],
+            path: path_from_legacy(None, &head_log(), SessionId::new()).unwrap(),
+            cache_ttl: CacheTtl::FiveMinutes,
+        };
         let (segments, _) = ContextBuilder::new().build(&input).unwrap();
 
         let (a, b) = breakpoint_indices(&segments);
@@ -1385,6 +1434,8 @@ mod tool_call_pairing_tests {
     use chrono::Utc;
     use conway_core::content::{StopReason, Usage};
     use conway_core::ids::{BackendId, LogSeq, ModelRef, SessionId, ToolName};
+
+    use crate::context::path::path_from_legacy;
 
     fn tool_use(call_id: &str) -> ContentBlock {
         ContentBlock::ToolUse {
@@ -1425,8 +1476,23 @@ mod tool_call_pairing_tests {
         }
     }
 
+    /// The session's first own record (the head): a `UserTurn "head"`. Old
+    /// shape carried this as `HeadSegment::Prompt { text: "head" }`; the path
+    /// carries the same record as its Head-stamped node.
+    fn head_record() -> LogRecord {
+        LogRecord::UserTurn {
+            seq: LogSeq(0),
+            ts: Utc::now(),
+            text: "head".into(),
+            prov: Provenance::UserPrompt,
+        }
+    }
+
     /// Records arrive as the agent's OWN log (the resumable-mid-batch case).
+    /// `own` is the records AFTER the head.
     fn input_with(own: Vec<LogRecord>, cache_mode: CacheMode) -> ContextInput {
+        let mut own_log = vec![head_record()];
+        own_log.extend(own);
         ContextInput {
             agent_id: AgentId::new(),
             turn: 0,
@@ -1435,27 +1501,34 @@ mod tool_call_pairing_tests {
             system_prompt: None,
             skills: vec![],
             tools: vec![],
-            inherited: None,
-            head: HeadSegment::Prompt {
-                text: "head".into(),
-            },
-            own: Arc::from(own),
+            path: path_from_legacy(None, &own_log, SessionId::new()).unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
         }
     }
 
     /// The same records arriving as an INHERITED prefix (the mid-batch fork
-    /// case) rather than as the agent's own log.
-    fn input_inheriting(records: Vec<LogRecord>) -> ContextInput {
+    /// case) rather than as the agent's own log. `own` is the records AFTER
+    /// the head (empty when the case under test has no own volatile tail).
+    fn input_inheriting(records: Vec<LogRecord>, own: Vec<LogRecord>) -> ContextInput {
         let from = SessionId::new();
         let last = records.last().and_then(|r| r.seq()).unwrap_or(LogSeq(0));
+        let inherited = InheritedPrefix {
+            from,
+            seq_range: SeqRange::new(LogSeq(0), Some(last.succ())),
+            records: Arc::from(records),
+        };
+        let mut own_log = vec![head_record()];
+        own_log.extend(own);
         ContextInput {
-            inherited: Some(InheritedPrefix {
-                from,
-                seq_range: SeqRange::new(LogSeq(0), Some(last.succ())),
-                records: Arc::from(records),
-            }),
-            ..input_with(vec![], CacheMode::None)
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode: CacheMode::None,
+            system_prompt: None,
+            skills: vec![],
+            tools: vec![],
+            path: path_from_legacy(Some(&inherited), &own_log, SessionId::new()).unwrap(),
+            cache_ttl: CacheTtl::FiveMinutes,
         }
     }
 
@@ -1566,15 +1639,18 @@ mod tool_call_pairing_tests {
     /// the cache hint would land on the wrong boundary.
     #[test]
     fn breakpoint_b_lands_on_the_last_surviving_inherited_segment() {
-        let input = input_inheriting(vec![
-            LogRecord::UserTurn {
-                seq: LogSeq(0),
-                ts: Utc::now(),
-                text: "inherited turn".into(),
-                prov: Provenance::UserPrompt,
-            },
-            assistant(1, vec![tool_use("orphan")]),
-        ]);
+        let input = input_inheriting(
+            vec![
+                LogRecord::UserTurn {
+                    seq: LogSeq(0),
+                    ts: Utc::now(),
+                    text: "inherited turn".into(),
+                    prov: Provenance::UserPrompt,
+                },
+                assistant(1, vec![tool_use("orphan")]),
+            ],
+            vec![],
+        );
         let (segments, report) = ContextBuilder::new().build(&input).unwrap();
 
         assert_eq!(report.dropped, vec!["orphan".to_string()]);
@@ -1604,19 +1680,21 @@ mod tool_call_pairing_tests {
     /// test in this module and fails this one.
     #[test]
     fn orphans_are_dropped_from_the_inherited_prefix_and_the_own_log_alike() {
-        let mut input = input_inheriting(vec![
-            LogRecord::UserTurn {
-                seq: LogSeq(0),
-                ts: Utc::now(),
-                text: "inherited turn".into(),
-                prov: Provenance::UserPrompt,
-            },
-            assistant(1, vec![tool_use("inherited_orphan")]),
-        ]);
-        input.own = Arc::from(vec![
-            assistant(2, vec![tool_use("own_orphan"), tool_use("own_answered")]),
-            tool_result(3, "own_answered"),
-        ]);
+        let input = input_inheriting(
+            vec![
+                LogRecord::UserTurn {
+                    seq: LogSeq(0),
+                    ts: Utc::now(),
+                    text: "inherited turn".into(),
+                    prov: Provenance::UserPrompt,
+                },
+                assistant(1, vec![tool_use("inherited_orphan")]),
+            ],
+            vec![
+                assistant(2, vec![tool_use("own_orphan"), tool_use("own_answered")]),
+                tool_result(3, "own_answered"),
+            ],
+        );
 
         let (segments, report) = ContextBuilder::new().build(&input).unwrap();
 

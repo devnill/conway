@@ -16,11 +16,10 @@ use conway_core::content::{
 };
 use conway_core::ids::{AgentId, LogSeq, ModelId, SeqRange, SessionId, ToolName};
 use conway_core::log::LogRecord;
+use conway_core::path::{NodeProvenance, NodeStamp, PathNode, RecordRef, ResolvedPath, Selector};
 use conway_core::provenance::Provenance;
 use conway_core::segment::{CacheTtl, PromptSegment};
-use conway_runtime::context::{
-    ContextBuilder, ContextInput, HeadSegment, InheritedPrefix, SkillFragment, SystemPromptSpec,
-};
+use conway_runtime::context::{ContextBuilder, ContextInput, SkillFragment, SystemPromptSpec};
 
 // ---------------------------------------------------------------------
 // Fixed identifiers (never `AgentId::new()`/`SessionId::new()`): these
@@ -52,6 +51,36 @@ fn agent_steer_from() -> AgentId {
 
 fn session_parent() -> SessionId {
     "01ARZ3NDEKTSV4RRFFQ69G5FBV".parse().unwrap()
+}
+
+/// The owning session for a fixture's head/own nodes. Not embedded in the
+/// golden projection (`GoldenSegment` omits `RecordRef`/`NodeStamp`), so any
+/// fixed value is fine; this one is fixed for determinism, matching the file's
+/// convention.
+fn session_self() -> SessionId {
+    "01ARZ3NDEKTSV4RRFFQ69G5FBA".parse().unwrap()
+}
+
+/// Build one `(PathNode, Arc<LogRecord>)` pair — the path node list shape
+/// `ContextInput.path` carries. `prov` uses `Selector::DefaultRule` + the
+/// file's fixed `ts()` for determinism.
+fn path_node(
+    session: SessionId,
+    seq: LogSeq,
+    stamp: NodeStamp,
+    record: LogRecord,
+) -> (PathNode, Arc<LogRecord>) {
+    (
+        PathNode {
+            record: RecordRef { session, seq },
+            stamp,
+            prov: NodeProvenance {
+                selected_by: Selector::DefaultRule,
+                at: ts(),
+            },
+        },
+        Arc::new(record),
+    )
 }
 
 fn ts() -> chrono::DateTime<chrono::Utc> {
@@ -87,17 +116,25 @@ fn root_simple_input() -> ContextInput {
             text: "Review diffs for races.".into(),
         }],
         tools: vec![sample_tool("read"), sample_tool("write")],
-        inherited: None,
-        head: HeadSegment::Prompt {
-            text: "Please review src/lib.rs".into(),
+        path: ResolvedPath {
+            nodes: vec![path_node(
+                session_self(),
+                LogSeq(0),
+                NodeStamp::Head,
+                LogRecord::UserTurn {
+                    seq: LogSeq(0),
+                    ts: ts(),
+                    text: "Please review src/lib.rs".into(),
+                    prov: Provenance::UserPrompt,
+                },
+            )],
         },
-        own: Arc::from(Vec::new()),
         cache_ttl: CacheTtl::FiveMinutes,
     }
 }
 
 fn fork_inherited_input() -> ContextInput {
-    let records: Vec<LogRecord> = vec![
+    let inherited_records: Vec<LogRecord> = vec![
         LogRecord::UserTurn {
             seq: LogSeq(0),
             ts: ts(),
@@ -129,6 +166,29 @@ fn fork_inherited_input() -> ContextInput {
             },
         },
     ];
+    let inherited_stamp = NodeStamp::Inherited {
+        from: session_parent(),
+    };
+    let mut nodes: Vec<(PathNode, Arc<LogRecord>)> = inherited_records
+        .into_iter()
+        .map(|r| {
+            let seq = r.seq().unwrap();
+            path_node(session_parent(), seq, inherited_stamp, r)
+        })
+        .collect();
+    // Head: the fork directive (the child's first own record).
+    nodes.push(path_node(
+        session_self(),
+        LogSeq(0),
+        NodeStamp::Head,
+        LogRecord::ForkDirective {
+            seq: LogSeq(0),
+            ts: ts(),
+            text: "Now review the diff for races".into(),
+            by: agent_forker(),
+            prov: Provenance::ForkDirective { by: agent_forker() },
+        },
+    ));
     ContextInput {
         agent_id: agent_fork_child(),
         turn: 0,
@@ -146,16 +206,7 @@ fn fork_inherited_input() -> ContextInput {
             text: "Review diffs for races.".into(),
         }],
         tools: vec![sample_tool("read"), sample_tool("write")],
-        inherited: Some(InheritedPrefix {
-            from: session_parent(),
-            seq_range: SeqRange::new(LogSeq(0), Some(LogSeq(3))),
-            records: Arc::from(records),
-        }),
-        head: HeadSegment::ForkDirective {
-            text: "Now review the diff for races".into(),
-            by: agent_forker(),
-        },
-        own: Arc::from(Vec::new()),
+        path: ResolvedPath { nodes },
         cache_ttl: CacheTtl::FiveMinutes,
     }
 }
@@ -175,17 +226,25 @@ fn spawn_clean_input() -> ContextInput {
             text: "Look at logs first.".into(),
         }],
         tools: vec![sample_tool("read")],
-        inherited: None,
-        head: HeadSegment::Prompt {
-            text: "Diagnose the failing pipeline run #482".into(),
+        path: ResolvedPath {
+            nodes: vec![path_node(
+                session_self(),
+                LogSeq(0),
+                NodeStamp::Head,
+                LogRecord::UserTurn {
+                    seq: LogSeq(0),
+                    ts: ts(),
+                    text: "Diagnose the failing pipeline run #482".into(),
+                    prov: Provenance::UserPrompt,
+                },
+            )],
         },
-        own: Arc::from(Vec::new()),
         cache_ttl: CacheTtl::FiveMinutes,
     }
 }
 
 fn steer_and_toolresults_input() -> ContextInput {
-    let own_records = vec![
+    let own_records: Vec<LogRecord> = vec![
         LogRecord::Assistant {
             seq: LogSeq(1),
             ts: ts(),
@@ -224,6 +283,22 @@ fn steer_and_toolresults_input() -> ContextInput {
             },
         },
     ];
+    // Head: the session's first own record (the initial prompt).
+    let mut nodes = vec![path_node(
+        session_self(),
+        LogSeq(0),
+        NodeStamp::Head,
+        LogRecord::UserTurn {
+            seq: LogSeq(0),
+            ts: ts(),
+            text: "Please review src/lib.rs".into(),
+            prov: Provenance::UserPrompt,
+        },
+    )];
+    for r in own_records {
+        let seq = r.seq().unwrap();
+        nodes.push(path_node(session_self(), seq, NodeStamp::Own, r));
+    }
     ContextInput {
         agent_id: agent_root(),
         turn: 1,
@@ -241,11 +316,7 @@ fn steer_and_toolresults_input() -> ContextInput {
             text: "Review diffs for races.".into(),
         }],
         tools: vec![sample_tool("read"), sample_tool("write")],
-        inherited: None,
-        head: HeadSegment::Prompt {
-            text: "Please review src/lib.rs".into(),
-        },
-        own: Arc::from(own_records),
+        path: ResolvedPath { nodes },
         cache_ttl: CacheTtl::FiveMinutes,
     }
 }
@@ -556,13 +627,23 @@ fn prefix_key_stable_across_siblings_and_sensitive_to_model() {
     let key_a = conway_runtime::context::prefix_key(&base.model, &segments_a);
 
     // A "sibling": different agent identity and different post-boundary
-    // content (the fork directive text), same static+inherited prefix.
+    // content (the fork directive text), same static+inherited prefix. The
+    // first 3 nodes (inherited) are unchanged so the siblings share the
+    // prefix and differ only after breakpoint B.
     let mut sibling = base.clone();
     sibling.agent_id = agent_forker();
-    sibling.head = HeadSegment::ForkDirective {
-        text: "a completely different directive".into(),
-        by: agent_forker(),
-    };
+    sibling.path.nodes[3] = path_node(
+        session_self(),
+        LogSeq(0),
+        NodeStamp::Head,
+        LogRecord::ForkDirective {
+            seq: LogSeq(0),
+            ts: ts(),
+            text: "a completely different directive".into(),
+            by: agent_forker(),
+            prov: Provenance::ForkDirective { by: agent_forker() },
+        },
+    );
     let (segments_b, _) = ContextBuilder::new().build(&sibling).unwrap();
     let key_b = conway_runtime::context::prefix_key(&sibling.model, &segments_b);
     assert_eq!(

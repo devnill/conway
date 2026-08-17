@@ -777,8 +777,8 @@ async fn n_siblings_forked_from_one_point_share_a_byte_identical_leading_run_on_
     // breakpoint positioned inside it. ---
 
     // `system`: wholly shared (there is no per-sibling system content at
-    // all -- `HeadSegment::ForkDirective` is a `Role::User` message, never a
-    // `system` entry).
+    // all -- a `ForkDirective` record renders as a `Role::User` message, never
+    // a `system` entry).
     for pair in siblings.windows(2) {
         assert_eq!(
             pair[0]["system"], pair[1]["system"],

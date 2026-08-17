@@ -550,11 +550,14 @@ fn render_would_orphan(orphans: &[Orphan]) -> String {
 /// its already-read `Arc<LogRecord>`s, in render order (DESIGN §3). Produced by
 /// `resolve_path` (conway-session); consumed by assembly (D1-3d).
 ///
-/// This is the value `ContextInput` will gain in place of `inherited`/`head`/
-/// `own` — but NOT in this item: D1-3d owns that wiring, and the byte-identity
-/// proof against unregenerated goldens. Here it only exists as the return type
-/// of `resolve_path`, with no consumers yet, so the seam is in place without
-/// disturbing a single wire byte.
+/// This is the value `ContextInput` carries in place of the legacy
+/// `inherited`/`head`/`own` triple (D1-3d). `Clone` is derived (not a manual
+/// impl) because both halves — `PathNode` and `Arc<LogRecord>` — are `Clone`
+/// by value; cloning a `ResolvedPath` cheaply clones the `Arc`s (bump refcount,
+/// no `LogRecord` copy), which is the shape `ContextInput`'s `Clone` derive
+/// needs so the golden/behavioural tests can clone a fixture before mutating
+/// a non-path field (e.g. `cache_mode`).
+#[derive(Clone)]
 pub struct ResolvedPath {
     /// The expanded node list zipped with its already-read records, in render
     /// order. The records are cloned out of the resolver's memoised
