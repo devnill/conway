@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{AgentId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
 use crate::log::SubagentMode;
+use crate::path::SelectionKey;
 
 /// Errors produced by a `Backend` implementation.
 #[non_exhaustive]
@@ -229,6 +230,28 @@ pub enum StoreError {
     NotRemovable { session: SessionId, reason: String },
     #[error("session {session} cannot be promoted: {reason}")]
     NotPromotable { session: SessionId, reason: String },
+}
+
+/// Errors produced by a `PathStore` implementation (DESIGN-context-path §2.9,
+/// §4.4). A focused, selection-keyed counterpart to [`StoreError`] —
+/// deliberately NOT the session-keyed [`StoreError`] (whose `NotFound`/
+/// `Corrupt` carry a `SessionId`/`line`, the wrong shape for a
+/// content-addressed selection object).
+///
+/// `PrefixChainTooDeep` reuses `conway_core::transcript::MAX_ANCESTRY_DEPTH`
+/// as its bound (DESIGN §2.6 — "the same shape as `resolver.rs`'s
+/// `MAX_ANCESTRY_DEPTH`"); the one 256, referenced by name.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum PathStoreError {
+    #[error("selection {key} not found")]
+    NotFound { key: SelectionKey },
+    #[error("selection {key} corrupt: {detail}")]
+    Corrupt { key: SelectionKey, detail: String },
+    #[error("path store io error: {detail}")]
+    Io { detail: String },
+    #[error("prefix chain too deep (depth {depth} exceeds MAX_ANCESTRY_DEPTH)")]
+    PrefixChainTooDeep { depth: usize },
 }
 
 /// Errors produced by the `Router`.

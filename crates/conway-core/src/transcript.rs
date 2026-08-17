@@ -96,7 +96,12 @@ use crate::ports::SessionStore;
 
 /// Ancestry walks longer than this are reported as corrupt rather than
 /// followed indefinitely — see the module-level "Cycle / depth guard" docs.
-const MAX_ANCESTRY_DEPTH: usize = 256;
+///
+/// Reused as the prefix-chain depth bound for path selection expansion
+/// (DESIGN-context-path §2.6 — "the same shape as `resolver.rs`'s
+/// `MAX_ANCESTRY_DEPTH`"; the resolver moved to this module). The one
+/// bound, referenced by name, never a second 256.
+pub const MAX_ANCESTRY_DEPTH: usize = 256;
 
 /// Memoization cache key: a session and the exclusive upper bound (measured
 /// over its *effective* transcript) of the resolved prefix — see the

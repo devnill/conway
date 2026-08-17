@@ -62,6 +62,7 @@ mod capability_index;
 mod events;
 mod hook_runner;
 mod observer;
+mod path_store;
 mod permission;
 mod plugin;
 mod routing;
@@ -74,6 +75,7 @@ pub use capability_index::*;
 pub use events::*;
 pub use hook_runner::*;
 pub use observer::*;
+pub use path_store::*;
 pub use permission::*;
 pub use plugin::*;
 pub use routing::*;
@@ -95,6 +97,7 @@ mod tests {
         _: &dyn Tool,
         _: &dyn PermissionGate,
         _: &dyn SessionStore,
+        _: &dyn PathStore,
         _: &dyn Router,
         _: &dyn HealthRegistry,
         _: &dyn SubagentHost,
