@@ -213,6 +213,18 @@ const WATCHED_ENUMS: &[WatchedEnum] = &[
               refuse, ask) -- the allow/deny asymmetry and trust gate \
               hinge on it",
     },
+    WatchedEnum {
+        name: "PathOp",
+        decl_file: "crates/conway-core/src/path.rs",
+        why: "each variant is a distinct structural edit a curator proposes \
+              (omit/include/move/restamp a node) whose effect on the derived \
+              path IS the behavior; DESIGN §5: the path constructors \
+              (default_path/derive/derive_reordered) emit no PathOp internally \
+              -- they receive ops from curators -- and offers_for (the §4.1 \
+              harness repair-offer path) constructs Omit/Include/Move as \
+              suggestions, so only Restamp stays inert (allowlisted) until a \
+              curator constructs it",
+    },
 ];
 
 /// A watched enum's variant that is deliberately allowlisted: nothing in
@@ -277,6 +289,29 @@ const ALLOWLIST: &[Allowlisted] = &[
     // do not remove): both are now constructed in production -- the TUI
     // prompt's `s` scope key (`conway-cli/src/tui/input.rs`) and the
     // facade's scoped grant methods -- so their entries are gone too.
+    //
+    // -- PathOp (D1-3a part 2): only RESTAMP is a deliberate forward
+    // declaration. `offers_for` (the harness repair-offer path, §4.1)
+    // constructs `Omit`/`Include` (rule 1/2 repair offers) and `Move`
+    // (rule 3: the inverse reorder is the only single-op repair for a
+    // result-before-call orphan), so the guard finds those three
+    // constructed and they are NOT on this list. `Restamp` is the one
+    // variant no harness path constructs -- curators construct it
+    // (committing a curated selection so children share its cache), and no
+    // curator exists yet (D1-8/conway.memory). This is a TEMPORARY
+    // allowance: the sub-unit that first constructs a `Restamp` in
+    // production (Unit 3 / D1-8) must remove this entry AND the
+    // "not yet implemented" marker on the variant's own doc comment.
+    Allowlisted {
+        enum_name: "PathOp",
+        variant: "Restamp",
+        reason: "Constructed only by curator plugins (outside \
+                 conway-core/session/runtime), per DESIGN §5; no curator exists \
+                 yet (curators land with the curation capability, D1-8). \
+                 derive/derive_reordered APPLY this op but do not construct \
+                 it, and offers_for (the harness repair-offer path) never \
+                 offers a restamp, so nothing in core constructs a Restamp.",
+    },
 ];
 
 fn workspace_root() -> PathBuf {
