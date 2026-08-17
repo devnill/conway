@@ -93,6 +93,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use conway_core::canon::canonical_json_bytes;
 use conway_core::capabilities::CacheMode;
 use conway_core::content::{ContentBlock, Role, ToolResult, ToolSpec};
 use conway_core::error::RuntimeError;
@@ -101,7 +102,7 @@ use conway_core::log::LogRecord;
 use conway_core::provenance::{ContextReport, ContextReportEntry, Provenance};
 use conway_core::segment::{CacheHint, CacheTtl, PromptSegment};
 
-use super::prefix::{self, canonical_json_bytes};
+use super::prefix;
 
 /// Name of the estimator recorded on every [`ContextReport`] this builder
 /// produces (T-9: never present a token estimate as exact without naming

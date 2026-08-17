@@ -16,6 +16,7 @@
 //! and **must delete this label when it lands.**
 
 pub mod agent;
+pub mod canon;
 pub mod capabilities;
 pub mod config;
 pub mod containment;
@@ -27,6 +28,7 @@ pub mod failure;
 pub mod hook;
 pub mod ids;
 pub mod log;
+pub mod path;
 pub mod permission_mode;
 pub mod permission_pattern;
 pub mod ports;
