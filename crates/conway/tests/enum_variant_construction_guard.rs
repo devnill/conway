@@ -312,6 +312,31 @@ const ALLOWLIST: &[Allowlisted] = &[
                  it, and offers_for (the harness repair-offer path) never \
                  offers a restamp, so nothing in core constructs a Restamp.",
     },
+    // -- LogRecord (D1-3c): two new variants for the first-class context
+    // path system. The variants, their serde shapes, and their
+    // `seq`/`kind_tags_are_exact` handling are in place, and the
+    // `resolve_default_path` orchestrator (`conway-runtime/src/context/
+    // path.rs`) READS `ContextPathSet` to find the HEAD — but reading is
+    // not constructing. The call sites that WRITE these records land with
+    // the runtime wiring (D1-3d) and the path-naming surface (later). This
+    // is a TEMPORARY allowance: the sub-unit that first constructs one in
+    // production must remove the entry here AND the "not yet implemented"
+    // marker on the variant's own doc comment.
+    Allowlisted {
+        enum_name: "LogRecord",
+        variant: "ContextPathSet",
+        reason: "D1-3c adds the variant, serde shape, and a reader \
+                 (resolve_default_path finds the HEAD) but no production \
+                 writer. The call site that appends a ContextPathSet lands \
+                 with the runtime wiring (D1-3d).",
+    },
+    Allowlisted {
+        enum_name: "LogRecord",
+        variant: "ContextPathNamed",
+        reason: "D1-3c adds the variant and serde shape but no production \
+                 writer. The call site that appends a name→selection binding \
+                 lands with the path-naming surface (D1-3d or later).",
+    },
 ];
 
 fn workspace_root() -> PathBuf {

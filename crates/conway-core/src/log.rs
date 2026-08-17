@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::AgentResult;
 use crate::content::{ContentBlock, StopReason, ToolResult, Usage};
 use crate::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
+use crate::path::SelectionKey;
 use crate::ports::PluginConfig;
 use crate::provenance::{ContextReport, Provenance};
 
@@ -346,6 +347,46 @@ pub enum LogRecord {
         target_seq: LogSeq,
         excluded: bool,
     },
+    /// The owning session named a head/selection at a point in time (DESIGN §2.5).
+    /// A head points at an immutable `selection` and covers the mutable tail up
+    /// to `covers_upto` (LOCAL units, same as `resolver.rs`). Absence of any
+    /// `ContextPathSet` means the default path (DESIGN §6).
+    ///
+    /// Not yet implemented in core: the variant, its serde shape, and its
+    /// `seq`/`kind_tags_are_exact` handling are in place (D1-3c), but no
+    /// production code appends one yet — the call site that writes a head
+    /// lands with the runtime wiring (D1-3d). The `resolve_default_path`
+    /// orchestrator (`conway-runtime/src/context/path.rs`) READS this variant
+    /// to find the HEAD, but reading is not constructing.
+    ContextPathSet {
+        seq: LogSeq,
+        ts: DateTime<Utc>,
+        selection: SelectionKey,
+        covers_upto: LogSeq,
+    },
+    /// A session-scoped name→selection binding (DESIGN §2.5). Sibling record to
+    /// `ContextPathSet` in the owning session's own log. Names are
+    /// session-scoped: two sessions may use the same name for different
+    /// selections without collision.
+    ///
+    /// Not yet implemented in core: the variant and its serde shape are in
+    /// place (D1-3c), but no production code appends one yet — the call site
+    /// that writes a name→selection binding lands with the path-naming
+    /// surface (D1-3d or later).
+    ///
+    /// **Reconciliation note — why this carries `seq`/`ts` when the §2.5
+    /// sketch wrote only `{ name, selection }`.** The sketch was informal, not
+    /// a constraint. Every non-Header `LogRecord` variant carries seq/ts; a
+    /// naming is a timeline event (it happens at a point in time in a
+    /// session); and last-write-wins-by-name resolution needs `seq` to
+    /// determine which binding is "latest" when a name is rebound. So the
+    /// binding gets seq/ts like every other timeline event.
+    ContextPathNamed {
+        seq: LogSeq,
+        ts: DateTime<Utc>,
+        name: String,
+        selection: SelectionKey,
+    },
 }
 
 impl LogRecord {
@@ -362,7 +403,9 @@ impl LogRecord {
             | LogRecord::AgentResultRecord { seq, .. }
             | LogRecord::ChildResultRecord { seq, .. }
             | LogRecord::ContextReportRecord { seq, .. }
-            | LogRecord::ContextMask { seq, .. } => Some(*seq),
+            | LogRecord::ContextMask { seq, .. }
+            | LogRecord::ContextPathSet { seq, .. }
+            | LogRecord::ContextPathNamed { seq, .. } => Some(*seq),
         }
     }
 
@@ -380,6 +423,8 @@ impl LogRecord {
             LogRecord::ChildResultRecord { .. } => "child_result",
             LogRecord::ContextReportRecord { .. } => "context_report",
             LogRecord::ContextMask { .. } => "context_mask",
+            LogRecord::ContextPathSet { .. } => "context_path_set",
+            LogRecord::ContextPathNamed { .. } => "context_path_named",
         }
     }
 }
@@ -530,6 +575,24 @@ mod tests {
                     excluded: true,
                 },
                 "context_mask",
+            ),
+            (
+                LogRecord::ContextPathSet {
+                    seq: LogSeq(11),
+                    ts: ts(),
+                    selection: crate::path::SelectionKey::from_nodes(&[]),
+                    covers_upto: LogSeq(9),
+                },
+                "context_path_set",
+            ),
+            (
+                LogRecord::ContextPathNamed {
+                    seq: LogSeq(12),
+                    ts: ts(),
+                    name: "stable".into(),
+                    selection: crate::path::SelectionKey::from_nodes(&[]),
+                },
+                "context_path_named",
             ),
         ];
         for (record, expected) in &records {
