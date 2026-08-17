@@ -168,7 +168,8 @@ impl SubagentHost for Runtime {
     ///    reads a session's *own* records straight from the store,
     ///    regardless of what its header's `origin` says).
     /// 4. Append the head record: `LogRecord::ForkDirective` (fork) or
-    ///    `LogRecord::UserTurn` (spawn) — `agent_loop::split_head` (///    unmodified) already turns either into the right `HeadSegment`.
+    ///    `LogRecord::UserTurn` (spawn) — `agent_loop::path_from_legacy`
+    ///    (///    unmodified) stamps it `Head` and renders it via `own_segment`.
     ///    **Skipped** when `spec.keep_alive` is set AND `spec.prompt` is
     ///    empty (the interactive keep-alive case, this item's addition): no
     ///    placeholder record is written and the child's `resume_gate` starts

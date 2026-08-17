@@ -647,11 +647,12 @@ async fn steer_lands_only_at_the_next_turn_boundary_as_a_parent_steer_segment() 
 
 /// Criterion (source-level/structural): no code path injects into a
 /// context outside `drain_inbox` -- `ContextInput` is constructed exactly
-/// once per turn, and its `own` field always comes straight from
-/// `SessionStore::read` (via `split_head`), never from anything
-/// `drain_inbox` returns directly (`drain_inbox` returns `()`, not
-/// records -- see `mailbox::DrainEffect::Persist`'s own doc on why a
-/// steer becomes visible only by first becoming a stored record).
+/// once per turn, and its `path` is always derived from `all_records`
+/// (sourced from a fresh `SessionStore::read` via `path_from_legacy`),
+/// never from anything `drain_inbox` returns directly (`drain_inbox`
+/// returns `()`, not records -- see `mailbox::DrainEffect::Persist`'s own
+/// doc on why a steer becomes visible only by first becoming a stored
+/// record).
 #[test]
 fn context_own_is_only_ever_populated_from_a_fresh_store_read() {
     let src = include_str!("../src/agent_loop.rs");
@@ -661,8 +662,8 @@ fn context_own_is_only_ever_populated_from_a_fresh_store_read() {
         "ContextInput must be constructed in exactly one place"
     );
     assert!(
-        src.contains("let (head, own) = try_rt!(state, split_head(&all_records, self.session));"),
-        "own must be derived from split_head's return value, sourced from a fresh store read"
+        src.contains("path_from_legacy(self.inherited.as_ref(), &all_records, self.session)"),
+        "path must be derived from path_from_legacy over all_records, sourced from a fresh store read"
     );
     assert!(
         src.contains("async fn drain_inbox(&mut self) -> Result<(), RuntimeError>"),

@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
-use conway_core::error::{PathStoreError, StoreError};
+use conway_core::error::{PathStoreError, RuntimeError, StoreError};
 use conway_core::ids::{LogSeq, SeqRange, SessionId};
 use conway_core::log::LogRecord;
 use conway_core::path::{
@@ -39,6 +39,8 @@ use conway_core::path::{
 };
 use conway_core::ports::{PathStore, SessionStore};
 use conway_core::transcript::{TranscriptResolver, MAX_ANCESTRY_DEPTH};
+
+use super::builder::InheritedPrefix;
 
 /// Resolve the default path for `session` (DESIGN §2.5, §5, §6).
 ///
@@ -470,6 +472,144 @@ fn store_err_to_path(e: StoreError) -> PathError {
             detail: format!("store error: {other}"),
         },
     }
+}
+
+/// A TRANSITIONAL translation constructor: build a `ResolvedPath` from the
+/// legacy `inherited` prefix + head record + own records shape today's runtime
+/// produces, with correct stamps and attribution.
+///
+/// This exists because `resolve_default_path` (above) has a divergent no-head
+/// fork-child branch — a flattened `Arc<[LogRecord]>` carries no per-record
+/// session id, so it stamps every record `Head`/`Own` and attributes every
+/// `RecordRef.session` to the child, losing the `Inherited{from: parent}`
+/// provenance today's runtime produces (pinned by
+/// `fork_child_no_head_pins_divergent_stamps`). Wiring `resolve_default_path`
+/// naively would break the `context_fork_inherited` golden, so this
+/// translation reproduces today's behaviour byte-for-byte instead, while
+/// `resolve_default_path` stays UNWIRED (latent). The ancestry-walk fix that
+/// makes `resolve_default_path` byte-identical for the no-head fork-child case
+/// is a separate follow-up item; this constructor is the DESIGN §6 migration
+/// bridge.
+///
+/// `own_log` is the FULL own log: `[0]` is the head (a `UserTurn` or
+/// `ForkDirective`), `[1..]` are the own volatile records. The head validation
+/// mirrors `agent_loop::split_head`'s precondition (now deleted): a session
+/// with no records, or whose first record is neither kind, is a caller
+/// precondition violation — `Runtime::start_root`/`prompt`/`spawn`/`fork`
+/// always append the head record before an `AgentLoop` task is spawned.
+///
+/// Does NOT preserve `Arc::ptr_eq`: each node wraps a fresh
+/// `Arc::new(record.clone())`. That is fine for rendering — the builder maps
+/// each node through `record_role_and_content`/`own_segment`, which read
+/// content only — and consistent with the `resolver.rs` module doc's note that
+/// `Arc::ptr_eq` does not hold across siblings with the current cache shape.
+/// `SelectionKey` hashes `record` (session+seq) + `stamp` only, never
+/// `prov.at`, so the `Utc::now()` in `NodeProvenance.at` is deterministic
+/// enough for identity.
+pub fn path_from_legacy(
+    inherited: Option<&InheritedPrefix>,
+    own_log: &[LogRecord],
+    session: SessionId,
+) -> Result<ResolvedPath, RuntimeError> {
+    // 1. Validate the head (own_log[0]) — same precondition split_head enforced.
+    let head = own_log.first().ok_or_else(|| {
+        RuntimeError::Store(StoreError::Corrupt {
+            session,
+            line: 0,
+            detail: "session has no records to build context from".to_string(),
+        })
+    })?;
+    if !matches!(
+        head,
+        LogRecord::UserTurn { .. } | LogRecord::ForkDirective { .. }
+    ) {
+        return Err(RuntimeError::Store(StoreError::Corrupt {
+            session,
+            line: 0,
+            detail: format!(
+                "expected the session's first record to be a user_turn or fork_directive, found {}",
+                head.kind_str()
+            ),
+        }));
+    }
+
+    let mut nodes: Vec<(PathNode, Arc<LogRecord>)> = Vec::new();
+
+    // 2. Inherited prefix (if any) — every record stamped `Inherited { from:
+    // inherited.from }` and attributed to `inherited.from`, matching today's
+    // [3] loop exactly (at fork depth >= 2 the prefix includes grandparent
+    // records, all stamped `from: immediate_parent`; the rendering uses
+    // `stamp.from`, not `record.session`).
+    if let Some(inherited) = inherited {
+        for record in inherited.records.iter() {
+            if !is_content_record(record) {
+                continue;
+            }
+            let seq = record
+                .seq()
+                .expect("inherited content records always carry a seq (Header never appears here)");
+            nodes.push((
+                PathNode {
+                    record: RecordRef {
+                        session: inherited.from,
+                        seq,
+                    },
+                    stamp: NodeStamp::Inherited {
+                        from: inherited.from,
+                    },
+                    prov: NodeProvenance {
+                        selected_by: Selector::DefaultRule,
+                        at: Utc::now(),
+                    },
+                },
+                Arc::new(record.clone()),
+            ));
+        }
+    }
+
+    // 3. Head — own_log[0], stamped `Head`, attributed to this session.
+    {
+        let seq = head
+            .seq()
+            .expect("head content records always carry a seq (Header never appears here)");
+        nodes.push((
+            PathNode {
+                record: RecordRef { session, seq },
+                stamp: NodeStamp::Head,
+                prov: NodeProvenance {
+                    selected_by: Selector::DefaultRule,
+                    at: Utc::now(),
+                },
+            },
+            Arc::new(head.clone()),
+        ));
+    }
+
+    // 4. Own — own_log[1..], each content record stamped `Own`, attributed to
+    // this session. Non-content records (Header, AgentResultRecord,
+    // ContextReportRecord) are skipped, matching today's [5..] `own_segment`
+    // filtering.
+    for record in &own_log[1..] {
+        if !is_content_record(record) {
+            continue;
+        }
+        let seq = record
+            .seq()
+            .expect("own content records always carry a seq (Header never appears here)");
+        nodes.push((
+            PathNode {
+                record: RecordRef { session, seq },
+                stamp: NodeStamp::Own,
+                prov: NodeProvenance {
+                    selected_by: Selector::DefaultRule,
+                    at: Utc::now(),
+                },
+            },
+            Arc::new(record.clone()),
+        ));
+    }
+
+    Ok(ResolvedPath { nodes })
 }
 
 #[cfg(test)]

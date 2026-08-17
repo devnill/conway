@@ -29,12 +29,13 @@
 //!
 //! `AgentLoop` gained one field this item: `inherited: Option<InheritedPrefix>`.
 //! For a root agent or a spawned child it is `None` and every turn's
-//! `ContextInput::inherited` stays `None`, exactly as before. For a fork
-//! child, `subagent.rs`'s `SubagentHost::start` resolves it exactly once
-//! (via `conway_core::transcript::TranscriptResolver`, at fork time, before any of
-//! the child's own records exist) and this loop simply clones it into
-//! every turn's `ContextInput` unchanged -- see the field's own doc for why
-//! no turn-boundary re-resolution is needed or correct.
+//! `ContextInput.path` carries no `Inherited`-stamped nodes, exactly as
+//! before. For a fork child, `subagent.rs`'s `SubagentHost::start` resolves
+//! it exactly once (via `conway_core::transcript::TranscriptResolver`, at
+//! fork time, before any of the child's own records exist) and this loop
+//! simply hands it to `path_from_legacy` each turn unchanged -- see the
+//! field's own doc for why no turn-boundary re-resolution is needed or
+//! correct.
 //!
 //! `AgentSpec::report_slot` (An earlier review found: ) is this item's
 //! one additive hook for a live caller: after each successful
@@ -131,7 +132,7 @@ use chrono::Utc;
 use conway_core::agent::{AgentMessage, AgentResult, Budget, ResultStatus, ToolSelector};
 use conway_core::capabilities::{CacheMode, HeadroomPolicy, RequiredCaps, ToolCallSupport};
 use conway_core::content::{ContentBlock, ToolResult, ToolSpec, Usage};
-use conway_core::error::{ConwayError, RoutingError, RuntimeError, StoreError};
+use conway_core::error::{ConwayError, RoutingError, RuntimeError};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, ModelId, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::LogRecord;
@@ -146,8 +147,9 @@ use conway_core::segment::{CacheTtl, PromptSegment};
 use tokio_util::sync::CancellationToken;
 
 use crate::attempt::{AttemptEngine, AttemptOutcome, AttemptRequest};
+use crate::context::path::path_from_legacy;
 use crate::context::{
-    ContextBuilder, ContextInput, GuardedContextHook, HeadSegment, InheritedPrefix, SkillFragment,
+    ContextBuilder, ContextInput, GuardedContextHook, InheritedPrefix, SkillFragment,
     SystemPromptSpec,
 };
 use crate::events::EventBus;
@@ -519,7 +521,7 @@ impl AgentLoop {
     /// calls `self.inbox.drain()`, is what makes "no code path injects into
     /// a context outside `drain_inbox`" hold structurally: a steer becomes
     /// visible by first becoming a stored record, read back exactly like
-    /// any other own record (`split_head` below), never by this function
+    /// any other own record (`path_from_legacy` below), never by this function
     /// handing a segment to anyone directly.
     ///
     /// A soft cancel only sets `self.pending_cancel`, consumed by the
@@ -955,7 +957,6 @@ impl AgentLoop {
                 state,
                 self.deps.store.read(&self.session, SeqRange::full()).await
             );
-            let (head, own) = try_rt!(state, split_head(&all_records, self.session));
 
             let tool_specs = self.deps.registry.specs(self.spec.tools.as_ref());
             let model_hint = self
@@ -965,6 +966,10 @@ impl AgentLoop {
                 .map(|pin| pin.model.clone())
                 .unwrap_or_else(|| ModelId::new("unrouted"));
 
+            let path = try_rt!(
+                state,
+                path_from_legacy(self.inherited.as_ref(), &all_records, self.session)
+            );
             let input = ContextInput {
                 agent_id: self.agent_id,
                 turn: state.turn,
@@ -973,9 +978,7 @@ impl AgentLoop {
                 system_prompt: self.spec.system_prompt.clone(),
                 skills: self.spec.skills.clone(),
                 tools: tool_specs.clone(),
-                inherited: self.inherited.clone(),
-                head,
-                own,
+                path,
                 cache_ttl: self.spec.cache_ttl,
             };
             let (mut segments, mut report) = try_rt!(state, self.deps.builder.build(&input));
@@ -1908,44 +1911,6 @@ fn segment_metadata_json(segments: &[PromptSegment]) -> Vec<serde_json::Value> {
             })
         })
         .collect()
-}
-
-/// Splits a session's full record list into the fixed head segment (the
-/// session's own record 0: a fork directive or the initial prompt) and the
-/// volatile `own` records that follow it (architecture §5.3). A session
-/// with no records, or whose first record is neither, is a caller
-/// precondition violation — `Runtime::start_root`/`prompt` always
-/// append the head record before an `AgentLoop` task is spawned.
-fn split_head(
-    records: &[LogRecord],
-    session: SessionId,
-) -> Result<(HeadSegment, std::sync::Arc<[LogRecord]>), RuntimeError> {
-    match records.first() {
-        Some(LogRecord::UserTurn { text, .. }) => Ok((
-            HeadSegment::Prompt { text: text.clone() },
-            std::sync::Arc::from(&records[1..]),
-        )),
-        Some(LogRecord::ForkDirective { text, by, .. }) => Ok((
-            HeadSegment::ForkDirective {
-                text: text.clone(),
-                by: *by,
-            },
-            std::sync::Arc::from(&records[1..]),
-        )),
-        Some(other) => Err(RuntimeError::Store(StoreError::Corrupt {
-            session,
-            line: 0,
-            detail: format!(
-                "expected the session's first record to be a user_turn or fork_directive, found {}",
-                other.kind_str()
-            ),
-        })),
-        None => Err(RuntimeError::Store(StoreError::Corrupt {
-            session,
-            line: 0,
-            detail: "session has no records to build context from".to_string(),
-        })),
-    }
 }
 
 /// Concatenates every `ContentBlock::Text` in `blocks`, in order — the
