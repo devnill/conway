@@ -184,6 +184,12 @@ pub struct ContextInput {
     pub tools: Vec<ToolSpec>,
     pub path: ResolvedPath,
     pub cache_ttl: CacheTtl,
+    /// Why the pre-assembly curator declined to curate this turn, if it
+    /// failed (DESIGN §11.6). `None` -- the overwhelmingly common case --
+    /// when no curator is installed or the curator succeeded. Carried into
+    /// the assembled `ContextReport` so a curator failure is recorded
+    /// durably beside `dropped` rather than only in a log line.
+    pub curator_failed: Option<String>,
 }
 
 /// Assembles an agent's request context in the fixed architecture §5.3
@@ -401,7 +407,13 @@ impl ContextBuilder {
             &key,
         );
 
-        let report = build_report(input.agent_id, input.turn, &segments, dropped);
+        let report = build_report(
+            input.agent_id,
+            input.turn,
+            &segments,
+            dropped,
+            input.curator_failed.clone(),
+        );
 
         Ok((segments, report))
     }
@@ -444,6 +456,7 @@ pub(crate) fn retotal(
     segments: &mut [PromptSegment],
     tools: &[ToolSpec],
     dropped: Vec<String>,
+    curator_failed: Option<String>,
 ) -> ContextReport {
     for segment in segments.iter_mut() {
         segment.tokens_est = Some(estimate_tokens(&segment.content));
@@ -455,18 +468,22 @@ pub(crate) fn retotal(
     {
         segment.tokens_est = Some(estimate_tool_schemas_tokens(tools));
     }
-    build_report(agent_id, turn, segments, dropped)
+    build_report(agent_id, turn, segments, dropped, curator_failed)
 }
 
 /// `dropped` is threaded in rather than recomputed: by the time a report is
 /// built the unanswered calls are already gone from `segments`, so nothing
 /// downstream can rediscover them. [`retotal`] therefore has to carry the
-/// incoming report's list forward -- see its own doc.
+/// incoming report's list forward -- see its own doc. `curator_failed`
+/// (DESIGN §11.6) is threaded for the same reason: the curator ran
+/// pre-assembly, so by report-build time nothing in `segments` remembers it
+/// failed, and a re-totalled report would silently lose the record.
 fn build_report(
     agent_id: AgentId,
     turn: u32,
     segments: &[PromptSegment],
     dropped: Vec<String>,
+    curator_failed: Option<String>,
 ) -> ContextReport {
     let entries: Vec<ContextReportEntry> = segments
         .iter()
@@ -486,6 +503,7 @@ fn build_report(
         segments: entries,
         total_tokens_est,
         dropped,
+        curator_failed,
     }
 }
 
@@ -1087,7 +1105,7 @@ mod estimator_tests {
             text: "a".repeat(40),
         }];
 
-        let report = retotal(agent_id, 3, &mut segments, &[], Vec::new());
+        let report = retotal(agent_id, 3, &mut segments, &[], Vec::new(), None);
 
         let expected = estimate_tokens(&segments[0].content);
         assert_eq!(segments[0].tokens_est, Some(expected));
@@ -1105,7 +1123,7 @@ mod estimator_tests {
             _ => true,
         });
 
-        let report = retotal(agent_id, 0, &mut segments, &[], Vec::new());
+        let report = retotal(agent_id, 0, &mut segments, &[], Vec::new(), None);
         assert_eq!(report.segments.len(), 1);
     }
 
@@ -1153,7 +1171,7 @@ mod estimator_tests {
         )];
         let tools = vec![sample_tool("read"), sample_tool("write")];
 
-        let report = retotal(agent_id, 0, &mut segments, &tools, Vec::new());
+        let report = retotal(agent_id, 0, &mut segments, &tools, Vec::new(), None);
 
         let expected = estimate_tool_schemas_tokens(&tools);
         assert!(expected > 0);
@@ -1189,6 +1207,7 @@ mod estimator_tests {
             )
             .unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
         };
         let (segments, report) = ContextBuilder::new().build(&input).unwrap();
 
@@ -1281,6 +1300,7 @@ mod own_segment_provenance_tests {
             )
             .unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
         };
 
         let (segments, report) = ContextBuilder::new().build(&input).unwrap();
@@ -1366,6 +1386,7 @@ mod breakpoint_indices_tests {
             tools: vec![],
             path: path_from_legacy(Some(&inherited), &head_log(), SessionId::new()).unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
         }
     }
 
@@ -1405,6 +1426,7 @@ mod breakpoint_indices_tests {
             tools: vec![],
             path: path_from_legacy(None, &head_log(), SessionId::new()).unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
         };
         let (segments, _) = ContextBuilder::new().build(&input).unwrap();
 
@@ -1503,6 +1525,7 @@ mod tool_call_pairing_tests {
             tools: vec![],
             path: path_from_legacy(None, &own_log, SessionId::new()).unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
         }
     }
 
@@ -1529,6 +1552,7 @@ mod tool_call_pairing_tests {
             tools: vec![],
             path: path_from_legacy(Some(&inherited), &own_log, SessionId::new()).unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
         }
     }
 
@@ -1736,8 +1760,15 @@ mod tool_call_pairing_tests {
             &mut segments,
             &[],
             report.dropped.clone(),
+            Some("synthetic curator failure".to_string()),
         );
         assert_eq!(after.dropped, vec!["b".to_string()]);
+        // §11.6: a re-totalled report must not lose the curator record --
+        // the curator ran pre-assembly, so nothing in `segments` remembers it.
+        assert_eq!(
+            after.curator_failed.as_deref(),
+            Some("synthetic curator failure")
+        );
     }
 
     /// `check_tool_call_coherence` is a no-op report on a fully-answered

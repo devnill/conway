@@ -275,6 +275,8 @@ fn build_loop(
         headroom: Arc::new(HeadroomPolicy::default()),
         tree: tree.clone(),
         context_hook: std::sync::RwLock::new(None),
+        resolver: Arc::new(conway_core::transcript::TranscriptResolver::new(64)),
+        context_curator: std::sync::RwLock::new(None),
         observers: Vec::new(),
         plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
     });

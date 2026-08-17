@@ -59,6 +59,7 @@
 mod artifact;
 mod backend;
 mod capability_index;
+mod curator;
 mod events;
 mod hook_runner;
 mod observer;
@@ -72,6 +73,7 @@ mod subagent;
 pub use artifact::*;
 pub use backend::*;
 pub use capability_index::*;
+pub use curator::*;
 pub use events::*;
 pub use hook_runner::*;
 pub use observer::*;
@@ -107,6 +109,7 @@ mod tests {
         _: &dyn BackendFactory,
         _: &dyn HookRunner,
         _: &dyn ToolObserver,
+        _: &dyn Curator,
     ) {
     }
 }

@@ -186,13 +186,13 @@ fn tool_call_response(call_id: &str, tool: &str, arguments: serde_json::Value) -
 /// itself (no separate `with_context_hook` call) -- the packaging surface
 /// this item exists to prove.
 fn build_conway(
-    scratch: &PathBuf,
+    scratch: &std::path::Path,
     backend: Arc<ScriptedBackend>,
     install: bool,
 ) -> (conway::Conway, Arc<FakeStore>) {
     let store = Arc::new(FakeStore::new());
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let mut builder = ConwayBuilder::from_parts(base_config(scratch.clone()))
+    let mut builder = ConwayBuilder::from_parts(base_config(scratch.to_path_buf()))
         .with_backend(backend)
         .with_session_store(store.clone())
         .with_permission_gate(gate)

@@ -633,6 +633,16 @@ impl ValidatedPath {
         self.nodes.iter().map(|(n, r)| (n, r))
     }
 
+    /// Consume this path and return its expanded node list zipped with the
+    /// already-read `Arc<LogRecord>`s, in render order. The consuming
+    /// (no-clone) inverse of [`Self::default_path`] -- the curator stage
+    /// uses this to turn a curator's [`Derivation`] (whose `path` is a
+    /// `ValidatedPath`) into the [`ResolvedPath`] assembly reads, without
+    /// copying the `Arc<LogRecord>`s a second time (DESIGN §11.4).
+    pub fn into_nodes(self) -> Vec<(PathNode, Arc<LogRecord>)> {
+        self.nodes
+    }
+
     /// Incoherence the constructor tolerated rather than refused (DESIGN
     /// §4.1). Empty for derived paths; `default_path` declares here. Render-
     /// time repair (D1-3e) reconciles `drop_unanswered_tool_calls`'s drops
@@ -1793,7 +1803,7 @@ mod tests {
     #[test]
     fn validate_coherence_rule_1_call_present_result_omitted() {
         let (base, call_n, result_n) = pair_base();
-        let orphans = validate_coherence(&base, &[call_n.clone()]);
+        let orphans = validate_coherence(&base, std::slice::from_ref(&call_n));
         assert_eq!(orphans.len(), 1);
         let o = &orphans[0];
         assert_eq!(o.call_id, "tc_3");
@@ -1814,7 +1824,7 @@ mod tests {
     #[test]
     fn validate_coherence_rule_2_result_present_call_omitted() {
         let (base, call_n, result_n) = pair_base();
-        let orphans = validate_coherence(&base, &[result_n.clone()]);
+        let orphans = validate_coherence(&base, std::slice::from_ref(&result_n));
         assert_eq!(orphans.len(), 1);
         let o = &orphans[0];
         assert_eq!(o.call_id, "tc_3");

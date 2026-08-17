@@ -291,6 +291,7 @@ fn arb_context_report_record() -> impl Strategy<Value = LogRecord> {
                     }],
                     total_tokens_est: tokens_est,
                     dropped,
+                    curator_failed: None,
                 },
             },
         )

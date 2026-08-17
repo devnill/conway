@@ -275,6 +275,7 @@ fn skill_body_is_carried_verbatim_into_assembled_segment() {
         )
         .unwrap(),
         cache_ttl: CacheTtl::FiveMinutes,
+        curator_failed: None,
     };
     let (segments, _report) = ContextBuilder::new()
         .build(&input)

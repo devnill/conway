@@ -4,6 +4,7 @@
 //! assembled `ContextReport`.
 
 pub mod builder;
+pub mod curator_stage;
 pub(crate) mod hook_guard;
 pub mod path;
 pub mod prefix;

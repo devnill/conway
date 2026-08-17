@@ -128,10 +128,10 @@ use conway_core::ids::{BackendId, ModelRef};
 use conway_core::permission_pattern::{PatternOrigin, Rule, Select, Then, When};
 use conway_core::ports::CapabilityIndex;
 use conway_core::ports::{
-    Backend, BackendBuildContext, BackendFactory, ContextHook, HealthRegistry, HookRunner,
-    PermissionGate, Plugin, PluginPermissionRule, PluginPermissionVerdict,
-    PluginStatusContribution, Router, RouterBuildContext, RouterBundle, RouterFactory,
-    RoutingExplainer, SessionStore,
+    Backend, BackendBuildContext, BackendFactory, ContextHook, CurateOutcome, Curator,
+    HealthRegistry, HookRunner, PermissionGate, Plugin, PluginPermissionRule,
+    PluginPermissionVerdict, PluginStatusContribution, Router, RouterBuildContext, RouterBundle,
+    RouterFactory, RoutingExplainer, SessionStore,
 };
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::events::EventBus;
@@ -256,6 +256,13 @@ pub struct ConwayBuilder {
     /// `context_hook` at the `Runtime`-constructed default of `None` --
     /// i.e. today's behavior, unchanged.
     context_hook: Option<Arc<dyn ContextHook>>,
+    /// An embedder-injected [`Curator`] (DESIGN §11.4). `None` (the default)
+    /// means `build()` contributes no curator of its own -- it still composes
+    /// any plugin-contributed curators, and if BOTH are `None` the runtime's
+    /// `context_curator` stays `None`, leaving the pre-assembly stage a
+    /// zero-cost pass-through (the `context_golden` 11/11 gate's
+    /// load-bearing guarantee).
+    context_curator: Option<Arc<dyn Curator>>,
     /// `None` (the default) means
     /// `build()` never calls `Runtime::set_hook_runner` at all, leaving
     /// `PermissionBroker::decide`'s `pre_tool_use` hook-check step at the
@@ -358,6 +365,7 @@ impl ConwayBuilder {
             backend_factories: Vec::new(),
             declined_backend_kinds: Vec::new(),
             context_hook: None,
+            context_curator: None,
             hook_runner: None,
             builtin_selection: None,
             warnings: Vec::new(),
@@ -590,6 +598,26 @@ impl ConwayBuilder {
     /// item, with a hard `ContextTooLarge` on overflow.
     pub fn with_context_hook(mut self, hook: Arc<dyn ContextHook>) -> Self {
         self.context_hook = Some(hook);
+        self
+    }
+
+    /// Registers a standalone [`Curator`] -- the pre-assembly selection-layer
+    /// curation capability (DESIGN-context-path §11.4). Mirrors
+    /// [`Self::with_context_hook`]'s own shape exactly: an embedder with a
+    /// standalone curator and no plugin still uses it directly, but a plugin
+    /// can ALSO contribute curators through [`Plugin::curators`] on the SAME
+    /// `with_plugin`/`install_selected` surface (GP-03 -- no privileged
+    /// channel). `build()` composes this injected curator first, then each
+    /// plugin's `curators()` in install order, into the single
+    /// `Runtime::set_context_curator` call the runtime reads.
+    ///
+    /// No call to this method (the default) AND no curating plugin installed
+    /// means `build()` never calls `Runtime::set_context_curator` at all --
+    /// the pre-assembly stage is a zero-cost pass-through, byte-identical to
+    /// a build without this port (the `context_golden` 11/11 gate's
+    /// load-bearing guarantee).
+    pub fn with_curator(mut self, curator: Arc<dyn Curator>) -> Self {
+        self.context_curator = Some(curator);
         self
     }
 
@@ -976,6 +1004,7 @@ impl ConwayBuilder {
             backend_factories,
             declined_backend_kinds,
             context_hook,
+            context_curator,
             hook_runner,
             builtin_selection,
             warnings,
@@ -1312,6 +1341,14 @@ impl ConwayBuilder {
             .iter()
             .flat_map(|p| p.context_hooks())
             .collect();
+        // Collect each installed plugin's own `Plugin::curators()`
+        // contributions BEFORE `resolved_plugins` is moved into `RuntimeDeps`
+        // below -- the SAME collect-before-move, install-after-construct
+        // shape `plugin_context_hooks` immediately above establishes for
+        // context hooks. Composed with any `with_curator`-injected curator
+        // after construction -- see the `set_context_curator` call below.
+        let plugin_curators: Vec<Arc<dyn Curator>> =
+            resolved_plugins.iter().flat_map(|p| p.curators()).collect();
         // Collect each installed plugin's own `Plugin::permission_rules()`
         // contributions BEFORE `resolved_plugins` is moved into `RuntimeDeps`
         // below (board item `01M03VKJG7JJ0JEKY265WA7MJ7`). Installed into the
@@ -1435,6 +1472,24 @@ impl ConwayBuilder {
         }
         composed.extend(plugin_context_hooks);
         rt.set_context_hook(compose_context_hooks(composed));
+        // Mirrors the `context_hook` wiring immediately above: the single
+        // curator the runtime accepts is composed here from TWO sources, in
+        // this order -- (1) an embedder's explicit `with_curator`-injected
+        // curator (if any), then (2) every installed plugin's own
+        // `Plugin::curators()` contributions, in `with_plugin`/
+        // `install_selected` install order. `None` overall (no injected
+        // curator AND no plugin contributed one) sets the runtime's curator
+        // to `None`, identical to never calling this method at all -- the
+        // zero-cost default `Plugin::curators`'s empty default preserves for
+        // every plugin that does not opt in, and the pre-assembly stage is a
+        // pass-through (the `context_golden` 11/11 gate's load-bearing
+        // guarantee).
+        let mut composed_curators: Vec<Arc<dyn Curator>> = Vec::new();
+        if let Some(injected) = context_curator {
+            composed_curators.push(injected);
+        }
+        composed_curators.extend(plugin_curators);
+        rt.set_context_curator(compose_curators(composed_curators));
         // mirrors the `context_hook`
         // wiring immediately above -- `hook_runner: None` (no
         // `with_hook_runner` call) sets the broker's runner to `None`,
@@ -1684,6 +1739,321 @@ impl ContextHook for ChainedContextHook {
         } else {
             None
         }
+    }
+}
+
+/// Composes zero or more plugin-/embedder-contributed [`Curator`]s into the
+/// single `Option<Arc<dyn Curator>>` the runtime accepts. Mirrors
+/// [`compose_context_hooks`] exactly:
+///
+/// - Empty -> `None`: the runtime's curator stays unset, and the
+///   pre-assembly stage is a zero-cost pass-through, byte-identical to no
+///   curator installed (the `context_golden` 11/11 gate's load-bearing
+///   guarantee).
+/// - One -> that curator directly: no wrapper (the common case -- e.g. a
+///   single `conway.memory` install).
+/// - More than one -> a [`ComposedCurator`] that chains them: curator B's
+///   base is curator A's derived `ValidatedPath`; `Unchanged` passes the
+///   current base through; `Failed` stops the chain and returns `Failed`;
+///   all-`Unchanged` -> `Unchanged`.
+///
+/// This is the composition `Plugin::curators`'s own doc names: an
+/// embedder's `with_curator` curator first, then each plugin's curators in
+/// install order. It keeps the `with_curator` surface working for a
+/// standalone curator while letting plugins contribute curation through the
+/// SAME `with_plugin`/`install_selected` surface -- no privileged channel
+/// (GP-03).
+///
+/// **No `GuardedCurator` re-validation layer** -- the `Derivation`-only
+/// construction IS the guard (DESIGN §11.4): `CurateOutcome::Derived` can
+/// only be built from a `Derivation`, which is already the validated,
+/// cost-estimated output of `ValidatedPath::derive`. The unrepresentability
+/// lives in the type, not a wrapper, so the seam does not need a second
+/// guard the way `ContextHook` needed `GuardedContextHook`.
+fn compose_curators(curators: Vec<Arc<dyn Curator>>) -> Option<Arc<dyn Curator>> {
+    match curators.len() {
+        0 => None,
+        1 => Some(curators.into_iter().next().expect("len == 1")),
+        _ => Some(Arc::new(ComposedCurator::new(curators))),
+    }
+}
+
+/// Runs a chain of [`Curator`]s in order, feeding each curator's derived
+/// `ValidatedPath` to the next as its base. Only constructed by
+/// [`compose_curators`] when more than one curator is present; the
+/// one-curator case installs that curator directly, so this type's
+/// chaining logic is exercised only when an embedder AND a plugin (or two
+/// plugins) each contribute a curator.
+struct ComposedCurator {
+    curators: Vec<Arc<dyn Curator>>,
+}
+
+impl ComposedCurator {
+    fn new(curators: Vec<Arc<dyn Curator>>) -> Self {
+        Self { curators }
+    }
+}
+
+#[async_trait::async_trait]
+impl Curator for ComposedCurator {
+    async fn curate(
+        &self,
+        ctx: &conway_core::ports::CurateCtx,
+        base: &conway_core::path::ValidatedPath,
+    ) -> CurateOutcome {
+        // Start from the base; each curator sees the previous curator's
+        // derived path (or the original base if it returned `Unchanged`).
+        let mut current: conway_core::path::ValidatedPath = base.clone();
+        let mut last_derivation: Option<conway_core::path::Derivation> = None;
+        for curator in &self.curators {
+            match curator.curate(ctx, &current).await {
+                CurateOutcome::Unchanged => {
+                    // Pass the current base through to the next curator.
+                }
+                CurateOutcome::Derived(derivation) => {
+                    // Curator B's base is curator A's derived path. Clone
+                    // the path into `current` (cheap `Arc<LogRecord>`
+                    // clones) so `derivation` stays whole for the return.
+                    current = derivation.path.clone();
+                    last_derivation = Some(derivation);
+                }
+                CurateOutcome::Failed { reason } => {
+                    // A failing curator stops the chain -- §11.6 -- and the
+                    // composed outcome is `Failed` (recorded non-fatally by
+                    // the stage, same as a single-curator failure).
+                    return CurateOutcome::Failed { reason };
+                }
+            }
+        }
+        // If any curator derived, `last_derivation.path == current` by
+        // construction (the last `Derived` set both). If none did, every
+        // curator returned `Unchanged` and the composed outcome is
+        // `Unchanged` -- the stage uses the original path.
+        match last_derivation {
+            Some(derivation) => CurateOutcome::Derived(derivation),
+            None => CurateOutcome::Unchanged,
+        }
+    }
+}
+
+#[cfg(test)]
+mod compose_curators_tests {
+    //! Covers [`compose_curators`]'s 0/1/2+ branches and [`ComposedCurator`]'s
+    //! chaining, which nothing else in the tree drives: the runtime's
+    //! `curator_stage` tests exercise ONE curator through the stage, and the
+    //! composition that turns N plugin-contributed curators into the single
+    //! `Arc<dyn Curator>` the runtime accepts lives here, in this crate,
+    //! behind a private fn. Without these, the `Failed`-discards-earlier-
+    //! derivations rule and the `last_derivation`-is-the-final-path invariant
+    //! could regress silently.
+
+    use super::*;
+    use conway_core::ids::{AgentId, LogSeq, ModelId, SessionId};
+    use conway_core::log::LogRecord;
+    use conway_core::path::{
+        NodeProvenance, NodeStamp, PathNode, PathOp, RecordRef, Selector, ValidatedPath,
+    };
+    use conway_core::ports::CurateCtx;
+    use conway_core::provenance::Provenance;
+    use conway_core::transcript::TranscriptResolver;
+    use conway_testkit::FakeStore;
+
+    fn ts() -> chrono::DateTime<chrono::Utc> {
+        "2026-07-20T00:00:00Z".parse().unwrap()
+    }
+
+    fn sid() -> SessionId {
+        "01ARZ3NDEKTSV4RRFFQ69G5FBV".parse().unwrap()
+    }
+
+    /// A two-node base path, both nodes plain `UserTurn`s so `derive`'s
+    /// tool-call coherence rules (§4.1) never refuse an `Omit`.
+    fn base_path() -> ValidatedPath {
+        let nodes = (0..2)
+            .map(|i| {
+                (
+                    PathNode {
+                        record: RecordRef {
+                            session: sid(),
+                            seq: LogSeq(i),
+                        },
+                        stamp: NodeStamp::Head,
+                        prov: NodeProvenance {
+                            selected_by: Selector::DefaultRule,
+                            at: ts(),
+                        },
+                    },
+                    Arc::new(LogRecord::UserTurn {
+                        seq: LogSeq(i),
+                        ts: ts(),
+                        text: format!("turn {i}"),
+                        prov: Provenance::UserPrompt,
+                    }),
+                )
+            })
+            .collect();
+        ValidatedPath::default_path(nodes)
+    }
+
+    fn ctx() -> CurateCtx {
+        CurateCtx {
+            agent_id: AgentId::new(),
+            session_id: sid(),
+            turn: 1,
+            model: Some(ModelId::new("unrouted")),
+            store: Arc::new(FakeStore::new()),
+            resolver: Arc::new(TranscriptResolver::new(64)),
+        }
+    }
+
+    /// Omits the base node at `index`, recording the base length it saw.
+    struct OmitAt {
+        index: usize,
+        base_len_seen: std::sync::Mutex<Option<usize>>,
+    }
+
+    impl OmitAt {
+        fn new(index: usize) -> Arc<Self> {
+            Arc::new(Self {
+                index,
+                base_len_seen: std::sync::Mutex::new(None),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Curator for OmitAt {
+        async fn curate(&self, _ctx: &CurateCtx, base: &ValidatedPath) -> CurateOutcome {
+            *self.base_len_seen.lock().unwrap() = Some(base.nodes().count());
+            let Some(target) = base.nodes().nth(self.index).map(|(n, _)| n.record) else {
+                return CurateOutcome::Failed {
+                    reason: format!("no node at {}", self.index),
+                };
+            };
+            match base.derive(&[PathOp::Omit { node: target }]) {
+                Ok(derivation) => CurateOutcome::Derived(derivation),
+                Err(err) => CurateOutcome::Failed {
+                    reason: format!("derive refused: {err}"),
+                },
+            }
+        }
+    }
+
+    struct Noop;
+    #[async_trait::async_trait]
+    impl Curator for Noop {
+        async fn curate(&self, _ctx: &CurateCtx, _base: &ValidatedPath) -> CurateOutcome {
+            CurateOutcome::Unchanged
+        }
+    }
+
+    struct AlwaysFails;
+    #[async_trait::async_trait]
+    impl Curator for AlwaysFails {
+        async fn curate(&self, _ctx: &CurateCtx, _base: &ValidatedPath) -> CurateOutcome {
+            CurateOutcome::Failed {
+                reason: "synthetic".into(),
+            }
+        }
+    }
+
+    /// Records whether it ran at all -- proves the chain STOPS on `Failed`.
+    struct RecordsThatItRan {
+        ran: std::sync::Mutex<bool>,
+    }
+    #[async_trait::async_trait]
+    impl Curator for RecordsThatItRan {
+        async fn curate(&self, _ctx: &CurateCtx, _base: &ValidatedPath) -> CurateOutcome {
+            *self.ran.lock().unwrap() = true;
+            CurateOutcome::Unchanged
+        }
+    }
+
+    #[test]
+    fn compose_of_none_is_none_so_the_stage_stays_a_zero_cost_passthrough() {
+        assert!(compose_curators(Vec::new()).is_none());
+    }
+
+    #[test]
+    fn compose_of_one_installs_it_directly_without_a_wrapper() {
+        let only: Arc<dyn Curator> = Arc::new(Noop);
+        let composed = compose_curators(vec![only.clone()]).expect("one curator composes to Some");
+        // The SAME Arc, not a ComposedCurator wrapping it.
+        assert!(Arc::ptr_eq(&composed, &only));
+    }
+
+    #[tokio::test]
+    async fn chained_second_curator_sees_the_firsts_derived_path_as_its_base() {
+        let first = OmitAt::new(1);
+        let second = OmitAt::new(0);
+        let composed = compose_curators(vec![first.clone(), second.clone()])
+            .expect("two curators compose to Some");
+
+        let outcome = composed.curate(&ctx(), &base_path()).await;
+
+        assert_eq!(first.base_len_seen.lock().unwrap().unwrap(), 2);
+        // The load-bearing assertion: the second curator's base is the
+        // FIRST's derived path (1 node), not the original 2-node base.
+        assert_eq!(second.base_len_seen.lock().unwrap().unwrap(), 1);
+        match outcome {
+            CurateOutcome::Derived(derivation) => {
+                assert_eq!(
+                    derivation.path.nodes().count(),
+                    0,
+                    "both omissions applied, so the final derivation is empty"
+                );
+            }
+            other => panic!("expected Derived, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn all_unchanged_composes_to_unchanged() {
+        let composed = compose_curators(vec![Arc::new(Noop), Arc::new(Noop)]).expect("Some");
+        assert!(matches!(
+            composed.curate(&ctx(), &base_path()).await,
+            CurateOutcome::Unchanged
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_derive_followed_by_unchanged_keeps_the_derivation() {
+        let first = OmitAt::new(1);
+        let composed = compose_curators(vec![first, Arc::new(Noop)]).expect("Some");
+        match composed.curate(&ctx(), &base_path()).await {
+            CurateOutcome::Derived(derivation) => {
+                assert_eq!(
+                    derivation.path.nodes().count(),
+                    1,
+                    "the derivation survives"
+                );
+            }
+            other => panic!("expected Derived, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failure_after_a_derive_discards_the_derivation_and_fails_open() {
+        // §11.6: the composed outcome is `Failed`, NOT a half-applied
+        // curation -- the stage then proceeds on the ORIGINAL path.
+        let composed = compose_curators(vec![OmitAt::new(1), Arc::new(AlwaysFails)]).expect("Some");
+        match composed.curate(&ctx(), &base_path()).await {
+            CurateOutcome::Failed { reason } => assert_eq!(reason, "synthetic"),
+            other => panic!("expected Failed (no half-applied curation), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failure_stops_the_chain_before_later_curators_run() {
+        let later = Arc::new(RecordsThatItRan {
+            ran: std::sync::Mutex::new(false),
+        });
+        let composed = compose_curators(vec![Arc::new(AlwaysFails), later.clone()]).expect("Some");
+        let _ = composed.curate(&ctx(), &base_path()).await;
+        assert!(
+            !*later.ran.lock().unwrap(),
+            "a curator after a failing one must not run"
+        );
     }
 }
 
