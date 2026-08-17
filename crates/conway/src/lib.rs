@@ -238,8 +238,14 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   the builder/`#[non_exhaustive]` combination `ToolCtx`'s own doc
 ///   rejects as disproportionate for ordinary struct-literal construction.
 /// - The `SessionStore`/`HealthRegistry` implementation surfaces.
-///   `SessionStore` because `SeqRange`/`StoreError` — needed to spell
-///   `SessionStore::append`'s own signature — are not re-exported anywhere;
+///   `SessionStore` because *implementing* it means spelling
+///   `SessionStore::append`'s own signature, and the full set that requires
+///   is not re-exported. Note the narrower *calling* surface IS reachable as
+///   of D1-8: `CurateCtx` hands a curator a live `Arc<dyn SessionStore>` and
+///   its module doc advertises `ctx.store.read(...)`, so `SeqRange` and
+///   `StoreError` are re-exported from `plugin` below — without them that
+///   advertised read surface would not compile from a facade-only crate.
+///   Implementing the port from outside remains out of scope;
 ///   `HealthRegistry` because, like `SubagentHost`/`EventSink` above, no
 ///   `ConwayBuilder::with_*` method injects a replacement. Both checked by
 ///   compiling a facade-only scratch crate against each claim, not by
@@ -278,6 +284,18 @@ pub mod plugin {
         Artifact, ArtifactKind, ContentBlock, PermissionClass, Role, ToolCall, ToolCategory,
         ToolSpec, TruncationPolicy,
     };
+    /// The other half of the §11.5 read surface. `CurateCtx::store` is a live
+    /// `Arc<dyn SessionStore>`, and the ONLY way to call its `read` is
+    /// `ctx.store.read(&sid, SeqRange::full())` — so a curator that cannot
+    /// name `SeqRange` cannot use the cross-session read the port exists to
+    /// provide, and one that cannot name `StoreError` cannot handle its
+    /// failure. Both are re-exported for *calling* `SessionStore`, which is
+    /// distinct from *implementing* it (still out of scope — see the
+    /// `forbidden`-types discussion on this module's parent).
+    /// `crates/conway/tests/plugin_surface.rs` compiles a facade-only
+    /// curator against exactly this surface so the claim is checked rather
+    /// than asserted.
+    pub use conway_core::error::StoreError;
     pub use conway_core::error::{
         ArtifactWriteError, CwdError, HookFailure, SubagentError, ToolError,
     };
@@ -302,6 +320,7 @@ pub mod plugin {
     /// `pre_tool_use` implementor returns (see `HookPermissionVerdict`'s
     /// own doc for why it has no `Allow` variant).
     pub use conway_core::hook::{HookAnswer, HookEvent, HookInvocation, HookPermissionVerdict};
+    pub use conway_core::ids::SeqRange;
     pub use conway_core::ids::ToolName;
     /// [`Plugin::events`]'s own
     /// return type -- a plugin author constructs one of these per custom
@@ -311,14 +330,21 @@ pub mod plugin {
     pub use conway_core::ports::EventDecl;
     pub use conway_core::ports::{
         ArtifactWriteHandle, ArtifactWriter, CancellationToken, Command, CommandCtx,
-        CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, EventSink,
-        EventSinkHandle, HookRunner, HostCapability, ObservedCall, ObserverAnswer, ObserverCtx,
-        ObserverNote, OverflowInfo, PathArgs, Plugin, PluginConfig, PluginEventHandle,
-        PluginManifest, PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution,
-        RegisteredObserver, RenderKind, Tool, ToolCtx, ToolObserver, ToolOutput,
+        CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, CurateCtx,
+        CurateOutcome, Curator, EventSink, EventSinkHandle, HookRunner, HostCapability,
+        ObservedCall, ObserverAnswer, ObserverCtx, ObserverNote, OverflowInfo, PathArgs, Plugin,
+        PluginConfig, PluginEventHandle, PluginManifest, PluginPermissionRule,
+        PluginPermissionVerdict, PluginStatusContribution, RegisteredObserver, RenderKind, Tool,
+        ToolCtx, ToolObserver, ToolOutput,
     };
     pub use conway_core::provenance::Provenance;
     pub use conway_core::segment::PromptSegment;
+    /// The memoised effective-transcript resolver a [`CurateCtx`] carries
+    /// (DESIGN §11.5): a curator may resolve any session's transcript via
+    /// `ctx.resolver.resolve(&ctx.store, &sid)`. Re-exported here because
+    /// `CurateCtx`'s `pub resolver: Arc<TranscriptResolver>` field would
+    /// otherwise be unspellable from a crate depending only on `conway`.
+    pub use conway_core::transcript::TranscriptResolver;
 }
 
 /// The `Backend` authoring surface:

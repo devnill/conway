@@ -563,6 +563,7 @@ mod tests {
                         segments: vec![],
                         total_tokens_est: 0,
                         dropped: vec![],
+                        curator_failed: None,
                     },
                 },
                 "context_report",

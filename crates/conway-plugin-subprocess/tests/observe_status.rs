@@ -64,7 +64,7 @@ fn call(tool: &str, arguments: serde_json::Value) -> ToolCall {
 }
 
 /// Finds the declared tool named `name` on `plugin`, panicking if absent.
-fn tool_named<'a>(plugin: &'a SubprocessPlugin, name: &str) -> Arc<dyn conway::plugin::Tool> {
+fn tool_named(plugin: &SubprocessPlugin, name: &str) -> Arc<dyn conway::plugin::Tool> {
     plugin
         .tools()
         .into_iter()

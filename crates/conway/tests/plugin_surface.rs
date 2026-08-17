@@ -42,7 +42,17 @@ use conway::plugin::{
     Provenance, RenderKind, Role, SubagentError, Tool, ToolCall, ToolCategory, ToolCtx, ToolError,
     ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
+// D1-8: the curator port + the §11.5 read surface, facade-only. The port
+// types and the `SeqRange`/`StoreError` pair needed to CALL
+// `CurateCtx::store` come from `conway::plugin`; the path vocabulary comes
+// from the root re-exports. `SessionStore` itself is NOT imported here: a
+// curator only ever CALLS `ctx.store.read(..)` through the already-typed
+// `Arc<dyn SessionStore>` the ctx hands it, so the trait needs no import at
+// the call site -- which is exactly the difference between calling the port
+// and implementing it.
+use conway::plugin::{CurateCtx, CurateOutcome, Curator, SeqRange, StoreError};
 use conway::{AgentId, SessionId};
+use conway::{LogRecord, PathOp, ValidatedPath};
 // Only used by the `jsonl-store`-gated test below; see that test's own doc.
 #[cfg(feature = "jsonl-store")]
 use conway::{ConwayBuilder, RoleAlias};
@@ -493,4 +503,92 @@ async fn authored_hook_transforms_payloads() {
         writer.last_write.lock().unwrap().as_ref(),
         Some(&("spill.txt".to_string(), b"overflow content".to_vec()))
     );
+}
+
+// ---------------------------------------------------------------------------
+// D1-8: a third-party CURATOR, written against `conway::plugin` alone.
+//
+// The §11.5 read surface is the point: `CurateCtx` hands a curator a live
+// `Arc<dyn SessionStore>` and a `TranscriptResolver`, and the port's own doc
+// advertises `ctx.store.read(&sid, SeqRange::full())` as the cross-session
+// reach that makes a memory plugin expressible. That call needs `SeqRange`
+// (to build the range) and `StoreError` (to handle the failure) to be
+// nameable from a facade-only crate. Before D1-8 re-exported them, this
+// module would not COMPILE -- which is exactly the guard this file exists to
+// provide, and the reason the claim is checked here rather than asserted in
+// a doc comment.
+//
+// Note this file still never imports `conway_core`: `Curator` is implemented
+// and the read surface is CALLED entirely through `conway::plugin`.
+// ---------------------------------------------------------------------------
+
+struct RecallCurator;
+
+#[async_trait]
+impl Curator for RecallCurator {
+    async fn curate(&self, ctx: &CurateCtx, base: &ValidatedPath) -> CurateOutcome {
+        // The §11.5 cross-session read, spelled exactly as the port's doc
+        // advertises it. `SeqRange` and `StoreError` must both be facade-
+        // reachable for this to compile.
+        let foreign = SessionId::new();
+        let recalled: Result<Vec<LogRecord>, StoreError> =
+            ctx.store.read(&foreign, SeqRange::full()).await;
+        // A curator author handles the error rather than unwrapping it.
+        let Ok(records) = recalled else {
+            return CurateOutcome::Failed {
+                reason: "could not read the remembered session".into(),
+            };
+        };
+        // The resolver half of the read surface is reachable too.
+        let _ = ctx.resolver.resolve(ctx.store.as_ref(), &foreign).await;
+        if records.is_empty() {
+            return CurateOutcome::Unchanged;
+        }
+        // Deriving is the ONLY way to produce a path: a curator names ops and
+        // the harness validates them (§11.4).
+        let Some((node, _)) = base.nodes().next() else {
+            return CurateOutcome::Unchanged;
+        };
+        match base.derive(&[PathOp::Omit { node: node.record }]) {
+            Ok(derivation) => CurateOutcome::Derived(derivation),
+            Err(err) => CurateOutcome::Failed {
+                reason: format!("derive refused: {err}"),
+            },
+        }
+    }
+}
+
+/// A plugin contributes its curator through the SAME `Plugin` surface every
+/// other capability uses -- GP-03: no privileged first-party channel.
+struct RecallPlugin;
+
+#[async_trait]
+impl Plugin for RecallPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: "thirdparty.recall".into(),
+            version: "0.1.0".into(),
+            tools: vec![],
+            required_host_caps: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![]
+    }
+
+    fn curators(&self) -> Vec<Arc<dyn Curator>> {
+        vec![Arc::new(RecallCurator)]
+    }
+}
+
+#[test]
+fn a_third_party_curator_is_implementable_and_installable_through_the_facade() {
+    // Compiling at all is the assertion (this file never imports
+    // `conway_core`); these checks keep the types live rather than merely
+    // named.
+    let plugin = RecallPlugin;
+    assert_eq!(plugin.curators().len(), 1);
+    let installed: Vec<Arc<dyn Plugin>> = vec![Arc::new(RecallPlugin)];
+    assert_eq!(installed.len(), 1);
 }

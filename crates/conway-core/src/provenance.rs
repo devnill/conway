@@ -169,6 +169,23 @@ pub struct ContextReport {
     /// existed still decodes, with no dropped calls recorded.
     #[serde(default)]
     pub dropped: Vec<String>,
+    /// Why the pre-assembly context curator declined to curate this turn, if
+    /// it failed (DESIGN-context-path §11.6). `None` -- the overwhelmingly
+    /// common case -- means no curator is installed, or the curator ran and
+    /// either curated or returned `Unchanged`.
+    ///
+    /// A curator failure is *fail-open*: the turn proceeds on the uncurated
+    /// path, because a curator is an optimization and the consequence of not
+    /// curating is caught downstream by admission (§2.7). But fail-open with
+    /// a silent swallow is the thing this project refuses, which is why the
+    /// reason lands here beside [`Self::dropped`] rather than only in a log
+    /// line. Both a `CurateOutcome::Failed` return and a caught curator
+    /// panic record here.
+    ///
+    /// `#[serde(default)]`: every session log written before this field
+    /// existed still decodes, with no curator failure recorded.
+    #[serde(default)]
+    pub curator_failed: Option<String>,
 }
 
 /// One segment's entry in a [`ContextReport`].
@@ -411,9 +428,27 @@ mod tests {
             }],
             total_tokens_est: 42,
             dropped: vec!["call_9".into()],
+            curator_failed: Some("curator refused".into()),
         };
         let json = serde_json::to_string(&report).unwrap();
         let back: ContextReport = serde_json::from_str(&json).unwrap();
         assert_eq!(report, back);
+    }
+
+    /// `curator_failed` is `#[serde(default)]`, the same backward-compatible
+    /// shape `dropped` uses: every session log written before the field
+    /// existed still decodes, with no curator failure recorded (§11.6).
+    #[test]
+    fn context_report_without_curator_failed_still_decodes() {
+        let legacy = serde_json::json!({
+            "agent_id": AgentId::new(),
+            "turn": 1,
+            "tokenizer": "cl100k_base",
+            "segments": [],
+            "total_tokens_est": 0,
+        });
+        let back: ContextReport = serde_json::from_value(legacy).unwrap();
+        assert_eq!(back.curator_failed, None);
+        assert!(back.dropped.is_empty());
     }
 }

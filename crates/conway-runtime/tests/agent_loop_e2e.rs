@@ -635,6 +635,8 @@ fn build_loop_inner(
         context_hook: std::sync::RwLock::new(
             context_hook.map(|inner| Arc::new(GuardedContextHook::new(inner))),
         ),
+        resolver: Arc::new(conway_core::transcript::TranscriptResolver::new(64)),
+        context_curator: std::sync::RwLock::new(None),
         observers,
         plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
     });

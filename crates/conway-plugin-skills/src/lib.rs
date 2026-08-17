@@ -328,7 +328,7 @@ mod tests {
             Some("How to write a good commit message."),
             "## git-commit\n\nBody text.",
         );
-        let skills = map_of(&[git_commit.clone()]);
+        let skills = map_of(std::slice::from_ref(&git_commit));
         let found = find_skill(&skills, "git-commit").expect("git-commit is in the table");
         assert_eq!(found.body, git_commit.body);
         assert!(find_skill(&skills, "does-not-exist").is_none());

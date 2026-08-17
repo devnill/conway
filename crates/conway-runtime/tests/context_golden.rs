@@ -130,6 +130,7 @@ fn root_simple_input() -> ContextInput {
             )],
         },
         cache_ttl: CacheTtl::FiveMinutes,
+        curator_failed: None,
     }
 }
 
@@ -208,6 +209,7 @@ fn fork_inherited_input() -> ContextInput {
         tools: vec![sample_tool("read"), sample_tool("write")],
         path: ResolvedPath { nodes },
         cache_ttl: CacheTtl::FiveMinutes,
+        curator_failed: None,
     }
 }
 
@@ -240,6 +242,7 @@ fn spawn_clean_input() -> ContextInput {
             )],
         },
         cache_ttl: CacheTtl::FiveMinutes,
+        curator_failed: None,
     }
 }
 
@@ -318,6 +321,7 @@ fn steer_and_toolresults_input() -> ContextInput {
         tools: vec![sample_tool("read"), sample_tool("write")],
         path: ResolvedPath { nodes },
         cache_ttl: CacheTtl::FiveMinutes,
+        curator_failed: None,
     }
 }
 

@@ -351,11 +351,22 @@ impl Runtime {
                 builder,
                 headroom,
                 tree: tree.clone(),
+                // The resolver Arc created above is shared between the
+                // runtime (for `subagent.rs`'s fork resolution) and the
+                // loop (for the curator stage's `CurateCtx`). One cache,
+                // two read sites.
+                resolver: resolver.clone(),
                 // no `RuntimeDeps` field sources this (out of that
                 // item's file scope to add here) -- `set_context_hook`
                 // below fills it in post-construction. `None` here
                 // preserves every existing caller's behavior unchanged.
                 context_hook: RwLock::new(None),
+                // Same additive-post-construction shape as `context_hook`
+                // above: `set_context_curator` below fills it in. `None`
+                // here is the zero-cost pass-through -- `apply_curator`
+                // returns the original path untouched, so the
+                // `context_golden` 11/11 gate stays unregenerated.
+                context_curator: RwLock::new(None),
                 observers,
                 // The SAME dispatcher `post_tool_use` and every other
                 // plugin-declared event already fan out through, so an
@@ -436,6 +447,32 @@ impl Runtime {
             .write()
             .expect("context_hook lock poisoned") =
             hook.map(|inner| Arc::new(GuardedContextHook::new(inner)));
+    }
+
+    /// Registers (or clears, via `None`) the pre-assembly context
+    /// [`Curator`](conway_core::ports::Curator) the runtime reads fresh
+    /// every turn via `AgentLoop::apply_curator`. Mirrors
+    /// [`Self::set_context_hook`]'s own shape exactly -- `RuntimeDeps` is
+    /// out of this item's file scope (also constructed by field literal in
+    /// several existing tests a new required field would break), so this is
+    /// a purely additive post-construction setter rather than a new
+    /// `RuntimeDeps` field.
+    ///
+    /// **No guard wrapper** -- unlike `set_context_hook`'s
+    /// `GuardedContextHook`, a curator needs no re-validation layer:
+    /// `CurateOutcome::Derived` can only be built from a `Derivation`,
+    /// which is already the validated output of `ValidatedPath::derive`
+    /// (§11.4). The unrepresentability lives in the type, not a wrapper.
+    ///
+    /// Not called at all (the default) means `AgentLoop::apply_curator` is a
+    /// zero-cost pass-through -- `context_golden` stays 11/11
+    /// unregenerated, byte-identical to a build without this port.
+    pub fn set_context_curator(&self, curator: Option<Arc<dyn conway_core::ports::Curator>>) {
+        *self
+            .loop_deps
+            .context_curator
+            .write()
+            .expect("context_curator lock poisoned") = curator;
     }
 
     /// Registers (or clears, via
@@ -1504,5 +1541,6 @@ fn empty_report(agent_id: AgentId) -> ContextReport {
         segments: Vec::new(),
         total_tokens_est: 0,
         dropped: Vec::new(),
+        curator_failed: None,
     }
 }

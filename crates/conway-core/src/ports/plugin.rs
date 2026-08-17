@@ -198,6 +198,42 @@ pub trait Plugin: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// Zero or more selection-layer [`Curator`](crate::ports::Curator)s this
+    /// plugin installs -- the curation capability (DESIGN-context-path
+    /// §11.3, §11.4). A curator runs BEFORE assembly, operating on the
+    /// resolved [`ValidatedPath`](crate::path::ValidatedPath), and returns a
+    /// validated [`Derivation`](crate::path::Derivation) (or
+    /// `Unchanged`/`Failed`); see [`CurateOutcome`](crate::ports::CurateOutcome).
+    /// This is the SEAM a cross-tree memory curator (Unit 3) plugs into, and
+    /// the capability that turns the path mechanism from a data model into
+    /// something any plugin can use.
+    ///
+    /// **Why a separate port, not another `ContextHook`.** `ContextHook`
+    /// runs AFTER assembly and sees rendered `Vec<PromptSegment>`; a curator
+    /// runs BEFORE assembly and sees records. Every advantage the path model
+    /// claims (byte-identical records, knowable cache cost, refusal instead
+    /// of silent repair, structural predicates) lives at the selection
+    /// layer, not the segment layer -- see `crate::ports::curator`'s module
+    /// doc for the full §11.3 comparison table.
+    ///
+    /// **GP-03 -- same surface as tools/hooks.** Same argument as
+    /// [`Self::context_hooks`] in spirit: a plugin-contributed tool whose
+    /// value depends on curation installs the curator through the SAME
+    /// `with_plugin`/`install_selected` surface its tools use, and
+    /// `ConwayBuilder::build` composes every installed plugin's curators
+    /// (plus any `with_curator`-injected one) into the single
+    /// `Runtime::set_context_curator` call the runtime reads. No privileged
+    /// first-party channel -- a third-party plugin reaches this exact same
+    /// surface. The default returns none, so every existing `Plugin`
+    /// implementor -- built-in, first-party, third party -- keeps compiling
+    /// unmodified, and a build with no curating plugin leaves the runtime's
+    /// curator unset, byte-identical to never installing one at all (the
+    /// zero-cost pass-through the stage guarantees when
+    /// `context_curator` is `None`).
+    fn curators(&self) -> Vec<Arc<dyn crate::ports::Curator>> {
+        Vec::new()
+    }
+
     /// Zero or more NARROWING permission rules this plugin contributes --
     /// the in-process / host-side projection of a plugin's declared
     /// permission policy (the wire form is `permission.policy/1`, board item

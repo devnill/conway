@@ -136,10 +136,11 @@ use conway_core::error::{ConwayError, RoutingError, RuntimeError};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, ModelId, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::LogRecord;
+use conway_core::path::ResolvedPath;
 use conway_core::ports::{
-    ArtifactWriteHandle, ContextHookCtx, ContextPayload, CwdHandle, ObservedCall, ObserverCtx,
-    OverflowInfo, PluginConfig, PluginEventEmitter, PluginEventHandle, RegisteredObserver, Router,
-    SessionStore, SubagentHost,
+    ArtifactWriteHandle, ContextHookCtx, ContextPayload, CurateCtx, CwdHandle, ObservedCall,
+    ObserverCtx, OverflowInfo, PluginConfig, PluginEventEmitter, PluginEventHandle,
+    RegisteredObserver, Router, SessionStore, SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::routing::RouteRequest;
@@ -248,6 +249,35 @@ pub struct LoopDeps {
     /// synthesis -- see `finish`'s own doc and `supervisor.rs`'s module doc
     /// ("the narrow race this module does not close").
     pub tree: Arc<AgentTree>,
+    /// The memoised effective-transcript resolver shared with the runtime
+    /// (architecture §4.4). Held as `Arc` because `TranscriptResolver` is
+    /// not `Clone` (it owns a `Mutex`-backed LRU cache). Threaded into every
+    /// turn's [`CurateCtx`] so a curator can resolve any session's effective
+    /// transcript (§11.5) without re-walking the ancestry each call.
+    pub resolver: Arc<conway_core::transcript::TranscriptResolver>,
+    /// Pluggable pre-assembly context curation (DESIGN-context-path §11.4).
+    /// `RwLock` rather than a plain `Option` for the SAME reason
+    /// [`Self::context_hook`] is: `RuntimeDeps` (runtime.rs, out of this
+    /// item's file scope) has no field to source one from at `LoopDeps`
+    /// construction time -- `Runtime::set_context_curator` (a new, purely
+    /// additive method) sets this post-construction, before any agent
+    /// starts running, and every turn reads it fresh via
+    /// `AgentLoop::context_curator`. `None` (the default every existing
+    /// construction site gets, unchanged) means the curator stage is a
+    /// zero-cost pass-through -- `apply_curator` returns the original
+    /// `ResolvedPath` without allocating a `CurateCtx` or even reading the
+    /// lock's value's internals, so `run_inner`'s assembly stays
+    /// byte-identical to behavior before this port existed (the
+    /// `context_golden` 11/11 gate is the load-bearing proof).
+    ///
+    /// **`Arc<dyn Curator>`, no guard wrapper** -- unlike
+    /// [`Self::context_hook`]'s `GuardedContextHook`, a curator needs no
+    /// re-validation layer: `CurateOutcome::Derived` can only be built from
+    /// a `Derivation`, which is already the validated, cost-estimated output
+    /// of `ValidatedPath::derive` (§11.4). The "make it unrepresentable"
+    /// move lives one layer up, in the type itself, so the seam does not
+    /// need a second wrapper here.
+    pub context_curator: RwLock<Option<Arc<dyn conway_core::ports::Curator>>>,
     /// Pluggable per-call context/tool curation. `RwLock` rather
     /// than a plain `Option` because `RuntimeDeps` (`runtime.rs`, out of
     /// this item's file scope) has no field to source one from at
@@ -629,6 +659,75 @@ impl AgentLoop {
             .clone()
     }
 
+    /// The currently-registered `Curator`, if any. Reads `LoopDeps::
+    /// context_curator` fresh on every call (see that field's own doc for
+    /// why it is a `RwLock` rather than a plain `Option`). `None` (the
+    /// default) makes [`Self::apply_curator`] a zero-cost pass-through.
+    fn context_curator(&self) -> Option<Arc<dyn conway_core::ports::Curator>> {
+        self.deps
+            .context_curator
+            .read()
+            .expect("context_curator lock poisoned")
+            .clone()
+    }
+
+    /// The pre-assembly curator stage (DESIGN §11.4). Runs the registered
+    /// [`Curator`](conway_core::ports::Curator) -- if any -- against the
+    /// harness-resolved `path`, BEFORE `ContextInput` is assembled. This is
+    /// the SEAM a cross-tree memory curator plugs into.
+    ///
+    /// **Zero-cost when no curator is installed** (the
+    /// `context_golden` 11/11 gate's load-bearing guarantee): `None` returns
+    /// the original `path` without allocating a `CurateCtx` or cloning the
+    /// node list, so assembly is byte-identical to a build without this
+    /// port. The clone of `path.nodes` into a `ValidatedPath` base happens
+    /// ONLY after the `Some` branch is taken.
+    ///
+    /// **Failure is fail-open and recorded** (§11.6): a curator that returns
+    /// `Failed` (or whose `derive` refused) is logged via `tracing::warn!`
+    /// -- the SAME non-fatal recording posture a panicking `ToolObserver`
+    /// uses (mirroring `ToolObserver`'s `catch_unwind` + `tracing::warn!`
+    /// below) -- and the turn proceeds on the uncurated `path`. A curator is
+    /// an optimization, not a correctness requirement; the consequence of
+    /// not curating is caught downstream by admission (§2.7).
+    ///
+    /// `derive`-only construction is the guard (§11.4): a `Derived` outcome
+    /// carries a `Derivation` whose `path` is already validated, so no
+    /// separate `GuardedCurator` re-validation layer is needed -- the
+    /// unrepresentability lives in `CurateOutcome`'s shape.
+    ///
+    /// Delegates to [`crate::context::curator_stage::apply_curator`] so the
+    /// stage logic is unit-testable without constructing a full `AgentLoop`.
+    async fn apply_curator(
+        &self,
+        path: ResolvedPath,
+        turn: u32,
+        model_hint: &ModelId,
+    ) -> Result<(ResolvedPath, Option<String>), RuntimeError> {
+        let curator = self.context_curator();
+        // Capture owned values so the closure is self-contained; the
+        // `build_ctx` closure is ONLY called on the `Some` branch -- the
+        // zero-cost `None` pass-through never allocates a `CurateCtx`.
+        let agent_id = self.agent_id;
+        let session = self.session;
+        let store = self.deps.store.clone();
+        let resolver = self.deps.resolver.clone();
+        // The curator stage runs BEFORE routing, so only the pinned
+        // `ModelId` hint is available -- a routed `ModelRef` does not
+        // exist yet (§11.5: a curator may READ model-dependent facts to
+        // decide whether to act; what it PRODUCES stays model-free).
+        let model = Some(model_hint.clone());
+        crate::context::curator_stage::apply_curator(curator, path, move || CurateCtx {
+            agent_id,
+            session_id: session,
+            turn,
+            model,
+            store,
+            resolver,
+        })
+        .await
+    }
+
     async fn route_and_attempt(
         &self,
         turn: u32,
@@ -819,6 +918,7 @@ impl AgentLoop {
                 &mut segments,
                 &tools,
                 report.dropped,
+                report.curator_failed,
             );
         }
     }
@@ -970,6 +1070,17 @@ impl AgentLoop {
                 state,
                 path_from_legacy(self.inherited.as_ref(), &all_records, self.session)
             );
+            // Pre-assembly curator stage (DESIGN §11.4): a registered
+            // `Curator` may derive a new path from `path` before assembly
+            // renders it. `None` (the default) is a zero-cost pass-through --
+            // `apply_curator` returns the original `path` unchanged, never
+            // allocating a `CurateCtx`, so `context_golden` stays 11/11
+            // unregenerated. This is the SEAM a cross-tree memory curator
+            // (Unit 3) plugs into; Unit 2 proves it with test curators.
+            let (path, curator_failed) = try_rt!(
+                state,
+                self.apply_curator(path, state.turn, &model_hint).await
+            );
             let input = ContextInput {
                 agent_id: self.agent_id,
                 turn: state.turn,
@@ -980,6 +1091,7 @@ impl AgentLoop {
                 tools: tool_specs.clone(),
                 path,
                 cache_ttl: self.spec.cache_ttl,
+                curator_failed,
             };
             let (mut segments, mut report) = try_rt!(state, self.deps.builder.build(&input));
 
@@ -1036,6 +1148,7 @@ impl AgentLoop {
                     &mut segments,
                     &announced_tools,
                     report.dropped,
+                    report.curator_failed,
                 );
             }
 
@@ -1131,6 +1244,7 @@ impl AgentLoop {
                         &mut segments,
                         &announced_tools,
                         report.dropped,
+                        report.curator_failed,
                     );
                 }
             }

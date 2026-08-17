@@ -3874,6 +3874,7 @@ mod tests {
             ],
             total_tokens_est: 52,
             dropped: Vec::new(),
+            curator_failed: None,
         });
 
         execute(
@@ -3924,6 +3925,7 @@ mod tests {
             segments: Vec::new(),
             total_tokens_est: 0,
             dropped: Vec::new(),
+            curator_failed: None,
         });
 
         execute(
