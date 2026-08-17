@@ -18,6 +18,7 @@ use std::sync::{Arc, RwLock};
 use conway_core::agent::{
     PermissionDecision, PermissionDecisionKind, PermissionRequest, PermissionScope,
 };
+use conway_core::canon::canonical_json_bytes;
 use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::content::ToolCategory;
 use conway_core::event::Event;
@@ -25,7 +26,6 @@ use conway_core::hook::{HookEvent, HookInvocation, HookPermissionVerdict};
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{HookRunner, PathArgs, PermissionGate, RenderKind};
 
-use crate::context::prefix::canonical_json_bytes;
 use crate::events::EventBus;
 
 /// The already-prefixed per-agent plugin-config key `conway_tools::fs`'s

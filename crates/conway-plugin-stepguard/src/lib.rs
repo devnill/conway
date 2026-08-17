@@ -142,30 +142,9 @@ impl StepGuard {
     fn digest(tool: &conway::ToolName, arguments: &serde_json::Value) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
         hasher.update(tool.as_str().as_bytes());
-        hasher.update(&canonical_json_bytes(arguments));
+        hasher.update(&conway::canonical_json_bytes(arguments));
         *hasher.finalize().as_bytes()
     }
-}
-
-/// Recursively sorts object keys and serializes without insignificant
-/// whitespace, so semantically identical JSON always produces identical
-/// bytes.
-fn canonical_json_bytes(value: &serde_json::Value) -> Vec<u8> {
-    fn canon(value: &serde_json::Value) -> serde_json::Value {
-        match value {
-            serde_json::Value::Object(map) => {
-                let mut entries: Vec<(String, serde_json::Value)> =
-                    map.iter().map(|(k, v)| (k.clone(), canon(v))).collect();
-                entries.sort_by(|a, b| a.0.cmp(&b.0));
-                serde_json::Value::Object(entries.into_iter().collect())
-            }
-            serde_json::Value::Array(items) => {
-                serde_json::Value::Array(items.iter().map(canon).collect())
-            }
-            other => other.clone(),
-        }
-    }
-    serde_json::to_vec(&canon(value)).expect("canonical json serialization never fails")
 }
 
 #[async_trait]

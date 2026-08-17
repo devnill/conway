@@ -448,6 +448,26 @@ pub mod backend {
 pub use conway_core::provenance::{ContextReport, Provenance};
 pub use conway_core::routing::{AttemptFailure, BreakerKind, BreakerState, RoutingReason};
 
+/// Canonical JSON bytes — recursively sort object keys, serialize without
+/// insignificant whitespace. Re-exported from `conway-core` (DESIGN-context-path
+/// §2.3) so a crate depending only on this facade (e.g. a first-party plugin
+/// that holds the "facade-only" discipline, like `conway-plugin-stepguard`)
+/// can hash through the one canonicalizer the workspace uses, rather than
+/// carrying a third copy. Pure, no policy.
+pub use conway_core::canon::canonical_json_bytes;
+
+/// The first-class context path vocabulary (DESIGN-context-path §2.1–§2.6,
+/// §4.1–§4.2): pure value types and the model-free `SelectionKey`. Re-exported
+/// so a facade-only crate can name `RecordRef`/`PathNode`/`PathSelection`/
+/// `SelectionKey`/`PathOp`/`CostEstimate`/`PathError` without depending on
+/// `conway-core` directly. The validating constructors (`default_path`,
+/// `derive`, `derive_reordered`), the `PathStore` port, head resolution and
+/// assembly land in later sub-units and live elsewhere.
+pub use conway_core::path::{
+    CostEstimate, DivergenceKind, HarnessDrop, NodeProvenance, NodeStamp, OpLabel, Orphan,
+    PathError, PathNode, PathOp, PathSelection, RecordRef, SelectionKey, Selector,
+};
+
 // Amended by:
 // `routes explain` needs `Conway::explain_routing`'s return type.
 // `ExplainReport` (and its own public field types -- `ExplainEntry`,

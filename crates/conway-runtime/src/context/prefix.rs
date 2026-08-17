@@ -2,6 +2,7 @@
 //! over the fixed static+inherited boundary, stable across sibling agents
 //! forked at the same point.
 
+use conway_core::canon::canonical_json_bytes;
 use conway_core::ids::{ModelId, PrefixKey};
 use conway_core::provenance::SegmentTier;
 use conway_core::segment::PromptSegment;
@@ -51,27 +52,4 @@ fn canonical_segment_bytes(segments: &[PromptSegment]) -> Vec<u8> {
         })
         .collect();
     canonical_json_bytes(&serde_json::Value::Array(projected))
-}
-
-/// Canonicalize `value`: recursively sort object keys and serialize
-/// without insignificant whitespace, so semantically identical JSON always
-/// hashes to the same bytes. `serde_json`'s default `Map` is already
-/// key-sorted (no `preserve_order` feature is enabled anywhere in this
-/// workspace), but this function does not rely on that remaining true.
-pub(crate) fn canonical_json_bytes(value: &serde_json::Value) -> Vec<u8> {
-    fn canon(value: &serde_json::Value) -> serde_json::Value {
-        match value {
-            serde_json::Value::Object(map) => {
-                let mut entries: Vec<(String, serde_json::Value)> =
-                    map.iter().map(|(k, v)| (k.clone(), canon(v))).collect();
-                entries.sort_by(|a, b| a.0.cmp(&b.0));
-                serde_json::Value::Object(entries.into_iter().collect())
-            }
-            serde_json::Value::Array(items) => {
-                serde_json::Value::Array(items.iter().map(canon).collect())
-            }
-            other => other.clone(),
-        }
-    }
-    serde_json::to_vec(&canon(value)).expect("canonical json serialization never fails")
 }
