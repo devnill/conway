@@ -143,6 +143,22 @@ fn bundle(cwd: &std::path::Path) -> Vec<Arc<dyn Plugin>> {
         // = ["conway.skills"]` is the whole of the wiring -- no separate
         // `with_context_hook` call.
         Arc::new(skills_plugin),
+        // `conway.memory` -- the cross-tree curator that recalls records
+        // from explicitly labelled past sessions into the current turn's
+        // assembled context (board item 01M090JY3KYHQQMKCZZM1Y6EDZ,
+        // DESIGN-context-path §11.7). Its one capability is a `Curator`
+        // (`Plugin::curators`), installed through the SAME `with_plugin`/
+        // `install_selected` surface every other plugin capability uses
+        // (GP-03) -- so `[plugins].install = ["conway.memory"]` is the
+        // whole of the wiring, exactly like the skills plugin above. Opt-in
+        // like every other member of this bundle; `MemoryConfig::default()`
+        // is this binary's own choice of policy (label `"memory"`, caps
+        // 8 records / 8192 bytes) -- an embedder wanting different bounds
+        // constructs its own `MemoryPlugin::new` via `with_plugin` instead
+        // of going through this bundle.
+        Arc::new(conway_plugin_memory::MemoryPlugin::new(
+            conway_plugin_memory::MemoryConfig::default(),
+        )),
     ]
 }
 
@@ -303,6 +319,23 @@ mod tests {
             "the linked bundle must contain the skeleton plugin under its published id, \
              otherwise `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
             conway_plugin_skeleton::PLUGIN_ID
+        );
+    }
+
+    /// Same wiring-only check, for `conway_plugin_memory`: without its
+    /// published id present in `bundle`, `[plugins].install =
+    /// ["conway.memory"]` resolves to an unknown-id error.
+    #[test]
+    fn bundle_carries_the_memory_plugin_under_its_published_id() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let found = bundle(&cwd)
+            .iter()
+            .any(|p| p.manifest().id == conway_plugin_memory::PLUGIN_ID);
+        assert!(
+            found,
+            "the linked bundle must contain the memory plugin under its published id, \
+             otherwise `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
+            conway_plugin_memory::PLUGIN_ID
         );
     }
 
