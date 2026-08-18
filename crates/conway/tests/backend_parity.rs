@@ -62,7 +62,7 @@ use conway::backend::{
     async_trait, check_admission, Admission, Backend, BackendError, BackendId, BoxStream,
     CacheMode, Capabilities, ContentBlock, GenerateRequest, GenerateResponse, ModelId, PrefixKey,
     ProbeReport, PromptSegment, ReliabilityTier, SamplingParams, StopReason, StreamChunk,
-    StructuredOutput, ToolCall, ToolCallSupport, ToolSpec, Usage,
+    StructuredOutput, TokenCountFidelity, ToolCall, ToolCallSupport, ToolSpec, Usage,
 };
 use conway::plugin::{PermissionClass, Role};
 use conway::{
@@ -251,6 +251,16 @@ impl Backend for StubBackend {
             self.max_context_tokens,
         )
     }
+
+    /// Overridden, not left at the trait's default -- `admit` above already
+    /// improves on the dialect-neutral default, so a stub that overrode
+    /// `admit` without also declaring what it achieved would be exactly the
+    /// invisible-inheritance failure mode `Backend::token_fidelity` exists to
+    /// close. Still `Heuristic`, honestly: `estimate_tokens` above is not
+    /// calibrated against anything.
+    fn token_fidelity(&self) -> TokenCountFidelity {
+        TokenCountFidelity::Heuristic
+    }
 }
 
 /// A hand-rolled `Stream` over a fixed `VecDeque` — this file's own
@@ -363,6 +373,14 @@ fn admit_delegates_to_check_admission_and_admits_a_small_request() {
     let admission = backend(1_000_000).admit(&req, 8_192).unwrap();
     assert!(admission.fits());
     assert_eq!(admission.max_context_tokens, 1_000_000);
+}
+
+#[test]
+fn token_fidelity_is_declared_heuristic_not_left_at_a_silent_default() {
+    assert_eq!(
+        backend(1_000_000).token_fidelity(),
+        TokenCountFidelity::Heuristic
+    );
 }
 
 #[test]

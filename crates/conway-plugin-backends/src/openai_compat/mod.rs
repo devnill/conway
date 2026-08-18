@@ -23,6 +23,7 @@ use conway_core::error::BackendError;
 use conway_core::ids::{BackendId, ModelId};
 use conway_core::ports::{
     check_admission, Admission, Backend, BoxStream, GenerateRequest, GenerateResponse, StreamChunk,
+    TokenCountFidelity,
 };
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -190,5 +191,21 @@ impl Backend for OpenAiCompatBackend {
             headroom_tokens,
             caps.max_context_tokens,
         )
+    }
+
+    /// **Declared honestly as [`TokenCountFidelity::Heuristic`]** (board item
+    /// 01M0AP4ADTGJWF3GFMCFWFF1ZQ, Part 2), for the same reason
+    /// `AnthropicBackend::token_fidelity` gives: `admit` above estimates over
+    /// THIS profile's own wire body (its message envelope, tool-schema
+    /// shape, per-provider quirks) rather than a generic one, but bottoms out
+    /// in `estimate_wire_tokens`'s `chars.div_ceil(4)` — no vendored
+    /// tokenizer for any of the six built-in profiles or a user-supplied
+    /// one, and no measured calibration factor (no OpenAI-compatible server
+    /// this crate targets exposes a count-tokens endpoint to measure
+    /// against, and this environment has no live network access to any of
+    /// them). A guessed factor would not be `Calibrated`; it would be this
+    /// same heuristic with a false label.
+    fn token_fidelity(&self) -> TokenCountFidelity {
+        TokenCountFidelity::Heuristic
     }
 }

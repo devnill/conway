@@ -11,7 +11,7 @@ use conway::backend::{
     async_trait, check_admission, Admission, Backend, BackendError, BackendId, BoxStream,
     CacheMode, Capabilities, ContentBlock, GenerateRequest, GenerateResponse, ModelId, PrefixKey,
     ProbeReport, PromptSegment, ReliabilityTier, SamplingParams, StopReason, StreamChunk,
-    StructuredOutput, ToolCall, ToolCallSupport, ToolSpec, Usage,
+    StructuredOutput, TokenCountFidelity, ToolCall, ToolCallSupport, ToolSpec, Usage,
 };
 
 /// Every re-exported *type* in `conway::backend` must be nameable at this
@@ -40,6 +40,7 @@ fn assert_types_nameable(
     _: Option<ToolCall>,
     _: Option<ToolSpec>,
     _: Option<PromptSegment>,
+    _: Option<TokenCountFidelity>,
 ) {
 }
 

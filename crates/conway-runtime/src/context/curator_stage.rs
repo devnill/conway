@@ -109,6 +109,30 @@ pub async fn run_curator_stage(
         CurateOutcome::Derived(derivation) => {
             // `into_nodes` consumes the validated `ValidatedPath` -- no
             // second clone of the `Arc<LogRecord>`s.
+            //
+            // `derivation.cost` (a `CostEstimate`) is DELIBERATELY dropped
+            // here, not read. Part 4 of board item 01M0AP4ADTGJWF3GFMCFWFF1ZQ:
+            // **admission (`Backend::admit`, run once per candidate model in
+            // `conway_runtime::attempt::AttemptEngine::execute`, just before
+            // each generate call) is the ONLY gate over token cost.** A
+            // curator reasons about STRUCTURE (`CostEstimate`'s remaining
+            // fields: shared prefix length, divergence position/kind,
+            // frozen-tier membership) to decide whether a derivation is
+            // worth proposing; it does not, and after this item cannot,
+            // reason about TOKENS at all -- `CostEstimate` no longer carries
+            // a token estimate for a curator to read (see `conway_core::
+            // path::CostEstimate`'s own doc for why that field was removed
+            // rather than kept "for non-gating use"). The alternative
+            // (giving `CurateCtx` a counting capability so a curator could
+            // gate on cost too) was considered and rejected: it would be a
+            // SECOND gate at a layer that runs BEFORE the real per-model
+            // count exists, dragging the per-candidate-model cost problem
+            // (routing has not chosen a model yet at curation time) into a
+            // stage that today has none of that machinery. One gate, at the
+            // layer where the real count exists and already refuses loudly
+            // with the exact shortfall named -- see `Backend::admit`'s own
+            // doc in `conway-core::ports::backend` -- is simpler and cannot
+            // drift from admission's own verdict.
             (
                 ResolvedPath {
                     nodes: derivation.path.into_nodes(),
