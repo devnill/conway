@@ -114,6 +114,11 @@ ulid_id!(
     /// Identifies one prompt segment within an assembled context.
     SegmentId
 );
+ulid_id!(
+    /// Identifies one stored [`crate::ports::Memory`] in a
+    /// [`crate::ports::MemoryStore`] (board item `01M09P2T8E5M292WMSMS64CVC4`).
+    MemoryId
+);
 
 string_id!(
     /// A model name as the backend knows it (e.g. `claude-sonnet-4-6`, `qwen3-coder:30b`).
