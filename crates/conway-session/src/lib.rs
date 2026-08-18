@@ -17,6 +17,7 @@
 pub mod codec;
 pub mod fork;
 pub mod index;
+pub mod memory_store;
 pub mod meta;
 pub mod path_store;
 pub mod provenance;
@@ -24,6 +25,7 @@ pub mod resolver;
 pub mod store;
 
 pub use index::SessionIndex;
+pub use memory_store::FsMemoryStore;
 pub use meta::{ForkOrigin, SessionFilter, SessionMeta};
 pub use path_store::{FsPathIndex, FsPathStore};
 pub use provenance::ContextReport;

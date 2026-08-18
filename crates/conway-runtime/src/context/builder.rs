@@ -923,6 +923,7 @@ fn provenance_discriminant(provenance: &Provenance) -> &'static str {
         Provenance::SystemNote { .. } => "system_note",
         Provenance::MergedAsk { .. } => "merged_ask",
         Provenance::ChildResult { .. } => "child_result",
+        Provenance::Memory { .. } => "memory",
         _ => "unknown",
     }
 }

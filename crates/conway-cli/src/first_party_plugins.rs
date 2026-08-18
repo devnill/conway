@@ -143,20 +143,36 @@ fn bundle(cwd: &std::path::Path) -> Vec<Arc<dyn Plugin>> {
         // = ["conway.skills"]` is the whole of the wiring -- no separate
         // `with_context_hook` call.
         Arc::new(skills_plugin),
-        // `conway.memory` -- the cross-tree curator that recalls records
-        // from explicitly labelled past sessions into the current turn's
-        // assembled context (board item 01M090JY3KYHQQMKCZZM1Y6EDZ,
-        // DESIGN-context-path §11.7). Its one capability is a `Curator`
-        // (`Plugin::curators`), installed through the SAME `with_plugin`/
-        // `install_selected` surface every other plugin capability uses
-        // (GP-03) -- so `[plugins].install = ["conway.memory"]` is the
-        // whole of the wiring, exactly like the skills plugin above. Opt-in
-        // like every other member of this bundle; `MemoryConfig::default()`
-        // is this binary's own choice of policy (label `"memory"`, caps
-        // 8 records / 8192 bytes) -- an embedder wanting different bounds
-        // constructs its own `MemoryPlugin::new` via `with_plugin` instead
-        // of going through this bundle.
+        // `conway.memory` -- a mutable `MemoryStore` injected into context
+        // by a `ContextHook` (board item `01M09P2T8E5M292WMSMS64CVC4`, a
+        // REWORK of the label-based curator this bundle used to install --
+        // see `conway_plugin_memory`'s own module doc for why). Installs
+        // through the SAME `Plugin::tools`/`Plugin::context_hooks`/
+        // `with_plugin` surface every other plugin capability uses (GP-03)
+        // -- so `[plugins].install = ["conway.memory"]` is the whole of the
+        // wiring, exactly like the skills plugin above. Opt-in like every
+        // other member of this bundle.
+        //
+        // **`InMemoryMemoryStore`, not the durable `conway::memory::
+        // FsMemoryStore`, deliberately, for now.** `bundle` (this
+        // function) is synchronous and takes only `cwd`, but
+        // `FsMemoryStore::open` performs real I/O and is `async`; wiring it
+        // here needs the same kind of sync/async bridge `conway`'s own
+        // `build_default_store`/`block_on` already discloses for the
+        // session store, extended across `bundle`'s TWO callers
+        // (`install`, called once per process, and `installed_plugins`,
+        // re-derived independently for the TUI command registry -- see
+        // that function's own doc) without silently constructing two
+        // independent, unsynchronized stores. That is a real, separately
+        // scoped wiring item, not a one-line change belonging to the item
+        // that reworked this plugin's internals -- filed as a reportable
+        // follow-up rather than rushed in here. `InMemoryMemoryStore` is a
+        // fully real, non-mock `MemoryStore` (every remember/forget/
+        // list_memories acceptance property holds) -- it simply does not
+        // survive a process restart, matching this bundle's existing
+        // opt-in, non-default posture.
         Arc::new(conway_plugin_memory::MemoryPlugin::new(
+            Arc::new(conway_plugin_memory::InMemoryMemoryStore::new()),
             conway_plugin_memory::MemoryConfig::default(),
         )),
     ]

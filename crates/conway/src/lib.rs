@@ -39,6 +39,7 @@ mod fork_child;
 pub mod gates;
 mod host_caps;
 mod intent;
+pub mod memory;
 mod output_schema;
 mod permissions;
 pub mod presets;
@@ -83,7 +84,9 @@ pub mod permission_pattern {
 }
 pub use conway_core::content::{ToolCategory, Usage};
 pub use conway_core::event::{Envelope, Event};
-pub use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SegmentId, SessionId, ToolName};
+pub use conway_core::ids::{
+    AgentId, LogSeq, MemoryId, ModelRef, RoleAlias, SegmentId, SessionId, ToolName,
+};
 pub use conway_core::log::{AskOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 pub use conway_core::ports::{
     Backend, BackendBuildContext, BackendFactory, ContextHook, HealthRegistry, PermissionGate,
@@ -297,7 +300,7 @@ pub mod plugin {
     /// than asserted.
     pub use conway_core::error::StoreError;
     pub use conway_core::error::{
-        ArtifactWriteError, CwdError, HookFailure, SubagentError, ToolError,
+        ArtifactWriteError, CwdError, HookFailure, MemoryStoreError, SubagentError, ToolError,
     };
     pub use conway_core::event::Event;
     /// The SAME core-vs-plugin
@@ -331,11 +334,11 @@ pub mod plugin {
     pub use conway_core::ports::{
         ArtifactWriteHandle, ArtifactWriter, CancellationToken, Command, CommandCtx,
         CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, CurateCtx,
-        CurateOutcome, Curator, EventSink, EventSinkHandle, HookRunner, HostCapability,
-        ObservedCall, ObserverAnswer, ObserverCtx, ObserverNote, OverflowInfo, PathArgs, Plugin,
-        PluginConfig, PluginEventHandle, PluginManifest, PluginPermissionRule,
-        PluginPermissionVerdict, PluginStatusContribution, RegisteredObserver, RenderKind, Tool,
-        ToolCtx, ToolObserver, ToolOutput,
+        CurateOutcome, Curator, EventSink, EventSinkHandle, HookRunner, HostCapability, Memory,
+        MemoryProvenance, MemoryStore, ObservedCall, ObserverAnswer, ObserverCtx, ObserverNote,
+        OverflowInfo, PathArgs, Plugin, PluginConfig, PluginEventHandle, PluginManifest,
+        PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution,
+        RegisteredObserver, RenderKind, Tool, ToolCtx, ToolObserver, ToolOutput,
     };
     pub use conway_core::provenance::Provenance;
     pub use conway_core::segment::PromptSegment;

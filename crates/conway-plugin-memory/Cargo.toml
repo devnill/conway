@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
-description = "First-party plugin (board item 01M090JY3KYHQQMKCZZM1Y6EDZ): conway.memory, a cross-tree curator that recalls records from explicitly labelled past sessions into the current turn's assembled context (DESIGN-context-path §11.7)"
+description = "First-party plugin (board item 01M09P2T8E5M292WMSMS64CVC4): conway.memory, a mutable MemoryStore injected into context by a ContextHook -- a REWORK of the label-based curator this crate used to ship"
 
 # Board item 01KZDC3JQ7W4DY1MG6MBCVB2DV: this crate is versioned WITH the
 # workspace (`version.workspace = true`, same as every other crate here),
@@ -20,35 +20,27 @@ description = "First-party plugin (board item 01M090JY3KYHQQMKCZZM1Y6EDZ): conwa
 
 [dependencies]
 # The ONLY workspace crate this plugin depends on -- the public facade, the
-# exact surface a third-party plugin author gets (GP-03/P-6). The whole
-# point of Unit 3 (DESIGN-context-path §11.7) is that memory "needs no
-# storage of its own, no retrieval semantics of its own, and no new port" --
-# it is expressible entirely against the §11.5 `CurateCtx` read surface and
-# the `ValidatedPath::derive_with` cross-tree `Include` (Unit 3a), both
-# already facade-reachable through `conway`/`conway::plugin`. Depending on
-# `conway-core` directly would be the exact "gap in the facade" this crate's
-# own tests are built to catch, not paper over.
+# exact surface a third-party plugin author gets (GP-03/P-6). Board item
+# 01M09P2T8E5M292WMSMS64CVC4 reworked this plugin from a `Curator`
+# (path selection over existing records) to a `ContextHook` (injection of
+# freeform text that never was a record) plus a `MemoryStore`-backed tool
+# surface -- both reachable through this exact same facade dependency, no
+# new workspace edge.
 conway = { path = "../conway" }
-# `record_byte_estimate`'s conservative per-record size cap (R4) is the
-# record's own canonical-shaped JSON encoding length -- `serde_json` is a
-# leaf crate with no workspace/`conway-core` types of its own, the same
-# footing `conway-plugin-stepguard`/`conway-plugin-skeleton` already depend
-# on it on, so this does not compromise the facade-only discipline above
-# (it is not a WORKSPACE crate).
+# Tool argument schemas (`RememberArgs`/`ForgetArgs`) -- a leaf crate with no
+# workspace/`conway-core` types of its own, the same footing
+# `conway-plugin-skills`/`conway-plugin-stepguard` already depend on it on.
+schemars = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 # Test-only: builds a real, in-memory `Conway` (fake backend/store/gate/
-# router) to drive this plugin's curator through a real turn end to end --
+# router) to drive this plugin's hook/tools through a real turn end to end --
 # the same precedent `conway-plugin-skeleton`'s own
 # `tests/skeleton_end_to_end.rs` and `conway-plugin-history`'s own
 # `tests/history_end_to_end.rs` establish. Already a pinned workspace
 # dependency, not a new one (C-04).
 conway-testkit = { path = "../conway-testkit" }
-# `conway_core::{ids, log, path, ports}`: fixture values the unit tests
-# construct directly (`SessionMeta`, `LogRecord`, `RecordRef`, `SeqRange`,
-# `SessionStore`) -- already pulled in transitively via `conway-testkit`
-# above, named explicitly here since the tests import it by name (C-04).
-conway-core = { path = "../conway-core" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
-chrono = { workspace = true }

@@ -62,6 +62,7 @@ mod capability_index;
 mod curator;
 mod events;
 mod hook_runner;
+mod memory_store;
 mod observer;
 mod path_store;
 mod permission;
@@ -76,6 +77,7 @@ pub use capability_index::*;
 pub use curator::*;
 pub use events::*;
 pub use hook_runner::*;
+pub use memory_store::*;
 pub use observer::*;
 pub use path_store::*;
 pub use permission::*;
@@ -110,6 +112,7 @@ mod tests {
         _: &dyn HookRunner,
         _: &dyn ToolObserver,
         _: &dyn Curator,
+        _: &dyn MemoryStore,
     ) {
     }
 }

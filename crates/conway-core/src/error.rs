@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{AgentId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
+use crate::ids::{AgentId, LogSeq, MemoryId, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
 use crate::log::SubagentMode;
 use crate::path::SelectionKey;
 
@@ -252,6 +252,27 @@ pub enum PathStoreError {
     Io { detail: String },
     #[error("prefix chain too deep (depth {depth} exceeds MAX_ANCESTRY_DEPTH)")]
     PrefixChainTooDeep { depth: usize },
+}
+
+/// Errors produced by a [`crate::ports::MemoryStore`] implementation (board
+/// item `01M09P2T8E5M292WMSMS64CVC4`). A focused, memory-keyed counterpart to
+/// [`StoreError`]/[`PathStoreError`] -- deliberately its own enum rather than
+/// a reuse of either: `StoreError`'s `NotFound`/`Corrupt` carry a
+/// `SessionId`/`line` (the wrong shape for one stored [`crate::ports::
+/// Memory`]), and `PathStoreError`'s `NotFound`/`Corrupt` carry a
+/// `SelectionKey` (a content-addressed key a `MemoryStore` has no analog
+/// of -- a memory is addressed by the caller-assigned [`MemoryId`] it was
+/// [`crate::ports::MemoryStore::put`] under, not by the hash of its own
+/// content).
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum MemoryStoreError {
+    #[error("memory {id} not found")]
+    NotFound { id: MemoryId },
+    #[error("memory {id} already exists")]
+    AlreadyExists { id: MemoryId },
+    #[error("memory store io error: {detail}")]
+    Io { detail: String },
 }
 
 /// Errors produced by the `Router`.

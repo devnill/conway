@@ -394,6 +394,40 @@ mod tests {
         );
     }
 
+    /// Board item `01M09P2T8E5M292WMSMS64CVC4`: `conway.memory`'s
+    /// `ContextHook` injects a plain-text `Provenance::Memory` segment with
+    /// no `ToolUse`/`ToolResultBlock` content at all. "Verify, do not
+    /// assume" -- this proves the exact shape that plugin's hook produces
+    /// passes `check_tool_call_coherence` (and therefore
+    /// `ensure_hook_payload_coherent`) unmodified, rather than merely
+    /// arguing it must from `check_tool_call_coherence`'s own definition.
+    #[test]
+    fn an_injected_memory_segment_does_not_trip_the_coherence_guard() {
+        let agent_id = AgentId::new();
+        let session_id = SessionId::new();
+        let hook_ctx = ctx(agent_id, session_id, 1);
+        let memory_segment = PromptSegment::new(
+            Role::System,
+            vec![ContentBlock::Text {
+                text: "the deploy secret lives in vault".to_string(),
+            }],
+            Provenance::Memory {
+                id: conway_core::ids::MemoryId::new(),
+            },
+        );
+        let input = payload(vec![memory_segment]);
+
+        let result =
+            ensure_hook_payload_coherent(HookMethod::BeforeRequest, &hook_ctx, input.clone());
+
+        let output = result.expect("an injected memory segment must never be refused");
+        assert_eq!(output.segments.len(), 1);
+        assert!(matches!(
+            output.segments[0].provenance,
+            Provenance::Memory { .. }
+        ));
+    }
+
     /// The typed error becomes its own dedicated
     /// [`conway_core::error::RuntimeError::ContextHookIncoherent`] variant,
     /// not a fold into `BackendError::BadRequest`'s `detail` string (board

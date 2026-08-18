@@ -91,6 +91,14 @@ pub enum SegmentKind {
     InheritedPrefix,
     Directive,
     Turn,
+    /// A memory a `conway.memory`-shaped `ContextHook` injected from a
+    /// [`crate::ports::MemoryStore`] (board item
+    /// `01M09P2T8E5M292WMSMS64CVC4`) -- distinct from `SkillFragment`
+    /// despite sharing the same `Static` tier (`Provenance::Memory::
+    /// is_static`/`tier`): a skill fragment is a compile-time-configured
+    /// system capability, a memory is caller-mutable stored content, and the
+    /// CLI `/context` renderer benefits from telling them apart.
+    Memory,
 }
 
 impl From<&Provenance> for SegmentKind {
@@ -117,6 +125,7 @@ impl From<&Provenance> for SegmentKind {
             | Provenance::ToolResult { .. }
             | Provenance::SystemNote { .. }
             | Provenance::ChildResult { .. } => SegmentKind::Turn,
+            Provenance::Memory { .. } => SegmentKind::Memory,
         }
     }
 }
@@ -226,6 +235,12 @@ mod tests {
                 from: crate::ids::AgentId::new()
             }),
             SegmentKind::Turn
+        );
+        assert_eq!(
+            SegmentKind::from(&Provenance::Memory {
+                id: crate::ids::MemoryId::new()
+            }),
+            SegmentKind::Memory
         );
     }
 }

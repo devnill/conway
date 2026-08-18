@@ -29,15 +29,16 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
-use crate::ids::{AgentId, LogSeq, SegmentId, SeqRange, SessionId, ToolName};
+use crate::ids::{AgentId, LogSeq, MemoryId, SegmentId, SeqRange, SessionId, ToolName};
 use crate::log::LogRecord;
 use crate::ports::SessionStore;
 
 /// Why a segment of assembled context exists.
 ///
-/// Eleven variants: the original nine of architecture §5.3, plus
+/// Twelve variants: the original nine of architecture §5.3, plus
 /// [`Provenance::MergedAsk`] (B4), plus
-/// [`Provenance::ChildResult`].
+/// [`Provenance::ChildResult`], plus [`Provenance::Memory`] (board item
+/// `01M09P2T8E5M292WMSMS64CVC4`).
 /// Adding another is a breaking wire-format change and must be treated as
 /// such.
 #[non_exhaustive]
@@ -84,6 +85,16 @@ pub enum Provenance {
     /// unambiguously marked as having come from elsewhere in the tree, the
     /// same way `ParentSteer` marks a steer as not self-authored.
     ChildResult { from: AgentId },
+    /// A memory a `conway.memory`-shaped `ContextHook` injected from a
+    /// [`crate::ports::MemoryStore`] (board item `01M09P2T8E5M292WMSMS64CVC4`).
+    /// `id` names the stored [`crate::ports::Memory`] this segment renders,
+    /// so an injected segment is honestly attributed as recalled MEMORY --
+    /// never disguised as a `UserPrompt`/`Assistant` record that was
+    /// actually re-selected off some session's log (the old, now-retired
+    /// label-based curator's own shape). Mirrors how
+    /// [`Provenance::AgentDef`]/[`Provenance::Skill`] attribute injected,
+    /// non-record content.
+    Memory { id: MemoryId },
 }
 
 /// Where a segment sits in the fixed §5.3 ordering: `Static` segments are
@@ -99,14 +110,25 @@ pub enum SegmentTier {
 }
 
 impl Provenance {
-    /// `true` for `AgentDef`, `Skill`, and `ToolRegistry` — the segments that
-    /// are byte-identical across sibling agents (architecture §5.3).
+    /// `true` for `AgentDef`, `Skill`, `ToolRegistry`, and `Memory` — the
+    /// segments that are byte-identical across sibling agents (architecture
+    /// §5.3, extended by board item `01M09P2T8E5M292WMSMS64CVC4`).
+    ///
+    /// `Memory` joins this set deliberately (open question 3 of that item,
+    /// decided in code): a memory store is GLOBAL-scoped (this module's own
+    /// doc does not gate scope, and `conway-plugin-memory`'s injection hook
+    /// reads one shared `MemoryStore`), so at any given instant every
+    /// sibling agent sees the identical stored memory set -- exactly the
+    /// same byte-identity property `AgentDef`/`Skill`/`ToolRegistry` already
+    /// have, and the reason a rarely-changing memory set is a good citizen
+    /// of the STABLE prefix rather than the per-turn-changing tail.
     pub fn is_static(&self) -> bool {
         matches!(
             self,
             Provenance::AgentDef { .. }
                 | Provenance::Skill { .. }
                 | Provenance::ToolRegistry { .. }
+                | Provenance::Memory { .. }
         )
     }
 
@@ -116,7 +138,8 @@ impl Provenance {
         match self {
             Provenance::AgentDef { .. }
             | Provenance::Skill { .. }
-            | Provenance::ToolRegistry { .. } => SegmentTier::Static,
+            | Provenance::ToolRegistry { .. }
+            | Provenance::Memory { .. } => SegmentTier::Static,
             Provenance::Inherited { .. } => SegmentTier::Inherited,
             Provenance::UserPrompt
             | Provenance::ForkDirective { .. }
@@ -329,6 +352,12 @@ mod tests {
                 },
                 "child_result",
             ),
+            (
+                Provenance::Memory {
+                    id: crate::ids::MemoryId::new(),
+                },
+                "memory",
+            ),
         ]
     }
 
@@ -340,8 +369,8 @@ mod tests {
             let back: Provenance = serde_json::from_value(value).unwrap();
             assert_eq!(back, prov);
         }
-        // Eleven variants, no more, no fewer.
-        assert_eq!(all_tagged().len(), 11);
+        // Twelve variants, no more, no fewer.
+        assert_eq!(all_tagged().len(), 12);
     }
 
     #[test]
@@ -394,6 +423,17 @@ mod tests {
             }
             .tier(),
             SegmentTier::Volatile
+        );
+        assert!(Provenance::Memory {
+            id: crate::ids::MemoryId::new()
+        }
+        .is_static());
+        assert_eq!(
+            Provenance::Memory {
+                id: crate::ids::MemoryId::new()
+            }
+            .tier(),
+            SegmentTier::Static
         );
 
         assert_eq!(
