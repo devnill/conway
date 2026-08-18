@@ -203,6 +203,7 @@ async fn skill_named_in_def_appears_as_provenance_skill_segment_end_to_end() {
             model: None,
             system_prompt_override: None,
             result_contract: None,
+            labels: Vec::new(),
         },
     )
     .await;

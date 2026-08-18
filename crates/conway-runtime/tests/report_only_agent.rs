@@ -716,6 +716,7 @@ fn root_spec_no_tools(prompt: &str) -> RootSpec {
         model: None,
         system_prompt_override: None,
         result_contract: None,
+        labels: Vec::new(),
     }
 }
 

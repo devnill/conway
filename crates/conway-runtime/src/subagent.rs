@@ -600,6 +600,22 @@ impl SubagentHost for Runtime {
             role: Some(role.clone()),
             created: now,
             cwd: child_cwd.clone(),
+            // Deliberately NOT `spec.labels` -- there is no such field, and
+            // that is a decision, not an oversight (board item
+            // `01M0989GZ0PQAW0TN7APY1PHYW`, R2). A label is an operator's
+            // explicit mark on ONE conversation; inheriting it into every
+            // fork, spawn, and `/ask` child would mean a single marked
+            // session silently turns its whole subtree into a
+            // `conway.memory`-style recall source, and the amount pulled in
+            // would keep growing on its own as the tree grows. The failure
+            // is silent and compounding, the worst shape: nothing errors,
+            // context just quietly fills with material nobody chose.
+            // `SubagentSpec` (`conway-core/src/agent.rs`) has no `labels`
+            // field today -- a labelled child is a separate, deliberate
+            // feature this item does not add. The conservative default is
+            // also the reversible one: an unlabelled child can be labelled
+            // later by a caller that wants that, but a wrongly-inherited
+            // label has already polluted recall by the time anyone notices.
             labels: Vec::new(),
             // `ephemeral` flows straight from the caller's `SubagentSpec`: a
             // `conway_ask` fork (item d sets `spec.ephemeral = true`) stamps
