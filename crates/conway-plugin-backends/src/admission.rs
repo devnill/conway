@@ -23,6 +23,19 @@
 //! `"heuristic-chars4"` (`docs/routing.md`): roughly `ceil(chars / 4)`.
 //! Calibrating this against a response's reported `input_tokens` is the job
 //! of a measured baseline (the headroom amendment's own text), not this one's.
+//!
+//! **Fidelity, declared, not left to be inferred (board item
+//! 01M0AP4ADTGJWF3GFMCFWFF1ZQ):** both `AnthropicBackend::token_fidelity` and
+//! `OpenAiCompatBackend::token_fidelity` override
+//! `conway_core::ports::Backend::token_fidelity`'s default to state
+//! `TokenCountFidelity::Heuristic` explicitly, with each override's own doc
+//! explaining why (no vendored tokenizer, no measured calibration factor
+//! available in this crate or this build/review environment). This module
+//! staying `chars.div_ceil(4)` is therefore not an oversight left for a
+//! later item to quietly improve — it is the honest ceiling of what this
+//! crate can claim today, and the declaration makes that a visible fact
+//! rather than something a reader has to infer from the absence of a
+//! tokenizer dependency.
 
 pub(crate) fn estimate_wire_tokens(body: &serde_json::Value) -> u32 {
     let rendered = body.to_string();

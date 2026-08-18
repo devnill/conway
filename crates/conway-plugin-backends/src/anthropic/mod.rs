@@ -25,6 +25,7 @@ use conway_core::error::BackendError;
 use conway_core::ids::{BackendId, ModelId};
 use conway_core::ports::{
     check_admission, Admission, Backend, BoxStream, GenerateRequest, GenerateResponse, StreamChunk,
+    TokenCountFidelity,
 };
 use conway_core::segment::PromptSegment;
 use serde_json::Value;
@@ -253,6 +254,22 @@ impl Backend for AnthropicBackend {
             headroom_tokens,
             caps.max_context_tokens,
         )
+    }
+
+    /// **Declared honestly as [`TokenCountFidelity::Heuristic`], not
+    /// [`TokenCountFidelity::Calibrated`] or [`TokenCountFidelity::Exact`]**
+    /// (board item 01M0AP4ADTGJWF3GFMCFWFF1ZQ, Part 2). `admit` above already
+    /// improves on the dialect-neutral default by estimating over Anthropic's
+    /// OWN wire body rather than a generic one, but the estimate at the
+    /// bottom of that is still `estimate_wire_tokens`'s `chars.div_ceil(4)`
+    /// (`crate::admission`) — no vendored copy of Anthropic's tokenizer, and
+    /// no measured calibration factor: this crate has no network access to
+    /// real `/v1/messages` responses at either build time or in this review,
+    /// so any factor here would be GUESSED, and the ruling is explicit that a
+    /// guessed factor must not be dressed up as `Calibrated`. An honest
+    /// heuristic beats a fabricated exact count.
+    fn token_fidelity(&self) -> TokenCountFidelity {
+        TokenCountFidelity::Heuristic
     }
 
     async fn probe(&self) -> Result<ProbeReport, BackendError> {

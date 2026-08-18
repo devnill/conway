@@ -19,7 +19,7 @@ use conway_core::content::{
 };
 use conway_core::error::BackendError;
 use conway_core::ids::{BackendId, ModelId, ToolName};
-use conway_core::ports::{Backend, GenerateRequest};
+use conway_core::ports::{Backend, GenerateRequest, TokenCountFidelity};
 use conway_core::provenance::Provenance;
 use conway_core::segment::PromptSegment;
 use conway_plugin_backends::anthropic::AnthropicBackend;
@@ -297,6 +297,29 @@ async fn no_network_call_of_any_kind_occurs_across_a_mix_of_admission_checks() {
         requests.is_empty(),
         "expected zero requests (including any count-tokens call) on the admission path, got: {requests:?}"
     );
+}
+
+// ---------------------------------------------------------------------
+// Board item 01M0AP4ADTGJWF3GFMCFWFF1ZQ, Part 1+2: both shipped dialects
+// override `admit` with their own wire-body estimator, but neither has a
+// vendored tokenizer or a measured calibration factor -- so both must
+// DECLARE `TokenCountFidelity::Heuristic` through `Backend::token_fidelity`
+// rather than silently inheriting a default a reader would have to infer
+// from the absence of a tokenizer dependency.
+// ---------------------------------------------------------------------
+
+#[test]
+fn anthropic_declares_heuristic_token_fidelity() {
+    let server_uri = "http://127.0.0.1:1"; // never dialed; construction only
+    let backend = anthropic_backend(server_uri, ROOMY_WINDOW);
+    assert_eq!(backend.token_fidelity(), TokenCountFidelity::Heuristic);
+}
+
+#[test]
+fn openai_compat_declares_heuristic_token_fidelity() {
+    let server_uri = "http://127.0.0.1:1"; // never dialed; construction only
+    let backend = openai_backend(server_uri, ROOMY_WINDOW);
+    assert_eq!(backend.token_fidelity(), TokenCountFidelity::Heuristic);
 }
 
 // ---------------------------------------------------------------------

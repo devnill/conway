@@ -91,6 +91,68 @@ pub fn check_admission(
     }
 }
 
+/// How much a `Backend`'s `est_tokens` (from [`Admission`], via
+/// [`Backend::admit`]) can be trusted -- the operator ruling's mechanism for
+/// Part 1 of board item 01M0AP4ADTGJWF3GFMCFWFF1ZQ ("...leave this
+/// responsibility up to the plugin so the code responsible for calling
+/// inference can also be responsible for providing a mechanism which can be
+/// used to gate").
+///
+/// **Why this exists, not a required trait method:** a required
+/// `count_tokens` would force every `Backend` to answer a question some
+/// genuinely cannot (a local model behind an OpenAI-compatible endpoint may
+/// expose no tokenizer; a test double has no opinion) -- so `admit` stays a
+/// PROVIDED method with a default, as it already was. What changes is that
+/// *accepting* that default is no longer invisible: [`Backend::token_
+/// fidelity`] is a second provided method, paired with `admit`, that any
+/// override of `admit` should also override -- so a caller can ask "how much
+/// should I trust this backend's `est_tokens`" and get a real, named answer
+/// rather than having to infer it from whether `admit` happens to be
+/// overridden.
+///
+/// **Scope of that visibility, stated honestly: this is visible to CODE, not
+/// yet to an operator.** Nothing in the shipped system reads
+/// `token_fidelity()` today -- not `ProbeReport`, not the routing engine, not
+/// any CLI output; the only callers are tests. A declaration no production
+/// path consumes is the "capability with nothing behind it" shape this
+/// project keeps finding, and pretending otherwise in this doc would be the
+/// same defect one layer up. Surfacing it where an operator can actually see
+/// it (a probe field, or `conway routes`, which today explains routing
+/// decisions but never reaches a backend instance) is filed as its own item
+/// rather than asserted here. Declaring
+/// [`Self::Heuristic`] is not a lesser answer than declaring [`Self::Exact`]
+/// -- an honest heuristic beats a fabricated exact count -- but it must be a
+/// DECLARED choice, not an inherited default nobody looked at.
+///
+/// Mirrors how [`Capabilities`] already lets a backend declare what it
+/// knows (tool-call support, cache mode, context window) rather than the
+/// caller having to probe for it -- this is the same declaration shape,
+/// scoped to one question: how good is this backend's own token count.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenCountFidelity {
+    /// The backend's `est_tokens` is computed by the SAME tokenizer the
+    /// provider itself uses to bill/bound the request (e.g. a vendored copy
+    /// of the provider's own BPE vocabulary). No shipped dialect claims this
+    /// today -- see `conway-plugin-backends`'s Anthropic/OpenAI-compatible
+    /// adapters, both of which declare [`Self::Heuristic`] and document why.
+    Exact,
+    /// The backend's `est_tokens` is a heuristic (e.g. chars-per-token) that
+    /// has been MEASURED against real provider-reported `input_tokens` and
+    /// scaled by a documented calibration factor. The measurement, not just
+    /// the factor, must be documented at the declaration site -- a guessed
+    /// factor is [`Self::Heuristic`] wearing a more confident name, not
+    /// this variant.
+    Calibrated,
+    /// The backend's `est_tokens` is an uncalibrated, dialect-neutral
+    /// heuristic (this crate's own default: `chars.div_ceil(4)`) with no
+    /// measurement behind it. The honest default for every `Backend` that
+    /// does not override [`Backend::token_fidelity`] -- see that method's
+    /// own doc for why this is a DECLARED choice rather than a silent one.
+    Heuristic,
+}
+
 /// Dialect-neutral fallback estimator for [`Backend::admit`]'s default
 /// implementation: `ceil(chars / 4)` over each segment's serialized content
 /// (roughly `conway-runtime`'s `ContextBuilder::TOKEN_ESTIMATOR`,
@@ -209,6 +271,28 @@ pub trait Backend: Send + Sync + 'static {
             headroom_tokens,
             self.capabilities(&req.model).max_context_tokens,
         )
+    }
+
+    /// How much this backend's [`Admission::est_tokens`] can be trusted --
+    /// see [`TokenCountFidelity`]'s own doc for the full reasoning. Default
+    /// [`TokenCountFidelity::Heuristic`], matching [`Self::admit`]'s own
+    /// default implementation (`default_estimate_tokens`'s
+    /// `chars.div_ceil(4)`), so a `Backend` that overrides neither method
+    /// declares, correctly, that it has done nothing to earn a stronger
+    /// claim.
+    ///
+    /// **An implementation that overrides [`Self::admit`] with a real
+    /// dialect-aware estimator SHOULD also override this method** to state
+    /// what it actually achieved -- `conway-plugin-backends`'s Anthropic and
+    /// OpenAI-compatible adapters both override `admit` (their own wire body
+    /// through `estimate_wire_tokens`) and both override this to declare
+    /// [`TokenCountFidelity::Heuristic`] explicitly, with a doc explaining
+    /// why they cannot honestly claim better (no vendored tokenizer, no
+    /// measured calibration factor) -- the visible, deliberate choice this
+    /// method exists to force, rather than an invisible inheritance of the
+    /// chars/4 default.
+    fn token_fidelity(&self) -> TokenCountFidelity {
+        TokenCountFidelity::Heuristic
     }
 }
 
@@ -705,5 +789,17 @@ mod tests {
         };
         let err = backend.admit(&tiny_request("hello"), 8_192).unwrap_err();
         assert!(matches!(err, BackendError::ContextTooLarge { .. }));
+    }
+
+    /// A `Backend` that overrides neither `admit` nor `token_fidelity` must
+    /// declare `Heuristic` — the honest label for `default_estimate_tokens`'s
+    /// `chars.div_ceil(4)`, and the visible-by-default choice Part 1 of board
+    /// item 01M0AP4ADTGJWF3GFMCFWFF1ZQ requires.
+    #[test]
+    fn default_token_fidelity_is_heuristic() {
+        let backend = DefaultAdmitBackend {
+            max_context_tokens: 1_000_000,
+        };
+        assert_eq!(backend.token_fidelity(), TokenCountFidelity::Heuristic);
     }
 }

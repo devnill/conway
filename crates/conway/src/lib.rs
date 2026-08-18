@@ -434,6 +434,11 @@ pub mod plugin {
 ///   `est_tokens + headroom_tokens <= max_context_tokens` itself.
 ///   `check_admission` is not decoration: an author who cannot name it
 ///   cannot honour `Backend::admit`'s contract.
+/// - `TokenCountFidelity` — `Backend::token_fidelity`'s return type (board
+///   item 01M0AP4ADTGJWF3GFMCFWFF1ZQ): a third-party `Backend` overriding
+///   `admit` with a real dialect-aware estimator cannot declare what it
+///   achieved without naming this type, the same way it cannot honour
+///   `admit` without naming `check_admission` above.
 /// - `async_trait` — `Backend` is `#[async_trait]`-transformed, the same
 ///   reason `pub mod plugin` re-exports the macro for its own three
 ///   traits.
@@ -469,7 +474,7 @@ pub mod backend {
     pub use conway_core::ids::{BackendId, ModelId, PrefixKey};
     pub use conway_core::ports::{
         check_admission, Admission, Backend, BoxStream, GenerateRequest, GenerateResponse,
-        StreamChunk,
+        StreamChunk, TokenCountFidelity,
     };
     pub use conway_core::segment::PromptSegment;
 }

@@ -83,6 +83,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: `conway_core::path::CostEstimate` no longer carries a token
+  estimate — `shared_prefix_tokens_est` and `discarded_prefix_tokens_est` are
+  removed.** Operator ruling: core reports STRUCTURE (shared prefix length,
+  divergence position/kind, frozen-tier membership), which it can compute
+  exactly and synchronously with no I/O; only a `Backend` can honestly count
+  TOKENS, since that depends on the provider's own wire format. The removed
+  fields were a second, `chars.div_ceil(4)` estimate that nothing read (the
+  curator stage takes only `derivation.path`, never `derivation.cost`) —
+  `Backend::admit` (`conway-core::ports::backend`) remains the one estimate
+  that actually gates a request. `CostEstimate` is `Serialize`/`Deserialize`
+  and not `#[non_exhaustive]`, so this is a genuine wire/semver break for
+  anyone who persisted one; nothing in this workspace does. `CostEstimate`
+  gains an additive `appended_nodes` field, and `DivergenceKind::None`'s doc
+  is corrected — it no longer claims the derived path's expanded node list is
+  identical to the base's, which a `ValidatedPath::derive_with` foreign
+  append could already make false.
+- **`Backend::token_fidelity` — a new provided method declaring how much a
+  backend's `Admission::est_tokens` can be trusted** (`TokenCountFidelity`:
+  `Exact` / `Calibrated` / `Heuristic`), paired with `Backend::admit`. The
+  chars/4 default remains the default answer for a `Backend` that overrides
+  neither method, but it is now a visible, named declaration rather than an
+  inherited default a reader has to infer from the absence of a tokenizer
+  dependency. Both shipped dialects (`conway-plugin-backends`'s
+  `AnthropicBackend`/`OpenAiCompatBackend`) override `admit` with their own
+  wire-body-aware estimate but declare `TokenCountFidelity::Heuristic`
+  honestly — neither vendors a tokenizer nor has a measured calibration
+  factor. Note the scope: this is visible to code inspecting the trait, not
+  yet to an operator — no production path (probe report, routing engine, CLI
+  output) reads `token_fidelity()` today. Surfacing it is filed separately.
 - **`conway.fs` enforces its own confinement root for all six of its tools —
   `read`, `write`, `edit`, `cd`, `glob`, `grep` — and does so
   open-relative**, closing a symlink-swap TOCTOU race that a check-then-open

@@ -357,7 +357,17 @@ pub enum PathOp {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DivergenceKind {
-    /// No divergence: the derived path's expanded node list equals the base's.
+    /// No divergence *within the base's own content*: every base node is
+    /// present in the derived path, unomitted and unreordered.
+    ///
+    /// **This does NOT mean the derived path's expanded node list is
+    /// identical to the base's** -- that was this variant's original claim,
+    /// and it is false whenever a [`ValidatedPath::derive_with`] foreign
+    /// `Include` appends a node the base never had (Unit 3a; a foreign node
+    /// always lands at the tail, so it never disturbs the shared prefix that
+    /// makes this variant `None` in the first place). See
+    /// [`CostEstimate::appended_nodes`], which discloses exactly that gap for
+    /// the case a curator's read surface can introduce it.
     #[default]
     None,
     /// The base has a node the derived path omits (the cheap direction —
@@ -376,15 +386,46 @@ pub enum DivergenceKind {
 /// *rendering* question, answered at assembly and reported as
 /// `RenderDivergence` — the derivation promises structure, not prices it
 /// cannot know.
+///
+/// **No token fields here — by operator ruling (2026-08-18, board item
+/// 01M0AP4ADTGJWF3GFMCFWFF1ZQ).** This type used to carry
+/// `shared_prefix_tokens_est`/`discarded_prefix_tokens_est`, a
+/// `chars.div_ceil(4)` guess computed in this crate and read by nothing --
+/// the curator stage (`conway-runtime`'s `context/curator_stage.rs`) takes
+/// only `derivation.path` and drops `derivation.cost` outright, so that
+/// second estimate gated nothing while a completely separate, ALREADY
+/// dialect-differentiated estimator (`Backend::admit` /
+/// `conway_plugin_backends::admission::estimate_wire_tokens`, see
+/// `conway-core::ports::backend`'s own doc) is the one thing that actually
+/// refuses an oversized request. **The ruling: core reports STRUCTURE, which
+/// it can know exactly and synchronously with no I/O; the backend owns
+/// TOKENS, which only it can know per provider (wire format, message
+/// envelope, tool-schema shape all differ per dialect).** A second, worse
+/// answer to a question already assigned elsewhere is not a hedge, it is
+/// drift risk -- and it is also future pressure to thread a tokenizer or a
+/// network call into this crate, which is synchronous, internally
+/// dependency-free, and has no business making one during path validation.
+/// `Backend::admit` remains the ONLY gate (see this type's field docs and
+/// `crates/conway-runtime/src/context/curator_stage.rs`'s own doc for where
+/// that decision is stated at the call site that used to have the
+/// alternative).
+///
+/// **BREAKING CHANGE (semver):** `shared_prefix_tokens_est`,
+/// `discarded_prefix_tokens_est` are REMOVED from this `Serialize`/
+/// `Deserialize`, non-`#[non_exhaustive]` struct. Any serialized
+/// `CostEstimate` (or `Derivation`, which embeds one) written before this
+/// change will fail to deserialize under `#[serde(deny_unknown_fields)]`
+/// contexts, or silently drop the two fields under permissive ones -- this
+/// crate carries strict-semver discipline, so this is a major-version event,
+/// not a patch. Nothing in this workspace persists a `CostEstimate` across a
+/// process boundary today (`Derivation` is a same-process, per-turn value;
+/// grep finds no on-disk or wire encoding of it), so the practical blast
+/// radius inside this tree is zero, but a downstream consumer that DID
+/// serialize one must be told.
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct CostEstimate {
     /// How many leading nodes the derived path shares with its base.
     pub shared_prefix_nodes: u64,
-    /// Estimated tokens in the shared prefix (the cacheable portion).
-    pub shared_prefix_tokens_est: u64,
-    /// Estimated tokens discarded from the base by this derivation (the
-    /// un-cacheable tail spent by omitting/reordering).
-    pub discarded_prefix_tokens_est: u64,
     /// The first node at which the derived path diverges from the base, or
     /// `None` if they are identical.
     pub first_divergence: Option<RecordRef>,
@@ -396,6 +437,30 @@ pub struct CostEstimate {
     /// §5b's "dropping from the tail is nearly free, dropping from the head
     /// spends everything", mechanical rather than rhetorical.
     pub divergence_inside_frozen_tier: bool,
+    /// How many nodes on the derived path do not appear anywhere on the base
+    /// path at all — i.e. were introduced by a foreign `PathOp::Include`
+    /// through [`ValidatedPath::derive_with`] (Unit 3a), which lands every
+    /// such node at the tail. `0` for `derive`/`derive_reordered` (which
+    /// never resolve outside `base`, so nothing on `derived` can be
+    /// foreign), and `0` for a `derive_with` call whose `Include`s all
+    /// resolved against `base` itself (a re-include, not an append).
+    ///
+    /// This is the additive field that keeps [`DivergenceKind::None`]
+    /// honest rather than adding a breaking `Append` variant to that enum
+    /// (a corrected doc + this field, over a new variant + the semver/wire
+    /// event a `Serialize`/`Deserialize`, non-`#[non_exhaustive]` enum
+    /// change would be): a base fully reproduced as the derived path's
+    /// leading prefix, plus one or more foreign nodes appended after it,
+    /// still reports `divergence_kind: None` (nothing the base had was
+    /// omitted or reordered) — `appended_nodes > 0` discloses that the
+    /// expanded node list is nonetheless longer than the base's. Independent
+    /// of `divergence_kind`: an `Omission` earlier in the same derivation
+    /// (e.g. a curator both drops a base node AND recalls a foreign one in
+    /// the same `derive_with` call) still reports its own
+    /// `first_divergence`/`divergence_kind` for the omission, with
+    /// `appended_nodes` disclosing the unrelated foreign append alongside
+    /// it, not instead of it.
+    pub appended_nodes: u64,
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -1410,67 +1475,14 @@ pub(crate) fn offers_for(orphans: &[Orphan]) -> Vec<PathOp> {
 // §4.2  CostEstimate computation
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Rough MODEL-FREE token estimate: ~4 chars per token, the same shape a
-/// render-layer estimator would use before a tokenizer is loaded. This is a
-/// PLACEHOLDER D1-2 (cost reporting) may refine; the STRUCTURE of
-/// `CostEstimate` (shared prefix length, divergence kind/position) is the
-/// promise, the token count is an estimate.
-fn token_est(record: &LogRecord) -> u64 {
-    ((record_content_char_len(record) as u64).saturating_add(3)) / 4
-}
-
-/// Total chars of a record's content as rendered, for the token estimate
-/// above. `Assistant` sums its `content` blocks; `ToolResultRecord` sums its
-/// `result.blocks` plus the tool name; the text-bearing turns use their `text`;
-/// everything else (Header, result records, context report, mask) has no
-/// rendered content text and contributes 0.
-fn record_content_char_len(record: &LogRecord) -> usize {
-    match record {
-        LogRecord::Assistant { content, .. } => content.iter().map(block_char_len).sum(),
-        LogRecord::ToolResultRecord { result, .. } => {
-            result.blocks.iter().map(block_char_len).sum::<usize>()
-                + result.tool.as_str().chars().count()
-        }
-        LogRecord::UserTurn { text, .. }
-        | LogRecord::ForkDirective { text, .. }
-        | LogRecord::ParentSteer { text, .. }
-        | LogRecord::SystemNote { text, .. } => text.chars().count(),
-        LogRecord::Header(_)
-        | LogRecord::AgentResultRecord { .. }
-        | LogRecord::ChildResultRecord { .. }
-        | LogRecord::ContextReportRecord { .. }
-        | LogRecord::ContextMask { .. }
-        | LogRecord::ContextPathSet { .. }
-        | LogRecord::ContextPathNamed { .. } => 0,
-    }
-}
-
-/// Per-block char count for `record_content_char_len`. Each variant counts the
-/// text it carries; a `ToolResultBlock` recurses into its nested blocks.
-fn block_char_len(block: &ContentBlock) -> usize {
-    match block {
-        ContentBlock::Text { text } => text.chars().count(),
-        ContentBlock::Thinking { text, .. } => text.chars().count(),
-        ContentBlock::ToolUse {
-            call_id,
-            name,
-            arguments,
-        } => {
-            call_id.chars().count()
-                + name.as_str().chars().count()
-                + arguments.to_string().chars().count()
-        }
-        ContentBlock::ToolResultBlock {
-            call_id, blocks, ..
-        } => call_id.chars().count() + blocks.iter().map(block_char_len).sum::<usize>(),
-        ContentBlock::Image { data_base64, .. } => data_base64.chars().count(),
-    }
-}
-
 /// Compute the structural cost of a derivation (DESIGN §4.2), over
 /// `(base = self nodes, derived = candidate, moved)`. Model-free: it measures
 /// the shared prefix and where the first divergence falls relative to the
-/// frozen tier boundary, never reading the model or the wire.
+/// frozen tier boundary, never reading the model or the wire. No token
+/// counting happens here at all — see `CostEstimate`'s own doc for why that
+/// question moved to `Backend::admit` (`conway-core::ports::backend`) and
+/// each dialect's own wire-aware estimator (`conway-plugin-backends`'s
+/// `admission::estimate_wire_tokens`), never restated in this crate.
 pub(crate) fn cost_estimate(
     base: &ValidatedPath,
     derived: &[PathNode],
@@ -1491,10 +1503,16 @@ pub(crate) fn cost_estimate(
     }
     let shared_prefix_nodes = sp as u64;
 
-    // Token estimates over base records (shared prefix + discarded tail).
-    let records: Vec<Arc<LogRecord>> = base.nodes().map(|(_, r)| Arc::clone(r)).collect();
-    let shared_prefix_tokens_est: u64 = records[..sp].iter().map(|r| token_est(r)).sum();
-    let discarded_prefix_tokens_est: u64 = records[sp..].iter().map(|r| token_est(r)).sum();
+    // appended_nodes: derived nodes whose RecordRef is not anywhere on the
+    // base at all — i.e. genuinely foreign content a `derive_with` `Include`
+    // introduced (see `CostEstimate::appended_nodes`'s own doc). A re-include
+    // of a base node shares that node's `RecordRef` with the base, so it is
+    // NOT counted here — it is the base's own content, duplicated, not new.
+    let base_refs: HashSet<RecordRef> = base_nodes.iter().map(|n| n.record).collect();
+    let appended_nodes = derived
+        .iter()
+        .filter(|n| !base_refs.contains(&n.record))
+        .count() as u64;
 
     let first_divergence = if sp < base_nodes.len() {
         Some(base_nodes[sp].record)
@@ -1541,11 +1559,10 @@ pub(crate) fn cost_estimate(
 
     CostEstimate {
         shared_prefix_nodes,
-        shared_prefix_tokens_est,
-        discarded_prefix_tokens_est,
         first_divergence,
         divergence_kind,
         divergence_inside_frozen_tier,
+        appended_nodes,
     }
 }
 
@@ -2371,10 +2388,9 @@ mod tests {
         assert_eq!(cost.first_divergence, Some(text_n.record));
         assert_eq!(cost.divergence_kind, DivergenceKind::Omission);
         assert!(!cost.divergence_inside_frozen_tier, "no Inherited nodes");
-        // discarded prefix = all of base (nothing shared).
-        assert!(
-            cost.discarded_prefix_tokens_est > 0,
-            "discarded tail has tokens"
+        assert_eq!(
+            cost.appended_nodes, 0,
+            "no foreign content was introduced, only base content omitted"
         );
     }
 
@@ -2430,6 +2446,11 @@ mod tests {
         assert_eq!(deriv.cost.shared_prefix_nodes, 2);
         assert_eq!(deriv.cost.first_divergence, None);
         assert_eq!(deriv.cost.divergence_kind, DivergenceKind::None);
+        assert_eq!(
+            deriv.cost.appended_nodes, 0,
+            "a re-include of a base node shares its RecordRef with the base -- \
+             it is not foreign content, so it is not counted as appended"
+        );
     }
 
     /// §2.7: a foreign `Include` (a `RecordRef` not on the base) is still
@@ -2671,12 +2692,25 @@ mod tests {
         assert_eq!(deriv.cost.first_divergence, None);
         assert_eq!(deriv.cost.divergence_kind, DivergenceKind::None);
         assert!(!deriv.cost.divergence_inside_frozen_tier);
+        assert_eq!(
+            deriv.cost.appended_nodes, 1,
+            "the one foreign node is disclosed here even though divergence_kind \
+             is None -- this is exactly what corrects None's old (false) \
+             'expanded node list equals the base's' claim"
+        );
     }
 
-    /// Unit 3a cost honesty: an `Omit` earlier in the same derivation is
-    /// still correctly labeled `Omission` at the omitted node, unaffected by
-    /// a foreign append that follows it — the insertion does not get
-    /// mistaken for the cause of the divergence.
+    /// Unit 3a cost honesty, AND the D1-3a `appended_nodes` test the item's
+    /// own doc calls out as missing: a derivation containing BOTH an
+    /// omission AND an append in one `derive_with` call. An `Omit` earlier
+    /// in the derivation is still correctly labeled `Omission` at the
+    /// omitted node, unaffected by a foreign append that follows it — the
+    /// insertion does not get mistaken for the cause of the divergence —
+    /// AND `appended_nodes` discloses the foreign append alongside it,
+    /// simultaneously, not instead of the omission. This is the case where
+    /// a single scalar `divergence_kind` could not carry both facts at
+    /// once, which is exactly why `appended_nodes` is a field of its own
+    /// rather than a third `DivergenceKind` variant.
     #[test]
     fn derive_with_omission_cost_is_unaffected_by_a_later_foreign_append() {
         let (base, call_n, result_n) = pair_base();
@@ -2707,6 +2741,12 @@ mod tests {
             deriv.cost.divergence_kind,
             DivergenceKind::Omission,
             "the omission, not the later foreign append, is the divergence"
+        );
+        assert_eq!(
+            deriv.cost.appended_nodes, 1,
+            "the foreign append is disclosed via appended_nodes AT THE SAME TIME \
+             as divergence_kind names the (unrelated) omission -- neither fact \
+             suppresses the other"
         );
     }
 
