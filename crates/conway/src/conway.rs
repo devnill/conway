@@ -840,10 +840,14 @@ impl Conway {
     /// distinct from every other failure this method can produce, not a
     /// generic error.
     ///
-    /// **Disclosed gap:** `RootSpec` (`conway-runtime`) has no field
-    /// for `SessionSpec::labels` or for `config.limits.max_parallel_tools`,
-    /// so neither reaches the created session/agent through this method --
-    /// out of this item's file scope to add.
+    /// **`SessionSpec::labels` reaches the created session** (board item
+    /// `01M0989GZ0PQAW0TN7APY1PHYW`): passed straight through to
+    /// `RootSpec::labels`, which `start_root` stamps onto the new session's
+    /// `SessionMeta.labels` -- see that field's own doc for why fork/spawn
+    /// children deliberately do NOT inherit it. `config.limits.
+    /// max_parallel_tools` remains a disclosed gap: `RootSpec` still has no
+    /// field for it, so it does not reach the created session/agent through
+    /// this method -- out of this item's file scope to add.
     pub async fn new_session(&self, spec: SessionSpec) -> Result<SessionHandle> {
         let role = spec
             .role
@@ -875,6 +879,7 @@ impl Conway {
             // call-site-wins-over-agent-def precedence; `RootSpec::
             // result_contract`'s own doc has the enforcement mechanism.
             result_contract: spec.result_contract,
+            labels: spec.labels,
         };
         let root = self.rt.start_root(root_spec).await?;
 

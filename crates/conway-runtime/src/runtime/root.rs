@@ -150,6 +150,31 @@ pub struct RootSpec {
     /// mirrored from `subagent.rs`'s identical rule for a forked/spawned
     /// child's own contract.
     pub result_contract: Option<schemars::schema::RootSchema>,
+    /// Operator-set marks on THIS session alone, threaded straight into
+    /// `SessionMeta.labels` -- see that field's own doc and
+    /// `SessionFilter::label`/`SessionStore::list` for the read side, which
+    /// existed and was tested well before anything could write a label
+    /// (board item `01M0989GZ0PQAW0TN7APY1PHYW`). `conway::SessionSpec::
+    /// labels` (`conway::Conway::new_session`) is this field's one facade
+    /// caller today.
+    ///
+    /// **Deliberately NOT inherited by fork/spawn children.** A label marks
+    /// ONE conversation an operator explicitly chose; `subagent.rs`'s own
+    /// `SessionMeta` construction hard-codes `labels: Vec::new()` for every
+    /// child regardless of the parent's labels, and that is a decision, not
+    /// an oversight -- see that call site's own comment for the full
+    /// reasoning (in short: inheriting would let a single marked session
+    /// silently turn its whole subtree into a recall source, growing on its
+    /// own as the tree grows, with a failure mode -- unchosen context
+    /// silently accumulating -- that never errors and is easy to miss until
+    /// context is already polluted). `SubagentSpec` has no `labels` field
+    /// today; a labelled child is a separate, deliberate feature this item
+    /// does not add.
+    ///
+    /// Empty (the default for every caller before this field existed)
+    /// preserves prior behavior exactly: `SessionMeta.labels` stays empty
+    /// and `SessionFilter::label` never matches this session.
+    pub labels: Vec<String>,
 }
 
 /// The specification for re-registering a persisted session's agent as a
@@ -425,7 +450,7 @@ impl Runtime {
             role: Some(role.clone()),
             created: Utc::now(),
             cwd: spec.cwd.clone(),
-            labels: Vec::new(),
+            labels: spec.labels.clone(),
             // A root is never ephemeral -- only a facade-level fork-ask
             // child is (`conway`'s `SessionHandle::ask`, which sets this
             // itself before calling `store.fork`, never `start_root`).

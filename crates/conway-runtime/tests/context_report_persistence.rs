@@ -198,6 +198,7 @@ fn root_spec(prompt: &str, agent_def: Option<AgentDefRef>) -> RootSpec {
         model: None,
         system_prompt_override: None,
         result_contract: None,
+        labels: Vec::new(),
     }
 }
 

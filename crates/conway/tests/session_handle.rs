@@ -8,11 +8,11 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, SessionSpec};
+use conway::{Conway, ConwayBuilder, ForkSpec, SessionSpec, SpawnSpec};
 use conway_core::agent::{Budget, PermissionDecision, ResultStatus};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, LogSeq, SessionId};
-use conway_core::log::{LogRecord, SessionMeta};
+use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::SessionStore;
 use conway_core::provenance::Provenance;
 use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
@@ -674,4 +674,133 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
         "the grandchild's effective transcript must be the whole prefix (D-11): the root's \
          r0/r1, then the child's own c0, then the grandchild's own g0"
     );
+}
+
+// ---------------------------------------------------------------------
+// `SessionSpec::labels` (board item 01M0989GZ0PQAW0TN7APY1PHYW): the write
+// path that closes the gap `RootSpec` previously had no field for -- see
+// `Conway::new_session`'s own doc.
+// ---------------------------------------------------------------------
+
+/// A session created through the FACADE with a non-empty `SessionSpec::
+/// labels` reaches the store's real `SessionMeta.labels` -- and is found by
+/// `SessionStore::list` filtered on that label -- proving the write path
+/// `RootSpec::labels` -> `start_root`'s `SessionMeta` literal actually
+/// works end to end, not merely that the field exists on the struct.
+#[tokio::test]
+async fn facade_set_labels_reach_the_created_sessions_meta_and_are_found_by_list() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store.clone());
+
+    let handle = conway
+        .new_session(SessionSpec {
+            labels: vec!["memory".to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("new_session should succeed");
+
+    let meta = store.meta(&handle.id()).await.expect("meta should resolve");
+    assert_eq!(
+        meta.labels,
+        vec!["memory".to_string()],
+        "SessionSpec::labels must reach the created session's own SessionMeta.labels"
+    );
+
+    let found = store
+        .list(SessionFilter {
+            label: Some("memory".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("list should succeed");
+    assert!(
+        found.iter().any(|m| m.id == handle.id()),
+        "SessionStore::list filtered on the label must surface the labelled session"
+    );
+}
+
+/// A session created through the facade with NO labels (the default)
+/// behaves exactly as before this item: `SessionMeta.labels` is empty and
+/// the session is invisible to a label filter.
+#[tokio::test]
+async fn facade_default_labels_stay_empty() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store.clone());
+
+    let handle = new_handle(&conway).await;
+
+    let meta = store.meta(&handle.id()).await.expect("meta should resolve");
+    assert!(
+        meta.labels.is_empty(),
+        "SessionSpec::default()'s empty labels must produce an empty SessionMeta.labels"
+    );
+
+    let found = store
+        .list(SessionFilter {
+            label: Some("memory".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("list should succeed");
+    assert!(
+        !found.iter().any(|m| m.id == handle.id()),
+        "an unlabelled session must never match a label filter"
+    );
+}
+
+/// R2, pinned: a fork/spawn child of a labelled parent has EMPTY labels --
+/// a label is a mark on ONE conversation, not something a subtree inherits.
+/// See `RootSpec::labels`'s own doc and `subagent.rs`'s `SessionMeta`
+/// construction comment for the full reasoning.
+#[tokio::test]
+async fn fork_and_spawn_children_of_a_labelled_parent_have_empty_labels() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store.clone());
+
+    let handle = conway
+        .new_session(SessionSpec {
+            labels: vec!["memory".to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("new_session should succeed");
+
+    let parent_meta = store.meta(&handle.id()).await.expect("meta should resolve");
+    assert_eq!(
+        parent_meta.labels,
+        vec!["memory".to_string()],
+        "sanity: the parent really is labelled before checking its children"
+    );
+
+    let forked = handle
+        .fork(handle.root(), ForkSpec::new("keep going"))
+        .await
+        .expect("fork should succeed");
+    let spawned = handle
+        .spawn(handle.root(), SpawnSpec::new("please review"))
+        .await
+        .expect("spawn should succeed");
+
+    for (label, child) in [("fork", forked), ("spawn", spawned)] {
+        let child_session = store
+            .list(SessionFilter {
+                include_ephemeral: true,
+                ..Default::default()
+            })
+            .await
+            .expect("list should succeed")
+            .into_iter()
+            .find(|m| m.agent_id == child)
+            .expect("the child must have its own session");
+        assert!(
+            child_session.labels.is_empty(),
+            "a {label} child of a labelled parent must NOT inherit the parent's labels (R2), \
+             got {:?}",
+            child_session.labels
+        );
+    }
+
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(forked)).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(spawned)).await;
 }
