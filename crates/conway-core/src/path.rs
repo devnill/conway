@@ -18,7 +18,7 @@
 //! exclusions are documented at the hash site because they are load-bearing
 //! for the "ten heads, one selection" sharing story (§2.3).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -322,10 +322,17 @@ pub enum PathOp {
     /// the construction guard's allowlist.
     Omit { node: RecordRef },
     /// (Re-)include `node` in the derived path. `derive`/`derive_reordered`
-    /// apply this op; `offers_for` constructs it as a repair suggestion
-    /// (§4.1). No curator plugin exists yet to propose an `Include` (D1-8),
-    /// but the harness repair-offer path does construct it, so this variant
-    /// is not on the construction guard's allowlist.
+    /// resolve `node` against the base only (a re-include of a node already
+    /// on the path); [`ValidatedPath::derive_with`] additionally resolves
+    /// against a caller-supplied map of foreign records -- records the
+    /// curator already read through its own read surface (`CurateCtx`,
+    /// §11.5) -- which is what makes a cross-tree `Include` (memory,
+    /// D1-8/conway.memory) expressible (Unit 3a). `offers_for` also
+    /// constructs this op as a repair suggestion (§4.1). No curator plugin
+    /// has landed yet that actually proposes a cross-tree `Include`
+    /// (conway.memory is Unit 3, still unbuilt), but the harness
+    /// repair-offer path does construct it, so this variant is not on the
+    /// construction guard's allowlist.
     Include { node: RecordRef },
     /// Move `node` to immediately before `before` in the derived path.
     /// Refused by `derive`; accepted by `derive_reordered` (DESIGN §4.2).
@@ -664,15 +671,72 @@ impl ValidatedPath {
     /// `PathOp::Move` (reordering is [`derive_reordered`](Self::derive_reordered))
     /// and refusing any candidate that would orphan a tool call/result pair
     /// (DESIGN §4.1, §4.2). The cheap operation gets the short name.
+    ///
+    /// `PathOp::Include` is resolved against `self`'s own nodes only (a
+    /// cross-tree `Include` needs [`derive_with`](Self::derive_with), which
+    /// this delegates to with an empty foreign map — byte-identical to this
+    /// function's behaviour before Unit 3a).
     pub fn derive(&self, ops: &[PathOp]) -> Result<Derivation, PathError> {
         self.apply(ops, false)
     }
 
     /// Derive a new path from `ops` applied to `self`, accepting
     /// `PathOp::Move` (the expensive direction — DESIGN §4.2). Still refuses
-    /// an orphaning candidate.
+    /// an orphaning candidate. Same `Include` scope as [`derive`](Self::derive)
+    /// — base only; see [`derive_with`](Self::derive_with) for cross-tree.
     pub fn derive_reordered(&self, ops: &[PathOp]) -> Result<Derivation, PathError> {
         self.apply(ops, true)
+    }
+
+    /// [`derive`](Self::derive), but `PathOp::Include` additionally resolves
+    /// against `foreign` — records the CALLER already read through its own
+    /// read surface (a curator's `CurateCtx`, DESIGN §11.5) — after `self`'s
+    /// own nodes (today's `derive` behaviour, checked first, byte-identical).
+    /// A ref in NEITHER still refuses with `UnresolvableNode`: the refusal
+    /// survives, it just stops being unconditional (Unit 3a).
+    ///
+    /// `derive` stays pure, model-free, and synchronous — it has no port
+    /// access and does not read the store itself. The caller (a curator)
+    /// already holds the read surface, resolves the record, and hands it
+    /// here; `derive_with` never reaches outside its arguments.
+    ///
+    /// `foreign`'s value is just the record — never a stamp. Per the
+    /// [`NodeStamp`] doc, a recalled foreign record renders as ordinary
+    /// content (not a fork-ancestry claim, not this session's head) and is
+    /// volatile (chosen by a plugin this turn, no shared inherited prefix),
+    /// so its stamp is unconditionally [`NodeStamp::Own`]. Accepting a
+    /// caller-supplied stamp would let a curator smuggle an `Inherited`
+    /// claim it cannot back — a lie in the record; not accepting one closes
+    /// that door.
+    ///
+    /// A foreign node has no base index to reconstruct a position from (the
+    /// base-relative re-include logic `derive` already runs for its own
+    /// nodes has nothing to work with), so it lands at the TAIL of the
+    /// candidate — honest and predictable. A curator wanting it elsewhere
+    /// issues an explicit `Move` (refused by `derive_with`'s `derive`
+    /// semantics, accepted once `derive_reordered` grows the same
+    /// capability).
+    ///
+    /// `selected_by` is the [`Selector`] every newly-introduced foreign node
+    /// is stamped with (DESIGN §2.2: provenance — not the stamp — is where
+    /// "a memory plugin chose this" gets recorded, as
+    /// `Selector::Plugin { id, op }`). One `derive_with` call is one
+    /// curation act, so one `Selector` covers every foreign node it
+    /// introduces; a re-included BASE node keeps its ORIGINAL provenance
+    /// unchanged, same as plain `derive`.
+    ///
+    /// Still refuses any candidate that would orphan a tool call/result
+    /// pair, including one a foreign `Include` manufactures on its own — a
+    /// recalled `ToolUse` whose answering `ToolResultBlock` is not also
+    /// recalled is exactly the rule-1 case `validate_coherence_with` exists to
+    /// catch; §4.1's refusal-not-silent-repair posture applies unchanged.
+    pub fn derive_with(
+        &self,
+        ops: &[PathOp],
+        foreign: &BTreeMap<RecordRef, Arc<LogRecord>>,
+        selected_by: Selector,
+    ) -> Result<Derivation, PathError> {
+        self.apply_with(ops, false, foreign, selected_by)
     }
 
     /// The §2.8 constructor that includes everything: runs the three-rule
@@ -693,8 +757,28 @@ impl ValidatedPath {
 
     /// Shared core of [`derive`](Self::derive) / [`derive_reordered`](Self::derive_reordered).
     /// `allow_move` is the only difference between the two: `derive` refuses a
-    /// `Move`, `derive_reordered` accepts it.
+    /// `Move`, `derive_reordered` accepts it. Delegates to
+    /// [`Self::apply_with`] with an empty foreign map and an unused
+    /// [`Selector`] (never attached to a node — the map is empty, so the
+    /// foreign branch of `Include` never runs), which is what keeps `derive`/
+    /// `derive_reordered` byte-identical to their pre-Unit-3a behaviour.
     fn apply(&self, ops: &[PathOp], allow_move: bool) -> Result<Derivation, PathError> {
+        self.apply_with(ops, allow_move, &BTreeMap::new(), Selector::DefaultRule)
+    }
+
+    /// Shared core of [`derive`](Self::derive) / [`derive_reordered`](Self::derive_reordered)
+    /// / [`derive_with`](Self::derive_with). `allow_move` is the `derive` vs.
+    /// `derive_reordered` difference; `foreign`/`selected_by` are the
+    /// `derive_with` addition (Unit 3a) — see that fn's doc for what they
+    /// mean. `derive`/`derive_reordered` call this with an empty `foreign`
+    /// map, so the `Include` foreign branch below never runs for them.
+    fn apply_with(
+        &self,
+        ops: &[PathOp],
+        allow_move: bool,
+        foreign: &BTreeMap<RecordRef, Arc<LogRecord>>,
+        selected_by: Selector,
+    ) -> Result<Derivation, PathError> {
         // §4.2: `derive` refuses any `Move`. Checked before any mutation so a
         // refusing `derive` never produces a partial candidate.
         if !allow_move {
@@ -714,43 +798,77 @@ impl ValidatedPath {
                 PathOp::Omit { node } => {
                     candidate.retain(|n| n.record != *node);
                 }
-                // (Re-)include a base node, restoring it to its ORIGINAL base
-                // position -- not the tail. This is what makes a "keep" repair
-                // offer validate (DESIGN §4.1): a curator that omitted a CALL
-                // (which precedes its result) and is offered "keep the call"
-                // must get `[call, result]`, not `[result, call]` -- a
-                // tail-append would manufacture a rule-3 orphan. The op
-                // carries only a `RecordRef`, so the stamp/provenance come from
-                // `self`'s node with that record. A foreign cross-tree
-                // `Include` (memory) would need a read surface to resolve the
-                // record and stamp from, which does not exist yet (D1-8); the
-                // `UnresolvableNode` refusal is the honest placeholder until
-                // then. A curator that wants a node elsewhere still uses `Move`.
+                // (Re-)include, resolved in TWO steps (Unit 3a):
+                //
+                // 1. Against `self`'s own nodes -- a re-include, restoring the
+                //    node to its ORIGINAL base position, not the tail. This is
+                //    what makes a "keep" repair offer validate (DESIGN §4.1):
+                //    a curator that omitted a CALL (which precedes its
+                //    result) and is offered "keep the call" must get
+                //    `[call, result]`, not `[result, call]` -- a tail-append
+                //    would manufacture a rule-3 orphan. The op carries only a
+                //    `RecordRef`, so the stamp/provenance come from `self`'s
+                //    node with that record, unchanged.
+                // 2. If absent from the base, against `foreign` -- a
+                //    caller-resolved record from outside `self`'s tree
+                //    (`derive_with` only; `derive`/`derive_reordered` always
+                //    pass an empty map). A foreign node has no base index to
+                //    reconstruct a position from, so it lands at the TAIL of
+                //    the candidate; its stamp is unconditionally `Own` and
+                //    its provenance is freshly stamped `selected_by` at
+                //    `Utc::now()` (see `derive_with`'s doc for why).
+                //
+                // A ref in NEITHER still refuses with `UnresolvableNode` --
+                // the refusal survives, it just stops being unconditional. A
+                // curator that wants a node elsewhere still uses `Move`.
                 PathOp::Include { node } => {
                     let base: Vec<PathNode> = self.nodes().map(|(n, _)| n.clone()).collect();
-                    let Some(bi) = base.iter().position(|n| n.record == *node) else {
-                        return Err(PathError::UnresolvableNode {
-                            record: *node,
-                            detail: "foreign Include requires the read surface (D1-8)".to_string(),
-                        });
-                    };
-                    let pn = base[bi].clone();
-                    let base_refs: Vec<RecordRef> = base.iter().map(|n| n.record).collect();
-                    // Insert before the first remaining candidate node whose
-                    // own base index is greater than `bi` -- i.e. the first
-                    // node that originally followed the re-included one. If
-                    // none (the node was last in the base, or everything after
-                    // it was omitted), append at the tail.
-                    let mut insert_at = candidate.len();
-                    for (i, cn) in candidate.iter().enumerate() {
-                        if let Some(ci) = base_refs.iter().position(|r| *r == cn.record) {
-                            if ci > bi {
-                                insert_at = i;
-                                break;
+                    if let Some(bi) = base.iter().position(|n| n.record == *node) {
+                        let pn = base[bi].clone();
+                        let base_refs: Vec<RecordRef> = base.iter().map(|n| n.record).collect();
+                        // Insert before the first remaining candidate node
+                        // whose own base index is greater than `bi` -- i.e.
+                        // the first node that originally followed the
+                        // re-included one. If none (the node was last in the
+                        // base, or everything after it was omitted), append
+                        // at the tail.
+                        let mut insert_at = candidate.len();
+                        for (i, cn) in candidate.iter().enumerate() {
+                            if let Some(ci) = base_refs.iter().position(|r| *r == cn.record) {
+                                if ci > bi {
+                                    insert_at = i;
+                                    break;
+                                }
                             }
                         }
+                        candidate.insert(insert_at, pn);
+                    } else if foreign.contains_key(node) {
+                        candidate.push(PathNode {
+                            record: *node,
+                            stamp: NodeStamp::Own,
+                            prov: NodeProvenance {
+                                selected_by: selected_by.clone(),
+                                at: Utc::now(),
+                            },
+                        });
+                    } else {
+                        // One message for both entry points. `derive`/
+                        // `derive_reordered` pass an empty map, so a foreign
+                        // ref lands here and reads "not in the supplied
+                        // foreign map" -- which is exactly true of an empty
+                        // one, and points at `derive_with` as the way to
+                        // supply it. The older wording ("requires the read
+                        // surface (D1-8)") is retired: the D1-8 read surface
+                        // EXISTS now, and a message that says otherwise sends
+                        // the next reader looking for an unbuilt capability.
+                        return Err(PathError::UnresolvableNode {
+                            record: *node,
+                            detail: "record not found on the base path or in the supplied \
+                                     foreign map (a cross-tree Include must go through \
+                                     `derive_with`, which carries the caller-resolved record)"
+                                .to_string(),
+                        });
                     }
-                    candidate.insert(insert_at, pn);
                 }
                 // Move: reorder `node` to immediately before `before`. Both
                 // must be present in `candidate`; either absent → refusal.
@@ -797,7 +915,10 @@ impl ValidatedPath {
             }
         }
 
-        let orphans = validate_coherence(self, &candidate);
+        // Foreign-aware (Unit 3a): with an empty `foreign` map this is
+        // byte-identical to the pre-Unit-3a call, since `validate_coherence`
+        // is now a thin wrapper over this with an empty map of its own.
+        let orphans = validate_coherence_with(self, &candidate, foreign);
         if !orphans.is_empty() {
             let offers = offers_for(&orphans);
             return Err(PathError::would_orphan(orphans, offers));
@@ -805,21 +926,24 @@ impl ValidatedPath {
 
         let cost = cost_estimate(self, &candidate, moved);
 
-        // Zip each candidate `PathNode` with `self`'s `Arc<LogRecord>` for that
-        // `RecordRef` (same Arc — preserves sibling sharing; do NOT clone the
+        // Zip each candidate `PathNode` with its `Arc<LogRecord>` (same Arc
+        // for base nodes — preserves sibling sharing; do NOT clone the
         // LogRecord). Every candidate node's record was resolved from `self`
-        // (foreign `Include` was refused above), so the lookup always succeeds.
-        let rec_by_ref: HashMap<RecordRef, Arc<LogRecord>> = self
+        // or from `foreign` (any other ref was refused above), so the lookup
+        // always succeeds.
+        let mut rec_by_ref: HashMap<RecordRef, Arc<LogRecord>> = self
             .nodes()
             .map(|(n, r)| (n.record, Arc::clone(r)))
             .collect();
+        for (r, rec) in foreign {
+            rec_by_ref.entry(*r).or_insert_with(|| Arc::clone(rec));
+        }
         let zipped: Vec<(PathNode, Arc<LogRecord>)> = candidate
             .iter()
             .map(|n| {
-                let r = rec_by_ref
-                    .get(&n.record)
-                    .cloned()
-                    .expect("candidate record resolved from base (foreign Include refused)");
+                let r = rec_by_ref.get(&n.record).cloned().expect(
+                    "candidate record resolved from base or foreign (unresolvable Include refused)",
+                );
                 (n.clone(), r)
             })
             .collect();
@@ -916,9 +1040,79 @@ fn extract_calls_results(record: &LogRecord) -> Vec<Extracted> {
 /// deduped by `call_id`. An orphan the *base* already had (e.g. a base
 /// `default_path` that tolerated a call-without-result) is NOT reported here:
 /// `derive` only refuses orphans the *derivation* introduced, so a rule-1 or
-/// rule-2 orphan whose omitted half is also absent from `base` is inherited
-/// incoherence, not a new one, and is skipped.
+/// rule-2 orphan whose omitted half is also absent from `base` (and, per
+/// [`validate_coherence_with`], from any resolved `foreign` record too) is
+/// inherited incoherence, not a new one, and is skipped.
+///
+/// Thin wrapper over [`validate_coherence_with`] with an empty foreign map —
+/// `derive`/`derive_reordered` never resolve outside `base`, so this stays
+/// byte-identical to its pre-Unit-3a behaviour, and every existing direct
+/// caller (this module's own tests) compiles and behaves unmodified.
+/// `#[cfg(test)]`: production code now calls `apply_with`, which goes
+/// straight to `validate_coherence_with` (it always has a `foreign` map in
+/// hand, even if empty), so this wrapper's only remaining caller is the test
+/// suite that predates `derive_with`.
+#[cfg(test)]
 pub(crate) fn validate_coherence(base: &ValidatedPath, candidate: &[PathNode]) -> Vec<Orphan> {
+    validate_coherence_with(base, candidate, &BTreeMap::new())
+}
+
+/// The non-`#[cfg(test)]` counterpart of `validate_coherence` (kept for
+/// production callers): a call/result pair's missing half may also be
+/// named by `foreign` — records the caller resolved through its own read
+/// surface (§11.5) and handed to [`ValidatedPath::derive_with`], whether or
+/// not they ended up `Include`d into `candidate` (Unit 3a).
+///
+/// This is what stops a foreign `Include` from silently manufacturing an
+/// orphan: a recalled `ToolUse` whose answering `ToolResultBlock` the curator
+/// also resolved (so it is *nameable*, present in `foreign`) but did not
+/// `Include` is still refused as a rule-1 orphan, exactly as if that result
+/// had been on `base` and omitted. A recalled `ToolUse` whose answering
+/// `ToolResultBlock` was never resolved by the caller at all — not in `base`,
+/// not in `foreign` — cannot be named and is a disclosed limit: this function
+/// can only refuse an omission it can locate, the same honest limit the
+/// original base-only skip already accepted for pre-existing incoherence.
+/// May a resolved-but-not-included `foreign` record be used to NAME the
+/// missing half of `present_node`'s pair?
+///
+/// Only when `present_node` is itself a node this derivation introduced from
+/// `foreign` -- i.e. its `RecordRef` is not on the base at all.
+///
+/// This guard is load-bearing, and its absence was a real defect (caught in
+/// review of Unit 3a, reproduced by
+/// `foreign_content_does_not_refuse_the_bases_own_declared_incoherence`).
+/// `foreign` holds everything the caller resolved, whether or not it proposed
+/// to `Include` it -- which is exactly how a broad-read-surface curator like
+/// `conway.memory` works. Without this guard, a record the curator merely
+/// looked at, and which happens to answer a `call_id` the BASE was already
+/// tolerating as declared incoherence, would convert that inherited
+/// incoherence into a hard `WouldOrphan` refusal. That breaks the module's
+/// governing invariant -- `derive` refuses only orphans the DERIVATION
+/// introduced (see [`validate_coherence`]'s doc) -- for a derivation that may
+/// carry no ops at all.
+///
+/// Ruling 3 still holds: a curator that resolves BOTH halves and `Include`s
+/// only one introduced that node from `foreign`, so the guard passes and the
+/// orphan is named and refused.
+fn foreign_names_missing_half<'a>(
+    present_node: &RecordRef,
+    base_refs: &HashSet<RecordRef>,
+    foreign_half: &'a HashMap<String, RecordRef>,
+    cid: &str,
+) -> Option<&'a RecordRef> {
+    if base_refs.contains(present_node) {
+        // The present half came from the base: this is the base's own
+        // pairing question, and only the base may answer it.
+        return None;
+    }
+    foreign_half.get(cid)
+}
+
+pub(crate) fn validate_coherence_with(
+    base: &ValidatedPath,
+    candidate: &[PathNode],
+    foreign: &BTreeMap<RecordRef, Arc<LogRecord>>,
+) -> Vec<Orphan> {
     // 1. Build the base pairing map: call_id -> (call_node, result_node), and
     // the first-occurrence index maps the rule-3 base-side skip needs to
     // detect a base's own ri < ci inversion (DESIGN §4.1, D1-3c Part 4).
@@ -941,9 +1135,39 @@ pub(crate) fn validate_coherence(base: &ValidatedPath, candidate: &[PathNode]) -
         }
     }
 
+    // 1b. Build the foreign pairing map (Unit 3a): call_id -> node, scanned
+    // over EVERY record the caller resolved, whether or not it ended up on
+    // `candidate`. No index map is needed here -- rule 3's inversion check
+    // only ever needs base's own indices (a foreign pair, resolved and
+    // reordered, has no base index and so is never skipped there, which is
+    // correct: it is new).
+    let mut foreign_call: HashMap<String, RecordRef> = HashMap::new();
+    let mut foreign_result: HashMap<String, RecordRef> = HashMap::new();
+    for (r, rec) in foreign {
+        for ext in extract_calls_results(rec) {
+            match ext.half {
+                Half::Call => {
+                    foreign_call.entry(ext.call_id).or_insert(*r);
+                }
+                Half::Result => {
+                    foreign_result.entry(ext.call_id).or_insert(*r);
+                }
+            }
+        }
+    }
+
+    // Every `RecordRef` the base carries. A candidate node whose ref is NOT
+    // in here was introduced by this derivation from `foreign` -- the only
+    // case in which `foreign` may name a missing half (see
+    // `foreign_names_missing_half`).
+    let base_refs: &HashSet<RecordRef> = &base.nodes().map(|(n, _)| n.record).collect();
+
     // 2. Walk candidate in order; record first-occurrence indices + nodes.
-    let rec_by_ref: HashMap<RecordRef, &LogRecord> =
+    let mut rec_by_ref: HashMap<RecordRef, &LogRecord> =
         base.nodes().map(|(n, r)| (n.record, r.as_ref())).collect();
+    for (r, rec) in foreign {
+        rec_by_ref.entry(*r).or_insert(rec.as_ref());
+    }
     let mut cand_call_idx: HashMap<String, usize> = HashMap::new();
     let mut cand_result_idx: HashMap<String, usize> = HashMap::new();
     let mut cand_call_node: HashMap<String, RecordRef> = HashMap::new();
@@ -952,10 +1176,10 @@ pub(crate) fn validate_coherence(base: &ValidatedPath, candidate: &[PathNode]) -
     let mut first_idx: HashMap<String, usize> = HashMap::new();
     for (i, n) in candidate.iter().enumerate() {
         let Some(rec) = rec_by_ref.get(&n.record) else {
-            // A foreign node (not resolvable from base) contributes no
-            // calls/results. `derive` would have refused it as an
-            // `UnresolvableNode` Include before reaching here, so this is
-            // purely defensive.
+            // A node resolvable from NEITHER `base` NOR `foreign` contributes
+            // no calls/results. `derive`/`derive_with` would have refused it
+            // as an `UnresolvableNode` Include before reaching here, so this
+            // is purely defensive.
             continue;
         };
         for ext in extract_calls_results(rec) {
@@ -986,9 +1210,19 @@ pub(crate) fn validate_coherence(base: &ValidatedPath, candidate: &[PathNode]) -
         let tool = cand_tool.get(cid).cloned().unwrap_or_default();
         if call_present && !result_present {
             // Rule 1: call present, result omitted. The omitted half (result)
-            // is named by base. If base also lacks the result, this is the
-            // base's declared incoherence, not a derivation-introduced orphan.
-            if let Some(&result_node) = base_result.get(cid) {
+            // is named by base first, then -- ONLY when this derivation
+            // itself introduced the present half from `foreign` -- by foreign
+            // (Unit 3a). See `foreign_names_missing_half` for why that guard
+            // is load-bearing: without it, an unrelated record the caller
+            // merely resolved turns the base's own tolerated incoherence into
+            // a refusal. If NEITHER names it, this is either the base's
+            // declared incoherence (inherited, not derivation-introduced) or
+            // a foreign half the caller never resolved at all (disclosed
+            // limit -- see `validate_coherence_with`'s doc).
+            let call_node_ref = cand_call_node[cid];
+            if let Some(&result_node) = base_result.get(cid).or_else(|| {
+                foreign_names_missing_half(&call_node_ref, base_refs, &foreign_result, cid)
+            }) {
                 let call_node = cand_call_node[cid];
                 orphans.push(Orphan {
                     call_id: cid.clone(),
@@ -999,9 +1233,13 @@ pub(crate) fn validate_coherence(base: &ValidatedPath, candidate: &[PathNode]) -
                 });
             }
         } else if !call_present && result_present {
-            // Rule 2: result present, call omitted. The omitted half (call) is
-            // named by base. If base also lacks the call, inherited, skip.
-            if let Some(&call_node) = base_call.get(cid) {
+            // Rule 2: result present, call omitted. Same base-then-foreign
+            // naming as rule 1, under the same derivation-introduced guard,
+            // mirrored onto the call half.
+            let result_node_ref = cand_result_node[cid];
+            if let Some(&call_node) = base_call.get(cid).or_else(|| {
+                foreign_names_missing_half(&result_node_ref, base_refs, &foreign_call, cid)
+            }) {
                 let result_node = cand_result_node[cid];
                 orphans.push(Orphan {
                     call_id: cid.clone(),
@@ -1050,7 +1288,7 @@ pub(crate) fn validate_coherence(base: &ValidatedPath, candidate: &[PathNode]) -
 }
 
 /// Run the three coherence rules (DESIGN §4.1) over a single node list in
-/// DECLARE mode — the tolerant counterpart of [`validate_coherence`]. Instead
+/// DECLARE mode — the tolerant counterpart of `validate_coherence_with`. Instead
 /// of returning [`Orphan`]s for refusal (which `derive` does), this converts
 /// each orphan to a [`HarnessDrop`] so [`ValidatedPath::default_path`] can
 /// *declare* the incoherence a fork cut or a killed session left behind rather
@@ -2194,9 +2432,13 @@ mod tests {
         assert_eq!(deriv.cost.divergence_kind, DivergenceKind::None);
     }
 
-    /// §2.7: a foreign `Include` (a `RecordRef` not on the base) is refused with
-    /// `UnresolvableNode` — the honest placeholder until the cross-tree read
-    /// surface lands (D1-8).
+    /// §2.7: a foreign `Include` (a `RecordRef` not on the base) is still
+    /// refused with `UnresolvableNode` through `derive`, which supplies no
+    /// foreign records. Unit 3a did NOT relax this: it added a second entry
+    /// point (`derive_with`) that carries caller-resolved records, and left
+    /// `derive`'s behaviour byte-identical. The refusal is no longer a
+    /// placeholder for an unbuilt capability — it is the correct answer when
+    /// no foreign record was supplied.
     #[test]
     fn derive_refuses_foreign_include() {
         let (base, _call_n, _result_n) = pair_base();
@@ -2210,10 +2452,320 @@ mod tests {
         match err {
             PathError::UnresolvableNode { record, detail } => {
                 assert_eq!(record, foreign);
-                assert!(detail.contains("D1-8"), "detail must name D1-8: {detail}");
+                assert!(
+                    detail.contains("derive_with"),
+                    "detail must point at the entry point that CAN resolve it: {detail}"
+                );
             }
             other => panic!("expected UnresolvableNode, got {other:?}"),
         }
+    }
+
+    // -- derive_with: cross-tree Include (Unit 3a) ---------------------------
+
+    /// A foreign record built for `derive_with` tests: same shape as
+    /// `assistant_text`, but the caller supplies its own `RecordRef` (a
+    /// different session from `base`'s, as a curator recalling across trees
+    /// would).
+    fn foreign_ref(seq: u64) -> RecordRef {
+        RecordRef {
+            session: SessionId::new(),
+            seq: LogSeq(seq),
+        }
+    }
+
+    fn memory_selector() -> Selector {
+        Selector::Plugin {
+            id: "conway.memory".to_string(),
+            op: OpLabel::new("recall"),
+        }
+    }
+
+    /// Unit 3a: `derive_with` resolves a foreign `Include` against a
+    /// caller-supplied record the base does not have. Rulings 1+2: the
+    /// foreign node lands at the TAIL, stamped unconditionally `Own`, with
+    /// `NodeProvenance.selected_by` set to the caller-supplied `Selector`.
+    #[test]
+    fn derive_with_includes_a_foreign_record_at_the_tail_stamped_own() {
+        let (base, call_n, result_n) = pair_base();
+        let recalled = foreign_ref(42);
+        let mut foreign: BTreeMap<RecordRef, Arc<LogRecord>> = BTreeMap::new();
+        foreign.insert(
+            recalled,
+            Arc::new(assistant_text(1, "recalled from another tree")),
+        );
+
+        let deriv = base
+            .derive_with(
+                &[PathOp::Include { node: recalled }],
+                &foreign,
+                memory_selector(),
+            )
+            .expect("a foreign record the caller resolved must be includable");
+
+        let nodes: Vec<(RecordRef, NodeStamp)> = deriv
+            .path
+            .nodes()
+            .map(|(n, _)| (n.record, n.stamp))
+            .collect();
+        assert_eq!(
+            nodes,
+            vec![
+                (call_n.record, NodeStamp::Own),
+                (result_n.record, NodeStamp::Own),
+                (recalled, NodeStamp::Own),
+            ],
+            "foreign node lands at the tail (ruling 2), stamped Own (ruling 1)"
+        );
+
+        // Provenance: `selected_by` is exactly what the caller supplied.
+        let (recalled_node, recalled_rec) = deriv
+            .path
+            .nodes()
+            .find(|(n, _)| n.record == recalled)
+            .expect("recalled node is on the derived path");
+        assert_eq!(recalled_node.prov.selected_by, memory_selector());
+        assert_eq!(
+            recalled_rec.as_ref(),
+            &assistant_text(1, "recalled from another tree"),
+            "the resolved record content is carried through unchanged"
+        );
+    }
+
+    /// Unit 3a: a ref in NEITHER `base` NOR `foreign` still refuses with
+    /// `UnresolvableNode` — the refusal survives, it just stops being
+    /// unconditional.
+    #[test]
+    fn derive_with_refuses_a_ref_in_neither_base_nor_foreign() {
+        let (base, _call_n, _result_n) = pair_base();
+        let unknown = foreign_ref(7);
+        let foreign: BTreeMap<RecordRef, Arc<LogRecord>> = BTreeMap::new();
+        let err = base
+            .derive_with(
+                &[PathOp::Include { node: unknown }],
+                &foreign,
+                memory_selector(),
+            )
+            .unwrap_err();
+        match err {
+            PathError::UnresolvableNode { record, .. } => assert_eq!(record, unknown),
+            other => panic!("expected UnresolvableNode, got {other:?}"),
+        }
+    }
+
+    /// Unit 3a ruling 3: a foreign `Include` that manufactures a rule-1
+    /// orphan (a recalled `ToolUse` whose answering `ToolResultBlock` the
+    /// caller also resolved, but did not `Include`) MUST refuse — the same
+    /// rule-1 case `validate_coherence` already catches for `base`, now
+    /// reached through `foreign` too.
+    #[test]
+    fn derive_with_refuses_a_foreign_include_that_orphans_a_tool_call() {
+        let (base, _call_n, _result_n) = pair_base();
+        let other_session = SessionId::new();
+        let foreign_call = RecordRef {
+            session: other_session,
+            seq: LogSeq(10),
+        };
+        let foreign_result = RecordRef {
+            session: other_session,
+            seq: LogSeq(11),
+        };
+        // The curator resolved BOTH halves of the foreign pair through its
+        // read surface, but only proposes to `Include` the call.
+        let mut foreign: BTreeMap<RecordRef, Arc<LogRecord>> = BTreeMap::new();
+        foreign.insert(
+            foreign_call,
+            Arc::new(assistant_call(10, "tc_foreign", "read")),
+        );
+        foreign.insert(
+            foreign_result,
+            Arc::new(tool_result(11, "tc_foreign", "read")),
+        );
+
+        let err = base
+            .derive_with(
+                &[PathOp::Include { node: foreign_call }],
+                &foreign,
+                memory_selector(),
+            )
+            .unwrap_err();
+        match err {
+            PathError::WouldOrphan { orphans, .. } => {
+                assert_eq!(orphans.len(), 1);
+                assert_eq!(orphans[0].rule, 1);
+                assert_eq!(orphans[0].call_id, "tc_foreign");
+                assert_eq!(orphans[0].call_node, foreign_call);
+                assert_eq!(
+                    orphans[0].result_node, foreign_result,
+                    "the omitted half is named from `foreign`, not just `base`"
+                );
+            }
+            other => panic!("expected WouldOrphan, got {other:?}"),
+        }
+    }
+
+    /// Unit 3a: recalling BOTH halves of a foreign pair (in order) is
+    /// coherent — the orphan refusal is about an unanswered `ToolUse`, not
+    /// about cross-tree `Include` itself.
+    #[test]
+    fn derive_with_accepts_a_coherent_foreign_pair() {
+        let (base, call_n, result_n) = pair_base();
+        let other_session = SessionId::new();
+        let foreign_call = RecordRef {
+            session: other_session,
+            seq: LogSeq(10),
+        };
+        let foreign_result = RecordRef {
+            session: other_session,
+            seq: LogSeq(11),
+        };
+        let mut foreign: BTreeMap<RecordRef, Arc<LogRecord>> = BTreeMap::new();
+        foreign.insert(
+            foreign_call,
+            Arc::new(assistant_call(10, "tc_foreign", "read")),
+        );
+        foreign.insert(
+            foreign_result,
+            Arc::new(tool_result(11, "tc_foreign", "read")),
+        );
+
+        let deriv = base
+            .derive_with(
+                &[
+                    PathOp::Include { node: foreign_call },
+                    PathOp::Include {
+                        node: foreign_result,
+                    },
+                ],
+                &foreign,
+                memory_selector(),
+            )
+            .expect("recalling both halves of a foreign pair, in order, is coherent");
+        let recs: Vec<RecordRef> = deriv.path.nodes().map(|(n, _)| n.record).collect();
+        assert_eq!(
+            recs,
+            vec![call_n.record, result_n.record, foreign_call, foreign_result]
+        );
+    }
+
+    /// Unit 3a cost honesty: a pure foreign append (nothing omitted or
+    /// reordered) reports `DivergenceKind::None` — the shared prefix covers
+    /// the whole base, and appending new content at the tail costs nothing
+    /// in cache terms (§4.2's "dropping from the tail is nearly free" taken
+    /// to its zero-cost limit: nothing was dropped at all). Confirms
+    /// `DivergenceKind` does not mislabel an insertion as an `Omission`.
+    #[test]
+    fn derive_with_cost_reports_no_divergence_for_a_pure_foreign_append() {
+        let (base, _call_n, _result_n) = pair_base();
+        let recalled = foreign_ref(1);
+        let mut foreign: BTreeMap<RecordRef, Arc<LogRecord>> = BTreeMap::new();
+        foreign.insert(recalled, Arc::new(assistant_text(1, "recalled")));
+        let deriv = base
+            .derive_with(
+                &[PathOp::Include { node: recalled }],
+                &foreign,
+                memory_selector(),
+            )
+            .unwrap();
+        assert_eq!(deriv.cost.shared_prefix_nodes, 2, "base.len()");
+        assert_eq!(deriv.cost.first_divergence, None);
+        assert_eq!(deriv.cost.divergence_kind, DivergenceKind::None);
+        assert!(!deriv.cost.divergence_inside_frozen_tier);
+    }
+
+    /// Unit 3a cost honesty: an `Omit` earlier in the same derivation is
+    /// still correctly labeled `Omission` at the omitted node, unaffected by
+    /// a foreign append that follows it — the insertion does not get
+    /// mistaken for the cause of the divergence.
+    #[test]
+    fn derive_with_omission_cost_is_unaffected_by_a_later_foreign_append() {
+        let (base, call_n, result_n) = pair_base();
+        let recalled = foreign_ref(1);
+        let mut foreign: BTreeMap<RecordRef, Arc<LogRecord>> = BTreeMap::new();
+        foreign.insert(recalled, Arc::new(assistant_text(1, "recalled")));
+        // Omitting the call orphans the result (rule 1) unless the result is
+        // also omitted; omit both, then append the foreign node, to keep the
+        // candidate coherent while still exercising the Omission cost path.
+        let deriv = base
+            .derive_with(
+                &[
+                    PathOp::Omit {
+                        node: call_n.record,
+                    },
+                    PathOp::Omit {
+                        node: result_n.record,
+                    },
+                    PathOp::Include { node: recalled },
+                ],
+                &foreign,
+                memory_selector(),
+            )
+            .unwrap();
+        assert_eq!(deriv.cost.shared_prefix_nodes, 0);
+        assert_eq!(deriv.cost.first_divergence, Some(call_n.record));
+        assert_eq!(
+            deriv.cost.divergence_kind,
+            DivergenceKind::Omission,
+            "the omission, not the later foreign append, is the divergence"
+        );
+    }
+
+    /// Unit 3a `SelectionKey` stability: two curators recalling the SAME
+    /// foreign record via different `Selector`s (different plugin id/op)
+    /// produce the SAME key — `NodeProvenance` is excluded from the hash
+    /// (§2.3), and that exclusion holds for foreign nodes exactly as it does
+    /// for everything else.
+    #[test]
+    fn derive_with_selection_key_is_stable_across_curators() {
+        let (base, _call_n, _result_n) = pair_base();
+        let recalled = foreign_ref(1);
+        let mut foreign: BTreeMap<RecordRef, Arc<LogRecord>> = BTreeMap::new();
+        foreign.insert(recalled, Arc::new(assistant_text(1, "recalled")));
+
+        let selector_a = Selector::Plugin {
+            id: "conway.memory".to_string(),
+            op: OpLabel::new("recall"),
+        };
+        let selector_b = Selector::Plugin {
+            id: "conway.memory.v2".to_string(),
+            op: OpLabel::new("surface"),
+        };
+
+        let deriv_a = base
+            .derive_with(&[PathOp::Include { node: recalled }], &foreign, selector_a)
+            .unwrap();
+        let deriv_b = base
+            .derive_with(&[PathOp::Include { node: recalled }], &foreign, selector_b)
+            .unwrap();
+
+        assert_eq!(
+            deriv_a.path.key(),
+            deriv_b.path.key(),
+            "two curators recalling the same record must hash equal, regardless of provenance"
+        );
+    }
+
+    /// Unit 3a additive guarantee: `derive` is exactly an `apply_with` call
+    /// with an empty foreign map — asserted directly (not just relied on via
+    /// the untouched existing test suite) by comparing a `derive` result
+    /// against the equivalent `derive_with` call.
+    #[test]
+    fn derive_matches_derive_with_given_an_empty_foreign_map() {
+        let (base, call_n, result_n) = pair_base();
+        // Omitting both halves keeps the candidate coherent (no orphan).
+        let ops = [
+            PathOp::Omit {
+                node: call_n.record,
+            },
+            PathOp::Omit {
+                node: result_n.record,
+            },
+        ];
+        let via_derive = base.derive(&ops).unwrap();
+        let via_derive_with = base
+            .derive_with(&ops, &BTreeMap::new(), Selector::DefaultRule)
+            .unwrap();
+        assert_eq!(via_derive, via_derive_with);
     }
 
     /// §4.2: `derive` refuses a `Move` whose target is not on the path with
@@ -2436,5 +2988,52 @@ mod tests {
         // Empty derivation does not introduce anything → succeeds.
         path.derive(&[])
             .expect("empty derive on a declared rule-3 base must succeed");
+    }
+
+    /// The invariant `derive_with` must not break: **`derive` only refuses
+    /// orphans the DERIVATION introduced.** A base that already declares a
+    /// rule-1 orphan (a fork cut left a `ToolUse` whose result is gone)
+    /// tolerates it; an empty derivation introduces nothing and must succeed.
+    ///
+    /// Unit 3a made the missing half nameable from `foreign` as well as from
+    /// `base`, so that a curator which RESOLVES a result and then declines to
+    /// `Include` it is still refused (ruling 3). But `foreign` is documented
+    /// to hold everything the caller resolved, `Include`d or not — so a
+    /// curator with a broad read surface (exactly how `conway.memory` is
+    /// meant to work) can have an unrelated record sitting in `foreign` that
+    /// happens to answer the base's OWN pre-existing orphan. That must not
+    /// turn previously-tolerated inherited incoherence into a hard refusal:
+    /// the derivation did not introduce it, and the curator did not ask for
+    /// it to be included.
+    #[test]
+    fn foreign_content_does_not_refuse_the_bases_own_declared_incoherence() {
+        let s = SessionId::new();
+        let call_n = node(s, 6, NodeStamp::Own, Selector::DefaultRule, &at(0));
+        // A base that tolerates a rule-1 orphan: the call is present, its
+        // answering result is simply gone (a fork cut).
+        let base = ValidatedPath::default_path(vec![(
+            call_n.clone(),
+            Arc::new(assistant_call(6, "tc_3", "read")),
+        )]);
+        assert_eq!(base.incoherence(), &[HarnessDrop::new("tc_3")]);
+
+        // A curator resolved some unrelated foreign record for its own
+        // purposes and never proposed to include it. It happens to answer
+        // "tc_3".
+        let mut foreign: BTreeMap<RecordRef, Arc<LogRecord>> = BTreeMap::new();
+        foreign.insert(
+            RecordRef {
+                session: SessionId::new(),
+                seq: LogSeq(99),
+            },
+            Arc::new(tool_result(99, "tc_3", "read")),
+        );
+
+        // Empty ops: the derivation introduces NOTHING.
+        base.derive_with(&[], &foreign, Selector::DefaultRule)
+            .expect(
+                "an empty derivation must not be refused because of unrelated \
+                 content the caller happened to resolve",
+            );
     }
 }
