@@ -778,6 +778,41 @@ Same posture, same reason, as `ToolObserver` (`ARCHITECTURE.md` §3.9).
   no new port: "recall what I learned in a past session" is a cross-session selection.
   Retention (§4.4) is what keeps those old sessions alive, so the two mechanisms
   compose rather than needing to know about each other.
+
+  > **AMENDED 2026-08-18 — this prediction was built to, and it failed.**
+  > Operator ruling, after `conway.memory` shipped in exactly the shape this
+  > paragraph describes (label a session, select its records through the path
+  > machinery) and proved unusable in practice.
+  >
+  > The claim was treated as a REQUIREMENT rather than a hypothesis, and the
+  > evidence against it accumulated as separate "follow-ups" instead of being
+  > read as one signal: marking could only happen at session creation — the one
+  > moment you cannot yet know a conversation mattered; nothing could be
+  > un-remembered; growth was "bounded" only by truncating a session to 8
+  > arbitrary records; and a memory could never be a distillation, only a
+  > verbatim excerpt. That cap was the tell, and it was written down as a virtue.
+  >
+  > The type system had already said so: `CurateOutcome::Derived` carries a
+  > `Derivation`, which can only reference records that already exist, so
+  > freeform memory text is structurally unrepresentable at the curator seam.
+  >
+  > **What shipped instead (`5beb741`):** a mutable `MemoryStore` port — a memory
+  > is freeform text with OPTIONAL provenance, addressable and removable,
+  > injected as a segment by a `ContextHook` and attributed with
+  > `Provenance::Memory`. So memory DOES have storage of its own and DOES need a
+  > new port. It still needs no retrieval semantics of its own, and it does not
+  > touch record-log immutability — a memory is an annotation ABOUT sessions, not
+  > content IN one.
+  >
+  > §11.3's ruling that `ContextHook` is the wrong seam still stands and is not
+  > contradicted: that ruling is about CURATION, which edits selections. Memory
+  > turned out to be INJECTION, which is what `Provenance::AgentDef`/`Skill` have
+  > always been.
+  >
+  > The rest of this section — `conway.compaction`, the human through
+  > `conway path` — is untouched by this amendment. Both are genuinely selection
+  > over existing records, which is what the curator seam is for and why it was
+  > kept.
 - **A human, through `conway path`** (D1-7) — the same operations, no plugin installed.
   This is why D1-7 is gating rather than cosmetic (§10).
 
