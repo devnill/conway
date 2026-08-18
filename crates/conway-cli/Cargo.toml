@@ -73,6 +73,13 @@ conway-plugin-subprocess = { path = "../conway-plugin-subprocess" }
 # full wiring and the trust disclosure this dependency carries (identical
 # footing to `conway-plugin-subprocess` above).
 conway-plugin-mcp = { path = "../conway-plugin-mcp" }
+# Board item 01M090JY3KYHQQMKCZZM1Y6EDZ: `conway.memory` -- the cross-tree
+# curator that recalls records from explicitly labelled past sessions
+# (DESIGN-context-path §11.7). Resolved through the SAME `[plugins].install`
+# mechanism and the same `src/first_party_plugins.rs` choke point as the
+# lines above; NOT installed by default (an operator opts in the same way
+# they would for `conway-plugin-skeleton`/`conway-plugin-history`).
+conway-plugin-memory = { path = "../conway-plugin-memory" }
 clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }
