@@ -45,6 +45,17 @@ harness. Read these first, in order, before doing anything else:
 - `CONTRIBUTING.md` §2 — the rule that keeps the "Where the tree is today" notes
   honest.
 
+**On the `docs/vision/DESIGN-*.md` documents.** These are design records written
+BEFORE the work they describe. They state what a mechanism was expected to need,
+and those expectations are hypotheses, not constraints the tree must satisfy.
+Where a design doc and the shipped code disagree, that is a FINDING to
+investigate, not automatically a defect in the code — the doc may be what is
+wrong. `DESIGN-context-path.md` §11.7 is a live example: it asserts memory
+"needs no storage of its own, no retrieval semantics of its own, and no new
+port", and the operator overrode that on 2026-08-18 after the claim was built to
+and failed. See that section's own amendment note. Do not recommend reverting
+shipped work solely because a design document predicted a different shape.
+
 Then survey the tree yourself. Do not take the documents' word for what is built.
 At minimum establish, from the code:
 
@@ -62,8 +73,15 @@ At minimum establish, from the code:
 5. **The CLI surface.** Every flag in `crates/conway-cli/src/cli.rs`, every slash
    command, every subcommand — and what a general-purpose (non-coding) user of
    the harness would find missing.
-6. **The board.** `.ideate/work-items/` — what is open, what is done, and whether
-   the open set matches the findings you are about to write.
+6. **The board.** The live board is the **ideate MCP server** (`work_list`,
+   `work_get`) — what is open, what is done, and whether the open set matches
+   the findings you are about to write.
+
+   **Do NOT read `.ideate/work-items/*.yaml` as the board.** That directory is a
+   dead, all-done export from an earlier tooling generation. It has drifted far
+   out of date, and a reviewer who reads it concludes the project has no open
+   work. If you have no MCP access in this session, say so and treat the board
+   survey as NOT DONE rather than substituting the YAML files.
 
 ### What to produce
 
@@ -113,6 +131,39 @@ addition and flag it for the operator rather than deciding it yourself.
 - Where the intent is genuinely ambiguous, ask the operator rather than picking.
   Every question you have to ask is itself a finding about `INTENT.md`.
 
+### Four failure modes this review exists to catch
+
+Each of these produced real, shipped defects in this repository. They are listed
+as things to LOOK FOR in the tree, and as things to avoid while reviewing.
+
+**1. A premise defended by a series of workarounds.** When a feature has
+accumulated two or more accommodations — a limitation filed as an "ergonomics
+follow-up", a missing operation left as an "open question", a cap standing in for
+a bound — read them TOGETHER rather than one at a time. Each accommodation is
+usually locally reasonable, which is what makes the series invisible; the series
+is the signal that the premise underneath is failing. Watch especially for
+reassuring phrasing applied to a workaround: "bounded by construction" was
+written in this tree to describe a cap that existed only because the unit of work
+was wrong. A symptom phrased as a virtue is the hardest kind to see.
+
+**2. A capability verified in one direction only.** A complete READ path is not
+evidence of a WRITE path. This tree shipped a memory feature selecting sessions by
+a label that nothing could ever set: the filter existed, the query existed, both
+were reachable — and no code path wrote the field. When a design rests on a piece
+of data, verify both ends before believing it works, and prefer an end-to-end
+proof through the real surface over two half-proofs.
+
+**3. A design document treated as a constraint.** Covered in the reading list
+above. Stated here as conduct: when the tree and a `DESIGN-*.md` disagree,
+investigate which is wrong. Do not assume the code.
+
+**4. A limitation reported after the success.** If something works end to end but
+is not usable — a feature whose enabling path is unwired, a store that forgets on
+restart — say the limitation FIRST. Both occurred here, and in both cases the
+accurate-but-late framing left a reader believing something was finished when it
+was not. A review that buries the caveat has misled its reader even if every
+sentence is true.
+
 ---
 
 ## 3. After the run
@@ -127,3 +178,5 @@ addition and flag it for the operator rather than deciding it yourself.
 | Date | Change |
 | --- | --- |
 | 2026-08-14 | First version. Established the four-artifact shape and the rule that `INTENT.md` accumulates while the review and plan are replaced. |
+| 2026-08-18 | Added "Four failure modes this review exists to catch" to §2's conduct section — premise-defended-by-workarounds, one-directional verification, design-doc-as-constraint, limitation-reported-late. All four produced shipped defects in this tree during the 2026-08-17/18 memory program; they are recorded so the review looks for them rather than rediscovering them. |
+| 2026-08-18 | Two re-run hazards fixed. (1) The board survey pointed at `.ideate/work-items/*.yaml`, a dead all-done export — a reviewer following it would have concluded there was no open work, while the live MCP board carried 12 open items. Now points at the MCP server and says explicitly not to substitute the YAML. (2) Added the note above on `DESIGN-*.md` documents being hypotheses rather than constraints, after a design claim (`DESIGN-context-path.md` §11.7) was built to as a requirement, failed, and was overridden by the operator — a re-run reading it as authority could have recommended reverting the correction. |

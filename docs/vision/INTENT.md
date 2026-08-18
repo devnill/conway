@@ -459,6 +459,40 @@ It also means retention (a selection pins the records it references) is doing re
 work rather than being a formality: a memory plugin's selections are precisely what
 keeps old sessions from being reaped.
 
+*Addendum, 2026-08-18 — what survived contact, and what did not.*
+
+The **permission** above is unchanged and was vindicated: a selection may name any
+record in the store, the control belongs on the composer, and cross-tree reach is
+where the power is. `derive_with` (`5beb741`'s ancestor `afc26e0`) implements exactly
+that, and a curator can now pull a record from an unrelated session through the
+validator.
+
+The **prediction** in the paragraph above — that `conway.memory` would therefore need
+no storage and no new port, being "a curation plugin whose selections reach further
+back than the current tree" — was built to as written, and it failed. What emerged
+instead: marking could only happen at session creation, which is the one moment you
+cannot yet know a conversation mattered; nothing could be un-remembered; growth could
+only be capped by truncating a session to a few arbitrary records; and a memory could
+never be a distillation, only a verbatim excerpt of the conversation that produced it.
+
+`conway.memory` now has a `MemoryStore` of its own: a memory is freeform text with
+optional provenance, mutable and removable, injected as a segment rather than selected
+as records. It still needs no retrieval semantics of its own, and record-log
+immutability is untouched — a memory is an annotation ABOUT sessions, not content IN
+one.
+
+**The sentiment worth keeping, which this document did not previously say:** a claim
+in a design document about what a feature *needs* is a hypothesis. Building to it is
+right; treating it as a constraint the feature must satisfy is not. When accommodating
+a premise requires a series of workarounds — each individually reasonable — the series
+is the signal, and the premise is what should be questioned. A cap written down as
+"bounded by construction" is the shape that mistake takes: a symptom phrased as a
+virtue.
+
+The rest of §5e stands. Retention still does real work; `conway.compaction` and the
+operator through `conway path` are still genuine selection over existing records, which
+is what the curation seam was built for and why it was kept.
+
 ---
 
 ## 6. Plugins all the way down
