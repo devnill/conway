@@ -49,7 +49,8 @@ Two identities, two jobs, and the law that relates them:
 
 The second implication is already pinned by
 `crates/conway/tests/prefix_key_wire_identity.rs` (D1-2b, landed). The first is what
-this design adds, and it is what makes §5b's "one named selection, ten heads"
+this design adds, and it is what makes `PHILOSOPHY.md` §1's "ten children ... share
+its cached prefix by construction"
 structural rather than a coincidence somebody maintains. Nothing here changes
 `prefix_key`, its inputs, or its value for any existing session.
 
@@ -167,7 +168,7 @@ describes the *record* portion of the context and says nothing about them.
 
 Four reasons, in the order that decided it:
 
-1. **§5c's table says so literally.** *Rendering — depends on: model, system prompt,
+1. **§5c says so literally.** *A rendering ... depends on the model, system prompt,
    tool set.* Revision 1 was written before that table existed and put two of those
    three inside the selection.
 2. **The forcing case generalizes one layer up.** Changing model mid-session is
@@ -260,7 +261,7 @@ reader will get it wrong:
 A cache miss is the second kind. `PHILOSOPHY.md` already holds that caching is never
 correctness-bearing; refusing on a price change would be conway acquiring an opinion
 about which prices are acceptable, which is policy. But a silent miss "looks exactly
-like an expensive workload rather than like a bug" (§5b), so it must be **observable**:
+like an expensive workload rather than like a bug" (`PHILOSOPHY.md` §1), so it must be **observable**:
 `RenderDivergence { expected, actual, first_divergence }`, surfaced on the context
 report and as an event when an expected shared prefix was not achieved. Loud, free,
 never fatal.
@@ -619,7 +620,7 @@ principle that settles each so the next reader derives them instead of asking:
 3. ~~Static drift: refuse or re-key?~~ **§5c + §8.3.** Neither — statics leave the
    selection, so there is nothing to drift from. §8.3 keeps its teeth on unresolvable
    references and non-fitting selections; a price change is reported, not refused.
-4. ~~Persist the harness-drop declaration?~~ **§5b's recording rule.** Yes, on the body
+4. ~~Persist the harness-drop declaration?~~ **§5's recording rule.** Yes, on the body
    — and excluded from the key, being derivable.
 5. ~~Ordering rule 3 makes some reorderings illegal.~~ **§5d.** A provider-required
    constraint: legitimate, and stated plainly where a curator hits it.
@@ -636,8 +637,8 @@ principle that settles each so the next reader derives them instead of asking:
 
 **One consequence to check before D1-7 is scheduled as polish.** §5c assigns a
 no-longer-fitting selection to a loud refusal from admission, and the operator or a
-plugin curates again. But a default build ships **no curation plugin**. So the honest
-Tuesday experience of switching to a smaller model mid-session is: a loud, correct
+plugin curates again. But a default build ships **no curation plugin**. So what an
+operator actually gets on switching to a smaller model mid-session is: a loud, correct
 refusal and no installed way to act on it. Holding the line is right; being unusable is
 not (§8.7). The resolution costs nothing extra and is already here — **`conway path`
 verbs make a human a first-class curator with no plugin at all** — which is why D1-7 is

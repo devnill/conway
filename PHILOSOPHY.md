@@ -229,6 +229,14 @@ it works, is a branch ref. Ownership applies to the head: exactly one session
 may move it. A selection is shared freely: any session may reference one, and
 referencing costs nothing, because nothing is copied, only pointed at.
 
+That sharing is what makes curation affordable rather than merely possible. Ten
+children forked off one carefully curated path reference the same selection, so
+they share its cached prefix by construction. If a path could reference only
+individual records, each child would re-enumerate the same list, byte-identity
+would become a coincidence somebody has to maintain, and when it drifted nothing
+would fail — you would get a silent cache miss, which looks exactly like an
+expensive workload rather than like a bug.
+
 **Which records belong on a path is policy the core does not hold.** The core
 owns the ability to express and assemble a path — to select, to order, to
 render a selection to the bytes a model sees — never a default answer for
@@ -426,8 +434,18 @@ inherited prefix, then the turn's own volatile records. Two consequences follow.
 Put volatile things late, since a timestamp or a per-turn status line near the
 top of a system prompt spends the entire cached prefix every turn for a few
 tokens of content. And when a hook edits a request, where it edits matters more
-than how much, because appending is nearly free while rewriting the head is a
-full re-read.
+than how much, because appending is nearly free while rewriting the opening
+bytes is a full re-read.
+
+**Curation has a price you can know in advance.** Because a derived path
+selects from records that already exist and never rewrites them, it shares a byte
+prefix with the path it came from up to the first thing it leaves out. So the two
+curation moves cost very different amounts, and the difference is predictable
+before either is made: dropping the most recent records is nearly free, dropping
+the oldest spends the entire cached prefix, and reordering breaks at the first
+moved element, which is strictly worse than either. A curation policy can optimise
+against that. Summarizing cannot, because it changes everything after the point
+it touches.
 
 **It never changes results.** Cache hints change cost and never bytes. An
 adapter has to produce byte-identical request content with all hints stripped,

@@ -27,7 +27,7 @@
 //! a hook's edit is a deliberate act, so an incoherent result is reported as
 //! a typed error naming what it orphaned and which method produced it --
 //! never silently patched up, which would delete part of a deliberate
-//! choice (`INTENT.md` §5b hazard 1).
+//! choice (`INTENT.md` §5b; `docs/vision/DESIGN-context-path.md` §4.1).
 //!
 //! **Naming "the responsible hook":** `conway_core::ports::plugin::
 //! ContextHook` is held as `Arc<dyn ContextHook>` with no `name()`/`Debug`

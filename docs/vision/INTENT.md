@@ -7,9 +7,14 @@
 > is the specification; [`ARCHITECTURE.md`](../../ARCHITECTURE.md) is the
 > mechanism. This page is the thing both of those are *trying to be true to*.
 >
-> It is written to be added to. When a decision gets made that this page did not
-> anticipate, the fix is to write down the sentiment that would have settled it —
-> not to leave it as tribal knowledge.
+> **It is written to be added to, and it is written in the present tense.** When
+> a decision gets made that this page did not anticipate, the fix is to write
+> down the sentiment that would have settled it — folded into the argument where
+> it belongs, not appended as a dated amendment. This page is not a record of how
+> the thinking changed. It is what the thinking currently is. Claims about what
+> is *built* belong in
+> [`STATE-OF-THE-UNION.md`](STATE-OF-THE-UNION.md), which is replaced each time
+> the project is reviewed; this page outlives every one of those.
 
 ---
 
@@ -20,7 +25,8 @@ heavy, and should be equally usable as a general-purpose way to reach a language
 model from a script, a pipeline, or another application.
 
 Both halves matter. A harness that is only a coding agent is the thing being
-replaced. A harness that is only a library is not a tool anyone uses on a Tuesday.
+replaced. A harness that is only a library is a dependency, not a tool anyone
+actually uses.
 
 ---
 
@@ -105,393 +111,121 @@ inherited prefix is literal bytes in order, and siblings share it.
 
 ## 5. Context as a tree, not a line
 
-Every harness today models a conversation as a line: turn, turn, turn, sometimes
-a reasoning turn, but always a single path of thought.
+Every harness today models a conversation as a line: turn, turn, turn, always a
+single path of thought. That is not how the work goes. Real work branches — you go
+down a tangent, work on something else for an hour, come back. Two lines of
+thought that look unrelated trace back to a common root three decisions ago.
 
-That is not how the work goes. Real work has decision points. You branch, you go
-down a tangent, you work on a different project for an hour, you come back. Two
-lines of thought that look unrelated trace back to a common root three decisions
-ago.
+Git already solved the mental model for this shape, and the overlap with context
+management is large and mostly unexploited. Applied to a codebase the fit is
+natural: there is context every agent in a repository needs, and as you go deeper
+you get more specific about less. That gives you a high-level view *and* real
+specificity without compaction — and it maps onto caching almost exactly, since
+the shared upper reaches are stable and the specific lower reaches churn.
 
-Git already solved the visualization and the mental model for exactly this shape:
-a tool that tracks change over time and, as a side effect, gives you a
-hierarchical relationship between states you can navigate, compare, and merge.
-The overlap with context management is large and mostly unexploited.
+The claim underneath all of it: **a context window is not a log. It is a path
+through records that already exist**, so curation means choosing a different path
+and never rewriting anything. What that buys is a cost you can predict and a
+curator that does not have to be a model.
 
-Applied to a codebase, the shape is natural:
-
-- There is context every agent working in a repository needs.
-- As you go deeper, you get more specific about less — a deep agent knows a great
-  deal about one area and correspondingly little about everything else.
-- That gives you a high-level view *and* real specificity, without compaction.
-- It maps onto caching almost exactly: the shared upper reaches are stable and
-  cache well; the specific lower reaches churn and do not need to.
-
-And it gives the ephemeral-fork move a name. Break off a side branch, find out
-whether what you are reasoning about is worth having, and either merge it back
-into the trunk or let the branch die.
-
-> **Status, decided 2026-08-14.** This is an **idiom, not a law.** The core stays
-> agnostic: it owns fork, spawn, the log, and the ability to see the shape. How
-> you *curate* the tree — what merges, what gets dropped, what a branch means — is
-> itself an opinion, and opinions ship as plugins. Some of them may ship as
-> plugins that are installed by default. None of them ship as core behavior.
+> **This is an idiom, not a law.** The core owns fork, spawn, the log, and the
+> ability to see the shape. How you *curate* the tree — what merges, what gets
+> dropped, what a branch means — is an opinion, and opinions ship as plugins. Some
+> may ship as plugins installed by default. None ship as core behaviour.
 >
-> This distinction has a documentation consequence:
+> This has a consequence for how the specification is written:
 > [`PHILOSOPHY.md`](../../PHILOSOPHY.md) must not crosscut. Mechanism the harness
-> guarantees and practice the operator recommends have to stay visibly separate
-> on the page, or the idiom hardens into a law by accident.
-
-### 5a. The turns and the path through them are separate things
-
-*Added 2026-08-14, answering "does merging mean anything literal?" It does, and
-this is the sentence the rest of the section was missing.*
-
-Every turn and every tool call is an **immutable object**. Once written it is
-never edited, never summarized in place, never replaced. An agent's *head* is a
-pointer into that set of objects — immutability is what "head" means here. You can
-put a new agent at any point in the tree and it picks up from there, because the
-objects it needs have not moved and cannot.
-
-What follows is the part that matters: **the objects and the path taken through
-them are separate things.** A context window is not "the log." It is a *path* — an
-ordered selection of immutable objects. Two agents can walk different paths across
-the same objects. State curation operates on the path. It never operates on the
-turns.
-
-This is the same split git makes between objects and refs, and it is the reason
-the git analogy is worth keeping rather than being a loose metaphor.
-
-**The illustration is compaction, and it shows why the split is load-bearing.**
-
-The naive form asks a model: *summarize what has been going on*, then puts the
-prose where the records were. That is lossy in a way nobody can audit, it is
-unverifiable, and it destroys the cache — it rewrites the front of the prefix, so
-every byte after it is a fresh read.
-
-The form this model makes possible is **mechanical cherry-picking**: assemble a new
-tree by selecting from the objects that already exist. Nothing is summarized.
-Nothing is rewritten. Every record in the resulting context is byte-identical to
-one that was already there.
-
-Two things fall out of that, and both are the point:
-
-- **Cacheability becomes something you can reason about, in advance.** Because
-  order is preserved and bytes are unchanged, a derived path shares a prefix with
-  the original up to the first omission. So the price of a curation decision is
-  knowable *before* it is made: dropping from the tail is nearly free, and dropping
-  from the head spends the entire cached prefix. A curation policy can optimize
-  against that. Naive summarization cannot, because it changes everything.
-- **The curator does not have to be a model.** If selection is mechanical, it can
-  be driven by structure — headings, record type, provenance, which file a turn
-  touched, which tool ran, how many tokens it costs. All of that is available
-  without inference. Cheap, deterministic, testable, and incapable of
-  hallucinating. A non-LLM tool deciding whether a turn belongs in the window is a
-  better default than a model guessing.
-
-"Merge back into the trunk" therefore means something concrete: **derive a new path
-that includes objects from a branch.** Not replay, not rewrite, not a diff applied
-to a parent — a selection. And its opposite, dropping a branch, is just a path that
-does not include it. Nothing is deleted either way, because nothing ever is.
-
-> **What this does not settle, and must not be decided by whoever implements it
-> first.** conway today has one path per agent, computed by a fixed rule (a
-> session's own records, plus its inherited prefix). Making the path a
-> first-class, nameable, persisted thing is a real design change to the core, and
-> it is the enabling work for every curation plugin. The core owns *the ability to
-> express and assemble a path*. Which objects belong on it is a policy and belongs
-> in a plugin. Get that line wrong and the core acquires the opinion this whole
-> page exists to keep out of it.
-
-### 5b. The graph is a separate artifact from the nodes
-
-*Added 2026-08-14, answering "does a path span sessions?" It does, and working out
-why is what settles the shape of the whole mechanism.*
-
-Start from what fork already is. Forking creates a second agent to work on the
-**existing session tree** — it does not copy anything, it references a prefix. So
-paths already span sessions today; that is not a new capability being proposed, it
-is an accurate description of the one path conway has.
-
-What is new is that a path can be **rearranged**. And rearranging must never affect
-any other session.
-
-That combination looks, at first, like it breaks the git analogy: if we are
-selecting and reordering pieces, we are rebuilding a context by copying it, and
-copying is the thing conway does not do. But the analogy does not break — it was
-just being mapped one layer off. In git, file contents are blobs: shared freely,
-content-addressed, never rewritten. History is commits and trees: cheap to rewrite,
-never shared implicitly. `git rebase` rewrites history without copying a single byte
-of file content. That is exactly the move here.
-
-So the rule, in the operator's own words: **the graph is a separate artifact from
-the individual nodes.**
-
-- **Nodes are referenced, never copied.** Global, immutable, shared by anything
-  that wants them. Cherry-picking a record does not duplicate it.
-- **A graph is owned by exactly one session.** Local, cheap, freely rearranged.
-- **Deriving a graph mutates no node and touches no other graph.** That is what
-  makes rearrangement safe, and it is the invariant to hold above all others here.
-
-Under those rules, "assemble a new tree" is literally true and costs nothing but
-the graph.
-
-#### "Graph" is doing two jobs, and separating them is what protects caching
-
-*Refined 2026-08-14, after asking whether single ownership costs expressiveness
-around caching. It does not — but only once this distinction is explicit, and the
-version that leaves it implicit does cost something real.*
-
-Git needs three layers here, not two, and so does this:
-
-| | git | conway | Owned by |
-| --- | --- | --- | --- |
-| content | blob | **record** | nobody — global, immutable |
-| structure, frozen | commit / tree | **selection** | nobody — global, immutable, freely referenced |
-| structure, moving | branch ref | **head** | **exactly one session** |
-
-**Ownership applies to the head. A version is shared freely.** Read that way, the
-rule above is exactly right and costs nothing.
-
-Two reasons it has to be this way.
-
-**Expressiveness.** Fork ten children off one carefully curated path and they should
-share that path's cache. If a graph may reference *another selection* as its
-prefix, that sharing is structural — one named version, ten heads pointing at it,
-byte-identity guaranteed by construction. If a graph may reference only *records*,
-each child re-enumerates the same selection, byte-identity becomes a coincidence
-somebody has to preserve, and when it drifts nothing fails: you get a silent cache
-miss, which looks exactly like an expensive workload rather than like a bug.
-
-**Correctness.** If a session's graph could reference another session's *head*, then
-that session rearranging its own path would change this one's context underneath it
-— violating "deriving a graph touches no other graph" from the other direction. A
-reference must name something frozen. This is the discipline fork already uses: an
-inherited prefix is frozen at a sequence number and immutable by construction.
-
-> **The mechanism for this already exists and was built for another reason.**
-> `conway-runtime`'s `prefix_key` is `blake3(model ‖ canonical bytes of every
-> segment up to the static/inherited boundary)`, and it *deliberately excludes each
-> segment's per-agent id* so that siblings forked at the same point produce the same
-> key from byte-identical content
-> (`crates/conway-runtime/src/context/prefix.rs:20`). That is already
-> content-addressed, ownership-blind identity for exactly the shared portion of a
-> context — which is to say conway already computes graph-version identity and calls
-> it something else. The path design should build on it rather than invent a second
-> one.
-
-#### The five ways to get this wrong
-
-This is the part that needs care. Each of these is a real hazard, not a
-hypothetical, and the design has to answer all five in writing before any code.
-
-1. **Coherence — settled 2026-08-14: refuse, and refuse early.** A rendered context
-   must never contain a tool call without its result; providers reject the whole
-   request rather than tolerating it. conway already knows this the hard way: eight
-   parallel forks once landed on a prefix cut mid-batch and all eight died on their
-   first request with zero steps taken.
-
-   **An invalid path must never be created in the first place.** Validation belongs
-   at *derivation* time, not at render time: the operation that would produce an
-   incoherent path is refused, loudly, with a typed error naming what it would have
-   orphaned. An invalid path is therefore unrepresentable rather than detected late.
-   There is no repair, because there is no way to predict the correct fix — dropping
-   the orphaned call and keeping the result are both plausible, and choosing silently
-   is guessing at intent. This is `PHILOSOPHY.md` §6's existing posture ("a loud,
-   predictable refusal to a clever recovery") applied one layer up.
-
-   **The one existing repair stays, and the distinction is the reason.** Incoherence
-   the *harness* caused — a fork cut mid-batch, a session killed between an assistant
-   append and its tool results — is an accident nobody chose, and refusing it would
-   punish someone for something they did not do. That path keeps today's behaviour:
-   drop the unanswered calls and **record every drop in the context report**.
-   Incoherence a *deliberate selection* caused is an invalid change being requested,
-   and gets refused. Two different situations, two different answers, and the
-   difference is whether a human or a plugin asked for it.
-
-   > **A refusal has to be usable, not just correct.** When an operation is refused,
-   > say what the valid neighbouring operation is — "dropping record 7 orphans the
-   > call in record 6; drop both" is actionable where "invalid path" is not. Refusing
-   > without that turns a safety property into an obstacle.
-2. **Rearranging costs more than omitting.** A path that only *drops* records shares
-   a byte prefix with its origin up to the first omission. A path that *reorders*
-   them breaks at the first moved element, which is strictly worse and often total.
-   Both are legitimate, but they are not the same operation and should not feel like
-   it. Omission should be the cheap, obvious default; reordering should be a
-   deliberate act with its price shown.
-3. **Provenance has to survive.** Every segment carrying where it came from is what
-   makes an inexplicable agent explicable. A graph assembled from three sessions
-   either keeps that legible or destroys the single most valuable debugging property
-   conway has.
-4. **A graph pins the logs it references.** If a session's graph references another
-   session's nodes, that other session cannot be discarded. Ephemeral `/ask` children
-   are discarded by design, so a dangling reference is reachable today with no new
-   features. Retention needs a stated answer, not an emergent one.
-5. **A person has to be able to see it.** This is as much a user-experience problem
-   as a data-modeling one. If someone cannot look at a rearranged context and tell
-   what is in it and where each piece came from, they will not trust it — and
-   curation nobody trusts is worse than no curation, because it is applied anyway.
-
-> **The precedent to follow is already in the tree.** When the harness has to
-> intervene to produce a sendable request at all, it puts the intervention *in* the
-> record rather than behind it, so a strange turn is explicable from the log instead
-> of mysterious. Every curation mechanism built on paths inherits that obligation.
->
-> **Where an intervention has to be recorded, precisely:** *wherever the thing it
-> affected is read from.* "In the record" is otherwise ambiguous between the session
-> log, the per-turn context report, and any derived artifact — and an intervention
-> recorded somewhere nobody reads is the same defect as one not recorded at all.
-
-### 5c. A path is identified twice, and conflating the two costs you model changes
-
-*Added 2026-08-14. This section exists because five open questions came out of the
-first path design, and three of them dissolve once this distinction is written down.*
-
-Changing model mid-session is **ordinary**, not exceptional. It is one of the most
-consequential decisions available and people revise it constantly — cheaper model for
-a mechanical stretch, larger window when the work gets big, a different provider when
-one is degraded. A design that makes model changes awkward has failed regardless of
-what else it gets right.
-
-That requirement forces a distinction §5b did not draw. A path has **two identities,
-and they answer different questions**:
-
-| | **Selection** | **Rendering** |
-| --- | --- | --- |
-| Answers | *which records, in what order* | *what bytes go on the wire* |
-| Depends on | nothing but the nodes | model, system prompt, tool set |
-| Kind of fact | curatorial — a judgment someone made | mechanical — derived, recomputable |
-| Lifetime | durable; the thing worth naming and reusing | disposable; a cache key |
-| Who authors it | a person or a curation plugin | the harness |
-
-**`prefix_key` is the second one.** It folds in the `ModelId` and the whole static
-prefix, because it exists to identify a *cacheable wire prefix* — which is exactly
-right for its job and exactly wrong as the identity of a selection.
-
-Three consequences, and the third is the one that matters:
-
-- **Ten siblings share one selection and get N renderings**, one per model they route
-  to. §5b's "one named version, ten heads" is about the selection. Nothing
-  contradicts anything once the layers are named.
-- **A selection is model-free, so it survives a model change.** Switching models
-  invalidates the rendering — which is just the cache, and is *supposed* to be
-  invalidated — and leaves the curation untouched. That is the behaviour anyone would
-  expect, and it is only expressible if the two are separate.
-- **Therefore a session's head must reference a selection, not a rendering.** A head
-  keyed on a model-dependent identity could not survive a model change without being
-  rewritten, and two agents with identical curation but different models would appear
-  to have different paths. That is backwards.
-
-#### Fitting is not a property of a selection
-
-The related trap: a curation decision is usually made *for* something — "drop these
-turns so it fits." Fitting depends on the model, so it is tempting to bake a target
-into the selection.
-
-Do not. **A selection says what belongs in context. Whether it fits is a separate
-question, asked later, and it already has an owner:** admission belongs to the
-backend, because only the thing talking to an endpoint knows that model's real
-window and how that provider counts (`PHILOSOPHY.md` §5).
-
-So the layering is: *selection* (curatorial, durable) → *rendering* (mechanical,
-per-model) → *admission* (backend, per-model). A selection that no longer fits after
-a model change produces a loud refusal naming what did not fit — the behaviour
-`PHILOSOPHY.md` §6 already specifies — and the operator or a plugin curates again.
-Never a silent re-curation, and never a selection that quietly meant something
-different under a different model.
-
-### 5d. What conway constrains, and why — two different things
-
-*Added 2026-08-14.*
-
-§5b says a path can be "freely rearranged." That word is too strong, and the
-overclaim produced a question it should have prevented.
-
-Two kinds of constraint exist and they are not comparable:
-
-- **Constraints a provider requires.** A tool result must follow its call, because a
-  request that violates it is rejected outright. This is not conway having a view; it
-  is the shape of the medium. Such constraints are legitimate, unavoidable, and must
-  be **stated plainly** rather than discovered.
-- **Constraints conway would impose because it has an opinion.** *These are the ones
-  conway refuses to have.* A rule about what belongs in a context, how much is too
-  much, when to summarize — every one of those is a judgment that differs between
-  users, and it belongs in a plugin.
-
-So the accurate claim is: **a path may be rearranged freely, subject only to what the
-wire permits.** Any constraint that cannot be traced to a provider requirement is a
-defect, and any constraint that can be must be documented where a curator will hit it.
-
-### 5e. A selection may reference any record; the control is on the composer
-
-*Added 2026-08-14, answering "may a selection reach outside the current session's
-ancestry?" **Yes** — and not grudgingly. It is where much of the power is.*
-
-A selection may name **any record in the store**: a sibling's, another project's, an
-unrelated tree's.
-
-**Why permitting it is safe.** Context composition has never been a confinement
-boundary, and this does not change that. A fork already inherits everything its parent
-could see. Confinement (`SubagentSpec::root`) governs what an agent can *reach with a
-tool call* — a different axis entirely. Refusing cross-ancestry references would buy
-no containment while removing the mechanism's main capability.
-
-**The control that does matter is who may compose a path**, and it lands on machinery
-that already exists rather than needing a new boundary:
-
-- **The operator**, through the CLI.
-- **An installed plugin**, through the curation capability (D1-8).
-- **A model** — only if a plugin gives it a tool that composes paths, in which case it
-  is a tool call, subject to the permission gate and to tool-set narrowing exactly like
-  every other. An agent cannot curate its own context by default because nothing hands
-  it the means to.
-
-**What it buys, and this is the reason to say yes rather than merely allow it:
-memory stops being a separate subsystem.** "Recall what I learned in a past session"
-is a cross-session selection. So is "show me how I solved this in the other
-repository", and so is pulling a worked example from a finished agent as few-shot
-context. Under this rule `conway.memory` is not a new mechanism with its own storage
-and its own retrieval semantics — it is a **curation plugin whose selections reach
-further back than the current tree**. One mechanism, several plugins, which is the
-whole shape this project is aiming at.
-
-It also means retention (a selection pins the records it references) is doing real
-work rather than being a formality: a memory plugin's selections are precisely what
-keeps old sessions from being reaped.
-
-*Addendum, 2026-08-18 — what survived contact, and what did not.*
-
-The **permission** above is unchanged and was vindicated: a selection may name any
-record in the store, the control belongs on the composer, and cross-tree reach is
-where the power is. `derive_with` (`5beb741`'s ancestor `afc26e0`) implements exactly
-that, and a curator can now pull a record from an unrelated session through the
-validator.
-
-The **prediction** in the paragraph above — that `conway.memory` would therefore need
-no storage and no new port, being "a curation plugin whose selections reach further
-back than the current tree" — was built to as written, and it failed. What emerged
-instead: marking could only happen at session creation, which is the one moment you
-cannot yet know a conversation mattered; nothing could be un-remembered; growth could
-only be capped by truncating a session to a few arbitrary records; and a memory could
-never be a distillation, only a verbatim excerpt of the conversation that produced it.
-
-`conway.memory` now has a `MemoryStore` of its own: a memory is freeform text with
-optional provenance, mutable and removable, injected as a segment rather than selected
-as records. It still needs no retrieval semantics of its own, and record-log
-immutability is untouched — a memory is an annotation ABOUT sessions, not content IN
-one.
-
-**The sentiment worth keeping, which this document did not previously say:** a claim
-in a design document about what a feature *needs* is a hypothesis. Building to it is
-right; treating it as a constraint the feature must satisfy is not. When accommodating
-a premise requires a series of workarounds — each individually reasonable — the series
-is the signal, and the premise is what should be questioned. A cap written down as
-"bounded by construction" is the shape that mistake takes: a symptom phrased as a
-virtue.
-
-The rest of §5e stands. Retention still does real work; `conway.compaction` and the
-operator through `conway path` are still genuine selection over existing records, which
-is what the curation seam was built for and why it was kept.
+> guarantees and practice the operator recommends have to stay visibly separate on
+> the page, or the idiom hardens into a law by accident.
+
+**The words, one idea each.** Where the code or another document uses one
+differently, that is worth fixing there.
+
+| Word | What it means |
+| --- | --- |
+| **record** | one thing that happened, written down once and never rewritten |
+| **session** | one agent's log — the boundary on *whose turns these are*, not on who may read it or write to it |
+| **agent** | the thing that takes turns, calls tools, and moves a head |
+| **path** | the ordered records one agent is reasoning over, from as many sessions as it likes |
+| **head** | where an agent is now: the pointer it moves as it works |
+| **selection** | a path frozen, so it can be shared and referenced |
+| **rendering** | a selection turned into the bytes one model sees |
+
+A session is not a conversation, and reaching for it as one is the mistake this
+table exists to prevent: an agent three forks deep is reading from three logs at
+once. The conversation is the *path*. So "fork the session" is the wrong sentence
+— forking puts a new agent at a point in an existing path and gives it a log of
+its own to write to.
+
+**What conway commits to.** Five promises about your context. The mechanism that
+keeps them is [`PHILOSOPHY.md`](../../PHILOSOPHY.md) §1 and §4; the design that
+works them out is [`DESIGN-context-path.md`](DESIGN-context-path.md).
+
+- **5a — Nothing you wrote is destroyed or rewritten to make room for something
+  else, and what belongs in a context is your judgment rather than conway's.**
+  This is §3's objection to compaction one layer down: when a context has to get
+  smaller you look at less of it, you never replace what happened with a summary
+  of what happened. Curation acts on the path, never on the records. Which records
+  belong is an opinion, and opinions are plugins — the core owns only the ability
+  to assemble the context you asked for. Get that line wrong and the core acquires
+  exactly the opinion this document exists to keep out of it. It also means the
+  curator need not be a model: mechanical selection can be driven by record type,
+  provenance, which file a turn touched, or what it costs — cheap, deterministic,
+  testable, and incapable of hallucinating.
+- **5b — You can rearrange your own context without disturbing anyone else's, see
+  exactly what you did, and know the price before you pay it.** Curation nobody
+  can inspect is worse than none, because it gets applied anyway. Non-interference
+  and inspectability need the same thing: the arrangement is a separate artifact
+  from the material it arranges, so the pointer that moves belongs to one agent
+  while a frozen selection is shared freely. And because nothing is rewritten, the
+  cost of a curation decision is knowable in advance — dropping your most recent
+  records is nearly free, dropping the oldest spends the whole cached prefix, and
+  reordering is strictly worse than either.
+- **5c — Changing model mid-session is ordinary, and stays cheap.** It is one of
+  the most consequential decisions available and people revise it constantly. A
+  path therefore has two identities: a *selection* says which records in what
+  order and depends on nothing else, while a *rendering* is the bytes on the wire
+  and depends on the model, the system prompt and the tool set. A selection
+  survives a model change; only the rendering — which is the cache, and is supposed
+  to be invalidated — does not. An agent's head must reference the first, never the
+  second. A design that makes model changes awkward has failed regardless of what
+  else it gets right.
+- **5d — conway constrains your context only where the wire does.** A tool result
+  must follow its call because a request that violates it is rejected outright;
+  that is the shape of the medium, not conway having a view, and it must be stated
+  plainly rather than discovered. Every other limit — what belongs, how much is too
+  much, when to summarize — is somebody's opinion about how you work, and belongs
+  in a plugin you chose.
+- **5e — You can pull from anywhere. The question is who is allowed to do the
+  pulling.** A selection may name any record anywhere: a sibling's, another
+  project's, an unrelated tree's. This costs no containment, because composition
+  was never a confinement boundary — confinement governs what an agent can reach
+  with a *tool call*, a different axis. The control belongs on the composer: the
+  operator through the CLI, an installed plugin through the curation seam, and a
+  model only if a plugin hands it a tool that composes paths.
+
+Two things follow that are easy to miss. **Whether a path fits is not a property
+of the path**: fitting depends on the model, so it is asked later, by the thing
+talking to the endpoint, and a selection that no longer fits produces a loud
+refusal naming what did not fit rather than a silent re-curation. And **memory is
+not curation**: a selection can only point at bytes that already exist, which
+rules out deciding after the fact that a conversation mattered, un-remembering,
+and writing down a distilled sentence nobody ever said. Memory is an annotation
+*about* work rather than a selection *of* it, and it gets storage of its own.
+
+**Five questions any curation mechanism must answer in writing before it is
+built** — coherence (a context must never hold a tool call without its result, so
+an invalid path is refused when built rather than repaired when sent), the cost
+asymmetry between omitting and reordering, whether provenance survives a path
+drawn from several sessions, what a path pins and for how long, and whether a
+person can inspect the result. The answers are worked out in
+[`DESIGN-context-path.md`](DESIGN-context-path.md) §4.
+
+One obligation runs through all five, and the precedent is already in the tree:
+when the harness intervenes to produce a sendable request, it puts the
+intervention *in* the record rather than behind it, wherever the affected thing is
+read from. An intervention recorded where nobody reads it is the same defect as
+one not recorded at all.
 
 ---
 
@@ -505,10 +239,8 @@ The test to apply at every level: **can I swap this out or extend it without
 forking the project?**
 
 - **Inference providers.** Ollama, llama.cpp, Kimi, any cloud API, anything that
-  has not been invented yet. Reached through an interface that can be extended
-  and can integrate with services regardless of how they handle inference. A
-  provider conway has never heard of is something you install, not a patch you
-  submit and wait on.
+  has not been invented yet. A provider conway has never heard of is something you
+  install, not a patch you submit and wait on.
 - **The CLI application itself.** Adding features to it and customizing it should
   be normal. The terminal app is not a privileged consumer of the library.
 - **Context handling.** What happens when context gets too large. What gets
@@ -516,38 +248,40 @@ forking the project?**
 - **Everything below those.** If there is a level where the answer is "you would
   have to fork conway," that level is a defect.
 
-Two mechanisms, deliberately at different costs:
+Extension comes at deliberately different costs, and the cheapest one should cover
+the most ground:
 
-- **Plugins** — Rust, compiled, direct access to conway's types. The right price
-  for a new tool, a new backend, a new router.
 - **Hooks** — a named event and a command to run. No language requirement, no
-  build step, no API to track. A shell script is a legitimate extension.
-
-Most of what people actually want is the second one, and it should stay that way.
+  build step, no API to track. A shell script is a legitimate extension. Most of
+  what people actually want is this, and it should stay that way.
+- **A plugin in another language, running as its own program.** conway asks it
+  what tools it has and calls it when the model asks for one. The right price for
+  someone who wants to add a capability without learning Rust or rebuilding the
+  binary.
+- **A plugin compiled in.** Direct access to conway's own types, for a new tool, a
+  new provider, or a new routing policy. The most capable and the most expensive.
 
 ---
 
 ## 7. Three surfaces, all first-class
 
-*Revised 2026-08-14. This section used to name two surfaces and fold embedding
-into a bullet under the second. That was wrong: embedding is a use case in its own
-right, and treating it as an afterthought is exactly how it stays one.*
+Embedding is a use case in its own right, not something the other two happen to be
+built on. Treating it as an afterthought is exactly how it stays one.
 
-**One — the terminal application.** Built **for humans**. A real terminal tool that
-is pleasant to use, not a debug harness with a prompt attached. See §7a: this
+**One — the terminal application.** Built **for humans**. A real terminal tool
+that is pleasant to use, not a debug harness with a prompt attached. See §7a: this
 surface has a job beyond being a nice CLI.
 
-**Two — one-shot, from a shell or a pipeline.** `-p` in Claude Code is used
+**Two — one-shot, from a shell or a pipeline.** Claude Code's `-p` is used
 constantly as shorthand for quick inference, and it shows its tracks: it was
 clearly not made for anything except agentic coding. conway's equivalent should be
 a general way to get an answer out of a model — usable by someone who is not
 writing code, in a repository that may not exist.
 
-**Three — embedded in another application, to facilitate inference.** A host
-application depends on conway to reach models: routing, permissions, the log, the
-agent primitives if it wants them, and none of them if it does not. This is not
-"the library that the other two happen to be built on." It is a surface with its
-own users, its own ergonomics, and its own definition of done.
+**Three — embedded in another application.** A host application depends on conway
+to reach models: routing, permissions, the log, the agent primitives if it wants
+them, and none of them if it does not. It is a surface with its own users, its own
+ergonomics, and its own definition of done.
 
 The test for the third one is blunt: **how much ceremony stands between depending
 on conway and getting a completion back?** If a host has to assemble the whole
@@ -556,72 +290,31 @@ layer no matter how good the layer underneath is.
 
 None of the three should feel like it is borrowing a coding agent's plumbing.
 
-> **Going straight to the model is a composition, not a feature.**
-> *Added 2026-08-14.* There should be no second API that shortcuts conway — a
-> parallel path through the harness is a thing every future feature has to support
-> twice, and it would say that conway's own composition surface was not good enough
-> to express the simplest possible case.
+> **Going straight to the model is a composition, not a feature.** There should be
+> no second way in that shortcuts the harness — a parallel path is a thing every
+> future feature has to support twice, and it would say that conway's own
+> composition surface was not good enough to express the simplest possible case.
 >
-> The requirement is the other way round: the plugin and configuration architecture
-> must be flexible enough that **routing straight to inference is something you
-> configure**. No tools, no agent behaviour, one turn, out. If that cannot be
-> assembled from what already exists, the finding is not "conway lacks an inference
-> API" — it is *conway is too heavy and too opinionated to configure down*, which is
-> a defect in the composition surface and should be fixed there.
+> The requirement is the other way round: the plugin and configuration
+> architecture must be flexible enough that **routing straight to inference is
+> something you configure**. No tools, no agent behaviour, one turn, out. If that
+> cannot be assembled from what already exists, the finding is not "conway lacks
+> an inference API" — it is *conway is too heavy and too opinionated to configure
+> down*, which is a defect in the composition surface and should be fixed there.
 >
-> This makes a good falsifiable claim, and it belongs in the ledger: **conway can be
-> configured down to a bare inference call using only mechanisms a third party
-> also has.**
+> This makes a good falsifiable claim, and it belongs in the machine-checked
+> ledger: **conway can be configured down to a bare inference call using only
+> mechanisms a third party also has.**
 
-### 7c. Non-Rust hosts get to embed conway
+### 7a. What the CLI is *for*
 
-*Added 2026-08-14. The third surface has a complete answer for Rust hosts and had
-none at all for anyone else, which is most people.*
-
-**Yes.** Not everybody writes Rust, plenty of people embed compiled code, and a
-harness reachable only from one language is not an inference layer — it is a Rust
-library that also runs in a terminal.
-
-Three constraints on how, in order of importance:
-
-**It does not belong in the core or the engine.** The binding layer is another
-consumer of the facade, the same shape as a first-party plugin: its own crate,
-depending on `conway`, never touching `conway-core`. The core learns nothing about
-C. If it turns out this cannot be built directly and has to be an adapter sitting
-further out, that is an acceptable outcome and not a failure.
-
-**Follow the prior art; do not invent a binding layer.** This is solved ground with
-mature tooling, and the wheel is not worth rebuilding. The survey should reach at
-least [Diplomat](https://github.com/rust-diplomat/diplomat) (proc-macro driven, no
-external IDL, and its target list leads with C and C++ — it exists because ICU4X
-had this exact problem), [UniFFI](https://mozilla.github.io/uniffi-rs/) (IDL-driven,
-aimed at Kotlin/Swift/Python), and `cbindgen` at the lowest level. Look at how
-comparable projects expose themselves before choosing.
-
-**The hard part is async, and it is a design constraint rather than an objection.**
-conway's facade is fully async and event-streamed. Who drives the runtime, how a
-stream of events crosses the boundary, what happens to a panic that would otherwise
-unwind across it, and who owns returned memory are all real questions — and they
-are questions every one of the tools above has had to answer. Read their answers
-first.
-
-> **What this does not mean.** No second facade, no `libconway`, and no divergence
-> in capability. A non-Rust host gets a projection of the same public API a Rust
-> host uses, and anything it cannot reach is a gap in the projection rather than a
-> different product.
-
-## 7a. What the CLI is *for*
-
-*Added 2026-08-14, answering "which curation plugins install by default?" The
-answer turned out to be about the binary rather than about the plugins.*
-
-The shipped `conway` binary should be **fully functional and not heavy** — which is
-not a contradiction, because the resolution is that every capability it has can be
-turned on and off. It is an assembly of plugins, not a monolith with a plugin
+The shipped `conway` binary should be **fully functional and not heavy** — which
+is not a contradiction, because the resolution is that every capability it has can
+be turned on and off. It is an assembly of plugins, not a monolith with a plugin
 socket.
 
-This settles the default-install question by moving it. There are two different
-things and they were being conflated:
+This settles the question of what should be installed by default by moving it.
+There are two different things and they are easily conflated:
 
 - **The harness** answers *what must exist for conway to work at all?* That test
   stays sharp and stays narrow. Compaction, memory, and skills all fail it, and
@@ -640,23 +333,21 @@ Two reasons the binary has to be this, in increasing order of importance.
 **It is the worked example.** The most persuasive demonstration that capability
 composes granularly is a real application assembled that way, where you can see
 each piece, switch it off, and watch what changes. Nobody is convinced by a
-skeleton plugin. They are convinced by turning something off in a tool they use and
-having it keep working.
+skeleton plugin. They are convinced by turning something off in a tool they use
+and having it keep working.
 
 **It has to become the daily driver.** conway's CLI must be good enough to replace
 the harness currently being used, full time. This is the single strongest forcing
 function available: a tool only improves through daily use by someone who notices
 what is wrong with it, and every quality problem that matters will be found that
-way and by no other means. Until conway is dogfooded, its priorities are guesses.
+way and by no other means. Until conway is used that way, its priorities are
+guesses.
 
-So "is this needed to dogfood conway as a full-time coding agent?" is a legitimate
-and high-priority reason to build something, and it outranks architectural
-tidiness when the two disagree.
+So "is this needed to use conway as a full-time coding agent?" is a legitimate and
+high-priority reason to build something, and it outranks architectural tidiness
+when the two disagree.
 
-### 7b. The dogfooding bar is a ladder, not a switch
-
-*Added 2026-08-14. "Replaces the current harness" was going to be declared met and
-then quietly not be, so here is what it actually means.*
+### 7b. The daily-driver bar is a ladder, not a switch
 
 Nobody is switching away from an existing harness on a flag day, and pretending
 otherwise produces a bar that is either never met or met dishonestly. Two rungs:
@@ -671,22 +362,22 @@ This one has two conditions and both are required:
 - **Coverage** of the features that actually matter day to day — which is a much
   shorter list than any harness's full feature set, and finding out which features
   those are is most of what rung one is for.
-- **Output quality better than what the incumbent produces today.** Not comparable.
-  Better. This is the condition that matters, because feature parity with worse
-  results is not a reason for anyone to switch, including us.
+- **Output quality better than what the incumbent produces today.** Not
+  comparable. Better. This is the condition that matters, because feature parity
+  with worse results is not a reason for anyone to switch, including us.
 
 **How to find the list.** Look at what Claude Code, the
 [DeepSeek harness](https://deepseek.com/harness/en/), and
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) actually do and how
-they approach agentic coding — Hermes is worth particular attention, since it ships
-skills, persistent memory, and a learning loop as harness features rather than as
-things each user hand-builds. Then decide **what should be available in a default
-installation**: not necessarily enabled, but present and one toggle away, so
-someone can assemble the quality-of-life experience that makes conway an
+they approach agentic coding — Hermes is worth particular attention, since it
+ships skills, persistent memory, and a learning loop as harness features rather
+than as things each user hand-builds. Then decide **what should be available in a
+default installation**: not necessarily enabled, but present and one toggle away,
+so someone can assemble the quality-of-life experience that makes conway an
 alternative rather than a downgrade.
 
-"Available, not enabled" is the whole shape. It is §7a's distinction applied to the
-catalogue: the binary ships opinions, and every one of them is visible and
+"Available, not enabled" is the whole shape. It is §7a's distinction applied to
+the catalogue: the binary ships opinions, and every one of them is visible and
 removable.
 
 **Grounding.** For interface and interaction design, the
@@ -698,11 +389,45 @@ with good extension surfaces, [Pi](https://pi.dev) is the reference: four tools,
 short system prompt, tree-structured sessions, and an explicit list of things it
 refuses to own.
 
+### 7c. Non-Rust hosts get to embed conway
+
+Not everybody writes Rust, plenty of people embed compiled code, and a harness
+reachable only from one language is not an inference layer — it is a Rust library
+that also runs in a terminal.
+
+Three constraints on how, in order of importance:
+
+**It does not belong in the core or the engine.** The binding layer is another
+consumer of the public API, the same shape as a first-party plugin: its own crate,
+never reaching into the internals. The core learns nothing about C. If it turns
+out this cannot be built directly and has to be an adapter sitting further out,
+that is an acceptable outcome and not a failure.
+
+**Follow the prior art; do not invent a binding layer.** This is solved ground
+with mature tooling, and the wheel is not worth rebuilding. The survey should
+reach at least [Diplomat](https://github.com/rust-diplomat/diplomat),
+[UniFFI](https://mozilla.github.io/uniffi-rs/), and `cbindgen` at the lowest
+level. Look at how comparable projects expose themselves before choosing.
+
+**The hard part is async, and it is a design constraint rather than an
+objection.** conway's public API is fully asynchronous and streams events. Who
+drives the runtime, how a stream of events crosses the boundary, what happens to a
+crash that would otherwise cross it, and who owns returned memory are all real
+questions — and they are questions every one of the tools above has had to answer.
+Read their answers first.
+
+> **What this does not mean.** No second API, no divergence in capability. A
+> non-Rust host gets a projection of the same public interface a Rust host uses,
+> and anything it cannot reach is a gap in the projection rather than a different
+> product.
+
 ---
 
 ## 8. What "good" means here
 
-Ordered, most important first. **The numbered points below are cited elsewhere as §8.1 through §8.7** — there is no sub-heading to jump to, so a citation like §8.3 means point 3 of this list.
+Ordered, most important first. **The numbered points below are cited elsewhere as
+§8.1 through §8.8** — there is no sub-heading to jump to, so a citation like §8.3
+means point 3 of this list.
 
 1. **An open question is a failure of the spec, not a gap in the code.** If
    someone building on conway has to ask "should I do it this way or that way,"
@@ -711,16 +436,16 @@ Ordered, most important first. **The numbered points below are cited elsewhere a
 2. **The core is agnostic**, and here is how to tell whether something belongs in
    it. Every opinion in the core is a thing an extension has to accommodate or
    route around, forever — so the question comes up constantly and needs a test
-   rather than a instinct.
+   rather than an instinct.
 
    > **The test: does this encode a judgment that two reasonable people, doing the
    > same work, could answer differently?** If yes it is policy, and it belongs in
    > a plugin. If no it is mechanism, and the core may hold it.
 
-   This is deliberately a different test from the one `PHILOSOPHY.md` §5 applies to
-   the *default plugin set* (*does conway still function with nothing filling this
-   role?*). That one decides what must **ship**. This one decides what may live in
-   the **core surface**, and the two were being conflated.
+   This is deliberately a different test from the one that decides what must
+   *ship* (*does conway still function with nothing filling this role?*). That one
+   decides the default set. This one decides what may live in the core at all, and
+   the two are easily conflated.
 
    Worked examples, because the test is only useful if it discriminates. *The
    ability to bind a name to something* is mechanism — a pointer encodes no
@@ -740,29 +465,35 @@ Ordered, most important first. **The numbered points below are cited elsewhere a
 4. **The idioms are few and clearly stated.** A small number of guiding idioms,
    applied consistently, beats a large number of features.
 5. **Extension is low-friction at every level.** If the cheapest way to change
-   behavior is to fork the repo, that is a bug report against the extension
+   behaviour is to fork the repo, that is a bug report against the extension
    surface.
-6. **An invariant belongs to the seam, not to its call sites.** *Added
-   2026-08-14.* When something must be true across an extension point, enforce it
-   at the point itself — a wrapper around the seam — rather than at each place that
-   happens to use it.
+6. **An invariant belongs to the seam, not to its call sites.** When something
+   must be true across an extension point, enforce it at the point itself — a
+   wrapper around it — rather than at each place that happens to use it.
 
    Two reasons, and the second is the one that matters. **Coverage:** checking at
    call sites means every new consumer has to remember, and a missed one fails
-   silently. That is not hypothetical — it is exactly how `ContextHook::on_overflow`
-   ended up unguarded while `before_request` was the one being discussed.
-   **Opinion:** N call-site checks are N independent judgments that can drift apart;
-   one seam-level check is a single mechanical fact. Scattered enforcement
-   accumulates opinion, and a wrapper reduces it.
+   silently. **Opinion:** many call-site checks are many independent judgments
+   that can drift apart; one check at the seam is a single mechanical fact.
+   Scattered enforcement accumulates opinion, and a wrapper reduces it.
 
-   It is also what makes a surface safe to extend at all: a new consumer of the seam
-   inherits the contract instead of re-deriving it, which is the difference between
-   an extension point and a trap.
-7. **It is genuinely usable on a Tuesday.** This is a tool for doing the work, not
-   a demonstration of a philosophy. If the philosophy makes the tool unpleasant,
-   the philosophy is wrong. The operational form of this rule is §7a: conway's own
-   CLI must be good enough to replace the harness currently in daily use, and
-   until it is, everything on this page is untested.
+   It is also what makes a surface safe to extend at all: a new consumer inherits
+   the contract instead of re-deriving it, which is the difference between an
+   extension point and a trap.
+7. **It is genuinely usable for everyday work.** This is a tool for doing the
+   work, not a demonstration of a philosophy. If the philosophy makes the tool
+   unpleasant, the philosophy is wrong. The operational form of this rule is §7a:
+   conway's own CLI must be good enough to replace the harness currently in daily
+   use, and until it is, everything on this page is untested.
+8. **A design document says what a feature will need. That is a prediction, not a
+   requirement.** Building to it is right; treating it as a constraint the feature
+   must satisfy is not. When holding on to a premise starts requiring a series of
+   accommodations — each individually reasonable — the series is the signal, and
+   the premise is what should be questioned.
+
+   Watch especially for a symptom described as a virtue. A limit written down as
+   "bounded by construction" is the shape this mistake takes: it sounds like a
+   guarantee and it is a workaround for having chosen the wrong unit.
 
 ---
 
@@ -783,8 +514,47 @@ When a design decision comes up:
 
 1. Check [`PHILOSOPHY.md`](../../PHILOSOPHY.md). If it settles the question, done.
 2. If it does not, check this page for the sentiment that should settle it.
-3. If *this* page does not settle it either, that is the failure described in §8.1.
-   Write the missing sentiment here first, then make the decision, then push the
-   consequence down into `PHILOSOPHY.md` as spec.
+3. If *this* page does not settle it either, that is the failure described in
+   §8.1. Write the missing sentiment here first, then make the decision, then push
+   the consequence down into `PHILOSOPHY.md` as spec.
 
 The order matters. Sentiment, then specification, then code.
+
+When you add to this page, **fold the new sentiment into the argument it belongs
+to** and leave the page reading as though it had always said that. Do not append a
+dated note explaining what changed. If the reasoning that produced a decision is
+worth keeping, it is worth keeping as reasoning, in the present tense, where
+someone will actually read it.
+
+---
+
+## 11. What this page does not settle
+
+Open questions, in the sense of §8.1: each one is a place the guidance is
+currently insufficient, and each is waiting on a decision rather than on work.
+
+**Does an operator get a curation command?** conway has the machinery to build,
+validate, and share a curated path, and a plugin can drive it. A person cannot —
+there is no command to type. Either an operator-facing curation command is part of
+what conway promises, or curation is something you get through a plugin and this
+page should stop implying otherwise. Both are defensible; the current silence is
+not.
+
+**When is an extension surface proven?** §8.5 says extension must be low-friction,
+and the specification says a first-party plugin needing a private interface is a
+bug report against the extension surface. Neither says what makes a surface
+*proven*. The candidate answer: a surface is proven when something that is not its
+author uses it to do a thing someone wanted — not when it compiles, not when its
+tests pass. That would make it a sequencing rule, not an argument against building
+a seam early: the proof should arrive before the seam accumulates dependents.
+
+**Does a shipped capability owe a page?** There is a documentation gate on
+changes, and nothing that says an installable capability must be findable from an
+index. A capability nobody can find is close to one that does not exist, and the
+failure is quiet — nothing breaks, and it works perfectly for everyone who already
+knows it is there.
+
+**Should the vocabulary in §5f be pushed into the other documents?** This page now
+uses one word per idea. `PHILOSOPHY.md` and `ARCHITECTURE.md` do not yet, and in
+at least one place they disagree about which of *agent* or *session* owns a head.
+Adopting it is mechanical once it is agreed; the question is whether it is agreed.
