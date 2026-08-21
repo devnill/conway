@@ -74,7 +74,7 @@ fn long_brief() -> String {
 /// resolves relative to the fixture dir, and `build` needs a non-`prompt`
 /// gate). Uses `ConwayBuilder::from_config_only`, not `from_config` --
 /// see `continuity.rs::open_conway`'s own doc for why: this helper runs
-/// in-process, so `common::command`'s `XDG_CONFIG_HOME` isolation (which
+/// in-process, so `common::command`'s `CONWAY_CONFIG_DIR` isolation (which
 /// only reaches the spawned `conway` binary) does not cover it.
 async fn open_conway(fixture: &Fixture) -> Conway {
     let gate: Arc<dyn PermissionGate> = Arc::new(AllowListGate::new(Vec::new(), Vec::new()));

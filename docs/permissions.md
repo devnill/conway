@@ -63,7 +63,7 @@ and the command as it would actually run:
 | --- | --- | --- |
 | `y` | This exact call, once. | Nothing — the identical call asks again next time. |
 | `a` | This exact call — same tool, byte-identical (canonicalized) arguments — remembered at the current grant scope (see `s` below). A different argument to the same tool is a different call and asks again. | In memory only. Gone at restart; never written to a file. |
-| `p` | A prefix pattern: `<command> <subcommand>` for a two-token command (`git status`), or the single token for a one-token command (`pwd`) — narrow by design, so accepting the offer never silently covers a sibling subcommand (`git status` does not grant `git push`). For a tool whose rendering is a structured JSON dump rather than a shell command (`read`, `report`, …), the offer is the `tool:*` wildcard — "any `report` call" — because a prefix over a JSON dump is a rule the loader refuses to register (its token boundaries depend on key order and escaping you cannot predict), and the prompt never offers a rule that cannot be registered. The prompt states the exact grant in words (the `[p] grants:` line above) before you press anything. **`[p]` is never offered at all for a shell command (`bash`).** A durable pattern grant does not exist for a shell-rendered tool any more — see Limits — so there is nothing honest to offer; `[y]`/`[a]` (a one-shot or exact-call grant), `[n]`/`Esc`, or a confinement root are what remain for `bash`. | Installed immediately at the current grant scope, **and** — at session scope only — appended to the project-scoped `permissions.json`'s `allow` list (best-effort — a write failure loses only the file durability, never the in-session grant). That write changes the file's bytes, which changes its trust digest, so a *previously untrusted* file gains a rule that still won't take effect on its own until you `/trust permissions`; a *previously trusted* file needs no further action this session, but the digest change means the file is effectively re-recorded as trusted only by virtue of `/trust permissions` having installed the very rule that changed it. A per-agent or per-subtree grant is never written to a file: it names live agent ids, which are meaningless at the next launch, and persisting it would silently widen it to the load scope on restart. |
+| `p` | Opens a field editor over the call's top-level structured argument fields (only offered when the tool's rendering is a structured JSON dump, not a shell command — `read`, `report`, `grep`, … ). Every field starts **wildcard**; `space` pins the selected field to its exact (canonicalized-JSON) value, `↑`/`↓`/`tab` move between fields, `s` cycles the grant scope (shared with `a` above), `Enter` builds an allow rule from the pinned fields — a pinned field must match exactly, an unpinned one is wildcard, and every field must match (AND) — grants it, and resolves this call as allowed; `Esc` cancels back to this prompt with no decision made. Granting with nothing pinned is the broadest the editor can produce: any call to that tool — the same breadth the old immediate `tool:*` grant offered, and what the footer's `[p] grants:` line states before you press anything. **`[p]` is never offered at all for a shell command (`bash`).** A durable pattern grant does not exist for a shell-rendered tool at all — see Limits — so there is nothing honest to offer; `[y]`/`[a]` (a one-shot or exact-call grant), `[n]`/`Esc`, or a confinement root are what remain for `bash`. | Installed immediately at the current grant scope, **and** — at session scope only — appended to the project-scoped `permissions.json`'s structured `rules` array (best-effort, silent either way — a write failure loses only the file durability, never the in-session grant; matched by rule equality, so granting the identical rule twice never duplicates the entry). Same trust-digest consequence as `[a]`'s sibling flat-pattern write: that write changes the file's bytes, so a *previously untrusted* file gains a rule that still won't take effect on its own until you `/trust permissions`. A per-agent or per-subtree grant is never written to a file, for the same reason as the flat form: it names live agent ids, meaningless at the next launch. |
 | `s` | Not a decision — cycles the scope the two remembered-grant keys (`a` and `p`) grant at: **this session** (the default; every agent in the session) → **this agent only** → **this agent and its subtree**. The prompt states the current scope in words next to the keys. The choice resets to *this session* for every new prompt, so narrowing is always a deliberate, per-prompt act. | n/a |
 | `n` | Denies this call, once. | Nothing. |
 | `Esc` | Denies this call and tells the model to try a different approach (rather than just failing silently). | Nothing. |
@@ -83,7 +83,7 @@ remembered-grant key.
 A rules file — project-scoped (alongside the nearest `.conway/settings.json`,
 or `<cwd>/.conway/permissions.json` if none is discovered yet) or
 global-scoped (`~/.conway/permissions.json`, or
-`$XDG_CONFIG_HOME/conway/permissions.json`) — is a flat JSON object of
+`$CONWAY_CONFIG_DIR/permissions.json`) — is a flat JSON object of
 wire-form strings, meant to be read and diffed like any other config file:
 
 ```json
@@ -238,7 +238,7 @@ conway happened to be launched from.** In a project file
 `<project>/src` — the directory containing `.conway/`, derived from the
 file's own location (so a file discovered in an ancestor directory resolves
 against that ancestor, not your launch directory). In the global file
-(`~/.conway/permissions.json`, or `$XDG_CONFIG_HOME/conway/permissions.json`)
+(`~/.conway/permissions.json`, or `$CONWAY_CONFIG_DIR/permissions.json`)
 there is no containing project, so a relative prefix resolves against the
 agent's working directory at load time. An absolute prefix is used exactly
 as written in both files.
@@ -578,6 +578,16 @@ does:
   `--root`. `read`/`write`/`grep`/… and every other `Structured`-rendering
   tool are unaffected — their `allow` pattern grants work exactly as this
   page describes, because no shell is ever involved in running one.
+- **A `[p]` field-editor grant is written to `permissions.json`'s
+  structured `rules` array, not the flat `allow` list.** Every other
+  session-scope grant this page describes (a flat pattern, or any rule
+  installed from a permissions file) is backed by a flat `<tool>:<prefix>`
+  wire string. The field editor instead grants a structured rule
+  (`Select::Tools([tool])` + `When::ArgsMatch{pinned}` + `Then::Allow`) —
+  the pinned-field shape that flat wire string cannot express — so it is
+  written to (and read back from, and revoked from) the `rules` array
+  instead. See "The structured `rules` array" and "Inspecting and revoking"
+  above for what that array looks like and how a row there is revoked.
 - **The one-shot `-p`/`--allowed-tools` gate is a DIFFERENT mechanism, and it
   still scans a command's text for shell metacharacters — deliberately, not
   as an oversight.** Everything above this bullet describes `permissions.json`
@@ -622,19 +632,25 @@ does:
   counting on to block something outright can still be walked around by
   chaining it onto something else. Anything that must never happen at all
   belongs in the confinement root, not in a `deny` prefix.
-- **A trusted plugin runs with your full privileges.** conway's only
-  extension mechanism today is in-process (an `Arc<dyn Plugin>`, built-in or
-  supplied by whoever assembles the `Conway` you're running) — filesystem,
-  network, credentials, the ability to exec, everything the `conway`
-  process itself can do, a plugin can do too, with no sandbox around it and
-  nothing special about the built-in tools (`bash`, `read`, `write`, `edit`,
-  `cd`)
-  that would set them apart from a third-party one. There is currently no
-  on-disk, digest-checked ceremony for trusting a *plugin* the way one
-  exists for a `permissions.json` file — the only trust decision that
-  exists at this level is whichever code wired the plugin in at all, made
-  once, in Rust, before the process starts. It is binary: a plugin you're
-  running has everything, or it isn't running.
+- **A trusted plugin runs with your full privileges.** conway has three ways
+  to load one today, and none of them is sandboxed: compiled in as an
+  `Arc<dyn Plugin>` (built-in, or supplied by whoever assembles the `Conway`
+  you're running); a subprocess plugin named in `[plugins].subprocess`
+  ([`docs/plugins/subprocess-plugins.md`](plugins/subprocess-plugins.md)) —
+  an operator-named command conway spawns and talks to over its own wire
+  protocol; or an MCP server named in `[plugins].mcp`, spawned the same way
+  and reached over MCP's own wire protocol instead. Whichever tier supplied
+  it — filesystem, network, credentials, the ability to exec, everything the
+  `conway` process itself can do, a plugin can do too, with no sandbox
+  around it and nothing special about the built-in tools (`bash`, `read`,
+  `write`, `edit`, `cd`) that would set them apart from a third-party one,
+  in-process or out. There is currently no on-disk, digest-checked ceremony
+  for trusting a *plugin* the way one exists for a `permissions.json` file,
+  for any of the three — the only trust decision that exists at this level
+  is whichever code wired an in-process plugin in, or whichever operator
+  named a subprocess or MCP command in `settings.json`, made once, before it
+  ever runs. It is binary: a plugin you're running has everything, or it
+  isn't running.
 - **The trust-digest check on a permissions file is load-time, not
   per-invocation.** It runs once when a session starts, and again for one
   file when you explicitly run `/trust permissions` — never on a timer,

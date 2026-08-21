@@ -7,7 +7,7 @@
 //! `ConwayBuilder::discover()` call.** `crates/conway/tests/
 //! config_isolation_guard.rs` forbids calling `discover()` (or
 //! `LoadOptions::default()`) from an in-process test -- both read THIS
-//! process's real `$XDG_CONFIG_HOME`/`~/.conway/settings.json` and real
+//! process's real `$CONWAY_CONFIG_DIR`/`~/.conway/settings.json` and real
 //! `std::env::vars()`, which would make this test's outcome depend on
 //! whatever happens to be on the machine running it. `config::load` with a
 //! hermetic `LoadOptions` (`support::isolated_env`, an empty cwd with no
@@ -15,7 +15,7 @@
 //! isolated equivalent: it exercises the SAME five-source precedence chain
 //! `discover()` runs, deterministically landing on the same built-in
 //! defaults (`config::merge::default_document`) a real host gets when
-//! neither an XDG nor a project config file exists.
+//! neither an user config nor a project config file exists.
 //!
 //! Every `.await` is wrapped in a short `tokio::time::timeout`, matching
 //! `example_smoke.rs`'s own discipline, so a hang fails the test quickly
@@ -48,7 +48,7 @@ async fn discover_getting_started_example_flow_reaches_an_answer() {
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     })
-    .expect("load with no XDG/project layer must still succeed via built-in defaults");
+    .expect("load with no user/project layer must still succeed via built-in defaults");
 
     // Confirms the premise the example's own doc states in prose: with
     // nothing on disk, the discovery chain lands on the documented built-in
@@ -120,7 +120,7 @@ async fn unmodified_default_role_still_fails_to_route_with_a_named_no_candidate_
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     })
-    .expect("load with no XDG/project layer must still succeed via built-in defaults");
+    .expect("load with no user/project layer must still succeed via built-in defaults");
     assert_eq!(outcome.config.default_role.as_str(), "default");
 
     // `build()` requires at least one backend registered even though an

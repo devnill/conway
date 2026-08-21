@@ -172,6 +172,9 @@ impl Tool for AskTool {
             // see this module's own doc.
             agent_def: None,
             role: None,
+            // `conway_ask` never switches models -- inherit whatever the
+            // parent (or its agent_def) already resolves.
+            pin: None,
             tools: args.tools.map(ToolSelector::Only),
             budget: resolve_ask_budget(args.budget, &ctx.config)?,
             result_contract: None,

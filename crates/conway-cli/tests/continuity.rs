@@ -61,7 +61,7 @@ use common::mock_backend::{Chunk, MockBackend, Script};
 ///
 /// Uses `ConwayBuilder::from_config_only` , not `from_config`: this helper runs
 /// in-process, in the *test* process, not a subprocess -- `common::command`'s
-/// own `XDG_CONFIG_HOME` isolation only reaches the compiled `conway` binary
+/// own `CONWAY_CONFIG_DIR` isolation only reaches the compiled `conway` binary
 /// it spawns, never this test binary's own calls into the `conway` library.
 /// `from_config` would read this test binary's ambient
 /// `~/.conway/settings.json` unconditionally and deep-merge it into the

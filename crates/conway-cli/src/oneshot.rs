@@ -188,6 +188,21 @@
 //!    guard into two separate checks (one per flag) is what lets `--fork-
 //!    from` graduate while `--resume` stays refused with its own, accurate
 //!    reason text.
+//! 7. **`--role-override`/`--model` + `--resume` (INTENT.md §5c: "changing
+//!    model mid-session is ordinary, and stays cheap").** Neither flag was
+//!    ever read on the `--resume` arm before this item -- not a documented
+//!    usage error, a silent no-op: `Conway::resume` took only a bare
+//!    `SessionId`, so a caller combining either flag with `--resume` saw no
+//!    error and no effect. `Conway::resume_with` (new; `resume` is now
+//!    defined in terms of it) threads an optional role/model straight into
+//!    `conway_runtime::runtime::ResumeSpec`, which gained a `model` field
+//!    to match (mirroring `RootSpec::model`'s existing precedence: the
+//!    caller's pin wins over the resumed `agent_def`'s own). This arm now
+//!    parses both flags with the SAME helpers the flag-free/`--session`
+//!    arms use (`parse_model_pin`, `RoleAlias::new`) and passes them
+//!    through. Unlike the flags reconciliation #4/#6 describe, this is not
+//!    a "no facade parameter" gap -- it is a facade parameter that simply
+//!    did not exist yet, closed here rather than worked around.
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -421,14 +436,29 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
 
         // `--resume <id>`: reattach and hand the drivable handle straight
         // back to `run`, which subscribes and prompts it exactly like the
-        // flag-free path above -- `Conway::resume` now returns a
-        // handle whose `prompt` genuinely continues the persisted
-        // transcript (`Runtime::resume_root`), so there is nothing
-        // arm-specific left to do here beyond the existence check.
+        // flag-free path above. `--role-override`/`--model` now genuinely
+        // wire here too (INTENT.md §5c: "changing model mid-session is
+        // ordinary"), via `Conway::resume_with` -- previously neither flag
+        // was even read on this arm, so combining either with `--resume`
+        // silently did nothing (`Conway::resume` takes only a bare
+        // `SessionId`). A pin/role the session's persisted transcript
+        // cannot fit is never silently served under the old model or
+        // silently trimmed: the resumed agent idles (`ResumeGate`) until
+        // this run's own `handle.prompt` below, and THAT turn's ordinary
+        // admission gate (`conway_runtime::agent_loop`'s router-facing
+        // `too_large` check) produces the same loud `RoutingError::
+        // ContextTooLarge` refusal it would for any other turn -- surfaced
+        // to the operator through the same event stream `run`'s renderer
+        // already drives, never intercepted or swallowed here.
         (None, Some(id), None) => {
             let sid = session_ref::parse_sid(id).map_err(|e| usage_error(e.to_string()))?;
+            let role = cli
+                .role_override
+                .as_ref()
+                .map(|r| RoleAlias::new(r.clone()));
+            let model = parse_model_pin(cli)?;
             conway
-                .resume(sid)
+                .resume_with(sid, role, model)
                 .await
                 .map_err(|e| usage_error(format!("--resume {sid}: {e}")))
         }
@@ -516,7 +546,7 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
 /// (`ConwayBuilder::build` resolves it internally, once, at build time),
 /// so this is a small, deliberate duplicate rather than a new dependency on
 /// a private helper. `conway.config()` is the already-loaded, already-
-/// merged config this `Conway` was built from (defaults < XDG < project <
+/// merged config this `Conway` was built from (defaults < user config < project <
 /// env < `--config`/CLI), so this reads the SAME effective `[agents].dir`
 /// `ConwayBuilder::build` itself used to populate the `agent_defs` registry
 /// `--agent` ultimately resolves against.

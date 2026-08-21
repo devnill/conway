@@ -1,0 +1,36 @@
+[package]
+name = "conway-plugin-trim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin (board item 01M0EMAC4CCDQ8QJYM21RXPKRY): conway.trim, a Curator that omits tool call/result round-trips older than a configurable turn window -- the smallest honest consumer of the selection-layer curation seam"
+
+# Versioned WITH the workspace, like every other first-party plugin -- see
+# `conway-plugin-skeleton`'s own Cargo.toml doc comment for the full
+# reasoning (this crate carries none of `conway-core`'s strict-semver
+# discipline; that discipline exists for the crate third-party plugins
+# depend on, and from `conway`'s own point of view this is just another
+# consumer of the public facade).
+
+[dependencies]
+# The ONLY workspace crate this plugin depends on -- the public facade, the
+# exact surface a third-party curator author gets (GP-03/P-6). `Curator`,
+# `CurateCtx`, `CurateOutcome`, `ValidatedPath`, `PathOp`, `Derivation`,
+# `LogRecord` and `ContentBlock` are all reachable through `conway`/
+# `conway::plugin` alone -- board item 01M0EMAC4CCDQ8QJYM21RXPKRY's own
+# question was whether that is actually true for a real curator, not merely
+# a compile-time fixture; this crate is the answer.
+conway = { path = "../conway" }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+# Test-only: builds a real `Arc<dyn SessionStore>` fake to construct a
+# `CurateCtx`, the same precedent every other first-party plugin's own
+# dev-dependency on this crate establishes (see e.g.
+# `conway-plugin-memory/Cargo.toml`'s own comment).
+conway-testkit = { path = "../conway-testkit" }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

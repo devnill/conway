@@ -33,7 +33,7 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, PatternRule, PluginSelection, SessionSpec};
+use conway::{Conway, ConwayBuilder, PatternRule, PluginSelection, Rule, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::ContentBlock;
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias};
@@ -374,5 +374,317 @@ async fn a_read_wildcard_grant_actually_grants_through_the_real_render_seam() {
          `ReadTool`'s untouched default JSON-dump rendering always tripped the \
          metacharacter gate: {:?}",
         gate.requests()
+    );
+}
+
+// ---------------------------------------------------------------------
+// `Conway::grant_permission_rule` -- the structured (`When::ArgsMatch`)
+// counterpart to `grant_permission_pattern` above. Board item
+// `01M0EMDVBJVT510GBJHPWBZ3G6`: this method had ZERO coverage outside the
+// `conway-runtime` unit level (which drives `PermissionBroker` directly,
+// bypassing the facade) and the TUI-input level (which asserts the
+// `Action` is produced, never that it is applied). Exactly the seam that
+// hid the two prior inert-pattern-grant bugs this file's own module doc
+// names -- so these tests drive a REAL `Conway`, grant through the real
+// facade method, and run a real second turn through the same tool, never a
+// hand-built `AuthorizedCall`.
+// ---------------------------------------------------------------------
+
+fn tool_call_response(tool: &str, arguments: serde_json::Value) -> GenerateResponse {
+    GenerateResponse {
+        content: vec![],
+        tool_calls: vec![conway_core::content::ToolCall {
+            call_id: "call_1".to_string(),
+            name: conway_core::ids::ToolName::new(tool),
+            arguments,
+        }],
+        stop: conway_core::content::StopReason::ToolUse,
+        usage: conway_core::content::Usage::default(),
+    }
+}
+
+/// Grants `rule` through the real `Conway::grant_permission_rule` facade
+/// method (never `PermissionBroker::remember_pattern_rule` directly), then
+/// runs one real turn scripting a single `tool` call with `arguments`, and
+/// returns whatever the gate actually saw. Asserts the grant installs (an
+/// `ArgsMatch` rule is never dropped -- see `grant_permission_rule`'s own
+/// doc), so a regression that silently drops the rule fails loudly here
+/// rather than being read as "the call happened to not need it".
+async fn run_one_call_with_rule(
+    gate: Arc<RecordingGate>,
+    rule: Rule,
+    scope: PermissionScope,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> Vec<PermissionRequest> {
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(tool_call_response(tool, arguments)),
+            ScriptedTurn::Respond(text_response("done")),
+        ])
+        .with_id(BackendId::new("fake")),
+    );
+    let conway = build_conway(backend, gate.clone() as Arc<dyn PermissionGate>);
+
+    let installed = conway.grant_permission_rule(rule, scope, AgentId::new());
+    assert!(
+        installed,
+        "grant_permission_rule must install an ArgsMatch rule -- it is never dropped \
+         (unlike PathsUnder, it carries no canonicalizable prefix)"
+    );
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+    let turn = handle.prompt("do the thing").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+
+    gate.requests()
+}
+
+/// **The headline `grant_permission_rule` regression proof.** Nothing
+/// pinned (the `[p]` editor's all-wildcard default, byte-identical in
+/// intent to the old `tool:*` grant) must auto-allow a real `read` call
+/// through the real facade -- the gate must never even be consulted.
+#[tokio::test]
+async fn an_argsmatch_grant_with_nothing_pinned_auto_allows_every_call_through_the_real_facade() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let file_path = dir.path().join("f.txt");
+    std::fs::write(&file_path, "hello from the real facade seam").expect("write fixture file");
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason:
+            "must not be consulted -- an all-wildcard ArgsMatch grant must allow this on its own"
+                .into(),
+    });
+    let rule = Rule::args_match_allow_rule("read", BTreeMap::new());
+
+    let requests = run_one_call_with_rule(
+        gate,
+        rule,
+        PermissionScope::Session,
+        "read",
+        serde_json::json!({ "path": file_path.display().to_string() }),
+    )
+    .await;
+
+    assert!(
+        requests.is_empty(),
+        "grant_permission_rule with nothing pinned must auto-allow every future call to that \
+         tool -- through the real Conway facade, not a hand-built AuthorizedCall: {requests:?}"
+    );
+}
+
+/// A single pinned field auto-allows only the call whose arguments equal it
+/// exactly -- through the real facade.
+#[tokio::test]
+async fn an_argsmatch_grant_with_one_field_pinned_auto_allows_the_matching_call() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let file_path = dir.path().join("f.txt");
+    std::fs::write(&file_path, "hello from the pinned field").expect("write fixture file");
+    let pinned_path = file_path.display().to_string();
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "must not be consulted -- the pinned field matches this call exactly".into(),
+    });
+    let mut pinned = BTreeMap::new();
+    pinned.insert(
+        "path".to_string(),
+        serde_json::Value::String(pinned_path.clone()),
+    );
+    let rule = Rule::args_match_allow_rule("read", pinned);
+
+    let requests = run_one_call_with_rule(
+        gate,
+        rule,
+        PermissionScope::Session,
+        "read",
+        serde_json::json!({ "path": pinned_path }),
+    )
+    .await;
+
+    assert!(
+        requests.is_empty(),
+        "a pinned `path` field must auto-allow a call whose `path` matches it exactly: {requests:?}"
+    );
+}
+
+/// The mirror case: the same pinned rule must fall through to the operator
+/// for a call whose pinned field carries a DIFFERENT value -- narrowing, not
+/// widening, is the entire point of the field editor.
+#[tokio::test]
+async fn an_argsmatch_grant_falls_through_to_the_gate_for_a_different_pinned_value() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let granted_path = dir.path().join("granted.txt");
+    std::fs::write(&granted_path, "the value the rule pins").expect("write fixture file");
+    let other_path = dir.path().join("other.txt");
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
+    let mut pinned = BTreeMap::new();
+    pinned.insert(
+        "path".to_string(),
+        serde_json::Value::String(granted_path.display().to_string()),
+    );
+    let rule = Rule::args_match_allow_rule("read", pinned);
+
+    let requests = run_one_call_with_rule(
+        gate,
+        rule,
+        PermissionScope::Session,
+        "read",
+        serde_json::json!({ "path": other_path.display().to_string() }),
+    )
+    .await;
+
+    assert_eq!(
+        requests.len(),
+        1,
+        "a call whose pinned field differs from the granted value must still reach the \
+         operator -- a pinned `path` grant must not widen to cover any path: {requests:?}"
+    );
+}
+
+/// A pinned field that is ABSENT from the call's arguments is a non-match
+/// (not a wildcard pass), so the call must still reach the operator. Uses
+/// `grep`, whose `glob` field is optional and genuinely absent when the
+/// caller doesn't supply it -- proving the missing-field case is reached
+/// through a real tool's real argument shape, not a synthesized one.
+#[tokio::test]
+async fn an_argsmatch_grant_falls_through_to_the_gate_for_a_missing_pinned_field() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
+    let mut pinned = BTreeMap::new();
+    pinned.insert(
+        "glob".to_string(),
+        serde_json::Value::String("*.rs".to_string()),
+    );
+    let rule = Rule::args_match_allow_rule("grep", pinned);
+
+    let requests = run_one_call_with_rule(
+        gate,
+        rule,
+        PermissionScope::Session,
+        "grep",
+        // No `glob` key at all -- the pinned field is absent, not wildcard.
+        serde_json::json!({ "pattern": "fn main", "path": dir.path().display().to_string() }),
+    )
+    .await;
+
+    assert_eq!(
+        requests.len(),
+        1,
+        "a call missing a pinned field entirely must reach the operator -- absence must never \
+         be treated as a wildcard match: {requests:?}"
+    );
+}
+
+/// Two pinned fields are ANDed: a call matching only one of them must still
+/// reach the operator. Uses `grep`'s `pattern` and `path` fields together.
+#[tokio::test]
+async fn an_argsmatch_grant_with_two_pinned_fields_requires_both_to_match() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let granted_path = dir.path().display().to_string();
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
+    let mut pinned = BTreeMap::new();
+    pinned.insert(
+        "pattern".to_string(),
+        serde_json::Value::String("fn main".to_string()),
+    );
+    pinned.insert(
+        "path".to_string(),
+        serde_json::Value::String(granted_path.clone()),
+    );
+    let rule = Rule::args_match_allow_rule("grep", pinned);
+
+    // Matches `path` but not `pattern`: must still hit the gate.
+    let requests = run_one_call_with_rule(
+        gate,
+        rule,
+        PermissionScope::Session,
+        "grep",
+        serde_json::json!({ "pattern": "something else", "path": granted_path }),
+    )
+    .await;
+
+    assert_eq!(
+        requests.len(),
+        1,
+        "pinned fields are ANDed -- matching only one of two must still reach the operator: \
+         {requests:?}"
+    );
+}
+
+/// A grant for one tool must never authorize a call to a different tool,
+/// even with identical arguments.
+#[tokio::test]
+async fn an_argsmatch_grant_never_authorizes_a_different_tool() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let file_path = dir.path().join("f.txt");
+    std::fs::write(&file_path, "hello").expect("write fixture file");
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
+    // Granted for `read`, but the scripted call below is `grep`.
+    let rule = Rule::args_match_allow_rule("read", BTreeMap::new());
+
+    let requests = run_one_call_with_rule(
+        gate,
+        rule,
+        PermissionScope::Session,
+        "grep",
+        serde_json::json!({ "pattern": "hello", "path": dir.path().display().to_string() }),
+    )
+    .await;
+
+    assert_eq!(
+        requests.len(),
+        1,
+        "an ArgsMatch grant for `read` must not authorize a `grep` call: {requests:?}"
+    );
+}
+
+/// **The security-critical case.** An `ArgsMatch` grant on a `bash`
+/// (`RenderKind::ShellCommand`) tool must never auto-allow anything, no
+/// matter what is pinned -- `rule_allows`'s gate (`Rule::gate_allows`) must
+/// refuse it before pinned fields are even consulted. This is what makes the
+/// `[p]` editor narrowing-only and unreachable for `bash` at the UI layer
+/// AND refused again here if it were ever mis-issued.
+#[tokio::test]
+async fn an_argsmatch_grant_on_a_shell_command_tool_never_auto_allows_through_the_real_facade() {
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
+    // Nothing pinned -- the broadest possible ArgsMatch grant the language
+    // can express -- must still be refused for a ShellCommand tool.
+    let rule = Rule::args_match_allow_rule("bash", BTreeMap::new());
+
+    let requests = run_one_call_with_rule(
+        gate,
+        rule,
+        PermissionScope::Session,
+        "bash",
+        serde_json::json!({
+            "command": "git status"
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        requests.len(),
+        1,
+        "an ArgsMatch grant on `bash` must never auto-allow, even with nothing pinned -- the \
+         gate must refuse it before pinned fields are consulted: {requests:?}"
     );
 }

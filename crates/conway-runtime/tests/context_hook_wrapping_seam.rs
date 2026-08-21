@@ -86,6 +86,7 @@ fn build_runtime_over(store: Arc<dyn SessionStore>, backend: Arc<dyn Backend>) -
 
     Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
@@ -121,6 +122,7 @@ fn resume_spec(session: SessionId) -> ResumeSpec {
         session,
         agent_def: None,
         role: None,
+        model: None,
         tools: None,
         budget: Budget::default(),
         cwd: None,

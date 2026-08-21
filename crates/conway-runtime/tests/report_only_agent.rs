@@ -264,6 +264,7 @@ fn build_loop(
 
     let deps = Arc::new(LoopDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router: route(),
         attempt,
         registry: plugin_registry,
@@ -689,6 +690,7 @@ fn runtime_with_plugins(
     backends.insert(backend.id(), backend);
     let runtime = Runtime::new(RuntimeDeps {
         store: store.clone(),
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router: route(),
         health: Arc::new(conway_testkit::FakeHealth::new()),
         backends,

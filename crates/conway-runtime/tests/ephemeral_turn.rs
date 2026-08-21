@@ -148,6 +148,7 @@ fn build_runtime(backend: Arc<dyn Backend>) -> (Arc<Runtime>, Arc<dyn SessionSto
 
     let runtime = Runtime::new(RuntimeDeps {
         store: store.clone(),
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
@@ -188,6 +189,7 @@ fn spawn_spec(prompt: &str) -> SubagentSpec {
         prompt: prompt.to_string(),
         agent_def: None,
         role: None,
+        pin: None,
         tools: None,
         budget: Budget::default(),
         result_contract: None,

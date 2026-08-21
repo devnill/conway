@@ -171,6 +171,7 @@ fn build_runtime(
 
     let runtime = Runtime::new(RuntimeDeps {
         store: store.clone(),
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
@@ -394,6 +395,7 @@ async fn restart_over_the_same_store_returns_a_byte_equal_report() {
     backends.insert(backend.id(), backend);
     let runtime2 = Runtime::new(RuntimeDeps {
         store: store.clone(),
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,

@@ -124,8 +124,8 @@ conway routes explain coder
 
 ```text
 role: coder  (est_tokens=0, headroom_tokens=4096)
-  [0] anthropic/claude-sonnet-4-6  SELECTED primary for role `coder`  (breaker: closed)
-  [1] local/qwen3:4b               SELECTED fallback #1 after:   (breaker: closed)
+  [0] anthropic/claude-sonnet-4-6  SELECTED primary for role `coder`  (breaker: closed, tokens: heuristic)
+  [1] local/qwen3:4b               SELECTED fallback #1 after:   (breaker: closed, tokens: heuristic)
 ```
 
 Each `SELECTED`/`SKIPPED` line is real router output, one per chain
@@ -134,9 +134,18 @@ names exactly what disqualified it:
 
 ```text
 role: coder  (est_tokens=0, headroom_tokens=4096)
-  [0] anthropic/claude-sonnet-4-6  SELECTED primary for role `coder`  (breaker: closed)
-  [1] local/qwen3:4b               SKIPPED  skipped `local/qwen3:4b`: missing capabilities: unknown (backend, model) pair  (breaker: closed)
+  [0] anthropic/claude-sonnet-4-6  SELECTED primary for role `coder`  (breaker: closed, tokens: heuristic)
+  [1] local/qwen3:4b               SKIPPED  skipped `local/qwen3:4b`: missing capabilities: unknown (backend, model) pair  (breaker: closed, tokens: unknown)
 ```
+
+`tokens:` is that candidate's backend's declared `Backend::token_fidelity`
+(`exact` / `calibrated` / `heuristic`) — the operator-visible answer to "how
+much should I trust this backend's own token estimate?" Both shipped
+dialects declare `heuristic` honestly (neither vendors a tokenizer nor has a
+measured calibration factor); `unknown` means the producing router could not
+answer at all, not that the answer was bad — see the `MinimalRouter`
+paragraph below. `--json` carries the identical value as each chain entry's
+`"token_fidelity"` key.
 
 `--json` renders the same report machine-readably. Two things worth
 knowing about what this command actually evaluates (both verified
@@ -175,9 +184,11 @@ one automatically: `Conway::explain_routing` falls back to
 `RoutingConfig` the embedder's `settings.json` declares. That fallback
 report is honestly *degenerate*, not empty and not fabricated-rich: one
 entry per configured chain candidate (position `0` `SELECTED`, the rest
-`SKIPPED`), every `capabilities` field `None`, and every `breaker` field
-`Closed` -- because a `MinimalRouter` genuinely indexes no capabilities and
-tracks no real breaker state, and inventing either would be claiming a
+`SKIPPED`), every `capabilities` field `None`, every `token_fidelity` field
+`None` (rendered `tokens: unknown`), and every `breaker` field
+`Closed` -- because a `MinimalRouter` genuinely indexes no capabilities,
+holds no `Arc<dyn Backend>` to ask about token fidelity, and tracks no real
+breaker state, and inventing any of the three would be claiming a
 capability the harness doesn't have. Critically, `conway routes explain` still
 distinguishes "unknown role" from "configured role, empty report" in this
 configuration: it checks `roles` directly against your configuration,
@@ -622,8 +633,8 @@ conway routes explain coder
 
 ```text
 role: coder  (est_tokens=0, headroom_tokens=4096)
-  [0] anthropic/claude-sonnet-4-6  SELECTED primary for role `coder`  (breaker: closed)
-  [1] local/qwen3:4b               SELECTED fallback #1 after:   (breaker: closed)
+  [0] anthropic/claude-sonnet-4-6  SELECTED primary for role `coder`  (breaker: closed, tokens: heuristic)
+  [1] local/qwen3:4b               SELECTED fallback #1 after:   (breaker: closed, tokens: heuristic)
 ```
 
 Both candidates are eligible right now, in the order they'll be tried.

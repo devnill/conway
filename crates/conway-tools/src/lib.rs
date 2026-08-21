@@ -16,8 +16,20 @@
 //! - [`report`] — `report` (`ReportPlugin`)
 //!
 //! [`common`] holds the shared helper layer every tool builds on.
-//! `process` holds the process-group spawn/kill primitives [`shell`] and
+//! [`process`] holds the process-group spawn/kill primitives [`shell`] and
 //! [`hook_runner`] both build on -- one implementation, never restated.
+//! **`pub`, not `mod` (board item `01M0EKVR1BEXXS75NV2JC4HZZ9`):** this
+//! module used to be private, which is exactly why
+//! `conway-plugin-subprocess` and `conway-plugin-mcp` each hand-copied
+//! [`process::unix::kill_group`] rather than reusing it -- a first-party
+//! plugin crate may not depend on `conway-tools` directly, so a private
+//! module here left them no supported way to reach it. Published now, and
+//! re-exported (gated on this crate's own `builtin-tools` feature) as
+//! `conway::plugin::kill_group` -- see that re-export's own doc for the
+//! full argument. `conway-tools`'s own [`shell`] and [`hook_runner`] still
+//! call [`process::unix::kill_group`] directly (no reason for an
+//! in-crate caller to go through the facade), so this module has exactly
+//! one implementation and three callers, not three implementations.
 //! [`hook_runner`] is `conway_core::ports::HookRunner`'s one-shot exec
 //! implementation -- not a
 //! `Plugin`/`Tool`, so it is not part of [`builtin_plugins`]; this item
@@ -28,7 +40,7 @@
 pub mod common;
 pub mod fs;
 pub mod hook_runner;
-mod process;
+pub mod process;
 pub mod report;
 pub mod shell;
 pub mod subagent;

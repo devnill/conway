@@ -188,8 +188,27 @@ Members today:
   the `ToolObserver` port (§3.9), and the reason that port exists:
   `PHILOSOPHY.md` §6 leaves loop intervention to the operator "including
   writing none", which is only true once declining it is possible.
+- **`crates/conway-plugin-skills`** (`conway.skills`) — progressive skill
+  disclosure: a `ContextHook` narrows full-body `Provenance::Skill` segments
+  to a one-line index, and a companion `read_skill` tool returns the full
+  body on demand.
+- **`crates/conway-plugin-memory`** (`conway.memory`) — a mutable
+  `MemoryStore` the model can write to in its own words, injected into
+  context by a `ContextHook`. A rework of an earlier label-based curator;
+  see the crate's own module doc for why that design was replaced.
+- **`crates/conway-plugin-subprocess`** — the out-of-process plugin host: an
+  external program named in `[plugins].subprocess[]` is spawned and speaks
+  conway's own wire protocol (`tool/1`, `permission.policy/1`, `observe/1`,
+  `status.declare/1`) over a persistent NDJSON channel, gaining a tool the
+  binary was never compiled with.
+- **`crates/conway-plugin-mcp`** — an MCP-over-stdio *client*: an external
+  program named in `[plugins].mcp[]` is spawned as an MCP server, and every
+  tool it declares over `tools/list` attaches as an ordinary
+  `conway::plugin::Tool`. A sibling transport to the subprocess host above,
+  not a layering on it — the two speak different wire protocols.
 
-Compaction, memory, skills, and MCP support remain separate, later work.
+Compaction remains separate, later work — the sole member of this list not
+yet written; see `PHILOSOPHY.md` §6's own "Where the tree is today" note.
 
 The layout is one crate per plugin, under `crates/` like everything else.
 A single crate holding several would couple members that are meant to be
@@ -357,25 +376,39 @@ ships an allow-list gate (used by `-p`), a deny-all gate, and an interactive
 prompting gate (the TUI).
 
 A spawned child may additionally carry a **confinement root**
-(`SubagentSpec::root`). `PermissionBroker` checks a root against every
-call's declared `Tool::path_args` before the gate, the `AllowAlways` cache,
-pattern grants, or `AutoAllow` mode are ever consulted — a path outside the
-root is denied outright, before any of those can widen or bypass it. Stated
-plainly, not reassuringly: a root confines **the path arguments of
-path-taking tools**. It does not confine what a shell command does — `bash`'s
-`cwd` argument is root-checked, but its command string is declared
-unconfinable, not enforced (the string runs verbatim via `/bin/bash -c`, and
-the broker cannot parse shell), so **an agent holding `bash` is not confined
-by root alone.** The composition that IS a real guarantee is root *plus* a
-tool set that excludes `bash` (`SubagentSpec::tools`/`ToolSelector`,
-narrowing a child's announced tools at spawn) — a confined child is a child
-spawned without `bash`. And the check itself has a TOCTOU limit: it runs
-once in the broker, before dispatch; the tool opens the file later, across a
-task boundary, so a symlink created inside the root in between defeats it.
-Closing that requires `openat`/`O_NOFOLLOW` inside the tools, which is
-tool-layer sandboxing and out of scope here. See
-[`docs/permissions.md`](docs/permissions.md) for the full mechanism and
-these limits stated in full.
+(`SubagentSpec::root`). Enforcement is split by `Tool::path_args`. For a
+`PathArgs::Named` tool — `conway.fs`'s `read`, `write`, `edit`, `cd`, `glob`,
+and `grep` — the root is enforced inside the plugin itself, open-relative
+(`conway_tools::fs::beneath`, `cap_std::fs::Dir`): `resolve` returns a path
+meaningful only relative to a `Dir` opened at the canonical root, and the
+`Dir`'s own methods re-verify every path component at call time, so the
+containment check and the filesystem open are the same syscall sequence —
+a symlink created inside the root between a check and an open can no longer
+defeat it, closing a TOCTOU gap an earlier, harness-only check left open.
+`PermissionBroker::check_root` no longer walks a `Named` tool's declared
+path arguments at all; that call still reaches the gate, the `AllowAlways`
+cache, pattern grants, and `AutoAllow` mode first, and `conway.fs`'s own
+check runs after, refusing the call regardless of what the gate decided.
+
+`glob` and `grep` get a real but weaker version of the same guarantee: they
+validate their search *root* through `resolve` plus a probe `Dir::open_dir`,
+closing the window on the root argument itself, but the walk that follows
+(`crate::fs::walk_files`, the `ignore` crate) does not integrate with `Dir`
+— it relies on `WalkBuilder`'s `follow_links(false)` default instead. See
+`beneath.rs`'s own "What this does NOT close" section for the reasoning.
+
+`PathArgs::Unconfinable` is the one case the broker still checks directly,
+because no plugin-level root check can reach it: `bash`'s `cwd` argument is
+declared `checkable` and remains root-checked by `PermissionBroker::check_root`
+exactly as before; its `command` string is declared unconfinable, not
+enforced (the string runs verbatim via `/bin/bash -c`, and the broker cannot
+parse shell), so **an agent holding `bash` is not confined by root alone.**
+The composition that IS a real guarantee is root *plus* a tool set that
+excludes `bash` (`SubagentSpec::tools`/`ToolSelector`, narrowing a child's
+announced tools at spawn) — a confined child is a child spawned without
+`bash`. See [`docs/permissions.md`](docs/permissions.md) and
+[`docs/tools.md`](docs/tools.md) for the full mechanism and these limits
+stated in full.
 
 ### 3.5 `ContextHook` — pluggable context and tool curation
 

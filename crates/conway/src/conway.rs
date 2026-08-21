@@ -7,7 +7,7 @@ use chrono::{Duration as ChronoDuration, Utc};
 use conway_core::agent::{AgentDefRef, Budget, SubagentMode};
 use conway_core::capabilities::RequiredCaps;
 use conway_core::error::{RuntimeError, StoreError};
-use conway_core::ids::{AgentId, LogSeq, RoleAlias, SessionId};
+use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{RoutingExplainer, SessionStore};
 use conway_core::routing::{ExplainReport, MinimalRouter, RouteRequest};
@@ -40,7 +40,7 @@ const PRE_TOOL_USE_EVENT: &str = "pre_tool_use";
 /// doc, "arrays and scalars replace wholesale"), never a union of several
 /// files' entries the way a `permissions.json` grant's provenance is -- so
 /// there is exactly one place every hook rule can ever have come from: the
-/// final merged config. Reporting a specific layer name (default/XDG/
+/// final merged config. Reporting a specific layer name (default/user/
 /// project/env/CLI) would need knowing which layer's `[hooks]` table
 /// actually won, which nothing downstream of `config::merge::load` still
 /// tracks once the merge is done; this label says what IS known, honestly,
@@ -227,6 +227,41 @@ impl Conway {
             granting_agent,
             conway_core::permission_pattern::PatternOrigin::File(origin_path),
         );
+    }
+
+    /// Installs a structured ALLOW grant (e.g. a
+    /// [`conway_core::permission_pattern::When::ArgsMatch`] field-pinning
+    /// rule) approved through the interactive gate -- origin `Interactive`.
+    /// This is the structured-[`conway_core::permission_pattern::Rule`]
+    /// sibling of [`Self::grant_permission_pattern`]: that one takes the flat
+    /// [`conway_core::permission_pattern::PatternRule`] form; this one takes
+    /// the full [`conway_core::permission_pattern::Rule`], which is the only
+    /// way to install an `ArgsMatch` grant (the flat language cannot express
+    /// it -- see
+    /// [`conway_core::permission_pattern::Rule::args_match_allow_rule`]).
+    /// Returns `false` only if the broker dropped the rule at install (a
+    /// `PathsUnder` rule whose prefix could not be canonicalized); an
+    /// `ArgsMatch` rule is never dropped, so this is `true` for the only
+    /// constructor that builds one. The `base` passed to the broker is the
+    /// confinement root -- unused for `ArgsMatch` (which carries no paths)
+    /// but required by `remember_pattern_rule`'s signature.
+    pub fn grant_permission_rule(
+        &self,
+        rule: conway_core::permission_pattern::Rule,
+        scope: conway_core::agent::PermissionScope,
+        granting_agent: conway_core::ids::AgentId,
+    ) -> bool {
+        let base = self
+            .root
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        self.rt.permission_broker().remember_pattern_rule(
+            rule,
+            scope,
+            granting_agent,
+            conway_core::permission_pattern::PatternOrigin::Interactive,
+            base,
+        )
     }
 
     /// Installs a DENY rule loaded from a permissions file at
@@ -1023,26 +1058,69 @@ impl Conway {
     /// variant (e.g. a future `resume_root` failure mode) under
     /// `ConwayError::Runtime` unchanged.
     pub async fn resume(&self, sid: SessionId) -> Result<SessionHandle> {
+        self.resume_with(sid, None, None).await
+    }
+
+    /// [`Self::resume`], with an optional role and/or pinned-model override
+    /// applied to the resumed agent -- the mechanism `conway-cli`'s
+    /// `--model`/`--role-override`, combined with `--resume`, build on
+    /// (INTENT.md §5c: "changing model mid-session is ordinary, and stays
+    /// cheap"). `role: None, model: None` behaves exactly like
+    /// [`Self::resume`] (indeed, `resume` is defined in terms of this
+    /// method) -- neither override reaches `ResumeSpec`, so the resumed
+    /// agent's role/pin resolve purely from the persisted `SessionMeta`/
+    /// `agent_def`, unchanged.
+    ///
+    /// **Selection survives; only rendering does not (§5c).** The resumed
+    /// agent's history is the SAME persisted log every other resume reads --
+    /// nothing about which records are selected changes here. Only the
+    /// RENDERING of that history -- the bytes the newly-pinned model (or the
+    /// model the new role's chain resolves to) receives on its very next
+    /// turn -- can differ. A role/model this session's persisted transcript
+    /// does not fit is never silently trimmed or silently served under the
+    /// OLD model instead: it surfaces as the same loud
+    /// `RoutingError::ContextTooLarge` refusal an ordinary turn's admission
+    /// gate already produces (`conway_runtime::agent_loop`'s router-facing
+    /// `too_large` construction), naming what did not fit -- this method
+    /// performs no fallback of its own.
+    ///
+    /// **Not a live, same-process switch.** Like [`Self::resume`], this
+    /// re-registers the session's root agent as a freshly-launched
+    /// `AgentLoop` task -- it cannot reach into an ALREADY-running task's own
+    /// `AgentSpec` (fixed for that task's entire lifetime; there is no
+    /// mutation channel for it) and has no effect on one still live in this
+    /// same `Runtime`. `conway-cli`'s live, uninterrupted mid-conversation
+    /// `/model`/`/role` instead fork a fresh interactive child under the new
+    /// role/pin (`ForkSpec::role`/`ForkSpec::model`) and retarget input to
+    /// it -- see that command's own doc for why: forking, unlike this
+    /// method, is a mechanism that already reaches a LIVE session.
+    pub async fn resume_with(
+        &self,
+        sid: SessionId,
+        role: Option<RoleAlias>,
+        model: Option<ModelRef>,
+    ) -> Result<SessionHandle> {
         let agent = self
             .rt
             .resume_root(ResumeSpec {
                 session: sid,
                 agent_def: None,
-                role: None,
+                role,
+                model,
                 tools: None,
                 budget: self.default_budget(),
                 cwd: None,
-                // `resume` takes only a `SessionId` -- no per-call spec to
-                // source a contract from, so this is always `None`, exactly
-                // as before `ResumeSpec::result_contract` existed. See that
-                // field's own doc for the caller that CAN supply `Some`
+                // `resume`/`resume_with` take no per-call spec to source a
+                // contract from, so this is always `None`, exactly as before
+                // `ResumeSpec::result_contract` existed. See that field's
+                // own doc for the caller that CAN supply `Some`
                 // (`Conway::fork_from`, via `ForkSpec::result_contract`).
                 result_contract: None,
-                // `resume` takes only a `SessionId` -- no per-call spec to
-                // source a keep-alive flag from, so this is always `false`,
-                // exactly as before `ResumeSpec::keep_alive` existed
-                // (preserving `resume`'s existing one-shot behavior). See
-                // that field's own doc for the caller that CAN supply `true`
+                // `resume`/`resume_with` take no per-call spec to source a
+                // keep-alive flag from, so this is always `false`, exactly
+                // as before `ResumeSpec::keep_alive` existed (preserving
+                // `resume`'s existing one-shot behavior). See that field's
+                // own doc for the caller that CAN supply `true`
                 // (`Conway::fork_from`, via `ForkSpec::keep_alive`).
                 keep_alive: false,
             })

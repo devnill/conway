@@ -215,19 +215,19 @@ fn project_dir_with_permissions(contents: &str) -> TempDir {
     dir
 }
 
-/// An isolated, empty global config directory -- `XDG_CONFIG_HOME` pointed
+/// An isolated, empty global config directory -- `CONWAY_CONFIG_DIR` pointed
 /// here means `TrustStore::load` finds no `trust.json` (so the project file
 /// starts untrusted) and the global `permissions.json` candidate simply
 /// does not exist (so it contributes nothing, keeping every test's
 /// behavior attributable to the PROJECT file alone).
 fn isolated_env() -> (TempDir, HashMap<String, String>) {
-    let xdg = TempDir::new().expect("tempdir");
+    let config_dir = TempDir::new().expect("tempdir");
     let mut env = HashMap::new();
     env.insert(
-        "XDG_CONFIG_HOME".to_string(),
-        xdg.path().display().to_string(),
+        "CONWAY_CONFIG_DIR".to_string(),
+        config_dir.path().display().to_string(),
     );
-    (xdg, env)
+    (config_dir, env)
 }
 
 /// **The headline test.** An untrusted project `permissions.json`'s
@@ -247,7 +247,7 @@ fn isolated_env() -> (TempDir, HashMap<String, String>) {
 async fn an_untrusted_project_allow_rule_does_not_take_effect() {
     let project = project_dir_with_permissions(r#"{"allow": ["read:*"]}"#);
     let fixture_path = write_fixture_file(project.path());
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
 
     let gate = RecordingGate::new();
     let conway = build_conway(
@@ -296,7 +296,7 @@ async fn an_untrusted_project_allow_rule_does_not_take_effect() {
 async fn trusting_a_project_file_makes_its_allow_rule_take_effect() {
     let project = project_dir_with_permissions(r#"{"allow": ["read:*"]}"#);
     let fixture_path = write_fixture_file(project.path());
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
 
     let gate = RecordingGate::new();
     let conway = build_conway(
@@ -334,7 +334,7 @@ async fn trusting_a_project_file_makes_its_allow_rule_take_effect() {
 #[tokio::test]
 async fn an_untrusted_project_deny_rule_still_applies_immediately() {
     let project = project_dir_with_permissions(r#"{"deny": ["bash:curl"]}"#);
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
 
     let gate = RecordingGate::new();
     let conway = build_conway(
@@ -380,7 +380,7 @@ async fn an_untrusted_project_deny_rule_still_applies_immediately() {
 #[tokio::test]
 async fn a_misspelled_deny_key_in_a_project_file_installs_no_rule_and_is_reported_loudly() {
     let project = project_dir_with_permissions(r#"{"denys": ["bash:curl"]}"#);
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
 
     let gate = RecordingGate::new();
     let conway = build_conway(
@@ -430,7 +430,7 @@ async fn a_misspelled_deny_key_in_a_project_file_installs_no_rule_and_is_reporte
 #[tokio::test]
 async fn a_correctly_spelled_deny_key_in_a_project_file_does_refuse_the_call() {
     let project = project_dir_with_permissions(r#"{"deny": ["bash:curl"]}"#);
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
 
     let gate = RecordingGate::new();
     let conway = build_conway(
@@ -474,7 +474,7 @@ async fn a_correctly_spelled_deny_key_in_a_project_file_does_refuse_the_call() {
 async fn a_call_matching_neither_rule_still_reaches_the_gate() {
     let project =
         project_dir_with_permissions(r#"{"allow": ["bash:git status"], "deny": ["bash:curl"]}"#);
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
 
     let gate = RecordingGate::new();
     let conway = build_conway(
@@ -510,12 +510,12 @@ async fn a_call_matching_neither_rule_still_reaches_the_gate() {
 /// authorship. Simulated here by pointing the project's OWN cwd discovery
 /// at a directory with no project-scoped file, so the only candidate that
 /// exists is the "global" one this test writes directly into the isolated
-/// XDG directory.
+/// user config directory.
 #[tokio::test]
 async fn a_global_permissions_file_installs_with_no_trust_decision() {
     let cwd = TempDir::new().expect("tempdir with no project permissions file");
-    let (xdg, env) = isolated_env();
-    let global_dir = xdg.path().join("conway");
+    let (config_dir, env) = isolated_env();
+    let global_dir = config_dir.path().to_path_buf();
     std::fs::create_dir_all(&global_dir).expect("mkdir global conway dir");
     std::fs::write(
         global_dir.join("permissions.json"),
@@ -571,7 +571,7 @@ async fn a_global_permissions_file_installs_with_no_trust_decision() {
 async fn trusting_a_project_file_with_an_unrecognized_key_is_refused_and_not_recorded() {
     let project =
         project_dir_with_permissions(r#"{"allow": ["bash:git status"], "denys": ["bash:curl"]}"#);
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     let path = project.path().join(".conway").join("permissions.json");
     let agent = AgentId::new();
 
@@ -619,7 +619,7 @@ async fn trusting_a_project_file_with_an_unrecognized_key_is_refused_and_not_rec
 async fn trusting_a_correctly_spelled_project_file_is_recorded_as_trusted() {
     let project = project_dir_with_permissions(r#"{"allow": ["read:*"]}"#);
     let fixture_path = write_fixture_file(project.path());
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     let path = project.path().join(".conway").join("permissions.json");
     let agent = AgentId::new();
 
@@ -661,7 +661,7 @@ async fn trusting_a_correctly_spelled_project_file_is_recorded_as_trusted() {
 async fn editing_a_trusted_project_files_content_de_trusts_it() {
     let project = project_dir_with_permissions(r#"{"allow": ["read:*"]}"#);
     let fixture_path = write_fixture_file(project.path());
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     let path = project.path().join(".conway").join("permissions.json");
     let agent = AgentId::new();
 

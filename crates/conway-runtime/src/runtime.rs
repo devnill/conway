@@ -129,8 +129,8 @@ use conway_core::ids::{
 };
 use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 use conway_core::ports::{
-    Backend, ContextHook, HealthRegistry, HookRunner, PermissionGate, Plugin, PluginConfig,
-    PluginEventEmitter, RegisteredObserver, Router, SessionStore, SubagentHost,
+    Backend, ContextHook, HealthRegistry, HookRunner, PathStore, PermissionGate, Plugin,
+    PluginConfig, PluginEventEmitter, RegisteredObserver, Router, SessionStore, SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::segment::CacheTtl;
@@ -158,6 +158,19 @@ pub use root::{ResumeSpec, RootSpec};
 /// caller.
 pub struct RuntimeDeps {
     pub store: Arc<dyn SessionStore>,
+    /// Backing store for named/frozen context selections (DESIGN §2.5).
+    /// `resolve_default_path` (`context/path.rs`, D1-3d-wire) reads it every
+    /// turn to find a session's `ContextPathSet` head (today, always absent
+    /// in production -- no writer exists yet, D1-3d-wire's own out-of-scope
+    /// note (iii)) and, once one exists, to expand its prefix chain. A real
+    /// build sources this from `conway_session::FsPathStore`, rooted at the
+    /// `paths/` directory ALONGSIDE `config.session.root` rather than inside
+    /// it -- the session directory is an operator-visible artifact with its
+    /// own readers, and `PHILOSOPHY.md` §1 promises the log is "one file per
+    /// session" (`crates/conway/src/builder.rs`'s
+    /// `build_default_path_store`); a test build uses
+    /// `conway_testkit::FakePathStore`.
+    pub path_store: Arc<dyn PathStore>,
     pub router: Arc<dyn Router>,
     pub health: Arc<dyn HealthRegistry>,
     pub backends: HashMap<BackendId, Arc<dyn Backend>>,
@@ -282,6 +295,7 @@ impl Runtime {
     pub fn new(deps: RuntimeDeps) -> Arc<Runtime> {
         let RuntimeDeps {
             store,
+            path_store,
             router,
             health,
             backends,
@@ -340,6 +354,7 @@ impl Runtime {
         Arc::new_cyclic(|weak: &std::sync::Weak<Runtime>| {
             let loop_deps = Arc::new(LoopDeps {
                 store: store.clone(),
+                path_store,
                 router,
                 attempt,
                 registry: registry.clone(),

@@ -167,12 +167,12 @@ memory, skills, and MCP support are the ones named in
 [`PHILOSOPHY.md`](PHILOSOPHY.md#first-party-plugins-and-why-they-are-not-defaults),
 and each lands as its own crate under `crates/` as it is built — a capability
 being common does not make it neutral, so conway ships these as things you
-install rather than behavior you inherit. Progress against that intent is
-Routing, the provider adapters, session
-rewind and step-guarding are the occupants today; compaction, memory, skills,
-and MCP support remain unbuilt.
+install rather than behavior you inherit. Routing, the provider adapters,
+session rewind, step-guarding, skills, memory, and MCP support (plus the
+out-of-process subprocess plugin host, which the list above does not name)
+are the occupants today; compaction remains unbuilt.
 
-**The tier's shape is settled and demonstrated, with four members shipping
+**The tier's shape is settled and demonstrated, with nine members shipping
 today:** `crates/conway-plugin-skeleton`, a plugin that registers a single
 `skeleton_ping` tool and does nothing else — it exists to prove the `Plugin`/
 `Tool` mechanism below, not to be useful on its own — `crates/conway-plugin-routing`,
@@ -189,9 +189,21 @@ command ever holding a live handle onto any session); and
 `crates/conway-plugin-stepguard`, repeated-tool-call detection, which the
 agent loop used to carry unconditionally — `PHILOSOPHY.md` §6 leaves loop
 intervention to the operator "including writing none", which is only a real
-option once declining it is possible. Context compaction,
-memory, skills, MCP support, and `/checkout`/`ContextMask` remain separate,
-later work; conway-plugin-routing is not
+option once declining it is possible. Four more members ship alongside
+those five: `crates/conway-plugin-skills` (`conway.skills`), progressive
+skill disclosure — a `ContextHook` narrows full-body skill segments to a
+one-line index, with a companion `read_skill` tool for the full body on
+demand; `crates/conway-plugin-memory` (`conway.memory`), a mutable
+`MemoryStore` the model can write to in its own words, injected into
+context by a `ContextHook`; `crates/conway-plugin-subprocess`, the
+out-of-process plugin host — an external program named in
+`[plugins].subprocess[]` is spawned and speaks conway's own wire protocol,
+gaining a tool the binary was never compiled with; and
+`crates/conway-plugin-mcp`, an MCP-over-stdio *client* — an external
+program named in `[plugins].mcp[]` is spawned as an MCP server, and every
+tool it declares over `tools/list` attaches the same way, without a
+bundle id of its own to name. Compaction, and `/checkout`/`ContextMask`,
+remain separate, later work; conway-plugin-routing is not
 "dynamic routing" in the learned/adaptive sense PHILOSOPHY.md describes
 elsewhere — no classifier, no embedding model, ever — it is the same purely
 declarative resolver conway always had, no longer compiled in by default.

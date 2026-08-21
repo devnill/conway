@@ -14,16 +14,20 @@
 //! `main.rs::build_conway` calls both, in either order, against the same
 //! `ConwayBuilder`.
 //!
-//! **Why this is async, unlike `first_party_plugins::install`.** Resolving
-//! `[plugins].install` is a pure, synchronous id lookup against an
-//! in-memory `Vec`; discovering a subprocess plugin's own manifest means
-//! spawning a real process and awaiting its `tool.spec/1` answer
+//! **Why this is async.** Discovering a subprocess plugin's own manifest
+//! means spawning a real process and awaiting its `tool.spec/1` answer
 //! (`conway_plugin_subprocess::SubprocessPlugin::discover`'s own doc: "a
 //! plugin needing setup does it in its own constructor, before
 //! `ConwayBuilder::with_plugin`, where errors surface to the embedder
 //! directly"). This is exactly that constructor call, at exactly that
-//! point -- `main.rs`'s `build_conway` is `async fn` for this reason alone
-//! (see that function's own doc for the disclosed widening this causes).
+//! point -- `main.rs`'s `build_conway` became `async fn` for this reason
+//! (see that function's own doc for the disclosed widening this caused).
+//! `first_party_plugins::install` is ALSO `async fn` today (board item
+//! `01M09V3S2AQYB2VK6MANFRH1JM`, opening the durable memory store), for an
+//! unrelated, later reason -- resolving `[plugins].install` against this
+//! binary's own closed candidate set is still the pure, synchronous id
+//! lookup it always was; only the memory-store step that module added is
+//! what needs `.await`.
 //!
 //! **Trust, disclosed at the one place this binary actually spawns
 //! anything from this config, not only in the schema's own doc.** A

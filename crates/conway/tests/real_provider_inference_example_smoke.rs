@@ -104,7 +104,7 @@ async fn real_provider_inference_example_flow_reaches_a_real_backend_over_loopba
         cli_overrides: conway::config::CliOverrides::default(),
         model_metadata_refresh: false,
     })
-    .expect("load with no XDG/project layer must still succeed via built-in defaults");
+    .expect("load with no user/project layer must still succeed via built-in defaults");
     let config: ConwayConfig = outcome.config;
 
     let conway = ConwayBuilder::from_parts(config)

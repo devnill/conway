@@ -184,30 +184,30 @@ fn build_conway(cwd: &Path, script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionG
         .expect("build should succeed with the real builtin fs/bash tools registered")
 }
 
-/// An isolated, empty global config directory: `XDG_CONFIG_HOME` pointed
+/// An isolated, empty global config directory: `CONWAY_CONFIG_DIR` pointed
 /// here means `TrustStore::load` finds no `trust.json` (project files start
 /// untrusted) and the global `permissions.json` candidate lives at
-/// `<xdg>/conway/permissions.json` -- the one file `load_permission_files`
+/// `<config_dir>/conway/permissions.json` -- the one file `load_permission_files`
 /// treats as trusted-by-authorship, so its `allow` rules install
 /// unconditionally. Returns the tempdir (kept alive for the test's duration)
 /// and the env map to pass to `load_permission_files`.
 fn isolated_env() -> (TempDir, HashMap<String, String>) {
-    let xdg = TempDir::new().expect("tempdir");
+    let config_dir = TempDir::new().expect("tempdir");
     let mut env = HashMap::new();
     env.insert(
-        "XDG_CONFIG_HOME".to_string(),
-        xdg.path().display().to_string(),
+        "CONWAY_CONFIG_DIR".to_string(),
+        config_dir.path().display().to_string(),
     );
-    (xdg, env)
+    (config_dir, env)
 }
 
-/// Writes `contents` to the GLOBAL permissions file (`<xdg>/conway/permissions.json`)
+/// Writes `contents` to the GLOBAL permissions file (`<config_dir>/conway/permissions.json`)
 /// -- trusted-by-authorship, so its `allow` rules install unconditionally via
 /// `load_permission_files`. The `conway/` subdirectory is created to mirror
-/// `xdg_config_path`'s `$XDG_CONFIG_HOME/conway/settings.json` layout.
-fn write_global_permissions(xdg: &TempDir, contents: &str) {
-    let dir = xdg.path().join("conway");
-    std::fs::create_dir_all(&dir).expect("mkdir <xdg>/conway");
+/// `user_config_path`'s `$CONWAY_CONFIG_DIR/settings.json` layout.
+fn write_global_permissions(config_dir: &TempDir, contents: &str) {
+    let dir = config_dir.path().to_path_buf();
+    std::fs::create_dir_all(&dir).expect("mkdir <config_dir>/conway");
     std::fs::write(dir.join("permissions.json"), contents).expect("write global permissions.json");
 }
 
@@ -241,9 +241,9 @@ async fn a_paths_under_allow_rule_authorizes_an_in_root_read_without_the_gate() 
     .expect("write fixture file");
     let root_canon = root_dir.path().canonicalize().expect("canonicalize root");
 
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         &format!(
             r#"{{"rules":[{{"select":{{"tools":["read"]}},"when":{{"paths_under":"{}"}},"then":"allow"}}]}}"#,
             root_canon.display()
@@ -308,9 +308,9 @@ async fn a_paths_under_allow_rule_lets_an_out_of_root_read_reach_the_gate() {
         .canonicalize()
         .expect("canonicalize secret");
 
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         &format!(
             r#"{{"rules":[{{"select":{{"tools":["read"]}},"when":{{"paths_under":"{}"}},"then":"allow"}}]}}"#,
             root_canon.display()
@@ -371,9 +371,9 @@ async fn a_paths_under_rule_reads_arguments_not_rendered_so_a_traversal_path_rea
     std::fs::write(outside_dir.join("secret.txt"), b"TOP SECRET").expect("write secret");
     let root_canon = root_dir.canonicalize().expect("canonicalize root");
 
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         &format!(
             r#"{{"rules":[{{"select":{{"tools":["read"]}},"when":{{"paths_under":"{}"}},"then":"allow"}}]}}"#,
             root_canon.display()
@@ -472,7 +472,7 @@ async fn a_relative_paths_under_prefix_resolves_against_the_project_not_the_proc
     )
     .expect("write fixture");
 
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     write_project_permissions(
         &project,
         r#"{"rules":[{"select":{"tools":["read"]},"when":{"paths_under":"src"},"then":"allow"}]}"#,
@@ -608,7 +608,7 @@ async fn a_relative_paths_under_deny_confines_to_the_project_not_the_process_cwd
     )
     .expect("write fixture");
 
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     write_project_permissions(
         &project,
         r#"{"rules":[{"select":{"tools":["read"]},"when":{"paths_under":"src"},"then":"deny"}]}"#,
@@ -723,7 +723,7 @@ async fn a_relative_paths_under_prefix_in_an_ancestor_file_resolves_against_the_
     )
     .expect("write permissions.json");
 
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
@@ -821,9 +821,9 @@ async fn an_unconfinable_tool_never_satisfies_paths_under_so_bash_reaches_the_ga
     let root_dir = TempDir::new().expect("tempdir");
     let root_canon = root_dir.path().canonicalize().expect("canonicalize root");
 
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         &format!(
             r#"{{"rules":[{{"select":{{"tools":["bash"]}},"when":{{"paths_under":"{}"}},"then":"allow"}}]}}"#,
             root_canon.display()
@@ -885,12 +885,12 @@ async fn an_unconfinable_tool_never_satisfies_paths_under_so_bash_reaches_the_ga
 #[tokio::test]
 async fn command_prefix_on_a_structured_tool_is_a_registration_error() {
     let project = TempDir::new().expect("tempdir");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     // A GLOBAL file (trusted-by-authorship) so the allow rule's registration
     // check actually runs (allow rules from an UNTRUSTED project file are
     // skipped before the registration check; deny rules check regardless).
     write_global_permissions(
-        &xdg,
+        &config_dir,
         r#"{"rules":[{"select":{"tools":["read"]},"when":{"command_prefix":"read"},"then":"allow"}]}"#,
     );
 
@@ -960,12 +960,12 @@ async fn a_paths_under_deny_rule_on_an_unconfinable_tool_is_a_registration_error
         .path()
         .canonicalize()
         .expect("canonicalize project root");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     // A GLOBAL file (trusted-by-authorship) so the deny rule's registration
     // check runs (deny rules install from every file, but the registration
     // check gates installation regardless of trust).
     write_global_permissions(
-        &xdg,
+        &config_dir,
         &format!(
             r#"{{"rules":[{{"select":{{"tools":["bash"]}},"when":{{"paths_under":"{}"}},"then":"deny"}}]}}"#,
             root_canon.display()
@@ -1052,9 +1052,9 @@ async fn a_paths_under_deny_rule_on_a_category_with_an_unconfinable_tool_refuses
         .path()
         .canonicalize()
         .expect("canonicalize project root");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         &format!(
             r#"{{"rules":[{{"select":{{"categories":["execute"]}},"when":{{"paths_under":"{}"}},"then":"deny"}}]}}"#,
             root_canon.display()
@@ -1131,12 +1131,12 @@ async fn a_paths_under_allow_rule_with_a_prefix_that_cannot_canonicalize_surface
     // `ReadTool` -> `PermissionBroker::decide` seam.
     std::fs::write(project.path().join("file.txt"), b"inside the project")
         .expect("write fixture file");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     // A GLOBAL file (trusted-by-authorship) so the allow rule's install path
     // runs unconditionally. The prefix `nonexistent-dir` is never created, so
     // `CanonicalRoot::new(<project>/nonexistent-dir)` fails.
     write_global_permissions(
-        &xdg,
+        &config_dir,
         r#"{"rules":[{"select":{"tools":["read"]},"when":{"paths_under":"nonexistent-dir"},"then":"allow"}]}"#,
     );
 
@@ -1239,12 +1239,12 @@ async fn a_paths_under_allow_rule_with_a_nul_byte_in_its_prefix_surfaces_a_regis
     let project = TempDir::new().expect("tempdir");
     std::fs::write(project.path().join("file.txt"), b"inside the project")
         .expect("write fixture file");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     // JSON's `\u0000` escape is legal; serde_json decodes it to a real NUL
     // byte inside the parsed `String` -- untrusted config content, not a
     // Rust source literal quirk.
     write_global_permissions(
-        &xdg,
+        &config_dir,
         r#"{"rules":[{"select":{"tools":["read"]},"when":{"paths_under":"bad-\u0000-prefix"},"then":"allow"}]}"#,
     );
 
@@ -1317,12 +1317,12 @@ async fn paths_under_deny_and_prompt_rules_with_a_bad_prefix_each_surface_a_regi
     // silently allowed) through the real ReadTool -> PermissionBroker seam.
     std::fs::write(project.path().join("file.txt"), b"inside the project")
         .expect("write fixture file");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     // A GLOBAL file with one deny and one prompt rule, each over a
     // nonexistent prefix. Deny/prompt install from every file
     // unconditionally (D4 §3), so both install paths run.
     write_global_permissions(
-        &xdg,
+        &config_dir,
         r#"{"rules":[
             {"select":{"tools":["read"]},"when":{"paths_under":"missing-deny"},"then":"deny"},
             {"select":{"tools":["read"]},"when":{"paths_under":"missing-prompt"},"then":"prompt"}
@@ -1440,7 +1440,7 @@ async fn trusting_a_project_file_with_a_bad_prefix_does_not_count_the_dropped_ru
     let project = TempDir::new().expect("tempdir");
     std::fs::write(project.path().join("file.txt"), b"inside the project")
         .expect("write fixture file");
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     write_project_permissions(
         &project,
         r#"{"rules":[{"select":{"tools":["read"]},"when":{"paths_under":"nonexistent-dir"},"then":"allow"}]}"#,
@@ -1556,12 +1556,12 @@ async fn trusting_a_project_file_with_a_bad_prefix_does_not_count_the_dropped_ru
 /// against a matching case that auto-allows.
 #[tokio::test]
 async fn flat_and_structured_command_prefix_produce_byte_identical_gate_decisions() {
-    let (xdg_flat, env_flat) = isolated_env();
-    write_global_permissions(&xdg_flat, r#"{"allow":["bash:git status"]}"#);
+    let (config_flat, env_flat) = isolated_env();
+    write_global_permissions(&config_flat, r#"{"allow":["bash:git status"]}"#);
 
-    let (xdg_struct, env_struct) = isolated_env();
+    let (config_struct, env_struct) = isolated_env();
     write_global_permissions(
-        &xdg_struct,
+        &config_struct,
         r#"{"rules":[{"select":{"tools":["bash"]},"when":{"command_prefix":"git status"},"then":"allow"}]}"#,
     );
 
@@ -1577,8 +1577,8 @@ async fn flat_and_structured_command_prefix_produce_byte_identical_gate_decision
     ];
 
     for command in matrix {
-        let flat_count = run_bash_and_count_gate(&xdg_flat, &env_flat, command).await;
-        let struct_count = run_bash_and_count_gate(&xdg_struct, &env_struct, command).await;
+        let flat_count = run_bash_and_count_gate(&config_flat, &env_flat, command).await;
+        let struct_count = run_bash_and_count_gate(&config_struct, &env_struct, command).await;
         assert_eq!(
             flat_count, struct_count,
             "flat `bash:git status` and structured `command_prefix(\"git status\")` must produce \
@@ -1593,11 +1593,11 @@ async fn flat_and_structured_command_prefix_produce_byte_identical_gate_decision
 }
 
 /// Runs one `bash` call end to end against a fresh conway built with the
-/// global permissions file at `xdg`, and returns the number of requests the
+/// global permissions file at `config_dir`, and returns the number of requests the
 /// gate saw (0 = auto-allowed by a rule, 1 = reached the operator). The gate
 /// always denies so a chained command never actually executes.
 async fn run_bash_and_count_gate(
-    _xdg: &TempDir,
+    _config_dir: &TempDir,
     env: &HashMap<String, String>,
     command: &str,
 ) -> usize {
@@ -1637,7 +1637,7 @@ async fn run_bash_and_count_gate(
 #[tokio::test]
 async fn a_structured_deny_rule_from_an_untrusted_project_file_refuses_before_the_gate() {
     let project = TempDir::new().expect("tempdir");
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     write_project_permissions(
         &project,
         r#"{"rules":[{"select":{"tools":["bash"]},"when":{"command_prefix":"curl"},"then":"deny"}]}"#,
@@ -1698,10 +1698,10 @@ async fn a_structured_deny_rule_from_an_untrusted_project_file_refuses_before_th
 #[tokio::test]
 async fn a_structured_prompt_rule_from_an_untrusted_project_file_forces_the_gate() {
     let project = TempDir::new().expect("tempdir");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     // A GLOBAL allow rule that would auto-allow `rm` on its own -- so the
     // only thing forcing the gate is the project prompt rule.
-    write_global_permissions(&xdg, r#"{"allow":["bash:rm"]}"#);
+    write_global_permissions(&config_dir, r#"{"allow":["bash:rm"]}"#);
     write_project_permissions(
         &project,
         r#"{"rules":[{"select":{"tools":["bash"]},"when":{"command_prefix":"rm"},"then":"prompt"}]}"#,
@@ -1766,7 +1766,7 @@ async fn a_structured_prompt_rule_from_an_untrusted_project_file_forces_the_gate
 async fn an_untrusted_project_structured_allow_rule_does_not_take_effect() {
     let project = TempDir::new().expect("tempdir");
     std::fs::write(project.path().join("file.txt"), b"inside the project").expect("write fixture");
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     write_project_permissions(
         &project,
         r#"{"rules":[{"select":{"tools":["read"]},"when":"always","then":"allow"}]}"#,
@@ -1860,11 +1860,11 @@ async fn an_untrusted_project_structured_allow_rule_does_not_take_effect() {
 #[tokio::test]
 async fn a_command_prefix_rule_on_a_mixed_kind_multi_tool_select_installs_with_a_notice() {
     let project = TempDir::new().expect("tempdir");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     // A GLOBAL file (trusted-by-authorship) so the allow rule's registration
     // check runs and the rule installs.
     write_global_permissions(
-        &xdg,
+        &config_dir,
         r#"{"rules":[
             {"select":{"tools":["bash","read"]},"when":{"command_prefix":"echo"},"then":"allow"}
         ]}"#,
@@ -1963,9 +1963,9 @@ async fn a_command_prefix_rule_on_a_mixed_kind_multi_tool_select_installs_with_a
 #[tokio::test]
 async fn a_command_prefix_allow_rule_naming_only_bash_installs_with_a_notice() {
     let project = TempDir::new().expect("tempdir");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         r#"{"rules":[
             {"select":{"tools":["bash"]},"when":{"command_prefix":"git status"},"then":"allow"}
         ]}"#,
@@ -2040,9 +2040,9 @@ async fn a_command_prefix_allow_rule_naming_only_bash_installs_with_a_notice() {
 #[tokio::test]
 async fn an_always_allow_rule_naming_only_bash_installs_with_a_notice() {
     let project = TempDir::new().expect("tempdir");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         r#"{"rules":[
             {"select":{"tools":["bash"]},"when":"always","then":"allow"}
         ]}"#,
@@ -2113,9 +2113,9 @@ async fn an_always_allow_rule_naming_only_bash_installs_with_a_notice() {
 #[tokio::test]
 async fn a_deny_command_prefix_rule_naming_bash_installs_with_no_notice() {
     let project = TempDir::new().expect("tempdir");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         r#"{"rules":[
             {"select":{"tools":["bash"]},"when":{"command_prefix":"curl"},"then":"deny"}
         ]}"#,
@@ -2174,9 +2174,9 @@ async fn a_deny_command_prefix_rule_naming_bash_installs_with_no_notice() {
 #[tokio::test]
 async fn a_command_prefix_rule_on_an_all_structured_multi_tool_select_is_a_registration_error() {
     let project = TempDir::new().expect("tempdir");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         r#"{"rules":[
             {"select":{"tools":["read","write"]},"when":{"command_prefix":"read"},"then":"allow"}
         ]}"#,
@@ -2221,9 +2221,9 @@ async fn a_command_prefix_rule_on_an_all_structured_multi_tool_select_is_a_regis
 async fn a_command_prefix_rule_on_a_wildcard_selecting_only_structured_tools_is_a_registration_error(
 ) {
     let project = TempDir::new().expect("tempdir");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         r#"{"rules":[
             {"select":{"tools":["re*"]},"when":{"command_prefix":"read"},"then":"allow"}
         ]}"#,
@@ -2266,9 +2266,9 @@ async fn a_command_prefix_rule_on_a_wildcard_selecting_only_structured_tools_is_
 #[tokio::test]
 async fn a_command_prefix_rule_on_a_category_of_only_structured_tools_is_a_registration_error() {
     let project = TempDir::new().expect("tempdir");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         r#"{"rules":[
             {"select":{"categories":["read"]},"when":{"command_prefix":"read"},"then":"allow"}
         ]}"#,
@@ -2317,9 +2317,9 @@ async fn broadening_command_prefix_check_does_not_regress_paths_under_arms() {
         .path()
         .canonicalize()
         .expect("canonicalize project root");
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         &format!(
             r#"{{"rules":[
                 {{"select":{{"tools":["bash"]}},"when":{{"paths_under":"{}"}},"then":"deny"}},
@@ -2384,15 +2384,15 @@ async fn revoking_a_structured_allow_rule_removes_only_it_and_the_call_asks_agai
     std::fs::write(root_dir.path().join("file.txt"), b"inside the root").expect("write fixture");
     let root_canon = root_dir.path().canonicalize().expect("canonicalize root");
 
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         &format!(
             r#"{{"allow":["write:*"],"rules":[{{"select":{{"tools":["read"]}},"when":{{"paths_under":"{}"}},"then":"allow"}}]}}"#,
             root_canon.display()
         ),
     );
-    let global_file = xdg.path().join("conway").join("permissions.json");
+    let global_file = config_dir.path().join("permissions.json");
     let write_target = root_dir.path().join("written.txt").display().to_string();
 
     let gate = RecordingGate::new(PermissionDecision::Deny {
@@ -2560,9 +2560,9 @@ async fn revoking_a_structured_allow_rule_that_does_not_exist_returns_not_found(
     std::fs::write(root_dir.path().join("file.txt"), b"inside the root").expect("write fixture");
     let root_canon = root_dir.path().canonicalize().expect("canonicalize root");
 
-    let (xdg, env) = isolated_env();
+    let (config_dir, env) = isolated_env();
     write_global_permissions(
-        &xdg,
+        &config_dir,
         &format!(
             r#"{{"rules":[{{"select":{{"tools":["read"]}},"when":{{"paths_under":"{}"}},"then":"allow"}}]}}"#,
             root_canon.display()

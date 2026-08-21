@@ -87,6 +87,16 @@ impl<'a> RoutingExplain<'a> {
                             .capability_index()
                             .get(&model_ref)
                             .map(CapabilitySummary::from);
+                        // Board item 01M0ASX466G3PW3SJJS3KGNS55: the
+                        // operator-visible surface for
+                        // `Backend::token_fidelity`. Keyed by backend id
+                        // alone (fidelity is a `Backend`-level declaration,
+                        // not per-model), same index `capabilities` above
+                        // already reads.
+                        let token_fidelity = self
+                            .router
+                            .capability_index()
+                            .token_fidelity(&model_ref.backend);
                         let breaker = BreakerSnapshot {
                             state: self.router.health().state(&endpoint_of(&model_ref)),
                         };
@@ -109,6 +119,7 @@ impl<'a> RoutingExplain<'a> {
                             outcome,
                             capabilities,
                             breaker,
+                            token_fidelity,
                         }
                     })
                     .collect();

@@ -520,6 +520,14 @@ async fn authored_hook_transforms_payloads() {
 //
 // Note this file still never imports `conway_core`: `Curator` is implemented
 // and the read surface is CALLED entirely through `conway::plugin`.
+//
+// `PathStore` is deliberately absent from both `CurateCtx` above and this
+// file's imports (board item `01M0EMCK55628YJXGBQY8YGXHE`, decided:
+// engine-internal). `RecallCurator` below is the liveness evidence that
+// decision rests on: it reads a foreign session, names a `PathOp`, and lets
+// `base.derive(..)` do the deriving -- it never needs to `put`/`get` a
+// `PathSelection` directly. See `conway_core::ports::PathStore`'s own doc
+// for the full reasoning.
 // ---------------------------------------------------------------------------
 
 struct RecallCurator;

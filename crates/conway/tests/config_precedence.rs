@@ -82,7 +82,7 @@ fn conway_config_round_trips_the_full_documented_schema() {
     assert_eq!(cfg.backends["local"].stream_tools, Some(false));
 }
 
-/// Precedence test: default < XDG < project < env < CLI, proven for
+/// Precedence test: default < user < project < env < CLI, proven for
 /// `default_role`, `limits.max_steps`, and `permissions.mode` across all
 /// five sources, and for `backends.<id>.base_url` across the four sources
 /// that have a documented path (see the module-level disclosure below for
@@ -91,15 +91,15 @@ fn conway_config_round_trips_the_full_documented_schema() {
 /// Reconciliation disclosed here: `CliOverrides`' field
 /// list (fixed by the amendment's implementation notes) has no per-backend
 /// override, so there is no CLI path to `backends.<id>.base_url`. That key
-/// is therefore proven across default/XDG/project/env only.
+/// is therefore proven across default/user/project/env only.
 #[test]
 fn five_source_precedence_across_representative_keys() {
     let root = support::unique_temp_dir("precedence");
 
-    let xdg_home = root.join("xdg-home");
-    std::fs::create_dir_all(xdg_home.join("conway")).unwrap();
+    let config_home = root.join("config_dir-home");
+    std::fs::create_dir_all(&config_home).unwrap();
     std::fs::write(
-        xdg_home.join("conway").join("settings.json"),
+        config_home.join("settings.json"),
         r#"
 {
   "default_role": "role-x",
@@ -110,7 +110,7 @@ fn five_source_precedence_across_representative_keys() {
     "role-c": { "chain": [] }
   },
   "backends": {
-    "anthropic": { "kind": "anthropic", "base_url": "https://xdg.example.com" }
+    "anthropic": { "kind": "anthropic", "base_url": "https://config_dir.example.com" }
   },
   "limits": { "max_steps": 11 },
   "permissions": { "mode": "deny" }
@@ -136,13 +136,13 @@ fn five_source_precedence_across_representative_keys() {
     )
     .unwrap();
 
-    let mut xdg_only_env = HashMap::new();
-    xdg_only_env.insert(
-        "XDG_CONFIG_HOME".to_string(),
-        xdg_home.to_string_lossy().to_string(),
+    let mut user_only_env = HashMap::new();
+    user_only_env.insert(
+        "CONWAY_CONFIG_DIR".to_string(),
+        config_home.to_string_lossy().to_string(),
     );
 
-    let mut full_env = xdg_only_env.clone();
+    let mut full_env = user_only_env.clone();
     full_env.insert("CONWAY_DEFAULT_ROLE".to_string(), "role-e".to_string());
     full_env.insert(
         "CONWAY_BACKENDS__ANTHROPIC__BASE_URL".to_string(),
@@ -183,7 +183,7 @@ fn five_source_precedence_across_representative_keys() {
     );
 
     // Stage 3: remove CLI + env -> project wins.
-    let outcome = load(opts(xdg_only_env.clone(), CliOverrides::default())).unwrap();
+    let outcome = load(opts(user_only_env.clone(), CliOverrides::default())).unwrap();
     assert_eq!(outcome.config.default_role.as_str(), "role-p");
     assert_eq!(outcome.config.limits.max_steps, 22);
     assert_eq!(outcome.config.permissions.mode, PermissionMode::Prompt);
@@ -192,12 +192,12 @@ fn five_source_precedence_across_representative_keys() {
         "https://project.example.com"
     );
 
-    // Stage 4: remove CLI + env + project -> XDG wins.
+    // Stage 4: remove CLI + env + project -> user config wins.
     let empty_dir = root.join("empty-project");
     std::fs::create_dir_all(&empty_dir).unwrap();
     let outcome = load(LoadOptions {
         cwd: empty_dir.clone(),
-        ..opts(xdg_only_env.clone(), CliOverrides::default())
+        ..opts(user_only_env.clone(), CliOverrides::default())
     })
     .unwrap();
     assert_eq!(outcome.config.default_role.as_str(), "role-x");
@@ -205,11 +205,11 @@ fn five_source_precedence_across_representative_keys() {
     assert_eq!(outcome.config.permissions.mode, PermissionMode::Deny);
     assert_eq!(
         outcome.config.backends["anthropic"].base_url,
-        "https://xdg.example.com"
+        "https://config_dir.example.com"
     );
 
     // Stage 5: remove everything -> baked-in defaults. Still an isolated
-    // `XDG_CONFIG_HOME` (not a bare `HashMap::new()`): "remove everything"
+    // `CONWAY_CONFIG_DIR` (not a bare `HashMap::new()`): "remove everything"
     // means no source names a value, not "read whatever real settings.json
     // this machine has" (see `support::isolated_env`'s doc comment).
     let outcome = load(LoadOptions {
@@ -226,7 +226,7 @@ fn five_source_precedence_across_representative_keys() {
 #[test]
 fn env_var_mapping_reads_known_vars_and_ignores_unknown_ones() {
     let mut env = support::isolated_env();
-    // "default" (not an arbitrary alias): with no project/XDG source, the
+    // "default" (not an arbitrary alias): with no project/user-config source, the
     // merged `[roles]` table is only the baked-in default's own
     // `roles.default` (`config::merge::default_document`) -- naming any
     // other alias here would fail the "`default_role` exists in `[roles]`"

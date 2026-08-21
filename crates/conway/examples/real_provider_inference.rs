@@ -68,11 +68,11 @@ fn isolate_ambient_config_for_this_example() {
         "conway-real-provider-inference-example-{}",
         std::process::id()
     ));
-    let xdg = scratch.join("xdg-config-home");
+    let config_dir = scratch.join("config_dir-config-home");
     let cwd = scratch.join("cwd");
-    std::fs::create_dir_all(&xdg).expect("create scratch XDG_CONFIG_HOME");
+    std::fs::create_dir_all(&config_dir).expect("create scratch CONWAY_CONFIG_DIR");
     std::fs::create_dir_all(&cwd).expect("create scratch cwd");
-    std::env::set_var("XDG_CONFIG_HOME", &xdg);
+    std::env::set_var("CONWAY_CONFIG_DIR", &config_dir);
     std::env::set_current_dir(&cwd).expect("set scratch cwd");
 }
 

@@ -2,7 +2,7 @@
 //! mandatory Anthropic subscription OAuth-token rejection.
 //!
 //! `load` is a pure, network-free, deterministic function of five ordered
-//! sources (default < XDG < project < env < CLI). See `merge.rs` for the
+//! sources (default < user < project < env < CLI). See `merge.rs` for the
 //! precedence/env-mapping/validation logic and `schema.rs` for the wire
 //! shape, including the reconciliations against already-committed
 //! `conway_core` types disclosed there.
@@ -15,7 +15,7 @@ pub mod trust;
 
 pub use discovery::discover;
 pub use merge::{
-    apply_cli, load, load_ignoring_xdg, merged_document, validate, CliOverrides, LoadOptions,
+    apply_cli, load, load_ignoring_user_config, merged_document, validate, CliOverrides, LoadOptions,
 };
 pub use model_metadata::ModelMetadata;
 pub use schema::ConwayConfig;
@@ -50,7 +50,7 @@ pub enum WarningCode {
     /// variable) is present in the merged document, but `ConwayConfig` no
     /// longer defines that key (Stage 2a moved `TuiSection` and its
     /// presentation-shaped siblings to `conway-cli`, the one reader that
-    /// renders them). `load`/`load_ignoring_xdg` accept the rest of the
+    /// renders them). `load`/`load_ignoring_user_config` accept the rest of the
     /// document and discard `[tui]` rather than hard-failing the whole
     /// load on it -- the accepted-and-ignored-with-a-warning choice
     /// recorded for this migration; see `merge::merged_document`'s own doc

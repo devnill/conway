@@ -100,7 +100,7 @@ pub struct App {
     plugin_cmd_tx: mpsc::UnboundedSender<PluginCommandDone>,
     plugin_cmd_rx: Option<mpsc::UnboundedReceiver<PluginCommandDone>>,
     /// T8: where [`Self::submit`] persists `state.history` to after every push
-    /// -- `~/.conway/history` (or `$XDG_CONFIG_HOME/conway/history` when set),
+    /// -- `~/.conway/history` (or `$CONWAY_CONFIG_DIR/history` when set),
     /// resolved once at `App::new` via
     /// `conway::config::discovery::history_file_path`. `None` only when that
     /// resolution itself fails (no resolvable home directory --
@@ -642,7 +642,7 @@ mod tests {
     /// opened through the real `submit` path, and the assertion made on
     /// the OBSERVABLE rows -- the exact labels `view::draw` renders (via
     /// `view::settings::build_tree`) plus the rendered screen buffer --
-    /// never on an internal call count. No trust decision and no XDG
+    /// never on an internal call count. No trust decision and no user config
     /// isolation are needed precisely because deny/prompt install from any
     /// file, trusted or not -- the case this item exists for.
     #[tokio::test]

@@ -58,7 +58,7 @@ fn first_text(out: &conway::plugin::ToolOutput) -> String {
 #[tokio::test]
 async fn discover_completes_the_handshake_and_registers_every_listed_tool() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "ref.py", common::REF_MCP_SERVER);
+    let spec = common::spec_for_warmed(dir.path(), "ref.py", common::REF_MCP_SERVER).await;
 
     let plugin = McpPlugin::discover(spec)
         .await
@@ -118,7 +118,8 @@ async fn discover_fails_closed_when_the_command_cannot_be_spawned() {
 #[tokio::test]
 async fn discover_refuses_a_server_that_does_not_offer_tools() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "no_tools.py", common::NO_TOOLS_CAP_SERVER);
+    let spec =
+        common::spec_for_warmed(dir.path(), "no_tools.py", common::NO_TOOLS_CAP_SERVER).await;
     let err = McpPlugin::discover(spec)
         .await
         .expect_err("a server without the tools capability must be refused");
@@ -135,7 +136,7 @@ async fn discover_refuses_a_server_that_does_not_offer_tools() {
 #[tokio::test]
 async fn tools_call_round_trips_a_text_result_into_a_content_block() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "ref.py", common::REF_MCP_SERVER);
+    let spec = common::spec_for_warmed(dir.path(), "ref.py", common::REF_MCP_SERVER).await;
     let plugin = McpPlugin::discover(spec).await.expect("discover");
     let add = plugin
         .tools()
@@ -154,7 +155,7 @@ async fn tools_call_round_trips_a_text_result_into_a_content_block() {
 #[tokio::test]
 async fn every_tool_shares_one_child_process() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "pid.py", common::PID_SERVER);
+    let spec = common::spec_for_warmed(dir.path(), "pid.py", common::PID_SERVER).await;
     let plugin = McpPlugin::discover(spec).await.expect("discover");
     let pid_tool = plugin
         .tools()
@@ -178,7 +179,7 @@ async fn every_tool_shares_one_child_process() {
 #[tokio::test]
 async fn an_mcp_iserror_result_surfaces_as_is_error_true() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "ref.py", common::REF_MCP_SERVER);
+    let spec = common::spec_for_warmed(dir.path(), "ref.py", common::REF_MCP_SERVER).await;
     let plugin = McpPlugin::discover(spec).await.expect("discover");
     let greet = plugin
         .tools()
@@ -203,7 +204,7 @@ async fn an_mcp_iserror_result_surfaces_as_is_error_true() {
 #[tokio::test]
 async fn an_unknown_content_block_type_is_dropped_and_surfaced() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "mix.py", common::UNKNOWN_BLOCK_SERVER);
+    let spec = common::spec_for_warmed(dir.path(), "mix.py", common::UNKNOWN_BLOCK_SERVER).await;
     let plugin = McpPlugin::discover(spec).await.expect("discover");
     let mix = plugin
         .tools()
@@ -251,7 +252,23 @@ async fn a_timed_out_call_fails_closed_within_the_deadline() {
     // cold-start can exceed 500ms under that contention -- a 500ms discover
     // deadline is flaky. 2000ms survives parallel startup with margin while
     // still bounding the stuck call at ~2s, well under the 5s assertion below.
-    let spec = common::spec_with_timeout(dir.path(), "sleepy.py", common::SLEEPY_SERVER, 2000);
+    //
+    // This test used to fail intermittently under full-suite parallel runs
+    // with `TimedOut` on DISCOVERY, not the sleep below -- root-caused
+    // 2026-08-21 (board item `01M09MPZ9C188AHNBKWEJ3CEQA`) to a
+    // first-execution OS cost paid by any freshly-written script's first
+    // exec, not by CPU contention as such (see `common::warm`'s doc for the
+    // measurement: up to 23.5s at 0% CPU on a brand-new file, 44ms/35ms on
+    // the SAME file's later execs). `spec_with_timeout` now calls
+    // `common::warm` on this fixture before this deadline governs anything,
+    // so 2000ms only has to cover real Python cold-start under contention,
+    // which is what the comment above was already trying (and, half the
+    // time, failing) to buy with a bigger number. Do not raise this past
+    // 2000ms to chase a future flake without first confirming `warm` ran --
+    // if it did and this still flakes, that is new information about a
+    // bigger tax, not a reason to guess again.
+    let spec =
+        common::spec_with_timeout(dir.path(), "sleepy.py", common::SLEEPY_SERVER, 2000).await;
     let plugin = McpPlugin::discover(spec).await.expect("discover");
     let sleep_tool = plugin
         .tools()
@@ -282,7 +299,7 @@ async fn a_timed_out_call_fails_closed_within_the_deadline() {
 #[tokio::test]
 async fn a_session_that_dies_mid_call_surfaces_a_typed_session_died() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "die.py", common::DIE_AFTER_ONE_SERVER);
+    let spec = common::spec_for_warmed(dir.path(), "die.py", common::DIE_AFTER_ONE_SERVER).await;
     let plugin = McpPlugin::discover(spec).await.expect("discover");
     let die_tool = plugin
         .tools()
@@ -317,7 +334,7 @@ async fn a_call_cancelled_in_flight_returns_cancelled_not_a_hang() {
     // (which waits for the first sleep to finish, then its own) completes well
     // inside the 5000ms per-call timeout. The default timeout (5000ms), not a
     // tight one: the cancel watcher polls every 10ms and cancels at 50ms.
-    let spec = common::spec_for(dir.path(), "sleepy.py", common::SHORT_SLEEPY_SERVER);
+    let spec = common::spec_for_warmed(dir.path(), "sleepy.py", common::SHORT_SLEEPY_SERVER).await;
     let plugin = McpPlugin::discover(spec).await.expect("discover");
     let sleep_tool = plugin
         .tools()

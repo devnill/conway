@@ -105,7 +105,7 @@ while you're composing:
 | `Ctrl-D` | Quit, when the input box is empty. |
 
 Your input history persists across sessions (`~/.conway/history`, or under
-`$XDG_CONFIG_HOME/conway` if set) — it follows you across every project,
+`$CONWAY_CONFIG_DIR/conway` if set) — it follows you across every project,
 not just the current checkout. A pasted block is inserted as one edit, not
 replayed as a flood of keystrokes.
 
@@ -134,28 +134,46 @@ tool prompts the same way:
 ```
 ┌ PERMISSION REQUIRED ────────────────────────────────────────────┐
 │echo pong                                                        │
-│[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback│
-│  [p] grants: `bash` commands starting with `echo pong`          │
+│[y] allow once  [a] allow always  [n] deny  [Esc] deny w/ feedback│
 └───────────────────────────────────────────────────────────────────┘
 ```
 
 The first line is the command as it would actually run (below it, not
 shown above, the box also names the tool, its category, and the agent
-path proposing the call). Your options:
+path proposing the call). Note there is no `[p]` here: a `bash` call never
+offers a pattern grant at all, at any scope — see `permissions.md`'s Limits
+section for why. A structured tool (`read`, `write`, `grep`, …) offers
+`[p]` instead:
+
+```
+┌ PERMISSION REQUIRED ────────────────────────────────────────────┐
+│read({"path":"/etc/hosts"})                                       │
+│[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback│
+│  [p] grants: any `read` call                                    │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+Your options:
 
 | Key | Effect |
 | --- | --- |
 | `y` | Allow this one call. |
 | `a` | Allow this call, and remember the decision for the rest of the session. |
-| `p` | Grant a reusable pattern (a prefix match — the prompt states exactly what it would cover, before you press anything). Not offered when the command isn't safe to prefix-match (a shell command containing `;`, `&&`, a pipe, or similar). |
+| `p` | Opens a field editor over the call's structured arguments — every field starts wildcard; `space` pins the selected field to its exact value, `↑`/`↓`/`tab` move, `s` cycles the grant scope, `Enter` installs an allow rule covering future calls whose pinned fields match (unpinned fields stay wildcard) and allows this call, `Esc` cancels back to this prompt. Granting with nothing pinned is the broadest offer — any call to that tool. Never offered for a `bash` call. |
 | `n` | Deny this call. |
 | `Esc` | Deny this call, and tell the model to try a different approach. |
 | `PageUp` / `PageDown` | Scroll a long command's own display. |
 
-`[p]`'s pattern grant, project-file trust, and how grants persist and get
+`[p]`'s field editor, project-file trust, and how grants persist and get
 revoked are covered in full in [`permissions.md`](permissions.md) — this
 prompt is the one place you'll meet them, but that page is where the
-depth lives.
+depth lives. One thing worth knowing here rather than only there: at
+session scope, a `[p]` grant is also appended to the project's
+`permissions.json` (its structured `rules` array, not the flat `allow`
+list a plain pattern grant uses) — so it survives a restart the same way
+any other session-scope grant does, once you `/trust permissions` if the
+file wasn't already trusted. A per-agent or per-subtree grant is never
+written to a file, at any scope.
 
 ## Slash commands
 
@@ -170,10 +188,12 @@ shrinking the candidate list).
 | `/settings` | `/settings` | Open the settings menu (display preferences, permission mode, and grant management). |
 | `/steer` | `/steer <agent> <text>` | Send a steering message to a running agent. |
 | `/context` | `/context <agent>` | Show an agent's assembled context. |
-| `/why` | `/why` | Show the last routing decision. |
+| `/why` | `/why` | Show the last routing decision — and, after a `/model`/`/role` switch, what changed. |
 | `/fork` | `/fork [<text>]` or `/fork @<agent> <directive>` | Open an interactive fork of the focused agent (inherits its context, frozen at the fork point), or fork a specific agent explicitly. Free text is classified into a fork/spawn recipe and confirmed before anything is created. |
 | `/spawn` | `/spawn [@<agent_def>] [<prompt>]` | Open an interactive spawned agent — a clean slate, optionally from a named agent definition; inherits the parent's role/model if none is given. |
 | `/resume` | `/resume <session-id>` | Resume a prior session. |
+| `/model` | `/model <backend/model>` | Switch the focused agent to a pinned model, mid-conversation. |
+| `/role` | `/role <alias>` | Switch the focused agent to a different role, mid-conversation. |
 | `/trust permissions` | `/trust permissions` | Trust the project's `.conway/permissions.json` at its current content, installing its `allow` rules for this session. See [`permissions.md`](permissions.md). |
 | `/help` | `/help` | Open a read-only keybinding reference overlay. |
 | `/quit` or `/exit` | `/quit` | Exit conway. |
@@ -182,6 +202,35 @@ A message that doesn't start with `/` is sent to the model as an ordinary
 prompt. An unrecognized `/command` is reported as an error rather than
 sent to the model. `/trust permissions` doesn't appear in the `/` palette
 list above (typing it in full still works) — every other command does.
+
+### `/model` and `/role`: changing model mid-session
+
+A cheaper model for a mechanical stretch, a larger window when the work
+gets big, a different provider when one is degraded — switching is
+ordinary, not exceptional, and it works while the conversation is still
+running: no quitting, no `--resume`.
+
+```
+/model anthropic/claude-haiku
+/role planner
+```
+
+Under the hood this forks the focused agent: the new agent inherits the
+*entire* prior conversation (by reference, frozen at the switch point) and
+becomes the one you're now talking to — the same interactive-fork idiom a
+bare `/fork` uses, just with the child's model pinned (`/model`) or its role
+changed (`/role`) instead of a directive. Nothing about *which* records are
+selected changes; only the model rendering them from here does. A notice
+records the switch immediately; `/why` reports the resulting routing
+decision — and, once at least one switch has happened this session, what it
+changed (`role: planner -> fast`, `model: X -> Y`) rather than only the
+latest decision in isolation.
+
+If the newly-pinned model (or the new role's own chain) cannot take the
+conversation's current size, you'll see the same loud refusal an ordinary
+turn's admission gate gives — naming what didn't fit — the next time you
+send a message. Nothing silently falls back to the old model, and nothing
+is silently trimmed to make it fit.
 
 ### Plugin-declared commands
 

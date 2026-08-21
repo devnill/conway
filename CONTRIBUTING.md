@@ -164,6 +164,31 @@ something nobody intended. Even then the bar is that the edit makes the
 requirement clearer, never that it makes the requirement easier to satisfy. If
 you cannot tell which you are doing, you are doing the second one.
 
+### Module docs and other doc comments are review-only, not gated
+
+`scripts/check-design-claims.py`'s predicates pin specific sentences in
+specific files named by path, and `cargo doc`'s link check verifies that an
+intra-doc link *resolves*, not that the sentence around it is true. Neither
+mechanism asks a `//!`/`///` block the same "is this still true" question
+`board-claims.md` answers for `PHILOSOPHY.md`. `crates/conway-cli/src/
+first_party_plugins.rs`'s module doc said memory, skills, and MCP support
+were unbuilt roughly 120 lines above the lines in the same file that install
+all three (board item `01M0HDK6CDSE1QJW3HD58ND8WY`) — invisible to both
+gates: the predicate that would have caught the equivalent prose claim in
+`PHILOSOPHY.md` names paths, not sentences, and it happened not to name this
+one; `cargo doc` had nothing to check here at all, since the sentence links
+to nothing.
+
+**This class is caught by review, not by CI.** A `board-claims.md` predicate
+can pin one sentence once someone notices it is load-bearing; it does not
+scale to every module doc in the tree, and inventing a predicate per doc
+comment would just move the same staleness one file over, onto whichever
+predicates nobody thought to write. Until a mechanized check exists for this
+shape, a reviewer reading a module doc adjacent to code that changed should
+treat "does this comment's claim about what's built still match what the
+file does" as part of the review — the same discipline this section already
+asks for prose, applied without a gate behind it.
+
 ### Citing a board item, and keeping the citation honest
 
 The tree cites board items by id in roughly 920 places. Two rules:
@@ -239,9 +264,14 @@ The procedure:
   declaration/behavior mismatch one level up, and
   [the declaration rule](#2-nothing-may-claim-to-be-reached-that-isnt) applies to
   it. CI ran `cargo check` across the feature matrix, so it could not catch a
-  test that failed to *compile* under a combination. It now runs
-  `cargo test --no-run`, which compiles but still does not execute. That residual
-  gap is priced and stated, not papered over.
+  test that failed to *compile* under a combination. It then ran
+  `cargo test --no-run`, which compiled but still did not execute -- and that
+  residual gap hid a real one: 19 of 27 `crates/conway/tests/builder.rs` tests
+  failed the moment anyone actually ran them under a non-default combination
+  (board item `01M0JMEK24ZPRSP3PT3HJG0VHD`). It now runs the suite for real
+  under all six combinations, at negligible added cost over the compile time
+  already paid. Any gap still open is priced and stated in `.github/workflows/ci.yml`
+  itself, not papered over.
 
 ---
 
@@ -348,9 +378,12 @@ on 2026-08-12 in favour of the strict reading, so the two now agree:
 - **Any new dependency is justified against the zero-dependency path**, in the
   change that adds it. "What would it cost to not have this?" is the question,
   and for a harness this small the answer is often "less than you think" — the
-  worked examples are `directories` (kept: XDG precedence is a real
-  cross-platform contract, not arithmetic) and the several places a helper was
-  written inline instead, each noted at its own site.
+  worked examples are `directories` (kept: cross-platform home-directory
+  resolution is a real contract, not arithmetic — though note the original
+  justification was XDG precedence, which conway no longer implements, so this
+  case is weaker than it was and deserves re-testing when it is next touched)
+  and the several places a helper was written inline instead, each noted at its
+  own site.
 - **Expect the answer to be no.** The bar is not "this crate is good"; it is
   "the zero-dependency path is worse, and here is why".
 - **Tooling whose purpose is enforcing licensing or dependency policy is

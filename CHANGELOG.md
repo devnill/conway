@@ -109,9 +109,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AnthropicBackend`/`OpenAiCompatBackend`) override `admit` with their own
   wire-body-aware estimate but declare `TokenCountFidelity::Heuristic`
   honestly — neither vendors a tokenizer nor has a measured calibration
-  factor. Note the scope: this is visible to code inspecting the trait, not
-  yet to an operator — no production path (probe report, routing engine, CLI
-  output) reads `token_fidelity()` today. Surfacing it is filed separately.
+  factor.
+- **`conway routes explain` now shows how much to trust each candidate's own
+  token estimate** — an operator-visible answer to `Backend::token_fidelity`
+  above, closing the gap its own introduction left open (no production path
+  read it; only tests did). `CapabilityIndex::from_backends` — already the
+  code that reads each constructed backend's `Backend::capabilities()` at
+  startup — now reads `Backend::token_fidelity()` too, once per backend id
+  (a `Backend`-level declaration, not per-model like `Capabilities`, so it is
+  a new, dedicated side table rather than a field added to `Capabilities`
+  itself, which is constructed at ~40 call sites across the workspace and
+  answers an unrelated question). `ExplainEntry` gains a `token_fidelity`
+  field (`#[serde(default)]`, so a report encoded before this field existed
+  still decodes); `conway routes explain`'s text output gains a `tokens:
+  <exact|calibrated|heuristic|unknown>` suffix per candidate, `--json` gains
+  a matching `"token_fidelity"` key. `unknown` covers the one case that
+  cannot answer: `conway_core::routing::MinimalRouter`'s config-only
+  fallback, which holds no `Arc<dyn Backend>` at all and reports `None`
+  rather than guessing.
 - **`conway.fs` enforces its own confinement root for all six of its tools —
   `read`, `write`, `edit`, `cd`, `glob`, `grep` — and does so
   open-relative**, closing a symlink-swap TOCTOU race that a check-then-open
@@ -840,10 +855,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/tests/hook_revoke_seam.rs`, `docs/interactive.md`)
 
 - **A way to load config while ignoring the ambient user layer**. Every config load merges five sources --
-  `default < XDG < project < env < CLI` -- and `LoadOptions::explicit_path`
+  `default < user < project < env < CLI` -- and `LoadOptions::explicit_path`
   (and therefore `ConwayBuilder::from_config(path)`) only ever replaces the
-  *project* layer: the XDG/user layer
-  (`$XDG_CONFIG_HOME/conway/settings.json`, or `~/.conway/settings.json`) was
+  *project* layer: the user layer
+  (`$CONWAY_CONFIG_DIR/settings.json`, or `~/.conway/settings.json`) was
   read unconditionally, before it, every time -- `from_config`'s own doc
   comment ("still layered under XDG/env/CLI precedence") was accurate, but
   there was no way anywhere in the public API to opt OUT of that layer. Two
@@ -853,13 +868,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not link -- the operator's own config was correct; the gap was that
   nothing let a caller say "ignore it."
   `ConwayBuilder::from_config_only(path)` and its underlying
-  `conway::config::load_ignoring_xdg` are the new seam: identical to
-  `from_config`/`load`, except the XDG/user layer is never read (the merge
+  `conway::config::load_ignoring_user_config` are the new seam: identical to
+  `from_config`/`load`, except the user layer is never read (the merge
   becomes `default < project < env < CLI`, four sources instead of five).
   `env` is deliberately NOT suppressed by this seam -- `CONWAY_*` variables
   are how CI and container entrypoints hand a specific invocation its own
   credentials, not ambient state left over from someone else's home
-  directory; see `load_ignoring_xdg`'s own doc for the full reasoning.
+  directory; see `load_ignoring_user_config`'s own doc for the full reasoning.
   `from_config`'s documented behavior is unchanged. A structural guard
   (`crates/conway/tests/config_isolation_guard.rs`) now fails the suite if a
   future in-process test starts reading ambient config again.
@@ -1049,7 +1064,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the two methods itself; and every `event` other than `pre_tool_use`
   remains parsed-and-validated only. Guarded end to end rather than at the
   seam -- an integration test drives the real compiled binary through a
-  one-shot with an isolated `XDG_CONFIG_HOME`, and asserts the on-disk
+  one-shot with an isolated `CONWAY_CONFIG_DIR`, and asserts the on-disk
   session transcript's denial names the HOOK ID. That precision is
   load-bearing: with the injection removed the call is still denied, by the
   default allow-list gate (`tool 'bash' is not in the allow list`), so a

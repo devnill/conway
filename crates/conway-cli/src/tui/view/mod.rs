@@ -64,7 +64,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::state::{AppState, AskModal, IntentConfirm, Mode};
+use super::state::{AppState, AskModal, EditingPatternState, IntentConfirm, Mode};
 pub use theme::Theme;
 
 /// The input box's floor height: one row of text plus the two border rows
@@ -152,6 +152,17 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
 
     if let Mode::IntentConfirm(card) = &state.mode {
         draw_intent_confirm(frame, areas.transcript, card, state.modal_scroll, theme);
+    }
+
+    if let Mode::EditingPattern(ed) = &state.mode {
+        draw_editing_pattern(
+            frame,
+            areas.transcript,
+            ed,
+            state.permission_grant_scope,
+            state.modal_scroll,
+            theme,
+        );
     }
 
     // T7: the `/help` keybinding overlay is NOT a `Mode` variant (see
@@ -608,6 +619,90 @@ fn draw_intent_confirm(
         "[enter] confirm  [e] edit  [esc] manual  [PageUp/PageDown] scroll"
     } else {
         "[enter] confirm  [e] edit  [esc] manual"
+    };
+    let footer_lines = vec![Line::from(hint), Line::from("")];
+    let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, frame_areas.footer_area);
+}
+
+/// Footer rows reserved below the field list: the hint line plus a blank
+/// for symmetry (mirrors [`INTENT_CONFIRM_FOOTER_ROWS`]).
+const EDITING_PATTERN_FOOTER_ROWS: u16 = 2;
+
+/// Renders the `[p]` field editor (`Mode::EditingPattern`): a header naming
+/// the tool, then one row per top-level argument field showing its name,
+/// value, and pin state (`[pinned]` or `[wildcard]`), with the selected row
+/// highlighted via `theme.selected`. Mirrors [`draw_intent_confirm`]'s
+/// shape -- a wrapped body over [`modal::draw_modal_frame`] with a fixed
+/// hint footer. The grant scope (cycled by the prompt's `s` key, shared with
+/// this modal) is shown in the footer so the operator sees the breadth of
+/// the grant before pressing `Enter`.
+fn draw_editing_pattern(
+    frame: &mut Frame,
+    transcript_area: Rect,
+    ed: &EditingPatternState,
+    scope: conway::PermissionScope,
+    scroll: u16,
+    theme: &Theme,
+) {
+    let scope_label = match scope {
+        conway::PermissionScope::Session => "session",
+        conway::PermissionScope::Agent => "this agent",
+        conway::PermissionScope::AgentSubtree => "this agent's subtree",
+        _ => "scope",
+    };
+    let mut body_lines = vec![
+        Line::from(Span::styled(
+            format!("tool: {}    grant scope: {scope_label}", ed.tool),
+            theme.emphasized,
+        )),
+        Line::from(""),
+    ];
+    if ed.fields.is_empty() {
+        body_lines.push(Line::from(Span::styled(
+            "(no structured fields -- Enter grants tool:*, the all-wildcard default)",
+            theme.dim,
+        )));
+    } else {
+        for (i, f) in ed.fields.iter().enumerate() {
+            let marker = if f.pinned { "[pinned]" } else { "[wildcard]" };
+            let row = format!(
+                "{} {}: {}   {}",
+                if i == ed.cursor { "▸" } else { " " },
+                f.name,
+                f.value,
+                marker
+            );
+            if i == ed.cursor {
+                body_lines.push(Line::from(Span::styled(row, theme.selected)));
+            } else {
+                body_lines.push(Line::from(row));
+            }
+        }
+    }
+    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
+
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        EDITING_PATTERN_FOOTER_ROWS,
+        modal::DEFAULT_CAP_DENOMINATOR,
+        " PATTERN ",
+        theme.border_accent,
+    );
+
+    let body_max_scroll = modal::body_max_scroll(content_rows, frame_areas.body_area.height);
+    let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
+    frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
+
+    let hint = if body_max_scroll > 0 {
+        "[↑↓/tab] move  [space] pin/wildcard  [enter] grant  [s] scope  [esc] cancel  [PageUp/PageDown] scroll"
+    } else {
+        "[↑↓/tab] move  [space] pin/wildcard  [enter] grant  [s] scope  [esc] cancel"
     };
     let footer_lines = vec![Line::from(hint), Line::from("")];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });

@@ -3,14 +3,20 @@
 //!
 //! This module reads an owning session's log, finds the HEAD (the latest
 //! `ContextPathSet` record), and assembles the default path — either the
-//! whole effective transcript (no head) or `expand(selection)` `++` own
-//! records from `covers_upto` (head exists). The result is a
+//! session's own records, ancestry-walked with a `Fork` parent's inherited
+//! prefix prepended (no head), or `expand(selection)` `++` own records from
+//! `covers_upto` (head exists). The result is a
 //! [`ValidatedPath`] built via [`ValidatedPath::default_path`], which runs
 //! the coherence validator in DECLARE mode (orphans are tolerated and
 //! recorded as `HarnessDrop`, never refused — DESIGN §4.1).
 //!
-//! **Not wired into the runtime in D1-3c.** This module exists in isolation
-//! with its own tests; D1-3d connects it to the agent loop.
+//! **Wired into the runtime as of D1-3d-wire** (`agent_loop.rs`'s per-turn
+//! path assembly calls this, not the transitional `path_from_legacy`
+//! anymore). D1-3c built this module in isolation with its own tests, deferring
+//! the fork-child no-head ancestry-walk fix (see step 3's doc below); D1-3d
+//! wired everything BUT that branch, keeping `path_from_legacy` as the
+//! production constructor meanwhile; this item fixes the branch and flips the
+//! call site.
 //!
 //! # T4 and the prefix expansion
 //!
@@ -51,37 +57,44 @@ use super::builder::InheritedPrefix;
 /// 2. **Find the HEAD** — the latest `ContextPathSet` record by greatest
 ///    `seq`. Absence of any `ContextPathSet` means the default path (DESIGN
 ///    §6).
-/// 3. **If no head**: the default path is the whole effective transcript.
-///    `TranscriptResolver::resolve` returns `Arc<[LogRecord]>`; each content
-///    record is zipped into a `PathNode` with `Head` for the first, `Own` for
-///    the rest.
+/// 3. **If no head**: the default path is the session's own records
+///    (`Head` for the first, `Own` for the rest) preceded, for a FORK child,
+///    by the parent's prefix stamped `Inherited { from: parent }`.
 ///
-///    **Identity scope — root sessions only.** This IS byte-identical to
-///    today's behaviour for a ROOT session (the whole transcript is the
-///    session's own; every `RecordRef { session: root, seq }` is correct).
-///    It is NOT byte-identical for a FORK CHILD without a head, in two ways.
-///    First, **RecordRef mis-attribution**: `build_transcript_nodes` stamps
-///    every record's `RecordRef.session` with the child session, so the
-///    parent's records (present in the child's effective transcript via
-///    `resolve`) get `RecordRef { child, seq }` — a wrong pointer that would
-///    re-resolve to the child's own record at that seq, not the parent's;
-///    today's runtime attributes them to the parent (`InheritedPrefix.records
-///    = resolve_prefix(&parent, at_seq)`, `runtime/root.rs:728-745`). Second,
-///    **Stamp**: the parent's records get `Head`/`Own`, not
-///    `Inherited { from: parent }`. Both follow from one root cause: a
-///    flattened `Arc<[LogRecord]>` carries no per-record session id, so
-///    ancestry cannot be recovered here. Because `NodeStamp` AND `RecordRef`
-///    are hashed into `SelectionKey`, and the stamp selects the segment-mapping
-///    function (`Inherited` → `record_role_and_content` + `Provenance::Inherited`;
-///    `Own` → `own_segment` + a different `Provenance`), this would change
-///    segment provenance, `prefix_key`, and wire bytes for fork children.
-///    **D1-3d must resolve this before wiring** — either synthesize a default
-///    head at fork time, or have this branch walk ancestry per-record via
-///    `resolve_prefix(&parent, origin.at_seq)` to split inherited/own,
-///    attribute `RecordRef`s to their owning sessions, and stamp `Inherited`.
-///    This module is NOT wired into the runtime in D1-3c, so no break today;
-///    the test `fork_child_no_head_pins_divergent_stamps` documents the
-///    current contract so D1-3d inherits it consciously.
+///    **Root / Spawn: own records only.** A root session (`meta.origin ==
+///    None`) or a `Spawn` child (`meta.origin.mode == SubagentMode::Spawn`)
+///    gets no inherited prefix at all — `build_transcript_nodes` runs
+///    directly over the already-read `own_log`, stamping the first content
+///    record `Head` and the rest `Own`, every `RecordRef` attributed to
+///    `session`. This is intentionally the RAW own log, not
+///    `TranscriptResolver::resolve`'s masked read: `LogRecord::ContextMask`'s
+///    own doc states masking affects ONLY fork-prefix resolution, never a
+///    session's own future turns, so using the resolver's masked transcript
+///    here would apply masking to a session's own assembly — a regression
+///    `path_from_legacy` (the production constructor before this item) never
+///    had. `Spawn` gets no inherited prefix because `subagent.rs`'s own fork
+///    path only builds an `InheritedPrefix` for `SubagentMode::Fork` — a
+///    `Spawn` child's `meta.origin` exists for tree reconstructability only
+///    (that module's own doc), never for context assembly.
+///
+///    **Fork: parent's prefix, ancestry-walked.** For a `Fork` child
+///    (`meta.origin == Some(origin)` with `origin.mode ==
+///    SubagentMode::Fork`), the parent's effective transcript up to the fork
+///    point is resolved via `resolver.resolve_prefix(store, &origin.parent,
+///    origin.at_seq)` — the SAME memoised call `subagent.rs`'s live fork path
+///    makes when it first builds `InheritedPrefix` (`resolve_prefix`'s own
+///    doc: this is the one shortcut valid at any later resolve, not just the
+///    instant right after `store.fork`). Every record it returns is stamped
+///    `Inherited { from: origin.parent }` and its `RecordRef` attributed to
+///    `origin.parent` (`build_inherited_nodes`), mirroring
+///    `InheritedPrefix`'s own attribution (a single `from` for the whole
+///    bundle, regardless of a record's TRUE original author at fork depth >=
+///    2 — see `InheritedPrefix`'s own doc). The child's own records
+///    (`own_log`, already read in step 1) are appended after, via the same
+///    `build_transcript_nodes` the root/Spawn branch uses. This is the
+///    ancestry-walk fix D1-3d deferred; `fork_child_no_head_attributes_parent`
+///    (renamed from `fork_child_no_head_pins_divergent_stamps`) now asserts
+///    the CORRECT attribution instead of pinning the old divergence.
 /// 4. **If a head exists**: assembly = `expand(selection)` `++` own records
 ///    from `covers_upto`. The head's `selection` is looked up in the
 ///    `PathStore`, its prefix chain is expanded and resolved, and the prefix
@@ -164,16 +177,28 @@ where
         .meta(session)
         .await
         .map_err(store_err_to_path)?;
-    let immediate_parent = meta.origin.map(|o| o.parent);
+    let immediate_parent = meta.origin.as_ref().map(|o| o.parent);
 
     match head {
         None => {
-            // 3. No head: default path = whole effective transcript.
-            let transcript = resolver
-                .resolve(session_store, session)
-                .await
-                .map_err(store_err_to_path)?;
-            let nodes = build_transcript_nodes(&transcript, session);
+            // 3. No head: own records (`own_log`, already read above), plus
+            // — for a Fork child only — the parent's prefix, ancestry-walked
+            // and stamped `Inherited { from: parent }`.
+            let fork_origin = meta
+                .origin
+                .as_ref()
+                .filter(|o| o.mode == conway_core::log::SubagentMode::Fork);
+            let mut nodes = match fork_origin {
+                Some(origin) => {
+                    let inherited_records = resolver
+                        .resolve_prefix(session_store, &origin.parent, origin.at_seq)
+                        .await
+                        .map_err(store_err_to_path)?;
+                    build_inherited_nodes(&inherited_records, origin.parent)
+                }
+                None => Vec::new(),
+            };
+            nodes.extend(build_transcript_nodes(&own_log, session));
             Ok(ValidatedPath::default_path(nodes))
         }
         Some((selection_key, covers_upto)) => {
@@ -259,25 +284,23 @@ where
     }
 }
 
-/// Build path nodes from the full effective transcript (the "no head" case):
-/// `Head` for the first content record, `Own` for the rest.
+/// Build path nodes from a session's OWN records (the "no head" case's own
+/// portion, whether that is the whole log for a root/Spawn child or the tail
+/// after a Fork child's inherited prefix): `Head` for the first content
+/// record, `Own` for the rest, every `RecordRef` attributed to `session`.
 ///
-/// **Fork-child divergence (D1-3d).** Every record is stamped `Head`/`Own` —
-/// none `Inherited` — AND every record's `RecordRef.session` is set to the
-/// owning (child) session, because a flattened `Arc<[LogRecord]>` carries no
-/// per-record session id, so ancestry cannot be recovered here. For a root
-/// session this is byte-identical to today; for a fork child it is NOT (today
-/// attributes the parent's records to the parent and stamps them `Inherited {
-/// from: parent }`). See `resolve_default_path`'s step-3 doc for the D1-3d
-/// resolution; `fork_child_no_head_pins_divergent_stamps` pins the current
-/// contract.
+/// Takes `&[LogRecord]` (not `Arc<[LogRecord]>`) so it accepts both the
+/// resolver's `Arc<[LogRecord]>` transcript and a plain `Vec<LogRecord>` read
+/// straight off the store (`own_log`) via deref coercion — `resolve_default_path`
+/// calls this with the latter for the "no head" case (see that function's
+/// step-3 doc for why the RAW own log, not a resolver-masked transcript).
 fn build_transcript_nodes(
-    transcript: &Arc<[LogRecord]>,
+    records: &[LogRecord],
     session: &SessionId,
 ) -> Vec<(PathNode, Arc<LogRecord>)> {
-    let mut nodes = Vec::with_capacity(transcript.len());
+    let mut nodes = Vec::with_capacity(records.len());
     let mut first = true;
-    for record in transcript.iter() {
+    for record in records {
         if !is_content_record(record) {
             continue;
         }
@@ -296,6 +319,38 @@ fn build_transcript_nodes(
                 seq,
             },
             stamp,
+            prov: NodeProvenance {
+                selected_by: Selector::DefaultRule,
+                at: Utc::now(),
+            },
+        };
+        nodes.push((node, Arc::new(record.clone())));
+    }
+    nodes
+}
+
+/// Build path nodes for a prefix of records inherited from `from` — the Fork
+/// no-head branch's ancestry-walk fix. Every record is stamped
+/// `NodeStamp::Inherited { from }` and its `RecordRef` is attributed to
+/// `from`, mirroring `InheritedPrefix`'s own attribution convention (a single
+/// `from` for the whole bundle regardless of a record's true original author
+/// at fork depth >= 2 — see `InheritedPrefix`'s own doc and
+/// `path_from_legacy`'s inherited loop, which this reproduces byte-for-byte).
+fn build_inherited_nodes(
+    records: &[LogRecord],
+    from: SessionId,
+) -> Vec<(PathNode, Arc<LogRecord>)> {
+    let mut nodes = Vec::with_capacity(records.len());
+    for record in records {
+        if !is_content_record(record) {
+            continue;
+        }
+        let seq = record
+            .seq()
+            .expect("inherited content records always carry a seq (Header never reaches here)");
+        let node = PathNode {
+            record: RecordRef { session: from, seq },
+            stamp: NodeStamp::Inherited { from },
             prov: NodeProvenance {
                 selected_by: Selector::DefaultRule,
                 at: Utc::now(),
@@ -474,22 +529,23 @@ fn store_err_to_path(e: StoreError) -> PathError {
     }
 }
 
-/// A TRANSITIONAL translation constructor: build a `ResolvedPath` from the
-/// legacy `inherited` prefix + head record + own records shape today's runtime
-/// produces, with correct stamps and attribution.
-///
-/// This exists because `resolve_default_path` (above) has a divergent no-head
-/// fork-child branch — a flattened `Arc<[LogRecord]>` carries no per-record
-/// session id, so it stamps every record `Head`/`Own` and attributes every
-/// `RecordRef.session` to the child, losing the `Inherited{from: parent}`
-/// provenance today's runtime produces (pinned by
-/// `fork_child_no_head_pins_divergent_stamps`). Wiring `resolve_default_path`
-/// naively would break the `context_fork_inherited` golden, so this
-/// translation reproduces today's behaviour byte-for-byte instead, while
-/// `resolve_default_path` stays UNWIRED (latent). The ancestry-walk fix that
-/// makes `resolve_default_path` byte-identical for the no-head fork-child case
-/// is a separate follow-up item; this constructor is the DESIGN §6 migration
-/// bridge.
+/// **KEPT AS A TEST HELPER (D1-3d-wire), no longer the production
+/// constructor.** Builds a `ResolvedPath` synchronously from the legacy
+/// `inherited` prefix + head record + own records shape (a plain in-memory
+/// slice, no store/resolver needed) — a much cheaper fixture than standing
+/// up a `SessionStore` + `TranscriptResolver` + `PathStore` for every test.
+/// `agent_loop.rs`'s per-turn path assembly now calls `resolve_default_path`
+/// (above) instead, once its no-head fork-child branch was fixed to
+/// ancestry-walk via `TranscriptResolver::resolve_prefix` rather than relying
+/// on this function's already-attributed `InheritedPrefix` shape. `grep`
+/// confirms this crate's only remaining callers are test code — this
+/// module's own tests, `context/builder.rs`'s three test modules, and
+/// `conway`'s `tests/skills_e2e.rs` (a cross-crate integration test, which is
+/// why this stays a plain `pub fn` rather than `#[cfg(test)]`: that binary
+/// links `conway-runtime` as an ordinary dependency, not in test-cfg). Not
+/// deleted: rewriting every one of those call sites to build real
+/// store/resolver/path-store fixtures is unrelated churn this item does not
+/// need to take on.
 ///
 /// `own_log` is the FULL own log: `[0]` is the head (a `UserTurn` or
 /// `ForkDirective`), `[1..]` are the own volatile records. The head validation
@@ -950,7 +1006,7 @@ mod tests {
     /// to assert `Inherited { from: parent }` on the parent's record and
     /// `RecordRef { session: parent, .. }`.
     #[tokio::test]
-    async fn fork_child_no_head_pins_divergent_stamps() {
+    async fn fork_child_no_head_attributes_parent() {
         let store = FakeStore::new();
         let path_store = MemPathStore::default();
         let resolver = TranscriptResolver::new(64);
@@ -983,8 +1039,8 @@ mod tests {
             .unwrap();
 
         let nodes: Vec<_> = path.nodes().collect();
-        // Effective transcript = [parent's record, child's record] (2 content
-        // records; Headers filtered by `is_content_record`).
+        // Parent's inherited prefix (1 record) ++ child's own record (1
+        // record); Headers filtered by `is_content_record`.
         assert_eq!(nodes.len(), 2);
         // The first is the parent's record (text "parent")...
         let parent_text = match &**nodes[0].1 {
@@ -992,26 +1048,82 @@ mod tests {
             other => panic!("expected parent UserTurn, got {other:?}"),
         };
         assert_eq!(parent_text, "parent");
-        // ...but it is stamped `Head` (NOT `Inherited { from: parent }`) ...
-        assert_eq!(nodes[0].0.stamp, NodeStamp::Head);
-        // ... and mis-attributed to the CHILD (`RecordRef { child, 0 }`, not
-        // `{ parent, 0 }`) — the D1-3d fix point.
+        // ...stamped `Inherited { from: parent }` (the D1-3d-wire fix: no
+        // longer `Head`)...
+        assert_eq!(nodes[0].0.stamp, NodeStamp::Inherited { from: parent });
+        // ...and correctly attributed to the PARENT (`RecordRef { parent, 0
+        // }`, not `{ child, 0 }`).
         assert_eq!(
             nodes[0].0.record,
             RecordRef {
-                session: child,
+                session: parent,
                 seq: LogSeq(0)
             }
         );
-        // The second is the child's own record, stamped `Own`.
+        // The second is the child's own record, stamped `Head` (the child's
+        // OWN first content record — the parent's record is no longer
+        // masquerading as this session's head) and attributed to the child.
         let child_text = match &**nodes[1].1 {
             LogRecord::UserTurn { text, .. } => text.as_str(),
             other => panic!("expected child UserTurn, got {other:?}"),
         };
         assert_eq!(child_text, "child turn");
-        assert_eq!(nodes[1].0.stamp, NodeStamp::Own);
+        assert_eq!(nodes[1].0.stamp, NodeStamp::Head);
         assert_eq!(
             nodes[1].0.record,
+            RecordRef {
+                session: child,
+                seq: LogSeq(0)
+            }
+        );
+    }
+
+    /// A `Spawn` child with no head gets NO inherited prefix at all, unlike a
+    /// `Fork` child immediately above — `subagent.rs`'s own fork path only
+    /// builds an `InheritedPrefix` for `SubagentMode::Fork`; a `Spawn`
+    /// child's `meta.origin` is recorded for tree reconstructability only
+    /// and must never leak into context assembly.
+    #[tokio::test]
+    async fn spawn_child_no_head_excludes_parent_prefix() {
+        let store = FakeStore::new();
+        let path_store = MemPathStore::default();
+        let resolver = TranscriptResolver::new(64);
+
+        let parent = SessionId::new();
+        let child = SessionId::new();
+        make_session(
+            &store,
+            make_meta(parent, None),
+            vec![user_turn(0, "parent")],
+        )
+        .await;
+        let origin = conway_core::log::ForkOrigin {
+            parent,
+            at_seq: LogSeq(1),
+            mode: conway_core::log::SubagentMode::Spawn,
+        };
+        make_session(
+            &store,
+            make_meta(child, Some(origin)),
+            vec![user_turn(0, "child turn")],
+        )
+        .await;
+
+        let path = resolve_default_path(&resolver, &store, &path_store, &child)
+            .await
+            .unwrap();
+
+        let nodes: Vec<_> = path.nodes().collect();
+        // Only the child's own record — no parent prefix at all.
+        assert_eq!(nodes.len(), 1);
+        let child_text = match &**nodes[0].1 {
+            LogRecord::UserTurn { text, .. } => text.as_str(),
+            other => panic!("expected child UserTurn, got {other:?}"),
+        };
+        assert_eq!(child_text, "child turn");
+        assert_eq!(nodes[0].0.stamp, NodeStamp::Head);
+        assert_eq!(
+            nodes[0].0.record,
             RecordRef {
                 session: child,
                 seq: LogSeq(0)

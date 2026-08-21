@@ -357,6 +357,7 @@ fn build_runtime_with_store() -> (Arc<Runtime>, Arc<FakeStore>) {
 
     let rt = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,

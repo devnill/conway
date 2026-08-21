@@ -110,16 +110,38 @@ pub fn check_admission(
 /// rather than having to infer it from whether `admit` happens to be
 /// overridden.
 ///
-/// **Scope of that visibility, stated honestly: this is visible to CODE, not
-/// yet to an operator.** Nothing in the shipped system reads
-/// `token_fidelity()` today -- not `ProbeReport`, not the routing engine, not
-/// any CLI output; the only callers are tests. A declaration no production
-/// path consumes is the "capability with nothing behind it" shape this
-/// project keeps finding, and pretending otherwise in this doc would be the
-/// same defect one layer up. Surfacing it where an operator can actually see
-/// it (a probe field, or `conway routes`, which today explains routing
-/// decisions but never reaches a backend instance) is filed as its own item
-/// rather than asserted here. Declaring
+/// **Scope of that visibility, resolved (board item
+/// 01M0ASX466G3PW3SJJS3KGNS55): visible to an operator now, not only to
+/// code.** `conway_core::ports::CapabilityIndex::from_backends` -- already
+/// the production path that reads `Backend::capabilities()` once per
+/// constructed backend (`ConwayBuilder::build`'s "CapabilityIndex" step) --
+/// reads this method too, once per distinct backend id, and carries the
+/// result alongside the capability index it already builds.
+/// `conway-plugin-routing`'s `RoutingExplain` projects
+/// `CapabilityIndex::token_fidelity` onto every `ExplainEntry::
+/// token_fidelity`, and `conway routes explain` prints it for each
+/// candidate (`(breaker: ..., tokens: heuristic)` in text, a
+/// `"token_fidelity"` key in `--json`) -- so an operator can ask "how much
+/// should I trust this backend's token estimate?" and get a real, named
+/// answer without reading source. `conway_core::routing::MinimalRouter`'s
+/// config-only fallback reports `None` (rendered `"unknown"`) rather than
+/// guessing, honestly, since it holds no `Arc<dyn Backend>` at all.
+///
+/// `ProbeReport` was considered and rejected as the surface: it answers "is
+/// this backend alive right now" (a network round trip's result), not "how
+/// trustworthy is this backend's own arithmetic" (a declared, static
+/// property) -- two different questions with no reason to share one
+/// mechanism. It is also constructed at roughly a dozen call sites, mostly
+/// test doubles, across three crates, and is itself a wire-serialized
+/// shape -- widening it would have meant weighing codec/golden compatibility
+/// for no benefit `CapabilityIndex` does not already have. `CapabilityIndex`
+/// was chosen because it was already the exact, existing channel wired to a
+/// live `Backend` instance for a declared (not probed) per-backend/per-model
+/// property, at a single call site
+/// (`from_backends`) -- extending it cost one new field (keyed by
+/// `BackendId` alone, since fidelity is a `Backend`-level declaration, not
+/// per-model like `Capabilities`) and one new accessor, not new plumbing.
+/// Declaring
 /// [`Self::Heuristic`] is not a lesser answer than declaring [`Self::Exact`]
 /// -- an honest heuristic beats a fabricated exact count -- but it must be a
 /// DECLARED choice, not an inherited default nobody looked at.
@@ -394,7 +416,7 @@ pub struct BackendBuildContext {
     /// (e.g. `conway_plugin_backends`'s `"openai-compat"`) may resolve its
     /// own `dialect` string against, in precedence order (project-scoped
     /// first, then global) -- the exact list `crate::config::discovery::
-    /// provider_profile_file_paths` (the facade's own XDG/project-precedence
+    /// provider_profile_file_paths` (the facade's own user/project-precedence
     /// scanner) already resolves once per `build()` call and hands to EVERY
     /// [`BackendBuildContext`] unconditionally, the same way [`Self::models`]
     /// is handed to every kind whether or not it reads `models.json`

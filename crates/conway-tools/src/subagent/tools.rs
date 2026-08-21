@@ -333,6 +333,11 @@ async fn start_and_maybe_await(
         prompt: req.prompt,
         agent_def: req.agent_def.map(AgentDefRef),
         role: req.role.map(RoleAlias::new),
+        // The model-invoked `conway_fork`/`conway_spawn` tools have no
+        // model-pin argument -- pinning a specific model is an
+        // operator-only surface (`ForkSpec::model`, the TUI's `/model`),
+        // never something the model itself can invoke on its own behalf.
+        pin: None,
         tools: req.tools.map(ToolSelector::Only),
         budget: resolve_budget(req.budget, &ctx.config)?,
         result_contract,

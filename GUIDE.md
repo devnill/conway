@@ -267,13 +267,13 @@ distillate. A first-party compaction plugin is named in
 [`PHILOSOPHY.md`](PHILOSOPHY.md) as a thing you would install, and **does not
 exist yet**.
 
-**There is no memory, skills, or MCP support**, for the same reason and with the
-same status: wanted, named, not built.
-
-**Installing a plugin means building a binary.** There is no runtime plugin
-host — plugins are compiled in, and `plugins.install` selects among the ones
-your binary already links. Adding your own means adding a crate to the workspace
-and rebuilding. A subprocess-based host is planned.
+**Installing a new backend still means building a binary.** A backend needs
+full in-process access to `conway-core`'s types, so that rung stays Rust,
+compiled in, with `plugins.default_backends` selecting among the ones your
+binary links. A new *tool* is no longer the same story: an external program
+in any language can register one over a wire protocol, without conway's
+source or a rebuild — see [`docs/plugins/subprocess-plugins.md`](docs/plugins/subprocess-plugins.md)
+(conway's own protocol) and [`docs/plugins/mcp.md`](docs/plugins/mcp.md) (MCP).
 
 **conway does not sandbox.** The harness's responsibility ends at the permission
 gate. Stronger isolation composes from outside — a container, a worktree per
@@ -311,6 +311,8 @@ being used.
   agent may act on
 - [`plugins/authoring.md`](docs/plugins/authoring.md) — writing your first hook, then
   your first plugin
+- [`plugins/skills.md`](docs/plugins/skills.md), [`plugins/memory.md`](docs/plugins/memory.md) —
+  the two first-party context plugins, off by default, on when you install them
 - [`permissions.md`](docs/permissions.md) — the full permission model and its stated
   limits
 - [`PHILOSOPHY.md`](PHILOSOPHY.md) — how these primitives are meant to be

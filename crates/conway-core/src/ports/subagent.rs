@@ -357,6 +357,7 @@ fn translate(err: RuntimeError) -> SubagentError {
         | RuntimeError::Routing(_)
         | RuntimeError::Store(_)
         | RuntimeError::Tool(_)
+        | RuntimeError::Path(_)
         | RuntimeError::ForkContextOverflow { .. }
         // `PromptDenied` is not reachable through this port today: a subagent
         // is started via `SubagentHost::start`, which submits no user prompt,

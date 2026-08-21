@@ -69,7 +69,7 @@ fn user_message_text(request: &serde_json::Value) -> String {
 }
 
 /// Spawns the real `conway` binary (via `common::command`, so `--config`/
-/// `XDG_CONFIG_HOME`/cwd isolation all still apply) with a REAL OS pipe
+/// `CONWAY_CONFIG_DIR`/cwd isolation all still apply) with a REAL OS pipe
 /// attached to stdin, writes `stdin_bytes` into it on a background thread,
 /// and waits up to `bound` for the process to exit -- draining stdout/
 /// stderr concurrently on their own threads throughout, so a payload

@@ -501,7 +501,16 @@ impl SubagentHost for Runtime {
             .tools
             .clone()
             .or_else(|| agent_def.map(|d| d.tools.clone()));
-        let pin = agent_def.and_then(|d| d.model.clone());
+        // `spec.pin` (a caller-supplied override, e.g. `ForkSpec::model`)
+        // takes precedence over the (possibly fork-inherited) agent_def's
+        // own configured model -- the same "call-site override wins" shape
+        // `tools`/`role` just above already use. `None` preserves the
+        // pre-existing behavior exactly: the pin comes solely from
+        // `agent_def.model`.
+        let pin = spec
+            .pin
+            .clone()
+            .or_else(|| agent_def.and_then(|d| d.model.clone()));
         // Precedence: the explicit call-site contract (`spec.result_contract`
         // -- the model's `conway_fork`/`conway_spawn` `result_contract` arg, or an
         // embedder's `ForkSpec`/`SpawnSpec::result_contract` builder) wins

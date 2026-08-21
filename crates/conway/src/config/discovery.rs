@@ -1,4 +1,4 @@
-//! Filesystem/XDG discovery of config files. No parsing, no env-var
+//! Filesystem/user config discovery of config files. No parsing, no env-var
 //! `CONWAY_*` mapping (that lives in `merge.rs`) — just "which paths exist."
 
 use std::collections::HashMap;
@@ -20,19 +20,31 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// The user-scoped config path for `conway`: `$XDG_CONFIG_HOME/conway/settings.json`
-/// when `XDG_CONFIG_HOME` is set (and non-empty) in `env`, otherwise the
-/// home-directory default `~/.conway/settings.json` — mirroring the
-/// project-scoped `.conway/settings.json` convention so a user's global config
-/// lives in `.conway/` under `$HOME` just as a project's does under its root.
+/// The user-scoped config path for `conway`: `~/.conway/settings.json`,
+/// or `$CONWAY_CONFIG_DIR/settings.json` when `CONWAY_CONFIG_DIR` is set (and
+/// non-empty) in `env`.
+///
+/// **`~/.conway/` unconditionally, and no `CONWAY_CONFIG_DIR` branch** (INTENT.md
+/// §7b, "familiarity is the on-ramp"). Two reasons, and they agree: a
+/// dot-directory in the home folder is immediately apparent to someone who does
+/// not already know a desktop standard, and it matches the PROJECT layer, which
+/// is already `.conway/` (`discover`, above). One story — `.conway/` here,
+/// `~/.conway/` there.
+///
+/// `CONWAY_CONFIG_DIR` names conway's config directory *directly*, so
+/// `settings.json` sits at its root rather than under a `conway/` subdirectory
+/// the way the user config convention required. It mirrors `CLAUDE_CONFIG_DIR` so a
+/// switcher recognises it, and it is what every test uses to stay hermetic —
+/// see `crates/conway/tests/config_isolation_guard.rs` for the ambient-read bug
+/// that isolation exists to prevent.
 ///
 /// Takes an explicit `env` map (rather than reading `std::env` directly) so
 /// callers can inject it via `LoadOptions.env` and keep precedence tests
 /// parallel-safe.
-pub fn xdg_config_path(env: &HashMap<String, String>) -> Option<PathBuf> {
-    if let Some(xdg) = env.get("XDG_CONFIG_HOME") {
-        if !xdg.is_empty() {
-            return Some(Path::new(xdg).join("conway").join("settings.json"));
+pub fn user_config_path(env: &HashMap<String, String>) -> Option<PathBuf> {
+    if let Some(dir) = env.get("CONWAY_CONFIG_DIR") {
+        if !dir.is_empty() {
+            return Some(Path::new(dir).join("settings.json"));
         }
     }
     directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".conway").join("settings.json"))
@@ -40,19 +52,19 @@ pub fn xdg_config_path(env: &HashMap<String, String>) -> Option<PathBuf> {
 
 /// The TUI's persisted input-history file path (T8): alongside the
 /// user-scoped global config -- i.e. the same directory
-/// [`xdg_config_path`] resolves `settings.json` into, just with the
+/// [`user_config_path`] resolves `settings.json` into, just with the
 /// filename `history` instead. Deliberately NOT the project-scoped
 /// `.conway/` directory `discover` looks in: history follows the user
 /// across every project, not the checkout. `conway-cli` has no direct
 /// `directories` dependency of its own (no new dependencies), so it
 /// reaches this resolution through the facade the same way it already
-/// reaches `xdg_config_path`'s directory choice.
+/// reaches `user_config_path`'s directory choice.
 pub fn history_file_path(env: &HashMap<String, String>) -> Option<PathBuf> {
-    xdg_config_path(env).and_then(|settings| settings.parent().map(|dir| dir.join("history")))
+    user_config_path(env).and_then(|settings| settings.parent().map(|dir| dir.join("history")))
 }
 
 /// V2: the persisted permission-rules file, resolved project-first then
-/// global — the same precedence `discover`/`xdg_config_path` already
+/// global — the same precedence `discover`/`user_config_path` already
 /// establish for `settings.json`.
 ///
 /// Project-first is deliberate: a grant like "allow `cargo test`" is
@@ -75,7 +87,7 @@ pub fn permission_file_paths(cwd: &std::path::Path, env: &HashMap<String, String
     }
     // Global scope, alongside the resolved global settings.
     if let Some(global) =
-        xdg_config_path(env).and_then(|s| s.parent().map(|d| d.join("permissions.json")))
+        user_config_path(env).and_then(|s| s.parent().map(|d| d.join("permissions.json")))
     {
         if !paths.contains(&global) {
             paths.push(global);
@@ -116,7 +128,7 @@ pub fn provider_profile_file_paths(
         paths.push(cwd.join(".conway").join("profiles.toml"));
     }
     if let Some(global) =
-        xdg_config_path(env).and_then(|s| s.parent().map(|d| d.join("profiles.toml")))
+        user_config_path(env).and_then(|s| s.parent().map(|d| d.join("profiles.toml")))
     {
         if !paths.contains(&global) {
             paths.push(global);
@@ -163,10 +175,10 @@ mod tests {
         fs::write(conf_dir.join("settings.json"), "").unwrap();
 
         let mut env = HashMap::new();
-        env.insert("XDG_CONFIG_HOME".to_string(), "/custom/xdg".to_string());
+        env.insert("CONWAY_CONFIG_DIR".to_string(), "/custom/config_dir".to_string());
         let paths = provider_profile_file_paths(&tmp, &env);
         assert_eq!(paths[0], conf_dir.join("profiles.toml"));
-        assert_eq!(paths[1], PathBuf::from("/custom/xdg/conway/profiles.toml"));
+        assert_eq!(paths[1], PathBuf::from("/custom/config_dir/profiles.toml"));
     }
 
     #[test]
@@ -180,27 +192,27 @@ mod tests {
     }
 
     #[test]
-    fn xdg_config_path_honors_env_var() {
+    fn user_config_path_honors_env_var() {
         let mut env = HashMap::new();
-        env.insert("XDG_CONFIG_HOME".to_string(), "/custom/xdg".to_string());
-        let path = xdg_config_path(&env).unwrap();
-        assert_eq!(path, PathBuf::from("/custom/xdg/conway/settings.json"));
+        env.insert("CONWAY_CONFIG_DIR".to_string(), "/custom/config_dir".to_string());
+        let path = user_config_path(&env).unwrap();
+        assert_eq!(path, PathBuf::from("/custom/config_dir/settings.json"));
     }
 
     #[test]
     fn history_file_path_sits_alongside_the_resolved_settings_json() {
         let mut env = HashMap::new();
-        env.insert("XDG_CONFIG_HOME".to_string(), "/custom/xdg".to_string());
+        env.insert("CONWAY_CONFIG_DIR".to_string(), "/custom/config_dir".to_string());
         let history = history_file_path(&env).unwrap();
-        assert_eq!(history, PathBuf::from("/custom/xdg/conway/history"));
+        assert_eq!(history, PathBuf::from("/custom/config_dir/history"));
     }
 
     #[test]
-    fn xdg_config_path_falls_back_to_home_dot_conway_when_unset() {
+    fn user_config_path_falls_back_to_home_dot_conway_when_unset() {
         let env = HashMap::new();
         // Home-directory default `~/.conway/settings.json` — just assert it
         // resolves to *something* ending in the expected suffix.
-        let path = xdg_config_path(&env);
+        let path = user_config_path(&env);
         if let Some(path) = path {
             assert!(path.ends_with(".conway/settings.json"));
         }

@@ -193,6 +193,19 @@ pub struct ResumeSpec {
     pub session: SessionId,
     pub agent_def: Option<AgentDefRef>,
     pub role: Option<RoleAlias>,
+    /// Pins the resumed agent's model outright, overriding the
+    /// (possibly-persisted-`agent_def`-sourced) chain it would otherwise
+    /// resolve -- the `ResumeSpec` counterpart of [`RootSpec::model`].
+    /// `None` (every caller before this field existed, and `Conway::resume`'s
+    /// own caller today) preserves the pre-existing behavior exactly: the
+    /// resumed agent's pin comes solely from its resolved `agent_def.model`.
+    /// `Some` is what `conway::Conway::resume_with` (`--model`/
+    /// `--role-override` combined with `--resume`, INTENT.md §5c) threads
+    /// through when an operator names a model at resume time; a pin the
+    /// session's persisted transcript does not fit surfaces as the same loud
+    /// `RoutingError::ContextTooLarge` refusal an ordinary turn's admission
+    /// gate already gives, never a silent fallback or trim.
+    pub model: Option<ModelRef>,
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
     /// Overrides the persisted `SessionMeta::cwd`; `None` reuses it.
@@ -796,7 +809,14 @@ impl Runtime {
             .tools
             .clone()
             .or_else(|| agent_def.map(|d| d.tools.clone()));
-        let pin = agent_def.and_then(|d| d.model.clone());
+        // `spec.model` (a caller-supplied pin, e.g. `--model` combined with
+        // `--resume`) takes precedence over the `agent_def`'s own configured
+        // model -- mirroring `start_root`'s identical precedence for
+        // `spec.model` immediately above in this same file.
+        let pin = spec
+            .model
+            .clone()
+            .or_else(|| agent_def.and_then(|d| d.model.clone()));
         let cwd = spec.cwd.clone().unwrap_or_else(|| meta.cwd.clone());
 
         // (S3) `ResumeSpec` carries no `root` override field at all -- this

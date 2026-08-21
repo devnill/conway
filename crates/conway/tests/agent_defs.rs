@@ -149,6 +149,7 @@ mod result_contract_via_def {
 
         let runtime = Runtime::new(RuntimeDeps {
             store: store.clone(),
+            path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
             router,
             health,
             backends,

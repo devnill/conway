@@ -199,6 +199,7 @@ fn build_runtime_with_backend(backend: Arc<dyn Backend>, bus: Arc<EventBus>) -> 
 
     Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
@@ -238,6 +239,7 @@ fn ask_fork_spec(prompt: &str) -> SubagentSpec {
         prompt: prompt.to_string(),
         agent_def: None,
         role: None,
+        pin: None,
         tools: None,
         budget: Budget::default(),
         result_contract: None,
@@ -644,6 +646,7 @@ fn build_runtime_with_backend_and_defs(
 
     Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,

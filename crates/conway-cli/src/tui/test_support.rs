@@ -101,6 +101,7 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         // unapplied, so a test asserts on the ACTION -- the install/persist
         // half is covered where the facade lives.
         Action::GrantPermissionPattern(_, _)
+        | Action::GrantPermissionRule(_, _)
         | Action::CyclePermissionMode
         | Action::RevokePermissionGrants
         | Action::RevokePermissionPattern(_, _)

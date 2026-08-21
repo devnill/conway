@@ -117,16 +117,16 @@
 //! - **Process-group kill on drop**: when [`PersistentSession`] is
 //!   dropped, the process group is killed (best-effort SIGKILL on the
 //!   group, synchronously -- `Drop` cannot `await` the graceful
-//!   SIGTERM-then-SIGKILL `unix::kill_group` uses on the timeout path).
-//!   `kill_on_drop(true)` is ALSO set on the `Command` as a
+//!   SIGTERM-then-SIGKILL `conway::plugin::kill_group` uses on the timeout
+//!   path). `kill_on_drop(true)` is ALSO set on the `Command` as a
 //!   belt-and-suspenders so the leader dies even if our `Drop`'s
 //!   `kill(-pgid)` is beaten to it. A long-lived child is never orphaned.
-//! - **`kill_group` is DUPLICATED, not shared** -- `crate::unix::kill_group`
-//!   (itself already a documented duplicate of
-//!   `conway_tools::process::unix::kill_group`) is reused for the
-//!   graceful timeout kill; the synchronous `Drop`-time SIGKILL uses
-//!   `nix::sys::signal::kill` directly. `conway_tools::process`'s
-//!   visibility is NOT widened (out of this item's owned paths).
+//! - **`kill_group` is SHARED, not duplicated (board item
+//!   `01M0EKVR1BEXXS75NV2JC4HZZ9`)** -- `conway::plugin::kill_group` (the
+//!   ONE implementation every crate that needs this now calls, re-exported
+//!   from `conway_tools::process::unix::kill_group`) is reused for the
+//!   graceful timeout kill; the synchronous `Drop`-time SIGKILL still uses
+//!   `nix::sys::signal::kill` directly (`Drop` cannot `await`).
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -139,9 +139,8 @@ use tokio::process::{Child, ChildStdin};
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 use tokio::time::timeout;
 
-use conway::plugin::{Event, EventSink, EventSinkHandle, ToolError};
+use conway::plugin::{kill_group, Event, EventSink, EventSinkHandle, ToolError};
 
-use crate::unix::kill_group;
 use crate::wire::{
     build_observe_notification, parse_persistent_initialize_response,
     parse_persistent_observe_response, parse_persistent_permission_policy_response,
@@ -1583,8 +1582,8 @@ impl PersistentSession {
     }
 
     /// Kills the process group with the graceful SIGTERM-then-SIGKILL
-    /// sequence (reusing `crate::unix::kill_group`, the documented
-    /// duplicate of `conway_tools::process::unix::kill_group`) and marks
+    /// sequence (`conway::plugin::kill_group`, the one shared
+    /// implementation -- board item `01M0EKVR1BEXXS75NV2JC4HZZ9`) and marks
     /// the session dead. Used on the per-call timeout path. `kill_group`
     /// reaps the child itself (it `wait`s for exit under `TERM_GRACE`, then
     /// again after the SIGKILL fallback), so no separate reap is needed here.

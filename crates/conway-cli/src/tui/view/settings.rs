@@ -9,7 +9,7 @@
 //! Conway's config load (`conway::config::merge::load`) is a five-source
 //! layered read with no writer anywhere outside test fixtures -- persisting
 //! a runtime toggle would mean inventing one, and answering "which LAYER
-//! gets written" (default/XDG/project/env/CLI) has no good default answer.
+//! gets written" (default/user/project/env/CLI) has no good default answer.
 //! That question is out of THIS item's scope by design. This menu changes
 //! `AppState` at runtime only, exactly the way the two slash commands it
 //! replaces (`/thinking`, `/timestamps` -- both REMOVED, not aliased, see

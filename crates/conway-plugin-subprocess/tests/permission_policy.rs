@@ -44,11 +44,12 @@ use conway_plugin_subprocess::{SubprocessPlugin, SubprocessPluginError, Subproce
 #[tokio::test]
 async fn a_matching_policy_exchange_stores_and_surfaces_the_declared_rules() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "policy_ok.py",
         common::PERSISTENT_POLICY_OK_PLUGIN,
-    );
+    )
+    .await;
     assert_eq!(spec.transport, SubprocessTransport::Persistent);
 
     let plugin = SubprocessPlugin::discover(spec)
@@ -98,11 +99,12 @@ async fn a_matching_policy_exchange_stores_and_surfaces_the_declared_rules() {
 #[tokio::test]
 async fn an_unsupported_permission_policy_version_refuses_to_load() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "policy_ver.py",
         common::PERSISTENT_POLICY_VERSION_MISMATCH_PLUGIN,
-    );
+    )
+    .await;
 
     let err = SubprocessPlugin::discover(spec)
         .await
@@ -145,11 +147,12 @@ async fn an_unsupported_permission_policy_version_refuses_to_load() {
 #[tokio::test]
 async fn a_malformed_policy_answer_fails_closed() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "policy_bad.py",
         common::PERSISTENT_POLICY_MALFORMED_PLUGIN,
-    );
+    )
+    .await;
 
     let err = SubprocessPlugin::discover(spec)
         .await
@@ -172,11 +175,12 @@ async fn a_malformed_policy_answer_fails_closed() {
 #[tokio::test]
 async fn a_refused_policy_answer_surfaces_as_handshake_refused() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "policy_no.py",
         common::PERSISTENT_POLICY_REFUSED_PLUGIN,
-    );
+    )
+    .await;
 
     let err = SubprocessPlugin::discover(spec)
         .await
@@ -207,11 +211,12 @@ async fn a_refused_policy_answer_surfaces_as_handshake_refused() {
 #[tokio::test]
 async fn a_plugin_not_declaring_the_point_loads_normally_with_no_policy() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "handshake_ok.py",
         common::PERSISTENT_HANDSHAKE_OK_PLUGIN,
-    );
+    )
+    .await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await

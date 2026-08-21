@@ -84,6 +84,14 @@ pub enum Mode {
     /// the surface clears -- the three modal-bearing surfaces
     /// (`AwaitingPermission`, `AskModal`, `IntentConfirm`) never stack.
     IntentConfirm(IntentConfirm),
+    /// The `[p]` field editor (opened from `AwaitingPermission` for a
+    /// `RenderKind::Structured` tool). While this is the mode, the input
+    /// line is inert and `input.rs::handle_editing_pattern_key` swallows
+    /// every key except the field-navigation/toggle/grant/cancel keys and
+    /// the quit keys. It does not stack: it opens only from
+    /// `AwaitingPermission`, and cancel returns there, submit restores
+    /// there (the dispatch arm then resolves the prompt).
+    EditingPattern(EditingPatternState),
 }
 
 impl std::fmt::Debug for Mode {
@@ -96,6 +104,9 @@ impl std::fmt::Debug for Mode {
             Mode::AskModal(m) => write!(f, "AskModal(child={})", m.child),
             Mode::IntentConfirm(ic) => {
                 write!(f, "IntentConfirm(recipe={:?})", ic.intent.recipe)
+            }
+            Mode::EditingPattern(ed) => {
+                write!(f, "EditingPattern(tool={})", ed.tool)
             }
         }
     }

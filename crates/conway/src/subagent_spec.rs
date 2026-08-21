@@ -18,7 +18,7 @@
 //! delegation itself.
 
 use conway_core::agent::{AgentDefRef, Budget, SubagentMode, SubagentSpec, ToolSelector};
-use conway_core::ids::RoleAlias;
+use conway_core::ids::{ModelRef, RoleAlias};
 use conway_core::log::AskOrigin;
 
 /// A request to fork a live agent: the child inherits the forker's entire
@@ -55,6 +55,19 @@ pub struct ForkSpec {
     /// carries along -- see [`ForkSpec::result_contract`]'s own doc.
     pub agent_def: Option<String>,
     pub role: Option<RoleAlias>,
+    /// Pins the child's model outright, overriding whatever it would
+    /// otherwise resolve -- the mechanism `conway-cli`'s `/model
+    /// <backend/model>` builds on (INTENT.md §5c: "changing model
+    /// mid-session is ordinary, and stays cheap"). `None` (the
+    /// [`ForkSpec::new`] default) preserves the pre-existing fork-only
+    /// inheritance fill unchanged: the child's pin comes from its
+    /// (possibly-inherited) `agent_def.model`, exactly as before this field
+    /// existed. `Some` wins outright over that fill -- see
+    /// [`conway_core::agent::SubagentSpec::pin`]'s own doc for the full
+    /// precedence and for why a pin the inherited context does not fit is a
+    /// loud refusal, never a silent fallback or trim. Set via
+    /// [`ForkSpec::model`].
+    pub model: Option<ModelRef>,
     /// Selects which of the registered tools are announced to the child,
     /// replacing whatever it would otherwise inherit (an `agent_def`'s own
     /// selector) rather than narrowing it -- this can name a tool the forker's own
@@ -131,6 +144,7 @@ impl ForkSpec {
             directive: directive.into(),
             agent_def: None,
             role: None,
+            model: None,
             tools: None,
             budget: Budget::default(),
             result_contract: None,
@@ -148,6 +162,12 @@ impl ForkSpec {
 
     pub fn role(mut self, role: RoleAlias) -> Self {
         self.role = Some(role);
+        self
+    }
+
+    /// See [`ForkSpec::model`]'s own field doc.
+    pub fn model(mut self, model: ModelRef) -> Self {
+        self.model = Some(model);
         self
     }
 
@@ -198,6 +218,8 @@ impl From<ForkSpec> for SubagentSpec {
             prompt: spec.directive,
             agent_def: spec.agent_def.map(AgentDefRef),
             role: spec.role,
+            // See [`ForkSpec::model`]'s own doc.
+            pin: spec.model,
             tools: spec.tools,
             budget: spec.budget,
             result_contract: spec.result_contract,
@@ -403,6 +425,9 @@ impl From<SpawnSpec> for SubagentSpec {
             prompt: spec.prompt,
             agent_def: spec.agent_def.map(AgentDefRef),
             role: spec.role,
+            // `SpawnSpec` has no `model` field -- see [`ForkSpec::model`]'s
+            // own doc for why the override is scoped to fork only for now.
+            pin: None,
             tools: spec.tools,
             budget: spec.budget,
             result_contract: spec.result_contract,
@@ -433,9 +458,11 @@ mod tests {
             max_tokens: Some(100),
             max_tool_calls: Some(3),
         };
+        let pin: ModelRef = "anthropic/claude-haiku".parse().unwrap();
         let spec = ForkSpec::new("do the thing")
             .agent_def("reviewer")
             .role(RoleAlias::new("planner"))
+            .model(pin.clone())
             .tools(ToolSelector::Only(vec!["read".into()]))
             .budget(budget.clone());
 
@@ -444,6 +471,11 @@ mod tests {
         assert_eq!(converted.prompt, "do the thing");
         assert_eq!(converted.agent_def, Some(AgentDefRef("reviewer".into())));
         assert_eq!(converted.role, Some(RoleAlias::new("planner")));
+        assert_eq!(
+            converted.pin,
+            Some(pin),
+            "ForkSpec::model maps to SubagentSpec::pin"
+        );
         assert_eq!(
             converted.tools,
             Some(ToolSelector::Only(vec!["read".into()]))
@@ -466,6 +498,28 @@ mod tests {
             converted.ask_origin, None,
             "ask_origin defaults None when not set via the builder"
         );
+    }
+
+    /// `ForkSpec::model` (INTENT.md §5c: "changing model mid-session is
+    /// ordinary"): unset by default, preserving the pre-existing fork-only
+    /// inheritance fill unchanged (the child's pin comes solely from its
+    /// possibly-inherited `agent_def.model` -- see `SubagentSpec::pin`'s own
+    /// doc); set, it maps straight through as an override.
+    #[test]
+    fn fork_spec_default_model_is_none_and_the_builder_maps_through() {
+        let default_spec = ForkSpec::new("x");
+        assert_eq!(default_spec.model, None);
+        let default_converted: SubagentSpec = default_spec.into();
+        assert_eq!(
+            default_converted.pin, None,
+            "no ForkSpec::model set -> SubagentSpec::pin stays None"
+        );
+
+        let pin: ModelRef = "ollama_cloud/glm-5.2".parse().unwrap();
+        let pinned = ForkSpec::new("x").model(pin.clone());
+        assert_eq!(pinned.model, Some(pin.clone()));
+        let converted: SubagentSpec = pinned.into();
+        assert_eq!(converted.pin, Some(pin));
     }
 
     #[test]

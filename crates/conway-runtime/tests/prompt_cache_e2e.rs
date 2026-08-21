@@ -115,6 +115,7 @@ fn build_runtime(turns: usize) -> (Arc<Runtime>, Arc<ScriptedBackend>) {
 
     let runtime = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
@@ -349,6 +350,7 @@ async fn gp06_stripping_cache_hint_makes_a_cached_and_uncached_route_identical()
     );
     let uncached_runtime = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,

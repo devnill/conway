@@ -9,7 +9,7 @@
 //! (`crates/conway-thirdparty-backend/src/lib.rs`'s own module doc), the
 //! session store is the real `conway_session::JsonlSessionStore` writing to
 //! an isolated temp directory (local disk only, never a socket), and
-//! `build_conway`'s `XDG_CONFIG_HOME` isolation keeps a real
+//! `build_conway`'s `CONWAY_CONFIG_DIR` isolation keeps a real
 //! `~/.conway/settings.json` on the machine running this out of the merge
 //! entirely (same module's doc comment).
 //!

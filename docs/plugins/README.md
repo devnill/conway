@@ -20,6 +20,9 @@ a summary pointing somewhere else.
 | [`compatibility.md`](compatibility.md) — compatibility promises | What does conway promise not to break across versions — for config files, for the not-yet-built wire protocol, for the facade itself? | You're building against this set as a normative reference and need to know what's safe to depend on. |
 | [`authoring.md`](authoring.md) — your first hook | How do I actually write one in Rust, register it, and confirm it fired? | You're ready to build. Its ten-minute walkthrough has been **executed verbatim** against a crate depending only on `conway`. |
 | [`subprocess-plugins.md`](subprocess-plugins.md) — the subprocess plugin host | How do I add a tool to a `conway` binary I already built, in a language that isn't Rust, with a `settings.json` edit and no rebuild? | You want a plugin that isn't Rust, or you're evaluating what naming a command in `[plugins].subprocess` actually trusts. |
+| [`memory.md`](memory.md) — `conway.memory` | What does the model-writable memory store do, where does it live on disk, and what happens if that directory can't be opened? | You want the model to remember things across turns and across separate `conway` invocations, or you're deciding whether its fail-closed startup behavior blocks you. |
+| [`skills.md`](skills.md) — `conway.skills` | What does progressive skill disclosure narrow, and what does `read_skill` cost? | You have full-body skills in context and want to try narrowing them to a one-line index. |
+| [`mcp.md`](mcp.md) — the MCP client | How do I bring an existing MCP server's tools into conway, and what is conway's own MCP client (not server) posture? | You have an MCP server already and want its tools available to the model, or you're evaluating what naming one in `[plugins].mcp` actually trusts. |
 | [`scripts.md`](scripts.md) — the script convention | How would a hook fire a script in any language, and what does that cost per invocation? | You want a hook in something other than Rust. **Describes a designed convention; no script-dispatching plugin exists yet.** |
 | [`inference-hooks.md`](inference-hooks.md) — hooks judged by a model | When should a hook call an LLM rather than express a static rule, and do I fork or spawn? | You're weighing an inference-evaluated hook. Read its "when NOT to use one" section first. |
 | [`cookbook.md`](cookbook.md) — worked examples | What does a real hook look like end to end — spilling bulky output to a file, compaction, a permission guardrail, progressive skill disclosure, a status-line observer? | You learn faster from a worked example than from a contract. Five examples, each labeled implementable-today, partially-implementable, or blocked, with two treated explicitly as the architecture's own acceptance tests. |
@@ -52,6 +55,24 @@ two points it wires (`tool.spec/1`, `tool/1`) are real; everything else the
 full design describes (a persistent connection, `permission.policy/1`,
 `context.hook/1`, `observe/1`, a `plugin` trust subject) is not, and that
 page's own "What's left" section names each gap.
+
+## Three shipped first-party plugins
+
+Three capabilities beyond the mechanism itself now ship, each installable
+with a one-line `settings.json` edit and no rebuild:
+
+- [`memory.md`](memory.md) — `conway.memory`, a mutable store the model can
+  write to (`remember`/`forget`/`list_memories`), injected into context by a
+  `ContextHook`. Durable at `<cwd>/.conway/memory` once installed — a memory
+  survives a process restart — and **fails the CLI's startup, loudly, rather
+  than silently falling back**, if that directory cannot be opened; read its
+  own page before installing it.
+- [`skills.md`](skills.md) — `conway.skills`, progressive skill disclosure:
+  narrows full-body skill context to a one-line index plus a `read_skill`
+  tool.
+- [`mcp.md`](mcp.md) — the MCP-over-stdio **client**: brings an existing MCP
+  server's tools into conway. Not an MCP server — conway does not expose
+  itself over MCP.
 
 ## Everything not in this set
 

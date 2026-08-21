@@ -1,7 +1,8 @@
 /target
 **/*.rs.bk
 .DS_Store
-.conway/sessions/
+**/.conway/sessions/
+**/.conway/paths/
 
 # ideate metadata — local-only tooling state (not tracked)
 .ideate/

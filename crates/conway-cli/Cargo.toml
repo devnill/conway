@@ -11,6 +11,20 @@ description = "The `conway` CLI: interactive TUI, `-p` one-shot mode, and sessio
 name = "conway"
 path = "src/main.rs"
 
+[features]
+# Mirrors the facade's own `jsonl-store` feature name (`conway/Cargo.toml`)
+# so `src/first_party_plugins.rs` can `#[cfg(feature = "jsonl-store")]` on
+# whether `conway::memory::FsMemoryStore` (this crate's durable
+# `conway.memory` backing store) is actually compiled in, rather than
+# assuming it always is. On today's `conway = { path = "../conway" }` line
+# below (no `default-features = false`), `conway`'s own default features
+# already turn its `jsonl-store` on regardless of this crate's own feature
+# resolution -- this declaration exists so the cfg name is recognized (not
+# an `unexpected_cfgs` warning under `-D warnings`) and so the forwarding is
+# correct IF that dependency line ever adds `default-features = false`.
+default = ["jsonl-store"]
+jsonl-store = ["conway/jsonl-store"]
+
 [dependencies]
 conway = { path = "../conway" }
 # The first-party plugin tier (board item 01KZDC3JQ7W4DY1MG6MBCVB2DV): the

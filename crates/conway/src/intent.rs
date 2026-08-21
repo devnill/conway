@@ -272,6 +272,9 @@ pub(crate) async fn classify(
         prompt: classification_prompt(text, &known_defs),
         agent_def: None,
         role: Some(RoleAlias::new(INTENT_ROLE)),
+        // Intent classification never switches models -- inherit whatever
+        // the parent (or its agent_def) already resolves.
+        pin: None,
         tools: Some(ToolSelector::Only(Vec::new())),
         budget: INTENT_BUDGET,
         result_contract: None,

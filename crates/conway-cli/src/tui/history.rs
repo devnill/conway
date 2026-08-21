@@ -1,7 +1,7 @@
 //! T8: persistence for the input line's history FIFO
 //! ([`AppState::history`](crate::tui::state::AppState::history)) -- loaded
 //! once at `App::new`, appended to on every submit. Lives alongside the
-//! global config (`~/.conway/history`, or `$XDG_CONFIG_HOME/conway/history`
+//! global config (`~/.conway/history`, or `$CONWAY_CONFIG_DIR/history`
 //! when set -- `conway::config::discovery::history_file_path`), NOT under
 //! the project's own `.conway/` directory: history follows the user, not
 //! the checkout.

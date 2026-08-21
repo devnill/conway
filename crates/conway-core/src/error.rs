@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{AgentId, LogSeq, MemoryId, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
 use crate::log::SubagentMode;
-use crate::path::SelectionKey;
+use crate::path::{PathError, SelectionKey};
 
 /// Errors produced by a `Backend` implementation.
 #[non_exhaustive]
@@ -433,6 +433,14 @@ pub enum RuntimeError {
     Store(#[from] StoreError),
     #[error("tool error: {0}")]
     Tool(#[from] ToolError),
+    /// `resolve_default_path`'s per-turn path assembly (§2.5, §6) failed —
+    /// an unresolvable node or a too-deep prefix chain. Distinct from
+    /// [`RuntimeError::Store`]: this is the §2.8 path layer's own error, not
+    /// a raw store I/O failure (`resolve_default_path` already translates
+    /// every `StoreError` it sees into the closest `PathError` variant
+    /// before this conversion ever runs).
+    #[error("context path error: {0}")]
+    Path(#[from] PathError),
     /// T-1 at the fork boundary. Terminal — no truncation or escalation.
     #[error("context rejected: {est_tokens} prompt + {headroom_tokens} reserved output = {required_tokens} tokens, but {model} accepts at most {max_context_tokens} (short by {shortfall_tokens}); no truncation or escalation is performed")]
     ForkContextOverflow {
@@ -630,6 +638,13 @@ pub enum ConwayError {
     Tool(#[from] ToolError),
     #[error("store error: {0}")]
     Store(#[from] StoreError),
+    /// A `PathStore` I/O failure (`FsPathStore::open`, at facade build time
+    /// -- `ConwayBuilder::build`'s step 8b, D1-3d-wire). Distinct from
+    /// [`Self::Runtime`]`(RuntimeError::Path(_))`, which is a per-turn path
+    /// ASSEMBLY failure inside an already-running agent, not a store-open
+    /// failure at construction time.
+    #[error("path store error: {0}")]
+    PathStore(#[from] PathStoreError),
     #[error("routing error: {0}")]
     Routing(#[from] RoutingError),
     #[error("runtime error: {0}")]

@@ -18,7 +18,7 @@ use conway_core::capabilities::{
 };
 use conway_core::error::RoutingError;
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias};
-use conway_core::ports::{HealthRegistry, Router};
+use conway_core::ports::{HealthRegistry, Router, TokenCountFidelity};
 use conway_core::routing::{
     BreakerKind, BreakerState, HealthConfig, RouteRequest, RoutingConfig, RoutingReason,
 };
@@ -227,6 +227,53 @@ fn capability_summary_present_when_indexed_absent_when_not() {
     );
     let unknown_entry = &report.entries[1];
     assert!(unknown_entry.capabilities.is_none());
+}
+
+/// Board item 01M0ASX466G3PW3SJJS3KGNS55: `ExplainEntry::token_fidelity`
+/// mirrors `capabilities` above -- present for a backend the index has an
+/// entry for, `None` for one it does not (keyed by backend id alone, not
+/// per model: both entries below share backend `known.backend`, so both
+/// must report the same fidelity).
+#[test]
+fn token_fidelity_present_when_indexed_absent_when_not() {
+    let known = model_ref("anthropic", "claude-sonnet-4-6");
+    let known_second_model = model_ref("anthropic", "claude-haiku-5");
+    let unknown = model_ref("ollama-cloud", "glm-5.2");
+    let config = routing_config(
+        vec![(
+            "planner",
+            vec![known.clone(), known_second_model.clone(), unknown.clone()],
+            None,
+        )],
+        4_096,
+    );
+    let index = CapabilityIndex::builder()
+        .insert(known.backend.clone(), known.model.clone(), caps(100_000))
+        .insert(
+            known_second_model.backend.clone(),
+            known_second_model.model.clone(),
+            caps(100_000),
+        )
+        .insert_token_fidelity(known.backend.clone(), TokenCountFidelity::Calibrated)
+        .build();
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let report = RoutingExplain::new(&router).explain(&request("planner", 1_000));
+    assert_eq!(report.entries.len(), 3);
+    assert_eq!(
+        report.entries[0].token_fidelity,
+        Some(TokenCountFidelity::Calibrated),
+        "backend `anthropic` was indexed with a declared fidelity"
+    );
+    assert_eq!(
+        report.entries[1].token_fidelity,
+        Some(TokenCountFidelity::Calibrated),
+        "fidelity is per-backend, not per-model: the second `anthropic` model shares it"
+    );
+    assert_eq!(
+        report.entries[2].token_fidelity, None,
+        "backend `ollama-cloud` was never indexed at all"
+    );
 }
 
 #[test]

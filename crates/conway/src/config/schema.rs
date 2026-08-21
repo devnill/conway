@@ -617,8 +617,12 @@ impl Default for ToolsConfig {
 /// unknown id there is a hard config error precisely because the full
 /// candidate set is known here, at compile time
 /// (`config::merge::validate`'s check 8). A first-party plugin (dynamic
-/// routing, compaction, memory, skills, MCP — the six named in
-/// `PHILOSOPHY.md`) is never such a candidate: THIS crate does not, and
+/// routing, compaction, memory, skills, MCP — the five named in
+/// `PHILOSOPHY.md` §5, "First-party plugins, and why they are not
+/// defaults": "Every serious harness has compaction, memory, skills, MCP,
+/// and a policy for choosing which model gets a turn" and "Dynamic routing,
+/// context compaction, memory, skills, MCP support" -- five each time, not
+/// six) is never such a candidate: THIS crate does not, and
 /// must never, depend on any of them — a first-party plugin
 /// sits on the exact same footing as a third-party one from `conway`'s own
 /// point of view, never a privileged one folded into the built-in
@@ -875,8 +879,15 @@ pub enum SubprocessTransport {
 /// MCP server often needs credentials (an API key the server forwards to its
 /// upstream model provider), and naming them here makes the child's env
 /// ADDITIVE on the parent's rather than relying on whatever the parent
-/// happens to have set -- the identical shape a `[hooks].rules[]` entry's env
-/// carries.
+/// happens to have set. **No hooks parity to lean on here, checked and
+/// rejected rather than assumed:** [`HookEntry`] has no `env` field under any
+/// spelling, on itself or on any nested type (its fields are `id`, `event`,
+/// `match_tool`, `command`, `timeout_ms`, `enabled`), and
+/// `conway_tools::hook_runner::ProcessHookRunner` spawns a hook's command
+/// with no `.env()`/`.env_clear()` call at all -- a hook simply inherits the
+/// parent process's whole environment, unfiltered, with no additive
+/// mechanism of any kind. This entry's explicit, additive `env` is its own
+/// invention, not a shape borrowed from hooks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct McpPluginEntry {
@@ -905,8 +916,10 @@ pub struct McpPluginEntry {
     /// a hook command has. Name credentials here (e.g. an API key the MCP
     /// server forwards to its upstream provider) rather than relying on the
     /// parent process having them set -- the child gets the parent env PLUS
-    /// these, the identical additive shape a `[hooks].rules[]` entry's env
-    /// carries.
+    /// these. There is no hooks-side counterpart to be additive ON TOP of:
+    /// a `[hooks].rules[]` entry ([`HookEntry`]) has no `env` field at all,
+    /// and its command inherits the parent's environment whole, with no
+    /// additive mechanism of any kind.
     #[serde(default)]
     pub env: Vec<(String, String)>,
 }

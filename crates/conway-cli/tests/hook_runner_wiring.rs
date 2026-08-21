@@ -21,9 +21,9 @@
 //!
 //! No in-process `ConwayBuilder::from_config`/`ConwayBuilder::discover` call
 //! anywhere in this file -- both read the operator's real
-//! `$HOME`/`$XDG_CONFIG_HOME` ('s
+//! `$HOME`/`$CONWAY_CONFIG_DIR` ('s
 //! `crates/conway/tests/` fix does not reach this crate's own test suite).
-//! `common::command`/`common::run_conway` already isolate `XDG_CONFIG_HOME`
+//! `common::command`/`common::run_conway` already isolate `CONWAY_CONFIG_DIR`
 //! to the fixture's own temp dir for the SUBPROCESS this file drives; this
 //! file adds no second, unisolated construction path.
 

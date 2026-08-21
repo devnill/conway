@@ -98,11 +98,19 @@ present: rule\.event == "pre_tool_use"
 -->
 
 <!-- claim-check
-why: PHILOSOPHY.md §5 names five first-party plugin capabilities; four are unwritten, and this predicate fails the moment one lands so the page's Where-the-tree-is-today note gets updated with it
-note: PHILOSOPHY.md §5 lists "dynamic routing, context compaction, memory, skills, MCP support" as the first-party tier's members ("You get them by choosing them"), and §6 goes further, stating in the present tense that "there is a first-party compaction plugin to install or fork." Only routing and the provider adapters exist. The migration worker had no board-write access, marked this UNFILED rather than silently dropping real debt, and surfaced it on every run -- which is how it got filed within the hour. The item covers the §6 wording decision and the decomposition into one item per surviving capability; it is deliberately NOT a charter that builds all four, which would recreate the defect 01KZVZ6XCZVHD2YFVJQEGC61YV exists to fix.
-claim: four of the five named first-party-plugin-tier capabilities -- compaction, memory, skills, MCP -- are unbuilt, so nothing installs one
+why: PHILOSOPHY.md §6 names a first-party compaction plugin as a thing you would install; this predicate fails the moment one lands so that note gets updated in the same change
+note: narrowed 2026-08-20 from the five-capability claim this block used to be. That wider claim ("four of five unbuilt") went stale when memory and skills shipped as installable plugins (`conway_plugin_skills::SkillsPlugin`/`conway_plugin_memory::MemoryPlugin` in `first_party_plugins.rs`) and MCP client support shipped as `[plugins].mcp` (`conway_plugin_mcp`, wired by `mcp_plugins.rs`) -- the checker caught it on the next run, which is the mechanism working, not a defect. Compaction alone remains genuinely unwritten (`PHILOSOPHY.md` §6's own "Where the tree is today" note still says so); the sibling present-guard immediately below pins the three that shipped against silent regression.
+claim: compaction is the one first-party-plugin-tier capability still unbuilt, so nothing installs conway.compaction
 paths: crates/conway-cli/src crates/conway/src
-absent: conway\.(compaction|memory|skills|mcp)
+absent: conway\.compaction
+-->
+
+<!-- claim-check
+why: regression guard: memory, skills, and MCP client support shipped after the claim above went stale on them; an unwiring of any one would make PHILOSOPHY.md's first-party-tier note false again in the same understating direction that made this item necessary
+note: inverted from the absent claim above on 2026-08-20 when the checker's own STALE report showed memory/skills/MCP matching an absent pattern -- the same shape as the two 2026-08-13 inversions elsewhere in this file (search this file for "inverted from absent to present"). Pinned to the actual call sites (`SkillsPlugin::from_dir`, `MemoryPlugin::new`, `McpPlugin::discover`) rather than a comment or an id string, so removing the wiring -- not merely renaming a doc comment -- is what trips this.
+claim: conway.skills, conway.memory, and the MCP client are all built and installed through first_party_plugins.rs/mcp_plugins.rs, not merely named as intent
+paths: crates/conway-cli/src
+present: conway_plugin_skills::SkillsPlugin::from_dir|conway_plugin_memory::MemoryPlugin::new|McpPlugin::discover
 -->
 
 <!-- claim-check
@@ -165,4 +173,12 @@ note: sibling regression guard, point 11 (plugin subscription to observe/1). Nar
 claim: point 11 no longer bare-cites the hooks charter for plugin event subscription
 paths: docs/plugins/hooks.md
 absent: Tracked under `01KZDC0RDRMMMJHX7SAFMM2Q5A`
+-->
+
+<!-- claim-check
+why: INTENT.md §7 nominated this claim for the ledger by name and it was never added; bare_inference.rs is the runnable proof of it, so if this predicate disappears the claim reverts to unverified prose with nothing catching a silent regression
+note: added 2026-08-21 (board item 01M0EMEQJHPR3XVNAN39YX7C38), landing after 01M0EM97X118CZ43CGEPH2PB8F's same-day narrowing of the block above. Pinned to the `builtin_plugins: Vec::new()` struct literal in `bare_inference_config()` rather than the filename or the doc comment's `vec![]` paraphrase: a file can be renamed while the capability survives (paths scans the whole examples directory, not one filename), and a file can survive while its body is gutted, so the pattern is the exact call that empties `tools.builtin_plugins` and makes `ConwayBuilder::build`'s plugin-selection step match nothing -- the one line that, if deleted, means the example no longer configures conway down to zero tools at all.
+claim: conway can be configured down to a bare inference call using only mechanisms a third party also has -- proven by crates/conway/examples/bare_inference.rs, which reaches no tools, no agent behaviour, one turn out, using only ConwayConfig fields and ConwayBuilder methods
+paths: crates/conway/examples
+present: builtin_plugins: Vec::new\(\)
 -->

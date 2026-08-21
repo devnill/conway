@@ -197,6 +197,7 @@
 //!   gap matters most there, even though the fix itself lives in
 //!   `matches_deny` and benefits every mode equally.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -511,6 +512,32 @@ pub enum Select {
     Categories(Vec<ToolCategory>),
 }
 
+/// The pinned argument fields for an [`When::ArgsMatch`] rule: a map from
+/// top-level argument field name to the exact value the field must carry for
+/// the rule to match. Fields not in this map are wildcard (the rule does not
+/// care about them). A pinned field absent from the call's `arguments` is a
+/// non-match.
+///
+/// This is the safe pattern-matching primitive: it compares structured
+/// argument values for equality (under `canonical_json_bytes`, so object key
+/// order does not matter), and nothing interprets the matched data as a
+/// combiner -- there is no shell chaining over JSON field values, so the
+/// hazard that removed durable grants for [`RenderKind::ShellCommand`] tools
+/// (see the module's "AMENDED" section) does not arise here. The allow-side
+/// gate still applies, so an `ArgsMatch` rule on a `ShellCommand` tool
+/// authorizes nothing, exactly like every other allow `when`.
+///
+/// Top-level fields only this round; nested paths (`a.b.c`) are a follow-on.
+/// A struct (not a bare map) so a future match mode can be added without
+/// churning the `When` variant's serde shape.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArgsMatchSpec {
+    /// The argument fields to pin, and the exact value each must equal. An
+    /// empty map matches every call the select matches (equivalent to
+    /// [`When::Always`] for that tool).
+    pub pinned: BTreeMap<String, serde_json::Value>,
+}
+
 /// The condition under which a selected call matches a [`Rule`]. See
 /// [`Rule`] for how `select` + `when` + `then` compose.
 #[non_exhaustive]
@@ -551,6 +578,15 @@ pub enum When {
     /// third-party tools whose name you select but whose category you also
     /// want to pin.
     CategoryIn(Vec<ToolCategory>),
+    /// Structured argument-field equality: the call's `arguments` must carry
+    /// each pinned field at its exact value (compared under
+    /// `canonical_json_bytes`, so object key order does not matter); fields
+    /// not in the spec are wildcard. See [`ArgsMatchSpec`] for the safety
+    /// argument and why this -- unlike [`When::CommandPrefix`] -- is safe.
+    /// Evaluation lives in the broker (which has the call's `arguments` at
+    /// decision time), so [`Rule::matches_allow_render`] returns `false` for
+    /// this variant -- the same pattern [`When::PathsUnder`] uses.
+    ArgsMatch(ArgsMatchSpec),
 }
 
 /// The effect a [`Rule`] has when its `select` + `when` both match.
@@ -595,6 +631,22 @@ pub struct Rule {
 }
 
 impl Rule {
+    /// Build an interactive allow grant for `tool` that matches calls whose
+    /// `arguments` carry each `pinned` field at its exact value (other fields
+    /// wildcard). This is the constructor the TUI's `[p]` field editor calls;
+    /// it is the only way for a crate outside `conway-core` to build an
+    /// [`When::ArgsMatch`] rule, because [`When`], [`Select`], and [`Then`]
+    /// are all `#[non_exhaustive]` and their variants cannot be constructed
+    /// from another crate. An empty `pinned` map is equivalent to a `tool:*`
+    /// ([`When::Always`]) grant.
+    pub fn args_match_allow_rule(tool: &str, pinned: BTreeMap<String, serde_json::Value>) -> Rule {
+        Rule {
+            select: Select::Tools(vec![tool.to_string()]),
+            when: When::ArgsMatch(ArgsMatchSpec { pinned }),
+            then: Then::Allow,
+        }
+    }
+
     /// Whether `select` matches this call's `(tool, category)`. Shared by the
     /// allow and deny/prompt evaluators, and by the broker's `paths_under`
     /// path, so select semantics cannot drift between them.
@@ -657,6 +709,9 @@ impl Rule {
             When::CommandPrefix(p) => prefix_matches(p, rendered),
             When::CategoryIn(cats) => cats.contains(&category),
             When::PathsUnder(_) => false,
+            // Evaluated in the broker (`rule_allows`), which has the call's
+            // `arguments` -- this signature does not, and must not, take it.
+            When::ArgsMatch(_) => false,
         }
     }
 
@@ -682,6 +737,9 @@ impl Rule {
             }
             When::CategoryIn(cats) => cats.contains(&category),
             When::PathsUnder(_) => false,
+            // Allow-only this round; deny/prompt `ArgsMatch` is a follow-on
+            // (would need the same broker-side special-casing as allow).
+            When::ArgsMatch(_) => false,
         }
     }
 
@@ -744,6 +802,18 @@ impl Rule {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            (_, When::ArgsMatch(spec)) if spec.pinned.is_empty() => {
+                format!("{select_label} (any call)")
+            }
+            (_, When::ArgsMatch(spec)) => {
+                let fields = spec
+                    .pinned
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{select_label} with {fields} pinned")
+            }
         }
     }
 
@@ -2542,6 +2612,92 @@ mod f12_tests {
             r#"read({"path":"/repo/a.rs"})"#,
             RenderKind::Structured,
         ));
+    }
+
+    // ---- ArgsMatch: the structured argument-field primitive ----
+
+    /// The constructor the TUI's `[p]` field editor calls builds exactly
+    /// `Select::Tools([tool])` + `When::ArgsMatch` + `Then::Allow` -- the one
+    /// shape an external crate can build (the three types are
+    /// `#[non_exhaustive]`). An empty `pinned` map is the `tool:*` equivalent.
+    #[test]
+    fn args_match_allow_rule_builds_the_structured_allow_rule() {
+        let mut pinned = BTreeMap::new();
+        pinned.insert("path".into(), serde_json::json!("/etc/hosts"));
+        let r = Rule::args_match_allow_rule("read", pinned);
+        assert!(matches!(r.select, Select::Tools(ref ts) if ts == &["read".to_string()]));
+        assert!(matches!(r.when, When::ArgsMatch(_)));
+        assert_eq!(r.then, Then::Allow);
+        // Empty pinned == tool:* (no fields pinned, matches every call).
+        let wildcard = Rule::args_match_allow_rule("read", BTreeMap::new());
+        assert!(matches!(wildcard.when, When::ArgsMatch(ref s) if s.pinned.is_empty()));
+    }
+
+    /// `ArgsMatch` returns `false` from BOTH render evaluators: like
+    /// `PathsUnder`, it needs the call's `arguments`, which neither
+    /// `matches_allow_render` nor `matches_deny_render` carries. The broker
+    /// (`rule_allows`) is the only place an `ArgsMatch` rule can match, so
+    /// the render path must never fire it.
+    #[test]
+    fn args_match_returns_false_in_both_render_evaluators() {
+        let mut pinned = BTreeMap::new();
+        pinned.insert("path".into(), serde_json::json!("/etc/hosts"));
+        let r = Rule::args_match_allow_rule("read", pinned);
+        assert!(!r.matches_allow_render(
+            "read",
+            ToolCategory::Read,
+            r#"read({"path":"/etc/hosts"})"#,
+            RenderKind::Structured,
+        ));
+        assert!(!r.matches_deny_render(
+            "read",
+            ToolCategory::Read,
+            r#"read({"path":"/etc/hosts"})"#
+        ));
+    }
+
+    /// `describe` renders an empty spec as "any call" (the `tool:*` shape) and
+    /// a non-empty spec as the pinned fields, so the review surfaces
+    /// (`/settings`, `active_structured_allow_rules`) show the new rule kind
+    /// readably before the operator grants or revokes it.
+    #[test]
+    fn args_match_describe_renders_empty_and_pinned() {
+        let wildcard = Rule::args_match_allow_rule("read", BTreeMap::new());
+        // `select_label` for a single tool is bare (no backticks), matching
+        // the `PathsUnder`/`CategoryIn` arms; only the special-cased
+        // `When::Always` single-tool arm wraps the tool in backticks.
+        assert_eq!(wildcard.describe(), "read (any call)");
+        let mut pinned = BTreeMap::new();
+        pinned.insert("path".into(), serde_json::json!("/etc/hosts"));
+        pinned.insert("mode".into(), serde_json::json!("ro"));
+        let pinned_rule = Rule::args_match_allow_rule("read", pinned);
+        // BTreeMap iteration order is sorted by key, so the output is stable.
+        assert_eq!(
+            pinned_rule.describe(),
+            "read with mode=\"ro\", path=\"/etc/hosts\" pinned"
+        );
+    }
+
+    /// `gate_allows` keys only on the tool's static `RenderKind`, so an
+    /// `ArgsMatch` grant on a `ShellCommand` tool can never authorize a call
+    /// -- the gate refuses it before the `when` predicate is ever consulted,
+    /// identical to every other allow `when` (the AMENDED section's posture,
+    /// board `01KZDDPC5MMD49F6JPV9CW4TVM`). The broker's `rule_allows` arm
+    /// applies this same gate; this test pins it at the primitive the gate
+    /// actually reads.
+    #[test]
+    fn args_match_is_refused_for_shell_command_by_the_gate() {
+        let r = Rule::args_match_allow_rule("bash", BTreeMap::new());
+        assert!(!Rule::gate_allows(RenderKind::ShellCommand));
+        // And the render evaluator (which also gates) refuses it for shell:
+        assert!(!r.matches_allow_render(
+            "bash",
+            ToolCategory::Execute,
+            "git status",
+            RenderKind::ShellCommand,
+        ));
+        // A Structured tool passes the gate:
+        assert!(Rule::gate_allows(RenderKind::Structured));
     }
 
     // ---- registration error ----

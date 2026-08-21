@@ -549,7 +549,7 @@ async fn exit_2_bad_config() {
         .current_dir(dir.path())
         // Isolate user-scoped config discovery from a real ~/.conway (see
         // `common::command`).
-        .env("XDG_CONFIG_HOME", dir.path())
+        .env("CONWAY_CONFIG_DIR", dir.path())
         .arg("--config")
         .arg(&config_path)
         .args(["-p", "hi"])

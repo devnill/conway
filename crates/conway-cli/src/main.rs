@@ -85,8 +85,8 @@ async fn main() -> std::process::ExitCode {
         (Some(gate), None)
     };
 
-    let conway = match build_conway(&cli, gate_override, is_tui).await {
-        Ok(conway) => conway,
+    let (conway, memory_store) = match build_conway(&cli, gate_override, is_tui).await {
+        Ok(pair) => pair,
         Err(e) => {
             diag::error(e.to_string());
             return to_process_code(ExitCode::from_error(&e));
@@ -116,7 +116,7 @@ async fn main() -> std::process::ExitCode {
         }
     }
 
-    let result = dispatch(&cli, conway, tui_gate_rx).await;
+    let result = dispatch(&cli, conway, tui_gate_rx, memory_store).await;
 
     match result {
         Ok(code) => to_process_code(code),
@@ -160,17 +160,28 @@ async fn main() -> std::process::ExitCode {
 ///
 /// **DISCLOSED, PROMINENTLY FLAGGED: now `async fn`** (board item
 /// `01KZY8PATND84AKY0J376E3DWV`, the subprocess plugin host). The one new
-/// step below, `subprocess_plugins::install`, spawns a real process per
-/// `[plugins].subprocess[]` entry and awaits its `tool.spec/1` manifest
-/// answer -- see that module's own doc for why this cannot be
-/// `first_party_plugins::install`'s purely synchronous shape. `main`'s own
-/// call site now `.await`s this function; every OTHER line here is
-/// unchanged.
+/// step at the time, `subprocess_plugins::install`, spawns a real process
+/// per `[plugins].subprocess[]` entry and awaits its `tool.spec/1` manifest
+/// answer -- see that module's own doc for why that could not stay
+/// synchronous. `main`'s own call site `.await`s this function.
+/// `first_party_plugins::install` is ALSO now `async fn` (board item
+/// `01M09V3S2AQYB2VK6MANFRH1JM`, opening the durable memory store -- see
+/// that function's own doc), a later, separate reason unrelated to this
+/// one.
+///
+/// **Now also returns the `Arc<dyn conway::plugin::MemoryStore>`
+/// `first_party_plugins::install` resolved** (board item
+/// `01M09V3S2AQYB2VK6MANFRH1JM`) -- `main` threads it on to [`dispatch`],
+/// which is the only other place this binary needs to name an installed
+/// `conway.memory`'s backing store (`installed_plugins`/`commands::
+/// plugin::run`'s identical need). See `first_party_plugins::
+/// resolve_memory_store`'s own doc for why this is the ONE store instance
+/// this whole process ever constructs.
 async fn build_conway(
     cli: &Cli,
     gate: Option<Arc<dyn PermissionGate>>,
     is_tui: bool,
-) -> conway::Result<Conway> {
+) -> conway::Result<(Conway, Arc<dyn conway::plugin::MemoryStore>)> {
     let builder = match &cli.config {
         Some(path) => ConwayBuilder::from_config(path)?,
         None => ConwayBuilder::discover()?,
@@ -214,7 +225,7 @@ async fn build_conway(
     // `[plugins]` section in `settings.json` at all. Every dispatch target
     // sees this union from the SAME choke point, so the property holds for
     // the TUI and every one-shot/subcommand invocation identically.
-    let builder = first_party_plugins::install(builder)?;
+    let (builder, memory_store) = first_party_plugins::install(builder).await?;
     // The subprocess plugin tier (board item 01KZY8PATND84AKY0J376E3DWV):
     // a SEPARATE choke point from the line above -- see
     // `subprocess_plugins`'s own module doc for why this is a distinct
@@ -230,7 +241,8 @@ async fn build_conway(
     // protocol (JSON-RPC 2.0, MCP). Awaited for the identical reason
     // `subprocess_plugins::install` is -- the handshake spawns a real process.
     let builder = mcp_plugins::install(builder).await?;
-    builder.build()
+    let conway = builder.build()?;
+    Ok((conway, memory_store))
 }
 
 /// If `command.is_some()` -> `commands::{sessions,routes}::run`; else if
@@ -241,6 +253,7 @@ async fn dispatch(
     cli: &Cli,
     conway: Conway,
     tui_gate_rx: Option<tui::gate::GateReceiver>,
+    memory_store: Arc<dyn conway::plugin::MemoryStore>,
 ) -> conway::Result<ExitCode> {
     match &cli.command {
         Some(Command::Sessions(args)) => commands::sessions::run(args, &conway).await,
@@ -253,7 +266,7 @@ async fn dispatch(
         // target; there is no seam that lets `commands::plugin::run` be
         // reached any other way. See `commands::plugin`'s own module doc
         // for what it does.
-        Some(Command::External(args)) => commands::plugin::run(args, &conway).await,
+        Some(Command::External(args)) => commands::plugin::run(args, &conway, memory_store).await,
         None if cli.print.is_some() => oneshot::run(cli, conway).await,
         None => {
             let gate_rx = tui_gate_rx.expect("tui_gate_rx is constructed whenever is_tui is true");
@@ -262,8 +275,10 @@ async fn dispatch(
             // `first_party_plugins::install` call already read -- see
             // `installed_plugins`'s own doc for why this is a second,
             // independently-correct-by-construction read rather than a
-            // second resolution algorithm.
-            let plugins = first_party_plugins::installed_plugins(&conway);
+            // second resolution algorithm. `memory_store` is the SAME `Arc`
+            // that call resolved (board item `01M09V3S2AQYB2VK6MANFRH1JM`),
+            // never a second `FsMemoryStore::open` over the same root.
+            let plugins = first_party_plugins::installed_plugins(&conway, memory_store);
             tui::run(cli, conway, gate_rx, &plugins).await
         }
     }

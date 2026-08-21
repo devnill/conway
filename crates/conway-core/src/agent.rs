@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::{Artifact, ToolCategory, Usage};
 use crate::error::ConwayError;
-use crate::ids::{AgentId, LogSeq, RoleAlias, SessionId, ToolName};
+use crate::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId, ToolName};
 
 /// Fork vs spawn: re-exported from `log` (the canonical definition lives
 /// there because [`crate::log::ForkOrigin`] persists it). Do not redefine.
@@ -170,6 +170,30 @@ pub struct SubagentSpec {
     pub prompt: String,
     pub agent_def: Option<AgentDefRef>,
     pub role: Option<RoleAlias>,
+    /// Pins the child's model outright, overriding whatever it would
+    /// otherwise resolve (the fork-only inheritance fill's `agent_def.model`,
+    /// or -- absent that -- ordinary role-based routing). `None` (the
+    /// `fork`/`spawn` constructors' default) preserves the pre-existing
+    /// behavior exactly: `conway_runtime`'s `SubagentHost::start` derives the
+    /// child's pin solely from its (possibly inherited) `agent_def.model`,
+    /// with no way for a caller to name a specific model directly. `Some`
+    /// is the mechanism `conway`'s `ForkSpec::model` (INTENT.md §5c: "changing
+    /// model mid-session is ordinary") uses to switch a live conversation to
+    /// a named model without touching `role` at all -- the child still
+    /// inherits the forker's ENTIRE prior context (selection, per §5c,
+    /// survives a model change unchanged); only this pin, and therefore the
+    /// rendering the new model receives, differs. A pin the child's
+    /// inherited context does not fit produces the same loud
+    /// `RoutingError::ContextTooLarge` refusal an ordinary turn's admission
+    /// gate already gives -- never a silent fallback to the old model, and
+    /// never a silent trim.
+    ///
+    /// `#[serde(default)]` keeps already-persisted data readable: a
+    /// `SubagentSpec` serialized before this field existed still
+    /// deserializes, as `None` -- the pre-existing agent-def-only pin
+    /// resolution for every such spec.
+    #[serde(default)]
+    pub pin: Option<ModelRef>,
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
     /// A schema the child's final answer must satisfy. Evaluated on a
@@ -433,6 +457,7 @@ impl SubagentSpec {
             prompt: prompt.into(),
             agent_def: None,
             role: None,
+            pin: None,
             tools: None,
             budget,
             result_contract: None,
@@ -453,6 +478,7 @@ impl SubagentSpec {
             prompt: prompt.into(),
             agent_def: Some(agent_def),
             role: None,
+            pin: None,
             tools: None,
             budget,
             result_contract: None,
@@ -895,6 +921,7 @@ mod tests {
             prompt: "do it".into(),
             agent_def: None,
             role: None,
+            pin: None,
             tools: None,
             budget: Budget::default(),
             result_contract: None,

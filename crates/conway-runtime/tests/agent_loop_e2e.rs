@@ -616,6 +616,7 @@ fn build_loop_inner(
 
     let deps = Arc::new(LoopDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         attempt,
         registry: plugin_registry,

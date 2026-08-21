@@ -262,6 +262,7 @@ fn build_runtime(turns: usize) -> Arc<Runtime> {
     backends.insert(backend.id(), backend);
     Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,

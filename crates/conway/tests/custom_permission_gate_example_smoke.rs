@@ -98,7 +98,7 @@ async fn custom_permission_gate_example_flow_actually_consults_the_gate() {
         cli_overrides: conway::config::CliOverrides::default(),
         model_metadata_refresh: false,
     })
-    .expect("load with no XDG/project layer must still succeed via built-in defaults");
+    .expect("load with no user/project layer must still succeed via built-in defaults");
     let config: ConwayConfig = outcome.config;
 
     let backend = Arc::new(ScriptedBackend::new(vec![

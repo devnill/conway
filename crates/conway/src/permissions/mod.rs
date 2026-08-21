@@ -486,7 +486,7 @@ pub(crate) fn uncanonicalizable_paths_under_error(
 ///   the agent cwd, which coincides with the project root only in the
 ///   standard launch.)
 /// - For the GLOBAL file (`~/.conway/permissions.json`, or
-///   `$XDG_CONFIG_HOME/conway/permissions.json`): there is no containing
+///   `$CONWAY_CONFIG_DIR/permissions.json`): there is no containing
 ///   project, so the base is the AGENT CWD the load was initiated with --
 ///   the one directory a global rule can meaningfully be relative to at
 ///   load time. (Resolving against the config directory would make `"src"`
@@ -520,7 +520,7 @@ pub(crate) fn load_permission_files(
     granting_agent: AgentId,
 ) -> PermissionLoadReport {
     let paths = crate::config::discovery::permission_file_paths(cwd, env);
-    let global_path = crate::config::discovery::xdg_config_path(env)
+    let global_path = crate::config::discovery::user_config_path(env)
         .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
     let trust_store = crate::config::trust::TrustStore::load(env);
     let mut notices = Vec::new();
@@ -691,7 +691,7 @@ pub(crate) fn trust_permission_file(
     // For the global file (no containing project) the base is the passed
     // `cwd`, the same choice `load_permission_files` makes with its
     // explicit `cwd`.
-    let global_path = crate::config::discovery::xdg_config_path(env)
+    let global_path = crate::config::discovery::user_config_path(env)
         .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
     let base = permission_rule_base(path, global_path.as_deref(), cwd);
     let mut installed = 0;
@@ -853,7 +853,7 @@ pub(crate) fn persist_revoke_outcome(
             error: e.to_string(),
         },
         Ok(()) => {
-            let global_path = crate::config::discovery::xdg_config_path(env)
+            let global_path = crate::config::discovery::user_config_path(env)
                 .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
             let is_global = global_path.as_deref() == Some(path);
             let retrust_warning = if is_global {

@@ -1,4 +1,5 @@
-//! The `(backend, model) -> Capabilities` lookup built at startup.
+//! The `(backend, model) -> Capabilities` lookup built at startup, plus a
+//! per-backend `TokenCountFidelity` lookup built alongside it.
 //!
 //! Lives beside the `Backend` port (deliberately,
 //! "the backend side"): [`CapabilityIndex::from_backends`] reads directly
@@ -11,6 +12,24 @@
 //! applying. `conway-routing::CapabilityIndex` / `CapabilityIndexBuilder`
 //! remain usable as re-exports of these same types (see that crate's
 //! `lib.rs`), so no downstream import changes.
+//!
+//! **`fidelity`, board item 01M0ASX466G3PW3SJJS3KGNS55:** `from_backends`
+//! also reads `Backend::token_fidelity()`, once per distinct backend id
+//! present in `refs`, keyed by [`BackendId`] alone (not `(BackendId,
+//! ModelId)`) since fidelity is a property of a `Backend`, not of a
+//! `(backend, model)` pair -- unlike `Capabilities`, which genuinely varies
+//! per model. This is the channel that makes `Backend::token_fidelity`'s
+//! declaration operator-visible: `conway-plugin-routing`'s `RoutingExplain`
+//! reads [`CapabilityIndex::token_fidelity`] for every candidate and carries
+//! it onto `ExplainEntry::token_fidelity`, which `conway routes explain`
+//! prints. Deliberately NOT folded into `Capabilities` itself: that type is
+//! constructed at ~40 call sites across the workspace (an architecture
+//! §4.1 transcription with one already-documented deviation), and
+//! `token_fidelity` is a different question ("how much can I trust this
+//! backend's own arithmetic") from anything `Capabilities` answers ("what
+//! can this backend/model pair do"). Widening a used-everywhere type to
+//! answer an unrelated question is exactly the sort of ripple this
+//! dedicated, small side table exists to avoid.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,19 +37,22 @@ use std::sync::Arc;
 use crate::capabilities::Capabilities;
 use crate::ids::{BackendId, ModelId, ModelRef};
 
-use super::Backend;
+use super::{Backend, TokenCountFidelity};
 
-/// Immutable `(backend, model) -> Capabilities` lookup. Built once at
-/// startup; capability refresh is a rebuild (owned by the facade).
+/// Immutable `(backend, model) -> Capabilities` lookup, plus a `backend ->
+/// TokenCountFidelity` lookup. Built once at startup; capability refresh is
+/// a rebuild (owned by the facade).
 #[derive(Debug, Clone, Default)]
 pub struct CapabilityIndex {
     map: HashMap<(BackendId, ModelId), Capabilities>,
+    fidelity: HashMap<BackendId, TokenCountFidelity>,
 }
 
 /// Builder for [`CapabilityIndex`].
 #[derive(Debug, Default)]
 pub struct CapabilityIndexBuilder {
     map: HashMap<(BackendId, ModelId), Capabilities>,
+    fidelity: HashMap<BackendId, TokenCountFidelity>,
 }
 
 impl CapabilityIndexBuilder {
@@ -44,8 +66,24 @@ impl CapabilityIndexBuilder {
         self
     }
 
+    /// Records `backend`'s declared [`TokenCountFidelity`] -- one entry per
+    /// backend id, not per `(backend, model)` pair. Independent of
+    /// [`Self::insert`]: a caller (e.g. a test) may set one without the
+    /// other.
+    pub fn insert_token_fidelity(
+        mut self,
+        backend: BackendId,
+        fidelity: TokenCountFidelity,
+    ) -> CapabilityIndexBuilder {
+        self.fidelity.insert(backend, fidelity);
+        self
+    }
+
     pub fn build(self) -> CapabilityIndex {
-        CapabilityIndex { map: self.map }
+        CapabilityIndex {
+            map: self.map,
+            fidelity: self.fidelity,
+        }
     }
 }
 
@@ -58,7 +96,10 @@ impl CapabilityIndex {
     /// layer more entries on top (e.g. the facade's optional startup probe
     /// overlay) without re-querying every already-resolved pair.
     pub fn into_builder(self) -> CapabilityIndexBuilder {
-        CapabilityIndexBuilder { map: self.map }
+        CapabilityIndexBuilder {
+            map: self.map,
+            fidelity: self.fidelity,
+        }
     }
 
     /// O(1) `HashMap` lookup — no scan.
@@ -67,10 +108,21 @@ impl CapabilityIndex {
             .get(&(model_ref.backend.clone(), model_ref.model.clone()))
     }
 
+    /// O(1) `HashMap` lookup of `backend`'s declared [`TokenCountFidelity`]
+    /// -- `None` when this index holds no entry for `backend` (e.g. it was
+    /// never passed through [`Self::from_backends`], or the fallback
+    /// `MinimalRouter` path, which never reaches a live `Backend` instance
+    /// at all).
+    pub fn token_fidelity(&self, backend: &BackendId) -> Option<TokenCountFidelity> {
+        self.fidelity.get(backend).copied()
+    }
+
     /// Builds the index by asking each backend for its capabilities, once
-    /// per `(backend, model)` pair in `refs`. Refs whose backend id is not
-    /// present in `backends` are silently omitted. Synchronous --
-    /// `Backend::capabilities` performs no I/O.
+    /// per `(backend, model)` pair in `refs`, and its declared
+    /// [`TokenCountFidelity`], once per distinct backend id in `refs`. Refs
+    /// whose backend id is not present in `backends` are silently omitted.
+    /// Synchronous -- `Backend::capabilities` and `Backend::token_fidelity`
+    /// both perform no I/O.
     ///
     /// This is the *only* place a caller should populate a
     /// `CapabilityIndex` from real backends: routing this way (rather than
@@ -85,13 +137,17 @@ impl CapabilityIndex {
         let by_id: HashMap<BackendId, &Arc<dyn Backend>> =
             backends.iter().map(|b| (b.id(), b)).collect();
         let mut map = HashMap::new();
+        let mut fidelity = HashMap::new();
         for r in refs {
             if let Some(backend) = by_id.get(&r.backend) {
                 map.entry((r.backend.clone(), r.model.clone()))
                     .or_insert_with(|| backend.capabilities(&r.model));
+                fidelity
+                    .entry(r.backend.clone())
+                    .or_insert_with(|| backend.token_fidelity());
             }
         }
-        CapabilityIndex { map }
+        CapabilityIndex { map, fidelity }
     }
 
     pub fn len(&self) -> usize {
@@ -147,6 +203,7 @@ mod tests {
         id: BackendId,
         caps: Capabilities,
         calls: Arc<AtomicUsize>,
+        fidelity_calls: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
@@ -169,6 +226,10 @@ mod tests {
         }
         async fn probe(&self) -> Result<crate::capabilities::ProbeReport, BackendError> {
             unimplemented!("not exercised by this test")
+        }
+        fn token_fidelity(&self) -> TokenCountFidelity {
+            self.fidelity_calls.fetch_add(1, Ordering::SeqCst);
+            TokenCountFidelity::Calibrated
         }
     }
 
@@ -202,6 +263,7 @@ mod tests {
             id: BackendId::new("local"),
             caps: caps(1000),
             calls: Arc::clone(&calls),
+            fidelity_calls: Arc::new(AtomicUsize::new(0)),
         });
         let refs: Vec<ModelRef> = vec![
             "local/m1".parse().unwrap(),
@@ -213,5 +275,91 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2, "once per unique pair");
         assert_eq!(index.len(), 2);
         assert!(index.get(&"absent/m3".parse().unwrap()).is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // `TokenCountFidelity` plumbing (board item 01M0ASX466G3PW3SJJS3KGNS55)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn builder_insert_token_fidelity_and_lookup_and_unknown_backend() {
+        let index = CapabilityIndex::builder()
+            .insert_token_fidelity(BackendId::new("local"), TokenCountFidelity::Calibrated)
+            .build();
+        assert_eq!(
+            index.token_fidelity(&BackendId::new("local")),
+            Some(TokenCountFidelity::Calibrated)
+        );
+        assert_eq!(index.token_fidelity(&BackendId::new("remote")), None);
+    }
+
+    #[test]
+    fn from_backends_captures_token_fidelity_once_per_backend_not_per_model_pair() {
+        let fidelity_calls = Arc::new(AtomicUsize::new(0));
+        let backend: Arc<dyn Backend> = Arc::new(CountingBackend {
+            id: BackendId::new("local"),
+            caps: caps(1000),
+            calls: Arc::new(AtomicUsize::new(0)),
+            fidelity_calls: Arc::clone(&fidelity_calls),
+        });
+        let refs: Vec<ModelRef> = vec![
+            "local/m1".parse().unwrap(),
+            "local/m2".parse().unwrap(),
+            "absent/m3".parse().unwrap(),
+        ];
+        let index = CapabilityIndex::from_backends(&[backend], &refs);
+        assert_eq!(
+            fidelity_calls.load(Ordering::SeqCst),
+            1,
+            "once per distinct backend id, not per (backend, model) pair"
+        );
+        assert_eq!(
+            index.token_fidelity(&BackendId::new("local")),
+            Some(TokenCountFidelity::Calibrated)
+        );
+        assert_eq!(index.token_fidelity(&BackendId::new("absent")), None);
+    }
+
+    #[test]
+    fn from_backends_defaults_to_heuristic_when_backend_does_not_override() {
+        struct DefaultFidelityBackend {
+            id: BackendId,
+        }
+
+        #[async_trait::async_trait]
+        impl Backend for DefaultFidelityBackend {
+            fn id(&self) -> BackendId {
+                self.id.clone()
+            }
+            fn capabilities(&self, _model: &ModelId) -> Capabilities {
+                caps(1000)
+            }
+            async fn generate(
+                &self,
+                _req: GenerateRequest,
+            ) -> Result<GenerateResponse, BackendError> {
+                unimplemented!("not exercised by this test")
+            }
+            async fn stream(
+                &self,
+                _req: GenerateRequest,
+            ) -> Result<BoxStream<'static, Result<StreamChunk, BackendError>>, BackendError>
+            {
+                unimplemented!("not exercised by this test")
+            }
+            async fn probe(&self) -> Result<crate::capabilities::ProbeReport, BackendError> {
+                unimplemented!("not exercised by this test")
+            }
+        }
+
+        let backend: Arc<dyn Backend> = Arc::new(DefaultFidelityBackend {
+            id: BackendId::new("local"),
+        });
+        let refs: Vec<ModelRef> = vec!["local/m1".parse().unwrap()];
+        let index = CapabilityIndex::from_backends(&[backend], &refs);
+        assert_eq!(
+            index.token_fidelity(&BackendId::new("local")),
+            Some(TokenCountFidelity::Heuristic)
+        );
     }
 }

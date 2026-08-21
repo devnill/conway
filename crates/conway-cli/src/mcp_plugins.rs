@@ -17,15 +17,18 @@
 //! async before `build()`; attaches via `with_plugin`) -- only the wire
 //! protocol and the plugin crate differ.
 //!
-//! **Why this is async, like `subprocess_plugins::install` and unlike
-//! `first_party_plugins::install`.** Discovering an MCP server's own manifest
-//! means spawning a real process and awaiting its `initialize`/`tools/list`
-//! handshake (`conway_plugin_mcp::McpPlugin::discover`'s own doc: "a plugin
-//! needing setup does it in its own constructor, before
-//! `ConwayBuilder::with_plugin`, where errors surface to the embedder
-//! directly"). This is exactly that constructor call, at exactly that point --
-//! `main.rs`'s `build_conway` is `async fn` for this reason (the subprocess
-//! tier already widened it; this tier rides the same `.await`).
+//! **Why this is async, like `subprocess_plugins::install`.** Discovering an
+//! MCP server's own manifest means spawning a real process and awaiting its
+//! `initialize`/`tools/list` handshake (`conway_plugin_mcp::McpPlugin::
+//! discover`'s own doc: "a plugin needing setup does it in its own
+//! constructor, before `ConwayBuilder::with_plugin`, where errors surface to
+//! the embedder directly"). This is exactly that constructor call, at
+//! exactly that point -- `main.rs`'s `build_conway` is `async fn` for this
+//! reason (the subprocess tier already widened it; this tier rides the same
+//! `.await`). `first_party_plugins::install` is separately `async fn` too
+//! today (board item `01M09V3S2AQYB2VK6MANFRH1JM`, opening the durable
+//! memory store) -- a later, unrelated reason; resolving `[plugins].install`
+//! itself is still the pure, synchronous id lookup it always was.
 //!
 //! **Trust, disclosed at the one place this binary actually spawns anything
 //! from this config, not only in the schema's own doc.** A `[plugins].mcp[]`

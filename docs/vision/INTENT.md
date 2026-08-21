@@ -39,6 +39,14 @@ not used. Many of them had a moment when they were genuinely valuable and then
 faded as something better came along — but they never left, because nothing ever
 leaves. The weight is cumulative and the removal path does not exist.
 
+The complaint is not that it has many features. It is genuinely powerful, and it
+stays in daily use for good reasons — plenty of what is in there earns its keep.
+The problem is that nothing has to earn its place and nothing can leave, so the
+valuable and the faded accumulate identically until they are indistinguishable.
+**conway is not trying to have fewer features. It is trying to make each one earn
+its place, and to let it go when it stops.** Those are different goals, and only
+the second survives contact with a tool people actually like.
+
 Two separate problems live inside that complaint, and conway answers them
 differently:
 
@@ -200,9 +208,12 @@ works them out is [`DESIGN-context-path.md`](DESIGN-context-path.md).
   pulling.** A selection may name any record anywhere: a sibling's, another
   project's, an unrelated tree's. This costs no containment, because composition
   was never a confinement boundary — confinement governs what an agent can reach
-  with a *tool call*, a different axis. The control belongs on the composer: the
-  operator through the CLI, an installed plugin through the curation seam, and a
-  model only if a plugin hands it a tool that composes paths.
+  with a *tool call*, a different axis. The control belongs on the composer: an
+  installed plugin through the curation seam, and a model only if a plugin hands
+  it a tool that composes paths. The operator composes through the second of
+  those — you say what you are working on and a model assembles the context for
+  it — which is why conway has no curation verbs of its own and does not need
+  any.
 
 Two things follow that are easy to miss. **Whether a path fits is not a property
 of the path**: fitting depends on the model, so it is asked later, by the thing
@@ -251,6 +262,13 @@ forking the project?**
 Extension comes at deliberately different costs, and the cheapest one should cover
 the most ground:
 
+- **An instruction.** Where conway has a view about how work should go — when to
+  compose a fresh context, when to fork rather than continue, what a conway-shaped
+  answer looks like — that view ships as text a model reads, in a file you can
+  open, edit, or delete, arriving and leaving with the capability it describes. It
+  is not compiled in. A plugin makes behaviour swappable; an instruction makes it
+  *readable*, which is cheaper still. The cheapest way to change what conway does
+  is to disagree with a paragraph.
 - **Hooks** — a named event and a command to run. No language requirement, no
   build step, no API to track. A shell script is a legitimate extension. Most of
   what people actually want is this, and it should stay that way.
@@ -260,6 +278,13 @@ the most ground:
   binary.
 - **A plugin compiled in.** Direct access to conway's own types, for a new tool, a
   new provider, or a new routing policy. The most capable and the most expensive.
+
+The cheapest tier carries an obligation the others do not, because prose is not
+compiled and a wrong instruction fails quietly: **an instruction may only name a
+capability that is actually reachable.** Text telling a model to use something
+that is not installed produces an agent that tries and fails forever — the same
+defect as a configuration option that does nothing, and it needs the same kind of
+gate.
 
 ---
 
@@ -347,6 +372,14 @@ So "is this needed to use conway as a full-time coding agent?" is a legitimate a
 high-priority reason to build something, and it outranks architectural tidiness
 when the two disagree.
 
+Run it as a test and not only as a permission: **ask what the CLI using this looks
+like, before deciding to build it.** If the answer is that the binary gets visibly
+better — something you would switch on and keep on — that is the case for the
+feature, and which surface carries it can be argued afterwards. If the CLI would
+not use it, that is not a refusal; some capability genuinely belongs to a pipeline
+or to an embedder. It is a demand for a different justification, which then has to
+be given rather than assumed.
+
 ### 7b. The daily-driver bar is a ladder, not a switch
 
 Nobody is switching away from an existing harness on a flag day, and pretending
@@ -379,6 +412,15 @@ alternative rather than a downgrade.
 "Available, not enabled" is the whole shape. It is §7a's distinction applied to
 the catalogue: the binary ships opinions, and every one of them is visible and
 removable.
+
+**Familiarity is the on-ramp.** conway works differently underneath, and that is
+the point — but someone arriving from another harness should not have to relearn
+where things live in order to find that out. Where a convention costs nothing to
+honour, honour it: configuration in a dot-directory in the home folder, not in a
+location that assumes you already know a desktop standard. Novelty in the
+internals is the product. Novelty in the furniture is a tax on the person deciding
+whether to switch, charged before they have any reason to trust that the rest is
+worth it.
 
 **Grounding.** For interface and interaction design, the
 [DeepSeek harness](https://deepseek.com/harness/en/) is the reference point —
@@ -462,11 +504,38 @@ means point 3 of this list.
    names what changed.** The examples above are instances, not the boundary — the
    same rule covers a referenced configuration that has drifted, a selection that
    no longer fits after a model change, and whatever the next one turns out to be.
+
+   This rule protects against **loss**, not against action. Silent compaction,
+   silent trimming and silent substitution are intolerable because each destroys
+   something you cannot get back — the silence hides the damage, but the damage
+   is the offence. Composing a context takes nothing away: the records are still
+   there, the old path still resolves, and a wrong choice costs a correction
+   rather than a loss. So conway may work out what a stated task needs and act on
+   it, provided it says what it did. Name the work and assembling the context to
+   do it is part of doing it, not a separate decision to be asked about. What it
+   may never do is choose an *outcome* — which model, what a refusal becomes,
+   what "enough" means — because those are the judgments two reasonable people
+   answer differently, which is §8.2's test doing its ordinary job.
 4. **The idioms are few and clearly stated.** A small number of guiding idioms,
    applied consistently, beats a large number of features.
 5. **Extension is low-friction at every level.** If the cheapest way to change
    behaviour is to fork the repo, that is a bug report against the extension
    surface.
+
+   A surface is proven when **something that is not its author uses it to do a
+   thing someone wanted** — not when it compiles, and not when its tests pass. A
+   consumer written to exercise a seam demonstrates that the seam compiles, which
+   was never in question, and it will happily certify a surface that cannot carry
+   the case nobody had yet. So this is a sequencing rule: build a seam when there
+   is a consumer for it, not in anticipation of one, and let the proof arrive
+   before the seam accumulates dependents.
+
+   The same rule stated from the other end, because it is the one that catches
+   things earliest: **nothing is built on theory.** A feature lands with a
+   well-defined use case someone can exercise on the day it ships — not a design
+   that anticipates one, not a test that simulates one, but a real path through
+   the shipped binary a person can walk. If there is nothing to exercise, the
+   feature is not finished, whatever its tests say.
 6. **An invariant belongs to the seam, not to its call sites.** When something
    must be true across an extension point, enforce it at the point itself — a
    wrapper around it — rather than at each place that happens to use it.
@@ -501,8 +570,9 @@ means point 3 of this list.
 
 - A desktop application.
 - Being the harness with the most features.
-- Guessing what the user meant. Where the answer depends on the workload, conway
-  asks or refuses; it does not pick.
+- Guessing what you *want*. Where the outcome depends on the workload, conway asks
+  or refuses; it does not pick. Working out what a task you named requires is not
+  this — see §8.3.
 - Sandboxing conway cannot actually deliver. Say what is confined and what is not,
   precisely, rather than implying containment that does not hold.
 
@@ -533,28 +603,13 @@ someone will actually read it.
 Open questions, in the sense of §8.1: each one is a place the guidance is
 currently insufficient, and each is waiting on a decision rather than on work.
 
-**Does an operator get a curation command?** conway has the machinery to build,
-validate, and share a curated path, and a plugin can drive it. A person cannot —
-there is no command to type. Either an operator-facing curation command is part of
-what conway promises, or curation is something you get through a plugin and this
-page should stop implying otherwise. Both are defensible; the current silence is
-not.
-
-**When is an extension surface proven?** §8.5 says extension must be low-friction,
-and the specification says a first-party plugin needing a private interface is a
-bug report against the extension surface. Neither says what makes a surface
-*proven*. The candidate answer: a surface is proven when something that is not its
-author uses it to do a thing someone wanted — not when it compiles, not when its
-tests pass. That would make it a sequencing rule, not an argument against building
-a seam early: the proof should arrive before the seam accumulates dependents.
-
 **Does a shipped capability owe a page?** There is a documentation gate on
 changes, and nothing that says an installable capability must be findable from an
 index. A capability nobody can find is close to one that does not exist, and the
 failure is quiet — nothing breaks, and it works perfectly for everyone who already
 knows it is there.
 
-**Should the vocabulary in §5f be pushed into the other documents?** This page now
+**Should the vocabulary in §5 be pushed into the other documents?** This page now
 uses one word per idea. `PHILOSOPHY.md` and `ARCHITECTURE.md` do not yet, and in
 at least one place they disagree about which of *agent* or *session* owns a head.
 Adopting it is mechanical once it is agreed; the question is whether it is agreed.

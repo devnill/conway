@@ -131,7 +131,7 @@ conway from within a project, set `session.root` to an absolute path:
 ```
 
 Your input history is separate from session data and always lives at
-`~/.conway/history` (or `$XDG_CONFIG_HOME/conway/history`) — see
+`~/.conway/history` (or `$CONWAY_CONFIG_DIR/history`) — see
 [`interactive.md`](interactive.md#composing-input).
 
 ## Resuming

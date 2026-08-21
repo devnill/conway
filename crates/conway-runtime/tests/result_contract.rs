@@ -256,6 +256,7 @@ fn build_loop_with_contract(
 
     let deps = Arc::new(LoopDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         attempt,
         registry: plugin_registry,
@@ -879,6 +880,7 @@ async fn a_spawned_childs_result_contract_is_enforced_through_subagent_host() {
 
     let runtime = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health,
         backends,
@@ -1192,6 +1194,7 @@ async fn keep_alive_with_a_result_contract_is_refused_by_subagent_host() {
 
     let runtime = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health,
         backends,

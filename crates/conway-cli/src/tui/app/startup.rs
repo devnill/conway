@@ -380,7 +380,7 @@ mod tests {
     /// (Structured render -- can never match reliably) written as a `deny`
     /// rule, because deny rules are validated and refused BEFORE any trust
     /// gating (deny applies from every file, trusted or not), so the test
-    /// needs no recorded trust decision and no XDG env isolation.
+    /// needs no recorded trust decision and no user config env isolation.
     #[tokio::test]
     async fn registration_error_surfaces_as_a_transcript_error() {
         let project = tempfile::TempDir::new().expect("tempdir");
@@ -575,7 +575,7 @@ mod tests {
             .with_router(router)
             // `conway` no longer
             // compiles either dialect in -- `from_config` also layers in
-            // whatever the live XDG-global `settings.json` declares (this
+            // whatever the live user config-global `settings.json` declares (this
             // function's own doc), so both factories are registered here,
             // matching the real binary's own always-both default.
             .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))

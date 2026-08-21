@@ -42,7 +42,8 @@ fn call(tool: &str, arguments: serde_json::Value) -> ToolCall {
 #[tokio::test]
 async fn unknown_category_tag_degrades_to_execute() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "unknown_tags.py", common::UNKNOWN_TAG_PLUGIN);
+    let spec =
+        common::spec_for_warmed(dir.path(), "unknown_tags.py", common::UNKNOWN_TAG_PLUGIN).await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -62,7 +63,8 @@ async fn unknown_category_tag_degrades_to_execute() {
 #[tokio::test]
 async fn unknown_permission_tag_degrades_to_dangerous() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "unknown_tags.py", common::UNKNOWN_TAG_PLUGIN);
+    let spec =
+        common::spec_for_warmed(dir.path(), "unknown_tags.py", common::UNKNOWN_TAG_PLUGIN).await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -81,7 +83,8 @@ async fn unknown_permission_tag_degrades_to_dangerous() {
 #[tokio::test]
 async fn unknown_tag_tool_still_invokes_normally() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "unknown_tags.py", common::UNKNOWN_TAG_PLUGIN);
+    let spec =
+        common::spec_for_warmed(dir.path(), "unknown_tags.py", common::UNKNOWN_TAG_PLUGIN).await;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("degradation loads the tool");
@@ -109,7 +112,8 @@ async fn unknown_tag_tool_still_invokes_normally() {
 #[tokio::test]
 async fn unknown_content_block_is_dropped_counted_and_surfaced() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "unknown_block.py", common::UNKNOWN_BLOCK_PLUGIN);
+    let spec =
+        common::spec_for_warmed(dir.path(), "unknown_block.py", common::UNKNOWN_BLOCK_PLUGIN).await;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("discovery has only known tags");
@@ -175,11 +179,12 @@ async fn unknown_content_block_is_dropped_counted_and_surfaced() {
 #[tokio::test]
 async fn unknown_content_block_over_persistent_transport_is_dropped_and_surfaced() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "persistent_unknown_block.py",
         common::PERSISTENT_UNKNOWN_BLOCK_PLUGIN,
-    );
+    )
+    .await;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("discovery has only known tags");
@@ -256,7 +261,7 @@ print(json.dumps({
     }],
 }))
 "#;
-    let spec = common::spec_for(dir.path(), "nonstring.py", manifest);
+    let spec = common::spec_for_warmed(dir.path(), "nonstring.py", manifest).await;
 
     let err = SubprocessPlugin::discover(spec)
         .await
@@ -285,7 +290,7 @@ print(json.dumps({
     }],
 }))
 "#;
-    let spec = common::spec_for(dir.path(), "nonstringperm.py", manifest);
+    let spec = common::spec_for_warmed(dir.path(), "nonstringperm.py", manifest).await;
 
     let err = SubprocessPlugin::discover(spec)
         .await
@@ -319,7 +324,7 @@ if req.get("op") == "tool.spec/1":
 else:
     print(json.dumps({"blocks": [{"type": "text", "text": "no ok here"}]}))
 "#;
-    let spec = common::spec_for(dir.path(), "nook.py", plugin_src);
+    let spec = common::spec_for_warmed(dir.path(), "nook.py", plugin_src).await;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("discovery is well-formed");
@@ -356,7 +361,7 @@ if req.get("op") == "tool.spec/1":
 else:
     print(json.dumps({"ok": False}))
 "#;
-    let spec = common::spec_for(dir.path(), "nerr.py", plugin_src);
+    let spec = common::spec_for_warmed(dir.path(), "nerr.py", plugin_src).await;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("discovery is well-formed");
@@ -390,7 +395,7 @@ print(json.dumps({
     }],
 }))
 "#;
-    let spec = common::spec_for(dir.path(), "emptyid.py", manifest);
+    let spec = common::spec_for_warmed(dir.path(), "emptyid.py", manifest).await;
 
     let err = SubprocessPlugin::discover(spec)
         .await

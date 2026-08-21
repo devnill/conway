@@ -15,7 +15,7 @@
 //! [`conway::ConwayBuilder::discover`], which already exists, already
 //! layers a documented, inspectable, built-in default over every one of
 //! those fourteen fields (`config::merge::default_document`, reachable
-//! through the same five-source precedence chain -- default < XDG < project
+//! through the same five-source precedence chain -- default < user config < project
 //! < env < CLI -- a real host's settings file/environment/CLI flags flow
 //! through), and gets a host to a first answer in well under half the
 //! lines, with zero struct-literal ceremony -- measured directly, not
@@ -59,13 +59,13 @@
 //!
 //! This example genuinely calls [`conway::ConwayBuilder::discover`] -- the
 //! real entry point a host application uses, which reads THIS process's own
-//! `$XDG_CONFIG_HOME`/`~/.conway/settings.json` and walks up from its
+//! `$CONWAY_CONFIG_DIR`/`~/.conway/settings.json` and walks up from its
 //! current directory looking for a project `.conway/settings.json`. Left
 //! alone, that means this example's output would depend on whatever happens
 //! to be configured on the machine running it -- fine for a real host (it
 //! WANTS its own ambient configuration), wrong for an example every reader
 //! should be able to run and get the identical result from. `main` below
-//! points `XDG_CONFIG_HOME` and the process `cwd` at fresh, empty scratch
+//! points `CONWAY_CONFIG_DIR` and the process `cwd` at fresh, empty scratch
 //! directories before calling `discover()`, purely so this stays
 //! reproducible -- `discover()` itself is not special-cased or mocked, it
 //! is simply given nothing to find, the same "no ambient config" case
@@ -90,7 +90,7 @@ use conway::{ConwayBuilder, ModelRef, PluginSelection, SessionSpec};
 // crate.
 use conway_testkit::{FakeBackend, FakeRouter, FakeStore};
 
-/// Points this process's own `$XDG_CONFIG_HOME` and current directory at
+/// Points this process's own `$CONWAY_CONFIG_DIR` and current directory at
 /// fresh, empty scratch directories, so the `ConwayBuilder::discover()`
 /// call below deterministically finds nothing regardless of the machine
 /// running this example -- see this module's own doc for why. A real host
@@ -100,11 +100,11 @@ fn isolate_ambient_config_for_this_example() {
         "conway-discover-getting-started-example-{}",
         std::process::id()
     ));
-    let xdg = scratch.join("xdg-config-home");
+    let config_dir = scratch.join("config_dir-config-home");
     let cwd = scratch.join("cwd");
-    std::fs::create_dir_all(&xdg).expect("create scratch XDG_CONFIG_HOME");
+    std::fs::create_dir_all(&config_dir).expect("create scratch CONWAY_CONFIG_DIR");
     std::fs::create_dir_all(&cwd).expect("create scratch cwd");
-    std::env::set_var("XDG_CONFIG_HOME", &xdg);
+    std::env::set_var("CONWAY_CONFIG_DIR", &config_dir);
     std::env::set_current_dir(&cwd).expect("set scratch cwd");
 }
 

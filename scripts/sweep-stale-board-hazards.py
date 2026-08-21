@@ -175,7 +175,7 @@ def main() -> int:
     print()
 
     print(f"HOME-REDIRECT -- {len(home_hits)} item(s) instruct redirecting HOME unconditionally")
-    print(f"  suggested fix: config isolation landed 2026-08-13 -- prefer XDG_CONFIG_HOME")
+    print(f"  suggested fix: config isolation landed 2026-08-13 -- prefer CONWAY_CONFIG_DIR")
     print(f"  alone, or if HOME must be redirected, preserve CARGO_HOME/RUSTUP_HOME too")
     for id_, status, title, ctx in home_hits:
         print(f"  [{status:9}] {id_}  {title[:70]}")

@@ -180,6 +180,7 @@ fn build_runtime(
 
     let runtime = Runtime::new(RuntimeDeps {
         store: store_dyn,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
@@ -481,6 +482,7 @@ async fn spawn_without_agent_def_inherits_the_parents_role() {
         prompt: "do it".into(),
         agent_def: None,
         role: None,
+        pin: None,
         tools: None,
         budget: Budget::default(),
         result_contract: None,
@@ -992,6 +994,7 @@ async fn await_result_blocks_until_the_child_actually_finishes_then_resolves_eve
 
     let runtime = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
@@ -1580,6 +1583,7 @@ async fn tool_ctx_subagents_is_the_runtime_itself() {
 
     let runtime = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
@@ -1726,6 +1730,7 @@ fn build_probe_runtime(
 
     let runtime = Runtime::new(RuntimeDeps {
         store: store.clone(),
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
@@ -1761,6 +1766,7 @@ fn build_runtime_over(store: Arc<dyn SessionStore>, script: Vec<ScriptedTurn>) -
 
     Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
@@ -1786,6 +1792,7 @@ fn spawn_spec_with_cwd(prompt: &str, cwd: Option<PathBuf>) -> SubagentSpec {
         prompt: prompt.to_string(),
         agent_def: None,
         role: None,
+        pin: None,
         tools: None,
         budget: Budget::default(),
         result_contract: None,
@@ -2413,6 +2420,7 @@ async fn resume_root_preserves_persisted_root_unchanged() {
             session: confined_session,
             agent_def: None,
             role: None,
+            model: None,
             tools: None,
             budget: Budget::default(),
             cwd: None,
@@ -2475,6 +2483,7 @@ async fn resume_root_cwd_override_outside_persisted_root_fails() {
             session: confined_session,
             agent_def: None,
             role: None,
+            model: None,
             tools: None,
             budget: Budget::default(),
             cwd: Some(outside_dir.path().to_path_buf()),
@@ -2726,6 +2735,7 @@ fn build_runtime_with_two_tools_and_defs(
 
     let runtime = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
@@ -2877,6 +2887,7 @@ fn build_runtime_with_pin_aware_router(
 
     let runtime = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
@@ -2949,6 +2960,57 @@ async fn fork_child_inherits_the_parents_agent_def_pinned_model() {
         "the forked child must route on the restricted def's inherited model pin, not the \
          role's plain default -- expected {:?}, the role default is {:?}, got {:?}",
         pinned_model_ref().model,
+        default_model_ref().model,
+        child_call.model
+    );
+}
+
+/// (board item "no way to change model mid-session"): `SubagentSpec::pin`,
+/// when explicitly set on the fork request itself, wins outright over the
+/// fork-only inheritance fill's own `agent_def.model` -- the SAME
+/// call-site-over-inheritance precedence `role`/`tools` already have
+/// (`subagent.rs::start`'s `spec.pin.clone().or_else(|| agent_def.and_then(
+/// |d| d.model.clone()))`). Discriminated the identical way the guard just
+/// above is: the child's own `GenerateRequest.model`, under
+/// `pin_aware_router` (not `FakeRouter::single`, which cannot tell one pin
+/// from another).
+///
+/// The forker here runs under NO `agent_def` at all (`root_spec` sets
+/// none), so absent this override the child would inherit no pin and
+/// `pin_aware_router` would fall back to the "planner" role's plain chain
+/// (`default_model_ref`) -- proving the assertion below genuinely
+/// discriminates the override, not merely the pre-existing agent_def fill
+/// `fork_child_inherits_the_parents_agent_def_pinned_model` already covers.
+#[tokio::test]
+async fn fork_child_with_an_explicit_pin_override_wins_over_no_inherited_agent_def() {
+    let (runtime, backend) = build_runtime_with_pin_aware_router(2, HashMap::new());
+
+    let root = runtime.start_root(root_spec("investigate")).await.unwrap();
+    let mut stream = runtime.subscribe();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    let mut child_spec = SubagentSpec::fork("go", Budget::default());
+    assert!(
+        child_spec.agent_def.is_none(),
+        "the forker has no agent_def, so an unpinned fork would route on the plain default"
+    );
+    child_spec.pin = Some(pinned_model_ref());
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, child_spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let calls = backend.calls();
+    let child_call = calls
+        .last()
+        .expect("the child must have made at least one generate call");
+    assert_eq!(
+        child_call.model,
+        pinned_model_ref().model,
+        "an explicit SubagentSpec::pin must win over routing that would otherwise fall back to \
+         the role's plain default ({:?}), got {:?}",
         default_model_ref().model,
         child_call.model
     );
@@ -3117,6 +3179,7 @@ async fn spawn_child_declines_the_parents_agent_def_even_though_a_fork_would_inh
         prompt: "do it".into(),
         agent_def: None,
         role: None,
+        pin: None,
         tools: None,
         budget: Budget::default(),
         result_contract: None,
@@ -3721,6 +3784,7 @@ fn build_runtime_with_panicking_reviewer(turns: usize) -> (Arc<Runtime>, Arc<Scr
 
     let runtime = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,

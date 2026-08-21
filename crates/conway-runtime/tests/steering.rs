@@ -260,6 +260,7 @@ fn build_loop(
 
     let deps = Arc::new(LoopDeps {
         store: store.clone(),
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         attempt,
         registry: plugin_registry,
@@ -649,12 +650,13 @@ async fn steer_lands_only_at_the_next_turn_boundary_as_a_parent_steer_segment() 
 
 /// Criterion (source-level/structural): no code path injects into a
 /// context outside `drain_inbox` -- `ContextInput` is constructed exactly
-/// once per turn, and its `path` is always derived from `all_records`
-/// (sourced from a fresh `SessionStore::read` via `path_from_legacy`),
-/// never from anything `drain_inbox` returns directly (`drain_inbox`
-/// returns `()`, not records -- see `mailbox::DrainEffect::Persist`'s own
-/// doc on why a steer becomes visible only by first becoming a stored
-/// record).
+/// once per turn, and its `path` is always derived from
+/// `resolve_default_path` (D1-3d-wire; runs its own fresh `SessionStore::
+/// read` internally, replacing the transitional `path_from_legacy` +
+/// `all_records` shape this test used to pin), never from anything
+/// `drain_inbox` returns directly (`drain_inbox` returns `()`, not records --
+/// see `mailbox::DrainEffect::Persist`'s own doc on why a steer becomes
+/// visible only by first becoming a stored record).
 #[test]
 fn context_own_is_only_ever_populated_from_a_fresh_store_read() {
     let src = include_str!("../src/agent_loop.rs");
@@ -664,8 +666,10 @@ fn context_own_is_only_ever_populated_from_a_fresh_store_read() {
         "ContextInput must be constructed in exactly one place"
     );
     assert!(
-        src.contains("path_from_legacy(self.inherited.as_ref(), &all_records, self.session)"),
-        "path must be derived from path_from_legacy over all_records, sourced from a fresh store read"
+        src.contains(
+            "resolve_default_path(\n                    &self.deps.resolver,\n                    self.deps.store.as_ref(),\n                    self.deps.path_store.as_ref(),\n                    &self.session,\n                )"
+        ),
+        "path must be derived from resolve_default_path over this session's own store/resolver/path_store"
     );
     assert!(
         src.contains("async fn drain_inbox(&mut self) -> Result<(), RuntimeError>"),

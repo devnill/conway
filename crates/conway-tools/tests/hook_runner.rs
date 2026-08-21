@@ -22,6 +22,7 @@ use conway_core::error::HookFailure;
 use conway_core::hook::{ContextDelta, HookAnswer, HookEvent, HookInvocation};
 use conway_core::ports::HookRunner;
 use conway_tools::hook_runner::ProcessHookRunner;
+use conway_tools::process::unix::kill_group;
 use tempfile::TempDir;
 
 /// Writes `script` to `dir` as an executable POSIX shell script and returns
@@ -31,6 +32,113 @@ fn fixture(dir: &Path, name: &str, script: &str) -> PathBuf {
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
+}
+
+/// Executes `path` once, with stdin closed, and discards everything about
+/// the result -- before returning, so a timed run against the SAME file
+/// immediately after pays the "first exec of a freshly written,
+/// freshly-chmod'd script" OS-side tax (board item `01M09MPZ9C188AHNBKWEJ3CEQA`;
+/// see `warm_hanging_fixture`'s own doc below for the measurement) OUTSIDE
+/// the clock, not inside it.
+///
+/// This simpler helper, not `warm_hanging_fixture`, is the right one for
+/// every fixture below that actually exits on its own (a `cat`-then-`case`
+/// or a plain `exit N`, none of which trap SIGTERM or background a
+/// grandchild): waiting for exit is safe and sufficient here, unlike the
+/// two hang fixtures `warm_hanging_fixture` exists for.
+async fn warm(path: &Path) {
+    let child = tokio::process::Command::new(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Ok(mut child) = child {
+        // Outcome deliberately discarded: warming only cares that the exec
+        // happened (and whatever OS-side check gates it completed), not
+        // what the script did with no input.
+        let _ = child.wait().await;
+    }
+}
+
+/// Executes `path` once and force-kills it as soon as `marker` is written
+/// (or a generous deadline elapses), before the REAL, timed run below spawns
+/// the SAME file through [`ProcessHookRunner`]'s own bounded `timeout_ms`
+/// clock -- pays the "first exec of a freshly written, freshly-chmod'd
+/// script" OS-side tax (board item `01M09MPZ9C188AHNBKWEJ3CEQA`; see
+/// `conway-plugin-subprocess`'s `tests/common/mod.rs::warm` for the full
+/// measurement: one run caught 23.5s wall clock at ~0% CPU for a brand-new
+/// script's first exec, with later execs of the SAME file costing tens of
+/// milliseconds) here, discarded, so `run`'s own `timeout_ms` deadline below
+/// measures the mechanism it says it measures, not an OS-dependent
+/// first-exec cost.
+///
+/// Confirmed as a live race in THIS crate, not inherited from the sibling
+/// crate's report: with `hang_trapping_sigterm_is_killed_and_reported_as_
+/// timed_out`'s 2000ms `timeout_ms` and no warm-up, injecting a few hundred
+/// freshly written/exec'd scripts' worth of concurrent churn from an
+/// unrelated process reproduced the exact panic `wait_for_pgid` below
+/// guards against ("fixture never wrote its pgid") on every attempt -- the
+/// runner's own kill fired before the fixture ever reached its `echo $$`
+/// line. The same churn against an ALREADY-WARMED copy of the identical
+/// fixture measured ~70ms to `echo $$`, confirming the tax is keyed to the
+/// specific FILE (consistent with the `com.apple.provenance` extended
+/// attribute a fresh file carries), not shared/system-wide contention --
+/// so warming each fixture, not raising `timeout_ms`, is the fix.
+///
+/// This is intentionally NOT a call to `conway-plugin-subprocess`'s own
+/// `common::warm`: that helper lives in a different crate's private
+/// `tests/` module and cannot be imported here, and more fundamentally its
+/// contract does not fit these fixtures anyway. That helper waits for the
+/// warmed process to EXIT; these two fixtures deliberately never exit on
+/// their own (`while true; do sleep 1; done` past a trapped SIGTERM), so
+/// waiting for exit would turn warming into the hang itself. Instead this
+/// waits only until `marker` is written -- proof the script got past its
+/// own exec and reached its own first lines -- or a generous deadline
+/// elapses, then tears down the warm-up child via [`kill_group`] (the SAME
+/// `process_group(0)` + SIGTERM-then-SIGKILL primitive `ProcessHookRunner`
+/// itself uses on the real, timed path below) and reaps it. Using
+/// `kill_group` here, not a bare `Child::kill`, matters for
+/// `backgrounded_grandchild_does_not_survive_the_timeout_path`'s own
+/// fixture specifically: it backgrounds a `sleep 300 &` right after
+/// writing `marker`, so a warm-up that only killed the direct child could
+/// race that background job's own spawn and leak a five-minute `sleep`
+/// orphan; signaling the whole group tears down whatever the script has
+/// spawned by the time `marker` appears, backgrounded job included.
+/// `marker` is deleted afterward so the REAL run below starts from a clean
+/// file rather than a stale pid this warm-up child already wrote: a
+/// stale-but-present pgid would let `assert_group_dead` succeed instantly
+/// against an already-dead warm-up process, proving nothing about the REAL
+/// invocation this test means to time.
+async fn warm_hanging_fixture(path: &Path, marker: &Path) {
+    let mut command = tokio::process::Command::new(path);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0);
+    let Ok(mut child) = command.spawn() else {
+        // The real, timed run immediately after will hit (and report) the
+        // same spawn failure -- not this helper's problem to report.
+        return;
+    };
+    let Some(pgid) = child.id().map(|id| id as i32) else {
+        // Already exited before its pid could be read -- nothing left to
+        // warm or tear down.
+        return;
+    };
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while tokio::time::Instant::now() < deadline {
+        let wrote_marker = std::fs::read_to_string(marker)
+            .map(|contents| !contents.trim().is_empty())
+            .unwrap_or(false);
+        if wrote_marker {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    kill_group(&mut child, pgid).await;
+    let _ = std::fs::remove_file(marker);
 }
 
 /// Runs `invocation`, retrying a bounded number of times if the spawn loses a
@@ -146,6 +254,7 @@ case "$input" in
 esac
 "#,
     );
+    warm(&script).await;
 
     let runner = ProcessHookRunner::new();
     let invocation = invocation(
@@ -175,6 +284,7 @@ esac
 async fn empty_stdout_on_success_is_the_default_answer() {
     let dir = TempDir::new().unwrap();
     let script = fixture(dir.path(), "silent.sh", "#!/bin/sh\nexit 0\n");
+    warm(&script).await;
 
     let runner = ProcessHookRunner::new();
     let invocation = invocation(
@@ -239,6 +349,7 @@ case "$input" in
 esac
 "#,
     );
+    warm(&script).await;
 
     let runner = ProcessHookRunner::new();
     let invocation = invocation(
@@ -296,6 +407,7 @@ async fn nonexistent_command_fails_closed_not_a_panic() {
 async fn nonzero_exit_fails_closed() {
     let dir = TempDir::new().unwrap();
     let script = fixture(dir.path(), "fails.sh", "#!/bin/sh\nexit 7\n");
+    warm(&script).await;
 
     let runner = ProcessHookRunner::new();
     let invocation = invocation(
@@ -319,6 +431,7 @@ async fn unparseable_stdout_fails_closed_even_on_a_clean_exit() {
         "garbage.sh",
         "#!/bin/sh\nprintf 'not json at all'\nexit 0\n",
     );
+    warm(&script).await;
 
     let runner = ProcessHookRunner::new();
     let invocation = invocation(
@@ -344,9 +457,13 @@ async fn unparseable_stdout_fails_closed_even_on_a_clean_exit() {
 /// flaky under `cargo test`'s default parallelism when both ran at once --
 /// the fixture's own `echo $$ > file` line, which runs before anything
 /// hangs, was sometimes still not visible even after several seconds of
-/// polling, purely from scheduling contention between the two forking
-/// loops. Running one at a time removes that contention; it changes
-/// nothing about what either test proves.
+/// polling. At the time this was attributed to scheduling contention
+/// between the two forking loops; `warm_hanging_fixture` below (board item
+/// `01M0HXD6CKDZGVZP29FKKBQQ6S`) names the more precise root cause -- a
+/// freshly-written, freshly-chmod'd script's first exec, not steady-state
+/// scheduling -- but this lock still removes one real source of CPU
+/// contention between the two, so it stays; it changes nothing about what
+/// either test proves.
 static PROCESS_GROUP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// A hook that traps SIGTERM and would otherwise run forever is killed
@@ -370,6 +487,7 @@ while true; do sleep 1; done
             pgid_file = pgid_file.to_str().unwrap()
         ),
     );
+    warm_hanging_fixture(&script, &pgid_file).await;
 
     let runner = ProcessHookRunner::new();
     let invocation = invocation(
@@ -417,6 +535,7 @@ while true; do sleep 1; done
             pgid_file = pgid_file.to_str().unwrap()
         ),
     );
+    warm_hanging_fixture(&script, &pgid_file).await;
 
     let runner = ProcessHookRunner::new();
     let invocation = invocation(
@@ -445,6 +564,21 @@ while true; do sleep 1; done
 /// poll rather than assume it is already there the instant `run` returns
 /// (the file write and the runner's own return race benignly; both settle
 /// well inside this poll's budget).
+///
+/// This 10s deadline used to be racing `ProcessHookRunner`'s own 2000ms
+/// `timeout_ms` for the SAME fixture's first exec (board item
+/// `01M0HXD6CKDZGVZP29FKKBQQ6S`): a freshly-written, freshly-chmod'd
+/// script's first exec can cost seconds at ~0% CPU (measured directly
+/// against these exact fixtures under injected churn: a worst case of
+/// ~8s to reach `echo $$`), so under load the runner could kill the
+/// process before it ever wrote its pgid, and this loop would then also
+/// exhaust its own budget and panic below -- a wrong-reason failure, not
+/// a real assertion failure about group teardown. Both callers now call
+/// `warm_hanging_fixture` on the SAME script before the timed `run`, which
+/// pays that tax outside `timeout_ms`'s clock; with warming in place this
+/// loop only has to cover an already-warm process actually reaching its
+/// own second line, which is near-instant, so 10s stays a correctness
+/// backstop, not a budget this loop is expected to need.
 fn wait_for_pgid(path: &Path) -> String {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {

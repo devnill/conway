@@ -290,6 +290,10 @@ impl SessionHandle {
             // `None` -> the runtime inherits the parent's effective role
             // (`subagent.rs`'s inheritance fallback), same routing as the asker.
             role: None,
+            // `None` -> the runtime inherits the parent's (possibly
+            // inherited-def) model pin, unchanged -- an ask is not a model
+            // switch.
+            pin: None,
             tools: None,
             budget: Budget::default(),
             result_contract: None,

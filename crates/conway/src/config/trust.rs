@@ -42,7 +42,7 @@
 //! ## Global vs project (D4 §4)
 //!
 //! This module is consulted for PROJECT-scoped files only. The operator's
-//! own global file (`<xdg>/permissions.json`) is trusted by authorship --
+//! own global file (`<config_dir>/permissions.json`) is trusted by authorship --
 //! asking an operator to trust their own file is theater that teaches
 //! people to click through prompts. `conway-cli`'s startup loader
 //! (`tui/app.rs`) is the caller that makes this split concrete: it never
@@ -117,7 +117,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// The on-disk shape of `<xdg>/trust.json`. `permission_files` maps a
+/// The on-disk shape of `<config_dir>/trust.json`. `permission_files` maps a
 /// path's `Display` string (JSON object keys must be strings; `PathBuf`
 /// has no portable string-key `Serialize` of its own) to the record of
 /// what was last explicitly trusted at that path.
@@ -164,12 +164,12 @@ fn path_key(path: &Path) -> String {
 
 impl TrustStore {
     /// The one global-only location, alongside every other user-scoped
-    /// file this crate resolves (`xdg_config_path`, `history_file_path`) --
+    /// file this crate resolves (`user_config_path`, `history_file_path`) --
     /// a third consumer of machinery that already exists, not a new
     /// discovery paradigm. Deliberately global-only: a project-scoped
     /// trust file would let untrusted content trust itself (D4 §4).
     pub fn path(env: &HashMap<String, String>) -> Option<PathBuf> {
-        super::discovery::xdg_config_path(env)
+        super::discovery::user_config_path(env)
             .and_then(|settings| settings.parent().map(|dir| dir.join("trust.json")))
     }
 
@@ -311,16 +311,16 @@ mod tests {
         COUNTER.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn env_for(xdg: &Path) -> HashMap<String, String> {
+    fn env_for(config_dir: &Path) -> HashMap<String, String> {
         let mut env = HashMap::new();
-        env.insert("XDG_CONFIG_HOME".to_string(), xdg.display().to_string());
+        env.insert("CONWAY_CONFIG_DIR".to_string(), config_dir.display().to_string());
         env
     }
 
     #[test]
     fn an_untrusted_file_is_untrusted_by_default() {
-        let xdg = tempfile_dir();
-        let env = env_for(&xdg);
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
         let store = TrustStore::load(&env);
         let project = tempfile_dir().join("permissions.json");
         fs::write(&project, r#"{"allow":["bash:*"]}"#).unwrap();
@@ -330,8 +330,8 @@ mod tests {
 
     #[test]
     fn trusting_a_file_makes_is_trusted_true_for_its_current_bytes() {
-        let xdg = tempfile_dir();
-        let env = env_for(&xdg);
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
         let project = tempfile_dir().join("permissions.json");
         fs::write(&project, r#"{"allow":["bash:cargo test"]}"#).unwrap();
 
@@ -347,8 +347,8 @@ mod tests {
     /// matching, because the recorded digest is of the OLD bytes.
     #[test]
     fn editing_a_trusted_files_content_de_trusts_it() {
-        let xdg = tempfile_dir();
-        let env = env_for(&xdg);
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
         let project = tempfile_dir().join("permissions.json");
         fs::write(&project, r#"{"allow":["bash:cargo test"]}"#).unwrap();
         TrustStore::trust(&env, &project).expect("trust succeeds");
@@ -369,8 +369,8 @@ mod tests {
     /// another's, even with byte-identical content.
     #[test]
     fn trust_does_not_leak_across_paths() {
-        let xdg = tempfile_dir();
-        let env = env_for(&xdg);
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
         let project_a = tempfile_dir().join("permissions.json");
         let project_b = tempfile_dir().join("permissions.json");
         let contents = r#"{"allow":["bash:cargo test"]}"#;
@@ -391,8 +391,8 @@ mod tests {
     /// A missing `trust.json` trusts nothing.
     #[test]
     fn a_missing_trust_file_trusts_nothing() {
-        let xdg = tempfile_dir();
-        let env = env_for(&xdg);
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
         let store = TrustStore::load(&env);
         assert!(!store.is_trusted(Path::new("/does/not/matter"), "anything"));
     }
@@ -401,10 +401,10 @@ mod tests {
     /// applied and never a panic.
     #[test]
     fn a_corrupt_trust_file_is_treated_as_empty() {
-        let xdg = tempfile_dir();
-        fs::create_dir_all(xdg.join("conway")).unwrap();
-        fs::write(xdg.join("conway").join("trust.json"), "not json at all").unwrap();
-        let env = env_for(&xdg);
+        let config_dir = tempfile_dir();
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(config_dir.join("trust.json"), "not json at all").unwrap();
+        let env = env_for(&config_dir);
 
         let store = TrustStore::load(&env);
         assert!(!store.is_trusted(Path::new("/anything"), "anything"));
@@ -424,8 +424,8 @@ mod tests {
     /// reasoning this test exists to keep honest).
     #[test]
     fn an_unrecognized_key_in_trust_json_does_not_prevent_a_recorded_decision_from_matching() {
-        let xdg = tempfile_dir();
-        fs::create_dir_all(xdg.join("conway")).unwrap();
+        let config_dir = tempfile_dir();
+        fs::create_dir_all(&config_dir).unwrap();
         let project = tempfile_dir().join("permissions.json");
         let contents = r#"{"allow":["bash:cargo test"]}"#;
         fs::write(&project, contents).unwrap();
@@ -444,8 +444,8 @@ mod tests {
             project.display().to_string(),
             digest,
         );
-        fs::write(xdg.join("conway").join("trust.json"), trust_json).unwrap();
-        let env = env_for(&xdg);
+        fs::write(config_dir.join("trust.json"), trust_json).unwrap();
+        let env = env_for(&config_dir);
 
         let store = TrustStore::load(&env);
         assert!(
@@ -460,8 +460,8 @@ mod tests {
     #[test]
     fn a_world_writable_trust_file_is_refused_like_a_loose_ssh_key() {
         use std::os::unix::fs::PermissionsExt;
-        let xdg = tempfile_dir();
-        let env = env_for(&xdg);
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
         let project = tempfile_dir().join("permissions.json");
         fs::write(&project, r#"{"allow":["bash:cargo test"]}"#).unwrap();
         TrustStore::trust(&env, &project).expect("trust succeeds");

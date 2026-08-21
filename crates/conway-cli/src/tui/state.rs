@@ -21,7 +21,7 @@
 //! this split is purely organizational: `AppState` is exactly the same
 //! type, with exactly the same fields and methods, as before it moved.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
@@ -115,6 +115,81 @@ pub struct IntentConfirm {
     pub parent: AgentId,
 }
 
+/// One row of the `[p]` field editor: a top-level argument field of the
+/// call being authorized, the value the call carries for it, and whether the
+/// operator has pinned it (match this exact value) or left it wildcard
+/// (match any value). Pinned here is the *narrowing* direction: every field
+/// starts wildcard (preserving today's `[p]`-then-grant = `tool:*`
+/// semantics), and the operator pins fields to narrow the grant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatternField {
+    pub name: String,
+    pub value: serde_json::Value,
+    pub pinned: bool,
+}
+
+/// The state carried by [`Mode::EditingPattern`]: the prompt being edited
+/// (moved out of `AwaitingPermission`, since [`PendingPrompt`] is not
+/// `Clone`), the tool name, the per-field rows, and the selected row. The
+/// grant scope is NOT carried here -- it lives on [`AppState`] as
+/// `permission_grant_scope` (cycled by the prompt's `s` key) and is read at
+/// submit, so the edit modal and the prompt share one scope source.
+/// Manual `Debug`/`PartialEq`: [`PendingPrompt`] carries a `oneshot::Sender`
+/// (not `Debug`/`Eq`), so the derive is impossible. The prompt is ignored for
+/// both -- identity is `tool + fields + cursor`, and the [`Mode::EditingPattern`]
+/// Debug arm (`state/modal.rs`) formats only the tool, so the prompt never
+/// reaches a debug surface anyway.
+pub struct EditingPatternState {
+    pub prompt: PendingPrompt,
+    pub tool: String,
+    pub fields: Vec<PatternField>,
+    pub cursor: usize,
+}
+
+impl std::fmt::Debug for EditingPatternState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EditingPatternState")
+            .field("tool", &self.tool)
+            .field("fields", &self.fields)
+            .field("cursor", &self.cursor)
+            .finish()
+    }
+}
+
+impl PartialEq for EditingPatternState {
+    fn eq(&self, other: &Self) -> bool {
+        self.tool == other.tool && self.fields == other.fields && self.cursor == other.cursor
+    }
+}
+
+impl EditingPatternState {
+    /// Build the field rows from a call's `arguments`: one row per top-level
+    /// key of a JSON object, each starting wildcard. A non-object
+    /// `arguments` (null, array, scalar) yields no rows -- the resulting
+    /// grant is the all-wildcard `tool:*` equivalent, which is the honest
+    /// representation (there is no field to pin).
+    pub fn from_arguments(prompt: PendingPrompt) -> Self {
+        let tool = prompt.request.tool.as_str().to_string();
+        let fields = match &prompt.request.arguments {
+            serde_json::Value::Object(map) => map
+                .iter()
+                .map(|(k, v)| PatternField {
+                    name: k.clone(),
+                    value: v.clone(),
+                    pinned: false,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        Self {
+            prompt,
+            tool,
+            fields,
+            cursor: 0,
+        }
+    }
+}
+
 /// The TUI's whole render model. Every mutation goes through [`Self::apply`]
 /// (event-driven) or the app loop's direct field writes for input-driven
 /// state (`input`, `mode`, `scroll`) -- see `input.rs`/`app.rs`.
@@ -126,6 +201,16 @@ pub struct AppState {
     /// `commands::render_why`; `apply` intentionally leaves it untouched so
     /// it stays pure.
     pub last_model_decision: Option<Envelope>,
+    /// The `ModelDecision` envelope this session saw immediately BEFORE
+    /// [`Self::last_model_decision`] -- i.e. what the decision *was*, so
+    /// `/why` (`commands::render_why`) can report what changed after a
+    /// `/model`/`/role` switch, not merely the latest decision in
+    /// isolation. Populated the SAME place `last_model_decision` is
+    /// (`app.rs`'s run loop shifts the old value here before overwriting
+    /// it), for the identical reason: `apply` stays pure. `None` until a
+    /// SECOND `ModelDecision` has been seen this session -- the ordinary
+    /// "nothing to compare against yet" case for a session's first turn.
+    pub previous_model_decision: Option<Envelope>,
     pub input: String,
     /// Cursor position within `input`, as a *char* index (not byte offset)
     /// -- `input.rs` translates to a byte offset via `char_indices` before
@@ -681,6 +766,7 @@ impl AppState {
             transcript: Vec::new(),
             tree,
             last_model_decision: None,
+            previous_model_decision: None,
             input: String::new(),
             cursor: 0,
             mode: Mode::Normal,
@@ -872,6 +958,64 @@ impl AppState {
             self.cursor = self.input.chars().count();
         }
         self.close_intent_confirm();
+    }
+
+    /// Opens the `[p]` field editor from a permission prompt. Only callable
+    /// while a prompt is showing (`Mode::AwaitingPermission`): the `p` key
+    /// is offered only there, and only for `RenderKind::Structured` tools
+    /// (where `suggested_rule` returns `Some`). The [`PendingPrompt`] is
+    /// MOVED out of `mode` into [`EditingPatternState`] (it is not `Clone`),
+    /// so the prompt is not lost -- cancel restores it, submit resolves it.
+    /// Does not park/queue: this modal can only open from `AwaitingPermission`
+    /// and returns there, so it never stacks against the other modal-bearing
+    /// surfaces.
+    pub fn offer_editing_pattern(&mut self) {
+        if !matches!(self.mode, Mode::AwaitingPermission(_)) {
+            return;
+        }
+        let Mode::AwaitingPermission(prompt) = std::mem::replace(&mut self.mode, Mode::Normal)
+        else {
+            unreachable!()
+        };
+        self.mode = Mode::EditingPattern(EditingPatternState::from_arguments(prompt));
+        self.modal_scroll = 0;
+    }
+
+    /// Cancels the field editor and returns the prompt to the screen
+    /// unresolved -- the operator can press `y`/`a`/`n`/`p` again.
+    pub fn cancel_editing_pattern(&mut self) {
+        if !matches!(self.mode, Mode::EditingPattern(_)) {
+            return;
+        }
+        let Mode::EditingPattern(ed) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            unreachable!()
+        };
+        self.mode = Mode::AwaitingPermission(ed.prompt);
+        self.modal_scroll = 0;
+    }
+
+    /// Submits the field editor: builds an `ArgsMatch` allow rule from the
+    /// pinned fields, restores the prompt to `AwaitingPermission` (so the
+    /// app loop's dispatch can resolve it with the existing
+    /// `resolve_current_prompt` path), and returns the rule + scope for the
+    /// key handler to wrap in an `Action::GrantPermissionRule`. Returns
+    /// `None` if no editor is open. The grant covers FUTURE calls; THIS
+    /// call is resolved separately by the dispatch arm as `AllowOnce`.
+    pub fn submit_editing_pattern(&mut self) -> Option<(conway::Rule, conway::PermissionScope)> {
+        if !matches!(self.mode, Mode::EditingPattern(_)) {
+            return None;
+        }
+        let Mode::EditingPattern(ed) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            unreachable!()
+        };
+        let mut pinned: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        for f in ed.fields.iter().filter(|f| f.pinned) {
+            pinned.insert(f.name.clone(), f.value.clone());
+        }
+        let rule = conway::Rule::args_match_allow_rule(&ed.tool, pinned);
+        self.mode = Mode::AwaitingPermission(ed.prompt);
+        self.modal_scroll = 0;
+        Some((rule, self.permission_grant_scope))
     }
 
     /// The single mutation entry point: applies one envelope's effect to

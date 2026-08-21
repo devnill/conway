@@ -179,12 +179,16 @@ leaves no gap between the two. The distinction Unix draws holds inside it: the
 working directory is where the agent is and changes freely, while the root is
 what it can reach, set from outside and narrowing only.
 
-> **Where the tree is today.** The root is enforced, but by the harness rather
-> than by `conway.fs`: the permission broker checks a call's declared path
-> arguments before dispatch, and the tool opens the file afterwards. That gap
-> is exactly the one the paragraph above exists to close — across it, a symlink
-> created inside the root between the check and the open defeats the check.
-> Moving enforcement into the plugin is real work, not a rename; see
+> **Where the tree is today.** This closed. `conway.fs` enforces its own root
+> now, open-relative: `read`, `write`, `edit`, and `cd` resolve every path
+> through a `Dir` opened at the canonical root, so the containment check and
+> the filesystem open are the same syscall sequence and a symlink created
+> inside the root between them no longer defeats it. Two limits remain, and
+> are real rather than closed by this: `glob` and `grep` close the window on
+> their search *root* the same way but walk the tree by a separate mechanism
+> that does not integrate with that check, a weaker guarantee than the other
+> four; and `bash` is confined by no root at all — its `cwd` argument is
+> checked, its command string runs verbatim and is declared unconfinable. See
 > [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.4 for the limits as they stand.
 
 A root on `conway.fs` says nothing about what a shell command does, and does not
@@ -480,11 +484,17 @@ surprising amount of "conway does not do what I want" is a settings change.
 
 ### Hooks
 
-Writing a plugin means writing Rust, compiling it, and keeping up with an API.
-That is the right cost for a new tool or a new backend, and far too high for
-what people want most of the time: run the formatter after an edit, refuse tool
-calls that touch a particular directory, log every command to a file, add a note
-to the context when a session starts.
+Writing a plugin used to mean writing Rust, compiling it, and keeping up with
+an API — still the only way to add a backend, or to reach conway's own types
+in-process. For a new tool alone, that rung has widened rather than gained a
+neighbor: an external program in any language can register one over a wire
+protocol instead, without conway's source or a rebuild — conway's own
+protocol ([`docs/plugins/subprocess-plugins.md`](docs/plugins/subprocess-plugins.md))
+or MCP ([`docs/plugins/mcp.md`](docs/plugins/mcp.md)). Either shape is the
+right cost for a new tool or a new backend, and far too high for what people
+want most of the time: run the formatter after an edit, refuse tool calls that
+touch a particular directory, log every command to a file, add a note to the
+context when a session starts.
 
 Hooks cover that. The shape will look familiar to anyone who has used Claude
 Code's: you name an event in configuration and a command to run, the command
@@ -622,9 +632,10 @@ harness and usable on the first run of the binary, without either fact
 costing the other.
 
 > **Where the tree is today.** The binary does not yet turn on anything
-> beyond the harness's own default set described above. `conway.routing` and
-> `conway.stepguard` exist and install, but ship off; compaction, memory,
-> skills, and MCP support are not written at all — see the note under
+> beyond the harness's own default set described above. `conway.routing`,
+> `conway.stepguard`, `conway.skills`, `conway.memory`, and MCP client support
+> all exist and install, but ship off; compaction is the one first-party
+> capability not written yet — see the note under
 > [First-party plugins](#first-party-plugins-and-why-they-are-not-defaults)
 > for exactly what exists. Becoming the opinionated, fully-equipped binary
 > this section describes is tracked work, not a description of what
@@ -666,11 +677,15 @@ written and maintained in this repository, shipped with it, and not installed by
 default. Dynamic routing, context compaction, memory, skills, MCP support. You
 get them by choosing them.
 
-> **Where the tree is today.** Dynamic routing is built and installable
-> (`conway.routing`), as are three members this list does not name — the
-> provider adapters, a session-rewind command, and repeated-step detection
-> (`conway.stepguard`, which §6 below is about). Compaction, memory, skills,
-> and MCP are not written yet, so there is nothing to install for any of them.
+> **Where the tree is today.** Dynamic routing, memory (`conway.memory`), and
+> skills (`conway.skills`) are all built and installable, as are four members
+> this list does not name by capability — the provider adapters, a
+> session-rewind command, repeated-step detection (`conway.stepguard`, which
+> §6 below is about), and the out-of-process subprocess plugin host. MCP
+> support is built too, but does not name a plugin id the way the others
+> do: an operator lists an external MCP server under `[plugins].mcp` and its
+> tools attach directly, the same shape as the subprocess host one line
+> over. Compaction is the one member of this list not written yet.
 
 This tier is permanent rather than a staging area for things on their way into
 the core, for three reasons.

@@ -76,8 +76,8 @@ use std::sync::Arc;
 use conway::plugin::{Command, CommandCtx};
 use conway::{
     AgentId, AgentIntent, ContextReport, Conway, Event, ForkSpec, ModelRef, PermissionScope,
-    Provenance, RoutingReason, SessionHandle, SessionId, SpawnSpec, SubagentMode, ToolSelector,
-    TrustPermissionReport, Usage,
+    Provenance, RoleAlias, RoutingReason, SessionHandle, SessionId, SpawnSpec, SubagentMode,
+    ToolSelector, TrustPermissionReport, Usage,
 };
 
 use super::state::{
@@ -126,6 +126,25 @@ pub enum SlashCommand {
     },
     Resume {
         sid: String,
+    },
+    /// `/model <backend/model>` (INTENT.md §5c: "changing model mid-session
+    /// is ordinary, and stays cheap"). `model` is still the raw, unparsed
+    /// `--model`-spelled string (`ModelRef::from_str` runs in [`execute`],
+    /// where a malformed value becomes a `Notice` like any other facade
+    /// failure, not a [`ParseError`]) -- see [`execute`]'s own `Model` arm
+    /// for the fork-based mechanism this drives.
+    Model {
+        model: String,
+    },
+    /// `/role <alias>` -- the same mid-session-switch mechanism as
+    /// [`SlashCommand::Model`], naming a role instead of pinning a model
+    /// directly. `role` is the raw alias text; an alias the configured
+    /// `[routing]` table does not recognize is not caught here (`parse`
+    /// stays state-free) -- it surfaces the first time the switched-to
+    /// child actually runs a turn, the same as any other roleless-fork
+    /// misconfiguration.
+    Role {
+        role: String,
     },
     Help,
     /// V4: opens the `/settings` menu (`view/settings.rs`), replacing the
@@ -228,6 +247,14 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
         "/resume" => {
             let sid = parse_one_arg(rest, "/resume <session-id>")?;
             Ok(SlashCommand::Resume { sid })
+        }
+        "/model" => {
+            let model = parse_one_arg(rest, "/model <backend/model>")?;
+            Ok(SlashCommand::Model { model })
+        }
+        "/role" => {
+            let role = parse_one_arg(rest, "/role <alias>")?;
+            Ok(SlashCommand::Role { role })
         }
         "/help" => {
             parse_no_arg(rest, "/help")?;
@@ -695,7 +722,7 @@ impl Host for LiveHost<'_> {
     ) -> std::io::Result<TrustPermissionReport> {
         // Collected fresh per call, exactly like the old `app.rs::submit`
         // interception did -- `Conway::trust_permission_file`'s own
-        // `TrustStore::trust` reads `env` for XDG resolution.
+        // `TrustStore::trust` reads `env` for user config resolution.
         let env_vars: HashMap<String, String> = std::env::vars().collect();
         self.conway
             .trust_permission_file(&env_vars, path, scope, granting_agent)
@@ -899,6 +926,64 @@ async fn bare_fork<H: Host>(
             parent: focused,
             first_message,
         },
+        Err(e) => {
+            notice(state, e.to_string());
+            Effect::None
+        }
+    }
+}
+
+/// The `/model`/`/role` execution path (INTENT.md §5c: "changing model
+/// mid-session is ordinary, and stays cheap"). Forks a fresh, interactive
+/// keep-alive child off `focused` with `spec` (already carrying a `.model`
+/// or `.role` override plus `.keep_alive(true)`/`.tools(..)`, built by each
+/// caller) and an EMPTY directive -- the identical idiom [`bare_fork`] uses,
+/// so the child inherits `focused`'s entire context (§5c: "a selection
+/// survives a model change; only the rendering ... does not") and idles
+/// rather than running a placeholder turn against blank input.
+///
+/// **Why fork, not a live mutation of `focused`'s own task.** `focused`'s
+/// running `AgentLoop` (`conway_runtime::agent_loop`) reads its role/pin
+/// from its own `AgentSpec`, fixed for that task's entire lifetime -- there
+/// is no message kind or shared cell that lets anything outside the task
+/// change it, and `AgentTree::attach` refuses a second registration under
+/// the same id besides, so "cancel and re-resume in place" is not available
+/// either (see `conway::Conway::resume_with`'s own doc for the
+/// process-restart path that IS this shape). Forking is the mechanism that
+/// already reaches a LIVE session without any of that: it is a wholly
+/// separate, already-running task from the moment it starts, so there is no
+/// existing task to mutate at all.
+///
+/// A malformed `--model`-shaped value or an admission refusal
+/// (`RoutingError::ContextTooLarge`, when the new pin/role's chain cannot
+/// take the inherited context) is never swallowed here: the malformed-value
+/// case fails before this function is even called (`execute`'s own `Model`
+/// arm), and an admission refusal cannot happen at fork time at all -- the
+/// child starts idle and only runs its router-facing admission check on its
+/// first REAL turn, which surfaces through the ordinary event stream
+/// `App::run` already renders, exactly like any other turn's refusal.
+///
+/// Pushes a `Notice` naming the switch and its target BEFORE returning
+/// `Effect::FocusNewSession`, so the transcript records the switch itself
+/// even though the routing decision it causes has not happened yet (that
+/// arrives later, as this child's own `Event::ModelDecision`, which `/why`
+/// then reports against the switch this notice already logged).
+async fn switch_session<H: Host>(
+    state: &mut AppState,
+    host: &H,
+    focused: AgentId,
+    describe: impl Into<String>,
+    spec: ForkSpec,
+) -> Effect {
+    match host.fork(focused, spec).await {
+        Ok(child) => {
+            notice(state, format!("{}: {focused} -> {child}", describe.into()));
+            Effect::FocusNewSession {
+                child,
+                parent: focused,
+                first_message: None,
+            }
+        }
         Err(e) => {
             notice(state, e.to_string());
             Effect::None
@@ -1236,6 +1321,50 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 Effect::None
             }
         },
+        // `/model <backend/model>` -- see [`switch_session`]'s own doc for
+        // the fork-based mechanism and why it, not a live mutation of the
+        // focused agent's own running task, is what actually reaches a LIVE
+        // session (INTENT.md §5c).
+        SlashCommand::Model { model } => {
+            let focused = state.focused_agent;
+            match model.parse::<ModelRef>() {
+                Ok(model_ref) => {
+                    let spec = ForkSpec::new(String::new())
+                        .keep_alive(true)
+                        .tools(interactive_keep_alive_tools())
+                        .model(model_ref.clone());
+                    switch_session(
+                        state,
+                        host,
+                        focused,
+                        format!("switched model to {model_ref}"),
+                        spec,
+                    )
+                    .await
+                }
+                Err(e) => {
+                    notice(state, format!("/model {model}: {e}"));
+                    Effect::None
+                }
+            }
+        }
+        // `/role <alias>` -- same mechanism as `Model` above, naming a role
+        // instead of pinning a model directly.
+        SlashCommand::Role { role } => {
+            let focused = state.focused_agent;
+            let spec = ForkSpec::new(String::new())
+                .keep_alive(true)
+                .tools(interactive_keep_alive_tools())
+                .role(RoleAlias::new(role.clone()));
+            switch_session(
+                state,
+                host,
+                focused,
+                format!("switched role to {role}"),
+                spec,
+            )
+            .await
+        }
         // T7: `/help` opens the keybinding overlay (`view/help.rs`) instead
         // of dumping a command list into the transcript -- `AppState::open_help`
         // is a pure flag flip, pushing zero `Entry::Notice` lines.
@@ -1549,6 +1678,16 @@ fn provenance_label(p: &Provenance) -> String {
 /// `/why`: renders `state.last_model_decision` (populated by `app.rs` on
 /// `Event::ModelDecision` -- this module never writes it). No facade call
 /// at all (module notes: "reads cached state with no facade call").
+///
+/// **Shows what changed** (this item, INTENT.md §5c: "changing model
+/// mid-session is ordinary"): when `state.previous_model_decision` is also
+/// `Some` (i.e. this is at least the second routing decision this session
+/// has seen -- ordinarily the child's first turn after a `/model`/`/role`
+/// switch), a changed `role`/`chosen` is rendered as `X -> Y` instead of
+/// bare `Y`, naming exactly what a `/model`/`/role` switch (or, equally, an
+/// ordinary fallback the router itself chose) actually changed. A field
+/// that did NOT change renders bare, unchanged from before this item --
+/// there is nothing to contrast it against.
 fn render_why(state: &mut AppState) {
     let Some(env) = state.last_model_decision.clone() else {
         notice(state, "no routing decision yet");
@@ -1568,8 +1707,33 @@ fn render_why(state: &mut AppState) {
         notice(state, "no routing decision yet");
         return;
     };
-    notice(state, format!("role: {role}"));
-    notice(state, format!("model: {chosen}"));
+    // `previous_model_decision` is only ever assigned an `Event::
+    // ModelDecision` envelope too (the SAME invariant as `last_model_
+    // decision`, `app.rs`'s run loop) -- a mismatched shape there degrades
+    // to "no previous decision to compare against" (`None`), same as a
+    // genuinely absent one, rather than panicking.
+    let previous = state.previous_model_decision.clone().and_then(|env| {
+        if let Event::ModelDecision {
+            role: prev_role,
+            chosen: prev_chosen,
+            ..
+        } = env.event
+        {
+            Some((prev_role, prev_chosen))
+        } else {
+            None
+        }
+    });
+    let role_text = match &previous {
+        Some((prev_role, _)) if *prev_role != role => format!("{prev_role} -> {role}"),
+        _ => role.to_string(),
+    };
+    let model_text = match &previous {
+        Some((_, prev_chosen)) if *prev_chosen != chosen => format!("{prev_chosen} -> {chosen}"),
+        _ => chosen.to_string(),
+    };
+    notice(state, format!("role: {role_text}"));
+    notice(state, format!("model: {model_text}"));
     notice(state, format!("reason: {}", render_routing_reason(&reason)));
     notice(state, format!("attempt: {attempt}"));
 }
@@ -1802,6 +1966,38 @@ mod tests {
     fn resume_missing_sid_is_a_parse_error_naming_the_form() {
         let err = parse("/resume").unwrap_err();
         assert!(err.to_string().contains("/resume <session-id>"));
+    }
+
+    #[test]
+    fn model_parses() {
+        assert_eq!(
+            parse("/model anthropic/claude-sonnet-4-6"),
+            Ok(SlashCommand::Model {
+                model: "anthropic/claude-sonnet-4-6".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn model_missing_value_is_a_parse_error_naming_the_form() {
+        let err = parse("/model").unwrap_err();
+        assert!(err.to_string().contains("/model <backend/model>"));
+    }
+
+    #[test]
+    fn role_parses() {
+        assert_eq!(
+            parse("/role planner"),
+            Ok(SlashCommand::Role {
+                role: "planner".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn role_missing_value_is_a_parse_error_naming_the_form() {
+        let err = parse("/role").unwrap_err();
+        assert!(err.to_string().contains("/role <alias>"));
     }
 
     #[test]
@@ -3772,6 +3968,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_forks_the_focused_agent_with_a_pinned_model_and_focuses_the_child() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child_focus = AgentId::new();
+        state.focus_agent(child_focus);
+        let mut host = FakeHost::new(root);
+        let child = AgentId::new();
+        host.fork_child = Some(child);
+
+        let effect = execute(
+            SlashCommand::Model {
+                model: "anthropic/claude-haiku".to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert_eq!(host.calls(), vec!["fork"]);
+        match effect {
+            Effect::FocusNewSession {
+                child: focused,
+                parent,
+                first_message,
+            } => {
+                assert_eq!(focused, child);
+                assert_eq!(
+                    parent, child_focus,
+                    "/model forks the FOCUSED agent, not the root"
+                );
+                assert_eq!(first_message, None, "/model never carries a first message");
+            }
+            _ => panic!("expected Effect::FocusNewSession, got a different effect"),
+        }
+        let spec = host
+            .last_fork_spec
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("fork should have been called");
+        assert!(spec.keep_alive, "/model's fork must be keep_alive");
+        assert_eq!(spec.directive, "", "/model carries no directive of its own");
+        assert_eq!(
+            spec.model,
+            Some(
+                "anthropic/claude-haiku"
+                    .parse::<ModelRef>()
+                    .expect("valid model ref")
+            )
+        );
+        assert_eq!(
+            spec.tools,
+            Some(ToolSelector::Except(vec!["report".into()])),
+            "/model's fork, like a bare /fork, must exclude `report`"
+        );
+        assert!(matches!(
+            state.transcript.last(),
+            Some(Entry::Notice { text })
+                if text.contains("anthropic/claude-haiku") && text.contains(&child_focus.to_string())
+        ));
+    }
+
+    #[tokio::test]
+    async fn model_with_a_malformed_ref_is_a_notice_and_never_calls_fork() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Model {
+                model: "not-a-valid-ref".to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            host.calls().is_empty(),
+            "a malformed --model must never reach fork"
+        );
+        assert!(matches!(
+            state.transcript.last(),
+            Some(Entry::Notice { text }) if text.contains("not-a-valid-ref")
+        ));
+    }
+
+    #[tokio::test]
+    async fn role_forks_the_focused_agent_with_the_named_role_and_focuses_the_child() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        let child = AgentId::new();
+        host.fork_child = Some(child);
+
+        let effect = execute(
+            SlashCommand::Role {
+                role: "planner".to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert_eq!(host.calls(), vec!["fork"]);
+        assert!(matches!(effect, Effect::FocusNewSession { child: c, .. } if c == child));
+        let spec = host
+            .last_fork_spec
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("fork should have been called");
+        assert!(spec.keep_alive, "/role's fork must be keep_alive");
+        assert_eq!(spec.role, Some(RoleAlias::new("planner")));
+        assert!(matches!(
+            state.transcript.last(),
+            Some(Entry::Notice { text }) if text.contains("planner")
+        ));
+    }
+
+    #[tokio::test]
     async fn why_makes_no_facade_call() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
@@ -3833,6 +4151,73 @@ mod tests {
         assert!(texts.iter().any(|t| t.contains(&chosen.to_string())));
         assert!(texts.iter().any(|t| t.contains("pinned by API")));
         assert!(texts.iter().any(|t| t.contains('1')));
+    }
+
+    /// A `/model`/`/role` switch (or an ordinary router fallback) shows up
+    /// in `/why` as an `X -> Y` diff on whichever field changed -- see
+    /// `render_why`'s own doc for why this needs `previous_model_decision`
+    /// at all (a session's SECOND `ModelDecision`, not its first).
+    #[tokio::test]
+    async fn why_after_a_model_switch_shows_what_changed() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let old_model = conway::ModelRef {
+            backend: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+        };
+        let new_model = conway::ModelRef {
+            backend: "anthropic".into(),
+            model: "claude-haiku".into(),
+        };
+        state.previous_model_decision = Some(conway::Envelope {
+            seq: 1,
+            ts: chrono::Utc::now(),
+            session: SessionId::new(),
+            agent: root,
+            event: Event::ModelDecision {
+                role: "planner".into(),
+                chosen: old_model,
+                reason: RoutingReason::PinnedByApi,
+                attempt: 1,
+            },
+        });
+        state.last_model_decision = Some(conway::Envelope {
+            seq: 2,
+            ts: chrono::Utc::now(),
+            session: SessionId::new(),
+            agent: root,
+            event: Event::ModelDecision {
+                role: "planner".into(),
+                chosen: new_model.clone(),
+                reason: RoutingReason::PinnedByApi,
+                attempt: 1,
+            },
+        });
+
+        execute(SlashCommand::Why, &mut state, &host).await;
+
+        let texts: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("claude-sonnet-4-6") && t.contains("claude-haiku")),
+            "expected an `old -> new` model diff, got: {texts:?}"
+        );
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.starts_with("role:") && t.contains("->")),
+            "role did not change and must render bare"
+        );
     }
 
     #[tokio::test]

@@ -242,6 +242,7 @@ fn build_runtime(
 
     let runtime = Runtime::new(RuntimeDeps {
         store: store.clone(),
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,

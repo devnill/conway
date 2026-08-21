@@ -99,6 +99,17 @@ pub const COMMANDS: &[CommandSpec] = &[
         description: "resume a prior session",
     },
     CommandSpec {
+        name: "/model",
+        usage: "/model <backend/model>",
+        description: "switch the focused agent to a pinned model (forks; see /why for the reason)",
+    },
+    CommandSpec {
+        name: "/role",
+        usage: "/role <alias>",
+        description:
+            "switch the focused agent to a different role (forks; see /why for the reason)",
+    },
+    CommandSpec {
         name: "/help",
         usage: "/help",
         description: "show this help",
