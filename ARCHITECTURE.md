@@ -264,9 +264,9 @@ after that point is explicit — steer messages (applied at turn boundaries)
 and terminal results, never implicit context bleed.
 
 The ephemeral **`/ask`** primitive (`SessionHandle::ask`, §3.6) is built
-directly on fork: it forks the current session at its head, drives one turn
-on the child, and returns a handle to that child — the parent's own
-transcript is never touched.
+directly on fork: it starts a new agent from the current head, drives one turn
+on it, and returns a handle to that child — the parent's own transcript is
+never touched.
 
 ### 3.2 The append-only session log and context assembly
 
@@ -474,8 +474,8 @@ exactly one `AgentFinished` for its whole lifetime (on cancel, deadline, or
 budget exhaustion), not one per turn.
 
 **`/ask`** (`SessionHandle::ask`) is the ephemeral side-question primitive
-built on fork (§3.1): it forks the current session at its head into a child
-marked `SessionMeta::ephemeral = true`, then drives one turn on that child
+built on fork (§3.1): it starts a new agent from the current head, whose own
+log is marked `SessionMeta::ephemeral = true`, then drives one turn on it
 with the given text. The child inherits the full context and tool set, so
 tool calls it makes are real, but its transcript never touches the parent's
 session and is excluded from default session listings — a throwaway

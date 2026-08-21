@@ -147,7 +147,11 @@ curator that does not have to be a model.
 > the page, or the idiom hardens into a law by accident.
 
 **The words, one idea each.** Where the code or another document uses one
-differently, that is worth fixing there.
+differently, that is worth fixing there. And where plain language will do,
+prefer it: a term earns its place by removing an ambiguity, not by existing.
+Every word in this table is one more thing someone has to learn before a
+sentence means anything to them, so the table stays short and the prose around
+it keeps saying what things *are* rather than leaning on their names.
 
 | Word | What it means |
 | --- | --- |
@@ -536,6 +540,16 @@ means point 3 of this list.
    that anticipates one, not a test that simulates one, but a real path through
    the shipped binary a person can walk. If there is nothing to exercise, the
    feature is not finished, whatever its tests say.
+
+   The failure this prevents is worth naming, because it does not look like a
+   mistake while you are making it: **a capability added silently, to be used
+   later.** The machinery lands, nothing expresses it, and the intention to
+   reach for it eventually lives in someone's head. What happens instead is that
+   it accumulates weight, constrains later decisions that had no reason to
+   accommodate it, and is found — much later — to have been the wrong shape for
+   its first real caller. So a capability and the thing that expresses it ship
+   together, in the same change. Memory arrives with a plugin that uses it, not
+   as a store waiting for one.
 6. **An invariant belongs to the seam, not to its call sites.** When something
    must be true across an extension point, enforce it at the point itself — a
    wrapper around it — rather than at each place that happens to use it.
@@ -603,13 +617,8 @@ someone will actually read it.
 Open questions, in the sense of §8.1: each one is a place the guidance is
 currently insufficient, and each is waiting on a decision rather than on work.
 
-**Does a shipped capability owe a page?** There is a documentation gate on
-changes, and nothing that says an installable capability must be findable from an
-index. A capability nobody can find is close to one that does not exist, and the
-failure is quiet — nothing breaks, and it works perfectly for everyone who already
-knows it is there.
+There are none open right now. That is the intended state rather than a finished
+one — §8.1 makes an open question a defect in this page, so an empty list means
+the guidance has caught up with the decisions, not that no decision will ever
+need making again.
 
-**Should the vocabulary in §5 be pushed into the other documents?** This page now
-uses one word per idea. `PHILOSOPHY.md` and `ARCHITECTURE.md` do not yet, and in
-at least one place they disagree about which of *agent* or *session* owns a head.
-Adopting it is mechanical once it is agreed; the question is whether it is agreed.

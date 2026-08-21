@@ -241,10 +241,9 @@ for what that tier is for. Turn one on with a distinct `plugins` key (not
 `conway.plugin_skeleton` is the tier's own worked example
 (`crates/conway-plugin-skeleton`): it registers one `skeleton_ping` tool
 and does nothing else. `conway.history` (`crates/conway-plugin-history`) is `/conway.history.rewind
-<seq>`: forks the current session at an explicit, persisted sequence
-number (never free text — see that crate's own module doc for why) and
-switches the TUI to drive the resulting child, with the original session's
-own log untouched. Once installed, the status line's `session <id>`
+<seq>`: starts a new agent from an explicit, persisted sequence number
+(never free text — see that crate's own module doc for why) and switches the
+TUI to drive it, with the original agent's own log untouched. Once installed, the status line's `session <id>`
 field grows to `session <id>@<seq>` so there is something to type.
 `conway.stepguard` (`crates/conway-plugin-stepguard`) notices when an agent
 calls the same tool with the same arguments three times and writes a note

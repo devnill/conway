@@ -162,7 +162,7 @@ else.
 
 - `01KZ844ZXZMVRWC7ZANT7PSM6X` — the `context.hook/1` REPLACE primitive, under a standing deferral recorded by id. Its verification anchor was repointed this round from the deleted `.design/extension-architecture.md` to `docs/plugins/hooks.md` §9; the deferral itself is untouched. **Do not claim it.**
 - `01KZHVFCN6ZEAXV7K5JHRQN1YB` — nothing can trust a plugin. Also deferred, and **its priority went up while it sat**: filed when every plugin was compiled in, and today two crates spawn operator-named external programs with no digest trust. The highest-value deferred item on the board.
-- Two open questions in [`INTENT.md`](INTENT.md) §11, neither of them work: whether a shipped capability owes a page, and whether §5's vocabulary should be pushed into the other documents.
+- No open questions in [`INTENT.md`](INTENT.md) §11 — the first time since it was written. §8.1 makes an unsettled question a defect in that page, so an empty list means the guidance has caught up, not that nothing will need deciding again.
 
 ---
 

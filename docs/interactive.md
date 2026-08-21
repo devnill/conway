@@ -263,9 +263,9 @@ never a frozen terminal.
 
 `conway.history` (`crates/conway-plugin-history`, install it with
 `"conway.history"` in `plugins.install`) ships exactly one command,
-`/conway.history.rewind <seq>`: forks the current session at that
-persisted sequence number and switches you to drive the resulting child,
-leaving the original session's own log untouched. `<seq>` must be an
+`/conway.history.rewind <seq>`: starts a new agent from that persisted
+sequence number and switches you to drive it, leaving the original agent's
+own log untouched. `<seq>` must be an
 explicit number you already know — see the status line's `session` field
 below for where to read the current one — never free text like "before the
 bad edit": nothing a plugin command receives lets it read your transcript

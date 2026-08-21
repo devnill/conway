@@ -228,9 +228,9 @@ through material that still exists exactly as it was written.
 This is the split git makes between objects and refs, carried one layer
 further. A **record** is a blob: global, immutable, referenced rather than
 copied. A **selection** — a path frozen and identified by what it selects,
-not by who made it — is a commit. A **head**, the pointer a session moves as
-it works, is a branch ref. Ownership applies to the head: exactly one session
-may move it. A selection is shared freely: any session may reference one, and
+not by who made it — is a commit. A **head**, the pointer an agent moves as it
+works, is a branch ref. Ownership applies to the head: exactly one agent may
+move it. A selection is shared freely: any agent may reference one, and
 referencing costs nothing, because nothing is copied, only pointed at.
 
 That sharing is what makes curation affordable rather than merely possible. Ten
