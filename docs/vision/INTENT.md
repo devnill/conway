@@ -472,7 +472,7 @@ Read their answers first.
 ## 8. What "good" means here
 
 Ordered, most important first. **The numbered points below are cited elsewhere as
-§8.1 through §8.8** — there is no sub-heading to jump to, so a citation like §8.3
+§8.1 through §8.9** — there is no sub-heading to jump to, so a citation like §8.3
 means point 3 of this list.
 
 1. **An open question is a failure of the spec, not a gap in the code.** If
@@ -577,6 +577,30 @@ means point 3 of this list.
    Watch especially for a symptom described as a virtue. A limit written down as
    "bounded by construction" is the shape this mistake takes: it sounds like a
    guarantee and it is a workaround for having chosen the wrong unit.
+9. **Operating the harness safely is table stakes, and safety is a mechanism
+   rather than an opinion.** A tool that runs commands on your machine has to be
+   safe enough for real work before anything else about it matters. But two
+   things are as bad as being unsafe: an approval process so verbose that people
+   learn to click through it without reading, and a set of clever heuristics
+   conway applies on your behalf about what looks dangerous. The first trains the
+   user to defeat it. The second is an opinion in the core, which point 2 already
+   rules out.
+
+   So the split is the usual one. conway owns the **mechanism** — a decision
+   point, a record of what was decided, and a way to answer. What counts as risky
+   is a **judgment**, and judgments are plugins.
+
+   **Where a convention already exists, borrow it.** Operating systems have spent
+   decades on who may do what to which file, and people already know the answers
+   they arrived at. conway's job is to meet those conventions rather than improve
+   on them — the same argument §4 makes about Unix and §7b makes about where
+   configuration lives.
+
+   Ship the lightweight version first: enough to work daily, with sophistication
+   arriving later as plugins that may bring inference and heuristics of their own.
+   A mode that learns what you always approve is a plugin's job, not the core's.
+   The thing that must not happen is a permissions model so elaborate that it
+   cannot be replaced.
 
 ---
 
