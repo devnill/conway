@@ -398,18 +398,37 @@ changed and decide again.
 
 **Granting trust deliberately.** The only path that ever writes a trust
 record is `/trust permissions`, typed on purpose — never automatic, never a
-side effect of starting a session or of anything else. It trusts the
-project-scoped candidate file at its *current* bytes and installs its
-current `allow` rules immediately, for this session as well as the next.
+side effect of starting a session or of anything else. Typing it opens a
+preview card, over the transcript, showing the file's current content —
+nothing is trusted or installed yet. Only pressing `[y]` (or `Enter`)
+confirms and actually trusts the *current* bytes shown, installing their
+`allow` rules immediately, for this session as well as the next; `[n]`/`Esc`
+cancels, having written nothing.
 
-**Reviewing what a file would install.** conway shows you nothing before
-you trust a file — no diff, no preview, no listing of the rules it would
-add. `/trust permissions` trusts and installs in the same action; the only
-report you get is afterward, in the transcript: `trusted
+**Reviewing what a file would install.** The preview card shows you the
+file's current content BEFORE you decide — install and trust no longer
+happen in the same action with nothing shown first. What it does **not**
+show is a diff against whatever you trusted before: conway's trust store
+keeps only a digest of a prior decision, never its content, so there is
+nothing on disk to compare the current bytes against, even when the file
+changed since you last trusted it. The card says so plainly for that case
+(*"this file changed since you last trusted it ... the previous version is
+not retained, so it cannot be shown or diffed"*) rather than implying a
+comparison it cannot produce — it is always a look at what you are ABOUT to
+trust, never a look at what changed. After you confirm, the transcript
+still gets the same report line it always did: `trusted
 .conway/permissions.json -- 2 allow rule(s) installed for this session, and
-will load automatically until its content next changes`. If you want to
-know what you're about to authorize, read the file yourself first — it is
-plain, diffable JSON for exactly this reason.
+will load automatically until its content next changes`.
+
+**In one-shot mode (`conway -p`) there is no trust surface at all.**
+`/trust permissions` is a TUI-only slash command; one-shot mode never
+parses slash commands and never reads `permissions.json`'s rules or
+`trust.json` in the first place (its gate comes solely from
+`--allowed-tools`/`--deny-tools`, above) — so there is no preview to show
+and no way to make a new trust decision there. A file you already trusted
+through the TUI still takes effect at ordinary session startup, one-shot
+runs included (see "Load-time, not continuous" just below); what cannot
+happen in `-p` mode is trusting something new.
 
 **Load-time, not continuous.** The trust check runs when a session starts
 (`Conway::load_permission_files`) and again, for that one file, whenever you

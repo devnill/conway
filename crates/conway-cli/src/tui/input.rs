@@ -13,7 +13,7 @@
 use conway::{AgentId, PermissionDecision, PermissionScope};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::state::{AppState, AskFate, IntentChoice, Mode};
+use super::state::{AppState, AskFate, IntentChoice, Mode, TrustDecision};
 
 /// What a keypress means for the app loop to carry out.
 #[derive(Debug, Clone, PartialEq)]
@@ -134,6 +134,11 @@ pub enum Action {
     /// classified prompt into `state.input` and closed the card via
     /// `AppState::begin_intent_confirm_edit`).
     IntentConfirm(IntentChoice),
+    /// A decision key was pressed while the trust-preview card was open
+    /// (`y`/`Enter` confirm / `n`/`Esc` cancel). The app loop runs
+    /// `commands::apply_trust_decision`; this module only reports which
+    /// decision was made.
+    TrustDecision(TrustDecision),
 }
 
 /// Routes a keypress based on `state.mode`, mutating `state.input`/`cursor`
@@ -165,6 +170,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
         Mode::AwaitingPermission(_) => handle_permission_key(state, key),
         Mode::AskModal(_) => handle_ask_modal_key(state, key),
         Mode::IntentConfirm(_) => handle_intent_confirm_key(state, key),
+        Mode::TrustPreview(_) => handle_trust_preview_key(state, key),
         Mode::EditingPattern(_) => handle_editing_pattern_key(state, key),
         Mode::Normal => handle_normal_key(state, key),
     }
@@ -493,6 +499,58 @@ fn handle_intent_confirm_key(state: &mut AppState, key: KeyEvent) -> Action {
             Action::IntentConfirm(IntentChoice::Edit)
         }
         KeyCode::Esc => Action::IntentConfirm(IntentChoice::Manual),
+        _ => Action::None,
+    }
+}
+
+/// The trust-preview card's key handling (board item, split from
+/// `01KZHVFCN6ZEAXV7K5JHRQN1YB`): exactly two ways out -- `y`/`Enter`
+/// (confirm) and `n`/`Esc` (cancel). Everything else is SWALLOWED, mirroring
+/// [`handle_ask_modal_key`]/[`handle_intent_confirm_key`]'s shape exactly:
+/// the input line is inert, `/agents` is neither visible nor available, and
+/// the quit keys (`Ctrl-C`/`Ctrl-D`) still pass through as `Action::CtrlC`/
+/// `Action::Quit` -- quitting with the card open IS the cancel outcome
+/// (nothing has been created or written yet, so there is nothing to purge
+/// or undo; `app.rs`'s quit path drops a parked card on the floor the same
+/// way it does the intent-confirm card).
+///
+/// The card scrolls past its capped height exactly like the other three
+/// (`view/mod.rs::draw_trust_preview`'s own doc) -- checked before the
+/// decision keys' bare-keypress guard, mirroring every other modal-bearing
+/// surface's key handler here.
+///
+/// `y`/`n` only fire on a bare keypress -- a modifier held (Ctrl-Y, Alt-N,
+/// ...) is NOT a decision, the same B5 M2 guard every other modal-bearing
+/// surface's key handler applies.
+fn handle_trust_preview_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    match key.code {
+        KeyCode::PageDown => {
+            adjust_modal_scroll(state, 1);
+            return Action::None;
+        }
+        KeyCode::PageUp => {
+            adjust_modal_scroll(state, -1);
+            return Action::None;
+        }
+        _ => {}
+    }
+    if !key.modifiers.is_empty() {
+        return Action::None;
+    }
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+            Action::TrustDecision(TrustDecision::Confirm)
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            Action::TrustDecision(TrustDecision::Cancel)
+        }
         _ => Action::None,
     }
 }

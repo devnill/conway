@@ -121,6 +121,47 @@ pub struct TrustPermissionReport {
     pub notices: Vec<String>,
 }
 
+/// The result of `Conway::preview_trust_target` -- what an operator must be
+/// shown BEFORE a trust decision, not after. Board item (split from the
+/// `(kind, id, digest)`/plugin-subject generalisation, which this does not
+/// pre-empt): the shipped `/trust permissions` used to install and trust in
+/// one action with nothing shown first; this is the read-only half that now
+/// runs ahead of it.
+///
+/// **Deliberately a preview, not a diff.** `crate::config::trust::
+/// TrustStore` never retains a PRIOR trust decision's content (only its
+/// digest -- see that module's own doc), so there is nothing on disk or in
+/// memory to diff `contents` against even when [`Self::status`] is
+/// [`crate::config::trust::TrustStatus::Changed`]. `contents` is always the
+/// file's CURRENT bytes; the caller (`conway_cli::tui::view::
+/// draw_trust_preview`) states that limit to the operator in words rather
+/// than implying a diff view that cannot be produced.
+#[derive(Debug, Clone)]
+pub struct TrustPreview {
+    /// The file's current bytes, read fresh at preview time -- the SAME
+    /// bytes `Conway::trust_permission_file` would digest and record if the
+    /// operator goes on to confirm.
+    pub contents: String,
+    /// Whether this would be a first trust, a re-trust of a changed file,
+    /// or a no-op re-confirmation of an already-current trust record.
+    pub status: crate::config::trust::TrustStatus,
+}
+
+/// Reads `path`'s current bytes and reports what trusting them now would
+/// mean, WITHOUT recording anything -- see `Conway::preview_trust_target`'s
+/// own doc (`crates/conway/src/conway.rs`) for the full contract. `env` is
+/// passed explicitly, mirroring [`trust_permission_file`]'s own shape,
+/// since this function has no `self.config` to read.
+pub(crate) fn preview_trust_target(
+    env: &HashMap<String, String>,
+    path: &Path,
+) -> std::io::Result<TrustPreview> {
+    let contents = std::fs::read_to_string(path)?;
+    let store = crate::config::trust::TrustStore::load(env);
+    let status = store.status(path, &contents);
+    Ok(TrustPreview { contents, status })
+}
+
 /// The result of `Conway::revoke_permission_pattern` -- what happened to
 /// the in-session grant AND to whatever file it came from, so the caller
 /// can tell the operator the whole truth rather than folding a failed

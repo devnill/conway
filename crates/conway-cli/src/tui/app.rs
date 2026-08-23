@@ -955,15 +955,21 @@ mod tests {
     /// level in `trust_with_no_permission_paths_configured_is_a_notice_
     /// with_no_facade_call`. Pointed at a freshly created, empty tempdir
     /// with NO `.conway/permissions.json` on disk, so `Conway::
-    /// trust_permission_file`'s OWN first step (`std::fs::read_to_string`)
+    /// preview_trust_target`'s OWN first step (`std::fs::read_to_string`)
     /// fails BEFORE ever reaching `TrustStore::trust` (the actual disk
-    /// write) -- this test can never write to the real operator's own
-    /// `~/.conway/trust.json`, unlike a genuinely successful trust would
-    /// (see `LiveHost::trust_permission_file`'s own doc on why that path is
-    /// deliberately left to `FakeHost` instead). The observable this test
-    /// exists to prove is that the REAL, non-fake dispatch chain reaches
-    /// `Conway::trust_permission_file` at all -- a genuine "file does not
-    /// exist" `Entry::Error`, not a parser rejection and not a stub.
+    /// write, which only `Conway::trust_permission_file` performs, after a
+    /// confirm this test never reaches) -- this test can never write to the
+    /// real operator's own `~/.conway/trust.json`, unlike a genuinely
+    /// successful trust would (see `LiveHost::trust_permission_file`'s own
+    /// doc on why that path is deliberately left to `FakeHost` instead).
+    /// The observable this test exists to prove is that the REAL, non-fake
+    /// dispatch chain reaches `Conway::preview_trust_target` at all -- a
+    /// genuine "file does not exist" `Entry::Error`, not a parser rejection
+    /// and not a stub. Board item (split from
+    /// `01KZHVFCN6ZEAXV7K5JHRQN1YB`): the failure text moved from "could
+    /// not trust" to "could not read" because the read this test exercises
+    /// now happens at the PREVIEW step, ahead of any trust decision -- see
+    /// `commands::execute`'s `SlashCommand::Trust` arm.
     #[tokio::test]
     async fn trust_reaches_its_handler_through_the_parser_against_a_real_conway() {
         let project = tempfile::TempDir::new().expect("tempdir");
@@ -987,11 +993,16 @@ mod tests {
         assert!(
             app.state.transcript.iter().any(|e| matches!(
                 e,
-                Entry::Error { text, .. } if text.contains("could not trust")
+                Entry::Error { text, .. } if text.contains("could not read")
             )),
-            "a real Conway must have reached the trust handler and reported \
-             the genuine 'file does not exist' failure, not a stub: {:?}",
+            "a real Conway must have reached the trust-preview handler and \
+             reported the genuine 'file does not exist' failure, not a \
+             stub: {:?}",
             app.state.transcript
+        );
+        assert!(
+            matches!(app.state.mode, Mode::Normal),
+            "a preview READ failure must never open the card"
         );
     }
 

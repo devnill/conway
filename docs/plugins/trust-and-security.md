@@ -124,20 +124,47 @@ twentieth identical modal of the week has already failed. The safe
 outcome — de-trust — has to require **zero** human action, precisely
 because a design that required one would eventually not get it.
 
-**What the operator sees instead, as actually shipped**, is narrower than
-the full trust-model design: a one-line transcript notice
-naming the file and how many rules are waiting, and a report line after you
-run `/trust permissions` (`trusted .conway/permissions.json -- 2 allow
-rule(s) installed for this session...`). The design describes the review
-surface an operator opens on purpose as showing a *diff against the trusted
-digest* rather than a bare yes/no — **that diff view does not exist in the
-tree today.** `/trust permissions` trusts and installs in the same action,
-with no preview beforehand; `docs/permissions.md`'s own "Reviewing what a
-file would install" section says this plainly: *"conway shows you nothing
-before you trust a file — no diff, no preview, no listing of the rules it
-would add... If you want to know what you're about to authorize, read the
-file yourself first."* Treat the diff-review surface as decided design, not
-shipped behavior, until it lands.
+**What the operator sees, as actually shipped**: a one-line transcript
+notice naming the file and how many rules are waiting, and then, when you
+run `/trust permissions`, a preview card showing the file's current
+content — bottom-anchored over the transcript, the same modal idiom the
+permission prompt and `/ask` use — BEFORE the trust decision, not after.
+Only `[y]` (confirm) actually records anything; `[n]`/`Esc` walks away
+having written nothing. This closes the gap this page used to describe
+here: install and trust no longer happen in the same action with nothing
+shown first.
+
+**What remains narrower than the full trust-model design, stated
+plainly rather than left implicit: this is a preview, not a diff.** The
+design describes the review surface as showing *a diff against the trusted
+digest*. `TrustStore` (`crates/conway/src/config/trust.rs`) never retained
+the bytes of a PRIOR trust decision — only its digest — so there is nothing
+on disk to diff the current content against, even for a file that changed
+since it was last trusted. The preview card says so directly when that is
+the case (`"this file changed since you last trusted it ... the previous
+version is not retained, so it cannot be shown or diffed"`), rather than
+implying a comparison it cannot produce. Building a real diff would mean
+`TrustStore` starts retaining a copy of every trusted file's content — new
+storage, new staleness questions, a materially bigger change than showing
+what you are about to trust — and is left as a distinct, undecided future
+step, not silently assumed here. `docs/permissions.md`'s own "Reviewing
+what a file would install" section states the identical preview-not-diff
+posture from the operator's side.
+
+**One-shot (`conway -p`) has no preview surface at all, and needs none: it
+has no trust surface of any kind.** `/trust permissions` is a TUI-only
+slash command — `conway -p` never parses slash commands, never calls
+`Conway::preview_trust_target` or `Conway::trust_permission_file`, and
+never even reads `permissions.json`'s rules or `trust.json`: one-shot mode
+builds its gate solely from `--allowed-tools`/`--deny-tools`
+(`conway::gates::AllowListGate` — see this page's own note on the
+one-shot gate being a different mechanism, above). A prior trust decision
+made through the TUI still applies at ordinary session startup either way
+(load-time, not per-invocation — see "Load-time, not continuous" in
+`docs/permissions.md`'s own "Trust" section), including a one-shot run; what
+cannot happen in one-shot mode is MAKING a new trust decision, because
+there is no operator present to show a preview to and no code path that
+would try.
 
 **Re-trusting** is `/trust permissions`, typed on purpose — never automatic,
 never a side effect of starting a session or of anything else

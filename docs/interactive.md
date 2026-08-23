@@ -84,8 +84,8 @@ pinned to the bottom. The transcript itself has no border — it renders as
 plain text with no box-drawing glyphs, so selecting and copying it with
 your terminal's own mouse selection copies exactly the conversation, never
 chrome. The input box, the agent panel, and every modal (the permission
-prompt, `/ask`, `/settings`, `/help`) are bordered; the transcript is the
-one thing that deliberately isn't.
+prompt, `/ask`, `/trust permissions`'s preview card, `/settings`, `/help`)
+are bordered; the transcript is the one thing that deliberately isn't.
 
 ## Composing input
 
@@ -194,7 +194,7 @@ shrinking the candidate list).
 | `/resume` | `/resume <session-id>` | Resume a prior session. |
 | `/model` | `/model <backend/model>` | Switch the focused agent to a pinned model, mid-conversation. |
 | `/role` | `/role <alias>` | Switch the focused agent to a different role, mid-conversation. |
-| `/trust permissions` | `/trust permissions` | Trust the project's `.conway/permissions.json` at its current content, installing its `allow` rules for this session. See [`permissions.md`](permissions.md). |
+| `/trust permissions` | `/trust permissions` | Opens a preview card showing the project's `.conway/permissions.json` at its current content; `[y]`/`Enter` confirms (trusting it and installing its `allow` rules for this session), `[n]`/`Esc` cancels having written nothing. See [`permissions.md`](permissions.md). |
 | `/help` | `/help` | Open a read-only keybinding reference overlay. |
 | `/quit` or `/exit` | `/quit` | Exit conway. |
 
@@ -426,5 +426,7 @@ anything at all.
 the input box is empty. Two consecutive `Ctrl-C` presses force an
 immediate exit even if a turn is stuck. Quitting with an `/ask` modal open
 discards that ephemeral fork first; quitting with a fork/spawn
-confirmation card open falls back to the manual (unclassified) flow —
-neither leaves anything half-created behind.
+confirmation card open falls back to the manual (unclassified) flow;
+quitting with `/trust permissions`'s preview card open is the same as
+pressing `[n]` — nothing was ever trusted or written, so there is nothing
+to undo. None of these leave anything half-created behind.

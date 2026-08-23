@@ -598,6 +598,25 @@ impl App {
                                     };
                                     commands::apply_ask_fate(fate, &mut self.state, &host).await;
                                 }
+                                Action::TrustDecision(decision) => {
+                                    // Board item (split from
+                                    // `01KZHVFCN6ZEAXV7K5JHRQN1YB`): the
+                                    // trust-preview card's confirm/cancel,
+                                    // via the SAME `Host` seam every other
+                                    // facade call uses -- a failed confirm
+                                    // keeps the card open with the error
+                                    // shown (see
+                                    // `commands::apply_trust_decision`'s own
+                                    // doc), mirroring `Action::AskFate` just
+                                    // above exactly.
+                                    let host = commands::LiveHost {
+                                        handle: &self.handle,
+                                        conway: &self.conway,
+                                        commands: &self.command_registry,
+                                    };
+                                    commands::apply_trust_decision(decision, &mut self.state, &host)
+                                        .await;
+                                }
                                 Action::IntentConfirm(choice) => {
                                     // C2: the confirmation card's trust
                                     // gate. `execute_intent_confirm` runs the

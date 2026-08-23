@@ -81,6 +81,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`/trust permissions` now shows you the file BEFORE you trust it, not
+  after.** Typing it opens a preview card — the same bottom-anchored modal
+  the permission prompt and `/ask` use — showing the project permission
+  file's current content, with `[y]`/`Enter` to confirm and `[n]`/`Esc` to
+  cancel; nothing is trusted or installed until you confirm. This is a
+  preview, not a diff: conway's trust store keeps only a digest of a prior
+  trust decision, never its content, so there is nothing to compare the
+  current bytes against — the card says this plainly when a previously
+  trusted file changed, rather than implying a comparison it can't produce.
+  One-shot (`conway -p`) is unaffected either way: it has no trust surface
+  at all (no slash commands, no read of `trust.json`), so a new trust
+  decision can never be made there, only one already made through the TUI
+  can apply. See [`docs/permissions.md`](docs/permissions.md)'s "Trust"
+  section and [`docs/plugins/trust-and-security.md`](docs/plugins/trust-and-security.md)
+  for the full posture, including what remains out of reach without new
+  storage.
 - **A plugin browser in the `/settings` menu: turn a first-party plugin on
   or off without recompiling, and see what changes before you do.** A new
   **plugins** section lists every plugin `conway` links in, on or off,

@@ -45,7 +45,7 @@ mod turn_summary;
 pub use agent_panel::AgentVisibility;
 pub use agent_tree::{AgentTreeView, NodeStatus, TreeNode};
 pub use input_line::{clamp_history_size, DEFAULT_HISTORY_SIZE};
-pub use modal::{AskFate, AskModal, Mode};
+pub use modal::{AskFate, AskModal, Mode, TrustDecision, TrustPreviewCard};
 pub use status::{should_animate, Activity, SPINNER_FRAMES};
 pub use transcript::{clamp_tool_preview_lines, Entry, ToolStatus};
 
@@ -454,6 +454,14 @@ pub struct AppState {
     /// slots in that fixed priority order, so the three modal-bearing
     /// surfaces never stack.
     pending_intent_confirm: Option<IntentConfirm>,
+    /// A trust-preview card parked behind another modal-bearing surface --
+    /// mirrors `pending_intent_confirm` exactly. `commands::execute`'s
+    /// `SlashCommand::Trust` arm calls [`Self::offer_trust_preview`] once
+    /// `Host::preview_trust_target` returns, which parks here whenever
+    /// `mode` is not `Normal`. Drained in the SAME fixed priority order
+    /// [`Self::promote_next_surface`] already documents (queued prompt,
+    /// then ask, then intent card, then this).
+    pending_trust_preview: Option<TrustPreviewCard>,
     /// Whether an `/ask` child's single turn is currently in flight (B5).
     /// Set by `app.rs` when it spawns the ask task, cleared when the result
     /// arrives -- while set, a second `/ask` is refused with a `Notice`
@@ -829,6 +837,7 @@ impl AppState {
             ask_in_flight: false,
             modal_scroll: 0,
             pending_intent_confirm: None,
+            pending_trust_preview: None,
             spinner_frame: 0,
             turn_started_at: None,
             turn_running_tokens: 0,

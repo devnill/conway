@@ -49,13 +49,14 @@ pub mod skills;
 mod subagent_spec;
 
 pub use builder::{ConwayBuilder, PluginSelection};
+pub use config::trust::TrustStatus;
 pub use conway::{Conway, HookRuleView};
 pub use error::{ConwayError, Result};
 pub use event_stream::EventStream;
 pub use host_caps::HostCaps;
 pub use intent::AgentIntent;
 pub use output_schema::compile_output_schema;
-pub use permissions::{PermissionLoadReport, RevokeOutcome, TrustPermissionReport};
+pub use permissions::{PermissionLoadReport, RevokeOutcome, TrustPermissionReport, TrustPreview};
 pub use session_handle::{SessionHandle, SessionSpec, TurnHandle};
 pub use subagent_spec::{ForkSpec, SpawnSpec};
 

@@ -77,11 +77,12 @@ use conway::plugin::{Command, CommandCtx};
 use conway::{
     AgentId, AgentIntent, ContextReport, Conway, Event, ForkSpec, ModelRef, PermissionScope,
     Provenance, RoleAlias, RoutingReason, SessionHandle, SessionId, SpawnSpec, SubagentMode,
-    ToolSelector, TrustPermissionReport, Usage,
+    ToolSelector, TrustPermissionReport, TrustPreview, Usage,
 };
 
 use super::state::{
-    AppState, AskFate, Entry, IntentChoice, IntentConfirm, Mode, PluginCommandEntry,
+    AppState, AskFate, Entry, IntentChoice, IntentConfirm, Mode, PluginCommandEntry, TrustDecision,
+    TrustPreviewCard,
 };
 
 /// One parsed slash command. Agent/session identifiers are still raw
@@ -628,6 +629,19 @@ pub trait Host {
         granting_agent: AgentId,
     ) -> std::io::Result<TrustPermissionReport>;
 
+    /// `/trust permissions`'s read-only FIRST step (board item, split from
+    /// `01KZHVFCN6ZEAXV7K5JHRQN1YB`'s `(kind, id, digest)`/plugin-subject
+    /// generalisation, which this does not pre-empt): a thin passthrough to
+    /// `Conway::preview_trust_target`, reached through this trait like
+    /// every other facade call so `execute`'s `SlashCommand::Trust` arm
+    /// (which now opens a preview card instead of trusting immediately) is
+    /// unit-testable against a fake. Returns `std::io::Result`, matching
+    /// [`Self::trust_permission_file`]'s own choice and for the identical
+    /// reason: `Conway::preview_trust_target` already returns `std::io::
+    /// Result`, and this is a pure read, so there is no separate class of
+    /// facade-level error to fold in.
+    async fn preview_trust_target(&self, path: &std::path::Path) -> std::io::Result<TrustPreview>;
+
     /// Resolves a plugin command's full name (e.g. `"acme.greet"`, the same
     /// string [`SlashCommand::Plugin::full_name`] carries) against the
     /// installed [`CommandRegistry`], or `None` if nothing is registered
@@ -726,6 +740,14 @@ impl Host for LiveHost<'_> {
         let env_vars: HashMap<String, String> = std::env::vars().collect();
         self.conway
             .trust_permission_file(&env_vars, path, scope, granting_agent)
+    }
+
+    async fn preview_trust_target(&self, path: &std::path::Path) -> std::io::Result<TrustPreview> {
+        // Collected fresh per call, mirroring `trust_permission_file` just
+        // above -- `Conway::preview_trust_target`'s own `TrustStore::load`
+        // reads `env` for user config resolution.
+        let env_vars: HashMap<String, String> = std::env::vars().collect();
+        self.conway.preview_trust_target(&env_vars, path)
     }
 
     fn resolve_command(&self, full_name: &str) -> Option<Arc<dyn Command>> {
@@ -1387,66 +1409,45 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
         // why. `parse` already rejected any argument other than the bare
         // form or `permissions`, so the only remaining case here is
         // "nothing to trust".
+        //
+        // Board item (split from `01KZHVFCN6ZEAXV7K5JHRQN1YB`'s `(kind,
+        // id, digest)`/plugin-subject generalisation, which this does not
+        // pre-empt): this arm used to call `Host::trust_permission_file`
+        // directly, installing and trusting in one action with nothing
+        // shown first. It now calls the read-only `Host::
+        // preview_trust_target` and opens the trust-preview card
+        // (`state.offer_trust_preview`) instead -- the actual trust call
+        // happens only after an explicit confirm, in
+        // [`apply_trust_decision`] below, driven by `app.rs`'s
+        // `Action::TrustDecision` arm exactly the way `Action::AskFate`
+        // drives [`apply_ask_fate`].
         SlashCommand::Trust => {
             match state.permission_paths.first().cloned() {
                 None => {
                     notice(state, "no project permissions file is configured to trust");
                 }
-                Some(path) => {
-                    let root_agent = state.root_agent();
-                    match host
-                        .trust_permission_file(&path, PermissionScope::Session, root_agent)
-                        .await
-                    {
-                        Ok(report) => {
-                            // B3: surface each registration error through
-                            // the SAME `Entry::Error { fatal: false }`
-                            // channel `load_permission_files`'s own
-                            // `registration_errors` uses.
-                            for err in report.registration_errors {
-                                state.transcript.push(Entry::Error {
-                                    text: format!(
-                                        "permission rule not installed: {} -- {}",
-                                        err.rule.describe(),
-                                        err.reason.describe()
-                                    ),
-                                    fatal: false,
-                                });
-                            }
-                            // A4: surface each partial-inertness notice
-                            // through the SAME `Entry::Notice` channel
-                            // `load_permission_files`'s own `notices` uses.
-                            for msg in report.notices {
-                                notice(state, msg);
-                            }
-                            notice(
-                                state,
-                                format!(
-                                    "trusted {} -- {} allow rule(s) installed for this \
-                                     session, and will load automatically until its \
-                                     content next changes",
-                                    path.display(),
-                                    report.installed
-                                ),
-                            );
-                        }
-                        Err(e) => {
-                            // Any failure here (not merely the "unrecognized
-                            // top-level key" case) is promoted to
-                            // `Entry::Error`, not `Entry::Notice` -- `/trust
-                            // permissions` is an explicit operator action,
-                            // so the operator's belief ("I just trusted this
-                            // file") diverging from reality ("nothing was
-                            // recorded") must never surface at a weaker
-                            // severity than `report.registration_errors`
-                            // does just above.
-                            state.transcript.push(Entry::Error {
-                                text: format!("could not trust {}: {e}", path.display()),
-                                fatal: false,
-                            });
-                        }
+                Some(path) => match host.preview_trust_target(&path).await {
+                    Ok(preview) => {
+                        state.offer_trust_preview(TrustPreviewCard {
+                            path,
+                            contents: preview.contents,
+                            status: preview.status,
+                            error: None,
+                        });
                     }
-                }
+                    Err(e) => {
+                        // A read failure here is promoted to `Entry::Error`,
+                        // same severity `apply_trust_decision`'s own confirm
+                        // failure uses below -- `/trust permissions` is an
+                        // explicit operator action, so a failure to even
+                        // show what would be trusted must never surface as
+                        // a routine notice.
+                        state.transcript.push(Entry::Error {
+                            text: format!("could not read {}: {e}", path.display()),
+                            fatal: false,
+                        });
+                    }
+                },
             }
             Effect::None
         }
@@ -1540,6 +1541,85 @@ pub async fn apply_ask_fate<H: Host>(fate: AskFate, state: &mut AppState, host: 
             notice(state, message);
         }
         Err(e) => state.fail_ask_modal(e.to_string()),
+    }
+}
+
+/// Carries out the trust-preview card's decision (board item, split from
+/// `01KZHVFCN6ZEAXV7K5JHRQN1YB`): a no-op `notice` for [`TrustDecision::
+/// Cancel`] (there is nothing to undo -- nothing was ever written), or the
+/// SAME `Host::trust_permission_file` call this arm used to make
+/// immediately (before this item added the preview step) for
+/// [`TrustDecision::Confirm`]. Driven by `app.rs`'s `Action::TrustDecision`
+/// arm, mirroring [`apply_ask_fate`]'s own dispatch shape exactly: reads
+/// the open card from `state.mode`, is a no-op if none is open (the same
+/// defensive shape `apply_ask_fate` uses -- a stale action delivered after
+/// the card already closed some other way must never panic or act on
+/// nothing).
+pub async fn apply_trust_decision<H: Host>(
+    decision: TrustDecision,
+    state: &mut AppState,
+    host: &H,
+) {
+    let path = match &state.mode {
+        Mode::TrustPreview(card) => card.path.clone(),
+        _ => return,
+    };
+    match decision {
+        TrustDecision::Cancel => {
+            state.close_trust_preview();
+            notice(state, format!("not trusted: {}", path.display()));
+        }
+        TrustDecision::Confirm => {
+            let root_agent = state.root_agent();
+            match host
+                .trust_permission_file(&path, PermissionScope::Session, root_agent)
+                .await
+            {
+                Ok(report) => {
+                    state.close_trust_preview();
+                    // B3: surface each registration error through the SAME
+                    // `Entry::Error { fatal: false }` channel
+                    // `load_permission_files`'s own `registration_errors`
+                    // uses.
+                    for err in report.registration_errors {
+                        state.transcript.push(Entry::Error {
+                            text: format!(
+                                "permission rule not installed: {} -- {}",
+                                err.rule.describe(),
+                                err.reason.describe()
+                            ),
+                            fatal: false,
+                        });
+                    }
+                    // A4: surface each partial-inertness notice through the
+                    // SAME `Entry::Notice` channel `load_permission_files`'s
+                    // own `notices` uses.
+                    for msg in report.notices {
+                        notice(state, msg);
+                    }
+                    notice(
+                        state,
+                        format!(
+                            "trusted {} -- {} allow rule(s) installed for this \
+                             session, and will load automatically until its \
+                             content next changes",
+                            path.display(),
+                            report.installed
+                        ),
+                    );
+                }
+                Err(e) => {
+                    // The card STAYS OPEN with the error shown -- mirroring
+                    // `apply_ask_fate`'s own failure path -- rather than
+                    // silently falling through to "cancelled": the
+                    // operator's belief ("I just confirmed trusting this
+                    // file") diverging from reality ("nothing was
+                    // recorded") must never be camouflaged as a routine
+                    // notice.
+                    state.fail_trust_preview(format!("could not trust {}: {e}", path.display()));
+                }
+            }
+        }
     }
 }
 
@@ -2294,6 +2374,13 @@ mod tests {
         /// success path (installed rules, notices, registration errors) and
         /// the failure path (`Entry::Error`, not `Entry::Notice`).
         trust_result: Option<TrustPermissionReport>,
+        /// Board item (split from `01KZHVFCN6ZEAXV7K5JHRQN1YB`): when
+        /// `Some`, `preview_trust_target` succeeds with this preview;
+        /// otherwise it fails with a fixed `std::io::Error` -- lets a
+        /// trust-preview test exercise both the card-opens path (any of
+        /// the three `TrustStatus` cases) and the read-failure path
+        /// (`Entry::Error`, no card opened).
+        preview_result: Option<TrustPreview>,
     }
 
     impl FakeHost {
@@ -2311,6 +2398,7 @@ mod tests {
                 classify_intent: None,
                 plugin_commands: HashMap::new(),
                 trust_result: None,
+                preview_result: None,
             }
         }
 
@@ -2329,6 +2417,13 @@ mod tests {
         /// that field's own doc.
         fn with_trust_result(mut self, report: TrustPermissionReport) -> Self {
             self.trust_result = Some(report);
+            self
+        }
+
+        /// Scripts `preview_trust_target` to succeed with `preview` -- see
+        /// that field's own doc.
+        fn with_preview_result(mut self, preview: TrustPreview) -> Self {
+            self.preview_result = Some(preview);
             self
         }
     }
@@ -2447,6 +2542,16 @@ mod tests {
             self.calls.lock().unwrap().push("trust_permission_file");
             self.trust_result.clone().ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "fake: trust failed")
+            })
+        }
+
+        async fn preview_trust_target(
+            &self,
+            _path: &std::path::Path,
+        ) -> std::io::Result<TrustPreview> {
+            self.calls.lock().unwrap().push("preview_trust_target");
+            self.preview_result.clone().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "fake: preview read failed")
             })
         }
 
@@ -3588,27 +3693,110 @@ mod tests {
     // off `SlashCommand`, not a pre-parser string comparison.
     // ---------------------------------------------------------------
 
+    /// The headline property this item exists to prove: `/trust
+    /// permissions` opens the preview card FIRST, showing the file's
+    /// current content and status -- it must NOT call
+    /// `trust_permission_file` (which would both install and trust in the
+    /// same action) until an explicit confirm.
     #[tokio::test]
-    async fn trust_installs_rules_and_records_the_installed_count() {
+    async fn trust_opens_a_preview_card_before_trusting_anything() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
-        state.permission_paths = vec![std::path::PathBuf::from("/tmp/permissions.json")];
+        let path = std::path::PathBuf::from("/tmp/permissions.json");
+        state.permission_paths = vec![path.clone()];
+        let host = FakeHost::new(root).with_preview_result(TrustPreview {
+            contents: r#"{"allow":["bash:cargo test"]}"#.to_string(),
+            status: conway::TrustStatus::New,
+        });
+
+        let effect = execute(SlashCommand::Trust, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(
+            host.calls(),
+            vec!["preview_trust_target"],
+            "must read and show the content, and must NOT trust anything yet"
+        );
+        match &state.mode {
+            Mode::TrustPreview(card) => {
+                assert_eq!(card.path, path);
+                assert_eq!(card.contents, r#"{"allow":["bash:cargo test"]}"#);
+                assert_eq!(card.status, conway::TrustStatus::New);
+                assert!(card.error.is_none());
+            }
+            other => panic!("expected Mode::TrustPreview, got {other:?}"),
+        }
+    }
+
+    /// Confirming the open card is what actually calls
+    /// `trust_permission_file` and records the installed count -- the SAME
+    /// facade call and message shape `/trust permissions` used to produce
+    /// immediately, before this item added the preview step.
+    #[tokio::test]
+    async fn confirming_the_trust_preview_installs_rules_and_records_the_installed_count() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let path = std::path::PathBuf::from("/tmp/permissions.json");
+        state.offer_trust_preview(TrustPreviewCard {
+            path: path.clone(),
+            contents: "{}".to_string(),
+            status: conway::TrustStatus::New,
+            error: None,
+        });
         let host = FakeHost::new(root).with_trust_result(TrustPermissionReport {
             installed: 3,
             registration_errors: Vec::new(),
             notices: Vec::new(),
         });
 
-        let effect = execute(SlashCommand::Trust, &mut state, &host).await;
+        apply_trust_decision(TrustDecision::Confirm, &mut state, &host).await;
 
-        assert!(matches!(effect, Effect::None));
         assert_eq!(host.calls(), vec!["trust_permission_file"]);
+        assert!(
+            matches!(state.mode, Mode::Normal),
+            "a successful confirm must close the card"
+        );
         assert!(
             state.transcript.iter().any(|e| matches!(
                 e,
                 Entry::Notice { text } if text.contains("trusted") && text.contains("3 allow rule")
             )),
             "the installed count must be surfaced: {:?}",
+            state.transcript
+        );
+    }
+
+    /// Cancelling the open card makes NO facade call at all -- there is
+    /// nothing to undo when nothing was ever written.
+    #[tokio::test]
+    async fn cancelling_the_trust_preview_makes_no_facade_call() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let path = std::path::PathBuf::from("/tmp/permissions.json");
+        state.offer_trust_preview(TrustPreviewCard {
+            path: path.clone(),
+            contents: "{}".to_string(),
+            status: conway::TrustStatus::New,
+            error: None,
+        });
+        let host = FakeHost::new(root);
+
+        apply_trust_decision(TrustDecision::Cancel, &mut state, &host).await;
+
+        assert!(
+            host.calls().is_empty(),
+            "cancelling must never call trust_permission_file"
+        );
+        assert!(
+            matches!(state.mode, Mode::Normal),
+            "cancel must close the card"
+        );
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("not trusted")
+            )),
+            "{:?}",
             state.transcript
         );
     }
@@ -3626,7 +3814,7 @@ mod tests {
         assert!(matches!(effect, Effect::None));
         assert!(
             host.calls().is_empty(),
-            "nothing to trust -- trust_permission_file must never be called"
+            "nothing to trust -- preview_trust_target must never be called"
         );
         assert!(
             state.transcript.iter().any(|e| matches!(
@@ -3638,28 +3826,67 @@ mod tests {
         );
     }
 
-    /// A facade failure is promoted to `Entry::Error`, never `Entry::Notice`
-    /// -- `/trust permissions` is an explicit operator action, so a failure
-    /// to do what it says must never be camouflaged as a routine notice
-    /// (mirrors `Conway::trust_permission_file`'s own doc).
+    /// A preview read failure is promoted to `Entry::Error`, never
+    /// `Entry::Notice`, and opens no card -- `/trust permissions` is an
+    /// explicit operator action, so a failure to even show what would be
+    /// trusted must never be camouflaged as a routine notice.
     #[tokio::test]
-    async fn trust_facade_failure_is_an_error_entry_not_a_notice() {
+    async fn trust_preview_read_failure_is_an_error_entry_not_a_notice() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
         state.permission_paths = vec![std::path::PathBuf::from("/tmp/permissions.json")];
-        let host = FakeHost::new(root); // trust_result: None -> fake io::Error
+        let host = FakeHost::new(root); // preview_result: None -> fake io::Error
 
         let effect = execute(SlashCommand::Trust, &mut state, &host).await;
 
         assert!(matches!(effect, Effect::None));
         assert!(
+            matches!(state.mode, Mode::Normal),
+            "a read failure must not open a card"
+        );
+        assert!(
             state.transcript.iter().any(|e| matches!(
                 e,
-                Entry::Error { text, fatal: false } if text.contains("could not trust")
+                Entry::Error { text, fatal: false } if text.contains("could not read")
             )),
             "a facade failure must be an Entry::Error, not a Notice: {:?}",
             state.transcript
         );
+    }
+
+    /// A facade failure on CONFIRM keeps the card open with the error shown
+    /// (mirroring `apply_ask_fate`'s own failure path) rather than silently
+    /// falling through to "cancelled" -- `/trust permissions` is an
+    /// explicit operator action, so the operator's belief ("I just
+    /// confirmed trusting this file") diverging from reality ("nothing was
+    /// recorded") must never be camouflaged.
+    #[tokio::test]
+    async fn confirm_facade_failure_keeps_the_card_open_with_the_error_shown() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let path = std::path::PathBuf::from("/tmp/permissions.json");
+        state.offer_trust_preview(TrustPreviewCard {
+            path: path.clone(),
+            contents: "{}".to_string(),
+            status: conway::TrustStatus::New,
+            error: None,
+        });
+        let host = FakeHost::new(root); // trust_result: None -> fake io::Error
+
+        apply_trust_decision(TrustDecision::Confirm, &mut state, &host).await;
+
+        match &state.mode {
+            Mode::TrustPreview(card) => {
+                assert!(
+                    card.error
+                        .as_deref()
+                        .is_some_and(|e| e.contains("could not trust")),
+                    "expected an in-card error, got {:?}",
+                    card.error
+                );
+            }
+            other => panic!("a failed confirm must keep the card open, got {other:?}"),
+        }
     }
 
     #[tokio::test]

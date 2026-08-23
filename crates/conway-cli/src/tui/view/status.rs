@@ -601,6 +601,9 @@ fn mode_label(mode: &Mode) -> String {
         Mode::AskModal(_) => "ask".to_string(),
         // C2: the NL intent confirmation card owns the screen.
         Mode::IntentConfirm(_) => "intent".to_string(),
+        // Board item (split from `01KZHVFCN6ZEAXV7K5JHRQN1YB`): the
+        // trust-preview card owns the screen.
+        Mode::TrustPreview(_) => "trust".to_string(),
         // The `[p]` field editor owns the screen.
         Mode::EditingPattern(_) => "pattern".to_string(),
     }

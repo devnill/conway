@@ -64,7 +64,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::state::{AppState, AskModal, EditingPatternState, IntentConfirm, Mode};
+use super::state::{
+    AppState, AskModal, EditingPatternState, IntentConfirm, Mode, TrustPreviewCard,
+};
 pub use theme::Theme;
 
 /// The input box's floor height: one row of text plus the two border rows
@@ -154,6 +156,10 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
         draw_intent_confirm(frame, areas.transcript, card, state.modal_scroll, theme);
     }
 
+    if let Mode::TrustPreview(card) = &state.mode {
+        draw_trust_preview(frame, areas.transcript, card, state.modal_scroll, theme);
+    }
+
     if let Mode::EditingPattern(ed) = &state.mode {
         draw_editing_pattern(
             frame,
@@ -214,7 +220,10 @@ fn layout(state: &AppState, area: Rect) -> Areas {
     // appeared -- `state.agent_view_open` itself is left untouched, so the
     // panel comes back exactly as it was once a fate closes the modal.
     let show_agents = state.agent_view_open
-        && !matches!(state.mode, Mode::AskModal(_) | Mode::IntentConfirm(_))
+        && !matches!(
+            state.mode,
+            Mode::AskModal(_) | Mode::IntentConfirm(_) | Mode::TrustPreview(_)
+        )
         && area.height > input_height + STATUS_HEIGHT + 3;
 
     // This item removed T6's sticky-header row reservation entirely: the
@@ -621,6 +630,108 @@ fn draw_intent_confirm(
         "[enter] confirm  [e] edit  [esc] manual"
     };
     let footer_lines = vec![Line::from(hint), Line::from("")];
+    let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, frame_areas.footer_area);
+}
+
+/// Rows the trust-preview card's footer ALWAYS reserves: the decision-key
+/// hint plus a line reserved for an in-card error (mirrors
+/// [`ASK_MODAL_FOOTER_ROWS`] exactly -- this card, like the `/ask` modal
+/// and unlike the intent-confirm card, has a real in-modal error state: a
+/// failed confirm keeps the card open with the error shown, via
+/// `commands::apply_trust_decision`).
+const TRUST_PREVIEW_FOOTER_ROWS: u16 = 2;
+
+/// The trust-preview card (board item, split from
+/// `01KZHVFCN6ZEAXV7K5JHRQN1YB`'s `(kind, id, digest)`/plugin-subject
+/// generalisation, which this does not pre-empt): bottom-anchored,
+/// content-sized, capped, via the shared [`modal`] primitive (V1) --
+/// following [`draw_ask_modal`]/[`draw_intent_confirm`]'s precedent. Shows
+/// `path`'s current content BEFORE any trust decision is recorded --
+/// `commands::execute`'s `SlashCommand::Trust` arm opens this card instead
+/// of installing and trusting in the same action, which is what shipped
+/// before this item.
+///
+/// The header line's wording depends on `card.status`
+/// (`conway::TrustStatus`), stated honestly rather than implying a
+/// capability this store does not have:
+/// - `New`: framed as a first trust.
+/// - `Unchanged`: framed as a no-op re-confirmation (re-installs the same
+///   rules for this session; nothing about the trust record changes).
+/// - `Changed`: framed as a re-trust of a file that changed since it was
+///   last trusted, WITH AN EXPLICIT STATEMENT that the previous version is
+///   not retained anywhere and cannot be shown -- `crate::config::trust::
+///   TrustStore` keeps only a digest of a prior decision, never its
+///   content (see that module's own doc), so there is nothing to diff
+///   `card.contents` against. This is the plain statement this item's own
+///   acceptance requires in place of a diff view: showing only a preview
+///   and calling it a diff would repeat exactly the failure this project
+///   has already ruled against elsewhere (a mechanism that manufactures
+///   confidence it cannot deliver).
+///
+/// The footer shows the two decision keys -- `[y] trust  [n] cancel` --
+/// and, after a FAILED confirm, the error that kept the card open (red),
+/// mirroring [`draw_ask_modal`]'s footer shape exactly.
+fn draw_trust_preview(
+    frame: &mut Frame,
+    transcript_area: Rect,
+    card: &TrustPreviewCard,
+    scroll: u16,
+    theme: &Theme,
+) {
+    let header = match card.status {
+        conway::TrustStatus::New => {
+            format!("trusting for the first time: {}", card.path.display())
+        }
+        conway::TrustStatus::Unchanged => format!(
+            "already trusted, unchanged: {} -- re-confirming for this session",
+            card.path.display()
+        ),
+        conway::TrustStatus::Changed => format!(
+            "this file changed since you last trusted it: {} -- the \
+             previous version is not retained, so it cannot be shown or \
+             diffed; below is the CURRENT content only",
+            card.path.display()
+        ),
+    };
+    let mut body_lines = vec![
+        Line::from(Span::styled(header, theme.emphasized)),
+        Line::from(""),
+    ];
+    body_lines.extend(
+        card.contents
+            .split('\n')
+            .map(|line| Line::from(line.to_string())),
+    );
+    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
+
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        TRUST_PREVIEW_FOOTER_ROWS,
+        modal::DEFAULT_CAP_DENOMINATOR,
+        " TRUST ",
+        theme.border_danger,
+    );
+
+    let body_max_scroll = modal::body_max_scroll(content_rows, frame_areas.body_area.height);
+    let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
+    frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
+
+    let hint = if body_max_scroll > 0 {
+        "[y] trust  [n] cancel  [PageUp/PageDown] scroll"
+    } else {
+        "[y] trust  [n] cancel"
+    };
+    let error_line = match &card.error {
+        Some(err) => Line::from(Span::styled(format!("error: {err}"), theme.error)),
+        None => Line::from(""),
+    };
+    let footer_lines = vec![Line::from(hint), error_line];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
     frame.render_widget(footer, frame_areas.footer_area);
 }

@@ -132,7 +132,8 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         | Action::Quit
         | Action::FocusAgent(_)
         | Action::AskFate(_)
-        | Action::IntentConfirm(_) => {}
+        | Action::IntentConfirm(_)
+        | Action::TrustDecision(_) => {}
     }
     action
 }

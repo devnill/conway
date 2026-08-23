@@ -17,7 +17,9 @@ use crate::config::model_metadata::ModelMetadata;
 use crate::config::{ConfigWarning, ConwayConfig};
 use crate::error::{ConwayError, Result};
 use crate::intent::AgentIntent;
-use crate::permissions::{PermissionLoadReport, RevokeOutcome, TrustPermissionReport};
+use crate::permissions::{
+    PermissionLoadReport, RevokeOutcome, TrustPermissionReport, TrustPreview,
+};
 use crate::session_handle::{SessionHandle, SessionSpec};
 use crate::subagent_spec::ForkSpec;
 
@@ -776,6 +778,40 @@ impl Conway {
         granting_agent: conway_core::ids::AgentId,
     ) -> PermissionLoadReport {
         crate::permissions::load_permission_files(&self.rt, cwd, env, scope, granting_agent)
+    }
+
+    /// Reads `path`'s current bytes and reports whether trusting it now
+    /// would be a first trust, a re-trust of a file that changed since it
+    /// was last trusted, or a no-op re-confirmation of an already-current
+    /// trust record -- WITHOUT recording anything. This is the read-only
+    /// half of a trust decision: `conway-cli`'s `/trust permissions` calls
+    /// this FIRST, shows the operator the result, and only calls
+    /// [`Self::trust_permission_file`] after an explicit confirm -- so the
+    /// operator is shown what they are about to trust before, not after,
+    /// deciding (board item, split from `01KZHVFCN6ZEAXV7K5JHRQN1YB`'s
+    /// `(kind, id, digest)`/plugin-subject generalisation, which this does
+    /// not pre-empt).
+    ///
+    /// Returns [`TrustPreview`]'s `contents` field as the file's CURRENT
+    /// bytes only -- never a diff against what a prior trust decision
+    /// covered. `crate::config::trust::TrustStore` retains only a digest of
+    /// a prior decision, never its content (see that module's own doc), so
+    /// there is nothing to diff against even when `status` reports
+    /// [`crate::config::trust::TrustStatus::Changed`]; see
+    /// [`TrustPreview`]'s own doc for the full reasoning and where that
+    /// limit is stated to the operator.
+    ///
+    /// Returns `Err` only for the ordinary `std::io::Error` an unreadable
+    /// `path` produces -- unlike [`Self::trust_permission_file`], there is
+    /// no unrecognized-top-level-key check here: this function never
+    /// writes anything, so there is nothing a bad file would silently
+    /// bless.
+    pub fn preview_trust_target(
+        &self,
+        env: &std::collections::HashMap<String, String>,
+        path: &std::path::Path,
+    ) -> std::io::Result<TrustPreview> {
+        crate::permissions::preview_trust_target(env, path)
     }
 
     /// Records an explicit trust decision for `path`'s CURRENT bytes on

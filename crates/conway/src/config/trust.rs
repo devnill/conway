@@ -151,6 +151,37 @@ pub struct TrustStore {
     file: TrustFile,
 }
 
+/// [`TrustStore::status`]'s finer answer than [`TrustStore::is_trusted`]'s
+/// plain boolean: a caller deciding what to SHOW an operator before a trust
+/// decision (board item, the trust-preview surface) needs to know not just
+/// "is this trusted" but "is there a prior record AT ALL" -- `is_trusted`
+/// collapses `New` and `Changed` into the same `false`, which is exactly
+/// right for the gating question `load_permission_files`/`is_trusted` ask
+/// ("does the `allow` half install") but wrong for a preview's wording
+/// ("trusting for the first time" reads very differently from "this file
+/// changed since you trusted it").
+///
+/// Deliberately carries no content of its own: this store never retains
+/// the bytes of a PRIOR trust decision (see this module's own doc,
+/// `TrustedRecord`) -- `Changed` says a prior record existed and no
+/// longer matches, not what it used to say. A caller wanting to show
+/// "what changed" cannot, from this store alone; see
+/// `conway_cli::tui::view::draw_trust_preview`'s own doc for how the
+/// preview surface states that limit plainly rather than implying a diff
+/// that cannot be produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrustStatus {
+    /// No record exists for this path at all -- this would be the first
+    /// time it is trusted.
+    New,
+    /// A record exists for this path, but its digest does not match the
+    /// bytes just read -- the file changed since it was last trusted.
+    Changed,
+    /// A record exists and its digest matches the bytes just read --
+    /// already trusted, unchanged.
+    Unchanged,
+}
+
 /// `blake3` is already a workspace dependency (`conway-core`,
 /// `conway-runtime`'s `PermissionBroker::CacheKey` both use it) -- reused
 /// here rather than reaching for a new dependency.
@@ -237,9 +268,20 @@ impl TrustStore {
     /// every call -- `conway_cli::tui::app`'s loader passes the same
     /// project-scoped candidate `permission_file_paths` already produced.
     pub fn is_trusted(&self, abs_path: &Path, contents: &str) -> bool {
+        self.status(abs_path, contents) == TrustStatus::Unchanged
+    }
+
+    /// The finer-grained answer [`is_trusted`](Self::is_trusted) collapses
+    /// into a single `bool` -- see [`TrustStatus`]'s own doc for why a
+    /// preview surface needs the distinction and why this store cannot go
+    /// any further than it (no prior content is retained to diff against).
+    pub fn status(&self, abs_path: &Path, contents: &str) -> TrustStatus {
         match self.file.permission_files.get(&path_key(abs_path)) {
-            Some(record) => record.content_digest == content_digest(contents),
-            None => false,
+            None => TrustStatus::New,
+            Some(record) if record.content_digest == content_digest(contents) => {
+                TrustStatus::Unchanged
+            }
+            Some(_) => TrustStatus::Changed,
         }
     }
 
@@ -457,6 +499,42 @@ mod tests {
              level -- must not prevent an otherwise-valid recorded trust \
              decision from matching"
         );
+    }
+
+    /// [`TrustStatus`]'s three cases -- the finer distinction the
+    /// trust-preview surface needs and `is_trusted` alone cannot give it
+    /// (board item: a preview must say "first time" versus "this changed"
+    /// rather than a bare "not trusted").
+    #[test]
+    fn status_distinguishes_new_changed_and_unchanged() {
+        let config_dir = tempfile_dir();
+        let env = env_for(&config_dir);
+        let project = tempfile_dir().join("permissions.json");
+        fs::write(&project, r#"{"allow":["bash:cargo test"]}"#).unwrap();
+
+        // No record at all yet.
+        let store = TrustStore::load(&env);
+        let contents = fs::read_to_string(&project).unwrap();
+        assert_eq!(store.status(&project, &contents), TrustStatus::New);
+
+        TrustStore::trust(&env, &project).expect("trust succeeds");
+
+        // Freshly trusted, unchanged since.
+        let store = TrustStore::load(&env);
+        assert_eq!(store.status(&project, &contents), TrustStatus::Unchanged);
+
+        // Edited after being trusted.
+        fs::write(&project, r#"{"allow":["bash:cargo test","bash:curl"]}"#).unwrap();
+        let new_contents = fs::read_to_string(&project).unwrap();
+        let store = TrustStore::load(&env);
+        assert_eq!(store.status(&project, &new_contents), TrustStatus::Changed);
+        // is_trusted must agree exactly with the Unchanged/not-Unchanged
+        // split -- this is the property the refactor (`is_trusted` now
+        // delegates to `status`) must preserve byte-for-byte: the OLD
+        // (recorded) bytes still read as trusted, the NEW (on-disk) bytes
+        // do not.
+        assert!(store.is_trusted(&project, &contents));
+        assert!(!store.is_trusted(&project, &new_contents));
     }
 
     #[cfg(unix)]
