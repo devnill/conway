@@ -107,11 +107,15 @@ use super::builder::InheritedPrefix;
 ///    Records with `selection_last_seq < seq < covers_upto` are in NEITHER
 ///    the frozen selection NOR the own tail — they are silently dropped
 ///    (the literal DESIGN §2.5 "own records from `covers_upto`" semantic;
-///    see `head_covers_upto_excludes_early_own_records`). A well-formed
-///    head keeps `covers_upto` consistent with the selection's extent
-///    (`covers_upto == selection_last_seq + 1`); D1-3d's head-writer must
-///    enforce that, or explicitly justify a skip — otherwise records vanish
-///    with no `HarnessDrop`.
+///    see `head_covers_upto_excludes_early_own_records`, which constructs
+///    exactly this gap by hand to prove the read side tolerates it). A
+///    well-formed head keeps `covers_upto` consistent with the selection's
+///    extent (`covers_upto == selection_last_seq + 1`); [`write_head`]
+///    (below) is the ONE place that invariant is enforced — it derives
+///    `covers_upto` itself via `covers_upto_for` rather than accepting it as
+///    a parameter, so no production call site can construct the gap this
+///    step tolerates. A hand-built `ContextPathSet` (as the test above does)
+///    still can, which is exactly what that test needs.
 /// 5. **Call `ValidatedPath::default_path(nodes)`** — runs the coherence
 ///    validator in DECLARE mode, recording harness-caused incoherence rather
 ///    than refusing it.
@@ -442,7 +446,14 @@ async fn expand_prefix_chain<P: PathStore + ?Sized>(
 /// Resolve each node's `RecordRef` to its `Arc<LogRecord>` via the memoised
 /// `TranscriptResolver::resolve_prefix`. Mirrors
 /// `conway_session::resolver::resolve_records`.
-async fn resolve_records<S: SessionStore + ?Sized>(
+///
+/// `pub(crate)`, not private: [`super::path_host::RuntimeContextPathHost`]
+/// reuses this exact resolution (masked, ancestry-aware) for
+/// `ContextPathHost::resolve_records` -- a caller-supplied `RecordRef`
+/// resolved any other way could silently un-mask a record `ContextMask`
+/// excluded, which this shared implementation cannot do (see that trait
+/// method's own doc).
+pub(crate) async fn resolve_records<S: SessionStore + ?Sized>(
     resolver: &TranscriptResolver,
     session_store: &S,
     nodes: Vec<PathNode>,
@@ -666,6 +677,145 @@ pub fn path_from_legacy(
     }
 
     Ok(ResolvedPath { nodes })
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// The writer half of the head mechanism (DESIGN §2.5).
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Compute `session`'s new `covers_upto` for a head about to name `selection`
+/// (DESIGN §2.5): the LOCAL seq, in `session`'s own numbering, one past the
+/// highest `session`-local seq already carried by `selection`'s fully
+/// expanded node list (its own `nodes` plus its prefix chain, walked exactly
+/// as [`expand_prefix_chain`] does for the read side). `LogSeq::ZERO` when
+/// the expanded selection carries none of `session`'s own records at all —
+/// the own tail then starts from the very beginning, matching the "no head"
+/// default (step 3 of [`resolve_default_path`]'s own doc).
+///
+/// **This is the ONE place the `covers_upto == selection_last_seq + 1`
+/// invariant is enforced.** [`resolve_default_path`]'s own module doc names
+/// the invariant and states a well-formed head must keep it, but a reader
+/// cannot enforce an invariant about how a value was PRODUCED — only a
+/// writer can. [`write_head`] calls this rather than accepting `covers_upto`
+/// as a parameter, so there is no call site anywhere that could pass an
+/// inconsistent value: the invariant is structural, not a rule every caller
+/// has to remember (the project's own stated preference — an invariant
+/// belongs to the seam that enforces it, not to everyone who calls it).
+async fn covers_upto_for<P>(
+    path_store: &P,
+    session: &SessionId,
+    selection: &PathSelection,
+) -> Result<LogSeq, PathError>
+where
+    P: PathStore + ?Sized,
+{
+    let expanded = expand_prefix_chain(path_store, selection).await?;
+    let last_own_seq = expanded
+        .iter()
+        .filter(|node| &node.record.session == session)
+        .map(|node| node.record.seq)
+        .max();
+    Ok(last_own_seq.map(LogSeq::succ).unwrap_or(LogSeq::ZERO))
+}
+
+/// Freeze `selection` as `session`'s new context-path HEAD (DESIGN §2.5):
+/// store the selection body, then append a `LogRecord::ContextPathSet` to
+/// `session`'s own log naming it. This is the writer [`resolve_default_path`]
+/// above has read for since D1-3c with nothing ever calling it — board item
+/// 01M0K5SWEHEMRYVZ49TAFCFXPK is what makes it exist.
+///
+/// # Who calls this, and when
+///
+/// Deliberately nobody, yet, in a running `conway` build. Decision
+/// 01M0K4QT6MBXPD6PXMBBBD2P7B settled that an operator curates by stating
+/// intent and a MODEL composes the resulting selection through a
+/// plugin-provided tool — but that tool is a separate item, not built here.
+/// This function is kept a bare, tool-agnostic operation over the
+/// `SessionStore`/`PathStore` ports specifically so that tool, and any other
+/// future caller (a migration script, a test), share this ONE
+/// implementation rather than each re-deriving the append shape and the
+/// `covers_upto` arithmetic independently. It is still ordinary, callable
+/// production code — the construction guard's allowlist entry for
+/// `ContextPathSet` is removed in the same change that adds this function.
+///
+/// # Write ordering
+///
+/// `selection` is stored via [`PathStore::put`] BEFORE the `ContextPathSet`
+/// record is appended (DESIGN §2.5's stated discipline: a head must never
+/// point at a missing body). A crash between the two calls leaves an
+/// unreferenced-but-harmless selection body in the path store, never a head
+/// pointing at nothing.
+///
+/// # The record's own `seq` field vs. `SessionStore::append`'s assigned one
+///
+/// `LogRecord::ContextPathSet` carries a `seq` field, and
+/// `SessionStore::append` ALSO assigns one (`JsonlSessionStore::assign_seq`
+/// re-serializes every appended record with the store's own next seq before
+/// writing it). Whatever this function puts in `seq` is therefore always
+/// discarded and overwritten — the same convention every other seq-carrying
+/// variant's callers already use elsewhere in this tree (e.g.
+/// `runtime.rs`'s `pull_in`: "Placeholder only -- the store re-sequences on
+/// append; this value never reaches disk"). `LogSeq::ZERO` is passed here
+/// for the same reason, and the value this function RETURNS is the seq
+/// `append` actually assigned, not the placeholder.
+///
+/// # Latest-seq-wins, and why there is no separate "move" or "undo"
+///
+/// This never retracts or mutates a session's PRIOR head record — appending
+/// a second `ContextPathSet` simply outranks it, because
+/// [`resolve_default_path`] reads the head as "the `ContextPathSet` with the
+/// greatest `seq`" (that function's own step 2). The prior head's record
+/// stays in the log, readable, exactly like every other append. Moving a
+/// head is itself just an ordinary append; reverting one is another append
+/// naming the earlier selection again. Nothing about that needs a dedicated
+/// undo mechanism — it falls out of the log being append-only.
+pub async fn write_head<S, P>(
+    session_store: &S,
+    path_store: &P,
+    session: &SessionId,
+    selection: PathSelection,
+) -> Result<LogSeq, PathError>
+where
+    S: SessionStore + ?Sized,
+    P: PathStore + ?Sized,
+{
+    // Computed BEFORE `put` moves `selection` — read-only, so it does not
+    // disturb the store-before-append ordering below.
+    let covers_upto = covers_upto_for(path_store, session, &selection).await?;
+
+    // `NotFound` is deliberately NOT special-cased here. `covers_upto_for`
+    // above already walked this selection's whole prefix chain through
+    // `expand_prefix_chain`, which fails with `UnresolvableNode` on exactly
+    // the missing-key condition `put`'s own internal expansion would hit —
+    // so a missing prefix is reported THERE, with the chain context that
+    // makes it diagnosable, and cannot still be missing by the time `put`
+    // runs. Re-handling it here would only produce a second, worse message:
+    // this call site has no failing node to name, so its `RecordRef` is a
+    // placeholder rather than a real address. Anything `put` still returns
+    // is either a genuine store fault or a same-process race no `PathStore`
+    // implementor in this tree permits; both are served better by the
+    // store's own message than by a guess.
+    let key = path_store.put(selection).await.map_err(|e| match e {
+        PathStoreError::PrefixChainTooDeep { .. } => PathError::PrefixChainTooDeep,
+        other => PathError::UnresolvableNode {
+            record: RecordRef {
+                session: *session,
+                seq: LogSeq(0),
+            },
+            detail: format!("storing the head's selection body failed: {other}"),
+        },
+    })?;
+
+    let record = LogRecord::ContextPathSet {
+        seq: LogSeq::ZERO, // placeholder -- append() reassigns; see doc above.
+        ts: Utc::now(),
+        selection: key,
+        covers_upto,
+    };
+    session_store
+        .append(session, record)
+        .await
+        .map_err(store_err_to_path)
 }
 
 #[cfg(test)]
@@ -1129,5 +1279,180 @@ mod tests {
                 seq: LogSeq(0)
             }
         );
+    }
+
+    /// (e) **The writer, proven through the real reader** — acceptance for
+    /// board item 01M0K5SWEHEMRYVZ49TAFCFXPK. `write_head` appends a
+    /// `ContextPathSet` naming a TWO-LEVEL selection (a previously stored
+    /// selection `a`, plus a new selection `b` with `prefix: Some(a)`), and
+    /// `resolve_default_path` — the same production reader every other test
+    /// in this module exercises — reads that head back and expands the full
+    /// prefix chain. This is deliberately not a unit test of `write_head`
+    /// checking what it appended in isolation: the append happens through
+    /// the real writer and the read happens through the real reader, with
+    /// nothing standing in for either.
+    #[tokio::test]
+    async fn write_head_round_trips_through_resolve_default_path() {
+        let store = FakeStore::new();
+        let path_store = MemPathStore::default();
+        let resolver = TranscriptResolver::new(64);
+
+        let s = SessionId::new();
+        make_session(
+            &store,
+            make_meta(s, None),
+            vec![
+                user_turn(0, "first"),
+                user_turn(1, "second"),
+                user_turn(2, "third"),
+                user_turn(3, "fourth"),
+            ],
+        )
+        .await;
+
+        // `a`: a previously stored selection over the session's first record
+        // — standing in for an EARLIER head's own frozen selection.
+        let a = PathSelection {
+            prefix: None,
+            nodes: vec![own_node(s, 0)],
+            incoherence: vec![],
+        };
+        let a_key = path_store.put(a).await.unwrap();
+
+        // `b`: the NEW selection a future composing tool would hand to
+        // `write_head` — prefixed by `a`, adding the session's second
+        // record.
+        let b = PathSelection {
+            prefix: Some(a_key),
+            nodes: vec![own_node(s, 1)],
+            incoherence: vec![],
+        };
+
+        let assigned_seq = write_head(&store, &path_store, &s, b).await.unwrap();
+
+        // `covers_upto` was derived from the FULLY EXPANDED chain (a's node
+        // at seq 0, b's node at seq 1), landing at 2 rather than 1 — proof
+        // the writer walked the prefix chain to compute it, not just `b`'s
+        // own (single) node.
+        let appended = store
+            .read(&s, SeqRange::full())
+            .await
+            .unwrap()
+            .into_iter()
+            .find_map(|r| match r {
+                LogRecord::ContextPathSet {
+                    seq, covers_upto, ..
+                } => Some((seq, covers_upto)),
+                _ => None,
+            })
+            .expect("write_head appended a ContextPathSet");
+        assert_eq!(appended.0, assigned_seq);
+        assert_eq!(appended.1, LogSeq(2));
+
+        // The real reader: resolve_default_path finds this head and expands
+        // its prefix chain.
+        let path = resolve_default_path(&resolver, &store, &path_store, &s)
+            .await
+            .unwrap();
+        let nodes: Vec<_> = path.nodes().collect();
+
+        // prefix chain (a's node, b's node) ++ own records from
+        // covers_upto=2 (records 2, 3).
+        assert_eq!(nodes.len(), 4);
+        assert_eq!(
+            nodes[0].0.record,
+            RecordRef {
+                session: s,
+                seq: LogSeq(0)
+            }
+        );
+        assert_eq!(nodes[0].0.stamp, NodeStamp::Inherited { from: s });
+        assert_eq!(
+            nodes[1].0.record,
+            RecordRef {
+                session: s,
+                seq: LogSeq(1)
+            }
+        );
+        assert_eq!(nodes[1].0.stamp, NodeStamp::Inherited { from: s });
+        assert_eq!(
+            nodes[2].0.record,
+            RecordRef {
+                session: s,
+                seq: LogSeq(2)
+            }
+        );
+        assert_eq!(nodes[2].0.stamp, NodeStamp::Head);
+        assert_eq!(
+            nodes[3].0.record,
+            RecordRef {
+                session: s,
+                seq: LogSeq(3)
+            }
+        );
+        assert_eq!(nodes[3].0.stamp, NodeStamp::Own);
+    }
+
+    /// (f) `covers_upto_for` (and therefore `write_head`) does not require
+    /// the selection to carry any of `session`'s own records at all —
+    /// `covers_upto` falls back to `LogSeq::ZERO`, so the live own tail is
+    /// read from the very beginning (matching the "no head" default).
+    #[tokio::test]
+    async fn write_head_with_no_own_records_covers_from_zero() {
+        let store = FakeStore::new();
+        let path_store = MemPathStore::default();
+        let resolver = TranscriptResolver::new(64);
+
+        let other = SessionId::new();
+        let s = SessionId::new();
+        make_session(&store, make_meta(other, None), vec![user_turn(0, "other")]).await;
+        make_session(
+            &store,
+            make_meta(s, None),
+            vec![user_turn(0, "own first"), user_turn(1, "own second")],
+        )
+        .await;
+
+        // A selection that references only ANOTHER session's record — none
+        // of `s`'s own.
+        let sel = PathSelection {
+            prefix: None,
+            nodes: vec![own_node(other, 0)],
+            incoherence: vec![],
+        };
+
+        write_head(&store, &path_store, &s, sel).await.unwrap();
+
+        let path = resolve_default_path(&resolver, &store, &path_store, &s)
+            .await
+            .unwrap();
+        let nodes: Vec<_> = path.nodes().collect();
+
+        // prefix (other/0, Inherited) ++ own from covers_upto=0 (both of
+        // s's own records).
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(
+            nodes[0].0.record,
+            RecordRef {
+                session: other,
+                seq: LogSeq(0)
+            }
+        );
+        assert_eq!(
+            nodes[1].0.record,
+            RecordRef {
+                session: s,
+                seq: LogSeq(0)
+            }
+        );
+        assert_eq!(nodes[1].0.stamp, NodeStamp::Head);
+        assert_eq!(
+            nodes[2].0.record,
+            RecordRef {
+                session: s,
+                seq: LogSeq(1)
+            }
+        );
+        assert_eq!(nodes[2].0.stamp, NodeStamp::Own);
     }
 }

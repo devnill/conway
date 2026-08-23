@@ -157,8 +157,8 @@ use tokio_util::sync::CancellationToken;
 use crate::attempt::{AttemptEngine, AttemptOutcome, AttemptRequest};
 use crate::context::path::resolve_default_path;
 use crate::context::{
-    ContextBuilder, ContextInput, GuardedContextHook, InheritedPrefix, SkillFragment,
-    SystemPromptSpec,
+    ContextBuilder, ContextInput, GuardedContextHook, InheritedPrefix, PluginInstruction,
+    SkillFragment, SystemPromptSpec,
 };
 use crate::events::EventBus;
 use crate::mailbox::{self, MailboxReceiver, MailboxSender};
@@ -171,6 +171,15 @@ use crate::tree::AgentTree;
 #[derive(Clone, Debug)]
 pub struct AgentSpec {
     pub system_prompt: Option<SystemPromptSpec>,
+    /// Plugin-declared instruction fragments (board item
+    /// `01M0K5MD59YZRSHE31JKZKFRMY`), rendered before `skills` -- see
+    /// `ContextInput::instructions`'s own doc for the precedence argument.
+    /// Resolved for a ROOT agent by `runtime::root::resolve_instructions`;
+    /// a spawned/forked child gets `Vec::new()` today, matching `skills`'
+    /// own pre-existing "a subagent gets no directory-sourced skills
+    /// either" gap (`subagent.rs`'s `SubagentHost::start` -- unaddressed by
+    /// this item, out of its scope; see that call site's own comment).
+    pub instructions: Vec<PluginInstruction>,
     pub skills: Vec<SkillFragment>,
     /// `None` behaves as [`ToolSelector::All`] (see
     /// [`PluginRegistry::specs`]).
@@ -250,6 +259,19 @@ pub struct LoopDeps {
     /// implementation exists yet; a fake or a not-yet-wired real
     /// host is injected by the caller.
     pub subagents: Arc<dyn SubagentHost>,
+    /// The context-path composition capability (decision
+    /// `01M0K4QT6MBXPD6PXMBBBD2P7B`) every turn's `ToolBatchCtx` threads
+    /// straight through to `ToolRunner::run_batch` -- see `ToolBatchCtx::
+    /// context_path_host`'s own doc. One runtime-wide instance
+    /// (`Runtime::new`), narrowed per call to that call's own session.
+    pub context_path_host: Arc<dyn conway_core::ports::ContextPathHost>,
+    /// The cross-session discovery capability (board item
+    /// `01M0PS8J3AK7Z7253Z3E3RD3GY`) every turn's `ToolBatchCtx` threads
+    /// straight through to `ToolRunner::run_batch`, mirroring
+    /// `context_path_host` immediately above exactly -- one runtime-wide
+    /// instance (`Runtime::new`), never narrowed to a session (discovery is
+    /// cross-session by construction).
+    pub session_discovery_host: Arc<dyn conway_core::ports::SessionDiscoveryHost>,
     pub plugin_config: Arc<PluginConfig>,
     pub bus: Arc<EventBus>,
     pub builder: Arc<ContextBuilder>,
@@ -931,6 +953,7 @@ impl AgentLoop {
                 &tools,
                 report.dropped,
                 report.curator_failed,
+                report.instruction_fragments,
             );
         }
     }
@@ -1111,6 +1134,7 @@ impl AgentLoop {
                 model: model_hint,
                 cache_mode: self.spec.cache_mode.clone(),
                 system_prompt: self.spec.system_prompt.clone(),
+                instructions: self.spec.instructions.clone(),
                 skills: self.spec.skills.clone(),
                 tools: tool_specs.clone(),
                 path,
@@ -1173,6 +1197,7 @@ impl AgentLoop {
                     &announced_tools,
                     report.dropped,
                     report.curator_failed,
+                    report.instruction_fragments,
                 );
             }
 
@@ -1269,6 +1294,7 @@ impl AgentLoop {
                         &announced_tools,
                         report.dropped,
                         report.curator_failed,
+                        report.instruction_fragments,
                     );
                 }
             }
@@ -1510,6 +1536,8 @@ impl AgentLoop {
                 chdir: chdir.clone(),
                 cancel: self.cancel.clone(),
                 subagents: self.deps.subagents.clone(),
+                context_path_host: self.deps.context_path_host.clone(),
+                session_discovery_host: self.deps.session_discovery_host.clone(),
                 // [S1.5]: this agent's own EFFECTIVE per-agent config
                 // (`self.plugin_config`, resolved once at construction --
                 // see that field's own doc), not the shared, process-wide

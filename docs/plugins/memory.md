@@ -11,10 +11,11 @@ contract this plugin's hook runs through.
 **The CLI wires this plugin to the durable `conway::memory::FsMemoryStore`
 when `"conway.memory"` is named in `[plugins].install`** (board item
 `01M09V3S2AQYB2VK6MANFRH1JM`, `crates/conway-cli/src/first_party_plugins.rs`'s
-`resolve_memory_store`), at `<cwd>/.conway/memory` — alongside the session
-store's own `.conway/sessions` default. A memory `remember`ed in one `conway`
-invocation is recalled by a later, separate invocation from the same
-directory, exactly like session history already is.
+`resolve_memory_store`), at `<cwd>/.conway/memory` — project-local, unlike
+the session store's own central, project-keyed default (see
+[`sessions.md`](../sessions.md#where-session-data-lives-on-disk)). A memory
+`remember`ed in one `conway` invocation is recalled by a later, separate
+invocation from the same directory, exactly like session history already is.
 
 **Opening that store is unconditional, not best-effort, once selected.** If
 the directory cannot be opened (permissions, a read-only filesystem, or a

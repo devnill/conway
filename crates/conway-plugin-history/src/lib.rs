@@ -87,7 +87,8 @@
 use std::sync::Arc;
 
 use conway::plugin::{
-    async_trait, Command, CommandCtx, CommandOutcome, CommandSpec, Plugin, PluginManifest,
+    async_trait, Command, CommandCtx, CommandOutcome, CommandSpec, Plugin, PluginDescription,
+    PluginManifest,
 };
 use conway::{LogSeq, SessionId};
 
@@ -263,6 +264,20 @@ impl Plugin for HistoryPlugin {
         }
     }
 
+    fn description(&self) -> PluginDescription {
+        PluginDescription {
+            summary: "rewind, mask, and check out session history".to_string(),
+            you_get: format!(
+                "3 commands: /{PLUGIN_ID}.rewind (fork this session at a past turn), \
+                 /{PLUGIN_ID}.mask (hide a turn from future context without deleting it), \
+                 /{PLUGIN_ID}.checkout (fork a DIFFERENT session by id)"
+            ),
+            you_lose: "nothing else -- history stays append-only and readable either way"
+                .to_string(),
+            costs: "none beyond the commands themselves".to_string(),
+        }
+    }
+
     fn tools(&self) -> Vec<Arc<dyn conway::plugin::Tool>> {
         Vec::new()
     }
@@ -366,6 +381,17 @@ mod tests {
     #[test]
     fn manifest_id_matches_the_published_constant() {
         assert_eq!(HistoryPlugin.manifest().id, PLUGIN_ID);
+    }
+
+    /// The plugin browser's own read surface (board item
+    /// `01M0KARX71A64NTSYTDBVANVPF`): a real description, never the
+    /// trait's empty default.
+    #[test]
+    fn description_is_non_empty() {
+        let description = HistoryPlugin.description();
+        assert!(!description.summary.is_empty());
+        assert!(!description.you_get.is_empty());
+        assert!(!description.you_lose.is_empty());
     }
 
     #[test]

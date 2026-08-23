@@ -156,11 +156,13 @@ mod result_contract_via_def {
             plugins: Vec::<Arc<dyn Plugin>>::new(),
             gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
             agent_defs,
+            instructions: Vec::new(),
             skills: Default::default(),
             event_bus: EventBus::new(1024),
             headroom: Arc::new(HeadroomPolicy::default()),
-        });
 
+            session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        });
         let parent = runtime
             .start_root(RootSpec {
                 session: None,

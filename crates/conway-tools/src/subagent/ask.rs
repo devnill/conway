@@ -203,6 +203,10 @@ impl Tool for AskTool {
             // `[S1.5]`: no `plugin_config` argument on this model-invoked
             // tool either -- mirrors `root`/`tag` above.
             plugin_config: None,
+            // `conway_ask` has no chosen-context argument in its schema
+            // either -- an ask is fork+await-text, always the asker's
+            // entire inherited context, unchanged.
+            context: None,
         };
 
         let outcome = ctx.subagents.ask(spec).await.map_err(ToolError::from)?;

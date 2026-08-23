@@ -140,7 +140,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent_loop::{AgentLoop, AgentSpec, LoopDeps};
 use crate::attempt::AttemptEngine;
-use crate::context::{ContextBuilder, GuardedContextHook, InheritedPrefix, TOKEN_ESTIMATOR};
+use crate::context::{
+    ContextBuilder, GuardedContextHook, InheritedPrefix, PluginInstruction, TOKEN_ESTIMATOR,
+};
 use crate::events::{EventBus, EventStream};
 use crate::mailbox::{self, Mailbox, MailboxSender};
 use crate::permission::{PermissionBroker, PreToolUseHookSpec};
@@ -160,10 +162,16 @@ pub struct RuntimeDeps {
     pub store: Arc<dyn SessionStore>,
     /// Backing store for named/frozen context selections (DESIGN §2.5).
     /// `resolve_default_path` (`context/path.rs`, D1-3d-wire) reads it every
-    /// turn to find a session's `ContextPathSet` head (today, always absent
-    /// in production -- no writer exists yet, D1-3d-wire's own out-of-scope
-    /// note (iii)) and, once one exists, to expand its prefix chain. A real
-    /// build sources this from `conway_session::FsPathStore`, rooted at the
+    /// turn to find a session's `ContextPathSet` head, and once one exists,
+    /// to expand its prefix chain. A production writer exists as of board
+    /// item 01M0K5SWEHEMRYVZ49TAFCFXPK (`context::path::write_head`), but
+    /// nothing in this runtime calls it at any turn boundary -- the
+    /// sanctioned production caller is the model-invoked tool a plugin will
+    /// provide to compose a curated selection (decision
+    /// 01M0K4QT6MBXPD6PXMBBBD2P7B), a separate, not-yet-built item. So a
+    /// head is still absent in an ordinary session today, but the mechanism
+    /// is complete and callable -- only nothing yet calls it. A real build
+    /// sources this from `conway_session::FsPathStore`, rooted at the
     /// `paths/` directory ALONGSIDE `config.session.root` rather than inside
     /// it -- the session directory is an operator-visible artifact with its
     /// own readers, and `PHILOSOPHY.md` §1 promises the log is "one file per
@@ -188,8 +196,38 @@ pub struct RuntimeDeps {
     /// names no skills, and is what every pre-existing test call site now
     /// passes.
     pub skills: HashMap<String, SkillDef>,
+    /// Every installed plugin's own `Plugin::instructions()` fragments,
+    /// already paired with the declaring plugin's `PluginManifest::id`
+    /// (board item `01M0K5MD59YZRSHE31JKZKFRMY`) -- `conway`'s
+    /// `ConwayBuilder::build` is the sole producer in a real build, in
+    /// `with_plugin`/`install_selected` install order (the SAME order
+    /// `plugin_context_hooks`/`plugin_curators` already preserve). This
+    /// list is UNCHECKED for reachability: the check runs per-turn, in
+    /// `ContextBuilder::build`, against each turn's own resolved tool set
+    /// -- see that method's own "Plugin instruction fragments" section for
+    /// why it belongs there rather than here (fixed at construction) or in
+    /// CI. `Vec::new()` (empty) preserves "no instruction fragments
+    /// anywhere" for every build with no instruction-declaring plugin
+    /// installed, and is what every pre-existing test call site now
+    /// passes.
+    pub instructions: Vec<PluginInstruction>,
     pub event_bus: Arc<EventBus>,
     pub headroom: Arc<HeadroomPolicy>,
+    /// The cross-session discovery capability (board item
+    /// `01M0PS8J3AK7Z7253Z3E3RD3GY`; `conway_core::ports::
+    /// SessionDiscoveryHost`'s own module doc) -- injected whole, like
+    /// [`Self::store`]/[`Self::path_store`], rather than built inside
+    /// `Runtime::new` the way `context_path_host` is: T4
+    /// (`crates/conway/tests/architecture_invariants.rs`) forbids THIS
+    /// crate from depending on `conway-session` (an adapter edge), and the
+    /// `SessionSearchScope::AllProjects` implementation genuinely needs
+    /// adapter-specific machinery (`conway_session::discovery`, opening a
+    /// `JsonlSessionStore` per sibling project directory) that has no
+    /// adapter-free equivalent the way `resolve_default_path`/`write_head`
+    /// do. `crates/conway/src/builder.rs`'s `FsSessionDiscoveryHost` is the
+    /// sole real-build producer; a test build injects
+    /// `conway_testkit::FakeSessionDiscoveryHost`.
+    pub session_discovery: Arc<dyn conway_core::ports::SessionDiscoveryHost>,
 }
 
 /// Everything the runtime keeps about one live (or finished-but-not-yet-
@@ -234,6 +272,10 @@ pub struct Runtime {
     /// `RuntimeDeps.skills`, wrapped once at construction -- `root.rs`'s
     /// `resolve_skills` reads it on every `start_root`/`resume_root` call.
     skills: Arc<HashMap<String, SkillDef>>,
+    /// `RuntimeDeps.instructions`, wrapped once at construction -- mirrors
+    /// `skills` immediately above. `root.rs`'s `resolve_instructions` reads
+    /// it on every `start_root`/`resume_root` call.
+    instructions: Arc<Vec<PluginInstruction>>,
     /// Held so `Runtime` reflects the spec's illustrative fields even though
     /// no method here reaches back into them directly (both are already
     /// shared, via clones, with `loop_deps`'s `ToolRunner`).
@@ -303,10 +345,13 @@ impl Runtime {
             gate,
             agent_defs,
             skills,
+            instructions,
             event_bus,
             headroom,
+            session_discovery,
         } = deps;
         let skills = Arc::new(skills);
+        let instructions = Arc::new(instructions);
 
         // Collected before `from_plugins` consumes the set. Each observer is
         // paired with its own plugin's manifest id here and nowhere else, so
@@ -350,11 +395,25 @@ impl Runtime {
         let resolver = Arc::new(conway_core::transcript::TranscriptResolver::new(
             TRANSCRIPT_CACHE_CAPACITY,
         ));
-
+        // The one production implementation of `ContextPathHost` (decision
+        // `01M0K4QT6MBXPD6PXMBBBD2P7B`) -- built from the SAME `store`/
+        // `path_store`/`resolver` this constructor already assembles for
+        // `resolve_default_path`/`write_head`'s other production callers,
+        // never a second store or a second cache. No `Weak` self-reference
+        // needed (unlike `subagents` below): this host reaches only the
+        // store/path-store/resolver, never back into `Runtime` itself.
+        let context_path_host: Arc<dyn conway_core::ports::ContextPathHost> =
+            Arc::new(crate::context::RuntimeContextPathHost::new(
+                store.clone(),
+                path_store.clone(),
+                resolver.clone(),
+            ));
         Arc::new_cyclic(|weak: &std::sync::Weak<Runtime>| {
             let loop_deps = Arc::new(LoopDeps {
                 store: store.clone(),
                 path_store,
+                context_path_host,
+                session_discovery_host: session_discovery,
                 router,
                 attempt,
                 registry: registry.clone(),
@@ -394,6 +453,7 @@ impl Runtime {
                 bus: event_bus,
                 agent_defs,
                 skills,
+                instructions,
                 registry,
                 broker,
                 hooks,
@@ -1557,5 +1617,6 @@ fn empty_report(agent_id: AgentId) -> ContextReport {
         total_tokens_est: 0,
         dropped: Vec::new(),
         curator_failed: None,
+        instruction_fragments: Vec::new(),
     }
 }

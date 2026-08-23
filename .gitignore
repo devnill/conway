@@ -3,6 +3,12 @@
 .DS_Store
 **/.conway/sessions/
 **/.conway/paths/
+# The path store's directory is derived from the session root's own name, so
+# when the session root moved to a central project-keyed location the sibling
+# became `<root>-paths` rather than `paths`. The pattern above stopped
+# matching and test runs started leaving content-addressed blobs in seven
+# crate directories. Board item 01M0QK9GRM8HSNWRAR414TCX42.
+**/.conway/sessions-paths/
 
 # ideate metadata — local-only tooling state (not tracked)
 .ideate/

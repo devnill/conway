@@ -484,6 +484,31 @@ impl App {
                                         .transcript
                                         .push(Entry::Notice { text });
                                 }
+                                // Board item `01M0KARX71A64NTSYTDBVANVPF`:
+                                // the write itself lives in
+                                // `App::apply_plugin_toggle`
+                                // (`app/plugin_toggle.rs`), factored out so
+                                // it is directly testable with no real
+                                // terminal/`select!` loop -- mirrors
+                                // `Self::apply_plugin_command_done`'s own
+                                // shape one screen over. `env_vars` is
+                                // collected HERE (never inside the method
+                                // itself, which takes it as a plain
+                                // parameter) for the SAME hermetic-testing
+                                // reason `Action::RevokePermissionPattern`'s
+                                // own arm above already collects its own
+                                // copy.
+                                Action::TogglePlugin(plugin_id, installed) => {
+                                    let env_vars: std::collections::HashMap<String, String> =
+                                        std::env::vars().collect();
+                                    self.apply_plugin_toggle(
+                                        plugin_id,
+                                        installed,
+                                        &env_vars,
+                                        &std::env::current_dir()
+                                            .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                                    );
+                                }
                                 Action::GrantPermissionPattern(rule, scope) => {
                                     // The granting agent is the one whose
                                     // call is being decided -- NOT

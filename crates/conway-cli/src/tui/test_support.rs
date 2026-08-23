@@ -106,7 +106,16 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         | Action::RevokePermissionGrants
         | Action::RevokePermissionPattern(_, _)
         | Action::RevokeStructuredAllowRule(_, _, _)
-        | Action::RevokeHookRule(_, _) => {}
+        | Action::RevokeHookRule(_, _)
+        // Board item `01M0KARX71A64NTSYTDBVANVPF`: writing
+        // settings.json needs a real filesystem path, not a live
+        // facade call -- but it is still applied in `app.rs`'s run
+        // loop, not here, for the SAME reason the grant/revoke actions
+        // above are not: this harness has no session/facade context to
+        // mirror that write against, and a test asserting on the
+        // ACTION alone (never on a filesystem side effect this helper
+        // never performs) is the right boundary.
+        | Action::TogglePlugin(_, _) => {}
         Action::ScrollLineUp => apply_line_scroll(state, area, true),
         Action::ScrollLineDown => apply_line_scroll(state, area, false),
         Action::JumpToTop => {

@@ -27,8 +27,11 @@ use conway_core::config::AgentDef;
 use conway_core::content::{ContentBlock, Role, SamplingParams, StopReason, Usage};
 use conway_core::error::{BackendError, RuntimeError, SubagentError, ToolError};
 use conway_core::event::Event;
-use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
-use conway_core::log::{ForkOrigin, SessionFilter, SessionMeta};
+use conway_core::ids::{
+    AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SeqRange, SessionId,
+};
+use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta};
+use conway_core::path::RecordRef;
 use conway_core::ports::{
     Backend, BoxStream, ContextHook, ContextHookCtx, ContextPayload, GenerateRequest,
     GenerateResponse, LiveOwner, Router, SessionStore, StreamChunk, SubagentHandle, SubagentHost,
@@ -187,9 +190,12 @@ fn build_runtime(
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs,
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     });
     (runtime, store)
 }
@@ -493,6 +499,7 @@ async fn spawn_without_agent_def_inherits_the_parents_role() {
         root: None,
         tag: None,
         plugin_config: None,
+        context: None,
     };
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, root, spec)
@@ -1001,11 +1008,13 @@ async fn await_result_blocks_until_the_child_actually_finishes_then_resolves_eve
         plugins: vec![Arc::new(SlowPlugin)],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
-    });
 
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+    });
     let root = start_and_finish_root(&runtime, "hi").await;
     let child = SubagentHost::start(&*runtime, root, root, fork_spec("go slow"))
         .await
@@ -1590,11 +1599,13 @@ async fn tool_ctx_subagents_is_the_runtime_itself() {
         plugins: vec![Arc::new(ForkingPlugin)],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
-    });
 
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+    });
     let mut stream = runtime.subscribe();
     let root = runtime.start_root(root_spec("use the tool")).await.unwrap();
     let result = wait_for_agent_finished(&mut stream, root).await;
@@ -1741,9 +1752,12 @@ fn build_probe_runtime(
         })],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     });
     (runtime, store, probe)
 }
@@ -1773,9 +1787,12 @@ fn build_runtime_over(store: Arc<dyn SessionStore>, script: Vec<ScriptedTurn>) -
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     })
 }
 
@@ -1803,6 +1820,7 @@ fn spawn_spec_with_cwd(prompt: &str, cwd: Option<PathBuf>) -> SubagentSpec {
         root: None,
         tag: None,
         plugin_config: None,
+        context: None,
     }
 }
 
@@ -2742,9 +2760,12 @@ fn build_runtime_with_two_tools_and_defs(
         plugins: vec![Arc::new(TwoToolPlugin)],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs,
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     });
     (runtime, backend)
 }
@@ -2894,9 +2915,12 @@ fn build_runtime_with_pin_aware_router(
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs,
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     });
     (runtime, backend)
 }
@@ -3190,6 +3214,7 @@ async fn spawn_child_declines_the_parents_agent_def_even_though_a_fork_would_inh
         root: None,
         tag: None,
         plugin_config: None,
+        context: None,
     };
     assert!(child_spec.agent_def.is_none());
 
@@ -3791,9 +3816,12 @@ fn build_runtime_with_panicking_reviewer(turns: usize) -> (Arc<Runtime>, Arc<Scr
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: defs,
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     });
     (runtime, planner_backend)
 }
@@ -3835,4 +3863,98 @@ async fn panicking_child_still_resolves_a_terminal_result_for_an_awaiting_parent
         }
         other => panic!("expected ResultStatus::Failed naming the panic, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------
+// `SubagentSpec::context` (board item `01M0R06MY4TV010EVFG4KBD2CF`): a
+// chosen starting context at fork/spawn boundary time.
+// ---------------------------------------------------------------------
+
+/// The `covers_upto` reasoning (`01M0P50E04EY3BHQJHZX74HSSC`'s zero-reset
+/// trap), pinned rather than merely asserted in a doc comment: a chosen
+/// context naming only FOREIGN records writes the child's very first head
+/// while the child's own log is still completely empty, so
+/// `covers_upto_for` lands on `LogSeq::ZERO` -- and here that is exactly the
+/// harmless, correct reading ("my own log, from the start"), never the
+/// finding's silent-reversal trap, which needs a PRIOR head with an
+/// exclusion for the reset to resurrect anything. A brand-new child has no
+/// prior head.
+#[tokio::test]
+async fn fork_with_chosen_context_writes_a_head_covering_from_zero() {
+    let (runtime, store) = build_runtime(3, HashMap::new());
+    let root = start_and_finish_root(&runtime, "root's own content").await;
+    let foreign_root = start_and_finish_root(&runtime, "foreign session content").await;
+    let foreign_session = session_of(&runtime, foreign_root);
+
+    let mut spec = fork_spec("child directive text");
+    spec.context = Some(vec![RecordRef {
+        session: foreign_session,
+        seq: LogSeq(0),
+    }]);
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let child_session = session_of(&runtime, child);
+    let records = store.read(&child_session, SeqRange::full()).await.unwrap();
+    let covers_upto = records
+        .iter()
+        .find_map(|r| match r {
+            LogRecord::ContextPathSet { covers_upto, .. } => Some(*covers_upto),
+            _ => None,
+        })
+        .expect("a chosen context must write a ContextPathSet head");
+    assert_eq!(
+        covers_upto,
+        LogSeq::ZERO,
+        "a brand-new child's own log is empty when the chosen-context head is written, so \
+         covers_upto correctly lands on ZERO"
+    );
+}
+
+/// A chosen context REPLACES a fork's ordinary inherited-prefix default
+/// outright: `SessionStore::fork` still runs exactly once (store-level
+/// lineage/sibling-sharing bookkeeping is unchanged -- `context` sits
+/// BESIDE the mode axis, not instead of it), but the child's own
+/// `ContextPathSet` selection holds only the chosen foreign record, never
+/// the parent's transcript.
+#[tokio::test]
+async fn fork_with_chosen_context_still_forks_at_the_store_level_but_the_selection_is_the_choice() {
+    let (runtime, store) = build_runtime(3, HashMap::new());
+    let root = start_and_finish_root(&runtime, "root's own content").await;
+    let foreign_root = start_and_finish_root(&runtime, "foreign session content").await;
+    let foreign_session = session_of(&runtime, foreign_root);
+    let fork_calls_before = store.fork_call_count();
+
+    let mut spec = fork_spec("child directive text");
+    spec.context = Some(vec![RecordRef {
+        session: foreign_session,
+        seq: LogSeq(0),
+    }]);
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    assert_eq!(
+        store.fork_call_count(),
+        fork_calls_before + 1,
+        "a Fork child with a chosen context still forks at the store level exactly once -- \
+         `context` sits beside the mode axis, it does not replace store-level lineage"
+    );
+
+    let child_session = session_of(&runtime, child);
+    let records = store.read(&child_session, SeqRange::full()).await.unwrap();
+    assert!(
+        records
+            .iter()
+            .any(|r| matches!(r, LogRecord::ContextPathSet { .. })),
+        "a chosen context must write a ContextPathSet head, alongside the ordinary store-level \
+         fork this test just proved still ran exactly once -- `context` sits BESIDE the mode \
+         axis; see `crates/conway/tests/subagent_chosen_context.rs` for the wire-level proof \
+         that the SELECTION (not the parent's transcript) is what a later turn actually reads"
+    );
 }

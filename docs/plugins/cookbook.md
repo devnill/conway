@@ -561,7 +561,7 @@ into context; fetch a specific skill's full document only once the model
 decides it wants it. This stresses **context assembly**, a different seam
 from example 1's tool-output narrowing — `ContextBuilder` injects one
 `Provenance::Skill` segment per configured skill, **full body, always**
-(`crates/conway-runtime/src/context/builder.rs`'s `[1] SkillFragments*`
+(`crates/conway-runtime/src/context/builder.rs`'s `[1b] SkillFragments*`
 step) — there is no name/description-only mode built into assembly itself.
 
 **The architecture verdict.** Both halves this example needs are already

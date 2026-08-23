@@ -425,6 +425,48 @@ let child = conway.fork_from(parent_session, at_seq, spec).await?;
 only the `SessionId` to reattach, with no per-call spec of any kind to carry
 one on.
 
+### Choosing a child's starting context: `ForkSpec`/`SpawnSpec::context`
+
+`fork` otherwise inherits the forker's ENTIRE transcript and `spawn`
+otherwise inherits none — before this field, there was no way to say "start
+this child with exactly these pieces." `context` takes an ordered
+`Vec<RecordRef>` of already-resolved `(session, seq)` references (your own
+session's earlier records, or a completed fork/spawn/ask child's
+`transcript_ref`) and REPLACES the mode's ordinary default outright:
+
+```rust
+use conway::RecordRef;
+
+// Start a fresh reviewer primed with three specific records from another
+// agent's work, instead of the forker's whole transcript.
+let child = session.fork(
+    session.root(),
+    ForkSpec::new("review the three attached records")
+        .context(vec![
+            RecordRef { session: other_session, seq: LogSeq(4) },
+            RecordRef { session: other_session, seq: LogSeq(7) },
+            RecordRef { session: other_session, seq: LogSeq(9) },
+        ]),
+).await?;
+```
+
+The directive/prompt is still appended as the child's own head content
+record either way — `context` only changes what precedes it. `Some(vec![])`
+is a deliberate "replace the default with nothing" (a fork that keeps only
+its own directive, dropping the forker's transcript entirely), distinct
+from leaving the field `None`. Reading is unrestricted — the same masked,
+ancestry-aware resolution `conway.path`'s `compose_context_path` tool
+already uses mid-chain (see [`docs/plugins/path.md`](plugins/path.md)); a
+reference to a masked, unresolvable, or nonexistent record fails the
+fork/spawn itself with a typed error. Not honored by `Conway::fork_from`
+(the persisted-session, no-live-agent path, `fork_child.rs`) — that
+mechanism already omits several other `ForkSpec` fields (`directive`,
+`model`, `ephemeral`, `ask_origin`) for the same structural reason, and
+wiring `context` through it is a disclosed follow-up. Not yet reachable
+from the model-invoked `conway_fork`/`conway_spawn` tools either — an
+embedder-only surface for this first slice, matching `cwd`/`root`'s own
+precedent.
+
 `build()` no longer registers all four `conway-tools` built-ins
 unconditionally. `fs`, `subagent`, and `report` are still on by default;
 `conway.shell` (bash — arbitrary shell command execution) is not, and

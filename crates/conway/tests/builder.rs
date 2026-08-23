@@ -101,6 +101,39 @@ impl Plugin for DummyPlugin {
     }
 }
 
+/// A no-op `Plugin` that declares exactly one instruction fragment named
+/// `.1` -- board item `01M0K5MD59YZRSHE31JKZKFRMY`'s duplicate-name check
+/// (`ConwayBuilder::build`, a build-time, configuration-independent fact,
+/// unlike the reachability check itself). The fragment names no tool_ids,
+/// so it never exercises reachability -- these tests are scoped to the
+/// naming collision alone.
+#[cfg(feature = "builtin-tools")]
+struct InstructingPlugin(&'static str, &'static str);
+
+#[cfg(feature = "builtin-tools")]
+impl Plugin for InstructingPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: self.0.to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![],
+            required_host_caps: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![]
+    }
+
+    fn instructions(&self) -> Vec<conway_core::ports::InstructionFragment> {
+        vec![conway_core::ports::InstructionFragment {
+            name: self.1.to_string(),
+            text: "some instruction text".to_string(),
+            tool_ids: vec![],
+        }]
+    }
+}
+
 /// A minimal config: one role with an empty chain (so `merge::validate`'s
 /// chain/backend-existence check is trivially satisfied), no backends, and
 /// otherwise-default sections. `cwd = "."`, so `agents.dir`
@@ -309,7 +342,7 @@ async fn build_constructs_default_jsonl_store_when_none_injected() {
     let mut cfg = base_config();
     let root = support::unique_temp_dir("builder-jsonl-store");
     cfg.cwd = root.clone();
-    cfg.session.root = std::path::PathBuf::from("sessions");
+    cfg.session.root = Some(std::path::PathBuf::from("sessions"));
 
     let backend = fake_backend("fake");
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
@@ -329,6 +362,113 @@ async fn build_constructs_default_jsonl_store_when_none_injected() {
     assert!(
         root.join("sessions").is_dir(),
         "JsonlSessionStore::open should have created the session root directory"
+    );
+}
+
+/// **`ConwayBuilder::from_parts` bypasses `config::load` entirely**, so the
+/// central, project-keyed default (board item `01M0QK9GRM8HSNWRAR414TCX42`)
+/// -- resolved at `config::load` time using its own `env`/`cwd`, which
+/// `from_parts`-constructed configs never went through -- is never
+/// computed. This proves the disclosed fallback instead: `session.root`
+/// left at `None` (the type's own default) still opens a REAL
+/// `JsonlSessionStore`, at the exact fixed location the field always
+/// defaulted to before this item existed, `.conway/sessions` under `cwd` --
+/// byte-identical to every OTHER test in this crate's suite that builds a
+/// `ConwayConfig` by hand via `SessionConfig::default()` and never sets
+/// `root` (this file's own `base_config`, and ~60 further call sites
+/// workspace-wide). No `CONWAY_CONFIG_DIR`/ambient environment read is
+/// involved in reaching this location -- `ConwayBuilder::build`'s own
+/// `effective_session_root` fallback, not `config::discovery::
+/// session_root`.
+#[cfg(feature = "jsonl-store")]
+#[tokio::test]
+async fn build_falls_back_to_the_old_fixed_default_when_from_parts_leaves_root_unset() {
+    let mut cfg = base_config();
+    let root = support::unique_temp_dir("builder-jsonl-store-unset-root");
+    cfg.cwd = root.clone();
+    assert!(
+        cfg.session.root.is_none(),
+        "base_config's SessionConfig::default() must leave root unset for this test to mean \
+         anything"
+    );
+
+    let backend = fake_backend("fake");
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    let conway = ConwayBuilder::from_parts(cfg)
+        .with_backend(backend)
+        .with_permission_gate(gate)
+        .with_router(fake_router())
+        .build()
+        .expect("build should synthesize a real JsonlSessionStore at the old fixed default");
+
+    conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session against the real store should succeed");
+
+    assert!(
+        root.join(".conway").join("sessions").is_dir(),
+        "an unset root reaching build() via from_parts must fall back to the OLD \
+         .conway/sessions default, not the new central one"
+    );
+}
+
+/// **Regression test for a real bug this item's own manual verification
+/// caught before landing** (board item `01M0QK9GRM8HSNWRAR414TCX42`):
+/// `build_default_path_store`'s original formula derived the path store's
+/// root from the session root's PARENT directory, which is safe only when
+/// that parent is already project-exclusive -- true of the OLD fixed
+/// default and of an operator's own explicit `session.root`, but false the
+/// moment two projects' session roots share a common parent, exactly what
+/// the new central default's layout does
+/// (`~/.conway/sessions/<project-key>/`, every project's own subdirectory
+/// under the ONE shared `sessions/`). Simulates that shared-parent shape
+/// directly via two explicit `session.root` values under a common
+/// `sessions/` directory (without touching `config::load`'s own
+/// resolution, which this test has no need to exercise) and proves the two
+/// builds' path stores land in two DIFFERENT directories, neither of which
+/// is the shared parent's own bare `sessions/paths`.
+#[cfg(feature = "jsonl-store")]
+#[tokio::test]
+async fn two_projects_sharing_a_central_sessions_parent_get_different_path_store_roots() {
+    let root = support::unique_temp_dir("builder-path-store-no-collision");
+    let shared_sessions_parent = root.join("sessions");
+
+    for key in ["-Users-dan-project-a", "-Users-dan-project-b"] {
+        let mut cfg = base_config();
+        cfg.cwd = root.clone();
+        cfg.session.root = Some(shared_sessions_parent.join(key));
+
+        let backend = fake_backend("fake");
+        let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+        let conway = ConwayBuilder::from_parts(cfg)
+            .with_backend(backend)
+            .with_permission_gate(gate)
+            .with_router(fake_router())
+            .build()
+            .expect("build should synthesize real stores for a central-shaped session root");
+        conway
+            .new_session(SessionSpec::default())
+            .await
+            .expect("new_session against the real store should succeed");
+    }
+
+    assert!(
+        !shared_sessions_parent.join("paths").is_dir(),
+        "the two projects must not have collided on one shared paths/ directory"
+    );
+    assert!(
+        shared_sessions_parent
+            .join("-Users-dan-project-a-paths")
+            .is_dir(),
+        "project a's own path store must exist, keyed by its own session root"
+    );
+    assert!(
+        shared_sessions_parent
+            .join("-Users-dan-project-b-paths")
+            .is_dir(),
+        "project b's own path store must exist, keyed by its own session root"
     );
 }
 
@@ -1329,5 +1469,128 @@ fn declined_backend_kind_error_is_distinct_from_unknown_backend_kind_error() {
     assert_ne!(
         unknown_err, declined_err,
         "the two diagnoses must be genuinely different text, not the same message printed twice"
+    );
+}
+
+/// Board item `01M0K5MD59YZRSHE31JKZKFRMY`: two installed plugins
+/// declaring `Plugin::instructions()` fragments under the SAME name is a
+/// build-time error -- a plain authoring bug this method's own doc argues
+/// is deliberately NOT the (configuration-dependent) reachability check,
+/// so it is caught here rather than deferred to context assembly.
+#[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
+#[test]
+fn duplicate_instruction_fragment_name_is_rejected() {
+    let cfg = base_config();
+    let backend = fake_backend("fake");
+    let store = Arc::new(FakeStore::new());
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    let result = ConwayBuilder::from_parts(cfg)
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(fake_router())
+        .with_plugin(Arc::new(InstructingPlugin("test.one", "when-to-do-x")))
+        .with_plugin(Arc::new(InstructingPlugin("test.two", "when-to-do-x")))
+        .build();
+    let err = expect_build_err(
+        result,
+        "two plugins declaring the same instruction fragment name must be rejected",
+    );
+
+    match err {
+        ConwayError::Build { message } => {
+            assert!(
+                message.contains("duplicate instruction fragment name"),
+                "{message}"
+            );
+            assert!(message.contains("when-to-do-x"), "{message}");
+            // BOTH plugin ids, not just the one being processed when the
+            // clash was noticed. Resolving a collision means editing one of
+            // the two declarations, so a message naming only the second and
+            // calling the first "an earlier plugin" leaves the operator
+            // hunting through every earlier-installed plugin by hand.
+            assert!(
+                message.contains("test.one"),
+                "the FIRST plugin to declare the name must be identified: {message}"
+            );
+            assert!(
+                message.contains("test.two"),
+                "the SECOND plugin to declare the name must be identified: {message}"
+            );
+        }
+        other => panic!("expected Build error, got {other:?}"),
+    }
+}
+
+/// The positive case beside the rejection above: two DISTINCTLY-named
+/// fragments from two different plugins build cleanly -- `build()` does
+/// not reject on the mere presence of `Plugin::instructions()`
+/// contributions, only on an actual name collision.
+#[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
+#[test]
+fn distinctly_named_instruction_fragments_from_two_plugins_build_cleanly() {
+    let cfg = base_config();
+    let backend = fake_backend("fake");
+    let store = Arc::new(FakeStore::new());
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    ConwayBuilder::from_parts(cfg)
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(fake_router())
+        .with_plugin(Arc::new(InstructingPlugin("test.one", "when-to-do-x")))
+        .with_plugin(Arc::new(InstructingPlugin("test.two", "when-to-do-y")))
+        .build()
+        .expect("two distinctly-named instruction fragments must build cleanly");
+}
+
+/// End-to-end through the real facade (not merely the `conway-runtime`
+/// unit tests): a reachable `Plugin::instructions()` fragment installed via
+/// `ConwayBuilder::with_plugin` reaches a real root agent's assembled
+/// context and reports its own plugin attribution -- the full
+/// `Plugin::instructions()` -> `ConwayBuilder::build` ->
+/// `RuntimeDeps.instructions` -> `Runtime.instructions` ->
+/// `runtime::root::resolve_instructions` -> `AgentSpec.instructions` ->
+/// `ContextInput.instructions` -> `ContextBuilder::build` pipeline, proven
+/// live rather than layer by layer.
+#[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
+#[tokio::test]
+async fn a_reachable_plugin_instruction_reaches_a_real_agents_context() {
+    let cfg = base_config();
+    let backend = fake_backend("fake");
+    let store = Arc::new(FakeStore::new());
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    let conway: Conway = ConwayBuilder::from_parts(cfg)
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(fake_router())
+        .with_plugin(Arc::new(InstructingPlugin("test.trim", "when-to-compose")))
+        .build()
+        .expect("build should succeed with a reachable instruction fragment");
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+    let turn = handle.prompt("hello there").await.expect("prompt");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+
+    let report = handle
+        .context_report_current(handle.root())
+        .await
+        .expect("context_report_current should succeed");
+    assert_eq!(report.instruction_fragments.len(), 1);
+    let entry = &report.instruction_fragments[0];
+    assert_eq!(entry.plugin_id, "test.trim");
+    assert_eq!(entry.name, "when-to-compose");
+    assert!(
+        entry.unreachable_tool_ids.is_empty(),
+        "a fragment naming no tool_ids is trivially reachable"
     );
 }

@@ -182,3 +182,11 @@ claim: conway can be configured down to a bare inference call using only mechani
 paths: crates/conway/examples
 present: builtin_plugins: Vec::new\(\)
 -->
+
+<!-- claim-check
+why: decision 01M0K4S2S1NBW63KNF1NEY5XT3's obligation ("an instruction may only name a capability that is actually reachable") is exactly the shape this project prefers to express as a mechanical predicate rather than a paragraph nobody re-checks -- this pins that a plugin-declared instruction fragment naming an unreachable tool is WITHHELD from the assembled context, not merely logged about, so the model can never read an instruction assuming a tool it cannot call
+note: added with board item 01M0K5MD59YZRSHE31JKZKFRMY (Plugin::instructions()). Pinned to the exact withholding call site in ContextBuilder::build, not to the struct field alone, so a refactor that keeps recording the omission but stops excluding the segment would still fail this check.
+claim: an instruction fragment naming a tool this turn's assembled tool set does not provide never becomes a Role::System segment -- it is withheld and recorded, checked at context assembly (per turn), not in CI
+paths: crates/conway-runtime/src/context/builder.rs
+present: if unreachable_tool_ids.is_empty\(\)
+-->

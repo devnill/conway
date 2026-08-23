@@ -80,19 +80,35 @@ impl Renderer for TextRenderer {
         match &env.event {
             Event::TextDelta { text } => self.write_delta(text)?,
             Event::ThinkingDelta { .. } => {}
+            // A tool call going normally is not a warning, and the level
+            // here is load-bearing rather than cosmetic. Emitting the whole
+            // lifecycle at warning level did two things, and the second is
+            // the one that matters: a healthy run looked alarming, and a
+            // GENUINE failure became unfindable among dozens of identically
+            // prefixed lines that were all fine (board item
+            // `01M0PSJZ18R02JJ5NHH3G6ZV9S`, found by using conway rather
+            // than by reading this file -- nothing here is wrong on paper).
+            //
+            // So: the routine lifecycle is `info`, which `diag` already
+            // gates behind `--verbose`, and only the two things an operator
+            // would actually act on -- a call that FAILED, and a call that
+            // was DENIED -- stay unconditional. The opaque call ids ride
+            // along at `info` for correlating a `--verbose` trace; nobody
+            // matches 22-character ids by eye at the default verbosity.
             Event::ToolCallProposed { call_id, tool, .. } => {
-                diag::warn(format!("tool call proposed: {tool} ({call_id})"));
+                diag::info(format!("tool call proposed: {tool} ({call_id})"));
             }
             Event::ToolCallStarted { call_id } => {
-                diag::warn(format!("tool call started ({call_id})"));
+                diag::info(format!("tool call started ({call_id})"));
             }
             Event::ToolCallFinished {
                 call_id, is_error, ..
             } => {
-                diag::warn(format!(
-                    "tool call finished ({call_id}): {}",
-                    if *is_error { "error" } else { "ok" }
-                ));
+                if *is_error {
+                    diag::warn(format!("tool call failed ({call_id})"));
+                } else {
+                    diag::info(format!("tool call finished ({call_id}): ok"));
+                }
             }
             Event::PermissionResolved { call_id, decision } => {
                 if Self::decision_is_denied(decision) {

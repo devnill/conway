@@ -633,9 +633,9 @@ costing the other.
 
 > **Where the tree is today.** The binary does not yet turn on anything
 > beyond the harness's own default set described above. `conway.routing`,
-> `conway.stepguard`, `conway.skills`, `conway.memory`, and MCP client support
-> all exist and install, but ship off; compaction is the one first-party
-> capability not written yet — see the note under
+> `conway.stepguard`, `conway.skills`, `conway.memory`, `conway.path`, and
+> MCP client support all exist and install, but ship off; compaction is the
+> one first-party capability not written yet — see the note under
 > [First-party plugins](#first-party-plugins-and-why-they-are-not-defaults)
 > for exactly what exists. Becoming the opinionated, fully-equipped binary
 > this section describes is tracked work, not a description of what
@@ -678,10 +678,12 @@ default. Dynamic routing, context compaction, memory, skills, MCP support. You
 get them by choosing them.
 
 > **Where the tree is today.** Dynamic routing, memory (`conway.memory`), and
-> skills (`conway.skills`) are all built and installable, as are four members
+> skills (`conway.skills`) are all built and installable, as are five members
 > this list does not name by capability — the provider adapters, a
 > session-rewind command, repeated-step detection (`conway.stepguard`, which
-> §6 below is about), and the out-of-process subprocess plugin host. MCP
+> §6 below is about), the out-of-process subprocess plugin host, and
+> context-path composition (`conway.path` — the tool a model calls to
+> compose what a session sends as context on its next turn). MCP
 > support is built too, but does not name a plugin id the way the others
 > do: an operator lists an external MCP server under `[plugins].mcp` and its
 > tools attach directly, the same shape as the subprocess host one line

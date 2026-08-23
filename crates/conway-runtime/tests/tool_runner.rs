@@ -18,7 +18,7 @@ use conway_core::ports::{
 use conway_runtime::events::EventBus;
 use conway_runtime::permission::{AgentRoot, PermissionBroker};
 use conway_runtime::tools::{PluginRegistry, ToolBatchCtx, ToolRunner};
-use conway_testkit::{FakeGate, FakeSubagentHost};
+use conway_testkit::{FakeGate, FakePathStore, FakeStore, FakeSubagentHost};
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------
@@ -306,6 +306,12 @@ fn batch_ctx_with_chdir(max_parallel_tools: usize, chdir: CwdHandle) -> ToolBatc
         chdir,
         cancel: CancellationToken::new(),
         subagents: Arc::new(FakeSubagentHost::new(AgentId::new())) as Arc<dyn SubagentHost>,
+        context_path_host: Arc::new(conway_runtime::context::RuntimeContextPathHost::new(
+            Arc::new(FakeStore::new()),
+            Arc::new(FakePathStore::new()),
+            Arc::new(conway_core::transcript::TranscriptResolver::new(4)),
+        )),
+        session_discovery_host: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         plugin_config: Arc::new(PluginConfig::default()),
         max_parallel_tools,
         // S5: this file exercises `ToolRunner` dispatch mechanics, not the

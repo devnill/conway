@@ -178,9 +178,12 @@ fn build_runtime(
         plugins,
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs,
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     });
     (runtime, store)
 }
@@ -402,11 +405,13 @@ async fn restart_over_the_same_store_returns_a_byte_equal_report() {
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
-    });
 
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+    });
     let restored = runtime2
         .context_report_at(root, live_report.turn)
         .await

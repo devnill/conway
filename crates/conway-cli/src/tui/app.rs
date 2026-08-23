@@ -46,6 +46,7 @@ use crate::tui::view::Theme;
 mod ask;
 mod focus;
 mod plugin_cmd;
+mod plugin_toggle;
 mod run;
 mod shutdown;
 mod startup;

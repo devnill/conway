@@ -1161,7 +1161,10 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
         SlashCommand::Context { agent } => {
             match resolve_agent(state, &agent) {
                 Ok(agent_id) => match host.context_report(agent_id).await {
-                    Ok(report) => render_context_report(&report, state),
+                    Ok(report) => {
+                        render_instruction_preamble(&report, state);
+                        render_context_report(&report, state);
+                    }
                     Err(e) => notice(state, e.to_string()),
                 },
                 Err(e) => notice(state, e),
@@ -1618,6 +1621,75 @@ fn render_tree_snapshot(state: &mut AppState) {
     }
 }
 
+/// The preamble section (board item `01M0K5MD59YZRSHE31JKZKFRMY`):
+/// renders `report.instruction_fragments` -- every plugin-declared
+/// instruction fragment this turn's assembly considered, WITH the
+/// (plugin_id, name) source attribution `Provenance::Skill` alone cannot
+/// carry (see `ContextReport::instruction_fragments`'s own doc). Called
+/// BEFORE [`render_context_report`] -- "instruction is the top of your
+/// context" (decision `01M0K5K8DCRVR523P54DZF4BY3`) -- and only when
+/// non-empty, so a session with no instruction-declaring plugin installed
+/// renders byte-identically to before this item (the per-segment listing
+/// below already shows the base idiom and any directory-authored skill by
+/// name, via `Provenance::AgentDef`/`Provenance::Skill`; this section adds
+/// only what that listing cannot: which PLUGIN a fragment came from, and
+/// whether it was withheld).
+///
+/// **Not the full illustrative header/table `/context`'s board item
+/// sketches** (`context · @root · claude-opus-5 · 11.8k / 200k`, a boxed
+/// `path` section, etc.) -- that is a broader `/context` rendering
+/// redesign the item's own text rules out ("`/context <agent>` already
+/// exists -- do not build a new viewer"). This renders the SAME one-
+/// notice-per-line shape [`render_context_report`] already uses, adding
+/// the source/reachability columns that shape can express.
+fn render_instruction_preamble(report: &ContextReport, state: &mut AppState) {
+    if report.instruction_fragments.is_empty() {
+        return;
+    }
+    let total_tokens: u32 = report
+        .instruction_fragments
+        .iter()
+        .map(|f| f.tokens_est)
+        .sum();
+    notice(
+        state,
+        format!(
+            "preamble: {} plugin-declared fragment{} · {total_tokens}tok",
+            report.instruction_fragments.len(),
+            if report.instruction_fragments.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+        ),
+    );
+    for fragment in &report.instruction_fragments {
+        if fragment.unreachable_tool_ids.is_empty() {
+            notice(
+                state,
+                format!(
+                    "  {}.{}  {}tok  <- {}",
+                    fragment.plugin_id, fragment.name, fragment.tokens_est, fragment.plugin_id
+                ),
+            );
+        } else {
+            let missing = fragment
+                .unreachable_tool_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            notice(
+                state,
+                format!(
+                    "  {}.{}  {}tok  \u{26a0} names {missing} -- not installed",
+                    fragment.plugin_id, fragment.name, fragment.tokens_est
+                ),
+            );
+        }
+    }
+}
+
 fn render_context_report(report: &ContextReport, state: &mut AppState) {
     if report.segments.is_empty() && report.dropped.is_empty() {
         notice(state, "empty context");
@@ -1772,8 +1844,8 @@ mod tests {
     // `ContextReport` fixtures reaches into `conway-core` directly, exactly
     // as `exit.rs`/`oneshot.rs`/`render/*.rs`'s existing tests already do
     // (see this crate's `Cargo.toml` `[dev-dependencies]` comment).
-    use conway_core::ids::SegmentId;
-    use conway_core::provenance::ContextReportEntry;
+    use conway_core::ids::{SegmentId, ToolName};
+    use conway_core::provenance::{ContextReportEntry, InstructionFragmentEntry};
 
     use super::*;
     use crate::tui::state::{NodeStatus, TreeNode};
@@ -4260,6 +4332,7 @@ mod tests {
             total_tokens_est: 52,
             dropped: Vec::new(),
             curator_failed: None,
+            instruction_fragments: Vec::new(),
         });
 
         execute(
@@ -4298,6 +4371,110 @@ mod tests {
         );
     }
 
+    /// Board item `01M0K5MD59YZRSHE31JKZKFRMY`: `/context` renders a
+    /// "preamble" section from `report.instruction_fragments`, ahead of
+    /// the ordinary per-segment lines -- carrying the (plugin_id, name)
+    /// source attribution the per-segment listing alone cannot express.
+    #[tokio::test]
+    async fn context_renders_a_preamble_section_with_plugin_source() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        host.context = Some(ContextReport {
+            agent_id: root,
+            turn: 1,
+            tokenizer: "heuristic-chars4".to_string(),
+            segments: Vec::new(),
+            total_tokens_est: 0,
+            dropped: Vec::new(),
+            curator_failed: None,
+            instruction_fragments: vec![InstructionFragmentEntry {
+                plugin_id: "conway.trim".to_string(),
+                name: "when-to-compose".to_string(),
+                tokens_est: 7,
+                unreachable_tool_ids: Vec::new(),
+            }],
+        });
+
+        execute(
+            SlashCommand::Context {
+                agent: root.to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let lines: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lines[0].contains("preamble") && lines[0].contains("1 plugin-declared fragment"),
+            "expected a preamble header line, got: {:?}",
+            lines
+        );
+        assert!(
+            lines[1].contains("conway.trim.when-to-compose")
+                && lines[1].contains("7tok")
+                && lines[1].contains("conway.trim"),
+            "expected the fragment's name, size, and plugin source, got: {:?}",
+            lines[1]
+        );
+    }
+
+    /// The reachability failure "renders inline" (decision
+    /// `01M0K5K8DCRVR523P54DZF4BY3`): an unreachable fragment's preamble
+    /// line names the missing tool id rather than silently vanishing.
+    #[tokio::test]
+    async fn context_renders_an_unreachable_fragment_inline() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        host.context = Some(ContextReport {
+            agent_id: root,
+            turn: 1,
+            tokenizer: "heuristic-chars4".to_string(),
+            segments: Vec::new(),
+            total_tokens_est: 0,
+            dropped: Vec::new(),
+            curator_failed: None,
+            instruction_fragments: vec![InstructionFragmentEntry {
+                plugin_id: "conway.trim".to_string(),
+                name: "when-to-compose".to_string(),
+                tokens_est: 7,
+                unreachable_tool_ids: vec![ToolName::new("compose_path")],
+            }],
+        });
+
+        execute(
+            SlashCommand::Context {
+                agent: root.to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let lines: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lines[1].contains("compose_path") && lines[1].contains("not installed"),
+            "expected the missing tool named inline, got: {:?}",
+            lines[1]
+        );
+    }
+
     #[tokio::test]
     async fn context_with_zero_segments_renders_an_explicit_empty_line() {
         let root = AgentId::new();
@@ -4311,6 +4488,7 @@ mod tests {
             total_tokens_est: 0,
             dropped: Vec::new(),
             curator_failed: None,
+            instruction_fragments: Vec::new(),
         });
 
         execute(

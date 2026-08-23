@@ -90,6 +90,18 @@ pub enum Action {
     /// `Conway::revoke_hook_rule` can never address a different rule than
     /// the one the operator actually selected.
     RevokeHookRule(String, String),
+    /// Board item `01M0KARX71A64NTSYTDBVANVPF`: `Enter` on a plugin's own
+    /// toggle leaf in `/settings`' plugins section -- carries the
+    /// plugin's own manifest id (never an index; the row that produced
+    /// this action is keyed by id, see `view::settings::
+    /// LEAF_TOGGLE_PLUGIN_PREFIX`'s own doc) and the DESIRED new
+    /// `installed` state, resolved from `AppState::plugin_browser`'s
+    /// current mirror in the SAME call that built the tree this row came
+    /// from -- mirroring `RevokePermissionPattern`'s own "resolved
+    /// against the mirror in the same call" shape, so the app loop never
+    /// has to re-derive "on or off" from state that may have changed by
+    /// the time it acts.
+    TogglePlugin(String, bool),
     /// `End` (T6): snap the transcript straight to its own tail --
     /// re-engages `follow_tail`. Fires only while the input line is empty
     /// (mirroring the dual-meaning precedent `Enter`'s empty-input arm
@@ -335,6 +347,24 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                 // index cannot have drifted.
                 if let Some(rule) = state.hook_rules.get(idx) {
                     return Some(Action::RevokeHookRule(rule.event.clone(), rule.id.clone()));
+                }
+            } else if let Some(plugin_id) =
+                id.strip_prefix(super::view::settings::LEAF_TOGGLE_PLUGIN_PREFIX)
+            {
+                // resolved against
+                // `state.plugin_browser` in the SAME call that just built
+                // the tree this row came from -- the desired state is the
+                // OPPOSITE of whatever this entry's mirror currently says,
+                // never re-derived downstream from a possibly-stale read.
+                if let Some(entry) = state
+                    .plugin_browser
+                    .iter()
+                    .find(|entry| entry.id == plugin_id)
+                {
+                    return Some(Action::TogglePlugin(
+                        plugin_id.to_string(),
+                        !entry.installed,
+                    ));
                 }
             }
             // `LEAF_TOOL_PREVIEW_LINES`: Enter has nothing to activate on
@@ -3311,6 +3341,76 @@ mod tests {
                 "deny-prompts".to_string(),
             )),
             "must name the SECOND row's own event/id, not the first"
+        );
+    }
+
+    /// Board item `01M0KARX71A64NTSYTDBVANVPF`: `Enter` on an ON plugin's
+    /// own toggle row resolves to `Action::TogglePlugin(id, false)` -- the
+    /// OPPOSITE of its current mirrored state, carrying the id, never an
+    /// index.
+    #[test]
+    fn enter_on_an_installed_plugins_toggle_row_yields_toggle_plugin_false() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.plugin_browser = vec![crate::tui::state::PluginBrowserEntry {
+            id: "conway.memory".to_string(),
+            version: "0.9.0".to_string(),
+            installed: true,
+            description: conway::plugin::PluginDescription::default(),
+        }];
+
+        let rows = crate::tui::view::settings::build_tree(&state).rows();
+        let idx = rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    &r.kind,
+                    crate::tui::view::menu::MenuRowKind::Leaf { id }
+                        if id.starts_with(crate::tui::view::settings::LEAF_TOGGLE_PLUGIN_PREFIX)
+                )
+            })
+            .expect("the toggle row must render");
+        state.settings_selected = idx;
+
+        let action = activate_settings_selection(&mut state);
+        assert_eq!(
+            action,
+            Some(Action::TogglePlugin("conway.memory".to_string(), false)),
+            "an installed plugin's toggle must resolve to turning it OFF"
+        );
+    }
+
+    /// The OFF-plugin counterpart: resolves to `Action::TogglePlugin(id,
+    /// true)`.
+    #[test]
+    fn enter_on_an_uninstalled_plugins_toggle_row_yields_toggle_plugin_true() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.plugin_browser = vec![crate::tui::state::PluginBrowserEntry {
+            id: "conway.trim".to_string(),
+            version: "0.9.0".to_string(),
+            installed: false,
+            description: conway::plugin::PluginDescription::default(),
+        }];
+
+        let rows = crate::tui::view::settings::build_tree(&state).rows();
+        let idx = rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    &r.kind,
+                    crate::tui::view::menu::MenuRowKind::Leaf { id }
+                        if id.starts_with(crate::tui::view::settings::LEAF_TOGGLE_PLUGIN_PREFIX)
+                )
+            })
+            .expect("the toggle row must render");
+        state.settings_selected = idx;
+
+        let action = activate_settings_selection(&mut state);
+        assert_eq!(
+            action,
+            Some(Action::TogglePlugin("conway.trim".to_string(), true)),
+            "an uninstalled plugin's toggle must resolve to turning it ON"
         );
     }
 

@@ -2,7 +2,8 @@
 //! `ScriptedBackend` (`Backend`), `FakeStore` (`SessionStore`), `FakeGate`
 //! (`PermissionGate`), `FakeRouter` (`Router`), `FakeHealth`
 //! (`HealthRegistry`), `FakeSubagentHost` (`SubagentHost`), `FakePathStore`
-//! (`PathStore`), and `CollectingEventSink` (`EventSink`).
+//! (`PathStore`), `FakeSessionDiscoveryHost` (`SessionDiscoveryHost`), and
+//! `CollectingEventSink` (`EventSink`).
 //!
 //! These used to live inside `conway-core` itself, behind `feature =
 //! "fakes"` (board item 01KZVYS0E0H0SKPZ9BM9WYXHTB labeled that gap; board
@@ -59,7 +60,8 @@ use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, Subage
 use conway_core::path::{PathSelection, SelectionKey};
 use conway_core::ports::{
     Backend, BoxStream, EventSink, GenerateRequest, GenerateResponse, HealthRegistry, LiveOwner,
-    PathStore, PermissionGate, Router, SessionStore, StreamChunk, SubagentHost,
+    PathStore, PermissionGate, Router, SessionDiscoveryHost, SessionSearchQuery,
+    SessionSearchResult, SessionStore, StreamChunk, SubagentHost,
 };
 use conway_core::routing::{BreakerState, Observation, Route, RouteRequest, RoutingReason};
 
@@ -1042,5 +1044,43 @@ impl CollectingEventSink {
 impl EventSink for CollectingEventSink {
     fn emit(&self, event: Event) {
         self.events.lock().unwrap().push(event);
+    }
+}
+
+// ---------------------------------------------------------------------
+// SessionDiscoveryHost fake
+// ---------------------------------------------------------------------
+
+/// A [`SessionDiscoveryHost`] fake for a `RuntimeDeps`/`LoopDeps` fixture
+/// that does not exercise session discovery: `search` always succeeds with
+/// a preconfigured (default: empty) [`SessionSearchResult`], never an
+/// I/O-performing scan. Deliberately succeeds rather than refuses --
+/// unlike `conway_core::ports::SessionDiscoveryHandle::noop` (which exists
+/// specifically to catch a `ToolCtx` fixture that FORGOT to wire a real
+/// host), this type is an explicit, injected test double, the same
+/// "trivial but real" shape [`FakePathStore`] already establishes.
+#[derive(Debug, Default)]
+pub struct FakeSessionDiscoveryHost {
+    result: Mutex<Option<SessionSearchResult>>,
+}
+
+impl FakeSessionDiscoveryHost {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Preconfigures the `SessionSearchResult` every subsequent `search`
+    /// call returns (until overridden again). Unconfigured calls get
+    /// `SessionSearchResult::default()` -- zero matches, zero cost.
+    pub fn with_result(self, result: SessionSearchResult) -> Self {
+        *self.result.lock().unwrap() = Some(result);
+        self
+    }
+}
+
+#[async_trait]
+impl SessionDiscoveryHost for FakeSessionDiscoveryHost {
+    async fn search(&self, _query: SessionSearchQuery) -> Result<SessionSearchResult, StoreError> {
+        Ok(self.result.lock().unwrap().clone().unwrap_or_default())
     }
 }

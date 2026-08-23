@@ -492,6 +492,29 @@ async fn main() -> conway::Result<()> {
 
 with `settings.json`'s `plugins.install: ["my.first_plugin"]` naming it.
 
+**Optional: describe your plugin for the operator, not only the model.**
+`Plugin::description()` (`hooks.md` point 19) is a separate, zero-cost-
+default trait method a plugin browser (`conway`'s own `/settings` plugins
+section) reads to show a summary and a you-get/you-lose/costs panel before
+someone turns your plugin on:
+
+```rust,ignore
+impl Plugin for MyFirstPlugin {
+    // ... manifest()/tools() unchanged from above ...
+    fn description(&self) -> conway::plugin::PluginDescription {
+        conway::plugin::PluginDescription {
+            summary: "greets someone by name".to_string(),
+            you_get: "1 tool (greet)".to_string(),
+            you_lose: "nothing else".to_string(),
+            costs: "none".to_string(),
+        }
+    }
+}
+```
+
+Leaving it unimplemented is fine -- the browser renders an honest
+"(no description)" rather than a blank row.
+
 **Executed against the real thing, not sketched:** the exact shape above (the
 `spec()`/`invoke()` bodies are elided here for length only — the scratch
 crate's own `GreetTool` is a complete, ordinary `Tool` impl, nothing hidden)

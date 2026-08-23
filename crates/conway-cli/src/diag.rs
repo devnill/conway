@@ -24,18 +24,23 @@ pub fn error(msg: impl AsRef<str>) {
 
 /// Unconditional stderr diagnostic for a non-fatal warning.
 ///
-/// Not yet called: the first real caller is the render loop
-/// (`Event::Lagged`/`BackendDegraded` notices).
-#[allow(dead_code)]
+/// **Reserve this for something an operator would act on.** It is not
+/// gated by `--verbose`, so anything emitted here competes for attention
+/// with every other warning in the run -- and a warning that fires on
+/// routine success does not merely add noise, it hides the ones that
+/// matter. The whole tool-call lifecycle was emitted here once and a
+/// genuine failure went unnoticed among dozens of healthy lines; see
+/// `crate::render::text`'s own comment and board item
+/// `01M0PSJZ18R02JJ5NHH3G6ZV9S`. Routine progress belongs in [`info`].
 pub fn warn(msg: impl AsRef<str>) {
     let _ = writeln!(std::io::stderr(), "conway: warning: {}", msg.as_ref());
 }
 
 /// Stderr diagnostic suppressed unless `--verbose` was passed at least once.
 ///
-/// Not yet called: the first real caller is the `ModelDecision`
-/// rendering.
-#[allow(dead_code)]
+/// The right home for routine progress -- routing decisions, the tool-call
+/// lifecycle, anything a person wants when they are investigating and not
+/// when they are working.
 pub fn info(msg: impl AsRef<str>) {
     if VERBOSITY.load(Ordering::Relaxed) >= 1 {
         let _ = writeln!(std::io::stderr(), "conway: {}", msg.as_ref());

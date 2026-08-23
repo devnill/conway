@@ -167,10 +167,34 @@ impl ConwayConfig {
 }
 
 /// `[session]`.
+///
+/// **`root` is `Option<PathBuf>`, and the two states mean genuinely
+/// different things (board item `01M0QK9GRM8HSNWRAR414TCX42`, ruled by
+/// decision `01M0QK8J757ZH6R06WYJ0PQGEM`).** `None` -- the default, and
+/// what an unmodified `settings.json` (or none at all) leaves this at -- is
+/// resolved by `config::load`/`load_ignoring_user_config` into the central,
+/// project-keyed default under `~/.conway/sessions/<project-key>/` (or
+/// `$CONWAY_CONFIG_DIR/sessions/<project-key>/`); see
+/// `config::discovery::session_root`'s own doc for exactly how the key is
+/// derived. `Some(path)` is an operator (or embedder) who set `[session]
+/// .root` explicitly, and it keeps the field's OLD, direct meaning
+/// unchanged from before this item: `path` names the sessions directory
+/// itself, resolved against `cwd` if relative -- narrowing to a single
+/// directory is still the field's job the moment a caller names one, so a
+/// value already sitting in an existing `settings.json` behaves exactly as
+/// it always did.
+///
+/// **This resolution happens at `config::load` time, not inside
+/// `ConwayBuilder::build`.** A config assembled directly via
+/// `ConwayBuilder::from_parts`, bypassing `load` entirely, can still reach
+/// `build()` with `root` at `None` -- see `build_default_store`'s own doc
+/// in `builder.rs` for what that falls back to, and why resolving the
+/// central default requires the load-scoped `env`/`cwd` `build()` has no
+/// seam of its own for.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SessionConfig {
-    pub root: PathBuf,
+    pub root: Option<PathBuf>,
     pub fsync: FsyncMode,
     pub fsync_interval_ms: u64,
 }
@@ -178,7 +202,7 @@ pub struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            root: PathBuf::from(".conway/sessions"),
+            root: None,
             fsync: FsyncMode::Interval,
             fsync_interval_ms: 200,
         }

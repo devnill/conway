@@ -295,6 +295,10 @@ pub(crate) async fn classify(
         // `[S1.5]`: no per-agent plugin config scoping need of its own --
         // inherit the parent's, unchanged.
         plugin_config: None,
+        // Intent classification has no chosen-context need of its own --
+        // clean-slate spawn, unchanged (see `SubagentSpec::context`'s own
+        // doc).
+        context: None,
     };
 
     // `caller` and `parent` are both `parent` -- classification always

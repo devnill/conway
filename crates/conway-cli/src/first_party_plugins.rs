@@ -182,7 +182,54 @@ fn bundle(cwd: &std::path::Path, memory_store: Arc<dyn MemoryStore>) -> Vec<Arc<
             memory_store,
             conway_plugin_memory::MemoryConfig::default(),
         )),
+        // `conway.path` -- the tool a model calls to compose a session's
+        // context path (board item `01M0PEFMG96SVBBD5D2E06H34A`, decision
+        // `01M0K4QT6MBXPD6PXMBBBD2P7B`): the first production caller of
+        // `write_head`/`ValidatedPath::derive_with`, which existed with no
+        // caller anywhere in a running build before this entry. Needs no
+        // constructor argument (unlike `conway.memory` above) -- every
+        // dispatched tool's `ToolCtx::context_path` is already populated by
+        // the runtime itself, regardless of which plugin owns the tool
+        // reading it. Opt-in like every other member of this bundle: this
+        // entry is what makes `[plugins].install = ["conway.path"]` reach
+        // real code at all -- `conway-plugin-trim`'s own defect (a
+        // workspace member `conway-cli` never depended on, so no
+        // `[plugins].install` entry could ever have reached it) is exactly
+        // what this entry closes for `conway.path`.
+        Arc::new(conway_plugin_path::PathPlugin),
+        // `conway.discover` -- the tool a model calls to find a session or
+        // record it does not already hold a reference to (board item
+        // `01M0PS8J3AK7Z7253Z3E3RD3GY`), feeding `conway.path`'s
+        // `compose_context_path` immediately above -- the two are meant to
+        // be installed together, though nothing here enforces that (an
+        // operator who installs `conway.discover` alone gets a tool that
+        // can find but not compose; see this crate's own module doc for
+        // why every candidate here stays independently opt-in). Needs no
+        // constructor argument, exactly like `conway.path` -- every
+        // dispatched tool's `ToolCtx::session_discovery` is already
+        // populated by the runtime itself.
+        Arc::new(conway_plugin_discover::DiscoverPlugin),
     ]
+}
+
+/// Every first-party `Plugin` this binary links, REGARDLESS of
+/// `[plugins].install` selection -- the plugin browser's own read surface
+/// (board item `01M0KARX71A64NTSYTDBVANVPF`, `crates/conway-cli/src/tui/
+/// app/startup.rs`'s `App::new`, the one caller). A thin, same-shaped
+/// wrapper over `bundle` (private to this module) rather than a second candidate list: `bundle`
+/// already IS "every first-party plugin this binary links", unfiltered --
+/// [`installed_plugins`] filters it down to the SELECTED subset for
+/// command-registry purposes, and this function is the other read the same
+/// unfiltered list needs, for a browser that must show what is
+/// AVAILABLE-but-off, not only what is on. Never re-derives the candidate
+/// set independently, so the browser's own "N installed of M compiled-in"
+/// count can never drift from what `[plugins].install` actually resolves
+/// against.
+pub fn all_bundle_plugins(
+    cwd: &std::path::Path,
+    memory_store: Arc<dyn MemoryStore>,
+) -> Vec<Arc<dyn Plugin>> {
+    bundle(cwd, memory_store)
 }
 
 /// Every first-party `RouterFactory` this binary links, in no particular
@@ -479,6 +526,34 @@ mod tests {
              otherwise `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
             conway_plugin_memory::PLUGIN_ID
         );
+    }
+
+    /// `all_bundle_plugins` must return the SAME candidates `bundle` itself
+    /// does, unfiltered by `[plugins].install` -- the plugin browser's own
+    /// "available but off" rows depend on seeing every linked candidate,
+    /// not only a selected subset.
+    #[test]
+    fn all_bundle_plugins_returns_every_linked_candidate_unfiltered() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let ids: Vec<String> = all_bundle_plugins(&cwd, memory_store)
+            .iter()
+            .map(|p| p.manifest().id)
+            .collect();
+        for expected in [
+            conway_plugin_skeleton::PLUGIN_ID,
+            conway_plugin_history::PLUGIN_ID,
+            conway_plugin_stepguard::PLUGIN_ID,
+            conway_plugin_skills::PLUGIN_ID,
+            conway_plugin_memory::PLUGIN_ID,
+            conway_plugin_path::PLUGIN_ID,
+            conway_plugin_discover::PLUGIN_ID,
+        ] {
+            assert!(
+                ids.contains(&expected.to_string()),
+                "missing {expected} in {ids:?}"
+            );
+        }
     }
 
     /// Same wiring-only check, for `backend_bundle`: both published kind

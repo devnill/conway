@@ -7,11 +7,11 @@
 //! curated brief verbatim).
 //!
 //! Mirrors `oneshot.rs`'s own harness (`common::{run_conway, write_fixture}` +
-//! `common::mock_backend::{Chunk, MockBackend, Script}`) and
-//! `continuity.rs`'s `open_conway` pattern for listing sessions against the
-//! on-disk `JsonlSessionStore` the subprocess wrote to. The orchestrator's,
+//! `common::mock_backend::{Chunk, MockBackend, Script}`) and `common::
+//! open_conway`'s pattern for listing sessions against the on-disk
+//! `JsonlSessionStore` the subprocess wrote to. The orchestrator's,
 //! ephemeral ask child's, and spawn child's own records are read straight
-//! from `<fixture>/.conway/sessions/<session_id>.jsonl` (the store's own
+//! from `<common::session_dir(fixture)>/<session_id>.jsonl` (the store's own
 //! layout, `conway-session/src/store.rs::session_path`) -- parsed as
 //! `LogRecord` lines -- because `Conway` exposes no public `SessionStore::read`
 //! and `SessionHandle::transcript` returns the ancestry-prefixed (effective)
@@ -19,13 +19,9 @@
 
 mod common;
 
-use std::sync::Arc;
-
 use common::mock_backend::{Chunk, MockBackend, Script};
-use common::{run_conway, write_fixture, Fixture};
-use conway::config::CliOverrides;
-use conway::gates::AllowListGate;
-use conway::{Conway, ConwayBuilder, PermissionGate, SessionFilter, SessionId};
+use common::{open_conway, run_conway, write_fixture, Fixture};
+use conway::{SessionFilter, SessionId};
 use conway_core::content::ContentBlock;
 use conway_core::log::{LogRecord, SubagentMode};
 
@@ -68,41 +64,20 @@ fn long_brief() -> String {
     s
 }
 
-/// Opens a fresh, read-only `Conway` against `fixture`'s on-disk session
-/// store (mirrors `continuity.rs::open_conway` -- same `CliOverrides.cwd`
-/// and empty-`AllowListGate` rationales apply: the fixture's session.root
-/// resolves relative to the fixture dir, and `build` needs a non-`prompt`
-/// gate). Uses `ConwayBuilder::from_config_only`, not `from_config` --
-/// see `continuity.rs::open_conway`'s own doc for why: this helper runs
-/// in-process, so `common::command`'s `CONWAY_CONFIG_DIR` isolation (which
-/// only reaches the spawned `conway` binary) does not cover it.
-async fn open_conway(fixture: &Fixture) -> Conway {
-    let gate: Arc<dyn PermissionGate> = Arc::new(AllowListGate::new(Vec::new(), Vec::new()));
-    ConwayBuilder::from_config_only(&fixture.config_path)
-        .expect("load fixture config")
-        .with_cli_overrides(CliOverrides {
-            cwd: Some(fixture.dir.path().to_path_buf()),
-            ..Default::default()
-        })
-        .with_permission_gate(gate)
-        // see `continuity.rs::
-        // open_conway`'s identical addition.
-        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
-        .build()
-        .expect("build conway against the fixture's own store")
-}
+// `open_conway` moved to `common` (board item `01M0QK9GRM8HSNWRAR414TCX42`)
+// -- see that function's own doc for why a local `CliOverrides::cwd`
+// override alone stopped being enough once `[session].root`'s
+// central-default resolution moved into `config::load` itself.
 
-/// Reads `<fixture>/.conway/sessions/<sid>.jsonl` and parses each non-blank
-/// line as a `LogRecord`. The `JsonlSessionStore`'s `append` writes each
-/// record to the OS file immediately (only `sync_data` is gated by the fsync
+/// Reads `<session_dir>/<sid>.jsonl` (`common::session_dir`, now the
+/// fixture's central-default session directory, not a bare
+/// `<fixture>/.conway/sessions`) and parses each non-blank line as a
+/// `LogRecord`. The `JsonlSessionStore`'s `append` writes each record to
+/// the OS file immediately (only `sync_data` is gated by the fsync
 /// interval), so the records are visible to this test process the moment the
 /// subprocess exits -- no fsync flush race (see `conway-session/src/store.rs`).
 fn read_session_records(fixture: &Fixture, sid: SessionId) -> Vec<LogRecord> {
-    let path = fixture
-        .dir
-        .path()
-        .join(".conway/sessions")
-        .join(format!("{sid}.jsonl"));
+    let path = common::session_dir(fixture).join(format!("{sid}.jsonl"));
     let content = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read session jsonl at {}: {e}", path.display()));
     content

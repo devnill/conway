@@ -216,7 +216,10 @@ pub fn merged_document(options: &LoadOptions) -> Result<Value> {
     merged_document_impl(options, IncludeUserLayer::Yes)
 }
 
-fn merged_document_impl(options: &LoadOptions, include_user_config: IncludeUserLayer) -> Result<Value> {
+fn merged_document_impl(
+    options: &LoadOptions,
+    include_user_config: IncludeUserLayer,
+) -> Result<Value> {
     let mut merged = default_document();
 
     if matches!(include_user_config, IncludeUserLayer::Yes) {
@@ -267,10 +270,11 @@ fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Res
         .as_object_mut()
         .is_some_and(|obj| obj.remove("tui").is_some());
 
-    let config: ConwayConfig = serde_json::from_value(merged).map_err(|e| ConwayError::Config {
-        path: None,
-        message: format!("failed to parse merged configuration: {e}"),
-    })?;
+    let mut config: ConwayConfig =
+        serde_json::from_value(merged).map_err(|e| ConwayError::Config {
+            path: None,
+            message: format!("failed to parse merged configuration: {e}"),
+        })?;
 
     let metadata_path = resolve_metadata_path(&config, &options.cwd);
     let metadata = model_metadata::load(&metadata_path)?;
@@ -288,6 +292,39 @@ fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Res
                       merge) will not find its value anywhere."
                 .to_string(),
         });
+    }
+
+    // `[session].root` central-default resolution (board item
+    // `01M0QK9GRM8HSNWRAR414TCX42`, decision `01M0QK8J757ZH6R06WYJ0PQGEM`).
+    // `root` is still `None` here whenever no source (user/project/env/CLI)
+    // set it -- `default_document`'s own comment on why it never bakes one
+    // in. Resolved HERE, once, using `options.cwd`/`options.env` (the same
+    // load-scoped, already-isolated inputs `resolve_metadata_path` just
+    // used two lines up), because `ConwayBuilder::build` has no seam of its
+    // own to receive them -- see `SessionConfig`'s own doc for the full
+    // disclosure of what a config that bypasses `load` entirely
+    // (`ConwayBuilder::from_parts`) falls back to instead.
+    if config.session.root.is_none() {
+        let resolved = discovery::session_root(&options.cwd, None, &options.env);
+        let legacy = discovery::legacy_project_sessions_dir(&options.cwd);
+        if legacy != resolved && directory_has_entries(&legacy) {
+            warnings.push(ConfigWarning {
+                code: WarningCode::LegacyProjectSessionsNotMigrated,
+                message: format!(
+                    "existing sessions found at {} -- they are NOT used by default anymore; \
+                     new sessions now live at {}. `sessions list`/`--resume` from here on only \
+                     see the new location. To keep using the old one, set \
+                     {{\"session\": {{\"root\": \"{}\"}}}} in settings.json; to switch over, \
+                     move its contents into the new directory yourself (conway does not do this \
+                     automatically). This warning repeats on every run until you do one or the \
+                     other.",
+                    legacy.display(),
+                    resolved.display(),
+                    legacy.display(),
+                ),
+            });
+        }
+        config.session.root = Some(resolved);
     }
 
     Ok(LoadOutcome { config, warnings })
@@ -366,7 +403,12 @@ fn default_document() -> Value {
         "default_role": "default",
         "cwd": ".",
         "session": {
-            "root": ".conway/sessions",
+            // No "root" key: `SessionConfig`'s own container-level
+            // `#[serde(default)]` fills it from `SessionConfig::default()`
+            // (`None`) when absent, exactly like every other layer that
+            // never names it -- `load_impl` resolves the central default
+            // afterward. See `SessionConfig`'s own doc for why `None` here
+            // and `Some` mean genuinely different things.
             "fsync": "interval",
             "fsync_interval_ms": 200,
         },
@@ -437,6 +479,18 @@ fn read_json_layer(path: &std::path::Path) -> Result<Option<Value>> {
             message: format!("failed to read {}: {e}", path.display()),
         }),
     }
+}
+
+/// Whether `dir` exists and contains at least one entry -- the "is there
+/// anything to strand" half of the `[session].root` legacy-directory check
+/// above. A missing directory (the common case: no old `.conway/sessions`
+/// ever existed) and an existing-but-empty one (someone `mkdir -p`'d it
+/// without ever writing a session) both return `false` -- neither is
+/// something an operator needs to be told about.
+fn directory_has_entries(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
 }
 
 /// The top-level `ConwayConfig` field names a `CONWAY_*` env var's first

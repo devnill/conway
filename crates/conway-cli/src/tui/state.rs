@@ -190,6 +190,27 @@ impl EditingPatternState {
     }
 }
 
+/// One row of the plugin browser (board item `01M0KARX71A64NTSYTDBVANVPF`,
+/// `view/settings.rs`'s own "plugins" section): one compiled-in first-party
+/// plugin candidate (`crate::first_party_plugins::all_bundle_plugins` --
+/// EVERY candidate this binary links, whether or not `[plugins].install`
+/// currently names it), its manifest identity, whether it is currently
+/// selected, and its operator-facing description.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginBrowserEntry {
+    pub id: String,
+    pub version: String,
+    /// Mirrors `[plugins].install` membership at the moment `App::new` (or
+    /// the last successful toggle) ran -- a DISPLAY value, not the live
+    /// `Conway`'s own installed set, which never changes mid-session
+    /// (restart-to-apply, `view/settings.rs`'s own footer note). A toggle
+    /// flips this field on a successful write so the row reflects what the
+    /// operator just asked for, even though nothing about the running
+    /// session's own tool/command registry changes until restart.
+    pub installed: bool,
+    pub description: conway::plugin::PluginDescription,
+}
+
 /// The TUI's whole render model. Every mutation goes through [`Self::apply`]
 /// (event-driven) or the app loop's direct field writes for input-driven
 /// state (`input`, `mode`, `scroll`) -- see `input.rs`/`app.rs`.
@@ -290,6 +311,13 @@ pub struct AppState {
     /// alongside `permission_grants` when `/settings` opens and after any
     /// revoke, on the same seam.
     pub hook_rules: Vec<conway::HookRuleView>,
+    /// The plugin browser's own read surface (board item
+    /// `01M0KARX71A64NTSYTDBVANVPF`): every compiled-in first-party plugin
+    /// candidate, on or off, with its description -- populated once at
+    /// `App::new` and mutated locally by a successful toggle (see
+    /// [`PluginBrowserEntry::installed`]'s own doc for why this is a
+    /// display mirror, never the live installed set).
+    pub plugin_browser: Vec<PluginBrowserEntry>,
     /// The scope the permission prompt's remembered-grant keys (`a` and
     /// `p`) grant at: `Session` (the default, and the only scope the prompt
     /// offered before this item), `Agent` (only the agent whose call is
@@ -779,6 +807,7 @@ impl AppState {
             structured_deny_rules: Vec::new(),
             structured_prompt_rules: Vec::new(),
             hook_rules: Vec::new(),
+            plugin_browser: Vec::new(),
             permission_grant_scope: conway::PermissionScope::Session,
             scroll: 0,
             follow_tail: true,

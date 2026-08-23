@@ -721,6 +721,93 @@ impl SubagentHost for Runtime {
             }
         };
 
+        // A CHOSEN starting context (`spec.context`, board item
+        // `01M0R06MY4TV010EVFG4KBD2CF`) sits BESIDE the Fork/Spawn axis
+        // above rather than replacing it: store-level lineage (just
+        // resolved), sibling sharing, and `inherited_upto` tree bookkeeping
+        // are all unchanged. What this writes is the child's very first
+        // `ContextPathSet` HEAD, before its own directive/prompt record is
+        // appended below -- so `resolve_default_path`'s "head exists"
+        // branch, not the mode's ordinary "no head" default, governs every
+        // turn from the first one on (see `SubagentSpec::context`'s own doc
+        // for the full argument).
+        //
+        // Reuses the EXACT SAME `ContextPathHost::set_head`/`ValidatedPath::
+        // derive_with` machinery `conway-plugin-path`'s `compose_context_path`
+        // tool calls mid-chain -- no second implementation of path
+        // derivation. The only difference is the BASE: mid-chain composition
+        // derives from the session's own CURRENT default path (which already
+        // carries an own tail to preserve); this derives from an EMPTY base
+        // (`ValidatedPath::default_path(Vec::new())`), since a brand-new
+        // child has no path of its own yet to compose from.
+        //
+        // `resolve_records` is the SAME wide-open read surface
+        // `compose_context_path` already uses (decision
+        // `01M0K4QT6MBXPD6PXMBBBD2P7B`: it can read any session's records,
+        // honestly, through the masked/ancestry-aware resolver) --
+        // deliberately NOT narrowed to "only what the parent could see" the
+        // way `plugin_config` narrows: that rule guards an
+        // operational/security-relevant resource (a filesystem root);
+        // context CONTENT already has no such rule mid-chain, and adding one
+        // only at this boundary would make an identical reference resolve
+        // here but not a moment later once the child is running. The only
+        // rejection this can produce is `resolve_records`'s own existing
+        // failure mode (masked, unresolvable, or nonexistent), surfaced as
+        // `RuntimeError::InvalidSpec` -- never a silent drop.
+        //
+        // `covers_upto`: `write_head`'s own `covers_upto_for` derives the
+        // child's own-tail marker purely from THIS selection's own-attributed
+        // nodes, and this selection is written while the child's log is
+        // still completely empty -- it always lands on `LogSeq::ZERO`, which
+        // here means exactly "read this (currently empty) own log from the
+        // beginning", never hitting finding `01M0P50E04EY3BHQJHZX74HSSC`'s
+        // silent-reversal trap: that trap needs a PRIOR head that already
+        // excluded some own records for the reset to resurrect anything, and
+        // a brand-new child has no prior head. Pinned by
+        // `fork_with_chosen_context_writes_a_head_covering_from_zero`
+        // (`crates/conway-runtime/tests/subagent_fork_spawn.rs`) and the
+        // facade-level `fork_with_chosen_context_replaces_the_inherited_
+        // transcript` (`crates/conway/tests/subagent_chosen_context.rs`),
+        // not merely asserted in this comment.
+        if let Some(refs) = spec.context.clone() {
+            let foreign = self
+                .loop_deps()
+                .context_path_host
+                .resolve_records(&refs)
+                .await
+                .map_err(|e| {
+                    invalid_spec(ConwayError::Config {
+                        detail: format!(
+                            "subagent context: could not resolve one or more chosen records: {e}"
+                        ),
+                    })
+                })?;
+            let ops: Vec<conway_core::path::PathOp> = refs
+                .iter()
+                .map(|node| conway_core::path::PathOp::Include { node: *node })
+                .collect();
+            let base = conway_core::path::ValidatedPath::default_path(Vec::new());
+            let derivation = base
+                .derive_with(&ops, &foreign, conway_core::path::Selector::Operator)
+                .map_err(|e| {
+                    invalid_spec(ConwayError::Config {
+                        detail: format!("subagent context: {e}"),
+                    })
+                })?;
+            self.loop_deps()
+                .context_path_host
+                .set_head(session_id, derivation.path)
+                .await
+                .map_err(|e| {
+                    invalid_spec(ConwayError::Config {
+                        detail: format!(
+                            "subagent context: could not freeze the chosen context as this \
+                             child's head: {e}"
+                        ),
+                    })
+                })?;
+        }
+
         // Interactive keep-alive children (bare TUI `/spawn`/`/fork`, WI's
         // "open an interactive session" item) are built with `keep_alive:
         // true` and an EMPTY prompt/directive -- the caller's first real
@@ -762,6 +849,15 @@ impl SubagentHost for Runtime {
         let last_report = Arc::new(Mutex::new(None));
         let agent_spec = AgentSpec {
             system_prompt,
+            // A forked/spawned child gets no plugin instruction fragments,
+            // matching `skills: Vec::new()` immediately below -- a
+            // pre-existing gap (this agent def's `skills:` names are ALSO
+            // never resolved for a child), unaddressed by board item
+            // `01M0K5MD59YZRSHE31JKZKFRMY`: that item scoped root-agent
+            // injection only (`runtime::root::resolve_instructions`) and
+            // flagged this as a follow-up rather than fixing it as a
+            // silent bycatch.
+            instructions: Vec::new(),
             skills: Vec::new(),
             tools,
             role: role.clone(),

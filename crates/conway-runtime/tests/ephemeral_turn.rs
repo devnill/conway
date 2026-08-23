@@ -155,9 +155,12 @@ fn build_runtime(backend: Arc<dyn Backend>) -> (Arc<Runtime>, Arc<dyn SessionSto
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     });
     (runtime, store)
 }
@@ -200,6 +203,7 @@ fn spawn_spec(prompt: &str) -> SubagentSpec {
         root: None,
         tag: None,
         plugin_config: None,
+        context: None,
     }
 }
 

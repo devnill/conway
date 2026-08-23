@@ -21,6 +21,8 @@ a summary pointing somewhere else.
 | [`authoring.md`](authoring.md) — your first hook | How do I actually write one in Rust, register it, and confirm it fired? | You're ready to build. Its ten-minute walkthrough has been **executed verbatim** against a crate depending only on `conway`. |
 | [`subprocess-plugins.md`](subprocess-plugins.md) — the subprocess plugin host | How do I add a tool to a `conway` binary I already built, in a language that isn't Rust, with a `settings.json` edit and no rebuild? | You want a plugin that isn't Rust, or you're evaluating what naming a command in `[plugins].subprocess` actually trusts. |
 | [`memory.md`](memory.md) — `conway.memory` | What does the model-writable memory store do, where does it live on disk, and what happens if that directory can't be opened? | You want the model to remember things across turns and across separate `conway` invocations, or you're deciding whether its fail-closed startup behavior blocks you. |
+| [`path.md`](path.md) — `conway.path` | What does the `compose_context_path` tool let a model do to a session's future context, what does it report afterward, and how does it avoid silently undoing an earlier exclusion? | You want an operator's stated intent ("forget that dead end", "bring in what we found in that other session") to actually change what a later turn sees, or you're evaluating what this new capability can and cannot read/write. |
+| [`discover.md`](discover.md) — `conway.discover` | What does the `search_sessions` tool let a model find that it did not already hold a reference to, what does a search cost, and how wide can it reach? | You want an operator's stated intent ("what did we work out yesterday") to name a session the model never started or spawned, or you're evaluating what this reaches and what it costs before it runs. |
 | [`skills.md`](skills.md) — `conway.skills` | What does progressive skill disclosure narrow, and what does `read_skill` cost? | You have full-body skills in context and want to try narrowing them to a one-line index. |
 | [`mcp.md`](mcp.md) — the MCP client | How do I bring an existing MCP server's tools into conway, and what is conway's own MCP client (not server) posture? | You have an MCP server already and want its tools available to the model, or you're evaluating what naming one in `[plugins].mcp` actually trusts. |
 | [`scripts.md`](scripts.md) — the script convention | How would a hook fire a script in any language, and what does that cost per invocation? | You want a hook in something other than Rust. **Describes a designed convention; no script-dispatching plugin exists yet.** |
@@ -56,9 +58,9 @@ full design describes (a persistent connection, `permission.policy/1`,
 `context.hook/1`, `observe/1`, a `plugin` trust subject) is not, and that
 page's own "What's left" section names each gap.
 
-## Three shipped first-party plugins
+## Five shipped first-party plugins
 
-Three capabilities beyond the mechanism itself now ship, each installable
+Five capabilities beyond the mechanism itself now ship, each installable
 with a one-line `settings.json` edit and no rebuild:
 
 - [`memory.md`](memory.md) — `conway.memory`, a mutable store the model can
@@ -73,6 +75,20 @@ with a one-line `settings.json` edit and no rebuild:
 - [`mcp.md`](mcp.md) — the MCP-over-stdio **client**: brings an existing MCP
   server's tools into conway. Not an MCP server — conway does not expose
   itself over MCP.
+- [`path.md`](path.md) — `conway.path`, a tool (`compose_context_path`) a
+  model calls to compose what a session sends as context on its NEXT turn —
+  bring specific records in from another session, leave specific records of
+  this session's own history out, or both. Reports what it brought in and
+  whether the change falls inside the cached portion of context; refuses
+  (never silently patches) a composition that would strand a tool call or
+  its result.
+- [`discover.md`](discover.md) — `conway.discover`, a tool (`search_sessions`)
+  a model calls to find a session or record it does not already hold a
+  reference to — one it neither started this turn nor was handed a
+  `transcript_ref` for. Metadata-only by default; a `text` argument turns it
+  into a bounded content scan. Reports what it searched and what that cost.
+  Install alongside `conway.path`: this tool finds, `compose_context_path`
+  composes.
 
 ## Everything not in this set
 

@@ -178,8 +178,9 @@ use chrono::Utc;
 use conway::plugin::{
     async_trait, Command, CommandCtx, CommandOutcome, CommandSpec, ContentBlock, ContextHook,
     ContextHookCtx, ContextPayload, Memory, MemoryProvenance, MemoryStore, MemoryStoreError,
-    PathArgs, PermissionClass, Plugin, PluginManifest, PromptSegment, Provenance, RenderKind, Role,
-    Tool, ToolCall, ToolCategory, ToolCtx, ToolError, ToolOutput, ToolSpec, TruncationPolicy,
+    PathArgs, PermissionClass, Plugin, PluginDescription, PluginManifest, PromptSegment,
+    Provenance, RenderKind, Role, Tool, ToolCall, ToolCategory, ToolCtx, ToolError, ToolOutput,
+    ToolSpec, TruncationPolicy,
 };
 use conway::{MemoryId, ToolName};
 
@@ -282,6 +283,29 @@ impl Plugin for MemoryPlugin {
                 ToolName::new(LIST_MEMORIES_TOOL_NAME),
             ],
             required_host_caps: vec![],
+        }
+    }
+
+    /// **Deliberately does NOT say "an instruction telling the model when
+    /// to write things down"** -- this crate declares no
+    /// `Plugin::instructions()` fragment (`grep -n "fn instructions"` in
+    /// this file finds nothing); recall is entirely a
+    /// `ContextHook`-injected `Provenance::Memory` segment, and the model
+    /// writes something down only by choosing to call `remember` on its
+    /// own or via an operator's `/conway.memory.remember`. Claiming an
+    /// instruction that is not shipped would violate "nothing may claim
+    /// to be reached that isn't" -- if this plugin later ships one, this
+    /// text should change to say so.
+    fn description(&self) -> PluginDescription {
+        PluginDescription {
+            summary: "notes that survive a restart".to_string(),
+            you_get: format!(
+                "3 tools ({REMEMBER_TOOL_NAME}, {FORGET_TOOL_NAME}, {LIST_MEMORIES_TOOL_NAME}) \
+                 and 3 commands (/{PLUGIN_ID}.list, /{PLUGIN_ID}.remember, /{PLUGIN_ID}.forget) \
+                 -- the model can write something down and recall it in a later session"
+            ),
+            you_lose: "nothing else -- recall falls back to context".to_string(),
+            costs: "a small read at the start of every turn".to_string(),
         }
     }
 
@@ -1359,6 +1383,34 @@ mod tests {
         assert_eq!(manifest.tools.len(), 3);
         assert_eq!(plugin.tools().len(), 3);
         assert_eq!(plugin.context_hooks().len(), 1);
+    }
+
+    /// The plugin browser's own read surface (board item
+    /// `01M0KARX71A64NTSYTDBVANVPF`): a real description, never the
+    /// trait's empty default, and honest about NOT shipping an
+    /// instruction fragment (see `description`'s own doc comment).
+    #[test]
+    fn description_is_non_empty_and_does_not_claim_an_instruction_fragment() {
+        let plugin = MemoryPlugin::new(
+            Arc::new(InMemoryMemoryStore::new()),
+            MemoryConfig::default(),
+        );
+        let description = plugin.description();
+        assert!(!description.summary.is_empty());
+        assert!(!description.you_get.is_empty());
+        assert!(!description.you_lose.is_empty());
+        assert!(!description.costs.is_empty());
+        assert!(
+            plugin.instructions().is_empty(),
+            "this crate ships no instruction fragment today -- if that changes, \
+             description()'s you_get text must be updated to say so honestly"
+        );
+        assert!(
+            !description.you_get.to_lowercase().contains("instruction"),
+            "description must not claim an instruction fragment this plugin does not ship: \
+             {}",
+            description.you_get
+        );
     }
 
     // ------------------------------------------------------------------

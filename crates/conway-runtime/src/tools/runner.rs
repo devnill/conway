@@ -42,8 +42,9 @@ use conway_core::error::ToolError;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{
-    CancellationToken as CoreCancellationToken, CwdHandle, EventSinkHandle, PluginConfig,
-    PluginEventEmitter, PluginEventHandle, SubagentHandle, SubagentHost, Tool, ToolCtx, ToolOutput,
+    CancellationToken as CoreCancellationToken, ContextPathHandle, ContextPathHost, CwdHandle,
+    EventSinkHandle, PluginConfig, PluginEventEmitter, PluginEventHandle, SessionDiscoveryHandle,
+    SessionDiscoveryHost, SubagentHandle, SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use futures::FutureExt;
 use tokio::sync::Semaphore;
@@ -74,6 +75,18 @@ pub struct ToolBatchCtx {
     pub chdir: CwdHandle,
     pub cancel: TokioCancellationToken,
     pub subagents: Arc<dyn SubagentHost>,
+    /// The context-path composition capability every dispatched tool's
+    /// `ToolCtx::context_path` is narrowed from (decision
+    /// `01M0K4QT6MBXPD6PXMBBBD2P7B`; [`ContextPathHost`]'s own module doc) --
+    /// mirrors [`Self::subagents`] exactly: one runtime-wide `Arc`, narrowed
+    /// to this batch's own `session_id` per call, below.
+    pub context_path_host: Arc<dyn ContextPathHost>,
+    /// The cross-session discovery capability every dispatched tool's
+    /// `ToolCtx::session_discovery` is built from (board item
+    /// `01M0PS8J3AK7Z7253Z3E3RD3GY`) -- mirrors [`Self::context_path_host`]
+    /// exactly: one runtime-wide `Arc`, cross-session by construction so
+    /// (unlike `context_path_host`) nothing narrows it per call.
+    pub session_discovery_host: Arc<dyn SessionDiscoveryHost>,
     pub plugin_config: Arc<PluginConfig>,
     pub max_parallel_tools: usize,
     /// S5: this agent's confinement root, reconstructed exactly once per
@@ -202,6 +215,8 @@ impl ToolRunner {
             let cwd = cwd_snapshot.clone();
             let chdir = ctx.chdir.clone();
             let subagents = ctx.subagents.clone();
+            let context_path_host = ctx.context_path_host.clone();
+            let session_discovery_host = ctx.session_discovery_host.clone();
             let plugin_config = ctx.plugin_config.clone();
             let root = ctx.root.clone();
             let hooks = self.hooks.clone();
@@ -228,6 +243,8 @@ impl ToolRunner {
                     cwd,
                     chdir,
                     subagents,
+                    context_path_host,
+                    session_discovery_host,
                     plugin_config,
                     root,
                     call,
@@ -287,6 +304,8 @@ async fn execute_one(
     cwd: PathBuf,
     chdir: CwdHandle,
     subagents: Arc<dyn SubagentHost>,
+    context_path_host: Arc<dyn ContextPathHost>,
+    session_discovery_host: Arc<dyn SessionDiscoveryHost>,
     plugin_config: Arc<PluginConfig>,
     root: AgentRoot,
     call: ToolCall,
@@ -407,6 +426,13 @@ async fn execute_one(
                 // agent (structural -- see `SubagentHandle`'s own
                 // doc).
                 subagents: SubagentHandle::new(subagents.clone(), agent_id),
+                // Narrowed to THIS call's own session -- mirrors
+                // `subagents` immediately above exactly (a caller-bound
+                // handle, never the raw runtime-wide host).
+                context_path: ContextPathHandle::new(context_path_host.clone(), session_id),
+                // Cross-session by construction -- no session to bind, see
+                // `SessionDiscoveryHandle`'s own doc.
+                session_discovery: SessionDiscoveryHandle::new(session_discovery_host.clone()),
                 // bound to THIS
                 // call's own resolved tool's declaring plugin id, never a
                 // different one -- `hooks` (this runner's own

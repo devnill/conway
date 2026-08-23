@@ -134,6 +134,7 @@ use conway_core::ports::{
     RouterFactory, RoutingExplainer, SessionStore,
 };
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
+use conway_runtime::context::PluginInstruction;
 use conway_runtime::events::EventBus;
 use conway_runtime::hook_dispatch::{declared_plugin_events, HookSpec, DISPATCHED_EVENTS};
 use conway_runtime::permission::PreToolUseHookSpec;
@@ -143,6 +144,7 @@ use crate::agents;
 use crate::config::schema::{BackendEntry, ConwayConfig};
 use crate::config::{self, CliOverrides, ConfigWarning, LoadOptions};
 use crate::conway::Conway;
+use crate::discovery_host;
 use crate::error::{ConwayError, Result};
 use crate::gates;
 use crate::host_caps::HostCaps;
@@ -352,6 +354,41 @@ impl ConwayBuilder {
     /// defaults to `std::env::current_dir()`).
     pub fn discover() -> Result<Self> {
         let outcome = config::load(LoadOptions::default())?;
+        Ok(Self::from_parts(outcome.config).with_warnings(outcome.warnings))
+    }
+
+    /// [`Self::discover`]/[`Self::from_config`], but from CALLER-SUPPLIED
+    /// `options` rather than `LoadOptions::default()` -- the seam none of
+    /// `discover`/`from_config`/`from_config_only` have: each hard-codes
+    /// `cwd: std::env::current_dir()`/`env: std::env::vars()`, this
+    /// PROCESS's real ambient values, with no way for an in-process caller
+    /// to supply its own instead. Board item `01M0QK9GRM8HSNWRAR414TCX42`
+    /// is what surfaced the gap: `[session].root`'s central-default
+    /// resolution happens INSIDE `config::load` itself, using
+    /// `LoadOptions.cwd`/`.env` directly, so a caller that needs THAT
+    /// resolved against something other than this process's real
+    /// environment (a fixture's own isolated `CONWAY_CONFIG_DIR`/`cwd`, the
+    /// case every in-process test building a `Conway` against a temp-dir
+    /// fixture is in) previously had no way to get it -- a LATER
+    /// `CliOverrides.cwd`/`with_cli_overrides` fix-up, applied at `build()`
+    /// time, is too late for a resolution that already happened inside
+    /// `load`. Still the full five-source chain (`default < user < project
+    /// < env < CLI`) -- `options.env`'s own `CONWAY_CONFIG_DIR` still
+    /// decides whether the "user" layer means a real `~/.conway/
+    /// settings.json` or an isolated fixture directory with none;
+    /// [`Self::from_options_ignoring_user_config`] is the sibling that
+    /// drops that layer entirely, mirroring `from_config_only`.
+    pub fn from_options(options: LoadOptions) -> Result<Self> {
+        let outcome = config::load(options)?;
+        Ok(Self::from_parts(outcome.config).with_warnings(outcome.warnings))
+    }
+
+    /// [`Self::from_options`]'s `from_config_only`-shaped sibling: the merge
+    /// is `default < project < env < CLI` (four sources, `options.explicit_
+    /// path`/`options.cwd`-discovered project layer, no user layer), from
+    /// CALLER-SUPPLIED `options` rather than `LoadOptions::default()`.
+    pub fn from_options_ignoring_user_config(options: LoadOptions) -> Result<Self> {
+        let outcome = config::load_ignoring_user_config(options)?;
         Ok(Self::from_parts(outcome.config).with_warnings(outcome.warnings))
     }
 
@@ -1061,6 +1098,18 @@ impl ConwayBuilder {
         let env: HashMap<String, String> = std::env::vars().collect();
         let profile_file_paths = config::discovery::provider_profile_file_paths(&cwd, &env);
 
+        // 2c. Session discovery (board item `01M0PS8J3AK7Z7253Z3E3RD3GY`):
+        //     the SAME `env` immediately above, reused (not re-read) for the
+        //     identical central-config-directory resolution `session.root`'s
+        //     own central-default branch performs -- pure, no I/O, just
+        //     naming where the central sessions root WOULD be. Step 8 below
+        //     builds the real `FsSessionDiscoveryHost` from these once
+        //     `store` exists.
+        let discovery_project_key =
+            config::discovery::encode_project_key(&config::discovery::normalize_lexically(&cwd));
+        let discovery_central_root = config::discovery::user_config_path(&env)
+            .and_then(|p| p.parent().map(|d| d.join("sessions")));
+
         // 3+3b+4. Duplicate-kind check over every registered factory FIRST
         //         (before any factory's own `build` runs, regardless of
         //         whether a `[backends.<id>]` entry ever names it -- a
@@ -1243,20 +1292,62 @@ impl ConwayBuilder {
         };
 
         // 8. Store: injected, else JsonlSessionStore::open (jsonl-store
-        //    feature), else a Build error.
+        //    feature), else a Build error. `config.session.root` is `Some`
+        //    for any config that reached here through `config::load`/
+        //    `load_ignoring_user_config` -- the central-default resolution
+        //    (board item `01M0QK9GRM8HSNWRAR414TCX42`) happens THERE, using
+        //    the load-scoped `env`/`cwd` this function has no seam of its
+        //    own to receive (see `SessionConfig`'s own doc). A config
+        //    assembled directly via `ConwayBuilder::from_parts`, bypassing
+        //    `load` entirely, can still reach here with `root` unresolved
+        //    (`None`) -- rather than reading THIS PROCESS's ambient
+        //    environment here too (a strictly larger blast radius than the
+        //    already-disclosed ambient read three steps up,
+        //    `provider_profile_file_paths`: that one only ever looks for an
+        //    optional file, this one would go on to CREATE a directory),
+        //    an unresolved `root` falls back to the exact fixed default
+        //    `session.root` always had before this item existed,
+        //    `.conway/sessions` relative to `cwd` -- byte-identical
+        //    behavior for every existing `from_parts` caller (this crate's
+        //    own test suite included) that never named a `session.root` of
+        //    its own.
+        let effective_session_root = config
+            .session
+            .root
+            .clone()
+            .unwrap_or_else(|| Path::new(".conway/sessions").to_path_buf());
         let store: Arc<dyn SessionStore> = match store {
             Some(store) => store,
-            None => build_default_store(&cwd, &config.session.root)?,
+            None => build_default_store(&cwd, &effective_session_root)?,
         };
-        // 8b. Path store: injected, else `FsPathStore::open`, co-located at
-        //     the SAME `config.session.root` the session store just resolved
-        //     against (D1-3d-wire: `RuntimeDeps::path_store`'s own doc for
-        //     why sharing a root is safe -- `FsPathStore` writes only under
-        //     `root/paths/` + `root/paths-index.jsonl`, disjoint from
-        //     `JsonlSessionStore`'s `root/<sid>.jsonl` + `root/index.jsonl`).
+        // 8a2. Session discovery (board item `01M0PS8J3AK7Z7253Z3E3RD3GY`):
+        //      built from `store` above (whichever it is -- injected or
+        //      the default just constructed) plus the pre-resolved
+        //      project key/central root from step 2c. Not injectable via a
+        //      builder method the way `store`/`path_store` are: nothing in
+        //      this crate's public surface names `SessionDiscoveryHost`
+        //      (T4 keeps it out of `conway-runtime`, and this facade has
+        //      not yet had a reason to widen `with_*` to it) -- an embedder
+        //      needing a different discovery implementation depends on
+        //      `conway-core`/`conway-runtime` directly and builds a
+        //      `RuntimeDeps` of their own, the same escape hatch every
+        //      facade-only limitation here has.
+        let session_discovery: Arc<dyn conway_core::ports::SessionDiscoveryHost> =
+            Arc::new(discovery_host::FsSessionDiscoveryHost::new(
+                store.clone(),
+                discovery_project_key,
+                discovery_central_root,
+            ));
+        // 8b. Path store: injected, else `FsPathStore::open`, co-located as
+        //     a SIBLING of the effective session root the session store
+        //     just resolved against -- see `build_default_path_store`'s own
+        //     doc for exactly where (a sibling of the root itself, not of
+        //     its parent, since this item's central default nests the root
+        //     one level deeper than the fixed default/an explicit value
+        //     ever did).
         let path_store: Arc<dyn PathStore> = match path_store {
             Some(path_store) => path_store,
-            None => build_default_path_store(&cwd, &config.session.root)?,
+            None => build_default_path_store(&cwd, &effective_session_root)?,
         };
 
         // 9. Gate: injected, else selected from config.permissions --
@@ -1400,6 +1491,59 @@ impl ConwayBuilder {
             .iter()
             .flat_map(|p| p.permission_rules())
             .collect();
+        // Collect each installed plugin's own `Plugin::instructions()`
+        // contributions BEFORE `resolved_plugins` is moved into `RuntimeDeps`
+        // below (board item `01M0K5MD59YZRSHE31JKZKFRMY`) -- the SAME
+        // collect-before-move shape `plugin_context_hooks`/`plugin_curators`/
+        // `plugin_permission_rules` establish above. Each fragment is paired
+        // with its declaring plugin's own `PluginManifest::id` here and
+        // nowhere else (the SAME "an author never picks their own
+        // namespace" attribution `Runtime::new`'s `observers` collection
+        // already performs for `Plugin::observers()`).
+        //
+        // Only ONE check happens here, and it is deliberately NOT the
+        // reachability check: a duplicate fragment `name` across every
+        // installed plugin is a plain authoring bug -- unlike reachability,
+        // it does not depend on what `plugins.install` resolved to for THIS
+        // operator (the SAME set of names is either unique or is not,
+        // regardless of which tools happen to be installed), so it is
+        // exactly the kind of build-time, configuration-INDEPENDENT fact
+        // this method already refuses to build on (mirrors the duplicate-
+        // plugin-id check above). Reachability itself is checked once per
+        // turn, in `conway_runtime::context::builder::ContextBuilder::build`,
+        // against that turn's own resolved tool set -- see
+        // `conway_core::ports::plugin::Plugin::instructions`'s own doc for
+        // the full argument for why it lives there instead of here or in CI.
+        // Keyed by fragment name -> the id of the plugin that declared it
+        // FIRST, rather than a bare set of names: resolving a collision means
+        // editing one of the two declarations, so the operator needs BOTH
+        // ids. A set can only name the plugin being processed when the clash
+        // is detected, leaving the other side as "some earlier plugin" for
+        // the reader to hunt down by hand.
+        let mut seen_instruction_names: HashMap<String, String> = HashMap::new();
+        let mut plugin_instructions: Vec<PluginInstruction> = Vec::new();
+        for plugin in &resolved_plugins {
+            let plugin_id = plugin.manifest().id;
+            for fragment in plugin.instructions() {
+                if let Some(first_plugin_id) = seen_instruction_names.get(&fragment.name).cloned() {
+                    return Err(ConwayError::Build {
+                        message: format!(
+                            "duplicate instruction fragment name '{}': plugins '{first_plugin_id}' \
+                             and '{plugin_id}' both declare a Plugin::instructions() fragment with \
+                             this name. Fragment names are global -- rename one of them",
+                            fragment.name
+                        ),
+                    });
+                }
+                seen_instruction_names.insert(fragment.name.clone(), plugin_id.clone());
+                plugin_instructions.push(PluginInstruction {
+                    plugin_id: plugin_id.clone(),
+                    name: fragment.name,
+                    text: fragment.text,
+                    tool_ids: fragment.tool_ids,
+                });
+            }
+        }
         // Collect each installed plugin's own `Plugin::status_contributions()`
         // and `Plugin::observe_sink()` contributions BEFORE `resolved_plugins`
         // is moved into `RuntimeDeps` below (board item
@@ -1484,9 +1628,11 @@ impl ConwayBuilder {
             plugins: resolved_plugins,
             gate,
             agent_defs,
+            instructions: plugin_instructions,
             skills: skill_defs,
             event_bus,
             headroom: Arc::new(headroom_policy),
+            session_discovery,
         });
         // `RuntimeDeps` has no `context_hook` field (out of that
         // item's file scope to add -- see `conway_runtime::runtime`'s
@@ -2671,13 +2817,40 @@ fn build_default_store(_cwd: &Path, _root: &Path) -> Result<Arc<dyn SessionStore
 ///
 /// A sibling directory keeps both stores' invariants intact and costs
 /// nothing.
+///
+/// **Sibling of `sessions_root` ITSELF, not of its parent** (board item
+/// `01M0QK9GRM8HSNWRAR414TCX42` -- a correction to this function's own
+/// first cut, caught before landing by actually running it against the
+/// real central default rather than only a project-local fixture). The
+/// original formula -- `sessions_root.parent().join("paths")` -- silently
+/// assumed `sessions_root`'s parent is ALREADY project-exclusive, true of
+/// the old fixed default (`<cwd>/.conway/sessions`, parent `<cwd>/.conway`)
+/// and of an operator's own explicit `session.root`, but false of the new
+/// central, project-keyed default: `~/.conway/sessions/<project-key>/`'s
+/// parent is `~/.conway/sessions/`, the ONE directory shared by every
+/// project. Every project would have collided on the identical
+/// `~/.conway/sessions/paths/` -- confirmed live, not hypothetically: an
+/// in-process test that reached this function without isolating
+/// `CONWAY_CONFIG_DIR` created exactly that directory under this
+/// machine's own real `~/.conway/`. Keying off `sessions_root`'s own file
+/// name instead of its parent's fixes the central case and leaves the
+/// fixed-default/explicit cases merely relocated (`<cwd>/.conway/
+/// sessions-paths` instead of `<cwd>/.conway/paths`) -- a safe, silent
+/// rename with no practical migration cost: nothing in this workspace's
+/// production code writes through `PathStore` yet (`RuntimeDeps::
+/// path_store`'s own doc), so no operator has real data sitting in the old
+/// location to lose.
 #[cfg(feature = "jsonl-store")]
 fn build_default_path_store(cwd: &Path, root: &Path) -> Result<Arc<dyn PathStore>> {
     let sessions_root = resolve_path(cwd, root);
-    let paths_root = match sessions_root.parent() {
-        Some(parent) => parent.join("paths"),
-        // A root with no parent (e.g. `/`) is pathological; fall back to a
-        // nested `paths/` so we still never write a stray file into the
+    let paths_root = match sessions_root.file_name() {
+        Some(name) => {
+            let mut paths_name = std::ffi::OsString::from(name);
+            paths_name.push("-paths");
+            sessions_root.with_file_name(paths_name)
+        }
+        // A root with no file name (e.g. `/`) is pathological; fall back to
+        // a nested `paths/` so we still never write a stray file into the
         // session directory itself.
         None => sessions_root.join("paths"),
     };

@@ -203,6 +203,44 @@
 //!    through. Unlike the flags reconciliation #4/#6 describe, this is not
 //!    a "no facade parameter" gap -- it is a facade parameter that simply
 //!    did not exist yet, closed here rather than worked around.
+//! 8. **The announced tool set now matches what `--allowed-tools`/
+//!    `--deny-tools`/`--permission-mode` will actually permit (board item
+//!    `01M0PSKJT91WE0DEH2BWSSSNJM`).** Before this item, `--allowed-tools`
+//!    only gated PERMISSION (via [`build_gate`]/[`AllowListGate`]) -- the
+//!    tool set the model was TOLD it had came solely from `RootSpec::
+//!    tools`'s pre-existing `spec.tools.or(agent_def.tools)` fallback
+//!    (`conway_runtime`), which `--allowed-tools` never touched. With no
+//!    `--agent` (the flag-free default), that fallback resolves to
+//!    `ToolSelector::All` regardless of `--allowed-tools`, so a run like
+//!    `--allowed-tools 'read,grep'` announced every registered tool and let
+//!    the model discover the gap for itself, one denied call at a time --
+//!    exactly the dogfooding session this item was filed from. [`resolve_
+//!    tools`] (new) computes the intersection of the resolved `--agent`
+//!    def's own selector (the pre-existing ceiling) and `--allowed-tools`
+//!    minus `--deny-tools`, and its result now flows into `SessionSpec::
+//!    tools`/`ForkSpec::tools` for every arm that has a facade field to
+//!    carry it (flag-free, `--session`, `--fork-from`) -- see that
+//!    function's own doc for the full composition rule and two deliberate
+//!    exclusions: `--permission-mode deny`, and (reversing this fix's own
+//!    first draft, after an empirical check turned up a real hazard) an
+//!    EMPTY `--allowed-tools`, which keeps announcing whatever the
+//!    pre-existing fallback already did rather than announcing nothing.
+//!
+//!    **`--resume` is NOT narrowed by this fix** -- the same "no facade
+//!    parameter" gap reconciliation #4 already describes for `--system-
+//!    prompt`/the budget flags: `conway_runtime::runtime::ResumeSpec` (what
+//!    `Conway::resume_with` builds) has no `tools` field to carry an
+//!    override through at all, so a resumed session's announced set stays
+//!    whatever its own persisted `agent_def.tools` (or `ToolSelector::All`)
+//!    already was, regardless of `--allowed-tools` on this invocation.
+//!    Unlike reconciliation #4's flags, this is not made a usage error:
+//!    `--allowed-tools`/`--deny-tools`/`--permission-mode` were never
+//!    restricted from combining with `--resume` before this item (only the
+//!    PERMISSION gate ever read them there), and this fix's scope is "match
+//!    the announced set to what the run permits," not "add a new usage
+//!    restriction" -- so the pre-existing gap between announced and
+//!    permitted narrows everywhere else but stays open here, disclosed
+//!    rather than silently left, until `ResumeSpec` grows the field.
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -211,6 +249,7 @@ use std::time::Duration;
 use conway::gates::AllowListGate;
 use conway::{
     AgentDef, AgentResult, Budget, Conway, Event, ForkSpec, RoleAlias, SessionHandle, SessionSpec,
+    ToolName, ToolSelector,
 };
 use futures::StreamExt;
 use schemars::schema::RootSchema;
@@ -373,6 +412,7 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
         resolve_system_prompt_override(cli, agent_def.as_ref(), output_schema.as_ref());
     let result_contract = resolve_result_contract(output_schema, agent_def.as_ref());
     let budget = resolve_budget(cli, conway);
+    let tools = resolve_tools(cli, agent_def.as_ref());
 
     match (&cli.session, &cli.resume, &cli.fork_from) {
         (None, None, None) => {
@@ -389,6 +429,7 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
                 system_prompt_override,
                 budget,
                 result_contract,
+                tools,
                 ..SessionSpec::default()
             };
             conway.new_session(spec).await
@@ -426,6 +467,7 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
                 system_prompt_override,
                 budget,
                 result_contract,
+                tools,
                 ..SessionSpec::default()
             };
             conway
@@ -529,6 +571,13 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
             // `--agent`'s own `AgentDef::result_contract`) is set here too,
             // rather than left at `ForkSpec::new`'s default `None`.
             spec.result_contract = result_contract;
+            // `--allowed-tools`/`--deny-tools`/`--permission-mode` narrow
+            // the forked child's announced set exactly as they do the
+            // flag-free/`--session` arms above (see [`resolve_tools`]) --
+            // `ForkSpec::tools` already exists and is honored by
+            // `Conway::fork_from` (`SubagentSpec::tools`, the same field a
+            // `conway_fork` tool call itself sets).
+            spec.tools = tools;
             conway
                 .fork_from(parent, at, spec)
                 .await
@@ -760,6 +809,140 @@ fn resolve_budget(cli: &Cli, conway: &Conway) -> Option<Budget> {
         budget.deadline = Some(chrono::Utc::now() + chrono::Duration::seconds(secs as i64));
     }
     Some(budget)
+}
+
+/// Narrows the tool set this run ANNOUNCES to the model so it matches what
+/// [`build_gate`] will actually permit (board item
+/// `01M0PSKJT91WE0DEH2BWSSSNJM`: a dogfooding session found the model
+/// opening with `bash`, denied, then `glob`, denied, before it ever reached
+/// for a tool `--allowed-tools` actually named -- `--allowed-tools` gated
+/// permission but never narrowed what the model was told it had, so it
+/// burned two round-trips discovering the gap for itself). `None` means
+/// "leave the pre-existing fallback alone" (`RootSpec::tools`'s own
+/// `spec.tools.or(agent_def.tools)`, `conway_runtime`), which is exactly
+/// what every caller before this fix already got.
+///
+/// **`--permission-mode deny` is deliberately excluded (returns `None`).**
+/// See this function's own reasoning for the empty-`--allowed-tools` case
+/// just below -- the identical hazard applies here, unconditionally, since
+/// `deny` refuses every tool regardless of name.
+///
+/// **An empty `--allowed-tools` is ALSO deliberately excluded (returns
+/// `None`), reversing this fix's first draft.** The obvious reading --
+/// announce nothing, since nothing is permitted -- is not safe, and this is
+/// not a hunch: it was checked, empirically, exactly as this item's own
+/// binding notes asked ("check what a turn does with an empty tool set
+/// before assuming it is safe"), and an empty announced set broke three
+/// previously-passing tests (`exit_5_budget`, `stdout_purity`, and this
+/// function's own first-draft handling of `unlisted_tool_gets_feedback`)
+/// the same way. The mechanism: the announced tool set is not merely
+/// advisory copy in the request -- it is ALSO the exact set
+/// `conway_plugin_backends::tool_calls::validate::SchemaValidator` compiles
+/// validators for, and a tool call naming anything outside it is
+/// `BackendError::ToolParse { detail: "unknown tool ..." }` (see that
+/// module's own doc, which calls this branch "a defensive fallback, not the
+/// primary path" -- i.e. code that expects to fire rarely, not on every
+/// denied call). `AttemptEngine` (`conway-runtime/src/attempt.rs`) treats a
+/// `ToolParse` as fatal-but-retryable exactly once, switching the SAME
+/// candidate to the non-streaming `generate()` path -- which, against a
+/// mock (or any real server that answers a non-streaming request with a
+/// streamed body regardless of what was asked for), fails a SECOND time and
+/// the whole routing chain aborts with `NoCandidate`. Before this fix, a
+/// denied call was always a graceful, in-turn
+/// `PermissionOutcome::Deny`/`DeniedWithFeedback` -- because the tool
+/// stayed ANNOUNCED (and thus known to the schema validator) even when it
+/// was not permitted; only the separate, runtime-only `AllowListGate` layer
+/// ever refused it. Collapsing "announced" onto "permitted" for the
+/// zero-tools case destroys that separation for every default one-shot
+/// invocation (no `--allowed-tools` is the DOCUMENTED default shape,
+/// `docs/scripting.md`'s own "being something other than a coding agent"
+/// example among them) -- turning an occasional stray tool call into a
+/// confusing routing failure instead of a graceful denial the model (or a
+/// human reading `--verbose` output) can make sense of. A real,
+/// spec-compliant tool-calling backend essentially cannot make this
+/// mistake when the announced and permitted sets DO match (a compliant
+/// response can only name a function present in the request's own `tools`
+/// schema) -- so narrowing a NON-empty `--allowed-tools` (below) carries
+/// none of this risk in practice; only the "nothing permitted, so announce
+/// nothing" empty case does, and only because it is the one case this fix
+/// could reach that the pre-existing `agent_def.tools` mechanism never
+/// could (an agent def with an empty `tools` selector is not a supported
+/// shape today). So: an empty `--allowed-tools` keeps announcing whatever
+/// the pre-existing fallback already would (every tool, absent an
+/// `--agent`) -- `build_gate`'s own fail-closed permission behavior is
+/// completely unaffected (every call is still denied), only HOW that
+/// denial reaches the model changes, and this keeps it the graceful way.
+///
+/// **Composes with `--agent`, never widens.** `agent_def.tools` -- the
+/// resolved `--agent` def's own selector, or [`ToolSelector::All`] when no
+/// def is loaded, matching `RootSpec::tools`'s own no-override fallback --
+/// is the ceiling. An `--allowed-tools` entry naming a tool the def itself
+/// does not select is dropped from the announced set entirely rather than
+/// added on top of the def's own narrower list: the call-site flag can only
+/// narrow what the def already permits, never widen it.
+///
+/// **`--deny-tools` subtracts too, but only a BARE entry removes a tool
+/// from the announced set.** A bare `--deny-tools bash` names a tool with
+/// no path to ever succeeding (deny always wins), so there is nothing
+/// dishonest about also removing it from what the model is told exists --
+/// unlike the empty-list case above, this is a per-tool decision an
+/// operator made deliberately, not "permission narrowed to nothing by
+/// default." An argument-scoped entry (`bash(rm *)`) is different: most
+/// calls to that tool would still succeed, so removing it from the
+/// announced set entirely would both lie by omission (the tool mostly
+/// works) and reintroduce the exact ToolParse hazard described above the
+/// moment the model tries it anyway -- so a scoped `--deny-tools` entry
+/// leaves the tool announced, unlike a bare one.
+fn resolve_tools(cli: &Cli, agent_def: Option<&AgentDef>) -> Option<ToolSelector> {
+    if !matches!(cli.permission_mode, PermissionMode::Allowlist) || cli.allowed_tools.is_empty() {
+        return None;
+    }
+    let base = agent_def
+        .map(|d| d.tools.clone())
+        .unwrap_or(ToolSelector::All);
+    let denied: std::collections::HashSet<&str> = cli
+        .deny_tools
+        .iter()
+        .filter(|raw| !entry_is_scoped(raw))
+        .map(|raw| entry_tool_name(raw))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let names: Vec<String> = cli
+        .allowed_tools
+        .iter()
+        .map(|raw| entry_tool_name(raw))
+        .filter(|name| !denied.contains(name))
+        .filter(|name| base.selects(&ToolName::new(*name)))
+        .filter(|name| seen.insert(*name))
+        .map(str::to_string)
+        .collect();
+    Some(ToolSelector::Only(names))
+}
+
+/// Whether one `--allowed-tools`/`--deny-tools` entry carries a
+/// `(arg_glob)` scope, i.e. is `tool_name(pattern)` rather than a bare
+/// `tool_name`. Structural only -- it does not validate the glob inside the
+/// parens (that is `conway::gates::Entry::parse`'s job, at gate-construction
+/// time); [`resolve_tools`] only needs to know whether an entry names the
+/// WHOLE tool or a subset of its calls.
+fn entry_is_scoped(raw: &str) -> bool {
+    match raw.find('(') {
+        Some(open) => raw.ends_with(')') && open < raw.len() - 1,
+        None => false,
+    }
+}
+
+/// Extracts the bare tool name from one `--allowed-tools`/`--deny-tools`
+/// entry, stripping a trailing `tool_name(arg_glob)` scope when present.
+/// Mirrors `conway::gates::Entry::parse`'s own tool/pattern split exactly
+/// (that type is private to `conway::gates`, so this is a duplicate of the
+/// same three-line rule, not a call into it) -- used only to decide which
+/// tool NAME an entry names, never to interpret the glob itself.
+fn entry_tool_name(raw: &str) -> &str {
+    match raw.find('(') {
+        Some(open) if raw.ends_with(')') && open < raw.len() - 1 => &raw[..open],
+        _ => raw,
+    }
 }
 
 /// Resolves the prompt text from `--print <text>` (the DIRECTIVE) and piped

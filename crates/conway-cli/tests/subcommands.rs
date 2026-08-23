@@ -27,7 +27,7 @@ fn assert_no_esc_byte(bytes: &[u8]) {
 }
 
 fn sessions_dir(fixture: &Fixture) -> std::path::PathBuf {
-    fixture.dir.path().join(".conway/sessions")
+    common::session_dir(fixture)
 }
 
 /// Scans `fixture`'s session store for the single session file it expects

@@ -269,9 +269,12 @@ fn build_runtime(turns: usize) -> Arc<Runtime> {
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     })
 }
 

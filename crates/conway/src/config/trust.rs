@@ -313,7 +313,10 @@ mod tests {
 
     fn env_for(config_dir: &Path) -> HashMap<String, String> {
         let mut env = HashMap::new();
-        env.insert("CONWAY_CONFIG_DIR".to_string(), config_dir.display().to_string());
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            config_dir.display().to_string(),
+        );
         env
     }
 

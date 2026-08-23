@@ -187,7 +187,7 @@ shrinking the candidate list).
 | `/agents` | `/agents` | Toggle the below-chat agent-tree panel. |
 | `/settings` | `/settings` | Open the settings menu (display preferences, permission mode, and grant management). |
 | `/steer` | `/steer <agent> <text>` | Send a steering message to a running agent. |
-| `/context` | `/context <agent>` | Show an agent's assembled context. |
+| `/context` | `/context <agent>` | Show an agent's assembled context, including its preamble (see below). |
 | `/why` | `/why` | Show the last routing decision — and, after a `/model`/`/role` switch, what changed. |
 | `/fork` | `/fork [<text>]` or `/fork @<agent> <directive>` | Open an interactive fork of the focused agent (inherits its context, frozen at the fork point), or fork a specific agent explicitly. Free text is classified into a fork/spawn recipe and confirmed before anything is created. |
 | `/spawn` | `/spawn [@<agent_def>] [<prompt>]` | Open an interactive spawned agent — a clean slate, optionally from a named agent definition; inherits the parent's role/model if none is given. |
@@ -202,6 +202,42 @@ A message that doesn't start with `/` is sent to the model as an ordinary
 prompt. An unrecognized `/command` is reported as an error rather than
 sent to the model. `/trust permissions` doesn't appear in the `/` palette
 list above (typing it in full still works) — every other command does.
+
+### `/context`: the preamble section
+
+`/context <agent>` lists every segment in that agent's assembled context.
+If any installed plugin declares an instruction fragment (a paragraph of
+guidance shipped alongside its tools, rather than a system prompt or a
+directory-loaded skill), those fragments appear first, in a **preamble**
+section:
+
+```
+preamble: 2 plugin-declared fragments · 700tok
+  conway.trim.when-to-compose  400tok  <- conway.trim
+  conway.memory.recalling      300tok  <- conway.memory
+```
+
+The source column is the point: it makes visible which plugin a paragraph
+of instruction came from, so it's obvious that uninstalling that plugin
+removes it too. If a fragment names a tool that isn't actually installed
+for this session, its text is never sent to the model — instead the line
+says so:
+
+```
+  conway.trim.when-to-compose  400tok  ⚠ names compose_path -- not installed
+```
+
+If no installed plugin declares an instruction fragment, `/context` shows
+no preamble section at all — the ordinary per-segment listing (system
+prompt, skills, path) is unaffected either way.
+
+**Subagents do not get instruction fragments yet.** A forked or spawned
+child agent receives none, even when it holds a tool whose plugin declares
+one — the same limitation directory-loaded skills already have for child
+agents. So `/context <child-agent>` shows no preamble section, and that
+looks identical to a session where no plugin declares one at all. If a
+subagent is mishandling a tool that its parent uses correctly, a missing
+instruction fragment is a likely cause and is worth ruling out first.
 
 ### `/model` and `/role`: changing model mid-session
 
@@ -291,21 +327,48 @@ active-only); `Esc` (or `/agents` again) closes it. The status markers:
 
 ## The `/settings` menu
 
-`/settings` opens a menu of three groups: **display** (show reasoning
+`/settings` opens a menu of four groups: **display** (show reasoning
 traces, show timestamps), **tool output** (how many lines a folded tool
-call shows before `Ctrl-E` is needed), and **permissions** (cycle the
+call shows before `Ctrl-E` is needed), **permissions** (cycle the
 permission mode; review or revoke individual grants under **allow** —
 flat and structured alike; read-only **deny** and **prompt** sections
 listing every rule — flat or structured — that any permissions file,
 trusted or not, has put in force, each with the file it came from; and
-**hooks**, a fourth, revocable review list). `Up`/`Down`
-navigate, `Enter` toggles a boolean, expands/collapses a group, or revokes
-a selected grant/hook row, `Left`/`Right` step the numeric tool-preview
-setting, `Esc` closes. The two display toggles, the permission-mode
-cycle, and every revoke action apply to this session only; the
-tool-preview line count persists to `[tui.tool_preview_lines]` in
-`settings.json` when you step it. Permission-mode and grant details are
-covered in [`permissions.md`](permissions.md).
+**hooks**, a fourth, revocable review list), and **plugins** (below).
+`Up`/`Down` navigate, `Enter` toggles a boolean, expands/collapses a
+group, revokes a selected grant/hook row, or turns a plugin on/off,
+`Left`/`Right` step the numeric tool-preview setting, `Esc` closes. The
+two display toggles, the permission-mode cycle, and every revoke action
+apply to this session only; the tool-preview line count persists to
+`[tui.tool_preview_lines]` in `settings.json` when you step it; a plugin
+toggle persists too (below), the one section of this menu with a real
+writer behind it. Permission-mode and grant details are covered in
+[`permissions.md`](permissions.md).
+
+### The plugins section: a browser, not just a toggle
+
+The **plugins** group lists every first-party plugin `conway` links in —
+the header row states how many are currently on (`installed`) and how
+many are compiled in but off (`available`). Each plugin is its own
+subsection, headed by a toggle row naming its id, version, on/off state,
+and a one-line summary; below that, three rows in the operator's own
+framing:
+
+- **you get** — what turning it ON adds (tools, commands, an instruction).
+- **you lose** — what is different with it OFF.
+- **costs** — its ongoing cost, if any, while it's on.
+
+Selecting the toggle row and pressing `Enter` flips it — this is the one
+`/settings` action with a real writer behind it: it edits
+`~/.conway/settings.json`'s `plugins.install` array directly (or
+`$CONWAY_CONFIG_DIR/settings.json` when that's set), adding or removing
+exactly the one id, leaving every other key, its ordering, and its
+formatting untouched, whether or not you've hand-edited the file. **The
+change applies on your next restart, not immediately** — plugins install
+once, at startup; nothing about the running session's tools or commands
+changes until you start `conway` again. The footer says so on every
+render. Project-scoped plugin selection isn't reachable from this menu —
+edit a project's own `.conway/settings.json` by hand for that.
 
 The **hooks** section lists every configured `hooks.rules[]` entry whose
 event can currently deny something — `pre_tool_use` (narrows a tool call)

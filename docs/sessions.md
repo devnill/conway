@@ -90,22 +90,31 @@ it is something you turn on rather than something you inherit.
 
 ## Where session data lives on disk
 
-By default, sessions live under `.conway/sessions/` (`[session.root]` in
-`settings.json`), one `<session-id>.jsonl` file per session plus an
-`index.jsonl` conway maintains for fast listing.
+By default, sessions live centrally, under `~/.conway/sessions/` (or
+`$CONWAY_CONFIG_DIR/sessions/` — the same directory `settings.json`/
+`history` already live in), keyed by project — the way [Claude
+Code](https://claude.com/claude-code) itself does it, rather than inside
+the project's own working directory: a project checked out at
+`/Users/you/my-project` gets `~/.conway/sessions/-Users-you-my-project/`,
+one `<session-id>.jsonl` file per session plus an `index.jsonl` conway
+maintains for fast listing. `.conway/sessions` is no longer created in
+your project by a fresh, unconfigured run.
 
-**This path is resolved against your invocation directory, not against
-wherever `settings.json` was discovered.** `settings.json` itself is found
-by walking up from your current directory (`getting-started.md`'s
-discovery rule), but `session.root`'s default, `.conway/sessions`, is a
-*relative* path resolved against `--cwd` (or the process's own working
-directory when `--cwd` is unset) every time conway starts — not against the
-directory that held the config file that named it. Concretely: run conway
-from a project's root, then again from a subdirectory of that same project
-(no `.conway/` of its own), and both runs discover the identical
-`settings.json` — but each writes its sessions into its own,
-separately-created `<dir>/.conway/sessions/`, and `conway sessions list`
-run from one location will not show sessions created from the other:
+**The project key is your invocation directory's absolute path, with `/`
+(or `\` on Windows) replaced by `-`.** Deliberately readable, not a hash —
+running `ls ~/.conway/sessions/` shows your own project paths, not opaque
+digests. Two checkouts of the same repository at different paths get two
+different keys (each is a genuinely separate working tree, with its own
+history); a renamed or moved checkout gets a new key of its own, and the
+old one is left where it was, still reachable by name if you go looking for
+it.
+
+**This still depends on your invocation directory, exactly as the old
+default did.** Run conway from a project's root, then again from a
+subdirectory of that same project (no `.conway/settings.json` of its own),
+and both runs discover the identical `settings.json` — but each resolves to
+its own project key, so `conway sessions list` run from one location still
+will not show sessions created from the other:
 
 ```console
 $ cd my-project && conway -p "..." && conway sessions list
@@ -117,9 +126,14 @@ ID        CREATED               ROLE   ORIGIN
 01KYWYK9  2026-07-31T20:42:04Z  coder
 ```
 
-Two different directories, two disjoint session stores, both reading the
-same config. If you want one shared history regardless of where you invoke
-conway from within a project, set `session.root` to an absolute path:
+Two different directories, two disjoint session stores (now
+`~/.conway/sessions/-Users-you-my-project/` and
+`~/.conway/sessions/-Users-you-my-project-src/`), both reading the same
+config. If you want one shared history regardless of where you invoke
+conway from within a project, set `session.root` explicitly — doing so
+opts back into the field's older, direct meaning: `root` then names the
+sessions directory itself (resolved against `--cwd` if you give a relative
+path), not a root further keyed by project:
 
 ```json
 // .conway/settings.json
@@ -129,6 +143,32 @@ conway from within a project, set `session.root` to an absolute path:
   }
 }
 ```
+
+`$CONWAY_CONFIG_DIR`, when set, redirects the central default the same way
+it redirects `settings.json`/`history`: sessions land under
+`$CONWAY_CONFIG_DIR/sessions/<project-key>/` instead of
+`~/.conway/sessions/<project-key>/`.
+
+### If you already have a project-local `.conway/sessions`
+
+An operator upgrading from before this default changed may already have
+sessions sitting in a project's own `.conway/sessions/`. conway does not
+read, move, or delete that directory automatically — a migration mutates
+data you might still need, and a half-completed one would be a worse
+failure than doing nothing. Instead, **conway tells you**: if an
+unconfigured `[session].root` would resolve to the new central default and
+a non-empty `.conway/sessions` still exists in your project, every run
+prints a warning naming both locations, until you resolve it one of two
+ways:
+
+- **Keep using the old location** — set `[session].root` to it explicitly
+  (the example just above), which restores the exact pre-upgrade behavior.
+- **Switch over** — move the old directory's contents into the new central
+  location yourself; conway does not do this for you.
+
+Either way, nothing is stranded silently: the old sessions are exactly
+where they always were, and the warning tells you where the new default
+now points.
 
 Your input history is separate from session data and always lives at
 `~/.conway/history` (or `$CONWAY_CONFIG_DIR/history`) — see

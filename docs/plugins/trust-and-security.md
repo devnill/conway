@@ -265,6 +265,153 @@ merely lets a plugin offer operator-privileged, already-possible actions
 DIFFERENTLY-NAMED session one already knows the id of) as a named command
 instead of a manual multi-step workaround.
 
+## Composing a context path: a gated tool, cross-session read, same-session write only
+
+See [`hooks.md` point 18](hooks.md#18-context-path-composition--toolctxcontext_path-contextpathhost)
+for the full mechanical contract; this section is its trust posture.
+
+`ContextPathHost` (board item `01M0PEFMG96SVBBD5D2E06H34A`, decision
+`01M0K4QT6MBXPD6PXMBBBD2P7B`) is a new extension point: a `ToolCtx` field
+(`ToolCtx::context_path`) every dispatched tool receives, mirroring
+`ToolCtx::subagents`'s own "caller-bound handle, never a raw host" shape.
+It backs exactly one first-party consumer today, `conway.path`'s
+`compose_context_path` tool — an ORDINARY `Tool`, proposed by the model and
+gated through `PermissionGate`/`PermissionBroker` before it runs, on the
+identical footing every other tool call in this page's opening section
+already describes. Nothing about it skips the gate the way a `Command`
+does.
+
+**What it can read: any session's records, honestly.** Composing a path
+from "what we discussed in that other session" needs to resolve a
+cross-session `RecordRef`, so `ContextPathHost::resolve_records` — like
+`CurateCtx::store` before it (a `Curator`'s own §11.5 read surface) — is
+deliberately not confined to the calling session. This is the SAME
+widening `CommandOutcome::Checkout` argues for above, applied to a
+different mechanism: reading a record already logged somewhere in this
+process is not a new capability an operator could not already exercise (any
+record in the store is, definitionally, something conway itself already
+produced), and the read is honest rather than a bypass — it resolves
+through the same masked, ancestry-aware transcript resolution the ordinary
+per-turn path assembly uses, so a record an operator excluded via
+`ContextMask` stays excluded here too.
+
+**What it can write: only the CALLING session's own head, never another's.**
+`ContextPathHost::default_path`/`::set_head` are narrowed by
+`ContextPathHandle` to the ONE session the invoking tool call belongs to —
+there is no parameter through which a call could name a different session
+to freeze a head onto, mirroring `SubagentHandle`'s identical "no `caller`
+parameter to override" structural guarantee. A composed path can pull
+CONTENT in from anywhere; it can only ever change what SESSION renders
+next for the session that asked.
+
+**No new store is exposed.** `PathStore` itself stays engine-internal, not
+re-exported through `conway::plugin` (board item `01M0EMCK55628YJXGBQY8YGXHE`,
+unchanged by this addition) — `ContextPathHost` is a narrow, purpose-built
+capability an implementation backs with `PathStore`/`SessionStore`
+internally, the same "narrow handle, not a raw port" shape `SubagentHandle`
+established for fork/spawn. A plugin author reaches it only by calling
+`ctx.context_path`'s methods; the trait and its production implementation
+are never nameable from a crate depending only on `conway`.
+
+**This section covers WRITING a path from a reference the model already
+holds.** "Finding a session" below covers the other half: how a model gets
+a reference to a session it neither started nor spawned in the first place.
+
+## Finding a session: a gated tool, read-only, bounded
+
+See [`hooks.md` point 20](hooks.md#20-cross-session-discovery--toolctxsession_discovery-sessiondiscoveryhost)
+for the full mechanical contract; this section is its trust posture. See
+"Composing a context path" immediately above for the tool this one feeds —
+worth reading first, since the two share most of their argument.
+
+`SessionDiscoveryHost` (board item `01M0PS8J3AK7Z7253Z3E3RD3GY`) is a new
+extension point, structurally identical to `ContextPathHost` above: a
+`ToolCtx` field (`ToolCtx::session_discovery`) every dispatched tool
+receives. It backs exactly one first-party consumer today, `conway.discover`'s
+`search_sessions` tool — an ORDINARY `Tool`, proposed by the model and gated
+through `PermissionGate`/`PermissionBroker` before it runs, on the identical
+footing every other tool call in this page's opening section already
+describes.
+
+**What it can read: this project's own sessions by default, every project's
+under an explicit widening — never a record CONTENT read unless asked.**
+`SessionSearchQuery::text` omitted means metadata only (which sessions
+exist, when, labeled how — the SAME header-only information
+`conway_session::SessionIndex` already keeps for every session store, never
+a new index over record content). `text` supplied is a real content scan,
+but bounded by `SessionSearchQuery::max_sessions` — the tool cannot be made
+to read an unbounded number of records in one call, and its reply always
+states how many it actually read. `scope: "all_projects"` is the ONE
+explicit widening beyond the calling project: every project directory
+under the central sessions root, resolved by one directory listing, never a
+filesystem crawl and never a registry (see `hooks.md` point 20's own
+"Reach" note).
+
+**Content search does not re-check `ContextMask`, and that is not a new
+hole.** `ContextMask` (`docs/plugins/hooks.md` point 15's `Checkout`
+section) affects fork-PREFIX resolution only — what a CHILD session
+inherits from a parent — never a session's own raw log. `search_sessions`
+reads a session's own records directly, the same reads
+`SessionStore::read`/`list` already permit any caller with a store handle
+to perform; masking was never a redaction mechanism over a session's own
+content and this tool does not change that. A masked record's `(session,
+seq)` CAN still be found by a search and handed to `compose_context_path`
+— which then, correctly, refuses to resolve it (`hooks.md` point 18's own
+masked-read contract), reported back to the model as an ordinary "could not
+resolve" failure, not a leak.
+
+**What it can write: nothing, ever.** `SessionDiscoveryHost::search` has no
+write path at all — unlike `ContextPathHost`, this port carries no
+`set_head` counterpart. Finding a session changes nothing about what any
+session renders next; only `compose_context_path` does that.
+
+**No new store is exposed.** The production implementation
+(`conway::discovery_host::FsSessionDiscoveryHost`) backs this capability
+with the SAME `SessionStore`/`conway_session::discovery` machinery
+`ContextPathHost`'s own implementation uses internally — nothing new is
+re-exported through `conway::plugin`. A plugin author reaches it only by
+calling `ctx.session_discovery`'s one method; the trait and its production
+implementation are never nameable from a crate depending only on `conway`.
+
+## Instruction fragments: text that reaches the model, with no gate either
+
+`Plugin::instructions()` (board item `01M0K5MD59YZRSHE31JKZKFRMY`;
+mechanism and obligations in [`hooks.md`](hooks.md) point 17) is a new
+extension point, and it is worth naming carefully: it is the first
+`Plugin` contribution whose entire effect is putting a paragraph of TEXT
+directly into the model's context, as its own `Role::System` segment,
+positioned ahead of an operator's own directory-authored skills.
+
+**Installing the plugin is still the entire control — nothing new is
+gated.** A tool call is proposed by the model and passes through
+`PermissionGate`/`PermissionBroker`; an instruction fragment has no call to
+gate at all — it is static text assembled once per turn, the same "nothing
+to gate" shape this page's slash-command section states for
+`Command::invoke`. There is no reachability-adjacent trust check either:
+the reachability rule (`ContextBuilder::build` withholds a fragment naming
+a tool id no installed plugin provides) is a CORRECTNESS mechanism against
+an accidentally-stale fragment, not a security boundary — it says nothing
+about whether the TEXT of a reachable fragment is honest, and enforces
+nothing about what that text asks the model to do. A malicious or careless
+plugin can declare a fragment whose text instructs the model to act against
+the operator's interest, and nothing here catches that; it is the same
+prompt-injection surface every other source of `Role::System`/inherited
+context already carries, just with a shorter path to the top of the
+prompt.
+
+**This grants no capability a `ContextHook` did not already have.**
+`ContextHook::before_request` can already add, edit, or drop ANY segment in
+an assembled request (this page's own "What conway DOES ship" section, and
+`conway.skills`'s own `SkillIndexHook`, prove it) — `Plugin::instructions()`
+is a NARROWER, declarative way to do one specific thing `before_request`
+could already do arbitrarily. Trust-wise, a plugin author who could already
+inject arbitrary text via a hook gains nothing new here; what changes is
+legibility (`/context`'s preamble section names which plugin a paragraph
+came from) and structural reachability (the text ships and leaves with
+`with_plugin`, per that method's own doc) — properties for the OPERATOR
+inspecting what is installed, not new restrictions on what an installed
+plugin's text may say.
+
 ## Backends and routers: the same install pass, and one hands over more
 
 Everything above states the plugin case by name. It applies unmodified to

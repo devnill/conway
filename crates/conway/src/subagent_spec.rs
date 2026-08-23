@@ -10,6 +10,18 @@
 //! no-`agent_def`-means-inherit-the-parent's-role/model semantics this
 //! relaxes from the 0.1.0 "agent_def mandatory for spawn" rule).
 //!
+//! **`context` (both specs) is the one axis that was purely inherited
+//! before it existed** -- `directive`/`agent_def`/`role`/`model`/`tools`/
+//! `budget`/`keep_alive`/`plugin_config` were all narrowable at the call
+//! site, but a fork always got the forker's ENTIRE transcript and a spawn
+//! always got none, with no way to say "start with exactly these pieces."
+//! `Some` on either spec REPLACES that default outright with a chosen list
+//! of already-resolved `(session, seq)` references -- see
+//! [`ForkSpec::context`]/[`SpawnSpec::context`]'s own docs for the full
+//! argument (this is a boundary-time analogue of `conway-plugin-path`'s
+//! mid-chain `compose_context_path` tool, sharing its derivation machinery
+//! rather than reimplementing it).
+//!
 //! Both convert into [`conway_core::agent::SubagentSpec`] via `From`, the
 //! type `conway_core::ports::SubagentHost::start` (`impl` on
 //! `conway_runtime::Runtime`) actually consumes. This module
@@ -20,6 +32,7 @@
 use conway_core::agent::{AgentDefRef, Budget, SubagentMode, SubagentSpec, ToolSelector};
 use conway_core::ids::{ModelRef, RoleAlias};
 use conway_core::log::AskOrigin;
+use conway_core::path::RecordRef;
 
 /// A request to fork a live agent: the child inherits the forker's entire
 /// context (by reference, as of the fork point) plus `directive`.
@@ -126,6 +139,32 @@ pub struct ForkSpec {
     /// fields' own `From` impl comments for the incoherence this avoids).
     /// Set via [`ForkSpec::plugin_config`].
     pub plugin_config: Option<conway_core::ports::PluginConfig>,
+    /// The child's CHOSEN starting context, as an ordered list of
+    /// already-resolved `(session, seq)` references -- the field a fork
+    /// previously had no way to express (`directive`/`agent_def`/`role`/
+    /// `model`/`tools`/`budget`/`keep_alive`/`plugin_config` were narrowable;
+    /// context was purely inherited). See
+    /// [`conway_core::agent::SubagentSpec::context`]'s own doc for the full
+    /// argument (what the field carries and why, how it composes with
+    /// `SubagentMode`, the narrowing decision, and the `covers_upto`
+    /// reasoning) -- this field maps straight through.
+    ///
+    /// **Reconciled against this struct's own "fork inherits the ENTIRE
+    /// context" framing (module doc), unlike `cwd`/`root`.** Those two stay
+    /// absent from `ForkSpec` because a PARTIAL override of an otherwise
+    /// fully-inherited transcript is incoherent (the child's own transcript
+    /// would keep describing the forker's directory while its tools resolved
+    /// elsewhere). `context` does not partially override the inherited
+    /// transcript -- when `Some`, it REPLACES it outright: the child's
+    /// starting context path IS the given selection, full stop, never "the
+    /// inherited prefix plus/minus these records." That is an all-or-nothing
+    /// override, the same shape [`ForkSpec::model`] already uses ("`Some`
+    /// wins outright"), not `plugin_config`'s narrowing shape. `None` (the
+    /// [`ForkSpec::new`] default) preserves "inherit the forker's ENTIRE
+    /// context" unchanged, down to the byte.
+    ///
+    /// Set via [`ForkSpec::context`].
+    pub context: Option<Vec<RecordRef>>,
 }
 
 impl ForkSpec {
@@ -152,6 +191,7 @@ impl ForkSpec {
             ephemeral: false,
             ask_origin: None,
             plugin_config: None,
+            context: None,
         }
     }
 
@@ -168,6 +208,12 @@ impl ForkSpec {
     /// See [`ForkSpec::model`]'s own field doc.
     pub fn model(mut self, model: ModelRef) -> Self {
         self.model = Some(model);
+        self
+    }
+
+    /// See [`ForkSpec::context`]'s own field doc.
+    pub fn context(mut self, records: Vec<RecordRef>) -> Self {
+        self.context = Some(records);
         self
     }
 
@@ -256,6 +302,9 @@ impl From<ForkSpec> for SubagentSpec {
             // plugin_config`]'s own doc for why this (unlike `cwd`/`root`)
             // IS reachable from `ForkSpec`.
             plugin_config: spec.plugin_config,
+            // Mapped straight through -- see [`ForkSpec::context`]'s own
+            // doc.
+            context: spec.context,
         }
     }
 }
@@ -341,6 +390,20 @@ pub struct SpawnSpec {
     /// effective per-agent config unchanged". Set via [`SpawnSpec::
     /// plugin_config`].
     pub plugin_config: Option<conway_core::ports::PluginConfig>,
+    /// The child's CHOSEN starting context, as an ordered list of
+    /// already-resolved `(session, seq)` references. Mirrors
+    /// [`ForkSpec::context`]'s own doc exactly -- unlike `cwd`/`root`, this
+    /// field IS also reachable from [`ForkSpec`] (see that field's own doc
+    /// for why). `None` (the [`SpawnSpec::new`] default) preserves the
+    /// pre-existing clean-slate spawn behavior unchanged: no starting
+    /// context at all beyond `prompt` itself. `Some` primes an otherwise
+    /// clean-slate child with hand-picked material -- "priming a child from
+    /// another agent's work" without also inheriting the spawner's own
+    /// transcript, a combination `Fork` cannot express even with `context`
+    /// set (`Fork`'s own store-level lineage/tree bookkeeping is unchanged
+    /// by this field -- see [`conway_core::agent::SubagentSpec::context`]'s
+    /// own doc). Set via [`SpawnSpec::context`].
+    pub context: Option<Vec<RecordRef>>,
 }
 
 impl SpawnSpec {
@@ -365,6 +428,7 @@ impl SpawnSpec {
             cwd: None,
             root: None,
             plugin_config: None,
+            context: None,
         }
     }
 
@@ -416,6 +480,12 @@ impl SpawnSpec {
         self.plugin_config = Some(plugin_config);
         self
     }
+
+    /// See [`SpawnSpec::context`]'s own field doc.
+    pub fn context(mut self, records: Vec<RecordRef>) -> Self {
+        self.context = Some(records);
+        self
+    }
 }
 
 impl From<SpawnSpec> for SubagentSpec {
@@ -442,6 +512,9 @@ impl From<SpawnSpec> for SubagentSpec {
             // `[S1.5]`: mapped straight through -- see [`SpawnSpec::
             // plugin_config`]'s own doc.
             plugin_config: spec.plugin_config,
+            // Mapped straight through -- see [`SpawnSpec::context`]'s own
+            // doc.
+            context: spec.context,
         }
     }
 }
@@ -677,6 +750,58 @@ mod tests {
         assert_eq!(scoped.plugin_config, Some(config.clone()));
         let converted: SubagentSpec = scoped.into();
         assert_eq!(converted.plugin_config, Some(config));
+    }
+
+    /// `SpawnSpec::context` maps through `From<SpawnSpec> for SubagentSpec`
+    /// unchanged, mirroring `spawn_spec_plugin_config_maps_through_from_
+    /// spawn_spec` -- the acceptance criterion "a parent can start a child
+    /// with a chosen context."
+    #[test]
+    fn spawn_spec_context_maps_through_from_spawn_spec() {
+        let default_spec = SpawnSpec::new("x");
+        assert_eq!(default_spec.context, None);
+        let default_converted: SubagentSpec = default_spec.into();
+        assert_eq!(default_converted.context, None);
+
+        let refs = vec![RecordRef {
+            session: conway_core::ids::SessionId::new(),
+            seq: conway_core::ids::LogSeq(3),
+        }];
+        let chosen = SpawnSpec::new("x").context(refs.clone());
+        assert_eq!(chosen.context, Some(refs.clone()));
+        let converted: SubagentSpec = chosen.into();
+        assert_eq!(converted.context, Some(refs));
+    }
+
+    /// `ForkSpec::context` maps through `From<ForkSpec> for SubagentSpec`
+    /// unchanged -- the fork side of the same acceptance criterion.
+    #[test]
+    fn fork_spec_context_maps_through_from_fork_spec() {
+        let default_spec = ForkSpec::new("x");
+        assert_eq!(default_spec.context, None);
+        let default_converted: SubagentSpec = default_spec.into();
+        assert_eq!(default_converted.context, None);
+
+        let refs = vec![RecordRef {
+            session: conway_core::ids::SessionId::new(),
+            seq: conway_core::ids::LogSeq(0),
+        }];
+        let chosen = ForkSpec::new("x").context(refs.clone());
+        assert_eq!(chosen.context, Some(refs.clone()));
+        let converted: SubagentSpec = chosen.into();
+        assert_eq!(converted.context, Some(refs));
+    }
+
+    /// `Some(vec![])` is not `None`: a deliberate "replace the default with
+    /// nothing" survives the conversion distinctly from "unset" -- see
+    /// `ForkSpec::context`'s own doc.
+    #[test]
+    fn fork_spec_context_some_empty_is_distinct_from_none() {
+        let blanked = ForkSpec::new("x").context(Vec::new());
+        assert_eq!(blanked.context, Some(Vec::new()));
+        let converted: SubagentSpec = blanked.into();
+        assert_eq!(converted.context, Some(Vec::new()));
+        assert_ne!(converted.context, None);
     }
 
     #[test]

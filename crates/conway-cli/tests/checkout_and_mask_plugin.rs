@@ -34,16 +34,12 @@ fn add_plugins_install(fixture: &common::Fixture, ids: &[&str]) {
 }
 
 /// `conway-session`'s own on-disk naming scheme (`store.rs::session_path`):
-/// `<session.root>/<sid>.jsonl`, and the fixture leaves `session.root` at
-/// its config-level default (`.conway/sessions`), relative to the fixture's
-/// own cwd (`common::command` sets the subprocess's cwd to `fixture.dir`).
+/// `<session.root>/<sid>.jsonl`; the fixture leaves `[session].root`
+/// unconfigured, so `session.root` resolves to `common::session_dir`'s
+/// central, project-keyed default (board item
+/// `01M0QK9GRM8HSNWRAR414TCX42`), not a bare `<fixture>/.conway/sessions`.
 fn session_file(fixture: &common::Fixture, sid: &str) -> std::path::PathBuf {
-    fixture
-        .dir
-        .path()
-        .join(".conway")
-        .join("sessions")
-        .join(format!("{sid}.jsonl"))
+    common::session_dir(fixture).join(format!("{sid}.jsonl"))
 }
 
 /// Every PER-SESSION `.jsonl` file in the fixture's sessions dir --
@@ -52,7 +48,7 @@ fn session_file(fixture: &common::Fixture, sid: &str) -> std::path::PathBuf {
 /// src/index.rs`), which is not a session file and would otherwise silently
 /// inflate every count in this file by one.
 fn session_files(fixture: &common::Fixture) -> Vec<std::path::PathBuf> {
-    let sessions_dir = fixture.dir.path().join(".conway").join("sessions");
+    let sessions_dir = common::session_dir(fixture);
     std::fs::read_dir(&sessions_dir)
         .expect("read sessions dir")
         .filter_map(|e| e.ok())

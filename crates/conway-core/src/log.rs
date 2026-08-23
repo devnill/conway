@@ -352,12 +352,20 @@ pub enum LogRecord {
     /// to `covers_upto` (LOCAL units, same as `resolver.rs`). Absence of any
     /// `ContextPathSet` means the default path (DESIGN §6).
     ///
-    /// Not yet implemented in core: the variant, its serde shape, and its
-    /// `seq`/`kind_tags_are_exact` handling are in place (D1-3c), but no
-    /// production code appends one yet — the call site that writes a head
-    /// lands with the runtime wiring (D1-3d). The `resolve_default_path`
-    /// orchestrator (`conway-runtime/src/context/path.rs`) READS this variant
-    /// to find the HEAD, but reading is not constructing.
+    /// **Has a production writer, as of board item 01M0K5SWEHEMRYVZ49TAFCFXPK.**
+    /// `conway_runtime::context::path::write_head` is the one place that
+    /// constructs one: it stores `selection` in the `PathStore` first, then
+    /// computes `covers_upto` itself (never trusting a caller-supplied value —
+    /// that function's own doc states the invariant and where it is enforced)
+    /// and appends this record. The `resolve_default_path` orchestrator in the
+    /// same module (`conway-runtime/src/context/path.rs`) READS this variant to
+    /// find the HEAD. Nothing in a running `conway` build calls `write_head` at
+    /// any turn boundary yet — the sanctioned production caller is the
+    /// model-invoked tool a plugin will provide to compose a curated selection
+    /// (decision 01M0K4QT6MBXPD6PXMBBBD2P7B), and that tool is a separate,
+    /// not-yet-built item. So a head is still absent in an ordinary session
+    /// today, but for a different reason than before this item: the mechanism
+    /// is complete and callable, not missing.
     ContextPathSet {
         seq: LogSeq,
         ts: DateTime<Utc>,
@@ -369,10 +377,23 @@ pub enum LogRecord {
     /// session-scoped: two sessions may use the same name for different
     /// selections without collision.
     ///
-    /// Not yet implemented in core: the variant and its serde shape are in
-    /// place (D1-3c), but no production code appends one yet — the call site
-    /// that writes a name→selection binding lands with the path-naming
-    /// surface (D1-3d or later).
+    /// Not yet implemented in core, deliberately and explicitly deferred —
+    /// not built by board item 01M0K5SWEHEMRYVZ49TAFCFXPK, which built
+    /// `ContextPathSet`'s writer. Still no production code appends one, and
+    /// — unlike `ContextPathSet`, which `resolve_default_path` reads —
+    /// nothing anywhere reads one either: this variant currently has
+    /// neither a writer nor a reader. Two reasons this stayed out of that
+    /// item's scope rather than being added for symmetry: (1) naming is its
+    /// own user-facing policy surface (DESIGN
+    /// §8.2: the core may hold a name→selection binding, but *which* names
+    /// exist, and who gets to choose them, is a decision for whatever surface
+    /// creates one — a decision that item never made); (2) a writer with no
+    /// reader would be unverifiable by construction — there is nothing to
+    /// prove it round-trips. A future item building the path-naming surface
+    /// gets both a reader and a writer in the same change, and can reuse
+    /// `write_head`'s write-ordering discipline (store the referenced
+    /// selection before appending the record that names it) for its own
+    /// append.
     ///
     /// **Reconciliation note — why this carries `seq`/`ts` when the §2.5
     /// sketch wrote only `{ name, selection }`.** The sketch was informal, not
@@ -564,6 +585,7 @@ mod tests {
                         total_tokens_est: 0,
                         dropped: vec![],
                         curator_failed: None,
+                        instruction_fragments: vec![],
                     },
                 },
                 "context_report",

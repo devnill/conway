@@ -12,7 +12,7 @@
 //! (`config_warnings.rs::write_headroom_warning_fixture`'s own pattern).
 //!
 //! Reads the persisted `LogRecord::ToolResultRecord` straight off disk
-//! (`<fixture>/.conway/sessions/<sid>.jsonl`) rather than the CLI's live
+//! (`<common::session_dir(fixture)>/<sid>.jsonl`) rather than the CLI's live
 //! `jsonl` stream, mirroring `oneshot_ask.rs`'s own rationale: the denial
 //! text is real, but it only ever lands in the tool result record, never on
 //! an event the live stream itself carries (`oneshot.rs::
@@ -110,7 +110,7 @@ fn one_denied_bash_call_script() -> Script {
 /// rather than shared because each integration-test binary compiles
 /// independently and this file needs both in one place).
 fn only_session_records(fixture: &Fixture) -> Vec<LogRecord> {
-    let dir = fixture.dir.path().join(".conway/sessions");
+    let dir = common::session_dir(fixture);
     let mut found: Option<std::path::PathBuf> = None;
     for entry in std::fs::read_dir(&dir).expect("read sessions dir") {
         let entry = entry.expect("dir entry");

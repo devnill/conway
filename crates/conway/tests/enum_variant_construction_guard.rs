@@ -313,29 +313,34 @@ const ALLOWLIST: &[Allowlisted] = &[
                  offers a restamp, so nothing in core constructs a Restamp.",
     },
     // -- LogRecord (D1-3c): two new variants for the first-class context
-    // path system. The variants, their serde shapes, and their
-    // `seq`/`kind_tags_are_exact` handling are in place, and the
-    // `resolve_default_path` orchestrator (`conway-runtime/src/context/
-    // path.rs`) READS `ContextPathSet` to find the HEAD — but reading is
-    // not constructing. The call sites that WRITE these records land with
-    // the runtime wiring (D1-3d) and the path-naming surface (later). This
-    // is a TEMPORARY allowance: the sub-unit that first constructs one in
-    // production must remove the entry here AND the "not yet implemented"
+    // path system.
+    //
+    // `ContextPathSet`'s entry is GONE: board item 01M0K5SWEHEMRYVZ49TAFCFXPK
+    // gave it a production writer (`conway_runtime::context::path::
+    // write_head`), so `LogRecord::ContextPathSet { .. }` now appears as a
+    // genuine construction in `crates/conway-runtime/src/context/path.rs`,
+    // and the "not yet implemented" marker was removed from the variant's
+    // own doc comment in the same change, per this comment's own instruction
+    // (previously two paragraphs above).
+    //
+    // `ContextPathNamed` stays allowlisted -- that same item explicitly
+    // decided NOT to build its writer (see the variant's own doc comment for
+    // the reasoning: unlike `ContextPathSet`, nothing reads this variant
+    // either, so a writer here would be unverifiable by construction; naming
+    // is its own user-facing policy surface DESIGN §8.2 leaves to whichever
+    // surface creates a name, which this item was not). This is still a
+    // TEMPORARY allowance: the sub-unit that first constructs one in
+    // production must remove this entry AND the "not yet implemented"
     // marker on the variant's own doc comment.
     Allowlisted {
         enum_name: "LogRecord",
-        variant: "ContextPathSet",
-        reason: "D1-3c adds the variant, serde shape, and a reader \
-                 (resolve_default_path finds the HEAD) but no production \
-                 writer. The call site that appends a ContextPathSet lands \
-                 with the runtime wiring (D1-3d).",
-    },
-    Allowlisted {
-        enum_name: "LogRecord",
         variant: "ContextPathNamed",
-        reason: "D1-3c adds the variant and serde shape but no production \
-                 writer. The call site that appends a name→selection binding \
-                 lands with the path-naming surface (D1-3d or later).",
+        reason: "D1-3c adds the variant and serde shape; still no production \
+                 writer or reader as of 01M0K5SWEHEMRYVZ49TAFCFXPK, which \
+                 built ContextPathSet's writer but explicitly deferred this \
+                 variant (see its own doc comment). The call site that \
+                 appends a name→selection binding lands with the \
+                 path-naming surface, a later, separate item.",
     },
 ];
 

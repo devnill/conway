@@ -206,9 +206,12 @@ fn build_runtime_with_backend(backend: Arc<dyn Backend>, bus: Arc<EventBus>) -> 
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: bus,
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     })
 }
 
@@ -250,6 +253,7 @@ fn ask_fork_spec(prompt: &str) -> SubagentSpec {
         root: None,
         tag: None,
         plugin_config: None,
+        context: None,
     }
 }
 
@@ -653,9 +657,12 @@ fn build_runtime_with_backend_and_defs(
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs,
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: bus,
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     })
 }
 

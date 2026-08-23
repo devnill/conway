@@ -33,6 +33,7 @@ pub mod agents;
 mod builder;
 pub mod config;
 mod conway;
+mod discovery_host;
 mod error;
 mod event_stream;
 mod fork_child;
@@ -331,6 +332,15 @@ pub mod plugin {
     /// establishes for commands, plus `carries_tool_name` (whether a
     /// `[hooks].rules[]` entry may pair this event with `match`).
     pub use conway_core::ports::EventDecl;
+    /// [`Plugin::instructions`]'s own return-type element -- a plugin
+    /// author constructs one of these per instruction fragment it
+    /// declares, the SAME "declare, host attributes/checks it" shape
+    /// [`EventDecl`]/[`CommandSpec`] establish immediately above and below.
+    pub use conway_core::ports::InstructionFragment;
+    /// [`Plugin::description`]'s own return type -- see that method's own
+    /// doc for why this is a distinct type from [`InstructionFragment`],
+    /// argued rather than assumed (two audiences, two cardinalities).
+    pub use conway_core::ports::PluginDescription;
     pub use conway_core::ports::{
         ArtifactWriteHandle, ArtifactWriter, CancellationToken, Command, CommandCtx,
         CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, CurateCtx,
@@ -565,6 +575,21 @@ pub use conway_core::path::{
     CostEstimate, Derivation, DivergenceKind, HarnessDrop, NodeProvenance, NodeStamp, OpLabel,
     Orphan, PathError, PathNode, PathOp, PathSelection, RecordRef, SelectionKey, Selector,
     ValidatedPath,
+};
+
+/// The cross-session discovery vocabulary (board item
+/// `01M0PS8J3AK7Z7253Z3E3RD3GY`): pure value types a `Tool` builds a
+/// [`conway_core::ports::SessionSearchQuery`] from and reads a
+/// [`conway_core::ports::SessionSearchResult`] back into -- re-exported at
+/// the root for the SAME reason the context-path vocabulary immediately
+/// above is: a facade-only crate constructs and reads these without
+/// depending on `conway-core` directly. `SessionDiscoveryHost`/
+/// `SessionDiscoveryHandle` are deliberately NOT re-exported (mirroring
+/// `ContextPathHost`/`ContextPathHandle`'s own precedent, `conway_core::
+/// ports::ContextPathHandle`'s doc): `ToolCtx::session_discovery`'s methods
+/// are reachable by dispatch alone, never by naming the handle/host types.
+pub use conway_core::ports::{
+    MatchedRecord, SessionMatch, SessionSearchQuery, SessionSearchResult, SessionSearchScope,
 };
 
 // Amended by:

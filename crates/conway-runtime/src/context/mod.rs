@@ -7,13 +7,16 @@ pub mod builder;
 pub mod curator_stage;
 pub(crate) mod hook_guard;
 pub mod path;
+pub mod path_host;
 pub mod prefix;
 pub mod report;
 pub mod script_hook;
 
 pub use builder::{
-    ContextBuilder, ContextInput, InheritedPrefix, SkillFragment, SystemPromptSpec, TOKEN_ESTIMATOR,
+    ContextBuilder, ContextInput, InheritedPrefix, PluginInstruction, SkillFragment,
+    SystemPromptSpec, TOKEN_ESTIMATOR,
 };
 pub use hook_guard::GuardedContextHook;
+pub use path_host::RuntimeContextPathHost;
 pub use prefix::prefix_key;
 pub use script_hook::{apply_script_deltas, AppliedContextEdit, SkippedAppend};

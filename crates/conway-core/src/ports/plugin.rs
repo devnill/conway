@@ -17,7 +17,10 @@ use crate::content::{Artifact, ContentBlock, ToolCall, ToolSpec, TruncationPolic
 use crate::error::{CwdError, ToolError};
 use crate::event_name::{validate_event_name, EVENT_NAMESPACE_SEPARATOR};
 use crate::ids::{AgentId, LogSeq, ModelRef, SessionId, ToolName};
-use crate::ports::{ArtifactWriteHandle, EventSink, EventSinkHandle, SubagentHandle, SubagentHost};
+use crate::ports::{
+    ArtifactWriteHandle, ContextPathHandle, EventSink, EventSinkHandle, SessionDiscoveryHandle,
+    SubagentHandle, SubagentHost,
+};
 use crate::segment::PromptSegment;
 
 /// A source of tools: a plugin declares its identity and the tools it
@@ -50,6 +53,172 @@ pub trait Plugin: Send + Sync + 'static {
     fn manifest(&self) -> PluginManifest;
 
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
+
+    /// Zero or more instruction fragments this plugin declares -- the
+    /// mechanism board item `01M0K5MD59YZRSHE31JKZKFRMY` gives decision
+    /// `01M0K4S2S1NBW63KNF1NEY5XT3`'s "conway's idiom ships as text a model
+    /// reads" claim: BEFORE this method, a plugin could only put a
+    /// paragraph into a context by mutating the assembled request from
+    /// inside [`ContextHook::before_request`] (`conway.skills`'s own
+    /// `SkillIndexHook` does exactly this, to narrow -- not author -- a
+    /// segment). That is *expressible* but not *legible*: the text lives
+    /// in Rust, not a file; there is no way to ask what instruction conway
+    /// is running with short of reading every hook; nothing states which
+    /// paragraph outranks which when several disagree; and nothing
+    /// connects a paragraph to the tool calls it assumes the model can
+    /// make. This method exists so the declaration is DATA a host can
+    /// inspect, order, and check -- not a second, hook-shaped injection
+    /// path alongside the one that already exists.
+    ///
+    /// **What "alongside `tools`" buys structurally, not by convention.**
+    /// A fragment naming a `tool_id` this SAME plugin also returns from
+    /// [`Self::tools`] can never fail the reachability check
+    /// (`conway_runtime::context::builder::ContextBuilder::build`'s own
+    /// "Plugin instruction fragments" section performs it): both are
+    /// contributed by the same `Arc<dyn Plugin>`, installed through the
+    /// same `with_plugin`/`install_selected` call, so they ship and leave
+    /// together by construction -- reachability for THAT case needs no
+    /// runtime check at all, only the fact that this method sits on the
+    /// same trait as `tools`. A fragment naming a tool_id belonging to a
+    /// DIFFERENT plugin, or to no installed plugin, is the genuinely
+    /// checkable case -- see below.
+    ///
+    /// **The default returns none**, the SAME zero-cost-default precedent
+    /// [`Self::commands`]/[`Self::events`]/[`Self::observers`] establish
+    /// above: every existing `Plugin` implementor keeps compiling
+    /// unmodified, and a build with no instruction-declaring plugin
+    /// injects no new segment and excludes nothing.
+    ///
+    /// **The reachability check runs at context-assembly time, not at
+    /// `ConwayBuilder::build` and not in CI** -- deliberately, per the
+    /// operator's own CLI ruling (`01M0K5K8DCRVR523P54DZF4BY3`). A
+    /// fragment can name a tool that exists somewhere in this repository
+    /// but is not among `ContextInput.tools` for THIS session's THIS
+    /// turn (e.g. an operator installed the fragment's plugin but not the
+    /// plugin providing the tool it assumes) -- a fact no static grep over
+    /// source can see, because it depends on what `plugins.install`
+    /// resolved to for this one operator's config. An unreachable
+    /// fragment's text is WITHHELD from every agent's assembled context
+    /// (never sent, so the model can never try a tool that is not there
+    /// and fail silently, forever) and recorded in
+    /// [`crate::provenance::ContextReport::instruction_fragments`]
+    /// with the missing tool ids named, so `/context`'s preamble section
+    /// renders the omission inline rather than only warning once in a log
+    /// line that scrolls away.
+    ///
+    /// **Precedence.** `ContextBuilder::build` injects a plugin's
+    /// instruction fragments as their own `[1] PluginInstructions*` step,
+    /// positioned AFTER `[0] SystemPrompt` (the agent definition's own
+    /// base idiom) and BEFORE `[1b] SkillFragments*` (the operator's own,
+    /// directory-authored skills, `AgentDef.skills`) -- base, then
+    /// capability-declared, then operator-authored-last, matching this
+    /// item's own illustrative `/context` rendering
+    /// (`conway.idiom` "base" -> `conway.trim`/`conway.memory`
+    /// plugin-sourced -> `house-style` "(yours)"). Multiple plugins'
+    /// fragments are injected in `with_plugin`/`install_selected` install
+    /// order -- the SAME "the seam owns precedence, not its call sites"
+    /// composition shape [`Self::context_hooks`]/[`Self::curators`]
+    /// already establish above, applied here to context CONTENT rather
+    /// than to a hook or curator.
+    ///
+    /// **Convention, not enforcement: text lives in a markdown file.**
+    /// Nothing in this trait forces a plugin to source `text` from a file
+    /// rather than a Rust string literal -- `String` cannot tell the
+    /// difference. The convention is `include_str!("../fragments/foo.md")`
+    /// (a file in the plugin's own crate, read at compile time) or, for a
+    /// plugin distributed as data alongside a compiled binary, a genuine
+    /// file read at construction time. See this crate's own doc for the
+    /// argued tradeoff between the two: `include_str!` has no file an
+    /// operator can delete to disable ONE fragment without uninstalling
+    /// the whole plugin (`01M0K5K8DCRVR523P54DZF4BY3`'s own open
+    /// question); a files-beside-the-plugin convention keeps every
+    /// fragment removable with no settings UI at all, which is why it is
+    /// the recommended shape even though `include_str!` remains legal for
+    /// a plugin that ships as a single compiled artifact with nothing else
+    /// to distribute.
+    ///
+    /// **Not `conway.skills`, and not folded into it without arguing so.**
+    /// A skill (`crate::config::SkillDef`, loaded by
+    /// `conway::skills::load_skill_defs` from an operator-maintained
+    /// directory) OUTLIVES any plugin -- it is the operator's own file,
+    /// selected by name in `AgentDef.skills`, with no `Plugin` in its
+    /// authorship chain at all. An instruction fragment does not outlive
+    /// its plugin: it ships and leaves with `with_plugin`, by
+    /// construction, which is the property this whole method exists to
+    /// make structural. They render through the SAME machinery
+    /// (`conway_runtime::context::builder::SkillFragment`,
+    /// `Provenance::Skill`) once resolved, because both are, at that
+    /// point, "a named text fragment injected into context" -- but the
+    /// SOURCING differs (capability-authored vs. operator-authored) and so
+    /// does the LIFETIME (bound to a plugin vs. bound to a file an
+    /// operator manages directly), which is why this is a distinct
+    /// contribution method rather than a widened `Self::commands`-shaped
+    /// reuse of skills' own directory-loading path.
+    fn instructions(&self) -> Vec<InstructionFragment> {
+        Vec::new()
+    }
+
+    /// An operator-facing description of this plugin -- what a plugin
+    /// browser (board item `01M0KARX71A64NTSYTDBVANVPF`) shows next to a
+    /// toggle, so someone deciding whether to turn a plugin on or off can
+    /// see what changes without reading source. **A different audience
+    /// from [`Self::instructions`]:** that method ships text for the
+    /// MODEL (injected into context, read by the agent); this one ships
+    /// text for the PERSON running conway, read at `ConwayBuilder::build`-adjacent time by a
+    /// TUI/CLI surface, never assembled into a prompt.
+    ///
+    /// **Why a trait method with a zero-cost default, not a field on
+    /// [`PluginManifest`] or an addition to [`InstructionFragment`] --
+    /// argued, not assumed, since the item that added `instructions()`
+    /// deliberately left this choice open:**
+    ///
+    /// - **Not a new `PluginManifest` field.** `PluginManifest` is
+    ///   constructed as a plain struct literal (no `Default` impl) at
+    ///   three dozen call sites across this workspace -- every first-party
+    ///   plugin crate, every fixture `Plugin` a test defines, every fake in
+    ///   `conway-runtime`/`conway-tools`'s own test suites. A required
+    ///   field there would force every one of those (most of which have no
+    ///   operator-facing browser to describe themselves for at all -- a
+    ///   skeleton, a hang-detector fixture, a panic-isolation probe) to
+    ///   invent placeholder description text just to keep compiling. A
+    ///   trait method with a default -- the SAME zero-cost-default
+    ///   precedent [`Self::commands`]/[`Self::events`]/
+    ///   [`Self::observers`]/[`Self::instructions`] itself all establish
+    ///   above -- costs those call sites nothing: every existing `Plugin`
+    ///   implementor keeps compiling unmodified, and only the six
+    ///   plugins a real browser actually lists override it.
+    /// - **Not an addition to [`InstructionFragment`].** Cardinality
+    ///   differs: a plugin has exactly ONE description (matching
+    ///   [`PluginManifest`]'s own one-per-plugin identity), but declares
+    ///   ZERO OR MANY instruction fragments -- `conway.skeleton`,
+    ///   `conway.stepguard`, and `conway.trim` all ship zero fragments
+    ///   today, yet every one of them still has something to say to an
+    ///   operator deciding whether to turn it on. Bolting a description
+    ///   onto a per-fragment type would leave a fragment-less plugin with
+    ///   no operator-facing text at all, or force it to declare a fragment
+    ///   solely to carry a description the model was never meant to read
+    ///   -- the wrong mechanism wearing the right method's clothes.
+    ///
+    /// **Where the text lives: a Rust literal, not a markdown file --
+    /// deliberately the opposite of [`Self::instructions`]'s own
+    /// convention.** That convention exists so an operator can delete ONE
+    /// fragment's file to disable a MODEL-facing behavior with no
+    /// recompile (see that method's own doc, "Convention, not
+    /// enforcement"). A description has no equivalent removability need:
+    /// it does not change what the model does, and there is no
+    /// "keep the plugin, lose only its description" state anyone would
+    /// want -- the description IS the plugin's own identity blurb,
+    /// exactly as fixed-at-compile-time as [`PluginManifest::id`]/
+    /// [`PluginManifest::version`] already are. Applying the file
+    /// convention here would buy operator control over nothing.
+    ///
+    /// The default returns [`PluginDescription::default`] (every field
+    /// empty) -- a browser renders an empty summary/you-get/you-lose/costs
+    /// honestly (e.g. "(no description)"), never a placeholder that
+    /// invents a claim this plugin never made.
+    fn description(&self) -> PluginDescription {
+        PluginDescription::default()
+    }
 
     /// Zero or more TUI slash commands this plugin contributes. The default returns none, so every
     /// existing `Plugin` implementor -- every built-in, every first-party
@@ -515,6 +684,71 @@ pub enum PluginConfigError {
          the requested value does not"
     )]
     WouldWiden { key: String },
+}
+
+/// One instruction fragment a plugin declares via [`Plugin::instructions`]
+/// -- see that method's own doc for the full argument (legibility over
+/// expressibility, the structural-vs-checkable reachability split, the
+/// precedence this composes under, and the relationship to
+/// `conway.skills`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstructionFragment {
+    /// A bare name, unique across every fragment every installed plugin
+    /// declares (checked at `ConwayBuilder::build` -- a build-time,
+    /// configuration-INDEPENDENT fact, unlike the reachability check
+    /// below, so it is caught there rather than deferred to context
+    /// assembly). Not prefixed with this plugin's own
+    /// [`PluginManifest::id`] on the wire -- unlike [`EventDecl::name`]/
+    /// [`CommandSpec::name`], a duplicate fragment name is not a
+    /// namespace COLLISION to avoid (nothing routes on it), so the
+    /// assembling host attributes it by pairing `(plugin_id, name)`
+    /// wherever it renders one, rather than mangling the two into a
+    /// single string.
+    pub name: String,
+    /// The fragment's instruction text -- injected as its own
+    /// `Role::System` segment when every id in [`Self::tool_ids`] is
+    /// reachable, withheld entirely otherwise. See [`Plugin::instructions`]'s
+    /// own doc for the markdown-file convention this field is meant to be
+    /// sourced from.
+    pub text: String,
+    /// Every tool id [`Self::text`] assumes the model can call. May be
+    /// empty for a fragment that names no specific tool (e.g. a general
+    /// style note) -- an empty list is trivially always reachable.
+    pub tool_ids: Vec<ToolName>,
+}
+
+/// [`Plugin::description`]'s own return type -- an operator-facing
+/// description of what turning this plugin on or off actually changes.
+/// See that method's own doc for why this is a separate type from
+/// [`InstructionFragment`] (different audience, different cardinality) and
+/// why its text is a Rust literal rather than a loaded file.
+///
+/// **"You get / you lose / costs" is deliberate, load-bearing phrasing --
+/// kept literally, not paraphrased into a generic "description" field.**
+/// It names what CHANGES, which is the actual question an operator is
+/// asking when deciding whether to flip a toggle; a prose description
+/// answers a different, less actionable question ("what is this").
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PluginDescription {
+    /// One line, fit for a compact list row alongside this plugin's id and
+    /// on/off state (e.g. "notes that survive a restart"). Empty means no
+    /// description was supplied -- a browser renders that honestly (e.g.
+    /// "(no description)"), never a placeholder claim.
+    pub summary: String,
+    /// What turning this plugin ON adds -- tools, commands, an
+    /// instruction, ... (e.g. "3 tools · /memory · an instruction telling
+    /// the model when to write things down"). Empty means nothing to
+    /// report beyond the summary.
+    pub you_get: String,
+    /// What is different with this plugin OFF, phrased for someone
+    /// deciding whether to flip it (e.g. "nothing else -- recall falls
+    /// back to context"). Empty means no notable loss beyond what
+    /// [`Self::you_get`] already names.
+    pub you_lose: String,
+    /// The ongoing cost of running this plugin, if any (e.g. "a small
+    /// read at the start of every turn"). Empty means no notable
+    /// standing cost.
+    pub costs: String,
 }
 
 /// One custom event a plugin declares it may emit -- the event-vocabulary
@@ -1416,6 +1650,21 @@ pub struct ToolCtx {
     /// capability uses [`PluginEventHandle::noop`].
     pub plugin_events: PluginEventHandle,
     pub config: Arc<PluginConfig>,
+    /// The context-path composition capability (decision
+    /// `01M0K4QT6MBXPD6PXMBBBD2P7B`; [`crate::ports::ContextPathHost`]'s own
+    /// module doc): bound to [`Self::session_id`] for
+    /// `default_path`/`set_head`, and reachable for any session's records
+    /// via `resolve_records`. Mirrors [`Self::subagents`] exactly -- a
+    /// caller-bound handle, never a raw store.
+    pub context_path: ContextPathHandle,
+    /// The cross-session discovery capability (board item
+    /// `01M0PS8J3AK7Z7253Z3E3RD3GY`; `SessionDiscoveryHost`'s own module
+    /// doc): finds a session a caller neither owns nor holds a
+    /// `transcript_ref` for, so its `(session, seq)` refs can be handed to
+    /// [`Self::context_path`]'s `resolve_records`/`compose_context_path`.
+    /// Cross-session by construction -- unlike `context_path`, there is no
+    /// single session to bind this to.
+    pub session_discovery: SessionDiscoveryHandle,
 }
 
 impl std::fmt::Debug for ToolCtx {
@@ -1430,6 +1679,8 @@ impl std::fmt::Debug for ToolCtx {
             .field("subagents", &self.subagents)
             .field("plugin_events", &self.plugin_events)
             .field("config", &self.config)
+            .field("context_path", &self.context_path)
+            .field("session_discovery", &self.session_discovery)
             .finish()
     }
 }
@@ -1502,6 +1753,21 @@ impl ToolCtx {
             subagents: SubagentHandle::new(subagents, agent_id),
             plugin_events: PluginEventHandle::noop("test"),
             config: Arc::new(PluginConfig::default()),
+            // A `Tool::invoke` fixture that DOES exercise context-path
+            // composition builds its own `ContextPathHandle` (a real
+            // `ContextPathHost`, or `conway_testkit`'s fake) and overrides
+            // this field via struct-update syntax, the SAME escape hatch
+            // `cancel`/`subagents` overrides already use -- see
+            // `ContextPathHandle::noop`'s own doc for why the default here
+            // is a refusal, not a silent no-op.
+            context_path: ContextPathHandle::noop(),
+            // Same reasoning, same escape hatch -- a fixture that DOES
+            // exercise session discovery builds its own
+            // `SessionDiscoveryHandle` (a real host, or a
+            // `conway_testkit` fake) and overrides this field via
+            // struct-update syntax, mirroring `context_path` immediately
+            // above.
+            session_discovery: SessionDiscoveryHandle::noop(),
         }
     }
 }

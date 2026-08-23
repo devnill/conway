@@ -59,7 +59,9 @@
 mod artifact;
 mod backend;
 mod capability_index;
+mod context_path;
 mod curator;
+mod discovery;
 mod events;
 mod hook_runner;
 mod memory_store;
@@ -74,7 +76,9 @@ mod subagent;
 pub use artifact::*;
 pub use backend::*;
 pub use capability_index::*;
+pub use context_path::*;
 pub use curator::*;
+pub use discovery::*;
 pub use events::*;
 pub use hook_runner::*;
 pub use memory_store::*;
@@ -113,6 +117,7 @@ mod tests {
         _: &dyn ToolObserver,
         _: &dyn Curator,
         _: &dyn MemoryStore,
+        _: &dyn ContextPathHost,
     ) {
     }
 }

@@ -63,9 +63,12 @@ fn build_runtime_over(
         plugins: vec![],
         gate: std::sync::Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: std::sync::Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: std::sync::Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     })
 }
 
