@@ -114,11 +114,16 @@ executes with your own privileges, unsandboxed — the identical footing
 `[hooks].rules[].command` and `[plugins].subprocess[]` already have: no
 sandboxing, no digest check, no allow/deny list. The operator's own review
 of what they typed into `settings.json` is the only control point. Board
-item `01KZHVFCN6ZEAXV7K5JHRQN1YB` (a digest-keyed `plugin` trust subject) is
-under a **standing operator deferral** and is not built by this crate —
-naming an MCP server here is exactly as trusted, and exactly as unaudited,
-as naming a `[hooks].rules[].command` already is today. If you would not
-paste an unfamiliar shell command into `[hooks].rules[]`, do not paste one
-into `[plugins].mcp[]` either. See
+item `01KZHVFCN6ZEAXV7K5JHRQN1YB` (a digest-keyed `plugin` trust subject)
+was reopened once both out-of-process transports shipped and worked to a
+conclusion: **considered and DECLINED**, not deferred — gating only the
+out-of-process transports with a digest check, while
+`[hooks].rules[].command` stays permanently ungated, would assert a
+distinction (plugins reviewed, hooks not) that the identical unsandboxed,
+full-privilege execution underneath both does not support. Naming an MCP
+server here is exactly as trusted, and exactly as unaudited, as naming a
+`[hooks].rules[].command` already is today. If you would not paste an
+unfamiliar shell command into `[hooks].rules[]`, do not paste one into
+`[plugins].mcp[]` either. See
 [`trust-and-security.md`](trust-and-security.md) for the fuller argument
 this crate's own module doc restates.

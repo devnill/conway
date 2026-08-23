@@ -83,16 +83,28 @@
 //! sandboxing, no allow/deny list, no argument sanitization here...an
 //! operator's review of the command...is the control point, not this
 //! type"), never a new, wider one. Board item `01KZHVFCN6ZEAXV7K5JHRQN1YB`
-//! (a `plugin` trust subject kind keyed on a content digest) is under a
-//! STANDING OPERATOR DEFERRAL and is explicitly out of scope here -- this
-//! crate does not build it, and does not work around its absence by
-//! inventing a parallel trust mechanism of its own. The honest state this
-//! leaves: naming a subprocess plugin in `settings.json` is exactly as
-//! trusted, and exactly as unaudited, as naming a `[hooks].rules[].command`
-//! already is today -- an operator who would not paste an unknown shell
-//! command into a hook rule should not paste an unknown command into a
-//! subprocess plugin entry either. See `docs/plugins/trust-and-security.md`
-//! for where this crate's entry in that page's inventory lives.
+//! (a `plugin` trust subject kind keyed on a content digest) was reopened
+//! once this crate shipped (decision `01M0R4RWCDJJ6RMNVFYCNHW0NK` lifted the
+//! 2026-08-12 standing deferral) and worked to a conclusion: DECLINED, not
+//! left open for lack of a consumer. A digest check on a plugin's own
+//! entrypoint file is a real, honest integrity primitive -- digest equality
+//! is a decidable claim it can actually keep, unlike the shell-metacharacter
+//! blocklist GP-13 records as a cautionary tale, which tried to infer safety
+//! it could not verify -- but gating only this crate's `command` with one,
+//! while `[hooks].rules[].command` stays permanently ungated, would
+//! manufacture exactly the false distinction the paragraph above argues
+//! against: the two run with identical, full, unsandboxed operator
+//! privileges, and a checkmark on only one of them would read as "plugins
+//! are vetted, hooks are not," which is false. This crate does not build a
+//! trust mechanism, and does not work around its absence by inventing a
+//! parallel one of its own. The honest state this leaves: naming a
+//! subprocess plugin in `settings.json` is exactly as trusted, and exactly
+//! as unaudited, as naming a `[hooks].rules[].command` already is today --
+//! an operator who would not paste an unknown shell command into a hook
+//! rule should not paste an unknown command into a subprocess plugin entry
+//! either. See `docs/plugins/trust-and-security.md` for where this crate's
+//! entry in that page's inventory lives, and for the full reasoning behind
+//! the decline.
 
 use std::process::Stdio;
 use std::sync::Arc;

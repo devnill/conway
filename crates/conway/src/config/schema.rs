@@ -744,16 +744,18 @@ pub struct PluginsConfig {
     ///
     /// **Trust, stated here because this is the field that grants the
     /// capability.** Board item `01KZHVFCN6ZEAXV7K5JHRQN1YB` (a `plugin`
-    /// trust subject kind, digest-keyed) is under a STANDING OPERATOR
-    /// DEFERRAL and is explicitly NOT built by this field's addition --
-    /// naming a command here is on the exact same trust footing as naming
-    /// one in `[hooks].rules[].command` already is (no sandboxing, no
-    /// digest check, the operator's own review of what they typed is the
-    /// only control point) -- see `conway_plugin_subprocess`'s own crate
-    /// doc for the full argument. This is a genuine widening of what a
-    /// `settings.json` can make a shipped binary execute, disclosed rather
-    /// than smuggled in as an "inert wire shape" claim that would
-    /// otherwise be misleading for THIS particular field.
+    /// trust subject kind, digest-keyed) was reopened once both
+    /// out-of-process transports shipped and worked to a conclusion:
+    /// considered and DECLINED, not deferred -- naming a command here is on
+    /// the exact same trust footing as naming one in
+    /// `[hooks].rules[].command` already is (no sandboxing, no digest
+    /// check, the operator's own review of what they typed is the only
+    /// control point) -- see `conway_plugin_subprocess`'s own crate doc and
+    /// `docs/plugins/trust-and-security.md` for the full argument. This is
+    /// a genuine widening of what a `settings.json` can make a shipped
+    /// binary execute, disclosed rather than smuggled in as an "inert wire
+    /// shape" claim that would otherwise be misleading for THIS particular
+    /// field.
     #[serde(default)]
     pub subprocess: Vec<SubprocessPluginEntry>,
     /// **DISCLOSED, PROMINENTLY FLAGGED addition (board item
@@ -781,7 +783,9 @@ pub struct PluginsConfig {
     /// `[hooks].rules[].command` and `[plugins].subprocess[]` already have
     /// (`conway_plugin_mcp`'s own crate doc has the full argument). Board item
     /// `01KZHVFCN6ZEAXV7K5JHRQN1YB` (a digest-keyed `plugin` trust subject)
-    /// is under a STANDING OPERATOR DEFERRAL and is NOT built here -- naming
+    /// was reopened once both out-of-process transports shipped and worked
+    /// to a conclusion: considered and DECLINED, not deferred -- see
+    /// `docs/plugins/trust-and-security.md` for the full reasoning. Naming
     /// an MCP server here is exactly as trusted, and exactly as unaudited, as
     /// naming a `[hooks].rules[].command` already is today. This is a genuine
     /// widening of what a `settings.json` can make a shipped binary execute,

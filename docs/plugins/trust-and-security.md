@@ -43,20 +43,72 @@ with nothing behind it" this project's own preference for thin,
 demonstrable slices over speculative generality warns against.
 
 **A subprocess plugin (`[plugins].subprocess`,
-[`subprocess-plugins.md`](subprocess-plugins.md)) now IS a real, loadable
-off-process artifact — the premise that used to make a `plugin` kind
-"nothing behind it" no longer holds verbatim.** Building the trust kind
-anyway is still explicitly out of scope: board item `01KZHVFCN6ZEAXV7K5JHRQN1YB`
-is under a STANDING OPERATOR DEFERRAL and is marked DO NOT EXECUTE. What
-this leaves, stated plainly rather than left implicit: naming a command in
-`[plugins].subprocess[]` is checked against **nothing** — no digest, no
-allow-list, no prompt — on the exact footing `[hooks].rules[].command`
-already has. If and when the deferral lifts, the shape to build is: a
-`plugin` trust-subject kind in `TrustStore` keyed on `(entry_digest,
-artifact_digest)` — two digests, because an artifact digest alone covers
-only the named entrypoint file, and an interpreter entrypoint whose real
-code sits in an adjacent tree would defeat a single-digest check. Gate it
-behind whatever loads a plugin off-process, not before.
+[`subprocess-plugins.md`](subprocess-plugins.md)) and an MCP-over-stdio
+plugin (`[plugins].mcp`, [`mcp.md`](mcp.md)) are now both real, loadable
+off-process artifacts — the premise that used to make a `plugin` kind
+"nothing behind it" no longer holds verbatim.** Board item
+`01KZHVFCN6ZEAXV7K5JHRQN1YB` was reopened on exactly that basis (decision
+`01M0R4RWCDJJ6RMNVFYCNHW0NK` lifted the 2026-08-12 standing deferral) and
+worked to a conclusion: **a `plugin` trust-subject kind was considered and
+DECLINED**, not left open for lack of a consumer this time.
+
+The reasoning. Both transports' own crate docs state, deliberately, that a
+plugin's `command` sits on the identical footing as
+`[hooks].rules[].command` — full, unsandboxed operator privilege either
+way, with the operator's own review as the only control point in both
+cases. A load-time digest check on a plugin's entrypoint file *would* be a
+real, honest integrity primitive — digest equality is a decidable claim it
+can actually keep, unlike the shell-metacharacter blocklist this page's own
+"Known limits" section below records as a cautionary tale (see "Deny-by-
+prefix is a seatbelt, not a boundary"): that scan tried to infer *safety*
+from a command's text and could not deliver it, which is why it was removed
+rather than tightened. But gating `[plugins].subprocess[].command` and
+`[plugins].mcp[]`'s command with one, while leaving
+`[hooks].rules[].command` permanently ungated, would not shrink the actual
+threat: both surfaces already grant full, unsandboxed process privilege,
+and the extra in-conway capabilities a plugin can additionally declare
+(tools, hooks, curators) are dominated by that privilege rather than
+adding to it — this page's own "capabilities govern what a plugin can make
+conway do, never what it can do to the machine" argument, turned on
+itself. A digest check that exists for one of two identically-privileged
+surfaces and not the other would read as "plugins are vetted, hooks are
+not," which is false, and would be exactly the kind of declared control
+sitting in a control's slot that this page's "declared-but-unenforced
+capability is worse than no documentation" line (below) warns against —
+except here the control WOULD be enforced, just enforced selectively
+enough to imply a distinction that is not real.
+
+**Requirement 5 (design note `01M0R3D57PDXCWM5TC6KX851YW`) — plugins
+appending durable records to the log — does not change this conclusion for
+either transport that ships today.** That capability is reachable only
+through the `Curator` port (`CurateCtx::store: Arc<dyn SessionStore>`,
+which carries `append`), and neither `conway-plugin-subprocess` nor
+`conway-plugin-mcp` overrides `Plugin::curators()` — both use the
+trait's default (empty) implementation, so no out-of-process plugin can
+reach a `SessionStore` at all today. Writing durable records remains an
+IN-PROCESS-only capability, on the identical trust footing as any other
+compiled-in `Arc<dyn Plugin>` (see "What trust is", above: an in-process
+plugin is trusted by whoever assembles the `Conway` that installs it, not
+through `TrustStore`). If a future item wires a curator, or any other
+durable-record-writing capability, onto an out-of-process transport, that
+changes the grant this section evaluates, and the conclusion above should
+be re-examined against it then — it is not re-examined here because the
+capability does not exist on either shipped transport.
+
+**What this leaves, stated plainly rather than left implicit:** naming a
+command in `[plugins].subprocess[]` or `[plugins].mcp[]` is checked
+against **nothing** — no digest, no allow-list, no prompt — on the exact
+footing `[hooks].rules[].command` already has, and this is now a
+considered position rather than an open gap. **If this project later wants
+stronger integrity assurance for a named external command**, the honest
+shape covers `[hooks].rules[].command` and every plugin transport's
+`command` uniformly, in one mechanism — not a `plugin`-only kind bolted
+onto `TrustStore` first. Such a mechanism would still need to key on
+`(entry_digest, artifact_digest)` — two digests, because an artifact
+digest alone covers only the named entrypoint file, and an interpreter
+entrypoint whose real code sits in an adjacent tree would defeat a
+single-digest check — but that shape is recorded here for whoever designs
+the uniform mechanism, not built by this item.
 
 **A persistent subprocess plugin (board item `01M03VJHG1WFECFJB4ZH3CKWDX`,
 `"transport": "persistent"`) is a larger exposure, not a larger capability
@@ -71,12 +123,12 @@ new ways (die mid-session, write a partial frame, stall on a blocked
 pipe); none of those are trust-mechanism gaps, they are liveness/safety
 problems the persistent transport's failure handling solves (see
 [`subprocess-plugins.md`](subprocess-plugins.md)'s "The persistent
-transport" section). The deferred digest-keyed `plugin` trust subject
-above addresses a DIFFERENT threat — verifying the binary on disk is the
-one the operator reviewed — that is identical for one-shot and persistent;
-going persistent does not change the digest-trust calculus, so it does
-not need the deferred mechanism to land safely, and this transport builds
-no parallel trust mechanism of its own.
+transport" section). The declined digest-keyed `plugin` trust subject
+above would have addressed a DIFFERENT threat — verifying the binary on
+disk is the one the operator reviewed — that is identical for one-shot and
+persistent; going persistent does not change that calculus, so it is not
+an argument for revisiting the decline above, and this transport builds no
+parallel trust mechanism of its own.
 
 **Why the directory form is rejected.** A directory-scoped trust decision
 made about `/repo` stays valid for whatever `/repo` becomes — a `git pull`
@@ -606,23 +658,28 @@ Stated next to the guarantees, per this set's house style, not softened:
   gap benign: rules are parsed and installed once at load, there is no
   reload path, and a file edited mid-session cannot install new rules into
   the running session — only the next session start is affected. For a
-  *plugin artifact*, once the `plugin` trust kind above exists, the same
-  document calls the identical gap real: an attacker able to replace the
-  artifact file in the window between digesting it and executing it runs
-  untrusted code under a trust record computed over different bytes.
-  Closing that properly means digesting a held file descriptor and executing
-  that same descriptor so check and use refer to one inode — worth doing
-  once there is a plugin process to protect, not before. Per-invocation
-  re-digesting is deliberately not the fix: it puts a filesystem read and a
-  hash on every tool call's hot path to close a window an attacker with
-  write access to your plugin binary has better ways to exploit.
+  *plugin artifact*, the same document calls the identical gap real: an
+  attacker able to replace the artifact file in the window between
+  digesting it and executing it runs untrusted code under a trust record
+  computed over different bytes. Closing that properly means digesting a
+  held file descriptor and executing that same descriptor so check and use
+  refer to one inode — one of the reasons a plugin-specific digest check
+  was declined for now rather than built half-strength (see "What trust
+  is", above): a load-time-only check on a plugin artifact would deliver a
+  narrower guarantee than "trusting a plugin" sounds like it promises, on
+  top of the asymmetry-with-hooks argument that was the deciding one.
+  Per-invocation re-digesting is not the fix either: it would put a
+  filesystem read and a hash on every tool call's hot path to close a
+  window an attacker with write access to your plugin binary has better
+  ways to exploit.
 - **A content digest covers the named file, not what that file's own code
   does.** An interpreter entrypoint whose real logic lives in an adjacent
   tree — a shim script that `import`s the actual payload from a sibling
   module — defeats a digest scoped to the entrypoint alone, regardless of
-  when the digest is computed. This is a limit on the *design* for the
-  not-yet-built `plugin` trust kind (the trust-model design, open
-  question 6); today's `TrustStore` digests a `permissions.json`'s own
-  bytes directly, which has no adjacent-tree indirection to exploit, so this
-  limit does not yet apply to anything shipped — it is recorded here so it
-  is not forgotten by the time it does.
+  when the digest is computed. This is a limit on the *design* for a
+  possible future uniform command-integrity mechanism ("What trust is",
+  above, and the trust-model design's own open question 6) — today's
+  `TrustStore` digests a `permissions.json`'s own bytes directly, which has
+  no adjacent-tree indirection to exploit, so this limit does not apply to
+  anything shipped; it is recorded here so it is not forgotten if that
+  mechanism is ever built.

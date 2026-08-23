@@ -40,10 +40,17 @@
 //! footing `[hooks].rules[].command` and `[plugins].subprocess[]` already
 //! have (see `conway-plugin-subprocess`'s own crate doc for the full
 //! argument). Board item `01KZHVFCN6ZEAXV7K5JHRQN1YB` (a `plugin` trust
-//! subject kind keyed on a content digest) is under a STANDING OPERATOR
-//! DEFERRAL and is explicitly NOT built here. Naming an MCP server in
-//! `settings.json` is exactly as trusted, and exactly as unaudited, as naming
-//! a `[hooks].rules[].command` already is today.
+//! subject kind keyed on a content digest) was reopened once both
+//! out-of-process transports shipped (decision `01M0R4RWCDJJ6RMNVFYCNHW0NK`
+//! lifted the 2026-08-12 standing deferral) and worked to a conclusion:
+//! DECLINED, for the reasons `conway-plugin-subprocess`'s own crate doc now
+//! states in full -- a digest check gated onto only the out-of-process
+//! transports, while `[hooks].rules[].command` stays permanently ungated,
+//! would assert a distinction (plugins reviewed, hooks not) that the
+//! identical unsandboxed, full-privilege execution underneath both does not
+//! support. Naming an MCP server in `settings.json` is exactly as trusted,
+//! and exactly as unaudited, as naming a `[hooks].rules[].command` already
+//! is today.
 //!
 //! **HTTP+SSE MCP transport is a SEPARATE item -- do NOT fold it in.** This
 //! crate is stdio only.

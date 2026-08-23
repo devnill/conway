@@ -36,9 +36,11 @@
 //! on the identical footing `[hooks].rules[]` and `[plugins].subprocess[]`
 //! already have (`conway_plugin_mcp`'s own crate doc has the full argument).
 //! Board item `01KZHVFCN6ZEAXV7K5JHRQN1YB` (a digest-keyed `plugin` trust
-//! subject) is under a STANDING OPERATOR DEFERRAL and is NOT built here or
-//! anywhere in this item -- this module does not gate spawning on any trust
-//! check, exactly as `subprocess_plugins::install` does not. An operator who
+//! subject) was reopened once both out-of-process transports shipped and
+//! worked to a conclusion: considered and DECLINED, not deferred -- see
+//! `docs/plugins/trust-and-security.md` for the full reasoning. This module
+//! does not gate spawning on any trust check, exactly as
+//! `subprocess_plugins::install` does not. An operator who
 //! would not paste an unfamiliar command into `[hooks].rules[]` should not
 //! paste one into `[plugins].mcp[]`.
 

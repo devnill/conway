@@ -35,10 +35,12 @@
 //! operator's own privileges, on the identical footing `[hooks].rules[]`
 //! already has (`conway_plugin_subprocess`'s own crate doc has the full
 //! argument). Board item `01KZHVFCN6ZEAXV7K5JHRQN1YB` (a digest-keyed
-//! `plugin` trust subject) is under a STANDING OPERATOR DEFERRAL and is
-//! NOT built here or anywhere in this item -- this module does not gate
-//! spawning on any trust check, exactly as `ProcessHookRunner` does not
-//! gate a hook's command on one either. An operator who would not paste an
+//! `plugin` trust subject) was reopened once both out-of-process
+//! transports shipped and worked to a conclusion: considered and DECLINED,
+//! not deferred -- see `docs/plugins/trust-and-security.md` for the full
+//! reasoning. This module does not gate spawning on any trust check,
+//! exactly as `ProcessHookRunner` does not gate a hook's command on one
+//! either. An operator who would not paste an
 //! unfamiliar command into `[hooks].rules[]` should not paste one into
 //! `[plugins].subprocess[]`.
 

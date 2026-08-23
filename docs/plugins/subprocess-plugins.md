@@ -179,10 +179,13 @@ broken schema).
 allow/deny list. The operator's own review of what they typed into
 `settings.json` is the only control point — see
 [`trust-and-security.md`](trust-and-security.md)'s own "What trust is"
-section for why a digest-keyed `plugin` trust subject is a *decided but
-deliberately deferred* extension (board item `01KZHVFCN6ZEAXV7K5JHRQN1YB`,
-under a standing operator deferral) and not something this slice works
-around by inventing a parallel mechanism.
+section for why a digest-keyed `plugin` trust subject was considered and
+DECLINED (board item `01KZHVFCN6ZEAXV7K5JHRQN1YB`), not left open for lack
+of a consumer: gating only the out-of-process transports while
+`[hooks].rules[].command` stays permanently ungated would assert a
+distinction the identical unsandboxed, full-privilege execution underneath
+both does not support, and this slice does not work around the decision by
+inventing a parallel mechanism of its own.
 
 If you would not paste an unfamiliar shell command into `[hooks].rules[]`,
 do not paste one into `[plugins].subprocess[]` either.
@@ -246,12 +249,12 @@ can do exactly what the one-shot child could do — it just does it for
 longer, accumulates state across calls, and can fail in new ways (die
 mid-session, write a partial frame, stall on a blocked pipe). None of those
 are trust-mechanism gaps; they are the liveness/safety problems the failure
-handling above solves. The deferred digest-keyed `plugin` trust subject
-(board item `01KZHVFCN6ZEAXV7K5JHRQN1YB`) addresses a DIFFERENT threat —
-verifying the binary on disk is the one the operator reviewed — that is
-identical for one-shot and persistent. Going persistent does not change the
-digest-trust calculus, so it does not need the deferred mechanism to land
-safely, and this transport builds no parallel trust mechanism of its own.
+handling above solves. The declined digest-keyed `plugin` trust subject
+(board item `01KZHVFCN6ZEAXV7K5JHRQN1YB`) would have addressed a DIFFERENT
+threat — verifying the binary on disk is the one the operator reviewed —
+that is identical for one-shot and persistent. Going persistent does not
+change that calculus, so it is not an argument for revisiting the decline,
+and this transport builds no parallel trust mechanism of its own.
 See [`trust-and-security.md`](trust-and-security.md) for the persistent-
 exposure entry in that page's inventory.
 
