@@ -635,7 +635,7 @@ principle that settles each so the next reader derives them instead of asking:
 5. ~~Ordering rule 3 makes some reorderings illegal.~~ **§5d.** A provider-required
    constraint: legitimate, and stated plainly where a curator hits it.
 
-**Genuinely open — one, and it is the operator's:**
+**Formerly open — one, and it was the operator's:**
 
 > **May a selection include records from a session outside the current session's
 > ancestry** — a sibling's, another project's, an unrelated tree's? Retention (§4.4)
@@ -644,6 +644,16 @@ principle that settles each so the next reader derives them instead of asking:
 > admits it by construction — a `RecordRef` names any session — so if the answer is
 > "no", that must be an explicit rule with an owner, not an accident of what nobody
 > tried.
+
+> **ANSWERED 2026-08-24 — yes, and the rule was already written.** `INTENT.md`
+> §5e: a selection may name any record anywhere, and the control sits on the
+> *composer* — an installed plugin through the curation seam, and a model only
+> through a tool a plugin hands it — not on an ancestry rule. Composition was
+> never a confinement boundary; confinement governs tool calls, a different
+> axis. `conway.path`'s `compose_context_path` is that control point, and
+> installing the plugin is the permission. No ancestry gate is owed, and the
+> shipped behaviour (any well-formed session id resolves) is the decided
+> answer, not an accident.
 
 **The dead-end this section predicted is real, and it was verified rather than
 assumed.** §5c assigns a no-longer-fitting selection to a loud refusal from admission,

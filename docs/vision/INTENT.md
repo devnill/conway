@@ -317,6 +317,13 @@ on conway and getting a completion back?** If a host has to assemble the whole
 world before it can ask a model a question, conway is not usable as an inference
 layer no matter how good the layer underneath is.
 
+One boundary inside "the agent primitives if it wants them": *if it wants them*
+means uncalled, not replaced. Fork and spawn are mechanism with exactly one
+implementation — the runtime that keeps the log is the only thing that may fork
+it, because a second authority over what a session's ancestry means would be a
+second answer to a question that has one. Every other socket an embedder can
+supply its own implementation of; this one it can only decline to use.
+
 None of the three should feel like it is borrowing a coding agent's plumbing.
 
 > **Going straight to the model is a composition, not a feature.** There should be
@@ -384,6 +391,12 @@ not use it, that is not a refusal; some capability genuinely belongs to a pipeli
 or to an embedder. It is a demand for a different justification, which then has to
 be given rather than assumed.
 
+The same surface carries a parity rule, because it is where supervision lives:
+**anything a model can do to the session's agents, the operator can do from the
+terminal with one typed command.** A lifecycle lever only the model holds is a
+capability the operator cannot supervise, and supervision is what this surface
+is for.
+
 ### 7b. The daily-driver bar is a ladder, not a switch
 
 Nobody is switching away from an existing harness on a flag day, and pretending
@@ -426,6 +439,10 @@ internals is the product. Novelty in the furniture is a tax on the person decidi
 whether to switch, charged before they have any reason to trust that the rest is
 worth it.
 
+The same courtesy extends to identity: a session an operator will return to can
+carry a name the operator chose. The id stays the machine's; the name is
+furniture, and furniture follows convention.
+
 **Grounding.** For interface and interaction design, the
 [DeepSeek harness](https://deepseek.com/harness/en/) is the reference point —
 plugin-mounted everything, an append-only trajectory you can inspect, fork, and
@@ -461,6 +478,10 @@ drives the runtime, how a stream of events crosses the boundary, what happens to
 crash that would otherwise cross it, and who owns returned memory are all real
 questions — and they are questions every one of the tools above has had to answer.
 Read their answers first.
+
+That survey is the first deliverable and carries no precondition. Until it
+exists, none of this has started, and this page must not be read as implying
+otherwise.
 
 > **What this does not mean.** No second API, no divergence in capability. A
 > non-Rust host gets a projection of the same public interface a Rust host uses,
@@ -642,6 +663,13 @@ means point 3 of this list.
     is currently hard and would become easy** — if it cannot, it is a preference
     about how the code looks, and how the code looks is not what this point is
     about.
+
+    A third consequence, for shape, because the plugin tier keeps meeting it:
+    when plugin-tier crates share a piece of knowledge, prefer the shape that
+    adds no new crate — define it once where the workspace already allows the
+    dependency and re-export it through the facade. A new shared crate is
+    justified only when the facade route would force the facade to know
+    something it has no reason to know.
 
 ---
 

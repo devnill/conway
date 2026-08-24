@@ -56,6 +56,15 @@ next.
 read from `cli.rs` tells you what exists; it does not tell you that the thing
 you want takes four commands and a config edit.
 
+Run against an **isolated `$HOME`** (or config dir) so nothing touches the
+operator's real `~/.conway`. When the environment has **no interactive
+terminal**, the TUI cannot be driven — do not fake it with source reading and
+call it driven. Exercise everything headless instead (one-shot, piping, output
+formats, resume, permission modes, `sessions`/`routes` subcommands), verify TUI
+behaviour source-against-`docs/interactive.md` only, and put "TUI not driven —
+no pty" first in **Not checked**. Two consecutive reviews without a real pty
+means the next run must be given one; note it as a process defect.
+
 Judge against **friction**, not feature count. `INTENT.md` §2 is explicit that
 conway is not trying to have fewer features — it is trying to make each one earn
 its place. A missing capability and a capability that takes six steps are the

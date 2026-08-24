@@ -1,193 +1,188 @@
 # Plan of attack
 
-**Written 2026-08-19 from [`STATE-OF-THE-UNION.md`](STATE-OF-THE-UNION.md),
-against the working tree at `fa8b03b`. Filed to the board 2026-08-20.**
+**Written 2026-08-24 from [`STATE-OF-THE-UNION.md`](STATE-OF-THE-UNION.md),
+against the working tree at `7654041`. Filed to the board 2026-08-24.**
 
 > For the agents doing the work. Snapshot document — replaced wholesale on the
 > next run of [`REVIEW-PROMPT.md`](REVIEW-PROMPT.md), not merged into.
 >
-> **The board is the authority; this page is the dispatch aid.** Every item below
-> exists on the board with its full spec, and the id is the thing to claim. What
-> this page adds is the one thing a board cannot express: which items would
-> collide if run at the same time, and in what order the shared files have to be
-> touched.
+> **The board is the authority; this page is the dispatch aid.** Every item
+> below exists on the board with its full spec; the id is the thing to claim.
+> What this page adds is what a board cannot express: which items collide, and
+> the order shared files must be touched in.
+>
+> | Item | Board id | | Item | Board id |
+> | --- | --- | --- | --- | --- |
+> | REC-1 | `01M0TV3R2T4ZEDR1G7JG5QJ887` | | EMB-2 | `01M0TV643ZWRSR8Q79Z4Q1KVR5` |
+> | REC-2 | `01M0TV447NAJ1R06S455DZPP54` | | CON-1 | `01M0TV6E2K6QF9VXP6C7TFH06X` |
+> | REC-3 | `01M0TV7GFSNNRZV522XCRMTHVX` | | CON-2 | `01M0TV7ZDS8X4F4TEJPRZB9P6T` |
+> | OP-1 | `01M0TV4J05PYE8PG6YTV0HX5HN` | | CON-3 | `01M0TV6WNCZ58N5BBGYWT6J06A` |
+> | OP-2 | `01M0TV4Y1K9ESJQ4PDRCP7R3FA` | | CON-4 | `01M0TV8MSFRHHQ5BNZV3NHZCEW` |
+> | OP-3 | `01M0TV5CYSP844XR8PJ59D8QM4` | | OP-4 | `01M0TNCAP1HH4YNC5K9753YG26` |
+> | EMB-1 | `01M0TV5PN8RR9NN97AWP09E6K7` | | OP-5 | `01M0TNBACHQSAMMJ3TY14S47MX` |
 >
 > Fan-out is chosen at dispatch time. Honour the collision table and the
-> serialization notes rather than the domain count.
+> serialisation notes rather than the domain count.
 
 ---
 
 ## 0. Board state
 
-23 open items, 18 claimable. Five are blocked on purpose — see §7.
+Surveyed live (MCP) during this review: **2 open items, 0 in progress, no
+stale claims**. Both open items are from the 2026-08-24 cycle review, both are
+claimable, and both fold into the operator domain below:
 
-This round also closed three items that had drifted, and recovered two real
-pieces of work from inside them:
-
-| Closed | Why |
+| Open on the board | Folded in as |
 | --- | --- |
-| `01M03GNPSPW37P6FQNZZWVMGB6` | The memory umbrella. Its acceptance was "stays open as the record that memory is wanted but not startable." Memory shipped; both named blockers are gone. |
-| `01M03FPPPJP0P6K2H5ZE7SP85Y` | The subprocess holder. Its acceptance was "closes by being decomposed"; it was, and three of its four pieces shipped. |
-| `01M03VKVR9Y0QF368938SA43SA` | Cancelled — a second marker waiting on the same operator ruling `01KZ844ZXZMVRWC7ZANT7PSM6X` already carries. |
+| `01M0TNCAP1HH4YNC5K9753YG26` — /tree prints a full agent id, /agents a short one, /tree's doc claims they match | OP-4 |
+| `01M0TNBACHQSAMMJ3TY14S47MX` — /ask pull-in is not atomic; failure halfway leaves an orphan | OP-5 |
 
-Recovered from inside them and refiled: `01M0EKTVJE558SB4S6K3YYVXVZ`
-(`permissions.md`) and `01M0EKVR1BEXXS75NV2JC4HZZ9` (`kill_group`).
-
-**No umbrella parents were created for the new work.** Both closures were
-roll-ups that became structurally unclaimable — the board refuses to complete a
-parent with open children — and drifted for weeks while the work underneath them
-shipped. Flat items with explicit `depends_on` express the same ordering without
-that failure mode.
+The six operator questions in `STATE-OF-THE-UNION.md` §7 were **answered
+2026-08-24** — the accepted sentiments are folded into `INTENT.md` (§7, §7a,
+§7b, §7c, §8.10) and `DESIGN-context-path.md` §10 is closed. Every item below
+is claimable the moment it is filed.
 
 ---
 
-## 1. Collision table
+## 1. Domains and the collision table
 
-The files two items would both want. Each has **exactly one owner at a time**.
-Anyone needing a change in one waits for the stated point.
+Four domains, workable in parallel. Each names the files it owns this round;
+nobody else touches them.
 
-| File | Owner | Then |
-| --- | --- | --- |
-| `PHILOSOPHY.md`, `ARCHITECTURE.md` | `01M0EM83C5…` | `01M0EM8NK2…` — different sections, land together if one agent takes both |
-| `README.md`, `GUIDE.md` | `01M0EM83C5…` | `01M0EMAWY0…` appends its links after |
-| `scripts/board-claims.md` | `01M0EM97X1…` | `01M0EMEQJH…` strictly after — same file, and going first would resurrect the entry the other removes |
-| `docs/permissions.md` | `01M0EKTVJE…` | — |
-| `docs/plugins/README.md` | `01M0EMAWY0…` | — |
-| `crates/conway-core/src/ports/**` | `01M0EMAC4C…` | `01M0EMCK55…` after |
-| `crates/conway-core/src/path.rs` | `01M0EMAC4C…` | — |
-| `crates/conway-runtime/src/agent_loop.rs` | `01M0EMAC4C…` | `01M08F5XYFZ…` after |
-| `crates/conway-cli/src/tui/**` | `01M0EM9RW7…` | `01M0EMDVBJ…` after |
-| `crates/conway-cli/src/cli.rs` | `01M0EM9RW7…` | `01M0EMC19F…` only if it builds `conway path` |
-| `crates/conway-cli/src/first_party_plugins.rs` | `01M09V3S2A…` | — |
-| `crates/conway-plugin-memory/**` | `01M09V3S2A…` | `01M0EMD54B…` after |
-| `Cargo.lock`, `deny.toml` | `01M0ASG80Q…` | — |
-
-**`agent_loop.rs` and `ports/` are the highest-traffic merge points in the
-tree.** While `01M0EMAC4C…` is running, nothing else may touch either.
-
----
-
-## 2. Truth in the documents — six items, no Rust
-
-The tree is right and the specification is wrong, in the *understating*
-direction, on two CI gates and six pages. Nothing here needs a decision, and the
-only cost of delay is that every reader in between is misinformed about
-capabilities that work.
-
-| Id | What | Size |
-| --- | --- | --- |
-| `01M0EM97X118CZ43CGEPH2PB8F` | **CI is red.** The design-claims ledger asserts four first-party capabilities are unbuilt; three ship. | S |
-| `01M0EM83C5ZZX75MSE0MTV7NZW` | Five top-level documents say memory/skills/MCP are unbuilt. Includes `GUIDE.md`'s "there is no runtime plugin host", the single worst line. | M |
-| `01M0EM8NK2R36X4TW50D43S58H` | `PHILOSOPHY.md` and `ARCHITECTURE.md` still describe a symlink race `cap-std` closed. Security-bearing, understates a guarantee. | S |
-| `01M0EKTVJE558SB4S6K3YYVXVZ` | `docs/permissions.md` says in-process is the only extension mechanism — on the security page. | S |
-| `01M0EMAWY0B62RC966FQMQPGAC` | `conway.memory`, `conway.skills` and the MCP client ship with no findable page. | M |
-| `01M0EMEQJHPR3XVNAN39YX7C38` | The bare-inference claim `INTENT.md` §7 nominated for the ledger was never added. | S |
-
-**Land the ledger fix and the five-documents fix in one change.** The ledger is
-what turned this from an unknown into a finding; splitting them recreates the
-divergence it exists to prevent.
-
----
-
-## 3. The curation premise — one item that gates three
-
-`01M0EMAC4CCDQ8QJYM21RXPKRY` — **prove the seam with the smallest real curator.**
-
-About 5,500 lines of path and curation machinery exist and nothing uses any of
-it. Six independent accommodations around one premise, and the premise's one
-test — `conway.memory` — failed and moved off it. Do not start
-`conway.compaction`. Do not build `conway path`. Write the cheapest honest
-curator (*"drop tool results older than K turns"*, well under a hundred lines),
-run it through the real seam on a real session, and report what the seam could
-not do.
-
-Blocked behind it, deliberately:
-
-- `01M0EMC19FV3FJFJVR5697AV44` — settle `Selector::Operator`: build `conway path` or correct the tense.
-- `01M0EMCK55628YJXGBQY8YGXHE` — `PathStore` is the one port an embedder cannot supply.
-- `01M08F5XYFZ0JY42HW789AHX9J` — wire `resolve_default_path`. **This dependency was added this round**; the item was previously claimable. If the seam turns out not to carry a consumer, wiring the resolver is not automatically right.
-
-Related and independent: `01M090HJEJBK24SX70Z9E25PZ4` (test
-`compose_context_hooks`, the untested precedent `compose_curators` mirrors).
-
-**Get C's answer to the operator before dispatching the three behind it.**
-
----
-
-## 4. The operator surface
-
-The domain [`INTENT.md`](INTENT.md) §7a says outranks architectural tidiness,
-and the one that has had the least attention.
-
-| Id | What | Size |
-| --- | --- | --- |
-| `01M0EM9RW7AYZAYXE5Z2XPNFND` | **`/model` and `/role`.** No way to change model mid-session, against §5c's "a design that makes model changes awkward has failed regardless of what else it gets right." Folds in the role/model argument on `/fork` and `/spawn`. | L |
-| `01M0EMD54BWAVZGYWPXP4S5P1J` | **`/memory`.** Three tools a model can call, nothing an operator can type. Waits on the durable store. | M |
-| `01M0EMDVBJVT510GBJHPWBZ3G6` | The in-flight `[p]` pattern editor: uncommitted, compiles, no item, no acceptance. Write its spec from the code, then finish or revert. | S |
-
----
-
-## 5. Memory
-
-`01M09V3S2AQYB2VK6MANFRH1JM` — wire the durable `FsMemoryStore`. Memory is real,
-tested end to end, and forgets everything on restart because the CLI installs
-`InMemoryMemoryStore`. The obstacle is real and stated in the code: `bundle()` is
-sync, `FsMemoryStore::open` is async, and it has two callers that must not end up
-with two unsynchronised stores over one directory.
-
-**Say the limitation first if any of it survives.** This is the failure mode
-[`REVIEW-PROMPT.md`](REVIEW-PROMPT.md) §2 lists fourth.
-
-Unblocks `01M0EMD54B…` (`/memory`) and feeds `01M0EMAWY0…` (the memory page's
-durability section).
-
----
-
-## 6. Gates and hygiene
-
-All independent, all claimable, all cheap relative to what they cost everyone
-else.
-
-| Id | What |
+| Domain | Owns this round |
 | --- | --- |
-| `01M0ASG80Q2ZWR8201F580M7RR` | `cargo deny` red on RUSTSEC-2026-0258. Verified red this review. |
-| `01M0APF2CFH3CCH9PJKX2HKTA5` | Long background workspace test runs get killed mid-flight. **Worth real diagnosis** — it taxes every other item's gate. |
-| `01M09MPZ9C188AHNBKWEJ3CEQA` | Two timeout-budget tests fail only under full-suite parallelism. Do not widen a budget until it passes. |
-| `01M0EKVR1BEXXS75NV2JC4HZZ9` | `kill_group` duplicated five times because `conway-tools::process` is private. A gap in the extension surface, not tidiness. |
-| `01M0ASX466G3PW3SJJS3KGNS55` | Surface `Backend::token_fidelity` where an operator can see it. |
+| **D-REC** — the record | `ARCHITECTURE.md`, `PHILOSOPHY.md` §6, `docs/README.md`, `docs/plugins/README.md`, `docs/vision/DESIGN-context-path.md`, doc comments in `crates/conway-core/src/{path,log}.rs` and `crates/conway-runtime/src/runtime.rs`, the enum-guard test |
+| **D-OP** — operator surface | `crates/conway-cli/**`, `docs/scripting.md`, `docs/sessions.md`, `docs/interactive.md` |
+| **D-EMB** — embedding | `crates/conway/src/{builder,host_caps}.rs`, `crates/conway-core/src/ports/subagent.rs`, a new survey doc under `docs/vision/` |
+| **D-CON** — consolidation | `crates/conway-plugin-mcp/**`, `crates/conway-plugin-subprocess/**`, `crates/conway-tools/src/process.rs`, `crates/conway/src/error.rs`, `crates/conway-testkit/**` |
+
+Shared files, their single owner, and the serialisation order:
+
+| Shared file | Owner | Order notes |
+| --- | --- | --- |
+| `PHILOSOPHY.md` | D-REC | only REC-3 touches it this round |
+| `ARCHITECTURE.md` | D-REC | only REC-3 |
+| `Cargo.toml` (workspace + crate manifests) | D-CON | REC-2 adds one conway-cli dependency **first** (small, mechanical); CON-2 lands after it if a shared crate is blessed |
+| `crates/conway-core/src/ports/*` | D-EMB | nothing else touches ports this round; D-REC's core edits are doc comments in `path.rs`/`log.rs`, outside `ports/` |
+| `crates/conway-runtime/src/agent_loop.rs` | — | **untouched this round**; if an item turns out to need it, stop and re-plan |
+| `crates/conway-cli/src/tui/commands.rs` | D-OP | OP-4 before OP-2 — both edit the command surface, OP-4 is already specced on the board |
+| `tests/` workspace-wide | D-CON | CON-4 **last of all items**, after every other domain's code has landed — it rewrites helpers other items' tests may add copies of |
 
 ---
 
-## 7. Waiting on you, not on work
+## 2. D-REC — the record catches up (adherence · evidence)
 
-- `01KZ844ZXZMVRWC7ZANT7PSM6X` — the `context.hook/1` REPLACE primitive, under a standing deferral recorded by id. Its verification anchor was repointed this round from the deleted `.design/extension-architecture.md` to `docs/plugins/hooks.md` §9; the deferral itself is untouched. **Do not claim it.**
-- `01KZHVFCN6ZEAXV7K5JHRQN1YB` — nothing can trust a plugin. Also deferred, and **its priority went up while it sat**: filed when every plugin was compiled in, and today two crates spawn operator-named external programs with no digest trust. The highest-value deferred item on the board.
-- No open questions in [`INTENT.md`](INTENT.md) §11 — the first time since it was written. §8.1 makes an unsettled question a defect in that page, so an empty list means the guidance has caught up, not that nothing will need deciding again.
+**REC-1. Retire the three "no production caller" comments.** *(S, unblocked)*
+Done: `crates/conway-core/src/path.rs:120-123`,
+`crates/conway-core/src/log.rs:363-367`,
+`crates/conway-runtime/src/runtime.rs:168-172` name
+`conway.path`/`compose_context_path` as the producer (matching
+`docs/plugins/hooks.md:778`); `Selector` added to the enum guard's
+`WATCHED_ENUMS`. (`DESIGN-context-path.md` §10 was closed with the operator's
+2026-08-24 ruling — already done, not part of this item.)
+
+**REC-2. `conway.trim` becomes reachable or declared unreachable.** *(S–M, owned by D-OP's crate but sequenced here, unblocked)*
+Done: either conway-cli depends on `conway-plugin-trim` and `"conway.trim"`
+resolves in `[plugins].install`, or every enumeration that should list it says
+"built, embedder-only" explicitly. The decision drives REC-3's wording, so this
+lands first. Touches `crates/conway-cli/Cargo.toml` +
+`first_party_plugins.rs`.
+
+**REC-3. The enumerations tell the whole plugin tier.** *(S, depends: REC-2)*
+Done: `ARCHITECTURE.md` §2b lists all twelve plugin crates;
+`docs/plugins/README.md` and `PHILOSOPHY.md` §6 account for `trim` per REC-2's
+outcome; `docs/README.md` gains its `docs/dogfooding.md` row.
 
 ---
 
-## 8. Dogfooding
+## 3. D-OP — the operator surface (operator lens + existing board items)
 
-`01M0EMBF2ZFJA5Z3NE21FYN8RF` — zero `[dogfooding]` items across 358. The intake
-mechanism was built and has never fired.
+**OP-1. The resume handle is named where the JSON example lives.** *(S, unblocked)*
+Done: `docs/scripting.md`'s JSON-output section states in prose that
+`transcript_ref` — not `agent_id` — is what `--resume` accepts, and
+`docs/sessions.md`'s resume walkthrough shows where the id comes from.
+(Alias/rename of the field is a separate call; the doc sentence is the fix a
+scripting user needs today.)
 
-**Run this concurrently with everything above, not after.** It is calendar time
-rather than agent time, and it is the only item on this page that can produce a
-finding no review would have.
+**OP-2. The operator can cancel one subagent.** *(M, unblocked; Q3 decides whether it becomes a standing rule)*
+Done: a `/cancel <agent>` command (mirroring `/steer <agent>`) cancels a
+specific non-focused subagent without ending the session, visible in the
+palette, covered by a TUI-level test. `/await` parity rides along if cheap.
+Serialise **after OP-4** (same file).
+
+**OP-3. Sessions an operator returns to can be told apart.** *(S–M, unblocked — Q4 answered: names are in)*
+Done: a session can carry an operator-chosen name (`--session` accepts it,
+`sessions list` shows it); the id stays the identity, the name is furniture,
+per INTENT §7b's ruling.
+
+**OP-4. Board `01M0TNCAP1HH4YNC5K9753YG26`** — /tree vs /agents id mismatch.
+*(claimable now; spec on the board)*
+
+**OP-5. Board `01M0TNBACHQSAMMJ3TY14S47MX`** — /ask pull-in atomicity.
+*(claimable now; spec on the board)*
 
 ---
 
-## 9. Dispatch
+## 4. D-EMB — the third surface (surfaces lens)
 
-**Minimum useful round:** the six document items in §2. Two red gates behind
-them, no decisions required, no Rust.
+**EMB-1. The §7c binding survey.** *(S, unblocked; Q5 asks only whether to prioritise it)*
+Done: a written comparison of Diplomat, UniFFI, and cbindgen against conway's
+async, streaming public API — who drives the runtime, how an event stream
+crosses, crash and memory ownership — ending in a recommendation and a rough
+shape. No code. This is the deliverable INTENT §7c itself blesses as the
+acceptable first step.
 
-**Three agents, nothing shared:** §2's ledger+documents pair, §6's gates, §8's
-dogfooding.
+**EMB-2. The subagent host's non-swappability cites its ruling.** *(S — Q1 answered: core-owned)*
+INTENT §7 now states fork/spawn are mechanism with exactly one implementation.
+Done: `crates/conway/src/host_caps.rs:68-73` and
+`crates/conway-core/src/ports/subagent.rs`'s header cite that decision instead
+of describing the missing injection point as an unexplained absence.
 
-**Wider:** add §4's `/model` and §5's memory wiring. Independent of §2 and of
-each other, colliding only at the two points named in §1.
+---
 
-**§3 is serialized behind its own first item**, and its answer should reach the
-operator before the three items behind it are dispatched. While it runs, nothing
-else may touch `ports/` or `agent_loop.rs`.
+## 5. D-CON — cost of change (sustainability ×2)
+
+**CON-1. One authority for the subprocess timeout default.** *(S, unblocked)*
+Done: a single `DEFAULT_TIMEOUT_MS` both plugin crates reference (the
+`kill_group` facade-re-export precedent, `crates/conway-tools/src/process.rs`,
+already shows an acceptable route); the "must match" comment in
+`conway-plugin-mcp/src/lib.rs:72-77` deleted because nothing is left to match.
+
+**CON-2. The subprocess twins share their lifecycle layer.** *(M, unblocked — Q6 answered)*
+Done: process-lifecycle + fail-closed error taxonomy (spawn / timeout /
+session-died / malformed-frame) defined once and consumed by both
+`conway-plugin-mcp` and `conway-plugin-subprocess`; the wire protocols stay
+separate on purpose. Shape per INTENT §8.10's ruling: facade re-export
+preferred; a new shared crate only if the facade would have to learn something
+it has no reason to know. Depends: CON-1 (it subsumes the constant's home).
+
+**CON-3. One of the two `ConwayError`s is renamed.** *(S, unblocked)*
+Done: `crates/conway/src/error.rs`'s enum takes a distinct name (the newer,
+narrower of the pair), the `CoreConwayError` alias machinery in
+`crates/conway/src/lib.rs:98-114` shrinks or disappears, no behaviour change.
+Mechanical, wide, low-risk — run the full workspace suite after.
+
+**CON-4. A facade-level test-support tier.** *(M, unblocked; lands LAST)*
+Done: `build_conway`/`text_response` exist once in a test-support module only
+workspace crates see (testkit itself stays core-only for third parties);
+`fake_router` copies deleted in favour of testkit's existing
+`FakeRouter::single`; the 46/52/36 hand-rolled copies gone. Touches test files
+across every crate — serialise after all other items so it does not invalidate
+in-flight work.
+
+---
+
+## 6. Dispatch
+
+**All fourteen items are dispatchable** (Q1–Q6 answered 2026-08-24). Order:
+OP-4, OP-5 (already on the board) and the small unblocked set — REC-1, REC-2 →
+REC-3, OP-1, OP-2 (after OP-4), OP-3, EMB-1, EMB-2, CON-1, CON-3 — then CON-2,
+with CON-4 last. Suggested fan-out 3: one worker each for D-REC, D-OP, D-CON;
+EMB-1 and EMB-2 are small enough to ride with any worker or a researcher.
+
+**Coverage debt for the next review** (from §6 of the state of the union): the
+TUI has still never been driven under a real pty; the security-bearing pages
+(`docs/permissions.md`, `docs/tools.md`) are unverified this round; the full
+workspace suite was last run at `da9813c`. The next run should spend an
+operator-lens budget on a real terminal, and an adherence budget on the
+permissions pages.
