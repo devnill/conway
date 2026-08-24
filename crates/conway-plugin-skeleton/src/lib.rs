@@ -43,8 +43,8 @@ use std::sync::Arc;
 
 use conway::plugin::{
     async_trait, Command, CommandCtx, CommandOutcome, CommandSpec, ContentBlock, EventDecl,
-    PathArgs, PermissionClass, Plugin, PluginManifest, RenderKind, Tool, ToolCall, ToolCategory,
-    ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
+    PathArgs, PermissionClass, Plugin, PluginDescription, PluginManifest, RenderKind, Tool,
+    ToolCall, ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
 
 /// This plugin's manifest id: the string an operator names in
@@ -196,6 +196,20 @@ impl Plugin for SkeletonPlugin {
         }
     }
 
+    /// Honest about what this crate is: a worked example of the install
+    /// mechanism, not a real capability -- see this crate's own module doc.
+    fn description(&self) -> PluginDescription {
+        PluginDescription {
+            summary: "a worked example proving the plugin install mechanism".to_string(),
+            you_get: format!(
+                "1 tool ({TOOL_NAME}) and 1 command that echo an argument back -- proof the \
+                 install mechanism works, no real capability"
+            ),
+            you_lose: "nothing -- it does no real work".to_string(),
+            costs: "none".to_string(),
+        }
+    }
+
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![Arc::new(SkeletonPingTool)]
     }
@@ -212,6 +226,22 @@ impl Plugin for SkeletonPlugin {
                 .to_string(),
             carries_tool_name: false,
         }]
+    }
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+
+    /// The plugin browser's own read surface (board item
+    /// `01M0KARX71A64NTSYTDBVANVPF`): a real description, never the
+    /// trait's empty default.
+    #[test]
+    fn description_is_non_empty() {
+        let description = SkeletonPlugin.description();
+        assert!(!description.summary.is_empty());
+        assert!(!description.you_get.is_empty());
+        assert!(!description.you_lose.is_empty());
     }
 }
 

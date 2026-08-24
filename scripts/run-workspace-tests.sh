@@ -32,6 +32,40 @@
 #     releases it) -- so per-worktree target dirs, the status quo, stay
 #     recommended. Nothing to compose here.
 #
+# A RUN OF THIS SCRIPT CAN GET "KILLED" MID-FLIGHT -- AND IT IS NOT THIS
+# SCRIPT, CARGO, THE OS, OR DISK SPACE. Board item 01M0APF2CFH3CCH9PJKX2HKTA5
+# investigated three such kills from 2026-08-18 (session f2c20b45) and found,
+# on 2026-08-21, the actual mechanism: `log show` for the whole machine has
+# zero JETSAM/OOM records anywhere near any observed kill (there is exactly
+# one JetsamEvent report on this machine, ever, on 2026-08-16, naming an
+# unrelated process) -- so nothing here is a memory-pressure kill. What DOES
+# reproduce: an AI agent's own tool harness caps a single foregrounded shell
+# command at a hard ceiling (observed: a default around 2 minutes, and a max
+# around 10, though both have shifted across harness versions) and past that
+# ceiling it either moves the command to a background job or terminates it
+# outright (`Exit code 143`, "Command timed out after Nm 0s") -- the historical
+# session shows BOTH outcomes from what looks like the identical situation,
+# so which one happens is not something this script or a cargo flag controls.
+# Crucially, even "moved to background" is not durable: that job is a child of
+# the agent's own session, and a full `--workspace --all-features` run on this
+# 13-crate workspace routinely takes past an hour wall-clock (confirmed live:
+# a single `cargo test -p conway` ran 49+ minutes with zero failures and had
+# not finished). If the agent that started the background job ends its own
+# task before the job completes, the session teardown reaps the job with it --
+# no crash report, tree left intact, exactly the "killed, not corrupted"
+# signature from the original reports. "Killed" and "ran out of agent turn
+# without finishing" are the same event observed at two different moments,
+# not two different bugs.
+#
+# THE PRACTICE THAT ACTUALLY WORKS: whoever runs this script as an agent must
+# either (a) chain enough foregrounded calls, staying in the same task, to
+# reach a real CARGO_EXIT line -- cargo's own build cache makes each
+# subsequent call resume from where compilation left off, or (b) start it
+# with an explicit background invocation and then keep polling for it to
+# finish BEFORE reporting the calling task done. Do not let a task end, or
+# claim a gate result, while this script is still running unattended in the
+# background -- that abandonment is the kill.
+#
 # Usage:  scripts/run-workspace-tests.sh
 # Output: prints suite/pass/fail counts and CARGO_EXIT=<n> on the last line.
 # Exit:   the real `cargo test` exit code (0 pass, non-zero fail or crash),

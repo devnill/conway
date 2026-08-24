@@ -49,7 +49,8 @@ Two identities, two jobs, and the law that relates them:
 
 The second implication is already pinned by
 `crates/conway/tests/prefix_key_wire_identity.rs` (D1-2b, landed). The first is what
-this design adds, and it is what makes §5b's "one named selection, ten heads"
+this design adds, and it is what makes `PHILOSOPHY.md` §1's "ten children ... share
+its cached prefix by construction"
 structural rather than a coincidence somebody maintains. Nothing here changes
 `prefix_key`, its inputs, or its value for any existing session.
 
@@ -167,7 +168,7 @@ describes the *record* portion of the context and says nothing about them.
 
 Four reasons, in the order that decided it:
 
-1. **§5c's table says so literally.** *Rendering — depends on: model, system prompt,
+1. **§5c says so literally.** *A rendering ... depends on the model, system prompt,
    tool set.* Revision 1 was written before that table existed and put two of those
    three inside the selection.
 2. **The forcing case generalizes one layer up.** Changing model mid-session is
@@ -260,7 +261,7 @@ reader will get it wrong:
 A cache miss is the second kind. `PHILOSOPHY.md` already holds that caching is never
 correctness-bearing; refusing on a price change would be conway acquiring an opinion
 about which prices are acceptable, which is policy. But a silent miss "looks exactly
-like an expensive workload rather than like a bug" (§5b), so it must be **observable**:
+like an expensive workload rather than like a bug" (`PHILOSOPHY.md` §1), so it must be **observable**:
 `RenderDivergence { expected, actual, first_divergence }`, surfaced on the context
 report and as an event when an expected shared prefix was not achieved. Loud, free,
 never fatal.
@@ -300,8 +301,11 @@ ValidatedPath                          // private fields, two constructors only
 | `default_path`, head resolution | **new** `crates/conway-runtime/src/context/path.rs` |
 | assembly over a path | `crates/conway-runtime/src/context/builder.rs` |
 
-All inside D1's declared ownership in `PLAN.md`. The CLI verbs in §4.5 are a **request
-to D4**, not a change specified into their files.
+All inside D1's declared ownership in `PLAN.md`. §4.5 formerly carried a **request to
+D4** for built-in CLI verbs; that request is **withdrawn** — decision
+`01M0K4QT6MBXPD6PXMBBBD2P7B` (2026-08-21) retired D1-7 and ruled out a built-in
+curation command (§4.5.2, §7, §10). Nothing in this design is specified into D4's
+files.
 
 ---
 
@@ -470,7 +474,10 @@ accelerator, never a source of truth, exactly `SessionIndex`'s discipline.
   modal-ask sweep must treat a pin refusal as *skip and report*, never swallow it.
 - **Pinning is not retroactive.**
 - **Unpinning is garbage collection, never mutation** — collected only by an explicit
-  `conway path gc`. Never automatic, never on a timer.
+  operator-invoked action, never automatic and never on a timer. No such action is
+  implemented yet, and it will not be a built-in `conway` verb: decision
+  `01M0K4QT6MBXPD6PXMBBBD2P7B` (2026-08-21) settled that conway ships no built-in
+  curation command (§10).
 - **`Conway::pull_in` stays unchanged** as the explicit "I want the content and want
   the log gone" escape hatch — the one place copying is sanctioned, because the
   operator asked for it by name.
@@ -479,9 +486,13 @@ accelerator, never a source of truth, exactly `SessionIndex`'s discipline.
 
 1. **`/context` gains origin** — `session/seq · provenance · selected-by · tokens`,
    plus a `RenderDivergence` line when an expected shared prefix was not achieved.
-2. **`conway path` verbs** — a **request to D4**: `show`, `diff` (kept / omitted /
-   **moved, with distance**, plus cost delta), `log`, `show --node`, `gc`. Load-bearing
-   rather than convenience — see §10.
+2. **Not a built-in verb of `conway` itself.** `INTENT.md` §7a rules out a built-in
+   curation command (decision `01M0K4QT6MBXPD6PXMBBBD2P7B`, 2026-08-21; §10). The
+   capability this point used to name as verbs — `show`, `diff` (kept / omitted /
+   **moved, with distance**, plus cost delta), `log`, `show --node`, `gc` — still
+   needs a producer, and does not have one: no tool that inspects or composes a
+   path this way exists anywhere in the tree today. Load-bearing rather than
+   convenience — see §10.
 3. **The persisted per-turn report** already answers this after the fact.
 
 The bar: a curator's decision must be visible without re-running the curator. That is
@@ -554,7 +565,7 @@ moved.
 | D1-4 | **Structural selection predicates** — mechanism only. | M | D1-3d |
 | D1-5 | **Fold in `ContextMask`** (`01KZY8QRAVVVKCRBZ6HAEGW3GG`). | M | D1-3d |
 | D1-6 | **Inspection** — report origin fields + `/context` render. | S | D1-3d |
-| D1-7 | **`conway path` verbs** — request to D4. **Gating, not cosmetic** (§10). | M | D1-3d, D1-6 |
+| D1-7 | **RETIRED.** Was built-in operator verbs on `conway` for path inspection/composition — request to D4. Decision `01M0K4QT6MBXPD6PXMBBBD2P7B` (2026-08-21) settled `INTENT.md` §11's open question against a built-in curation command; see §10. No other row in this table names D1-7 in its Depends-on column, so retiring it unblocks and restructures nothing here — it only removes the gating claim §10 made below, which named D1-7 as the fix for a default build shipping no curator. | — | — |
 | D1-8 | **Curation plugin capability.** Without it no curation plugin can exist and all of D1 is inert. | L | D1-3d |
 | D1-9 | **Retention enforcement.** | M | D1-3b, D1-3c |
 
@@ -619,7 +630,7 @@ principle that settles each so the next reader derives them instead of asking:
 3. ~~Static drift: refuse or re-key?~~ **§5c + §8.3.** Neither — statics leave the
    selection, so there is nothing to drift from. §8.3 keeps its teeth on unresolvable
    references and non-fitting selections; a price change is reported, not refused.
-4. ~~Persist the harness-drop declaration?~~ **§5b's recording rule.** Yes, on the body
+4. ~~Persist the harness-drop declaration?~~ **§5's recording rule.** Yes, on the body
    — and excluded from the key, being derivable.
 5. ~~Ordering rule 3 makes some reorderings illegal.~~ **§5d.** A provider-required
    constraint: legitimate, and stated plainly where a curator hits it.
@@ -634,15 +645,37 @@ principle that settles each so the next reader derives them instead of asking:
 > "no", that must be an explicit rule with an owner, not an accident of what nobody
 > tried.
 
-**One consequence to check before D1-7 is scheduled as polish.** §5c assigns a
-no-longer-fitting selection to a loud refusal from admission, and the operator or a
-plugin curates again. But a default build ships **no curation plugin**. So the honest
-Tuesday experience of switching to a smaller model mid-session is: a loud, correct
-refusal and no installed way to act on it. Holding the line is right; being unusable is
-not (§8.7). The resolution costs nothing extra and is already here — **`conway path`
-verbs make a human a first-class curator with no plugin at all** — which is why D1-7 is
-gating rather than cosmetic, and why the admission refusal should name the shortfall
-*and* point at those verbs.
+**The dead-end this section predicted is real, and it was verified rather than
+assumed.** §5c assigns a no-longer-fitting selection to a loud refusal from admission,
+and the operator or a plugin curates again. But a default build ships **no curation
+plugin** — confirmed: `conway-plugin-trim` is a workspace member via the `crates/*`
+glob but is not a dependency of `conway-cli` and is in no install set — and `/model
+<backend/model>` (`crates/conway-cli/src/tui/commands.rs:251`) ships, so the mid-session
+model change that triggers this is ordinary, not hypothetical. So what an operator
+actually gets on switching to a smaller model mid-session is: a loud, correct refusal
+(`crates/conway-core/src/capabilities.rs:301`) and no installed way to act on it.
+Holding the line is right; being unusable is not (§8.7). **The problem statement holds.
+Its remedy does not.**
+
+> **RETIRED 2026-08-21 — the remedy this paragraph used to name was built-in operator
+> verbs on `conway` (D1-7).** Decision `01M0K4QT6MBXPD6PXMBBBD2P7B`: `INTENT.md` §7a
+> rules out a built-in curation command — a verb that is deliberately not a plugin is
+> exactly the monolith §7a rejects, whatever gap it closes. **D1-7 is retired** (§7's
+> table); no other item in this design depended on it, so nothing else here is
+> unblocked or restructured by its retirement.
+>
+> The remedy the decision settled on: an operator curates by stating intent in natural
+> language, and a model assembles the context for it through **a tool a plugin
+> provides** — a call at a boundary where inference is already available, not a
+> `Curator` (§11.5's `CurateCtx` stays as it is; widening it with a callable model was
+> explicitly rejected, since curation runs per-turn before routing and inference there
+> would be re-entrant). `Selector::Operator` (`crates/conway-core/src/path.rs`) keeps
+> its name and now means *the operator's stated intent put this node here*, regardless
+> of which tool composed it.
+>
+> **What is still genuinely open:** no tool that composes a path exists anywhere in the
+> tree today, so the admission refusal still has nothing installed to point at. That
+> tool is out of scope for the decision that retired D1-7 and is separate work.
 
 **Disclosed limits:**
 
@@ -813,8 +846,50 @@ Same posture, same reason, as `ToolObserver` (`ARCHITECTURE.md` §3.9).
   > `conway path` — is untouched by this amendment. Both are genuinely selection
   > over existing records, which is what the curator seam is for and why it was
   > kept.
-- **A human, through `conway path`** (D1-7) — the same operations, no plugin installed.
-  This is why D1-7 is gating rather than cosmetic (§10).
+  >
+  > **AMENDED AGAIN 2026-08-21 — the bullet below no longer holds.** Operator ruling,
+  > decision `01M0K4QT6MBXPD6PXMBBBD2P7B`: conway ships no built-in `path` command,
+  > D1-7 is retired (§7, §10), and operator-driven composition is not a curator at all.
+  > `CurateCtx` (§11.5) carries `model: Option<ModelId>` as an identifier for sizing,
+  > not a callable backend, and widening it with one was explicitly rejected —
+  > curators run per-turn before routing, so inference there would be re-entrant and
+  > would silently cost tokens against §5b's promise that a curation decision's price
+  > is knowable in advance. The operator composes by stating intent in natural
+  > language; a model assembles the context for it through **a tool a plugin
+  > provides** — an ordinary call at a boundary where inference is already available,
+  > not a `Curator`. No such tool exists in the tree yet; building one is separate
+  > work.
+  >
+  > **The 2026-08-18 block above is preserved verbatim, and its mention of the
+  > retired command is deliberate — do not edit it.** A sweep for that command
+  > name will hit it; that hit is a dated historical record, not a live promise,
+  > and this amendment is what retires it. Rewriting an older amendment's body to
+  > match a later ruling is the failure `bd5f137` reverted — the standing rule
+  > that a document is never quietly softened to match a later state: it
+  > makes the earlier record read as though it had already anticipated the
+  > retirement, erasing the fact that the project changed its mind. Corrections
+  > are appended, never absorbed upward.
+- ~~A human, through the built-in `path` verbs of `conway` (D1-7) — the same
+  operations, no plugin installed.~~ **Retired**; see the amendment above.
+  `Selector::Operator` (`crates/conway-core/src/path.rs`) keeps its name and now means
+  "the operator's stated intent put this node here," produced by whichever tool a
+  plugin exposes for that purpose — not by this list's `Curator` mechanism.
 
-Three consumers, one mechanism. If a fourth wanted something none of these express,
-that is a finding against the port rather than a reason to widen the core.
+**This list began as three consumers and is now one: `conway.compaction`.** Both
+amendments above subtract rather than reclassify — `conway.memory` turned out to be
+INJECTION and shipped as a `ContextHook` over a `MemoryStore` port, not as a
+`Curator`; operator-driven composition is a plugin-provided tool called at a
+boundary, also not a `Curator`. Neither is a curator consumer, so neither may be
+counted as one here.
+
+**That is the finding, and it should not be smoothed over.** The section is titled
+"what becomes a curator" and its argument was that one mechanism serves several
+consumers. Two of the three predicted consumers did not survive contact, and the one
+that remains — `conway.compaction` — **does not exist in the tree**: the nearest
+thing, `conway-plugin-trim`, is a workspace member that `conway-cli` does not depend
+on and no install set names (§10). So the mechanism currently has zero live
+consumers, and its justification rests entirely on a plugin nobody has written.
+Per the operator's standing rule that a design premise is a prediction rather than a
+requirement, a run of accommodations defending a premise is the signal the premise
+failed — and this is the third accommodation. If `conway.compaction` is built and
+also moves off the seam, the port is the thing to question, not the consumer.

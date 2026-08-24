@@ -56,7 +56,7 @@
 //! `conway::backend` was needed to make that decision for it.
 //!
 //! `fixture::write_settings`'s rendered config sets `permissions.mode =
-//! "allowlist"` and `[build_conway]` points `XDG_CONFIG_HOME` at the
+//! "allowlist"` and `[build_conway]` points `CONWAY_CONFIG_DIR` at the
 //! fixture's own temp directory (which has no `conway/settings.json`
 //! inside it) -- so a real `~/.conway/settings.json` on the machine
 //! running this test (verified present on at least one development
@@ -313,9 +313,9 @@ impl BackendFactory for ThirdPartyBackendFactory {
 /// `conway-plugin-backends::OpenAiCompatBackendFactory` installs through in
 /// `crates/conway-plugin-backends/tests/builder_end_to_end.rs`. `dir` is
 /// both the fixture root ([`fixture::write_settings`]'s own return value's
-/// parent) and the `XDG_CONFIG_HOME` isolation point: it has no
+/// parent) and the `CONWAY_CONFIG_DIR` isolation point: it has no
 /// `conway/settings.json` inside it, so `conway::config::load`'s
-/// XDG-scoped lookup can never merge in a real
+/// user config-scoped lookup can never merge in a real
 /// `~/.conway/settings.json` from the machine running this (this module's
 /// own doc comment says why that hazard is real, not hypothetical).
 ///
@@ -327,7 +327,7 @@ impl BackendFactory for ThirdPartyBackendFactory {
 pub fn build_conway(dir: &Path, config_path: &Path) -> conway::Result<conway::Conway> {
     let mut env = std::collections::HashMap::new();
     env.insert(
-        "XDG_CONFIG_HOME".to_string(),
+        "CONWAY_CONFIG_DIR".to_string(),
         dir.to_string_lossy().into_owned(),
     );
     let outcome = conway::config::load(conway::config::LoadOptions {

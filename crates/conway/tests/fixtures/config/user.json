@@ -4,7 +4,7 @@
     "coder": { "chain": ["anthropic/claude-sonnet-4-6"] }
   },
   "backends": {
-    "anthropic": { "kind": "anthropic", "base_url": "https://xdg.example.com" }
+    "anthropic": { "kind": "anthropic", "base_url": "https://config_dir.example.com" }
   },
   "limits": {
     "max_steps": 11

@@ -14,16 +14,20 @@
 //! `main.rs::build_conway` calls both, in either order, against the same
 //! `ConwayBuilder`.
 //!
-//! **Why this is async, unlike `first_party_plugins::install`.** Resolving
-//! `[plugins].install` is a pure, synchronous id lookup against an
-//! in-memory `Vec`; discovering a subprocess plugin's own manifest means
-//! spawning a real process and awaiting its `tool.spec/1` answer
+//! **Why this is async.** Discovering a subprocess plugin's own manifest
+//! means spawning a real process and awaiting its `tool.spec/1` answer
 //! (`conway_plugin_subprocess::SubprocessPlugin::discover`'s own doc: "a
 //! plugin needing setup does it in its own constructor, before
 //! `ConwayBuilder::with_plugin`, where errors surface to the embedder
 //! directly"). This is exactly that constructor call, at exactly that
-//! point -- `main.rs`'s `build_conway` is `async fn` for this reason alone
-//! (see that function's own doc for the disclosed widening this causes).
+//! point -- `main.rs`'s `build_conway` became `async fn` for this reason
+//! (see that function's own doc for the disclosed widening this caused).
+//! `first_party_plugins::install` is ALSO `async fn` today (board item
+//! `01M09V3S2AQYB2VK6MANFRH1JM`, opening the durable memory store), for an
+//! unrelated, later reason -- resolving `[plugins].install` against this
+//! binary's own closed candidate set is still the pure, synchronous id
+//! lookup it always was; only the memory-store step that module added is
+//! what needs `.await`.
 //!
 //! **Trust, disclosed at the one place this binary actually spawns
 //! anything from this config, not only in the schema's own doc.** A
@@ -31,10 +35,12 @@
 //! operator's own privileges, on the identical footing `[hooks].rules[]`
 //! already has (`conway_plugin_subprocess`'s own crate doc has the full
 //! argument). Board item `01KZHVFCN6ZEAXV7K5JHRQN1YB` (a digest-keyed
-//! `plugin` trust subject) is under a STANDING OPERATOR DEFERRAL and is
-//! NOT built here or anywhere in this item -- this module does not gate
-//! spawning on any trust check, exactly as `ProcessHookRunner` does not
-//! gate a hook's command on one either. An operator who would not paste an
+//! `plugin` trust subject) was reopened once both out-of-process
+//! transports shipped and worked to a conclusion: considered and DECLINED,
+//! not deferred -- see `docs/plugins/trust-and-security.md` for the full
+//! reasoning. This module does not gate spawning on any trust check,
+//! exactly as `ProcessHookRunner` does not gate a hook's command on one
+//! either. An operator who would not paste an
 //! unfamiliar command into `[hooks].rules[]` should not paste one into
 //! `[plugins].subprocess[]`.
 

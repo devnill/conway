@@ -18,7 +18,7 @@
 mod common;
 
 use common::mock_backend::{MockBackend, Script};
-use common::{run_conway, write_fixture};
+use common::{open_conway, run_conway, write_fixture};
 
 fn add_plugins_install(fixture: &common::Fixture, ids: &[&str]) {
     let raw = std::fs::read_to_string(&fixture.config_path).expect("read rendered conway.json");
@@ -150,22 +150,7 @@ async fn built_in_subcommands_are_unaffected() {
     );
 }
 
-async fn open_conway(fixture: &common::Fixture) -> conway::Conway {
-    use std::sync::Arc;
-
-    use conway::config::CliOverrides;
-    use conway::gates::AllowListGate;
-    use conway::{ConwayBuilder, PermissionGate};
-
-    let gate: Arc<dyn PermissionGate> = Arc::new(AllowListGate::new(Vec::new(), Vec::new()));
-    ConwayBuilder::from_config_only(&fixture.config_path)
-        .expect("load fixture config")
-        .with_cli_overrides(CliOverrides {
-            cwd: Some(fixture.dir.path().to_path_buf()),
-            ..Default::default()
-        })
-        .with_permission_gate(gate)
-        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
-        .build()
-        .expect("build conway against the fixture's own store")
-}
+// `open_conway` moved to `common` (board item `01M0QK9GRM8HSNWRAR414TCX42`)
+// -- see that function's own doc for why a local `CliOverrides::cwd`
+// override alone stopped being enough once `[session].root`'s
+// central-default resolution moved into `config::load` itself.

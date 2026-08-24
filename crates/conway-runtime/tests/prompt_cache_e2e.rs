@@ -115,15 +115,19 @@ fn build_runtime(turns: usize) -> (Arc<Runtime>, Arc<ScriptedBackend>) {
 
     let runtime = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     });
     (runtime, backend)
 }
@@ -349,17 +353,20 @@ async fn gp06_stripping_cache_hint_makes_a_cached_and_uncached_route_identical()
     );
     let uncached_runtime = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
-    });
 
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+    });
     start_and_finish_root(&cached_runtime, "investigate the bug").await;
     start_and_finish_root(&uncached_runtime, "investigate the bug").await;
 

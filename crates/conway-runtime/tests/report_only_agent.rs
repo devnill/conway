@@ -262,8 +262,18 @@ fn build_loop(
         Arc::new(FakeSubagentHost::new(agent));
     let tree = Arc::new(AgentTree::new(bus.clone()));
 
+    let path_store: Arc<dyn conway_core::ports::PathStore> =
+        std::sync::Arc::new(conway_testkit::FakePathStore::new());
+    let resolver = Arc::new(conway_core::transcript::TranscriptResolver::new(64));
     let deps = Arc::new(LoopDeps {
-        store,
+        store: store.clone(),
+        path_store: path_store.clone(),
+        context_path_host: Arc::new(conway_runtime::context::RuntimeContextPathHost::new(
+            store.clone(),
+            path_store.clone(),
+            resolver.clone(),
+        )),
+        session_discovery_host: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         router: route(),
         attempt,
         registry: plugin_registry,
@@ -275,7 +285,7 @@ fn build_loop(
         headroom: Arc::new(HeadroomPolicy::default()),
         tree: tree.clone(),
         context_hook: std::sync::RwLock::new(None),
-        resolver: Arc::new(conway_core::transcript::TranscriptResolver::new(64)),
+        resolver,
         context_curator: std::sync::RwLock::new(None),
         observers: Vec::new(),
         plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
@@ -289,6 +299,7 @@ fn build_loop(
                    exactly once with a structured proposal."
                 .to_string(),
         }),
+        instructions: vec![],
         skills: vec![],
         tools: selector,
         role: RoleAlias::new("proposer"),
@@ -689,15 +700,19 @@ fn runtime_with_plugins(
     backends.insert(backend.id(), backend);
     let runtime = Runtime::new(RuntimeDeps {
         store: store.clone(),
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router: route(),
         health: Arc::new(conway_testkit::FakeHealth::new()),
         backends,
         plugins,
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs,
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     });
     (runtime, store)
 }

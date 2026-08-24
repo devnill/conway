@@ -17,7 +17,9 @@ use std::time::Duration;
 
 use conway::plugin::{Plugin as _, ToolCall, ToolCtx};
 use conway::AgentId;
-use conway_plugin_subprocess::{SubprocessPlugin, SubprocessPluginError, SubprocessTransport};
+use conway_plugin_subprocess::{
+    SubprocessPlugin, SubprocessPluginError, SubprocessPluginSpec, SubprocessTransport,
+};
 use conway_testkit::{CollectingEventSink, FakeSubagentHost};
 
 fn ctx() -> ToolCtx {
@@ -66,11 +68,12 @@ fn text_of(output: &conway::plugin::ToolOutput) -> String {
 #[tokio::test]
 async fn a_matching_handshake_opens_the_session_and_serves_tool_calls() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "handshake_ok.py",
         common::PERSISTENT_HANDSHAKE_OK_PLUGIN,
-    );
+    )
+    .await;
     assert_eq!(
         spec.transport,
         SubprocessTransport::Persistent,
@@ -116,11 +119,12 @@ async fn a_matching_handshake_opens_the_session_and_serves_tool_calls() {
 #[tokio::test]
 async fn a_major_mismatch_refuses_to_load_naming_both_majors() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "handshake_major.py",
         common::PERSISTENT_HANDSHAKE_MAJOR_MISMATCH_PLUGIN,
-    );
+    )
+    .await;
 
     let err = SubprocessPlugin::discover(spec)
         .await
@@ -155,11 +159,12 @@ async fn a_major_mismatch_refuses_to_load_naming_both_majors() {
 #[tokio::test]
 async fn an_unsatisfied_minor_min_refuses_to_load_naming_the_required_minor() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "handshake_minor.py",
         common::PERSISTENT_HANDSHAKE_MINOR_MIN_TOO_HIGH_PLUGIN,
-    );
+    )
+    .await;
 
     let err = SubprocessPlugin::discover(spec)
         .await
@@ -199,11 +204,12 @@ async fn an_unsatisfied_minor_min_refuses_to_load_naming_the_required_minor() {
 #[tokio::test]
 async fn an_initialize_answer_with_an_unknown_field_is_accepted_not_rejected() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "handshake_ok.py",
         common::PERSISTENT_HANDSHAKE_OK_PLUGIN,
-    );
+    )
+    .await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -234,29 +240,44 @@ async fn an_initialize_answer_with_an_unknown_field_is_accepted_not_rejected() {
 #[tokio::test]
 async fn a_plugin_that_closes_without_answering_initialize_fails_closed() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut spec = common::persistent_spec_for(
+    let path = common::write_script(
         dir.path(),
         "handshake_no_answer.py",
         common::PERSISTENT_HANDSHAKE_NO_ANSWER_PLUGIN,
     );
-    // Use the same 5000ms budget every other persistent test relies on for a
-    // fresh python3 interpreter's startup. A tighter budget (1000ms) risks a
-    // wrong-reason failure under heavy parallel load: `discover` does a
-    // one-shot manifest spawn (which needs startup time) BEFORE the persistent
-    // spawn + initialize, and under load that one-shot spawn can exceed a
-    // 1000ms budget and fail with `TimedOut` from discovery -- not the
-    // `SessionDied` from the handshake this test means to pin. The
-    // close-without-answer path itself resolves near-instantly (the reader's
-    // EOF is detected right after initialize is sent), so the 5000ms budget
-    // stays generous; the elapsed bound below is loosened to match.
-    spec.timeout_ms = 5000;
+    // Warm the fixture BEFORE building the timed spec: this test's own
+    // budget was raised from 1000ms to 5000ms to survive a flake that was
+    // never the handshake itself but a freshly-written, freshly-chmod'd
+    // script's first exec costing seconds at ~0% CPU (board item
+    // `01M09MPZ9C188AHNBKWEJ3CEQA`; see `common::warm`'s doc for the full
+    // measurement). `discover` execs this SAME file twice in a row for a
+    // persistent-transport plugin -- once for the one-shot `tool.spec/1`
+    // manifest call, once to spawn the persistent session -- so paying the
+    // tax here, once, discarded, covers both.
+    common::warm(&path).await;
+    let mut spec = SubprocessPluginSpec::new("test-fixture", vec![path.display().to_string()]);
+    spec.transport = SubprocessTransport::Persistent;
+    // Brought back DOWN from 5000ms now that `warm` above has already paid
+    // the first-exec tax that made 5000ms necessary: a warm `python3`
+    // interpreter's own cold start measures in the tens of milliseconds on
+    // this machine (see `common::warm`'s doc), and `discover`'s two
+    // sequential warm spawns (one-shot manifest, then the persistent
+    // session) plus the near-instant close-without-answer path this test
+    // exercises comfortably clear 1500ms -- the same per-spawn budget
+    // `tests/mechanism.rs`'s own post-`warm` fix (`invoke_fails_closed_on_
+    // timeout`) settled on for an identical "one warm interpreter startup
+    // under parallel test load" bound. 5000ms with the tax gone would be a
+    // materially weaker assertion (it would tolerate a near-5-second
+    // regression in this path before ever failing); do not raise this back
+    // up without first checking `warm` is still being called.
+    spec.timeout_ms = 1500;
 
     let start = std::time::Instant::now();
     let err = SubprocessPlugin::discover(spec)
         .await
         .expect_err("a plugin that closes without answering must fail closed");
     assert!(
-        start.elapsed() < Duration::from_secs(6),
+        start.elapsed() < Duration::from_secs(2),
         "the failure must surface within timeout_ms, not hang: took {:?}",
         start.elapsed()
     );
@@ -292,11 +313,12 @@ async fn a_plugin_that_closes_without_answering_initialize_fails_closed() {
 #[tokio::test]
 async fn host_version_is_informational_only_and_not_branched_on() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "handshake_reflect.py",
         common::PERSISTENT_HANDSHAKE_REFLECTS_HOST_VERSION_PLUGIN,
-    );
+    )
+    .await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await

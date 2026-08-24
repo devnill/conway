@@ -15,7 +15,7 @@ given request, see [`routing.md`](routing.md).
 Every provider is a `backends.<id>` entry in `.conway/settings.json`,
 discovered project-first then global — the nearest `.conway/settings.json`
 walking up from your current directory, then `~/.conway/settings.json` (or
-`$XDG_CONFIG_HOME/conway/settings.json`), then conway's built-in defaults.
+`$CONWAY_CONFIG_DIR/settings.json`), then conway's built-in defaults.
 `<id>` is a name you choose, not a fixed provider identifier, so an
 Anthropic-compatible third-party endpoint can be named for what it
 actually is (`kimi`, `internal-proxy`) and sit alongside a real
@@ -386,7 +386,7 @@ global.
 1. `.conway/profiles.toml` next to the `.conway/settings.json` conway
    discovered (or `<cwd>/.conway/profiles.toml` if no project config
    exists yet).
-2. `~/.conway/profiles.toml` (or `$XDG_CONFIG_HOME/conway/profiles.toml`).
+2. `~/.conway/profiles.toml` (or `$CONWAY_CONFIG_DIR/profiles.toml`).
 3. The six built-ins compiled into conway (`openai`, `ollama`,
    `vllm_hermes`, `lm_studio`, `llama_cpp_server`, `kimi`).
 
@@ -931,7 +931,7 @@ channel every embedding path in this doc uses:
 pub fn build_conway(dir: &Path, config_path: &Path) -> conway::Result<conway::Conway> {
     let mut env = std::collections::HashMap::new();
     env.insert(
-        "XDG_CONFIG_HOME".to_string(),
+        "CONWAY_CONFIG_DIR".to_string(),
         dir.to_string_lossy().into_owned());
     let outcome = conway::config::load(conway::config::LoadOptions {
         cwd: dir.to_path_buf(),

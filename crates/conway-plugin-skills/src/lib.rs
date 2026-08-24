@@ -76,8 +76,8 @@ use std::sync::Arc;
 
 use conway::plugin::{
     async_trait, ContentBlock, ContextHook, ContextHookCtx, ContextPayload, PathArgs,
-    PermissionClass, Plugin, PluginManifest, Provenance, RenderKind, Tool, ToolCall, ToolCategory,
-    ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
+    PermissionClass, Plugin, PluginDescription, PluginManifest, Provenance, RenderKind, Tool,
+    ToolCall, ToolCategory, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
 use conway::skills::load_skill_defs;
 use conway::SkillDef;
@@ -283,6 +283,20 @@ impl Plugin for SkillsPlugin {
         }
     }
 
+    fn description(&self) -> PluginDescription {
+        PluginDescription {
+            summary: "reusable instructions you write, loaded on demand".to_string(),
+            you_get: format!(
+                "1 tool ({TOOL_NAME}) and a narrowed skill index in context -- full skill \
+                 bodies from .conway/skills load on demand instead of every turn"
+            ),
+            you_lose: "skills stay fully expanded in context on every turn instead (uses more \
+                       of the context window as skills accumulate)"
+                .to_string(),
+            costs: format!("none beyond the {TOOL_NAME} calls the model makes"),
+        }
+    }
+
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![Arc::new(ReadSkillTool {
             skills: self.skills.clone(),
@@ -435,6 +449,18 @@ mod tests {
     fn manifest_id_matches_the_published_constant() {
         let plugin = SkillsPlugin::new(map_of(&[]));
         assert_eq!(plugin.manifest().id, PLUGIN_ID);
+    }
+
+    /// The plugin browser's own read surface (board item
+    /// `01M0KARX71A64NTSYTDBVANVPF`): a real description, never the
+    /// trait's empty default.
+    #[test]
+    fn description_is_non_empty() {
+        let plugin = SkillsPlugin::new(map_of(&[]));
+        let description = plugin.description();
+        assert!(!description.summary.is_empty());
+        assert!(!description.you_get.is_empty());
+        assert!(!description.you_lose.is_empty());
     }
 
     /// Installing via `with_plugin` announces `read_skill` AND contributes

@@ -671,6 +671,239 @@ every caller need new error handling?), and answering those by the shape of
 trap this document's own point 14 and `PluginManifest`'s retired `on_init`
 warn against.
 
+### 17. Instruction fragment declaration — `Plugin::instructions()`
+
+| Field | Value |
+|---|---|
+| Kind | Declarative (`Plugin::instructions()`, consulted at `ConwayBuilder::build` for duplicate-name validation and at `ConwayBuilder::build` for plugin attribution; the reachability check itself runs per-turn, in `ContextBuilder::build` — see "Where the reachability check runs" below) |
+| Receives | Consulted with nothing live; returns zero or more [`InstructionFragment`] (`name`, `text`, `tool_ids: Vec<ToolName>`) |
+| May return | Any number of fragments, including none (the trait's own zero-cost default). No shape constraint on `text` beyond being a `String` — this point ships no markdown-file loader; that is a plugin-author convention (see below), not a mechanism this point enforces |
+| On error | Not applicable — `instructions()` cannot fail; it is a pure, synchronous, in-process call, like `Plugin::tools()`/`Plugin::commands()` |
+| On timeout | None — synchronous, in-process, no I/O boundary |
+| On garbage | A `name` colliding with another installed plugin's fragment name (or another fragment of the SAME plugin's own) is a **named, build-time error** at `ConwayBuilder::build`, mirroring point 16's identical registration-time refusal for a colliding event name. A `tool_ids` entry naming a tool no installed plugin provides is NOT a build-time error (see below) |
+| When absent | No `Plugin::instructions()` override means no declared fragments — every existing `Plugin` implementor, built-in or third-party, keeps compiling and behaving identically; a build with no instruction-declaring plugin injects no new segment |
+| Ordering | Fragments render in `with_plugin`/`install_selected` install order, AFTER `[0] SystemPrompt` (the base idiom an `AgentDef` carries) and BEFORE an operator's own directory-authored skills (`AgentDef.skills`) — the seam (`ContextBuilder::build`) owns this precedence; no call site invents its own order |
+| Reaches | **Root agents only.** A forked or spawned child receives NO instruction fragments (`SubagentHost::start` passes `instructions: Vec::new()` unconditionally), even when that child holds a tool whose plugin declares one. This mirrors the pre-existing, separately-tracked limitation `AgentDef.skills` already has for child agents; it was not introduced by this point and is not fixed by it. **If you author a fragment, assume a subagent will not see it** — a child that mishandles a tool its parent uses correctly is the symptom. Disclosed at all three sites that create the gap (`subagent.rs`, `runtime/root.rs`, `agent_loop.rs`'s `AgentSpec::instructions`) |
+| Status | **Implemented.** `conway_core::ports::plugin::{InstructionFragment, Plugin::instructions}` (`crates/conway-core/src/ports/plugin.rs`); collection + duplicate-name check in `ConwayBuilder::build` (`crates/conway/src/builder.rs`); injection + per-turn reachability check in `ContextBuilder::build` (`crates/conway-runtime/src/context/builder.rs`); `/context`'s preamble section (`crates/conway-cli/src/tui/commands.rs`). Board item `01M0K5MD59YZRSHE31JKZKFRMY`. |
+
+**Why this point exists at all, stated once here rather than only in the
+struct's own doc.** Before this point, a plugin could already put a
+paragraph into a context by mutating the assembled request from inside
+point 3 (`ContextHook::before_request`) — `conway.skills`'s own
+`SkillIndexHook` does exactly this, to NARROW a segment, not author one.
+That is expressible but not legible: the text lives in Rust, not a file;
+there is no way to ask what instruction conway is running with short of
+reading every hook; nothing states which paragraph outranks which when
+several disagree; and nothing connects a paragraph to the tool calls it
+assumes. This point makes the declaration DATA a host can inspect, order,
+and check — not a second injection path alongside point 3.
+
+**Where the reachability check runs, and why it is split across two
+places.** The obligation ("an instruction may only name a capability that
+is actually reachable", decision `01M0K4S2S1NBW63KNF1NEY5XT3`) has TWO
+distinct failure classes, checked at two different times:
+
+- **Duplicate fragment names** are a build-time, configuration-INDEPENDENT
+  fact (the same set of names is either unique or is not, regardless of
+  which tools an operator happens to have installed) — checked once, at
+  `ConwayBuilder::build`, the same tier as point 16's duplicate-event-name
+  check.
+- **An unreachable `tool_ids` entry** is configuration-DEPENDENT: a
+  fragment can name a tool that exists somewhere in this repository but is
+  not among the tools THIS operator's `plugins.install` actually resolved
+  to — a fact no CI grep can see. This is checked per turn, in
+  `ContextBuilder::build`, against that turn's own resolved
+  `ContextInput.tools`. An unreachable fragment's text is WITHHELD (never
+  injected as a segment, so the model can never try a tool that is not
+  there and fail silently, forever) and recorded in
+  `ContextReport::instruction_fragments` with the missing tool id named, so
+  `/context`'s preamble section renders the omission inline
+  (`⚠ names <tool> — not installed`) rather than only warning once in a
+  log line that scrolls away.
+
+A fragment naming a tool id its OWN declaring plugin also provides
+(`Plugin::tools`) can NEVER fail the second check: both are contributed by
+the same `Arc<dyn Plugin>`, installed through the same `with_plugin` call,
+so they ship and leave together by construction. Reachability is therefore
+STRUCTURAL for that common case and CHECKED only for the genuinely
+cross-plugin (or entirely-missing) case.
+
+**Convention, not enforcement: text lives in a markdown file.** Nothing in
+`InstructionFragment` forces `text` to come from a file rather than a Rust
+string literal — a `String` cannot tell the difference. The convention is
+`include_str!("../fragments/foo.md")` for a fragment compiled into a
+plugin, or a genuine file read at construction time for a plugin
+distributed as data alongside a compiled binary. The two differ on
+removability: `include_str!` bakes the text into the binary, so there is no
+file an operator can delete to disable ONE fragment without uninstalling
+the whole plugin — that is the one kind of fragment that genuinely needs a
+settings UI to disable (deferred; the `/settings` instructions section is
+pending a fuller settings design, per decision `01M0K5K8DCRVR523P54DZF4BY3`).
+A files-beside-the-plugin convention keeps every fragment removable with no
+UI at all — the file IS the control surface — which is why it is the
+recommended shape even though `include_str!` remains legal.
+
+**Relationship to point 3's `conway.skills` — not folded together.**
+`conway.skills` narrows a `Provenance::Skill` segment `AgentDef.skills`
+already put there (operator-authored, loaded from a directory,
+`crates/conway/src/skills.rs`); this point AUTHORS a `Provenance::Skill`
+segment in the first place, sourced from a plugin. They share the
+rendering machinery (`conway_runtime::context::SkillFragment`,
+`Provenance::Skill`) once resolved — both are, at that point, "a named text
+fragment injected into context" — but the SOURCING differs
+(capability-authored vs. operator-authored) and so does the LIFETIME: a
+skill outlives any plugin (it is the operator's own file); an instruction
+fragment does not (it ships and leaves with `with_plugin`). This is a
+deliberate non-merge, argued rather than assumed.
+
+**Trust posture: see `docs/plugins/trust-and-security.md`'s "Instruction
+fragments" section.** Short version: installing the plugin is still the
+entire control (nothing new is gated), and this grants no capability point
+3 did not already have — a `ContextHook` could already inject arbitrary
+text; this is a narrower, declarative, legible way to do one specific thing
+point 3 could already do arbitrarily.
+
+### 18. Context-path composition — `ToolCtx::context_path` (`ContextPathHost`)
+
+| Field | Value |
+|---|---|
+| Kind | Participant (a `Tool` calls it during `Tool::invoke`; each method returns a value the tool acts on) |
+| Receives | `ToolCtx::context_path: ContextPathHandle`, a handle bound to the calling tool call's own `session_id`, on every dispatched `Tool::invoke` — not a hook a plugin implements, a capability every tool already holds. Three methods: `default_path()` (this session's current context path), `resolve_records(&[RecordRef])` (resolve records from ANY session, honestly, through the same masked read the per-turn assembly itself uses), `set_head(ValidatedPath)` (freeze a derived path as this session's new head) |
+| May return | `default_path`/`set_head` return `Result<_, PathError>`, narrowed to this session by construction — no parameter through which a call could name a different one; `resolve_records` returns `Result<BTreeMap<RecordRef, Arc<LogRecord>>, PathError>` and may name any session |
+| On error | `PathError` (`UnresolvableNode`, `PrefixChainTooDeep`, `WouldOrphan`, ...) is an ordinary typed error a tool matches on and reports back as an `is_error` `ToolOutput` — never a panic, never a partial write (`set_head` either fully persists a `ContextPathSet` record or does not run at all) |
+| On timeout | None at this point — whatever the underlying `SessionStore`/`PathStore` implementation's own I/O timeout is (unchanged by this point) |
+| On garbage | Not applicable — every argument is a typed Rust value (`SessionId`, `RecordRef`, `ValidatedPath`) constructed by the calling tool, not parsed from wire bytes at this boundary |
+| When absent | No tool that never calls `ctx.context_path` is affected — the field is populated unconditionally on every `ToolCtx` (like `subagents`/`chdir`), at zero cost to a tool that never reads it |
+| Ordering | Not applicable — no multiple-registration composition; one runtime-wide `ContextPathHost` implementation, narrowed per call |
+| Status | **Implemented.** `conway_core::ports::context_path::{ContextPathHost, ContextPathHandle}` (`crates/conway-core/src/ports/context_path.rs`); production implementation `conway_runtime::context::RuntimeContextPathHost` (`crates/conway-runtime/src/context/path_host.rs`), wired into `LoopDeps`/`ToolBatchCtx` in `runtime.rs`/`agent_loop.rs`/`tools/runner.rs`; first production consumer `conway.path`'s `compose_context_path` tool (`crates/conway-plugin-path`). Board item `01M0PEFMG96SVBBD5D2E06H34A`, decision `01M0K4QT6MBXPD6PXMBBBD2P7B`. |
+
+**Why this is a `ToolCtx` field, not a `Curator` capability.** Decision
+`01M0K4QT6MBXPD6PXMBBBD2P7B` (cited in the board item that built this
+point): `CurateCtx` carries `model: Option<ModelId>` as a sizing
+IDENTIFIER only, and a `Curator` runs per-turn BEFORE routing — inference
+there would be re-entrant. Composing a path from an operator's stated
+intent needs a MODEL to have already interpreted that intent, so the
+composing capability belongs at a `Tool` call, where inference is already
+in flight, not at the curator seam. `CurateCtx` is unchanged by this
+point.
+
+**Why a new handle, not a widened `PathStore` re-export.** `PathStore`
+(point coverage: none — it is engine-internal by a separate, standing
+decision, board item `01M0EMCK55628YJXGBQY8YGXHE`) is deliberately not
+re-exported through `conway::plugin`. This point does not reopen that
+decision: `ContextPathHost` is a narrow, purpose-built capability
+(`default_path`/`resolve_records`/`set_head` — not `PathStore`'s own
+`put`/`get`/`selections_referencing`) that its production implementation
+backs with `PathStore`/`SessionStore`/`TranscriptResolver` internally,
+mirroring `SubagentHandle`'s identical "narrow handle over a host trait,
+never the raw port" shape for fork/spawn (point 2's own `ToolCtx::
+subagents` field).
+
+**Trust posture: see `docs/plugins/trust-and-security.md`'s "Composing a
+context path" section.** Short version: an ordinary gated `Tool` call
+(unlike a `Command`, point 15 — this point's calls go through
+`PermissionGate`/`PermissionBroker` like any other tool); `resolve_records`
+may read any session's records (the same cross-session reach point 15's
+`Checkout` and `Curator`'s own §11.5 read surface already establish is not
+a new capability, since any record in the store is something conway itself
+already produced); `default_path`/`set_head` can only ever change what the
+CALLING session renders next, never another session's.
+
+**This point resolves a reference the model ALREADY holds.** Point 20,
+immediately below, is where a model gets a reference to a session it
+neither started nor spawned in the first place — `resolve_records` here has
+no way to answer "which session is that."
+
+### 19. Operator-facing description — `Plugin::description()`
+
+| Field | Value |
+|---|---|
+| Kind | Declarative (`Plugin::description()`, consulted by a plugin browser -- `crates/conway-cli/src/tui/view/settings.rs`'s `/settings` plugins section -- never by the model, never by context assembly) |
+| Receives | Consulted with nothing live; returns one [`PluginDescription`] (`summary`, `you_get`, `you_lose`, `costs`, every field a plain `String`) |
+| May return | Any text, including every field empty (the trait's own zero-cost default) |
+| On error | Not applicable -- `description()` cannot fail; it is a pure, synchronous, in-process call, like `Plugin::tools()`/`Plugin::manifest()` |
+| On timeout | None -- synchronous, in-process, no I/O boundary |
+| On garbage | Not applicable -- no external input crosses this point |
+| When absent | No `Plugin::description()` override means every field renders empty; the browser shows an honest fallback (`"(no description)"`/`"(none given)"`/`"none"`) rather than inventing text a plugin never supplied |
+| Ordering | Not applicable -- one description per plugin, no composition |
+| Status | **Implemented.** `conway_core::ports::plugin::{PluginDescription, Plugin::description}` (`crates/conway-core/src/ports/plugin.rs`); rendered by `crates/conway-cli/src/tui/view/settings.rs`'s plugins section; written by `crates/conway-cli/src/tui/app/plugin_toggle.rs`'s `App::apply_plugin_toggle` via `conway::config::writer::set_plugin_installed`. Board item `01M0KARX71A64NTSYTDBVANVPF`. |
+
+**Two audiences, two types -- argued, not assumed.** Point 17
+(`Plugin::instructions()`) ships text for the MODEL; this point ships text
+for the PERSON deciding whether to turn a plugin on. The choice was
+between a field on `PluginManifest`, an addition to `InstructionFragment`,
+or a new trait method -- this point is the third, for two reasons: adding
+a required field to `PluginManifest` would have forced every one of the
+three dozen existing struct-literal construction sites across this
+workspace (most with no operator-facing browser to describe themselves
+for at all) to invent placeholder text just to keep compiling, where a
+trait method with a default costs them nothing; and cardinality differs
+from `InstructionFragment` (one description per plugin, matching
+`PluginManifest`'s own one-per-plugin identity, vs. zero-or-many
+instruction fragments -- several first-party plugins ship zero fragments
+today but still have something to tell an operator).
+
+**Text lives as a Rust literal, not a loaded file -- the opposite of point
+17's own convention, deliberately.** That convention exists so an
+operator can delete ONE instruction fragment's file to disable a
+MODEL-facing behavior with no recompile. A description has no equivalent
+removability need: it never changes what the model does, and there is no
+"keep the plugin, lose only its description" state anyone would want.
+
+**"You get / you lose / costs" is the operator's own framing, kept
+literally** -- it names what CHANGES, the actual question when deciding
+whether to flip a toggle, rather than a generic "what is this" blurb.
+
+### 20. Cross-session discovery — `ToolCtx::session_discovery` (`SessionDiscoveryHost`)
+
+| Field | Value |
+|---|---|
+| Kind | Participant (a `Tool` calls it during `Tool::invoke`; the one method returns a value the tool reports back) |
+| Receives | `ToolCtx::session_discovery: SessionDiscoveryHandle`, on every dispatched `Tool::invoke` -- not a hook a plugin implements, a capability every tool already holds, mirroring point 18's `context_path` exactly. One method: `search(SessionSearchQuery) -> Result<SessionSearchResult, StoreError>`. Cross-session by construction -- unlike `context_path`, no session is baked in, since a search is never "about" one session. |
+| May return | `SessionSearchResult`: the matches found (session id, project key, cwd, created time, and -- only in content-search mode -- the specific `(seq, snippet)` pairs), plus `projects_scanned`/`sessions_considered`/`sessions_content_scanned`/`records_scanned`/`truncated` -- what was searched and what it cost, always populated, never optional |
+| On error | `StoreError`, an ordinary typed error a tool matches on and reports back as an `is_error` `ToolOutput` -- never a panic |
+| On timeout | None at this point -- whatever the underlying `SessionStore`'s own I/O timeout is |
+| On garbage | Not applicable -- every argument is a typed Rust value (`SessionSearchQuery`) constructed by the calling tool, not parsed from wire bytes at this boundary |
+| When absent | No tool that never calls `ctx.session_discovery` is affected -- the field is populated unconditionally on every `ToolCtx`, at zero cost to a tool that never reads it |
+| Ordering | Not applicable -- one runtime-wide `SessionDiscoveryHost` implementation, no per-call narrowing |
+| Status | **Implemented.** `conway_core::ports::discovery::{SessionDiscoveryHost, SessionDiscoveryHandle, SessionSearchQuery, SessionSearchResult}` (`crates/conway-core/src/ports/discovery.rs`); production implementation `conway::discovery_host::FsSessionDiscoveryHost` (`crates/conway/src/discovery_host.rs` -- NOT in `conway-runtime`, see below), wired into `RuntimeDeps`/`LoopDeps`/`ToolBatchCtx` in `builder.rs`/`runtime.rs`/`agent_loop.rs`/`tools/runner.rs`; first production consumer `conway.discover`'s `search_sessions` tool (`crates/conway-plugin-discover`). Board item `01M0PS8J3AK7Z7253Z3E3RD3GY`. |
+
+**Why the production implementation lives in the `conway` facade crate, not
+`conway-runtime` (unlike point 18's `RuntimeContextPathHost`).**
+`crates/conway/tests/architecture_invariants.rs`'s T4 pins `conway-runtime`
+to depend on `conway-core` alone -- no adapter edge, `conway-session`
+included. `SessionSearchScope::AllProjects` genuinely needs adapter
+machinery (`conway_session::discovery`, opening a `JsonlSessionStore` per
+sibling project directory under the central sessions root) that has no
+adapter-free equivalent the way point 18's `resolve_default_path`/
+`write_head` do, so `FsSessionDiscoveryHost` is built where the
+`conway-session` edge already legitimately exists -- gated behind
+`jsonl-store`, exactly like `build_default_store`. Its `CurrentProject`
+scope needs no adapter at all (it reuses the already-built `store: Arc<dyn
+SessionStore>` through the generic port trait alone), so it works
+identically whether `jsonl-store` is on or an embedder injected their own
+store.
+
+**Why a new port, not a widened `ContextPathHost`.** Bolting a `search`
+method onto point 18's port would fuse two genuinely separate capabilities
+-- composition and discovery -- into one, repeating one layer down the
+exact scope-doubling cherry-pick (`01M0KZ6J0DF6XR1TVSDH2KDPRX`) correctly
+avoided at the tool level. A new, narrow port keeps each seam answering
+exactly one question, mirroring `ContextPathHost`'s own "narrow,
+purpose-built capability" precedent.
+
+**Reach: a directory listing over one root, never a crawler or a
+registry.** Decision `01M0QK8J757ZH6R06WYJ0PQGEM` moved sessions to a
+central, project-keyed root specifically so `SessionSearchScope::
+AllProjects` would need neither. `conway_session::discovery::
+list_project_keys` does exactly one `read_dir` over that root.
+
+**Trust posture: see `docs/plugins/trust-and-security.md`'s "Finding a
+session" section.** Short version: an ordinary gated `Tool` call, same
+footing as point 18; `search` never writes anything, ever; content search
+(`SessionSearchQuery::text` set) is the only mode that reads a record body,
+and it is bounded by `max_sessions`, stated in the result.
+
 ## The permission decision ordering
 
 This is the ordering most likely to be reasoned about incorrectly, so it is

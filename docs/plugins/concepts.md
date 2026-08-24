@@ -39,9 +39,10 @@ own persistent-connection shape and every point beyond `tool.spec/1`/`tool/1`
 (`permission.policy/1`, `context.hook/1`, `observe/1`), a *plugin*-authored
 script-dispatching hook (the dispatching
 above is the runtime's own built-in `ProcessHookRunner`, not something a
-third-party `Plugin` provides), and digest-keyed *plugin* trust. **Stale as
-of this transport's own thin slice landing**, flagged here rather than
-silently left wrong:
+third-party `Plugin` provides). Digest-keyed *plugin* trust was considered
+and declined rather than left as still-design — see "Trust, in one
+paragraph" below for the conclusion. **Stale as of this transport's own
+thin slice landing**, flagged here rather than silently left wrong:
 [`docs/permissions.md`](../permissions.md#limits)'s "conway's only extension
 mechanism today is in-process" claim (stated from the operator's side) no
 longer covers a `[plugins].subprocess` entry, which is a real, out-of-process
@@ -287,16 +288,23 @@ triple, because the `id` axis exists to distinguish multiple subjects of the
 content edit changes the digest and de-trusts the file exactly as described
 above; this is exercised by that module's own tests.
 
-**Still not implemented, and now genuinely gated behind a standing operator
-deferral rather than "nothing to gate yet":** a `plugin` trust kind. A
-subprocess plugin (`[plugins].subprocess`,
-[`subprocess-plugins.md`](subprocess-plugins.md)) is a real, out-of-process
-artifact now — the "a `plugin` kind nothing can yet consume would be a
-capability with nothing behind it" argument that justified leaving this open
-no longer applies verbatim, since something COULD now consume a digest for
-it. Building it anyway is explicitly out of scope for that item (board item
-`01KZHVFCN6ZEAXV7K5JHRQN1YB`, DO NOT EXECUTE): the operator's own review of
-what they typed into `[plugins].subprocess[]` is the whole control point
+**Still not implemented, and now a considered position rather than "nothing
+to gate yet":** a `plugin` trust kind. A subprocess plugin
+(`[plugins].subprocess`, [`subprocess-plugins.md`](subprocess-plugins.md))
+and an MCP-over-stdio plugin (`[plugins].mcp`, [`mcp.md`](mcp.md)) are both
+real, out-of-process artifacts now — the "a `plugin` kind nothing can yet
+consume would be a capability with nothing behind it" argument that used to
+justify leaving this open no longer applies verbatim, since something COULD
+now consume a digest for it. Board item `01KZHVFCN6ZEAXV7K5JHRQN1YB` was
+reopened on that basis and worked to a conclusion: a `plugin` trust kind was
+considered and DECLINED, because a digest check gated onto only the
+out-of-process transports — while `[hooks].rules[].command` stays
+permanently ungated — would assert a distinction (plugins reviewed, hooks
+not) that the identical unsandboxed, full-privilege execution underneath
+both does not support; see
+[`trust-and-security.md`](trust-and-security.md#what-trust-is) for the full
+reasoning. The operator's own review of what they typed into
+`[plugins].subprocess[]` or `[plugins].mcp[]` is the whole control point
 today, on the identical footing `[hooks].rules[].command` already has — see
 [`subprocess-plugins.md`](subprocess-plugins.md)'s own "Trust" section.
 [`docs/permissions.md`](../permissions.md#limits)'s "trusting the binary and

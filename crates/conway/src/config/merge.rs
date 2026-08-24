@@ -1,9 +1,9 @@
-//! Five-source precedence merge (default < XDG < project < env < CLI),
+//! Five-source precedence merge (default < user < project < env < CLI),
 //! `CONWAY_*` environment mapping, and `ConwayConfig` semantic validation
 //! (the headroom checks and structural consistency checks).
 //!
-//! [`load_ignoring_xdg`] is the one seam that opts out of a source entirely
-//! — see its own doc for why XDG
+//! [`load_ignoring_user_config`] is the one seam that opts out of a source entirely
+//! — see its own doc for why user config
 //! alone, not `env` too, and why it is a sibling function rather than a new
 //! `LoadOptions` field.
 //!
@@ -19,7 +19,7 @@
 //! `deny_unknown_fields`, because `[tui]` is `conway-cli`'s presentation
 //! config (`TuiSection` and its siblings no longer live in this schema at
 //! all) and an existing `settings.json` naming it must still load
-//! successfully. [`load`]/[`load_ignoring_xdg`] record the strip as a
+//! successfully. [`load`]/[`load_ignoring_user_config`] record the strip as a
 //! [`crate::config::ConfigWarning`] rather than dropping it with no trace;
 //! [`merged_document`] is the escape hatch a caller that DOES understand
 //! `[tui]` (`conway-cli`) uses to read it back out of the same layered
@@ -96,7 +96,7 @@ impl Default for LoadOptions {
 /// names `backends.<id>.base_url` as one of the keys to prove all five
 /// sources against, but no CLI path exists for that leaf under this
 /// documented shape. `tests/config_precedence.rs` covers that key across
-/// default/XDG/project/env (four sources) and notes the gap rather than
+/// default/user/project/env (four sources) and notes the gap rather than
 /// inventing an undocumented field here.
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
@@ -131,17 +131,17 @@ pub struct CliOverrides {
     pub headroom_tokens: Option<u32>,
 }
 
-/// The full five-source load: default < XDG < project < env < CLI.
+/// The full five-source load: default < user < project < env < CLI.
 pub fn load(options: LoadOptions) -> Result<LoadOutcome> {
-    load_impl(options, IncludeXdgLayer::Yes)
+    load_impl(options, IncludeUserLayer::Yes)
 }
 
-/// Identical to [`load`], except the XDG/user layer
-/// (`$XDG_CONFIG_HOME/conway/settings.json`, or `~/.conway/settings.json`)
+/// Identical to [`load`], except the user layer
+/// (`$CONWAY_CONFIG_DIR/settings.json`, or `~/.conway/settings.json`)
 /// is never read — the merge becomes `default < project < env < CLI`, four
 /// sources instead of five.
 ///
-/// [`load`] reads the XDG layer unconditionally, *before* the
+/// [`load`] reads the user layer unconditionally, *before* the
 /// `explicit_path`/discovered project layer, regardless of whether
 /// `options.explicit_path` is set — so a caller who wants isolation (a test
 /// fixture, or an embedder that wants to use its own configuration rather
@@ -159,12 +159,12 @@ pub fn load(options: LoadOptions) -> Result<LoadOutcome> {
 /// one of those at compile time for a capability they have no reason to
 /// opt into; a same-shaped sibling function costs them nothing.
 ///
-/// **XDG only, not `env` too — decided, not left implicit:** `CONWAY_*`
-/// environment variables differ from the XDG layer in the one way that
+/// **user config only, not `env` too — decided, not left implicit:** `CONWAY_*`
+/// environment variables differ from the user layer in the one way that
 /// matters here — they are how a *caller* (CI, a container entrypoint, an
 /// embedder's own process supervisor) explicitly hands *this* invocation
 /// its credentials and overrides, at the moment `options.env` is
-/// constructed and passed in. The XDG layer, by contrast, is a *file on
+/// constructed and passed in. The user layer, by contrast, is a *file on
 /// disk*, written independently of any particular invocation and
 /// discovered by walking the filesystem rather than supplied by the
 /// caller — exactly the ambient "invoking user's home directory" state this
@@ -174,22 +174,22 @@ pub fn load(options: LoadOptions) -> Result<LoadOutcome> {
 /// the tool for that — pass a hand-built (possibly empty) `env` map, the
 /// same mechanism every hermetic test in this workspace already uses (see
 /// `crates/conway/tests/support/mod.rs::isolated_env`).
-pub fn load_ignoring_xdg(options: LoadOptions) -> Result<LoadOutcome> {
-    load_impl(options, IncludeXdgLayer::No)
+pub fn load_ignoring_user_config(options: LoadOptions) -> Result<LoadOutcome> {
+    load_impl(options, IncludeUserLayer::No)
 }
 
-/// Whether [`load_impl`] reads the XDG/user layer — a private, two-variant
-/// enum rather than a bare `bool` so `load`/`load_ignoring_xdg`'s own call
+/// Whether [`load_impl`] reads the user layer — a private, two-variant
+/// enum rather than a bare `bool` so `load`/`load_ignoring_user_config`'s own call
 /// sites stay self-documenting at the call site, not `load_impl(options,
 /// true)`/`load_impl(options, false)` with no indication of which way
 /// `true` goes.
-enum IncludeXdgLayer {
+enum IncludeUserLayer {
     Yes,
     No,
 }
 
 /// The fully layered document (the same five-source precedence [`load`]
-/// uses -- default < XDG < project < env < CLI), as raw JSON, BEFORE the
+/// uses -- default < user < project < env < CLI), as raw JSON, BEFORE the
 /// final `ConwayConfig` deserialize.
 ///
 /// **The one sanctioned escape hatch for a section this facade's schema
@@ -198,7 +198,7 @@ enum IncludeXdgLayer {
 /// `ConwayConfig` entirely -- `[tui]` is `conway-cli`'s presentation
 /// config, and a headless host linking only this facade has no business
 /// parsing or validating a theme it can never render. `load`/
-/// `load_ignoring_xdg` strip a top-level `tui` key out of the merged
+/// `load_ignoring_user_config` strip a top-level `tui` key out of the merged
 /// document before deserializing (see their own doc for why: otherwise
 /// EVERY existing `settings.json` with a `[tui.theme]`/`[tui.status_line]`
 /// block would hard-fail to load through this crate at all), so `[tui]`'s
@@ -208,19 +208,22 @@ enum IncludeXdgLayer {
 /// its own, locally-owned `TuiSection` (`crates/conway-cli/src/tui/
 /// config.rs`) -- the one caller today.
 ///
-/// Every other caller should prefer [`load`]/[`load_ignoring_xdg`]
+/// Every other caller should prefer [`load`]/[`load_ignoring_user_config`]
 /// instead: this bypasses `ConwayConfig`'s `#[serde(deny_unknown_fields)]`
 /// validation entirely, so a typo anywhere in the document is not caught
 /// here.
 pub fn merged_document(options: &LoadOptions) -> Result<Value> {
-    merged_document_impl(options, IncludeXdgLayer::Yes)
+    merged_document_impl(options, IncludeUserLayer::Yes)
 }
 
-fn merged_document_impl(options: &LoadOptions, include_xdg: IncludeXdgLayer) -> Result<Value> {
+fn merged_document_impl(
+    options: &LoadOptions,
+    include_user_config: IncludeUserLayer,
+) -> Result<Value> {
     let mut merged = default_document();
 
-    if matches!(include_xdg, IncludeXdgLayer::Yes) {
-        if let Some(path) = discovery::xdg_config_path(&options.env) {
+    if matches!(include_user_config, IncludeUserLayer::Yes) {
+        if let Some(path) = discovery::user_config_path(&options.env) {
             if let Some(layer) = read_json_layer(&path)? {
                 merge_values(&mut merged, layer);
             }
@@ -246,8 +249,8 @@ fn merged_document_impl(options: &LoadOptions, include_xdg: IncludeXdgLayer) -> 
     Ok(merged)
 }
 
-fn load_impl(options: LoadOptions, include_xdg: IncludeXdgLayer) -> Result<LoadOutcome> {
-    let mut merged = merged_document_impl(&options, include_xdg)?;
+fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Result<LoadOutcome> {
+    let mut merged = merged_document_impl(&options, include_user_config)?;
 
     // `[tui]` (or a `CONWAY_TUI__*` env var) is a presentation-only
     // section this facade deliberately does not define a type for any
@@ -267,10 +270,11 @@ fn load_impl(options: LoadOptions, include_xdg: IncludeXdgLayer) -> Result<LoadO
         .as_object_mut()
         .is_some_and(|obj| obj.remove("tui").is_some());
 
-    let config: ConwayConfig = serde_json::from_value(merged).map_err(|e| ConwayError::Config {
-        path: None,
-        message: format!("failed to parse merged configuration: {e}"),
-    })?;
+    let mut config: ConwayConfig =
+        serde_json::from_value(merged).map_err(|e| ConwayError::Config {
+            path: None,
+            message: format!("failed to parse merged configuration: {e}"),
+        })?;
 
     let metadata_path = resolve_metadata_path(&config, &options.cwd);
     let metadata = model_metadata::load(&metadata_path)?;
@@ -288,6 +292,39 @@ fn load_impl(options: LoadOptions, include_xdg: IncludeXdgLayer) -> Result<LoadO
                       merge) will not find its value anywhere."
                 .to_string(),
         });
+    }
+
+    // `[session].root` central-default resolution (board item
+    // `01M0QK9GRM8HSNWRAR414TCX42`, decision `01M0QK8J757ZH6R06WYJ0PQGEM`).
+    // `root` is still `None` here whenever no source (user/project/env/CLI)
+    // set it -- `default_document`'s own comment on why it never bakes one
+    // in. Resolved HERE, once, using `options.cwd`/`options.env` (the same
+    // load-scoped, already-isolated inputs `resolve_metadata_path` just
+    // used two lines up), because `ConwayBuilder::build` has no seam of its
+    // own to receive them -- see `SessionConfig`'s own doc for the full
+    // disclosure of what a config that bypasses `load` entirely
+    // (`ConwayBuilder::from_parts`) falls back to instead.
+    if config.session.root.is_none() {
+        let resolved = discovery::session_root(&options.cwd, None, &options.env);
+        let legacy = discovery::legacy_project_sessions_dir(&options.cwd);
+        if legacy != resolved && directory_has_entries(&legacy) {
+            warnings.push(ConfigWarning {
+                code: WarningCode::LegacyProjectSessionsNotMigrated,
+                message: format!(
+                    "existing sessions found at {} -- they are NOT used by default anymore; \
+                     new sessions now live at {}. `sessions list`/`--resume` from here on only \
+                     see the new location. To keep using the old one, set \
+                     {{\"session\": {{\"root\": \"{}\"}}}} in settings.json; to switch over, \
+                     move its contents into the new directory yourself (conway does not do this \
+                     automatically). This warning repeats on every run until you do one or the \
+                     other.",
+                    legacy.display(),
+                    resolved.display(),
+                    legacy.display(),
+                ),
+            });
+        }
+        config.session.root = Some(resolved);
     }
 
     Ok(LoadOutcome { config, warnings })
@@ -366,7 +403,12 @@ fn default_document() -> Value {
         "default_role": "default",
         "cwd": ".",
         "session": {
-            "root": ".conway/sessions",
+            // No "root" key: `SessionConfig`'s own container-level
+            // `#[serde(default)]` fills it from `SessionConfig::default()`
+            // (`None`) when absent, exactly like every other layer that
+            // never names it -- `load_impl` resolves the central default
+            // afterward. See `SessionConfig`'s own doc for why `None` here
+            // and `Some` mean genuinely different things.
             "fsync": "interval",
             "fsync_interval_ms": 200,
         },
@@ -437,6 +479,18 @@ fn read_json_layer(path: &std::path::Path) -> Result<Option<Value>> {
             message: format!("failed to read {}: {e}", path.display()),
         }),
     }
+}
+
+/// Whether `dir` exists and contains at least one entry -- the "is there
+/// anything to strand" half of the `[session].root` legacy-directory check
+/// above. A missing directory (the common case: no old `.conway/sessions`
+/// ever existed) and an existing-but-empty one (someone `mkdir -p`'d it
+/// without ever writing a session) both return `false` -- neither is
+/// something an operator needs to be told about.
+fn directory_has_entries(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
 }
 
 /// The top-level `ConwayConfig` field names a `CONWAY_*` env var's first
@@ -614,7 +668,7 @@ fn cli_overrides_to_value(cli: &CliOverrides) -> Value {
 /// This is the STRICT entry point (check 3 included, see that check's own
 /// doc for why): the right choice for a config a human might have typed by
 /// hand, notably `load_impl`'s own call site (behind [`load`]/
-/// [`load_ignoring_xdg`]). [`apply_cli`] deliberately calls
+/// [`load_ignoring_user_config`]). [`apply_cli`] deliberately calls
 /// `validate_impl` with check 3 skipped instead of this function -- see
 /// its own doc.
 ///
@@ -634,7 +688,7 @@ pub fn validate(
 /// Whether [`validate_impl`] treats `permissions.mode = "allowlist"` paired
 /// with an empty `allowed_tools` as a hard error (check 3) -- a private,
 /// two-variant enum rather than a bare `bool` for the same self-documenting
-/// reason [`IncludeXdgLayer`] is one, not `validate_impl(config, metadata,
+/// reason [`IncludeUserLayer`] is one, not `validate_impl(config, metadata,
 /// env, true)` with no indication of which way `true` goes.
 ///
 /// See check 3's own comment, at its call site below, for why the two
@@ -711,7 +765,7 @@ fn validate_impl(
     //    assembled -- passes `AllowlistEmptyCheck::Skip` instead, because by
     //    the time a config reaches it, the empty-allowlist-as-typo concern
     //    above no longer applies: either the config came from
-    //    `config::load`/`load_ignoring_xdg` and already passed THIS check
+    //    `config::load`/`load_ignoring_user_config` and already passed THIS check
     //    once (`load_impl`'s own `validate` call), or it was assembled
     //    programmatically via `ConwayBuilder::from_parts`/`CliOverrides` --
     //    an embedder writing Rust, not a human hand-editing a settings file

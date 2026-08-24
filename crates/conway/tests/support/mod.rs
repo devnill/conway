@@ -35,12 +35,12 @@ pub fn unique_temp_dir(label: &str) -> PathBuf {
 /// The hermetic `env` map every `config::load` call in this crate's tests
 /// should pass instead of a bare `HashMap::new()`.
 ///
-/// `merge::load` always consults the XDG layer, regardless of
+/// `merge::load` always consults the user layer, regardless of
 /// `explicit_path` (it is merged in *before* the explicit/project layer, not
-/// instead of it -- see `merge::load`'s own body). `discovery::xdg_config_path`
+/// instead of it -- see `merge::load`'s own body). `discovery::user_config_path`
 /// falls back to the invoking user's real `~/.conway/settings.json` whenever
-/// `XDG_CONFIG_HOME` is absent from the `env` map. So a test that builds
-/// `HashMap::new()` and calls `load` does not test "no XDG layer" -- it
+/// `CONWAY_CONFIG_DIR` is absent from the `env` map. So a test that builds
+/// `HashMap::new()` and calls `load` does not test "no user layer" -- it
 /// tests "whatever happens to be on the machine running the suite," CI or a
 /// developer's laptop alike.
 ///
@@ -51,21 +51,21 @@ pub fn unique_temp_dir(label: &str) -> PathBuf {
 /// name -- `HealthSection`'s `#[serde(deny_unknown_fields)]` rejected it.
 /// Nothing in the repository explained the failure.
 ///
-/// Points `XDG_CONFIG_HOME` at a fresh scratch directory (via
+/// Points `CONWAY_CONFIG_DIR` at a fresh scratch directory (via
 /// [`unique_temp_dir`]) that this call is the sole owner of and that never
-/// contains a `conway/settings.json` -- so the XDG layer resolves to
+/// contains a `conway/settings.json` -- so the user layer resolves to
 /// "absent" deterministically, the same outcome `HashMap::new()` was
 /// presumably intended to produce. A test that genuinely wants to exercise
-/// the XDG layer itself builds its own `env` map naming `XDG_CONFIG_HOME`
+/// the user layer itself builds its own `env` map naming `CONWAY_CONFIG_DIR`
 /// explicitly (as `config_precedence.rs`'s five-source test and several
 /// `config_headroom.rs` tests already do) rather than calling this helper --
-/// this is the one hermetic idiom for "I don't care about the XDG layer,"
+/// this is the one hermetic idiom for "I don't care about the user layer,"
 /// not a second competing pattern.
 pub fn isolated_env() -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert(
-        "XDG_CONFIG_HOME".to_string(),
-        unique_temp_dir("isolated-xdg-home")
+        "CONWAY_CONFIG_DIR".to_string(),
+        unique_temp_dir("isolated-config-home")
             .to_string_lossy()
             .to_string(),
     );

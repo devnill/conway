@@ -172,6 +172,9 @@ impl Tool for AskTool {
             // see this module's own doc.
             agent_def: None,
             role: None,
+            // `conway_ask` never switches models -- inherit whatever the
+            // parent (or its agent_def) already resolves.
+            pin: None,
             tools: args.tools.map(ToolSelector::Only),
             budget: resolve_ask_budget(args.budget, &ctx.config)?,
             result_contract: None,
@@ -200,6 +203,10 @@ impl Tool for AskTool {
             // `[S1.5]`: no `plugin_config` argument on this model-invoked
             // tool either -- mirrors `root`/`tag` above.
             plugin_config: None,
+            // `conway_ask` has no chosen-context argument in its schema
+            // either -- an ask is fork+await-text, always the asker's
+            // entire inherited context, unchanged.
+            context: None,
         };
 
         let outcome = ctx.subagents.ask(spec).await.map_err(ToolError::from)?;

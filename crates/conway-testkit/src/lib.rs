@@ -1,7 +1,8 @@
 //! Test doubles for every `conway-core` port trait: `FakeBackend`/
 //! `ScriptedBackend` (`Backend`), `FakeStore` (`SessionStore`), `FakeGate`
 //! (`PermissionGate`), `FakeRouter` (`Router`), `FakeHealth`
-//! (`HealthRegistry`), `FakeSubagentHost` (`SubagentHost`), and
+//! (`HealthRegistry`), `FakeSubagentHost` (`SubagentHost`), `FakePathStore`
+//! (`PathStore`), `FakeSessionDiscoveryHost` (`SessionDiscoveryHost`), and
 //! `CollectingEventSink` (`EventSink`).
 //!
 //! These used to live inside `conway-core` itself, behind `feature =
@@ -50,15 +51,17 @@ use conway_core::capabilities::{
     CacheMode, Capabilities, ProbeReport, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::content::{ContentBlock, Role, SamplingParams, StopReason, Usage};
-use conway_core::error::{BackendError, RoutingError, RuntimeError, StoreError};
+use conway_core::error::{BackendError, PathStoreError, RoutingError, RuntimeError, StoreError};
 use conway_core::event::Event;
 use conway_core::ids::{
     AgentId, BackendId, EndpointId, LogSeq, ModelId, ModelRef, RoleAlias, SeqRange, SessionId,
 };
 use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
+use conway_core::path::{PathSelection, SelectionKey};
 use conway_core::ports::{
     Backend, BoxStream, EventSink, GenerateRequest, GenerateResponse, HealthRegistry, LiveOwner,
-    PermissionGate, Router, SessionStore, StreamChunk, SubagentHost,
+    PathStore, PermissionGate, Router, SessionDiscoveryHost, SessionSearchQuery,
+    SessionSearchResult, SessionStore, StreamChunk, SubagentHost,
 };
 use conway_core::routing::{BreakerState, Observation, Route, RouteRequest, RoutingReason};
 
@@ -816,6 +819,57 @@ impl HealthRegistry for FakeHealth {
 }
 
 // ---------------------------------------------------------------------
+// PathStore fake
+// ---------------------------------------------------------------------
+
+/// A full in-memory [`PathStore`]: every `put` computes the same
+/// content-addressed `SelectionKey` the real `conway_session::FsPathStore`
+/// does (`SelectionKey::from_nodes`), so a fake-built fixture round-trips
+/// identically to a real one. Mirrors the ad hoc `MemPathStore` test doubles
+/// duplicated across `conway-session`'s and `conway-runtime`'s own test
+/// modules — promoted here once `RuntimeDeps` (D1-3d-wire) required one at
+/// every `Runtime`-constructing call site across both crates' test suites,
+/// not just one module's.
+#[derive(Debug, Default)]
+pub struct FakePathStore {
+    selections: RwLock<BTreeMap<SelectionKey, PathSelection>>,
+}
+
+impl FakePathStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl PathStore for FakePathStore {
+    async fn put(&self, selection: PathSelection) -> Result<SelectionKey, PathStoreError> {
+        let key = SelectionKey::from_nodes(&selection.nodes);
+        self.selections
+            .write()
+            .unwrap()
+            .insert(key.clone(), selection);
+        Ok(key)
+    }
+
+    async fn get(&self, key: &SelectionKey) -> Result<PathSelection, PathStoreError> {
+        self.selections
+            .read()
+            .unwrap()
+            .get(key)
+            .cloned()
+            .ok_or_else(|| PathStoreError::NotFound { key: key.clone() })
+    }
+
+    async fn selections_referencing(
+        &self,
+        _sid: &SessionId,
+    ) -> Result<Vec<SelectionKey>, PathStoreError> {
+        Ok(Vec::new())
+    }
+}
+
+// ---------------------------------------------------------------------
 // SubagentHost fake
 // ---------------------------------------------------------------------
 
@@ -990,5 +1044,43 @@ impl CollectingEventSink {
 impl EventSink for CollectingEventSink {
     fn emit(&self, event: Event) {
         self.events.lock().unwrap().push(event);
+    }
+}
+
+// ---------------------------------------------------------------------
+// SessionDiscoveryHost fake
+// ---------------------------------------------------------------------
+
+/// A [`SessionDiscoveryHost`] fake for a `RuntimeDeps`/`LoopDeps` fixture
+/// that does not exercise session discovery: `search` always succeeds with
+/// a preconfigured (default: empty) [`SessionSearchResult`], never an
+/// I/O-performing scan. Deliberately succeeds rather than refuses --
+/// unlike `conway_core::ports::SessionDiscoveryHandle::noop` (which exists
+/// specifically to catch a `ToolCtx` fixture that FORGOT to wire a real
+/// host), this type is an explicit, injected test double, the same
+/// "trivial but real" shape [`FakePathStore`] already establishes.
+#[derive(Debug, Default)]
+pub struct FakeSessionDiscoveryHost {
+    result: Mutex<Option<SessionSearchResult>>,
+}
+
+impl FakeSessionDiscoveryHost {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Preconfigures the `SessionSearchResult` every subsequent `search`
+    /// call returns (until overridden again). Unconfigured calls get
+    /// `SessionSearchResult::default()` -- zero matches, zero cost.
+    pub fn with_result(self, result: SessionSearchResult) -> Self {
+        *self.result.lock().unwrap() = Some(result);
+        self
+    }
+}
+
+#[async_trait]
+impl SessionDiscoveryHost for FakeSessionDiscoveryHost {
+    async fn search(&self, _query: SessionSearchQuery) -> Result<SessionSearchResult, StoreError> {
+        Ok(self.result.lock().unwrap().clone().unwrap_or_default())
     }
 }

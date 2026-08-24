@@ -121,6 +121,47 @@ pub struct TrustPermissionReport {
     pub notices: Vec<String>,
 }
 
+/// The result of `Conway::preview_trust_target` -- what an operator must be
+/// shown BEFORE a trust decision, not after. Board item (split from the
+/// `(kind, id, digest)`/plugin-subject generalisation, which this does not
+/// pre-empt): the shipped `/trust permissions` used to install and trust in
+/// one action with nothing shown first; this is the read-only half that now
+/// runs ahead of it.
+///
+/// **Deliberately a preview, not a diff.** `crate::config::trust::
+/// TrustStore` never retains a PRIOR trust decision's content (only its
+/// digest -- see that module's own doc), so there is nothing on disk or in
+/// memory to diff `contents` against even when [`Self::status`] is
+/// [`crate::config::trust::TrustStatus::Changed`]. `contents` is always the
+/// file's CURRENT bytes; the caller (`conway_cli::tui::view::
+/// draw_trust_preview`) states that limit to the operator in words rather
+/// than implying a diff view that cannot be produced.
+#[derive(Debug, Clone)]
+pub struct TrustPreview {
+    /// The file's current bytes, read fresh at preview time -- the SAME
+    /// bytes `Conway::trust_permission_file` would digest and record if the
+    /// operator goes on to confirm.
+    pub contents: String,
+    /// Whether this would be a first trust, a re-trust of a changed file,
+    /// or a no-op re-confirmation of an already-current trust record.
+    pub status: crate::config::trust::TrustStatus,
+}
+
+/// Reads `path`'s current bytes and reports what trusting them now would
+/// mean, WITHOUT recording anything -- see `Conway::preview_trust_target`'s
+/// own doc (`crates/conway/src/conway.rs`) for the full contract. `env` is
+/// passed explicitly, mirroring [`trust_permission_file`]'s own shape,
+/// since this function has no `self.config` to read.
+pub(crate) fn preview_trust_target(
+    env: &HashMap<String, String>,
+    path: &Path,
+) -> std::io::Result<TrustPreview> {
+    let contents = std::fs::read_to_string(path)?;
+    let store = crate::config::trust::TrustStore::load(env);
+    let status = store.status(path, &contents);
+    Ok(TrustPreview { contents, status })
+}
+
 /// The result of `Conway::revoke_permission_pattern` -- what happened to
 /// the in-session grant AND to whatever file it came from, so the caller
 /// can tell the operator the whole truth rather than folding a failed
@@ -486,7 +527,7 @@ pub(crate) fn uncanonicalizable_paths_under_error(
 ///   the agent cwd, which coincides with the project root only in the
 ///   standard launch.)
 /// - For the GLOBAL file (`~/.conway/permissions.json`, or
-///   `$XDG_CONFIG_HOME/conway/permissions.json`): there is no containing
+///   `$CONWAY_CONFIG_DIR/permissions.json`): there is no containing
 ///   project, so the base is the AGENT CWD the load was initiated with --
 ///   the one directory a global rule can meaningfully be relative to at
 ///   load time. (Resolving against the config directory would make `"src"`
@@ -520,7 +561,7 @@ pub(crate) fn load_permission_files(
     granting_agent: AgentId,
 ) -> PermissionLoadReport {
     let paths = crate::config::discovery::permission_file_paths(cwd, env);
-    let global_path = crate::config::discovery::xdg_config_path(env)
+    let global_path = crate::config::discovery::user_config_path(env)
         .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
     let trust_store = crate::config::trust::TrustStore::load(env);
     let mut notices = Vec::new();
@@ -691,7 +732,7 @@ pub(crate) fn trust_permission_file(
     // For the global file (no containing project) the base is the passed
     // `cwd`, the same choice `load_permission_files` makes with its
     // explicit `cwd`.
-    let global_path = crate::config::discovery::xdg_config_path(env)
+    let global_path = crate::config::discovery::user_config_path(env)
         .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
     let base = permission_rule_base(path, global_path.as_deref(), cwd);
     let mut installed = 0;
@@ -853,7 +894,7 @@ pub(crate) fn persist_revoke_outcome(
             error: e.to_string(),
         },
         Ok(()) => {
-            let global_path = crate::config::discovery::xdg_config_path(env)
+            let global_path = crate::config::discovery::user_config_path(env)
                 .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
             let is_global = global_path.as_deref() == Some(path);
             let retrust_warning = if is_global {

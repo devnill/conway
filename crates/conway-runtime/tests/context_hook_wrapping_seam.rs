@@ -86,15 +86,19 @@ fn build_runtime_over(store: Arc<dyn SessionStore>, backend: Arc<dyn Backend>) -
 
     Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     })
 }
 
@@ -121,6 +125,7 @@ fn resume_spec(session: SessionId) -> ResumeSpec {
         session,
         agent_def: None,
         role: None,
+        model: None,
         tools: None,
         budget: Budget::default(),
         cwd: None,

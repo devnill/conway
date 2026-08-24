@@ -130,15 +130,19 @@ fn build_runtime(
 
     let runtime = Runtime::new(RuntimeDeps {
         store: store.clone(),
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()) as Arc<dyn HealthRegistry>,
         backends,
         plugins: Vec::<Arc<dyn Plugin>>::new(),
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs,
+        instructions: Vec::new(),
         skills: skill_defs,
         event_bus: EventBus::new(1024),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     });
     (runtime, store)
 }
@@ -262,6 +266,7 @@ fn skill_body_is_carried_verbatim_into_assembled_segment() {
         model: ModelId::new("m"),
         cache_mode: CacheMode::None,
         system_prompt: None,
+        instructions: vec![],
         skills: vec![fragment],
         tools: vec![],
         path: path_from_legacy(

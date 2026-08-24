@@ -171,7 +171,13 @@ impl App {
                             // the `/why` reads this back; `AppState::apply`
                             // (state.rs, out of this item's file scope) does
                             // not populate it -- see the field's own doc.
+                            // The OLD value shifts into `previous_model_
+                            // decision` first (its own doc) so `/why` can
+                            // report what changed after a `/model`/`/role`
+                            // switch, not just the latest decision alone.
                             if matches!(env.event, conway::Event::ModelDecision { .. }) {
+                                self.state.previous_model_decision =
+                                    self.state.last_model_decision.take();
                                 self.state.last_model_decision = Some(env.clone());
                             }
                             // whether
@@ -478,6 +484,31 @@ impl App {
                                         .transcript
                                         .push(Entry::Notice { text });
                                 }
+                                // Board item `01M0KARX71A64NTSYTDBVANVPF`:
+                                // the write itself lives in
+                                // `App::apply_plugin_toggle`
+                                // (`app/plugin_toggle.rs`), factored out so
+                                // it is directly testable with no real
+                                // terminal/`select!` loop -- mirrors
+                                // `Self::apply_plugin_command_done`'s own
+                                // shape one screen over. `env_vars` is
+                                // collected HERE (never inside the method
+                                // itself, which takes it as a plain
+                                // parameter) for the SAME hermetic-testing
+                                // reason `Action::RevokePermissionPattern`'s
+                                // own arm above already collects its own
+                                // copy.
+                                Action::TogglePlugin(plugin_id, installed) => {
+                                    let env_vars: std::collections::HashMap<String, String> =
+                                        std::env::vars().collect();
+                                    self.apply_plugin_toggle(
+                                        plugin_id,
+                                        installed,
+                                        &env_vars,
+                                        &std::env::current_dir()
+                                            .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                                    );
+                                }
                                 Action::GrantPermissionPattern(rule, scope) => {
                                     // The granting agent is the one whose
                                     // call is being decided -- NOT
@@ -511,6 +542,49 @@ impl App {
                                         conway::PermissionDecision::AllowOnce,
                                     );
                                 }
+                                Action::GrantPermissionRule(rule, scope) => {
+                                    // The structured-argument counterpart to
+                                    // [`Action::GrantPermissionPattern`]:
+                                    // installs a `When::ArgsMatch` allow
+                                    // rule (built by the `[p]` field editor
+                                    // from the pinned fields) covering FUTURE
+                                    // calls, then resolves THIS call as
+                                    // `AllowOnce`. The granting agent is the
+                                    // prompt's requester (not
+                                    // `focused_agent`), same reasoning as
+                                    // the flat-pattern arm above.
+                                    let agent = self
+                                        .state
+                                        .pending_permission_agent()
+                                        .unwrap_or(self.state.focused_agent);
+                                    self.conway
+                                        .grant_permission_rule(rule.clone(), scope, agent);
+                                    // Persistence, mirroring the flat-pattern
+                                    // arm above exactly: best-effort, silent
+                                    // either way, session scope only (an
+                                    // Agent/AgentSubtree grant names LIVE
+                                    // agent ids, meaningless to a file read at
+                                    // the next launch -- persisting it would
+                                    // silently WIDEN it to the load scope on
+                                    // restart). Unlike the flat form, this
+                                    // writes into `permissions.json`'s
+                                    // structured `rules` array (F12) rather
+                                    // than the flat `allow` list -- the SAME
+                                    // array a file-loaded `paths_under` rule
+                                    // already round-trips through end to end
+                                    // (`conway/tests/structured_rule_seam.rs`),
+                                    // so an `ArgsMatch` rule needs no new wire
+                                    // format, only this write path.
+                                    if scope == conway::PermissionScope::Session {
+                                        persist_permission_structured_rule(
+                                            self.state.permission_paths.first(),
+                                            &rule,
+                                        );
+                                    }
+                                    self.state.resolve_current_prompt(
+                                        conway::PermissionDecision::AllowOnce,
+                                    );
+                                }
                                 Action::AskFate(fate) => {
                                     // B5: exactly one facade op per fate,
                                     // via the same Host seam `commands::execute`
@@ -523,6 +597,25 @@ impl App {
                                         commands: &self.command_registry,
                                     };
                                     commands::apply_ask_fate(fate, &mut self.state, &host).await;
+                                }
+                                Action::TrustDecision(decision) => {
+                                    // Board item (split from
+                                    // `01KZHVFCN6ZEAXV7K5JHRQN1YB`): the
+                                    // trust-preview card's confirm/cancel,
+                                    // via the SAME `Host` seam every other
+                                    // facade call uses -- a failed confirm
+                                    // keeps the card open with the error
+                                    // shown (see
+                                    // `commands::apply_trust_decision`'s own
+                                    // doc), mirroring `Action::AskFate` just
+                                    // above exactly.
+                                    let host = commands::LiveHost {
+                                        handle: &self.handle,
+                                        conway: &self.conway,
+                                        commands: &self.command_registry,
+                                    };
+                                    commands::apply_trust_decision(decision, &mut self.state, &host)
+                                        .await;
                                 }
                                 Action::IntentConfirm(choice) => {
                                     // C2: the confirmation card's trust
@@ -725,4 +818,150 @@ fn persist_permission_rule(path: Option<&std::path::PathBuf>, rule: &conway::Pat
         return;
     }
     let _ = std::fs::rename(&tmp, path);
+}
+
+/// The structured counterpart to [`persist_permission_rule`]: appends
+/// `rule` (a [`conway::Rule`] built by the `[p]` field editor -- an
+/// `ArgsMatch` allow rule today, but this takes any `Rule`) to the
+/// permission file at `path`'s structured `rules` array, best-effort,
+/// tmp-then-rename.
+///
+/// This needs no new wire format: `permissions.json`'s `rules` array (F12)
+/// already carries an arbitrary [`conway::Rule`] via `serde`'s ordinary
+/// derive, and `Conway::load_permission_files` already installs whatever
+/// `When` variant it finds there through the SAME generic path a
+/// `paths_under` file rule uses -- proven end to end in
+/// `conway/tests/structured_rule_seam.rs`. So an `ArgsMatch` rule granted
+/// here round-trips through exactly that path at the next launch; this
+/// function only had to exist, not invent anything new to write.
+///
+/// Same failure posture as [`persist_permission_rule`] throughout: every
+/// failure path is a silent no-op (a rule that cannot be written still
+/// applies to the running session); a corrupt or unreadable existing file
+/// is treated as empty; matches by `Rule` equality (not a wire string, which
+/// a structured rule has none of) so granting the identical rule twice
+/// never duplicates the file entry.
+fn persist_permission_structured_rule(path: Option<&std::path::PathBuf>, rule: &conway::Rule) {
+    let Some(path) = path else {
+        return;
+    };
+    let mut file = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<conway::PermissionFile>(&c).ok())
+        .unwrap_or_default();
+
+    if file.rules.contains(rule) {
+        return;
+    }
+    file.rules.push(rule.clone());
+
+    let Ok(serialized) = serde_json::to_string_pretty(&file) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        if std::fs::create_dir_all(dir).is_err() {
+            return;
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, serialized).is_err() {
+        return;
+    }
+    let _ = std::fs::rename(&tmp, path);
+}
+
+#[cfg(test)]
+mod persist_tests {
+    //! Unit coverage for [`persist_permission_structured_rule`], the write
+    //! half of the `[p]` field editor's durability round-trip (board item
+    //! `01M0EMDVBJVT510GBJHPWBZ3G6`). `run` itself owns a real terminal and
+    //! is not unit-tested (see this module's own doc); this free function
+    //! needs none of that, so it gets tested directly here, same as its
+    //! sibling `persist_permission_rule` should be (a pre-existing gap this
+    //! item did not expand to cover).
+    //!
+    //! The headline test re-parses the written file through
+    //! [`conway::permission_pattern::parse_rules`] -- the SAME parser
+    //! `Conway::load_permission_files` calls at the next launch -- rather
+    //! than hand-inspecting the JSON, so this proves the real round trip,
+    //! not just that some bytes landed on disk.
+    use super::persist_permission_structured_rule;
+    use std::collections::BTreeMap;
+
+    fn args_match_allow_rule() -> conway::Rule {
+        let mut pinned = BTreeMap::new();
+        pinned.insert(
+            "path".to_string(),
+            serde_json::Value::String("/etc/hosts".to_string()),
+        );
+        conway::Rule::args_match_allow_rule("read", pinned)
+    }
+
+    #[test]
+    fn a_granted_structured_rule_round_trips_through_the_real_file_parser() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("permissions.json");
+        let rule = args_match_allow_rule();
+
+        persist_permission_structured_rule(Some(&path), &rule);
+
+        let contents = std::fs::read_to_string(&path).expect("file must be written");
+        let parsed = conway::permission_pattern::parse_rules(&contents);
+        assert_eq!(
+            parsed,
+            vec![rule],
+            "the written file must re-parse, through the real loader-facing parser, to \
+             exactly the rule that was granted: {contents}"
+        );
+    }
+
+    #[test]
+    fn granting_the_identical_rule_twice_does_not_duplicate_the_file_entry() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("permissions.json");
+        let rule = args_match_allow_rule();
+
+        persist_permission_structured_rule(Some(&path), &rule);
+        persist_permission_structured_rule(Some(&path), &rule);
+
+        let contents = std::fs::read_to_string(&path).expect("file must be written");
+        let parsed = conway::permission_pattern::parse_rules(&contents);
+        assert_eq!(
+            parsed.len(),
+            1,
+            "granting the same rule twice must not duplicate it"
+        );
+    }
+
+    #[test]
+    fn a_second_distinct_rule_is_appended_alongside_the_first() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("permissions.json");
+        let first = args_match_allow_rule();
+        let mut pinned = BTreeMap::new();
+        pinned.insert(
+            "path".to_string(),
+            serde_json::Value::String("/etc/passwd".to_string()),
+        );
+        let second = conway::Rule::args_match_allow_rule("read", pinned);
+
+        persist_permission_structured_rule(Some(&path), &first);
+        persist_permission_structured_rule(Some(&path), &second);
+
+        let contents = std::fs::read_to_string(&path).expect("file must be written");
+        let parsed = conway::permission_pattern::parse_rules(&contents);
+        assert_eq!(
+            parsed.len(),
+            2,
+            "a distinct second rule must be appended, not replace the first"
+        );
+    }
+
+    #[test]
+    fn no_path_is_a_silent_no_op() {
+        // Never panics, never creates anything -- the caller passes
+        // `permission_paths.first()`, which is legitimately `None` when no
+        // permissions file was discovered.
+        persist_permission_structured_rule(None, &args_match_allow_rule());
+    }
 }

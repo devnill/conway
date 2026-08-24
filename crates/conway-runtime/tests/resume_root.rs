@@ -56,15 +56,19 @@ fn build_runtime_over(
 
     Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: std::sync::Arc::new(FakeHealth::new()),
         backends,
         plugins: vec![],
         gate: std::sync::Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: std::sync::Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: std::sync::Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     })
 }
 
@@ -91,6 +95,7 @@ fn resume_spec(session: SessionId) -> ResumeSpec {
         session,
         agent_def: None,
         role: None,
+        model: None,
         tools: None,
         budget: Budget::default(),
         cwd: None,

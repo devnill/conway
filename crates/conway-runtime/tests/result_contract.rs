@@ -254,8 +254,18 @@ fn build_loop_with_contract(
         Arc::new(FakeSubagentHost::new(agent));
     let tree = Arc::new(AgentTree::new(bus.clone()));
 
+    let path_store: Arc<dyn conway_core::ports::PathStore> =
+        std::sync::Arc::new(conway_testkit::FakePathStore::new());
+    let resolver = Arc::new(conway_core::transcript::TranscriptResolver::new(64));
     let deps = Arc::new(LoopDeps {
-        store,
+        store: store.clone(),
+        path_store: path_store.clone(),
+        context_path_host: Arc::new(conway_runtime::context::RuntimeContextPathHost::new(
+            store.clone(),
+            path_store.clone(),
+            resolver.clone(),
+        )),
+        session_discovery_host: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         router,
         attempt,
         registry: plugin_registry,
@@ -267,7 +277,7 @@ fn build_loop_with_contract(
         headroom: Arc::new(HeadroomPolicy::default()),
         tree: tree.clone(),
         context_hook: std::sync::RwLock::new(None),
-        resolver: Arc::new(conway_core::transcript::TranscriptResolver::new(64)),
+        resolver,
         context_curator: std::sync::RwLock::new(None),
         observers: Vec::new(),
         plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
@@ -275,6 +285,7 @@ fn build_loop_with_contract(
 
     let spec = AgentSpec {
         system_prompt: None,
+        instructions: vec![],
         skills: vec![],
         tools: None as Option<ToolSelector>,
         role: RoleAlias::new("planner"),
@@ -879,17 +890,20 @@ async fn a_spawned_childs_result_contract_is_enforced_through_subagent_host() {
 
     let runtime = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health,
         backends,
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: std::collections::HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::new(1024),
         headroom: Arc::new(HeadroomPolicy::default()),
-    });
 
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+    });
     let parent = runtime
         .start_root(RootSpec {
             session: None,
@@ -1192,17 +1206,20 @@ async fn keep_alive_with_a_result_contract_is_refused_by_subagent_host() {
 
     let runtime = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health,
         backends,
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: std::collections::HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::new(1024),
         headroom: Arc::new(HeadroomPolicy::default()),
-    });
 
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+    });
     let parent = runtime
         .start_root(RootSpec {
             session: None,

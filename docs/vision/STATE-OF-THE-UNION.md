@@ -1,627 +1,428 @@
 # State of the Union: conway
 
-**Reviewed 2026-08-14 against `main` @ `c760266`, version 0.9.0.**
-**Revised three times the same day** as the operator answered the questions it
-raised. Eight asked, eight answered; six of the answers changed the plan rather than
-confirming it. See §5, §6, and §8.
+**Reviewed 2026-08-18 against the working tree at `fa8b03b`, version 0.9.0.**
 
-> Written for the operator. It assumes you care about the shape of the system and
-> not about the shape of any particular trait. Everything here was checked
-> against the code in this run; where you might want to verify something
-> yourself, the file and line are given.
+> Written for the operator. It assumes you care about the shape of the system
+> and not about the shape of any particular trait. Everything in it was checked
+> against the code in this run; where you might want to check something
+> yourself, the file and line is given.
 >
 > Snapshot document — replaced wholesale on the next run of
 > [`REVIEW-PROMPT.md`](REVIEW-PROMPT.md).
+>
+> **Note on this run.** It is the second review at this commit. The tree has not
+> moved; what moved is what was verified. The previous run found the honesty
+> gate red and said so. This run confirms it, finds the same defect in three
+> more places the previous run did not name, finds a second gate red, and
+> reaches a different conclusion about the largest piece of work in the tree.
+> Where the two runs disagree, this one is the current reading.
 
 ---
 
-## The headline
+## 0. The verdict, in three sentences
 
-**The foundation is done and it is good.** The hard, structural, expensive-to-fix
-things — the primitives, the log, the port boundaries, the honesty discipline —
-are built, tested, and correct. Six months of decisions have gone the right way
-almost uniformly.
+**conway works, and the extension story is now genuinely proven** — a plugin
+written in any language, running as a separate process, can add tools to a
+`conway` binary that was compiled before it existed. **Two of the project's own
+CI gates are red on `main` right now**, and both are red for the same reason:
+capabilities shipped and the documents describing them were not updated, so five
+top-level pages tell a reader that things which work do not exist. **And the
+single largest piece of engineering in the tree — the context-path and curation
+machinery, about 5,500 lines — currently has no consumer at all**, after the one
+feature built on it was moved off it.
 
-**What is missing is the second storey.** conway is a very well-built harness that
-is still mostly a *coding* harness, still mostly extensible *by Rust programmers*,
-and still carrying its heaviest component (the terminal app) as a monolith rather
-than as the composition it tells everyone else to use.
-
-Against [`INTENT.md`](INTENT.md), the scorecard:
-
-| What you asked for | Where it stands |
-| --- | --- |
-| Small, agnostic core | **Strong.** The core holds no policy. Every opinion is either configuration, a hook, or a plugin. |
-| No compaction, no hidden context edits | **Complete.** Nothing in the tree rewrites, drops, or summarizes context on its own. |
-| Fork and spawn as the two primitives | **Complete**, and better than specified — a finished or crashed session can be forked, which most harnesses cannot do. |
-| Plugins all the way down | **Half.** The *seams* are real. The *ecosystem* is four plugins, all Rust, all compiled in. |
-| Context as a navigable tree | **Foundations only.** The data is all there. Almost none of it is reachable by a human or a model. |
-| A CLI made for humans | **Good and heavy.** The terminal app is the nicest thing in the tree and also the least conway-shaped. |
-| A CLI good enough to dogfood daily | **Not yet.** Missing skills and memory, which are load-bearing for full-time use. This is the forcing function everything else is untested without. |
-| One-shot as a general LLM tool | **Weak.** Five missing flags away; without them it is a coding agent you can script. |
-| Embedded in other applications, for inference | **Weakest area.** A host must assemble ~14 config fields, open a session, and run an agent turn before it can ask a model anything. There is no "give me a completion" path and exactly one example in the workspace. |
+The first is the best news the project has had. The second is a mechanical fix
+with a deadline. The third is a decision only you can make, and it is the reason
+to read this document.
 
 ---
 
-## 1. The system in blocks
+## 1. What is built, as blocks
+
+conway is one library consumed three ways. Everything below the facade line is
+fixed; everything to the right of it is optional and swappable.
 
 ```
-                        ┌───────────────────────────────────┐
-   how you drive it     │  TUI          -p / --print        │   ← conway-cli.
-                        │  (terminal)   (scripts, pipes)    │     ONE consumer,
-                        │            conway-cli             │     two modes.
-                        └─────────────────┬─────────────────┘
-                                          │
-     your application ───────────────────►│   ← a Rust host embedding the
-     (you write it; not in this repo)     │     library. A peer of conway-cli,
-                                          │     not of its two modes, and
-                                          │     privileged in neither direction.
-                        ┌─────────────────▼─────────────────┐
-   the public API       │    conway — this IS the library   │   ← there is no other
-                        │  build a harness, open a session, │     library and no
-                        │  prompt it, watch events          │     libconway to build
-                        └─────────────────┬─────────────────┘
-                                          │
-                        ┌─────────────────▼─────────────────┐
-   the engine           │        conway-runtime             │
-                        │  the turn loop · context assembly │
-                        │  fork/spawn · permissions · hooks │
-                        └────┬───────────────────────┬──────┘
-                             │                       │
-                ┌────────────▼──────┐     ┌──────────▼─────────┐
-   storage      │ conway-session    │     │  conway-tools      │  capability
-                │ the append-only   │     │  read write edit   │
-                │ log — the single  │     │  glob grep cd bash │
-                │ source of truth   │     │  fork spawn ask    │
-                └────────────┬──────┘     └──────────┬─────────┘
-                             │                       │
-                        ┌────▼───────────────────────▼──────┐
-   the contract         │           conway-core             │   ← ~8.8k lines
-                        │  types + the 12 extension seams   │      what a plugin
-                        │  no policy, no opinions           │      author depends on
-                        └───────────────────────────────────┘
+   terminal (TUI)  ─┐
+   one-shot `-p`   ─┼──▶  ┌──────────┐
+   your own app    ─┘     │  conway  │  the facade — one API, three consumers
+                          └────┬─────┘
+                               │
+        ┌──────────────┬───────┴───────┬──────────────┐
+        ▼              ▼               ▼              ▼
+   agent loop &    tool registry   session log    domain types
+   context build   & built-ins     (append-only)  & the 21 "ports"
+   (conway-        (conway-tools)  (conway-       (conway-core)
+    runtime)                        session)
+        │              │               │              │
+        └──────────────┴───────────────┴──────────────┘
+                               │
+                    ┌──────────┴───────────┐
+                    │   THE PLUGIN TIER    │   nine crates, all optional
+                    └──────────────────────┘
 
-   ─────────────────────────────────────────────────────────────────────────
-   optional, installed by choice          ┌──────────────────────────────┐
-   (none of these are in the diagram      │ routing · backends · history │
-    above; the core never depends on      │ stepguard · skeleton         │
-    any of them, in either direction)     └──────────────────────────────┘
+  in-process, compiled in:   routing · backends* · history · stepguard ·
+                             skills · memory · skeleton
+  OUT of process, no rebuild: subprocess-host · mcp-client
+                                          (* the only one on by default)
 ```
 
-**On "three ways to use conway" versus what this diagram shows.** Two different
-axes were being conflated, and the first draft of this diagram conflated them
-visually — it labelled the facade "three consumers" and drew two. Both statements
-are true at different levels:
+A "port" is a socket in the core that something else plugs into: where a model
+gets called, where permission is decided, where the log is written, where
+context is edited. There are 21 of them
+(`crates/conway-core/src/ports/`). **Every one has a working implementation
+living outside the core**, which is the property that makes the architecture
+real rather than decorative — with one exception, discussed in §3.
 
-- **Three ways to use conway** is the *user's* choice: as a library, from a
-  terminal, or one-shot from a script. This is the vocabulary `PHILOSOPHY.md` uses
-  and it is correct.
-- **One in-repo consumer of the facade** is the *dependency graph*. `conway-cli` is
-  a single crate offering two modes to a human; a host application is a separate
-  consumer that does not ship here. The TUI and one-shot mode are siblings inside
-  one consumer — they share a process, a binary, and config discovery. An embedder
-  is a peer of the binary, not of its modes.
+**Size.** About 36,000 lines of production code, 35,000 lines of comments in
+that same code, and 131,000 lines of tests across 2,842 test functions. The
+comment-to-code ratio is roughly 1:1 and the test-to-code ratio roughly 3.6:1.
+That is unusual and, on the evidence of this review, load-bearing: nearly every
+question I asked was answered by a comment that had already anticipated it.
 
-The facade is **the** library. There is no `libconway` to build and no second
-facade to write: `crates/conway/Cargo.toml` already carries zero CLI dependencies —
-no `clap`, no `ratatui`, no `crossterm`, all of which live only in `conway-cli` —
-so the isolation a split would buy is already enforced by the crate boundary. What
-makes embedding feel second-class is ceremony, not packaging, and that is §3.3a.
-
-**The one thing to take from this diagram:** the arrows only point downward, and
-the bottom box has no opinions in it. That is the property that makes everything
-above it replaceable, and it is genuinely true — machine-checked on every commit
-by a CI test that fails if a forbidden dependency edge appears
-(`crates/conway-cli/tests/cli_surface.rs`).
-
-### Scale, honestly
-
-| | Production Rust | Test Rust |
-| --- | ---: | ---: |
-| Everything | **~58,500** | ~102,000 |
-| — the terminal app | 13,900 | 25,400 |
-| — the engine | 11,300 | 21,200 |
-| — the public API | 10,600 | 29,300 |
-| — the contract others depend on | **8,800** | 7,500 |
-| — everything else | 13,900 | 18,600 |
-
-Two things worth noticing. The naïve line count of this repository is ~160,000,
-and nearly two-thirds of that is tests — 117 separate test files. That ratio is
-unusually good and is most of why the foundation can be called finished. And the
-crate a third-party plugin author has to understand is 8,800 lines, which is the
-number that actually matters for "is this thing lightweight."
+**The bottom-right box is the news.** `conway-plugin-subprocess` (4,099 lines)
+and `conway-plugin-mcp` (1,788 lines) let you name a command in your settings
+file, and conway spawns it, asks it what tools it has, and offers them to the
+model. No Rust, no recompile, no fork of the project. Between them they are the
+largest capability in the tree and the strongest answer conway has to its own
+central question — *can I extend this without forking it?*
 
 ---
 
-## 2. What is genuinely good
+## 2. Scored against [`INTENT.md`](INTENT.md)
 
-**The log is the truth, and it is written before anything is acted on.** Every
-turn, tool call, and result is appended to a plain JSONL file first. In-memory
-state is a cache over that file. This is the decision that makes everything else
-possible — forking a dead session, explaining why an agent did something
-inexplicable, recovering from a crash mid-turn. It is not a common choice and it
-is the right one.
+### §2 Weight: a small core with capability from outside. **Strong.**
 
-**Fork is cheaper and stronger than it needs to be.** Forking writes one line and
-copies zero records. Siblings forked at the same point share one allocation in
-memory *and* one cache prefix at the provider — so ten children forked from one
-point are largely paid for after the first. And because the thing being forked is
-a record rather than a live process, you can fork a session that finished hours
-ago, or crashed, at any point in its history. Most harnesses cannot do this at
-all.
+The core is 4,161 lines of code and holds no policy. Two mechanisms that a
+harness normally owns outright have been physically moved out of it and now
+install like anything else: model routing (`crates/conway-plugin-routing`) and
+repeated-step detection (`crates/conway-plugin-stepguard`). The provider
+adapters are also plugins; they are simply attached by default, because a
+harness that cannot reach a model is inert rather than unopinionated.
 
-**Nothing touches your context behind your back.** No compaction anywhere. No
-silent trimming. A request too large for its model is refused with an error that
-names what did not fit, rather than being quietly moved to a bigger model. This is
-§3 of `INTENT.md` and it is honoured without exception.
+The test you set — *can I swap this out without forking the project?* — now
+passes at every level including the one that used to be theoretical.
 
-**The extension seams are real, and there is proof.** Four of them have been
-tested the hard way — by taking something that used to be compiled into the core
-and moving it out to a plugin that installs through the same surface a stranger
-would use. Routing was a mandatory crate; it is now optional. Repeated-step
-detection was in the agent loop; it is now `conway.stepguard`, and you decline it
-by not installing it. Session rewind was going to be a TUI feature; it is
-`conway.history`. This is the only convincing evidence that a plugin system works,
-and this project has produced it four times.
+### §3/§5 Context as a tree; objects versus paths. **Built, unconsumed, and the decision point of this round.**
 
-**The honesty discipline is the best thing here.** `PHILOSOPHY.md` is written in
-the present tense, including for things not yet built — and every such claim
-carries a visible "Where the tree is today" note. What makes that safe rather than
-sloppy is `scripts/board-claims.md`: a ledger of falsifiable predicates that CI
-evaluates on every change, in *both* directions. If a promised capability ships,
-the check fails until the note is deleted. If a shipped capability regresses, the
-check fails too. This came out of a real incident where two documents describing
-the same work diverged and the un-enforced one went stale. It is a genuinely
-unusual piece of engineering culture and it should be protected.
+This is the belief the whole design hangs off, and it now has about 5,500 lines
+of machinery behind it: a vocabulary for what a context path is, a validator
+that refuses to build an incoherent one, a store that can persist and share a
+selection, a `Curator` socket a plugin plugs into, and a stage in the agent loop
+that calls it every turn. The code is good. I checked the refusal behaviour, the
+cross-session reach, and the composition of several curators, and all of it does
+what it says.
 
-**The permission model says what it actually does.** The documentation states,
-plainly rather than reassuringly, that a confinement root confines path arguments
-and does **not** confine what a shell command does — so an agent holding `bash` is
-not confined by a root alone. Being told the limit is worth more than being sold
-the guarantee.
+**Nothing uses any of it.** Specifically, and each of these was verified this
+run:
 
----
+- No curator exists anywhere in the project. The only thing implementing the
+  socket is the wrapper that would combine several of them
+  (`crates/conway/src/builder.rs:1798`), and unit-test doubles.
+- The store that would persist a selection is never constructed
+  (`FsPathStore`, `crates/conway-session/src/path_store.rs:482`).
+- The operation that assembles a new path is never called outside its own tests
+  (`derive_with`, `crates/conway-core/src/path.rs:798`).
+- The resolver that would make paths the real way a turn is assembled is
+  written, tested, and deliberately **not wired**; a translation bridge
+  reproduces the old behaviour instead
+  (`crates/conway-runtime/src/context/path.rs:489`).
+- The label meaning "the operator chose this" is produced in one place: a unit
+  test (`Selector::Operator`, `crates/conway-core/src/path.rs:121`). Its own
+  documentation says it arrives "through `conway path` verbs". There is no
+  `conway path` command.
+- An embedder cannot supply a path store at all — the socket is not re-exported
+  by the facade and there is no builder method for it.
 
-## 3. Where it falls short of the intent
+Read one at a time, each of those is a reasonable staging decision with an open
+board item behind it. **Read together, they are six accommodations around one
+premise**, which is the pattern [`REVIEW-PROMPT.md`](REVIEW-PROMPT.md) §2 asks
+this review to look for. The premise is that record-granular path curation is
+the mechanism memory, compaction, and operator curation would all be built on.
+Of those three, memory was built on it, failed, and was **moved off it**
+(`crates/conway-plugin-memory/src/lib.rs:4-33` records why, honestly and in
+detail). The other two are unwritten.
 
-Five areas, in the order I would fix them.
+So the seam's remaining justification rests entirely on a compaction plugin
+nobody has written and an operator command nobody has built. That may well be
+right — it is a genuinely well-shaped seam and compaction is the obvious fit.
+But it is a prediction, and the last prediction of this exact kind cost a
+rebuild. **The question for you is not "should we finish wiring it" but "what
+would prove this seam is the right one, and can that proof be produced cheaply
+before more is built on it?"** §5 has a concrete proposal.
 
-### 3.1 Extensibility is real but the exits are narrow
+The parts of §5 that *are* live are good and worth saying: forking is O(1) and
+shares a byte prefix, siblings forked at one point share a cache, a finished or
+crashed session can still be forked from, and every context segment carries
+where it came from.
 
-*Intent §6: "can I swap this out or extend it without forking the project?"*
+### §6 Plugins all the way down. **Strong — and the ceiling moved this cycle.**
 
-There are twelve extension seams in the contract crate and every one of them
-works. But there are only two ways to reach them:
+`PHILOSOPHY.md` §5 says the two extension costs are hooks (a shell script) and
+plugins (Rust, compiled). That is no longer the whole picture, and the gap is in
+conway's favour: an external program in any language can now register tools over
+a wire protocol, and a standard MCP server can be pointed at directly. Eight
+hook events fire from real code paths, and a plugin can declare its own events,
+its own slash commands, its own permission rules, and its own status line
+contributions.
 
-- **Write Rust and compile it in.** This is the only way to add a tool, a backend,
-  a router, or a context policy.
-- **Write a hook** — name an event, name a command. No language requirement, no
-  build step. Seven events are wired: before and after a tool call, session start,
-  prompt submitted, request assembled, child spawned, child reported.
+The one thing you still cannot do without recompiling is add a *backend*
+(a new inference provider) out of process.
 
-The hook path is the right idea and it is under-built relative to its promise. It
-can *observe* nearly everything and *deny* two things. It cannot supply a tool, a
-model, or a context policy. So the moment someone wants to add capability rather
-than react to it, they are writing Rust — and `INTENT.md` says most of what people
-want should never require that.
+### §7 Three surfaces. **Two strong, one thinner than it looks.**
 
-The missing rung is an **out-of-process plugin host**: a plugin that is a program
-rather than a compiled crate. The groundwork is deliberately in place — the
-tool-facing types are already serialization-ready, and comments across the tree
-name a future out-of-process transport
-(`crates/conway/src/lib.rs:208`, `crates/conway-core/src/ports/plugin.rs:389`) —
-but none of it is built. This is the single highest-leverage missing piece in the
-whole system, because it converts "plugins all the way down" from a property of
-the architecture into a property anyone can use.
+**One-shot (`-p`) is excellent.** Twenty-one flags, three output shapes, strict
+separation of model output from diagnostics, stable exit codes, fails closed on
+permissions, and a JSON-schema result contract enforced identically for every
+provider. It works outside a repository.
 
-### 3.2 The context tree exists in the data and almost nowhere else
+**Embedded is strong, and the falsifiable claim you asked for in §7 is proven in
+runnable code**: `crates/conway/examples/bare_inference.rs` configures conway
+down to one bare inference call — no tools, no agent behaviour — using only
+mechanisms a third party also has. That claim was never added to the machine-
+checked ledger the way §7 said it should be, which is a small miss.
 
-*Intent §5: context as a navigable tree, not a line.*
+**The terminal application is the thinnest of the three**, and that matters most
+because §7a says this surface is the forcing function for everything else. It
+has a live command palette, an agent-tree panel, permission prompts with a
+grant-scope choice, an `/ask` side-question modal with three exits, a settings
+screen that can revoke individual rules, and natural-language intent
+confirmation. What it does not have is discussed next.
 
-Everything needed is already recorded. Sessions have parents. Forks name a point.
-Every fragment of context carries where it came from. There is even a persisted,
-reversible mechanism for excluding a record from what a fork inherits.
+### §5c Changing model mid-session. **Not possible. This is a real gap.**
 
-What is missing is every way of *using* it:
+[`INTENT.md`](INTENT.md) §5c is unusually emphatic: *"Changing model mid-session
+is ordinary, not exceptional… A design that makes model changes awkward has
+failed regardless of what else it gets right."*
 
-- The exclusion mechanism has **no way to invoke it.** Nothing in the entire
-  workspace creates one outside of tests (`crates/conway-runtime`, `crates/conway`
-  — verified by search this run). A user who wants it must append the record to
-  the log by hand.
-- There is a `conway sessions tree` command and a TUI agent panel, but no view of
-  the *context* tree — which branch carries what, what each cost, where two
-  branches diverged.
-- "Merge the distillate back" is a thing you do by hand: read the child's answer,
-  decide, retype. The primitives support it; nothing names it.
-- Branches have no names. You navigate by session id.
+There is no `/model` command, no role or model argument on `/fork` or `/spawn`
+(`crates/conway-cli/src/tui/commands.rs`), and no facade method that changes a
+session's model or role. The only levers are `--model` and `--role-override` at
+process start. To use a cheaper model for a mechanical stretch of work you
+restart conway.
 
-So the idiom you described — break off a side branch, find out if it was worth
-anything, merge it or let it die — is *possible* today and *supported* by nothing.
-Per your steer, the curation policy belongs in a plugin. But the plugin needs
-something to hold onto, and today the handles are missing.
+The architecture is *ready* for this — §5c's own reasoning about selections
+being model-free was written precisely so this would be cheap. Nothing consumes
+that readiness.
 
-> **Superseded in part by §5.1.** This section framed the gap as naming and
-> visualization. It is bigger than that: the missing handle is a first-class
-> *path* — an ordered, nameable selection of immutable records that an agent's
-> context is assembled from. Read §5.1 before acting on this section.
+### §7a/§7b The dogfooding ladder. **Still at rung zero.**
 
-### 3.3 One-shot mode is a coding agent with the interactive parts removed
+The intake machinery shipped: [`docs/dogfooding.md`](../dogfooding.md) and
+`scripts/dogfood-note.sh`, which turns a moment of friction into a board item in
+one command. The script defines its own falsifiable marker — every item it
+creates is titled `[dogfooding] …`.
 
-*Intent §7: flexible programmatic use, not just one-shot inference.*
+**Across all 358 board items, that marker appears zero times.** No session of
+real work has been recorded through the mechanism built to record it.
 
-This is the weakest area relative to the intent, and it is also the cheapest to
-fix.
+There is one encouraging counter-signal: uncommitted work in the tree right now
+adds an in-prompt permission-pattern editor to the TUI, which is exactly the
+shape of change daily use produces. It has no board item.
 
-`conway -p "..."` gives you: streamed output, three output formats, strict
-separation of model output from diagnostics, stable exit codes, and a gate that
-fails closed. That is a solid scripting contract and it is well documented.
+§7a says *"is this needed to dogfood conway as a full-time coding agent?"*
+outranks architectural tidiness when the two disagree. Since the last review the
+work has been almost entirely architectural.
 
-What it does not give you is any way to be something other than a coding agent:
+### §8.1/§8.3 and `CONTRIBUTING.md` §2: nothing may claim to be reached that isn't. **RED, in both directions, on two gates.**
 
-| You cannot | Consequence |
-| --- | --- |
-| select an agent definition | Agent definitions exist and load from `.conway/agents/*.md`, but only a model or a role can be chosen from the command line. |
-| set or extend the system prompt | Every one-shot run is the built-in coding agent. |
-| ask for structured output | No schema flag. A pipeline wanting JSON parses prose. |
-| bound the run | No turn, token, or time limit on the command line. |
-| stream input | Prompt in, stream out — nothing resembling a conversation over a pipe. |
+This is the rule `CONTRIBUTING.md` calls the one the project has "broken most
+often." Two CI gates are failing on the current tree:
 
-Add those five and conway becomes a general-purpose way to reach a model. Without
-them it is a coding agent you can call from a script, which is the thing you said
-you were tired of.
+**Gate one — the design-claims ledger.** `python3 scripts/check-design-claims.py`
+reports 1 of 18 claims stale (`scripts/board-claims.md:100`). CI runs it
+(`.github/workflows/ci.yml:92`). The stale claim asserts that memory, skills and
+MCP are unbuilt. All three ship.
 
-Second-order: a plugin can add a **slash command** to the terminal app but cannot
-add a **subcommand** to the binary. So the CLI is extensible on the inside and
-fixed on the outside.
+**Gate two — dependency advisories.** `cargo deny check` reports
+`advisories FAILED`. Board item `01M0ASG80Q2ZWR8201F580M7RR` covers it.
 
-### 3.3a The embedding surface has the most ceremony and the least attention
+The ledger failing is the mechanism working — it is doing exactly the job it was
+built for. What it caught is that **five top-level documents currently understate
+what conway can do**, which is the same defect as overstating and, per
+`CONTRIBUTING.md` §2's own account, the kind that has bitten this repository
+before:
 
-*Added on revision. The first draft of this review treated embedding as the thing
-the other two surfaces are built on rather than as a use case with its own users.
-That was the same mistake the tree makes.*
+| Document | Says | Actually |
+| --- | --- | --- |
+| `PHILOSOPHY.md:606`, `:651` | compaction, memory, skills, MCP "not written at all" | three of the four ship and install |
+| `ARCHITECTURE.md:192` | "memory, skills, and MCP support remain separate, later work" | all three are crates in the tree |
+| `README.md:166`, `:193` | "four members shipping today"; memory/skills/MCP "unbuilt" | nine plugin crates; three of them are these |
+| `GUIDE.md:270`, `:273` | "no memory, skills, or MCP support"; **"there is no runtime plugin host — plugins are compiled in"** | all three exist; two runtime plugin hosts ship |
+| `PHILOSOPHY.md:182`, `ARCHITECTURE.md:372` | the filesystem root has a symlink-swap race, and closing it "is out of scope here" | closed — `crates/conway-tools/src/fs/beneath.rs` does open-relative enforcement via `cap-std` |
 
-conway is documented as serving three consumption modes equally, and at the level
-of API design that is true — the terminal app and one-shot mode really are written
-against the same public facade, with no privileged path. What is not true is that
-the three are equally *usable*.
+The `GUIDE.md` line is the worst of these. It tells a reader that conway's
+central promise — extend it without forking it — is unmet, at the exact moment
+it became met.
 
-To get an answer out of a model from a host application today, you construct a
-config object with roughly fourteen fields, build a harness, open a session, and
-run an agent turn. The one example in the entire workspace
-(`crates/conway/examples/minimal_session.rs`) spends its first sixty lines on
-config construction before anything happens, and it runs against fakes.
+The `PHILOSOPHY.md` §1 / `ARCHITECTURE.md` §3.4 row is the second worst, because
+it is security-bearing and it understates a *guarantee*. The task-level docs
+(`docs/tools.md:47`, `docs/plugins/trust-and-security.md:373`) already describe
+the fix correctly; only the two top-level pages are stale.
 
-There is no path that means *"ask this model this question."* Everything goes
-through the agent loop. A host that wants routing, the log, and permissions but not
-an agent has to take the agent anyway.
-
-Two things would change this and neither is architectural surgery: a builder that
-discovers sensible defaults instead of demanding every field, and a direct
-inference call that reuses the routing and logging machinery without starting an
-agent. What is genuinely open is whether the second one should exist at all — see
-§6.3.
-
-### 3.4 The plugin shelf is nearly empty
-
-`PHILOSOPHY.md` promises a tier of capabilities that ship in this repository and
-install by choice: dynamic routing, **compaction, memory, skills, MCP**. Routing
-exists. The other four do not — which the tree tracks honestly, with a CI check
-that will fail the moment one of them lands and the note is not removed.
-
-This matters more than "four features are missing," for two reasons. It is the
-difference between conway being usable in place of Claude Code (skills and memory
-are load-bearing for daily use) and being a well-built demonstration. And each one
-is a *test of the extension surface* — if compaction cannot be written as a plugin
-on the public API, the public API is unfinished, and that is worth discovering.
-
-### 3.5 The terminal app is the heaviest, least conway-shaped thing in the tree
-
-13,900 production lines, 11,500 of them the terminal UI, with single files of
-6,200, 3,700, 3,500, and 3,200 lines. It is the nicest part of conway to use and
-it is built as a monolith.
-
-Three consequences worth caring about:
-
-- It is the part of the tree that most needs to demonstrate the philosophy — it is
-  the reference consumer of the public API — and it currently demonstrates the
-  opposite.
-- It is where feature accretion will happen, and it has no structure that resists
-  it. This is the exact failure mode `INTENT.md` §2 is about.
-- Extending it means editing a 6,200-line state file, which is the friction
-  `INTENT.md` §6 says should not exist.
-
-Note this is a *shape* problem, not a *quality* problem. The code is tested at
-better than 2:1, and the redesign it went through was real work. It does not need
-rewriting. It needs decomposing.
+None of this is on the board.
 
 ---
 
-## 4. Three known gaps the tree already admits
+## 3. Findings
 
-These are declared in `PHILOSOPHY.md` with visible notes and pinned by CI, so they
-are debt-with-a-receipt rather than surprises. Listing them so the picture is
-complete:
+Ordered by what I would want decided first. All are now filed;
+[`PLAN.md`](PLAN.md) groups them by which files they collide on.
 
-1. **Confinement is enforced in the wrong place.** The spec says a filesystem
-   root belongs to the filesystem plugin, so that the same component both checks
-   the path and opens the file. Today the harness checks and the tool opens —
-   which leaves a gap where a symlink created in between defeats the check. Same
-   move also retires the one place the contract crate does file I/O.
-2. **Context policy can watch routing but not steer it.** A context hook sees
-   which model was chosen and cannot influence the choice. Content-aware model
-   selection therefore has to happen above the harness, in the caller.
-3. **The test doubles are locked inside the contract crate.** Every seam has a
-   fake, which is why this codebase is testable end to end with no network — but
-   they are unreachable outside this workspace, so a third-party plugin author
-   cannot use them.
+**F1 — Two CI gates are red on `main`, and five documents understate the tree.**
+The table in §2 is the whole finding. Mechanical to fix, and there is nothing to
+decide; the only cost of delay is that every reader in between is misinformed
+about a capability that works. *Filed 2026-08-20: `01M0EM97X118CZ43CGEPH2PB8F`
+(the red ledger), `01M0EM83C5ZZX75MSE0MTV7NZW` (five documents),
+`01M0EM8NK2R36X4TW50D43S58H` (the stale confinement notes),
+`01M0EKTVJE558SB4S6K3YYVXVZ` (`permissions.md`, a sixth document found while
+reconciling the board).*
 
----
+**F2 — The curation seam has no consumer, and its one consumer was moved off it.**
+About 5,500 lines, six independent accommodations, and a premise whose last
+test failed. The right response is probably not "wire the rest"; it is to decide
+what would prove the seam and produce that proof cheaply. *Now on the board: `01M0EMAC4CCDQ8QJYM21RXPKRY` asks the question, and
+`01M08F5XYFZ0JY42HW789AHX9J` (wire the resolver) was made to depend on it — it
+was claimable before 2026-08-20 and deliberately is not now.*
 
+**F3 — Memory is real, tested end to end, and forgets everything on restart.**
+The shipped binary installs the in-memory store while the durable one exists,
+finished, one crate away (`crates/conway-cli/src/first_party_plugins.rs:174`;
+`FsMemoryStore` at `crates/conway-session/src/memory_store.rs:163`). This is
+stated plainly and at length in the code comment, which is the right conduct —
+but it is stated nowhere a *user* looks, because `conway.memory` has no
+user-facing documentation at all. *On the board:
+`01M09V3S2AQYB2VK6MANFRH1JM`.*
 
-## 5. The answers, and what they changed
+**F4 — Three shipped plugins have no documentation.** `conway.memory` and
+`conway.skills` appear in no page under `docs/`, in no README, and in neither
+top-level specification. The out-of-process plugin host has one reference page
+(`docs/plugins/subprocess-plugins.md`) and is absent from `README.md` and
+`PHILOSOPHY.md` entirely. A capability nobody can find is not far from a
+capability that does not exist. *Filed 2026-08-20:
+`01M0EMAWY0B62RC966FQMQPGAC`.*
 
-The first draft of this review ended with three questions. All three have been
-answered, and two of them changed the plan rather than confirming it. Recorded
-here because a reader six months from now needs the resolution, not the question.
+**F5 — You cannot change model without restarting.** Against an intent document
+that calls this "one of the most consequential decisions available" and says
+people "revise it constantly." *Filed 2026-08-20:
+`01M0EM9RW7AYZAYXE5Z2XPNFND`.*
 
-### 5.1 Merging means something, and it is bigger than naming
+**F6 — There is no operator surface for anything built this cycle.** No
+`conway path`, no `conway memory`, no `/memory`, no `/model`. The sockets exist;
+only an embedder writing Rust can reach them. This is the question
+[`INTENT.md`](INTENT.md) §11 records as open and unresolved. *Filed 2026-08-20:
+`01M0EMD54BWAVZGYWPXP4S5P1J` (`/memory`) and `01M0EMC19FV3FJFJVR5697AV44`
+(settle `conway path`, blocked behind the curator proof).*
 
-**The answer.** Every turn and tool call is an immutable object. An agent's head is
-a pointer into that set. And — the load-bearing part — **the objects and the path
-taken through them are separate things.** A context window is not the log; it is an
-ordered *selection* from the log. Curation operates on the path and never on the
-turns. `INTENT.md` §5a carries the full statement.
+**F7 — Dogfooding has produced nothing.** Zero `[dogfooding]` items in 358.
+Rung one of the ladder — *used alongside your current harness, for real work, by
+choice* — has not been reached. *The intake item is closed; the outcome is
+untracked. Filed 2026-08-20: `01M0EMBF2ZFJA5Z3NE21FYN8RF`.*
 
-**Why it matters more than it sounds.** The worked example is compaction. The naive
-form asks a model to summarize and puts prose where records were: lossy in a way
-nobody can audit, and it destroys the cache because it rewrites the front of the
-prefix. The form this model enables is **mechanical cherry-picking** — assemble a
-new path from objects that already exist. Nothing is summarized, nothing is
-rewritten, every record is byte-identical to one that was already there. Two things
-fall out:
-
-- **Cache cost becomes knowable before the decision is made.** Order preserved and
-  bytes unchanged means a derived path shares a prefix with the original up to the
-  first omission. Dropping from the tail is nearly free; dropping from the head
-  spends everything. A policy can optimize against that; a summarizer cannot,
-  because it changes all of it.
-- **The curator does not have to be a model.** Structure — headings, record type,
-  provenance, which file a turn touched, which tool ran, token cost — is all
-  available without inference. Deterministic, testable, and incapable of
-  hallucinating.
-
-**What it changes in this review.** §3.2 said the context tree needed naming and
-visualization. That was too small. What is actually missing is a **first-class
-path**: a nameable, persistable, ordered selection of records that an agent's
-context is assembled from, possibly spanning sessions. Today conway has exactly one
-path per agent, computed by a fixed rule — a session's own records plus its
-inherited prefix. Everything downstream (compaction, memory, the graph views, the
-curation plugin) is waiting on that one piece.
-
-This is now the largest single item in the plan and it sits in the core. The line
-to hold: **the core owns the ability to express and assemble a path; which objects
-belong on it is policy and lives in a plugin.** Getting that line wrong puts the
-opinion back in the core.
-
-### 5.2 The binary may be opinionated; the harness may not
-
-**The answer.** The shipped `conway` binary should be fully functional and not
-heavy, which is only a contradiction until you notice they are two different
-questions:
-
-- *What must exist for conway to work at all?* — the harness. The test stays sharp
-  and narrow. Compaction, memory, and skills all fail it and none may be harness
-  defaults.
-- *What should someone get when they install the binary and run it?* — the
-  application. A fully-equipped coding agent, opinionated on purpose, every opinion
-  visible and removable.
-
-An opinion in the binary is not an opinion in the core.
-
-**What it changes.** The specification does not need a new middle tier of plugins;
-it needs to distinguish the harness from the shipped application, which is a
-smaller and cleaner edit. And it adds a priority that was not in the first draft:
-**the CLI has to become the daily driver.** A tool only improves through daily use
-by someone who notices what is wrong with it. Until conway is dogfooded full time,
-its priorities are guesses — which makes `conway.skills` and `conway.memory`
-gating items rather than shelf-stocking, and moves them up.
-
-### 5.3 There are three surfaces, not two
-
-**The answer.** Embedding conway inside another application to facilitate inference
-is a use case in its own right, not the substrate the other two happen to sit on.
-
-**What it changes.** A domain of its own in the plan, and the finding in §3.3a. The
-first draft folded this into "general-purpose LLM access layer" and scored it
-through the one-shot flags, which measured the wrong surface.
+**F8 — Small things, verified.** All three are filed:
+`01M0EMEQJHPR3XVNAN39YX7C38` (the ledger claim §7 nominated) and
+`01M0EMDVBJVT510GBJHPWBZ3G6` (the pattern editor's missing spec); the memory
+coverage gap is folded into `01M0EMAWY0B62RC966FQMQPGAC`'s page.
+ The bare-inference claim `INTENT.md` §7 says
+"belongs in the ledger" was never added to `scripts/board-claims.md`. The memory
+plugin's write path (the `remember` tool) is unit-tested and its read path is
+integration-tested, but no single test drives tool → store → context in one run;
+the two halves share a real store, so this is a coverage gap rather than the
+one-directional-verification defect, but it is the shape to watch. The
+in-flight permission-pattern editor has no board item.
 
 ---
 
+## 4. What is good, said plainly
 
-## 6. The second round of answers
+A review that only lists problems is not a state of the union, and this tree has
+had an unusually strong cycle.
 
-The three questions §5 opened were answered the same day. None was a yes/no; all
-three were "you are asking the wrong shape of question," and the corrections are
-worth more than the answers.
+**The out-of-process plugin host is the real thing.** Two wire transports, a
+version handshake, per-call deadlines, graceful degradation on unknown message
+tags, a plugin that declares the host capabilities it needs and is refused if
+they are absent, and a permission policy a remote plugin can declare that can
+narrow but never widen. This is the capability that turns "everything is a
+plugin" from a claim into a property.
 
-### 6.1 Going straight to the model is a composition, not a feature
+**The filesystem confinement fix is excellent work.** `conway.fs` now enforces
+its own root through open-relative syscalls, using `cap-std` rather than a
+hand-rolled loop, with the reasoning for that choice written down and the
+remaining uncovered case (`glob`/`grep` tree walks) disclosed rather than
+glossed. A check-then-open race in a security boundary was closed properly.
 
-**The answer.** No second API that shortcuts conway. A parallel path through the
-harness is something every future feature has to support twice, and building one
-would be an admission that conway's own composition surface cannot express its
-simplest case. What is required instead is that the plugin and configuration
-architecture be flexible enough that **routing straight to inference is something
-you configure** — no tools, no agent behaviour, one turn, out.
+**The memory rework is the best conduct in the repository.** A design document
+predicted memory would need no storage of its own. It was built that way, it
+failed on five specific counts, and the plugin was rebuilt on a store of its
+own. The module doc names all five failures, names the cap that had been written
+up as "bounded by construction" as the tell, and says the seam it abandoned is
+still the right seam for something else. Then the lesson was pushed up into
+[`INTENT.md`](INTENT.md) §5e as a general rule about design documents being
+hypotheses. That is the loop this project says it wants, executed.
 
-**What it changes.** The embedding domain loses "design a direct inference call"
-and gains something better: *try to configure conway down to a bare inference call
-using only mechanisms a third party also has, and report what stops you.* If
-something does, the finding is not "conway lacks an inference API" — it is **conway
-is too heavy and too opinionated to configure down**, which is a defect in the
-composition surface and gets fixed there.
+**The honesty machinery works.** The ledger caught the stale claim without
+anyone looking for it. The citation checker verified 401 citations across 452
+files with zero stale. The architecture invariants are machine-checked, down to
+"`conway-core` may do I/O in exactly one file."
 
-That is also a good falsifiable claim, and it should go in the ledger alongside the
-others.
-
-### 6.2 The graph is a separate artifact from the nodes
-
-**The answer, and it settles the shape of D1.** Paths already span sessions — that
-is what a fork's inherited prefix *is*, so this is a description of the present
-rather than a proposal. What is new is that a path can be **rearranged**, and
-rearranging must never affect any other session.
-
-That looked like it broke the git analogy — if we select and reorder, we are
-rebuilding a context by copying it, and copying is the thing conway does not do.
-The analogy was just mapped one layer off. Records are git *blobs*: shared,
-content-addressed, never rewritten. A path is a *commit*: cheap to rewrite, never
-shared implicitly. `git rebase` rewrites history without copying a byte of file
-content. Same move. So:
-
-- **Nodes are referenced, never copied.** Cherry-picking a record does not
-  duplicate it.
-- **A graph is owned by exactly one session.** Local, cheap, freely rearranged.
-- **Deriving a graph mutates no node and touches no other graph.**
-
-Under those rules "assemble a new tree" is literally true and costs nothing but the
-graph.
-
-**The hazard I would flag hardest, because the tree already has the scar.** A
-rendered context must never contain a tool call without its result — providers
-reject the entire request rather than tolerating it. conway learned this the
-expensive way: eight parallel forks once landed on a prefix cut mid-batch and all
-eight died on their first request with zero steps taken
-(`crates/conway-runtime/src/context/builder.rs:28`). The harness now drops
-unanswered calls as a final assembly pass, and — this is the part worth copying —
-**records every dropped call in the context report** rather than hiding the
-intervention, so a turn where the model re-issues a call it appears never to have
-made is explicable from the log instead of mysterious.
-
-Arbitrary selection reintroduces that problem at will. So the design has to answer,
-in writing: is an incoherent selection silently repaired, or refused? Silent repair
-means quietly deleting part of a deliberate choice. `INTENT.md` §5b carries this
-and four more hazards — rearranging costing strictly more than omitting, provenance
-surviving a graph drawn from three sessions, a graph pinning the logs it
-references, and whether a person can look at a rearranged context and tell what is
-in it. All five belong in D1-1's written design and none should be discovered
-during implementation.
-
-### 6.3 The dogfooding bar is a ladder
-
-**The answer.** Two rungs, not a flag day. **Rung one:** conway used alongside the
-current harness, for real work, by choice, for some class of task — this is what
-starts generating honest signal and it is closer than it looks. **Rung two:**
-comfort that the other tool could be uninstalled, which needs coverage of the
-features that actually matter *and* **output quality better than the incumbent
-produces today**. Not comparable — better. Feature parity with worse results is not
-a reason for anyone to switch, including us.
-
-**What it changes.** A survey item lands early: read what Claude Code, the DeepSeek
-harness, and [Hermes Agent](https://github.com/NousResearch/hermes-agent) actually
-do — Hermes especially, since it ships skills, persistent memory, and a learning
-loop as harness features rather than as things each user hand-builds — and produce
-the catalogue of what should be **available in a default installation**. Available,
-not enabled. That catalogue is what turns "ship four plugins" into a decision about
-which plugins, and it should exist before `conway.skills` starts.
+**The comments.** Roughly one line of prose per line of code, and it is the good
+kind — why a choice was made, what was rejected, what a mechanism deliberately
+does not cover. Several findings in this review came from a comment that had
+already anticipated the question and answered it against its own interest.
 
 ---
 
-## 7. What I would do, in one paragraph
+## 5. What I would do next
 
-Design the context path, because it is in the core, it blocks four other things,
-and its five hazards are all the kind that are cheap to answer on paper and
-expensive to discover in code. In parallel, run the competitive survey, because it
-decides what the plugin shelf should hold and it costs a fraction of building the
-wrong thing. In parallel, build the out-of-process plugin host, which is what turns
-"plugins all the way down" from an architecture property into one anyone can use.
-Then ship whatever the survey says gets conway to rung one of the dogfooding
-ladder, which is almost certainly skills and memory. Give one-shot mode its five
-flags, and try to configure conway down to a bare inference call — reporting
-whatever stops you as a defect in the composition surface. Decompose the terminal
-app. And close the three declared gaps, because a project whose credibility rests
-on an honesty ledger should not carry entries longer than it must.
+Four moves, in this order. Every one is a claimable board item;
+[`PLAN.md`](PLAN.md) says which of them collide on shared files.
 
-The plan that does all of that in parallel, with ownership boundaries, is in
-[`PLAN.md`](PLAN.md).
+1. **Green the gates and fix the six documents this week.** It is mechanical, it
+   needs no decision, and it is the rule you have said matters most. Fixing
+   `GUIDE.md:273` alone changes what a new reader believes conway is.
+   (`01M0EM97X118CZ43CGEPH2PB8F` and `01M0EM83C5ZZX75MSE0MTV7NZW` land together;
+   then `01M0EM8NK2R36X4TW50D43S58H`, `01M0EKTVJE558SB4S6K3YYVXVZ`,
+   `01M0EMAWY0B62RC966FQMQPGAC`, `01M0EMEQJHPR3XVNAN39YX7C38`.)
 
----
+2. **Answer the curation question before writing more curation code.** My
+   suggestion: do not start `conway.compaction` and do not build `conway path`
+   yet. Instead spend one small item writing the *cheapest possible* curator —
+   "drop tool results older than K turns" is about fifty lines — and run it
+   through the real seam on a real session. If it works, the seam is proven and
+   everything else is wiring. If it does not, you have found that out for fifty
+   lines rather than five hundred. Either answer is worth more than another
+   wiring item. (`01M0EMAC4CCDQ8QJYM21RXPKRY`, which now gates three items
+   behind it.)
 
-## 8. The last two answers
+3. **Give the operator something to type.** `/model` is the highest-value single
+   command in the tree, because `INTENT.md` §5c says so and because it is the
+   thing you will want on your first real session. `/memory` is second.
+   (`01M0EM9RW7AYZAYXE5Z2XPNFND`, then `01M0EMD54BWAVZGYWPXP4S5P1J`.)
 
-Both of §7's open questions were answered the same day. Nothing on this page is
-waiting on you now.
-
-### 8.1 An invalid path is refused, not repaired — and refused at derivation
-
-**The answer.** Fail fast and loudly. There is no way to predict the correct repair
-— dropping the orphaned call and keeping the result are both plausible, and choosing
-silently is guessing at intent. This is `PHILOSOPHY.md` §6's existing posture ("a
-loud, predictable refusal to a clever recovery") applied one layer up, which is a
-good sign the answer is the right one.
-
-**The sharper half is *where*.** The operative sentence was "it shouldn't ever be
-created in the first place," and that moves validation from render time to
-**derivation** time: the operation that would produce an incoherent path is the
-thing refused, with a typed error naming what it would have orphaned. An invalid
-path becomes unrepresentable rather than detected late — which is strictly better,
-because the error can name the operation that was wrong instead of describing a
-request nobody assembled by hand.
-
-**The existing repair stays, and the distinction is why.** Incoherence the *harness*
-caused — a fork cut mid-batch, a session killed between an assistant append and its
-tool results — is an accident nobody chose, and refusing it would punish someone for
-something they did not do. That keeps today's behaviour: drop the unanswered calls,
-record every drop. Incoherence a *deliberate selection* caused is an invalid change
-being requested, and gets refused. Two situations, two answers, and the difference
-is whether someone asked for it.
-
-**One usability obligation comes with it.** A refusal has to name the valid
-neighbouring operation — "dropping record 7 orphans the call in record 6; drop
-both" is actionable where "invalid path" is not. Without that, a safety property
-becomes an obstacle and people route around it.
-
-### 8.2 Non-Rust hosts get to embed conway
-
-**The answer.** Yes. Not everybody writes Rust, plenty of people embed compiled
-code, and a harness reachable from one language is not an inference layer — it is a
-Rust library that also runs in a terminal.
-
-**I owe a correction here.** Last section I asserted the shape would be "a process
-boundary with a serialized protocol, not a C ABI over the async facade." That was
-too confident. The stated targets are C, C++, and compiled hosts generally, where a
-subprocess is often exactly what you cannot have, so an in-process C ABI is
-genuinely on the table. The reason behind my claim has not gone away — conway's
-facade is fully async and event-streamed, and async across a C ABI is the hard part
-— but that is now a **design constraint for the binding layer** rather than an
-argument against it.
-
-**Three constraints on how, in priority order.**
-
-*It does not belong in the core or the engine.* The binding layer is another
-consumer of the facade, the same shape as a first-party plugin: its own crate,
-depending on `conway`, never touching `conway-core`. The core learns nothing about
-C. If it turns out this has to sit further out as an adapter rather than being built
-directly, that is an acceptable outcome and not a failure.
-
-*Follow the prior art.* This is solved ground and the wheel is not worth rebuilding.
-[Diplomat](https://github.com/rust-diplomat/diplomat) is the closest fit to the
-stated targets — proc-macro driven, no external IDL file, and its language list
-leads with C and C++; it exists because ICU4X had this exact problem.
-[UniFFI](https://mozilla.github.io/uniffi-rs/) is the IDL-driven alternative, aimed
-at Kotlin/Swift/Python. `cbindgen` is the low-level floor. Every one of them has
-already had to answer the async, panic-safety, and memory-ownership questions above,
-so read their answers before designing anything.
-
-*No second facade.* A non-Rust host gets a projection of the same public API a Rust
-host uses. Anything it cannot reach is a gap in the projection, not a different
-product.
+4. **Then use it.** Rung one is a session of real work, not a feature. Every
+   review since the beginning has audited prose against prose; the one input that
+   would change what this document says next time is friction from an actual
+   afternoon of use. (`01M0EMBF2ZFJA5Z3NE21FYN8RF` — run it alongside the rest,
+   not after.)
 
 ---
 
-## 9. Nothing is open
+## 6. Questions for you
 
-Eight questions asked across three rounds; eight answered. Every one of the eight
-turned out to be "you are asking the wrong shape of question," and in six cases the
-correction changed the plan rather than confirming it — which is the argument for
-running this review on a schedule rather than once.
+These are findings about [`INTENT.md`](INTENT.md), not about the code. All three
+are written up as open questions in that page's §11, in its own terms — I have
+not decided any of them.
 
-What is left is work, and it is in [`PLAN.md`](PLAN.md).
+1. **Does an operator get a curation command?** Still open from the last run
+   ([`INTENT.md`](INTENT.md) §11). Nothing about the tree has changed: the
+   machinery is there and there is nothing to type.
+
+2. **What proves an extension surface?** `INTENT.md` §8.5 says extension must be
+   low-friction, and `PHILOSOPHY.md` §5 says a first-party plugin needing a
+   private interface is a bug report against the plugin API. Neither says what
+   makes a surface *proven*. The `Curator` port is the case that needs the
+   answer.
+
+3. **Does a shipped capability owe a page?** Three plugins ship undocumented.
+   `CONTRIBUTING.md` §1 has a docs gate for changes; there is no rule that a
+   plugin crate implies a user-facing page, and the absence is why F4 happened
+   quietly.

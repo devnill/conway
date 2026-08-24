@@ -46,6 +46,7 @@ use crate::tui::view::Theme;
 mod ask;
 mod focus;
 mod plugin_cmd;
+mod plugin_toggle;
 mod run;
 mod shutdown;
 mod startup;
@@ -100,7 +101,7 @@ pub struct App {
     plugin_cmd_tx: mpsc::UnboundedSender<PluginCommandDone>,
     plugin_cmd_rx: Option<mpsc::UnboundedReceiver<PluginCommandDone>>,
     /// T8: where [`Self::submit`] persists `state.history` to after every push
-    /// -- `~/.conway/history` (or `$XDG_CONFIG_HOME/conway/history` when set),
+    /// -- `~/.conway/history` (or `$CONWAY_CONFIG_DIR/history` when set),
     /// resolved once at `App::new` via
     /// `conway::config::discovery::history_file_path`. `None` only when that
     /// resolution itself fails (no resolvable home directory --
@@ -642,7 +643,7 @@ mod tests {
     /// opened through the real `submit` path, and the assertion made on
     /// the OBSERVABLE rows -- the exact labels `view::draw` renders (via
     /// `view::settings::build_tree`) plus the rendered screen buffer --
-    /// never on an internal call count. No trust decision and no XDG
+    /// never on an internal call count. No trust decision and no user config
     /// isolation are needed precisely because deny/prompt install from any
     /// file, trusted or not -- the case this item exists for.
     #[tokio::test]
@@ -954,15 +955,21 @@ mod tests {
     /// level in `trust_with_no_permission_paths_configured_is_a_notice_
     /// with_no_facade_call`. Pointed at a freshly created, empty tempdir
     /// with NO `.conway/permissions.json` on disk, so `Conway::
-    /// trust_permission_file`'s OWN first step (`std::fs::read_to_string`)
+    /// preview_trust_target`'s OWN first step (`std::fs::read_to_string`)
     /// fails BEFORE ever reaching `TrustStore::trust` (the actual disk
-    /// write) -- this test can never write to the real operator's own
-    /// `~/.conway/trust.json`, unlike a genuinely successful trust would
-    /// (see `LiveHost::trust_permission_file`'s own doc on why that path is
-    /// deliberately left to `FakeHost` instead). The observable this test
-    /// exists to prove is that the REAL, non-fake dispatch chain reaches
-    /// `Conway::trust_permission_file` at all -- a genuine "file does not
-    /// exist" `Entry::Error`, not a parser rejection and not a stub.
+    /// write, which only `Conway::trust_permission_file` performs, after a
+    /// confirm this test never reaches) -- this test can never write to the
+    /// real operator's own `~/.conway/trust.json`, unlike a genuinely
+    /// successful trust would (see `LiveHost::trust_permission_file`'s own
+    /// doc on why that path is deliberately left to `FakeHost` instead).
+    /// The observable this test exists to prove is that the REAL, non-fake
+    /// dispatch chain reaches `Conway::preview_trust_target` at all -- a
+    /// genuine "file does not exist" `Entry::Error`, not a parser rejection
+    /// and not a stub. Board item (split from
+    /// `01KZHVFCN6ZEAXV7K5JHRQN1YB`): the failure text moved from "could
+    /// not trust" to "could not read" because the read this test exercises
+    /// now happens at the PREVIEW step, ahead of any trust decision -- see
+    /// `commands::execute`'s `SlashCommand::Trust` arm.
     #[tokio::test]
     async fn trust_reaches_its_handler_through_the_parser_against_a_real_conway() {
         let project = tempfile::TempDir::new().expect("tempdir");
@@ -986,11 +993,16 @@ mod tests {
         assert!(
             app.state.transcript.iter().any(|e| matches!(
                 e,
-                Entry::Error { text, .. } if text.contains("could not trust")
+                Entry::Error { text, .. } if text.contains("could not read")
             )),
-            "a real Conway must have reached the trust handler and reported \
-             the genuine 'file does not exist' failure, not a stub: {:?}",
+            "a real Conway must have reached the trust-preview handler and \
+             reported the genuine 'file does not exist' failure, not a \
+             stub: {:?}",
             app.state.transcript
+        );
+        assert!(
+            matches!(app.state.mode, Mode::Normal),
+            "a preview READ failure must never open the card"
         );
     }
 

@@ -84,8 +84,8 @@ pinned to the bottom. The transcript itself has no border — it renders as
 plain text with no box-drawing glyphs, so selecting and copying it with
 your terminal's own mouse selection copies exactly the conversation, never
 chrome. The input box, the agent panel, and every modal (the permission
-prompt, `/ask`, `/settings`, `/help`) are bordered; the transcript is the
-one thing that deliberately isn't.
+prompt, `/ask`, `/trust permissions`'s preview card, `/settings`, `/help`)
+are bordered; the transcript is the one thing that deliberately isn't.
 
 ## Composing input
 
@@ -105,7 +105,7 @@ while you're composing:
 | `Ctrl-D` | Quit, when the input box is empty. |
 
 Your input history persists across sessions (`~/.conway/history`, or under
-`$XDG_CONFIG_HOME/conway` if set) — it follows you across every project,
+`$CONWAY_CONFIG_DIR/conway` if set) — it follows you across every project,
 not just the current checkout. A pasted block is inserted as one edit, not
 replayed as a flood of keystrokes.
 
@@ -134,28 +134,46 @@ tool prompts the same way:
 ```
 ┌ PERMISSION REQUIRED ────────────────────────────────────────────┐
 │echo pong                                                        │
-│[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback│
-│  [p] grants: `bash` commands starting with `echo pong`          │
+│[y] allow once  [a] allow always  [n] deny  [Esc] deny w/ feedback│
 └───────────────────────────────────────────────────────────────────┘
 ```
 
 The first line is the command as it would actually run (below it, not
 shown above, the box also names the tool, its category, and the agent
-path proposing the call). Your options:
+path proposing the call). Note there is no `[p]` here: a `bash` call never
+offers a pattern grant at all, at any scope — see `permissions.md`'s Limits
+section for why. A structured tool (`read`, `write`, `grep`, …) offers
+`[p]` instead:
+
+```
+┌ PERMISSION REQUIRED ────────────────────────────────────────────┐
+│read({"path":"/etc/hosts"})                                       │
+│[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback│
+│  [p] grants: any `read` call                                    │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+Your options:
 
 | Key | Effect |
 | --- | --- |
 | `y` | Allow this one call. |
 | `a` | Allow this call, and remember the decision for the rest of the session. |
-| `p` | Grant a reusable pattern (a prefix match — the prompt states exactly what it would cover, before you press anything). Not offered when the command isn't safe to prefix-match (a shell command containing `;`, `&&`, a pipe, or similar). |
+| `p` | Opens a field editor over the call's structured arguments — every field starts wildcard; `space` pins the selected field to its exact value, `↑`/`↓`/`tab` move, `s` cycles the grant scope, `Enter` installs an allow rule covering future calls whose pinned fields match (unpinned fields stay wildcard) and allows this call, `Esc` cancels back to this prompt. Granting with nothing pinned is the broadest offer — any call to that tool. Never offered for a `bash` call. |
 | `n` | Deny this call. |
 | `Esc` | Deny this call, and tell the model to try a different approach. |
 | `PageUp` / `PageDown` | Scroll a long command's own display. |
 
-`[p]`'s pattern grant, project-file trust, and how grants persist and get
+`[p]`'s field editor, project-file trust, and how grants persist and get
 revoked are covered in full in [`permissions.md`](permissions.md) — this
 prompt is the one place you'll meet them, but that page is where the
-depth lives.
+depth lives. One thing worth knowing here rather than only there: at
+session scope, a `[p]` grant is also appended to the project's
+`permissions.json` (its structured `rules` array, not the flat `allow`
+list a plain pattern grant uses) — so it survives a restart the same way
+any other session-scope grant does, once you `/trust permissions` if the
+file wasn't already trusted. A per-agent or per-subtree grant is never
+written to a file, at any scope.
 
 ## Slash commands
 
@@ -169,12 +187,14 @@ shrinking the candidate list).
 | `/agents` | `/agents` | Toggle the below-chat agent-tree panel. |
 | `/settings` | `/settings` | Open the settings menu (display preferences, permission mode, and grant management). |
 | `/steer` | `/steer <agent> <text>` | Send a steering message to a running agent. |
-| `/context` | `/context <agent>` | Show an agent's assembled context. |
-| `/why` | `/why` | Show the last routing decision. |
+| `/context` | `/context <agent>` | Show an agent's assembled context, including its preamble (see below). |
+| `/why` | `/why` | Show the last routing decision — and, after a `/model`/`/role` switch, what changed. |
 | `/fork` | `/fork [<text>]` or `/fork @<agent> <directive>` | Open an interactive fork of the focused agent (inherits its context, frozen at the fork point), or fork a specific agent explicitly. Free text is classified into a fork/spawn recipe and confirmed before anything is created. |
 | `/spawn` | `/spawn [@<agent_def>] [<prompt>]` | Open an interactive spawned agent — a clean slate, optionally from a named agent definition; inherits the parent's role/model if none is given. |
 | `/resume` | `/resume <session-id>` | Resume a prior session. |
-| `/trust permissions` | `/trust permissions` | Trust the project's `.conway/permissions.json` at its current content, installing its `allow` rules for this session. See [`permissions.md`](permissions.md). |
+| `/model` | `/model <backend/model>` | Switch the focused agent to a pinned model, mid-conversation. |
+| `/role` | `/role <alias>` | Switch the focused agent to a different role, mid-conversation. |
+| `/trust permissions` | `/trust permissions` | Opens a preview card showing the project's `.conway/permissions.json` at its current content; `[y]`/`Enter` confirms (trusting it and installing its `allow` rules for this session), `[n]`/`Esc` cancels having written nothing. See [`permissions.md`](permissions.md). |
 | `/help` | `/help` | Open a read-only keybinding reference overlay. |
 | `/quit` or `/exit` | `/quit` | Exit conway. |
 
@@ -182,6 +202,71 @@ A message that doesn't start with `/` is sent to the model as an ordinary
 prompt. An unrecognized `/command` is reported as an error rather than
 sent to the model. `/trust permissions` doesn't appear in the `/` palette
 list above (typing it in full still works) — every other command does.
+
+### `/context`: the preamble section
+
+`/context <agent>` lists every segment in that agent's assembled context.
+If any installed plugin declares an instruction fragment (a paragraph of
+guidance shipped alongside its tools, rather than a system prompt or a
+directory-loaded skill), those fragments appear first, in a **preamble**
+section:
+
+```
+preamble: 2 plugin-declared fragments · 700tok
+  conway.trim.when-to-compose  400tok  <- conway.trim
+  conway.memory.recalling      300tok  <- conway.memory
+```
+
+The source column is the point: it makes visible which plugin a paragraph
+of instruction came from, so it's obvious that uninstalling that plugin
+removes it too. If a fragment names a tool that isn't actually installed
+for this session, its text is never sent to the model — instead the line
+says so:
+
+```
+  conway.trim.when-to-compose  400tok  ⚠ names compose_path -- not installed
+```
+
+If no installed plugin declares an instruction fragment, `/context` shows
+no preamble section at all — the ordinary per-segment listing (system
+prompt, skills, path) is unaffected either way.
+
+**Subagents do not get instruction fragments yet.** A forked or spawned
+child agent receives none, even when it holds a tool whose plugin declares
+one — the same limitation directory-loaded skills already have for child
+agents. So `/context <child-agent>` shows no preamble section, and that
+looks identical to a session where no plugin declares one at all. If a
+subagent is mishandling a tool that its parent uses correctly, a missing
+instruction fragment is a likely cause and is worth ruling out first.
+
+### `/model` and `/role`: changing model mid-session
+
+A cheaper model for a mechanical stretch, a larger window when the work
+gets big, a different provider when one is degraded — switching is
+ordinary, not exceptional, and it works while the conversation is still
+running: no quitting, no `--resume`.
+
+```
+/model anthropic/claude-haiku
+/role planner
+```
+
+Under the hood this forks the focused agent: the new agent inherits the
+*entire* prior conversation (by reference, frozen at the switch point) and
+becomes the one you're now talking to — the same interactive-fork idiom a
+bare `/fork` uses, just with the child's model pinned (`/model`) or its role
+changed (`/role`) instead of a directive. Nothing about *which* records are
+selected changes; only the model rendering them from here does. A notice
+records the switch immediately; `/why` reports the resulting routing
+decision — and, once at least one switch has happened this session, what it
+changed (`role: planner -> fast`, `model: X -> Y`) rather than only the
+latest decision in isolation.
+
+If the newly-pinned model (or the new role's own chain) cannot take the
+conversation's current size, you'll see the same loud refusal an ordinary
+turn's admission gate gives — naming what didn't fit — the next time you
+send a message. Nothing silently falls back to the old model, and nothing
+is silently trimmed to make it fit.
 
 ### Plugin-declared commands
 
@@ -214,9 +299,9 @@ never a frozen terminal.
 
 `conway.history` (`crates/conway-plugin-history`, install it with
 `"conway.history"` in `plugins.install`) ships exactly one command,
-`/conway.history.rewind <seq>`: forks the current session at that
-persisted sequence number and switches you to drive the resulting child,
-leaving the original session's own log untouched. `<seq>` must be an
+`/conway.history.rewind <seq>`: starts a new agent from that persisted
+sequence number and switches you to drive it, leaving the original agent's
+own log untouched. `<seq>` must be an
 explicit number you already know — see the status line's `session` field
 below for where to read the current one — never free text like "before the
 bad edit": nothing a plugin command receives lets it read your transcript
@@ -242,21 +327,48 @@ active-only); `Esc` (or `/agents` again) closes it. The status markers:
 
 ## The `/settings` menu
 
-`/settings` opens a menu of three groups: **display** (show reasoning
+`/settings` opens a menu of four groups: **display** (show reasoning
 traces, show timestamps), **tool output** (how many lines a folded tool
-call shows before `Ctrl-E` is needed), and **permissions** (cycle the
+call shows before `Ctrl-E` is needed), **permissions** (cycle the
 permission mode; review or revoke individual grants under **allow** —
 flat and structured alike; read-only **deny** and **prompt** sections
 listing every rule — flat or structured — that any permissions file,
 trusted or not, has put in force, each with the file it came from; and
-**hooks**, a fourth, revocable review list). `Up`/`Down`
-navigate, `Enter` toggles a boolean, expands/collapses a group, or revokes
-a selected grant/hook row, `Left`/`Right` step the numeric tool-preview
-setting, `Esc` closes. The two display toggles, the permission-mode
-cycle, and every revoke action apply to this session only; the
-tool-preview line count persists to `[tui.tool_preview_lines]` in
-`settings.json` when you step it. Permission-mode and grant details are
-covered in [`permissions.md`](permissions.md).
+**hooks**, a fourth, revocable review list), and **plugins** (below).
+`Up`/`Down` navigate, `Enter` toggles a boolean, expands/collapses a
+group, revokes a selected grant/hook row, or turns a plugin on/off,
+`Left`/`Right` step the numeric tool-preview setting, `Esc` closes. The
+two display toggles, the permission-mode cycle, and every revoke action
+apply to this session only; the tool-preview line count persists to
+`[tui.tool_preview_lines]` in `settings.json` when you step it; a plugin
+toggle persists too (below), the one section of this menu with a real
+writer behind it. Permission-mode and grant details are covered in
+[`permissions.md`](permissions.md).
+
+### The plugins section: a browser, not just a toggle
+
+The **plugins** group lists every first-party plugin `conway` links in —
+the header row states how many are currently on (`installed`) and how
+many are compiled in but off (`available`). Each plugin is its own
+subsection, headed by a toggle row naming its id, version, on/off state,
+and a one-line summary; below that, three rows in the operator's own
+framing:
+
+- **you get** — what turning it ON adds (tools, commands, an instruction).
+- **you lose** — what is different with it OFF.
+- **costs** — its ongoing cost, if any, while it's on.
+
+Selecting the toggle row and pressing `Enter` flips it — this is the one
+`/settings` action with a real writer behind it: it edits
+`~/.conway/settings.json`'s `plugins.install` array directly (or
+`$CONWAY_CONFIG_DIR/settings.json` when that's set), adding or removing
+exactly the one id, leaving every other key, its ordering, and its
+formatting untouched, whether or not you've hand-edited the file. **The
+change applies on your next restart, not immediately** — plugins install
+once, at startup; nothing about the running session's tools or commands
+changes until you start `conway` again. The footer says so on every
+render. Project-scoped plugin selection isn't reachable from this menu —
+edit a project's own `.conway/settings.json` by hand for that.
 
 The **hooks** section lists every configured `hooks.rules[]` entry whose
 event can currently deny something — `pre_tool_use` (narrows a tool call)
@@ -314,5 +426,7 @@ anything at all.
 the input box is empty. Two consecutive `Ctrl-C` presses force an
 immediate exit even if a turn is stuck. Quitting with an `/ask` modal open
 discards that ephemeral fork first; quitting with a fork/spawn
-confirmation card open falls back to the manual (unclassified) flow —
-neither leaves anything half-created behind.
+confirmation card open falls back to the manual (unclassified) flow;
+quitting with `/trust permissions`'s preview card open is the same as
+pressing `[n]` — nothing was ever trusted or written, so there is nothing
+to undo. None of these leave anything half-created behind.

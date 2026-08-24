@@ -614,8 +614,18 @@ fn build_loop_inner(
     let subagents: Arc<dyn SubagentHost> = Arc::new(FakeSubagentHost::new(agent));
     let tree = Arc::new(AgentTree::new(bus.clone()));
 
+    let path_store: Arc<dyn conway_core::ports::PathStore> =
+        std::sync::Arc::new(conway_testkit::FakePathStore::new());
+    let resolver = Arc::new(conway_core::transcript::TranscriptResolver::new(64));
     let deps = Arc::new(LoopDeps {
-        store,
+        store: store.clone(),
+        path_store: path_store.clone(),
+        context_path_host: Arc::new(conway_runtime::context::RuntimeContextPathHost::new(
+            store.clone(),
+            path_store.clone(),
+            resolver.clone(),
+        )),
+        session_discovery_host: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         router,
         attempt,
         registry: plugin_registry,
@@ -635,7 +645,7 @@ fn build_loop_inner(
         context_hook: std::sync::RwLock::new(
             context_hook.map(|inner| Arc::new(GuardedContextHook::new(inner))),
         ),
-        resolver: Arc::new(conway_core::transcript::TranscriptResolver::new(64)),
+        resolver,
         context_curator: std::sync::RwLock::new(None),
         observers,
         plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
@@ -643,6 +653,7 @@ fn build_loop_inner(
 
     let spec = AgentSpec {
         system_prompt: None,
+        instructions: vec![],
         skills: vec![],
         tools: None as Option<ToolSelector>,
         role: RoleAlias::new(role),

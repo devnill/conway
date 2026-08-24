@@ -188,6 +188,151 @@ async fn skeleton_tool_is_present_in_the_announced_set_once_installed() {
     );
 }
 
+/// The default-install gate for `conway.path` (board item
+/// `01M0PEFMG96SVBBD5D2E06H34A`): with no `[plugins].install` entry, the
+/// real compiled binary never announces `compose_context_path` -- proving
+/// this plugin behaves like every other first-party plugin (opt-in, not
+/// silently on), the SAME shape the skeleton pair above proves for
+/// `skeleton_ping`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compose_context_path_tool_is_absent_from_the_announced_set_without_plugins_install() {
+    let mock = MockBackend::start(Script(vec![vec![
+        Chunk::Text("hi back"),
+        Chunk::Finish("stop"),
+    ]]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+    // Deliberately no `add_plugins_install` call.
+
+    let out = run_conway(&["-p", "hi"], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let requests = mock.requests();
+    let names = announced_names(
+        requests
+            .last()
+            .expect("mock must have received one request"),
+    );
+    assert!(
+        !names.iter().any(|n| n == "compose_context_path"),
+        "with no [plugins].install, 'compose_context_path' must not be in the announced tool \
+         set, got {names:?}"
+    );
+}
+
+/// The other half of the gate: naming `"conway.path"` in `[plugins].install`
+/// against the REAL compiled binary makes `compose_context_path` reachable
+/// -- this is what proves `write_head`/`ValidatedPath::derive_with` are no
+/// longer unreachable in a running build, the exact defect this item exists
+/// to close. `conway-plugin-trim` (`"conway.trim"`) has no equivalent
+/// passing test anywhere in this tree, which is precisely how its own
+/// unreachability went unnoticed -- this test is the regression guard that
+/// keeps `conway.path` from quietly regressing to that same state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compose_context_path_tool_is_present_in_the_announced_set_once_installed() {
+    let mock = MockBackend::start(Script(vec![vec![
+        Chunk::Text("hi back"),
+        Chunk::Finish("stop"),
+    ]]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+    add_plugins_install(&fixture, &["conway.path"]);
+
+    let out = run_conway(&["-p", "hi"], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let requests = mock.requests();
+    let names = announced_names(
+        requests
+            .last()
+            .expect("mock must have received one request"),
+    );
+    assert!(
+        names.iter().any(|n| n == "compose_context_path"),
+        "with [plugins].install = [\"conway.path\"], 'compose_context_path' must be in the \
+         announced tool set, got {names:?}"
+    );
+}
+
+/// The default-install gate for `conway.discover` (board item
+/// `01M0PS8J3AK7Z7253Z3E3RD3GY`): with no `[plugins].install` entry, the
+/// real compiled binary never announces `search_sessions` -- the same
+/// shape the `conway.path` pair immediately above proves for
+/// `compose_context_path`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn search_sessions_tool_is_absent_from_the_announced_set_without_plugins_install() {
+    let mock = MockBackend::start(Script(vec![vec![
+        Chunk::Text("hi back"),
+        Chunk::Finish("stop"),
+    ]]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+    // Deliberately no `add_plugins_install` call.
+
+    let out = run_conway(&["-p", "hi"], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let requests = mock.requests();
+    let names = announced_names(
+        requests
+            .last()
+            .expect("mock must have received one request"),
+    );
+    assert!(
+        !names.iter().any(|n| n == "search_sessions"),
+        "with no [plugins].install, 'search_sessions' must not be in the announced tool \
+         set, got {names:?}"
+    );
+}
+
+/// The other half of the gate: naming `"conway.discover"` in
+/// `[plugins].install` against the REAL compiled binary makes
+/// `search_sessions` reachable -- one line in `settings.json`, the same
+/// day this item lands, proving `SessionDiscoveryHost` is not another
+/// `conway-plugin-trim` (a workspace member `conway-cli` never depended
+/// on, so no `[plugins].install` entry could ever have reached it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn search_sessions_tool_is_present_in_the_announced_set_once_installed() {
+    let mock = MockBackend::start(Script(vec![vec![
+        Chunk::Text("hi back"),
+        Chunk::Finish("stop"),
+    ]]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+    add_plugins_install(&fixture, &["conway.discover"]);
+
+    let out = run_conway(&["-p", "hi"], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let requests = mock.requests();
+    let names = announced_names(
+        requests
+            .last()
+            .expect("mock must have received one request"),
+    );
+    assert!(
+        names.iter().any(|n| n == "search_sessions"),
+        "with [plugins].install = [\"conway.discover\"], 'search_sessions' must be in the \
+         announced tool set, got {names:?}"
+    );
+}
+
 /// Beyond mere announcement: once installed, the tool actually dispatches
 /// through the real compiled binary to this plugin's own `Tool::invoke`,
 /// and its exact reply text is observable in the finished event's preview.

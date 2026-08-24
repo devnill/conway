@@ -34,6 +34,69 @@ use crate::path::{PathSelection, SelectionKey};
 /// sessions: the prefix is itself a stored selection with its own index lines,
 /// so transitive coverage would double-count (see `FsPathStore`'s coverage
 /// doc for the §4.4 reasoning).
+///
+/// # A labeled exception: this port is engine-internal, not part of the
+/// extension surface (board item `01M0EMCK55628YJXGBQY8YGXHE`)
+///
+/// Twenty other `conway-core` port traits are re-exported through
+/// `conway::plugin` (or the facade root) precisely so a third party can name
+/// and implement them — `SessionStore`, `MemoryStore`, `HookRunner`,
+/// `EventSink`, and the rest. `PathStore` is a deliberate, stated exception,
+/// not an oversight: it is defined here, `conway::ConwayBuilder` constructs
+/// and injects a default `FsPathStore` (`crates/conway-session`), but neither
+/// this trait nor `FsPathStore` is reachable from a crate that depends only
+/// on `conway`.
+///
+/// **Why, weighed rather than assumed.** The candidate consumer for a
+/// third-party `PathStore` would be a `Curator` — the one seam that works in
+/// terms of `PathSelection`/`PathOp` at all. `Curator::curate` receives a
+/// [`crate::ports::CurateCtx`] carrying `store: Arc<dyn SessionStore>` and
+/// `resolver: Arc<TranscriptResolver>` (the §11.5 read surface) — no path
+/// store. Board item `01M0EMAC4CCDQ8QJYM21RXPKRY` put a real curator
+/// (`conway-plugin-trim`) through that seam: it reads records, names
+/// `PathOp`s, and lets `ValidatedPath::derive` do the deriving. It never
+/// needed to `put` or `get` a `PathSelection` directly, because a curator's
+/// job ends at proposing ops — persisting the resulting content-addressed
+/// selection, and resolving an existing one's prefix chain, is the engine's
+/// own bookkeeping, done once per turn regardless of which curators ran.
+/// That is real evidence, not speculation: the one production consumer that
+/// could have needed this port didn't.
+///
+/// The invariants above compound the case for keeping it internal even if a
+/// consumer later appears: write-once content addressing and a reverse
+/// index that is documented as "NEVER the source of truth, rebuildable" are
+/// correctness properties the engine's retention machinery (§4.4) depends on
+/// holding *exactly*, across every implementation in the process — the kind
+/// of invariant a second, independently-written implementation is most
+/// likely to get subtly wrong (e.g. hashing the unexpanded selection, or
+/// treating the reverse index as authoritative). That is a materially
+/// different risk than swapping `SessionStore`'s storage backend, which
+/// carries no derived/rebuildable index of its own.
+///
+/// If a genuine third-party use case for `PathStore` shows up, the honest
+/// path is to re-export this trait through `conway::plugin`, matching every
+/// other port — `conway::ConwayBuilder::with_path_store` already exists
+/// (mirroring `with_session_store`'s override-the-default shape) but today
+/// only an embedder willing to depend on `conway-core` directly can name its
+/// `Arc<dyn PathStore>` parameter, which is this same exception surfacing at
+/// a second declaration site (see that method's own doc). Widening is
+/// exactly this item's option 1 — not to route around this doc by depending
+/// on `conway-core` directly.
+///
+/// **Resolved consequence (board item `01M0J7KWQDM4PMPD0TFFKSFTES`):** this
+/// exception, combined with the `jsonl-store` feature being the only source
+/// of a default `PathStore`, means a facade-only caller building with
+/// `jsonl-store` OFF cannot get a `PathStore` from ANY source — not the
+/// default (feature-gated), not `with_path_store` (parameter unnameable) —
+/// even when they supply their own `SessionStore` via
+/// `with_session_store` (which needs no feature). `ConwayBuilder::build()`
+/// fails in that configuration; that item confirmed the combination was
+/// untested in either direction, decided this was the correct, INTENTIONAL
+/// consequence of this decision rather than a bug to route around, and
+/// fixed `build()`'s error message (previously suggesting `with_path_store`
+/// as if it were reachable, which it is not for this exact caller) to name
+/// the real constraint instead. Recorded here, not left
+/// discovered-and-forgotten, per that item's own acceptance criterion 4.
 #[async_trait]
 pub trait PathStore: Send + Sync + 'static {
     /// Store `selection` content-addressed under its EXPANDED `SelectionKey`.

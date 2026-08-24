@@ -331,7 +331,7 @@ Currently **designed-not-built** and untracked by any other item
 infrastructure the memory and skill plugins above want (a small
 "3 facts recalled" or "skill: git-commit active" status fragment is the
 kind of ambient legibility that makes a quality-of-life feature feel
-trustworthy rather than invisible, and `INTENT.md` §5b's fifth hazard —
+trustworthy rather than invisible, and `DESIGN-context-path.md` §4.5 —
 "a person has to be able to see it" — is exactly this argument one layer
 up from curation). Sequence it just ahead of memory/skills if those get
 built, not after.

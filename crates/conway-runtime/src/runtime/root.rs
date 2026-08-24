@@ -71,6 +71,33 @@ fn resolve_skills(
         .collect()
 }
 
+/// Returns `instructions` unchanged, cloned -- every installed plugin's own
+/// `Plugin::instructions()` fragments (board item `01M0K5MD59YZRSHE31JKZKFRMY`),
+/// already resolved to `(plugin_id, name, text, tool_ids)` at
+/// `ConwayBuilder::build` time. Unlike [`resolve_skills`] there is no NAME
+/// list to resolve against: a plugin's instruction fragments have no
+/// per-agent-def selection mechanism (that is the composing tool's future
+/// territory, not this item's -- see the board item's own "explicitly out
+/// of scope" section), so every root agent gets every installed plugin's
+/// fragments unconditionally, exactly as it gets every installed plugin's
+/// TOOLS unconditionally today. This function exists (rather than inlining
+/// the clone at each call site) so both call sites read the same "yes,
+/// unconditional, on purpose" comment once, and so a future per-agent
+/// selection mechanism has one function to change instead of two.
+///
+/// **Root only.** A forked/spawned child does not call this --
+/// `subagent.rs`'s `SubagentHost::start` passes `instructions: Vec::new()`
+/// for `AgentSpec`, matching `skills: Vec::new()` immediately beside it
+/// there: subagents inherit no directory-sourced skills either, a
+/// pre-existing gap this item does not fix (out of scope; flagged in this
+/// item's own completion report as a follow-up, not fixed as a silent
+/// bycatch).
+fn resolve_instructions(
+    instructions: &[crate::context::PluginInstruction],
+) -> Vec<crate::context::PluginInstruction> {
+    instructions.to_vec()
+}
+
 /// The complete specification for starting a new root agent (i.e. one with
 /// no parent — the entry point of a fresh agent tree).
 pub struct RootSpec {
@@ -193,6 +220,19 @@ pub struct ResumeSpec {
     pub session: SessionId,
     pub agent_def: Option<AgentDefRef>,
     pub role: Option<RoleAlias>,
+    /// Pins the resumed agent's model outright, overriding the
+    /// (possibly-persisted-`agent_def`-sourced) chain it would otherwise
+    /// resolve -- the `ResumeSpec` counterpart of [`RootSpec::model`].
+    /// `None` (every caller before this field existed, and `Conway::resume`'s
+    /// own caller today) preserves the pre-existing behavior exactly: the
+    /// resumed agent's pin comes solely from its resolved `agent_def.model`.
+    /// `Some` is what `conway::Conway::resume_with` (`--model`/
+    /// `--role-override` combined with `--resume`, INTENT.md §5c) threads
+    /// through when an operator names a model at resume time; a pin the
+    /// session's persisted transcript does not fit surfaces as the same loud
+    /// `RoutingError::ContextTooLarge` refusal an ordinary turn's admission
+    /// gate already gives, never a silent fallback or trim.
+    pub model: Option<ModelRef>,
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
     /// Overrides the persisted `SessionMeta::cwd`; `None` reuses it.
@@ -337,6 +377,9 @@ impl Runtime {
         // registry into `SkillFragment`s -- see the module doc's "Skill
         // resolution" note and `resolve_skills`'s own doc.
         let skills = resolve_skills(agent_def, &self.skills)?;
+        // Every installed plugin's own instruction fragments, unconditionally
+        // -- see `resolve_instructions`'s own doc.
+        let instructions = resolve_instructions(&self.instructions);
         let tools = spec
             .tools
             .clone()
@@ -515,6 +558,7 @@ impl Runtime {
         let last_report = Arc::new(Mutex::new(None));
         let agent_spec = AgentSpec {
             system_prompt,
+            instructions,
             skills,
             tools,
             role: role.clone(),
@@ -792,11 +836,21 @@ impl Runtime {
         // registry into `SkillFragment`s -- see the module doc's "Skill
         // resolution" note and `resolve_skills`'s own doc.
         let skills = resolve_skills(agent_def, &self.skills)?;
+        // Every installed plugin's own instruction fragments, unconditionally
+        // -- see `resolve_instructions`'s own doc.
+        let instructions = resolve_instructions(&self.instructions);
         let tools = spec
             .tools
             .clone()
             .or_else(|| agent_def.map(|d| d.tools.clone()));
-        let pin = agent_def.and_then(|d| d.model.clone());
+        // `spec.model` (a caller-supplied pin, e.g. `--model` combined with
+        // `--resume`) takes precedence over the `agent_def`'s own configured
+        // model -- mirroring `start_root`'s identical precedence for
+        // `spec.model` immediately above in this same file.
+        let pin = spec
+            .model
+            .clone()
+            .or_else(|| agent_def.and_then(|d| d.model.clone()));
         let cwd = spec.cwd.clone().unwrap_or_else(|| meta.cwd.clone());
 
         // (S3) `ResumeSpec` carries no `root` override field at all -- this
@@ -933,6 +987,7 @@ impl Runtime {
         let last_report = Arc::new(Mutex::new(None));
         let agent_spec = AgentSpec {
             system_prompt,
+            instructions,
             skills,
             tools,
             role: role.clone(),

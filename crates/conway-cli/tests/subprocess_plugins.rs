@@ -101,6 +101,26 @@ fn write_greet_script(fixture: &common::Fixture) -> std::path::PathBuf {
     path
 }
 
+/// Executes `path` once, with stdin closed, and discards everything about
+/// the result -- before returning, so the REAL run below (which re-execs
+/// this SAME freshly-written, freshly-chmod'd script through the compiled
+/// `conway` binary's own subprocess plugin host) pays the "first exec of a
+/// fresh file" OS-side tax OUTSIDE `[plugins].subprocess[].timeout_ms`'s
+/// clock, not inside it (board item `01M09MPZ9C188AHNBKWEJ3CEQA`; see
+/// `conway-plugin-subprocess`'s `tests/common/mod.rs::warm` for the full
+/// measurement). [`GREET_PLUGIN_PY`] reads stdin then answers unconditionally
+/// -- it never hangs on empty input, so warming it is safe.
+async fn warm(path: &std::path::Path) {
+    let child = tokio::process::Command::new(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Ok(mut child) = child {
+        let _ = child.wait().await;
+    }
+}
+
 /// Rewrites `fixture`'s rendered `conway.json` to add exactly one
 /// `[plugins].subprocess[]` entry naming `script` -- the out-of-process
 /// sibling of `first_party_plugins.rs`'s own `add_plugins_install`.
@@ -111,14 +131,21 @@ fn add_plugins_subprocess(fixture: &common::Fixture, id: &str, script: &std::pat
         "subprocess": [{
             "id": id,
             "command": [script.display().to_string()],
-            // Generous relative to `DEFAULT_TIMEOUT_MS` (5000ms): spawning a
-            // real `python3` interpreter under this suite's own concurrent
-            // process load is measurably slower than in isolation --
-            // matching the disclosed hazard `crates/conway-tools/tests/
-            // hook_runner.rs` already carries for the identical process/
-            // timing class. A generous configured timeout here tests the
-            // real mechanism, not this suite's own scheduling luck.
-            "timeout_ms": 8000,
+            // The crate default (`conway_plugin_subprocess::DEFAULT_TIMEOUT_MS`,
+            // 5000ms), NOT a raised number. This was previously 8000ms with a
+            // comment blaming "this suite's own concurrent process load" --
+            // that was papering over the real cause: a freshly-written,
+            // freshly-chmod'd script's first exec can itself cost seconds at
+            // ~0% CPU regardless of load (board item
+            // `01M09MPZ9C188AHNBKWEJ3CEQA`; see `conway-plugin-subprocess`'s
+            // `tests/common/mod.rs::warm` for the measurement). Every caller
+            // of `write_greet_script` now calls `warm` on the SAME script
+            // first, which pays that tax outside this deadline's clock, so
+            // 5000ms -- already generous for a warm interpreter plus the
+            // compiled binary's own startup -- no longer needs padding. Do
+            // not raise this back up without first checking `warm` is still
+            // being called.
+            "timeout_ms": 5_000,
         }],
     });
     std::fs::write(
@@ -229,6 +256,7 @@ async fn tool_is_present_once_named_in_plugins_subprocess() {
     .await;
     let fixture = write_fixture(&mock, 10);
     let script = write_greet_script(&fixture);
+    warm(&script).await;
     add_plugins_subprocess(&fixture, "acme-greet", &script);
 
     let out = run_conway(&["-p", "hi"], &fixture);
@@ -270,6 +298,7 @@ async fn tool_is_callable_from_one_shot_once_configured() {
     .await;
     let fixture = write_fixture(&mock, 10);
     let script = write_greet_script(&fixture);
+    warm(&script).await;
     add_plugins_subprocess(&fixture, "acme-greet", &script);
 
     let out = run_conway(
@@ -312,6 +341,7 @@ async fn removing_the_plugins_subprocess_entry_removes_the_tool() {
     .await;
     let fixture = write_fixture(&mock, 10);
     let script = write_greet_script(&fixture);
+    warm(&script).await;
     add_plugins_subprocess(&fixture, "acme-greet", &script);
 
     let out = run_conway(&["-p", "hi"], &fixture);

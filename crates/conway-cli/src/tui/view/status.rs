@@ -601,6 +601,11 @@ fn mode_label(mode: &Mode) -> String {
         Mode::AskModal(_) => "ask".to_string(),
         // C2: the NL intent confirmation card owns the screen.
         Mode::IntentConfirm(_) => "intent".to_string(),
+        // Board item (split from `01KZHVFCN6ZEAXV7K5JHRQN1YB`): the
+        // trust-preview card owns the screen.
+        Mode::TrustPreview(_) => "trust".to_string(),
+        // The `[p]` field editor owns the screen.
+        Mode::EditingPattern(_) => "pattern".to_string(),
     }
 }
 
@@ -2166,15 +2171,15 @@ mod tests {
     /// move just as the file-based path does.
     #[test]
     fn env_var_fields_override_can_omit_mode_and_the_fix_still_covers_it() {
-        let xdg_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
         let cwd_dir = tempfile::tempdir().expect("tempdir");
         let mut env = std::collections::HashMap::new();
         // Redirect the user-scoped config path into an empty tempdir so
         // this test cannot pick up a real `~/.conway/settings.json` on the
         // machine it runs on.
         env.insert(
-            "XDG_CONFIG_HOME".to_string(),
-            xdg_dir.path().to_string_lossy().to_string(),
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
         );
         env.insert(
             "CONWAY_TUI__STATUS_LINE__FIELDS".to_string(),

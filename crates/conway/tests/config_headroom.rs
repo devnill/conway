@@ -49,10 +49,10 @@ fn headroom_for_role_override_vs_global_default_vs_unknown_alias() {
 fn headroom_default_participates_in_the_full_five_source_precedence_chain() {
     let root = support::unique_temp_dir("headroom-precedence");
 
-    let xdg_home = root.join("xdg-home");
-    std::fs::create_dir_all(xdg_home.join("conway")).unwrap();
+    let config_home = root.join("config_dir-home");
+    std::fs::create_dir_all(&config_home).unwrap();
     std::fs::write(
-        xdg_home.join("conway").join("settings.json"),
+        config_home.join("settings.json"),
         r#"{"default_role":"coder","roles":{"coder":{"chain":[]}},"routing":{"default_headroom_tokens":20000}}"#,
     )
     .unwrap();
@@ -67,12 +67,12 @@ fn headroom_default_participates_in_the_full_five_source_precedence_chain() {
 
     let role = RoleAlias::new("fast");
 
-    let mut xdg_only_env = HashMap::new();
-    xdg_only_env.insert(
-        "XDG_CONFIG_HOME".to_string(),
-        xdg_home.to_string_lossy().to_string(),
+    let mut user_only_env = HashMap::new();
+    user_only_env.insert(
+        "CONWAY_CONFIG_DIR".to_string(),
+        config_home.to_string_lossy().to_string(),
     );
-    let mut full_env = xdg_only_env.clone();
+    let mut full_env = user_only_env.clone();
     full_env.insert(
         "CONWAY_ROUTING__DEFAULT_HEADROOM_TOKENS".to_string(),
         "40000".to_string(),
@@ -107,7 +107,7 @@ fn headroom_default_participates_in_the_full_five_source_precedence_chain() {
     // remove C, E -> P.
     let outcome = load(opts(
         project_dir.clone(),
-        xdg_only_env.clone(),
+        user_only_env.clone(),
         CliOverrides::default(),
     ))
     .unwrap();
@@ -118,13 +118,13 @@ fn headroom_default_participates_in_the_full_five_source_precedence_chain() {
     std::fs::create_dir_all(&empty_dir).unwrap();
     let outcome = load(opts(
         empty_dir.clone(),
-        xdg_only_env.clone(),
+        user_only_env.clone(),
         CliOverrides::default(),
     ))
     .unwrap();
     assert_eq!(outcome.config.headroom_for(&role), 20_000);
 
-    // remove everything -> D. Still an isolated `XDG_CONFIG_HOME` (not a
+    // remove everything -> D. Still an isolated `CONWAY_CONFIG_DIR` (not a
     // bare `HashMap::new()`): the point of this stage is "no source names a
     // value," not "read whatever real settings.json this machine has" (see
     // `support::isolated_env`'s doc comment).
@@ -141,10 +141,10 @@ fn headroom_default_participates_in_the_full_five_source_precedence_chain() {
 fn per_role_headroom_from_a_lower_precedence_source_beats_a_higher_sources_global_default() {
     let root = support::unique_temp_dir("headroom-role-vs-global");
 
-    let xdg_home = root.join("xdg-home");
-    std::fs::create_dir_all(xdg_home.join("conway")).unwrap();
+    let config_home = root.join("config_dir-home");
+    std::fs::create_dir_all(&config_home).unwrap();
     std::fs::write(
-        xdg_home.join("conway").join("settings.json"),
+        config_home.join("settings.json"),
         r#"{"default_role":"coder","roles":{"coder":{"chain":[]},"planner":{"chain":[],"headroom_tokens":40000}}}"#,
     )
     .unwrap();
@@ -159,8 +159,8 @@ fn per_role_headroom_from_a_lower_precedence_source_beats_a_higher_sources_globa
 
     let mut env = HashMap::new();
     env.insert(
-        "XDG_CONFIG_HOME".to_string(),
-        xdg_home.to_string_lossy().to_string(),
+        "CONWAY_CONFIG_DIR".to_string(),
+        config_home.to_string_lossy().to_string(),
     );
 
     let outcome = load(LoadOptions {
@@ -182,18 +182,18 @@ fn per_role_headroom_from_a_lower_precedence_source_beats_a_higher_sources_globa
 #[test]
 fn env_var_overrides_a_per_role_headroom() {
     let root = support::unique_temp_dir("headroom-env-role");
-    let xdg_home = root.join("xdg-home");
-    std::fs::create_dir_all(xdg_home.join("conway")).unwrap();
+    let config_home = root.join("config_dir-home");
+    std::fs::create_dir_all(&config_home).unwrap();
     std::fs::write(
-        xdg_home.join("conway").join("settings.json"),
+        config_home.join("settings.json"),
         r#"{"default_role":"coder","roles":{"coder":{"chain":[]},"planner":{"chain":[],"headroom_tokens":40000}}}"#,
     )
     .unwrap();
 
     let mut env = HashMap::new();
     env.insert(
-        "XDG_CONFIG_HOME".to_string(),
-        xdg_home.to_string_lossy().to_string(),
+        "CONWAY_CONFIG_DIR".to_string(),
+        config_home.to_string_lossy().to_string(),
     );
     env.insert(
         "CONWAY_ROLES__PLANNER__HEADROOM_TOKENS".to_string(),

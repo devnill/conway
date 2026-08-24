@@ -15,6 +15,7 @@
 //! respectively.
 
 pub mod codec;
+pub mod discovery;
 pub mod fork;
 pub mod index;
 pub mod memory_store;

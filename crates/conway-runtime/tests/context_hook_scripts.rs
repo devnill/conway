@@ -340,8 +340,18 @@ fn build_loop(
     .unwrap();
     let agent_path = tree.path(agent);
 
+    let path_store: Arc<dyn conway_core::ports::PathStore> =
+        std::sync::Arc::new(conway_testkit::FakePathStore::new());
+    let resolver = Arc::new(conway_core::transcript::TranscriptResolver::new(64));
     let deps = Arc::new(LoopDeps {
-        store,
+        store: store.clone(),
+        path_store: path_store.clone(),
+        context_path_host: Arc::new(conway_runtime::context::RuntimeContextPathHost::new(
+            store.clone(),
+            path_store.clone(),
+            resolver.clone(),
+        )),
+        session_discovery_host: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         router,
         attempt,
         registry: plugin_registry,
@@ -355,7 +365,7 @@ fn build_loop(
         context_hook: std::sync::RwLock::new(
             context_hook.map(|inner| Arc::new(GuardedContextHook::new(inner))),
         ),
-        resolver: Arc::new(conway_core::transcript::TranscriptResolver::new(64)),
+        resolver,
         context_curator: std::sync::RwLock::new(None),
         observers: Vec::new(),
         plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
@@ -363,6 +373,7 @@ fn build_loop(
 
     let spec = AgentSpec {
         system_prompt: None,
+        instructions: vec![],
         skills: vec![],
         tools: None as Option<ToolSelector>,
         role: RoleAlias::new("planner"),

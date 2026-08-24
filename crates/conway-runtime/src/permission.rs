@@ -11,7 +11,9 @@
 use std::collections::HashMap;
 
 use conway_core::permission_mode::PermissionMode;
-use conway_core::permission_pattern::{PatternOrigin, PatternRule, Rule, Then, When};
+use conway_core::permission_pattern::{
+    ArgsMatchSpec, PatternOrigin, PatternRule, Rule, Then, When,
+};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -407,6 +409,22 @@ fn rule_allows(
             };
             paths_under_match(ctx, call, root)
         }
+        // Structured argument-field equality. Lives here (not in
+        // `matches_allow_render`) for the same reason `PathsUnder` does: it
+        // needs `call.arguments`, which that fn's signature does not carry.
+        // The gate applies first -- a `ShellCommand` tool is refused for
+        // free, identical to every other allow `when`, so an `ArgsMatch`
+        // grant on `bash` authorizes nothing (same posture the AMENDED
+        // section guarantees for `CommandPrefix`/`Always`).
+        When::ArgsMatch(spec) => {
+            if !rule.select_matches(call.tool.as_str(), call.category) {
+                return false;
+            }
+            if !Rule::gate_allows(call.render_kind) {
+                return false;
+            }
+            args_match(spec, &call.arguments)
+        }
         _ => rule.matches_allow_render(
             call.tool.as_str(),
             call.category,
@@ -414,6 +432,31 @@ fn rule_allows(
             call.render_kind,
         ),
     }
+}
+
+/// Whether `call_args` satisfies an [`ArgsMatchSpec`]: every pinned field
+/// must be present and equal its expected value under canonical JSON, and
+/// fields not in the spec are wildcard (don't care). A pinned field absent
+/// from the call is a non-match. An empty `pinned` matches every call -- the
+/// `tool:*` equivalent. Equality goes through [`canonical_json_bytes`] so
+/// object key order and insignificant whitespace never cause a miss (the
+/// same primitive `CacheKey::for_call` hashes the whole args object with).
+fn args_match(spec: &ArgsMatchSpec, call_args: &serde_json::Value) -> bool {
+    let Some(obj) = call_args.as_object() else {
+        // A non-object call can satisfy no pinned field, so it only matches
+        // the empty-spec (any-call) case -- which `spec.pinned.is_empty()`
+        // handles below. A non-object with a non-empty spec: no match.
+        return spec.pinned.is_empty();
+    };
+    for (field, expected) in &spec.pinned {
+        let Some(actual) = obj.get(field) else {
+            return false;
+        };
+        if canonical_json_bytes(actual) != canonical_json_bytes(expected) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Whether a DENY (or PROMPT) [`Rule`] matches `(ctx, call)` -- the single
@@ -1839,6 +1882,8 @@ mod tests {
 
     use async_trait::async_trait;
 
+    use std::collections::BTreeMap;
+
     use conway_core::agent::PermissionRequest;
     use conway_core::error::HookFailure;
     use conway_core::hook::HookAnswer;
@@ -1996,6 +2041,22 @@ mod tests {
         }
     }
 
+    /// A `Structured` call with arbitrary `arguments` -- the fixture the
+    /// `When::ArgsMatch` tests need: they assert a pinned-field grant
+    /// auto-allows a matching call (gate never reached) and lets a
+    /// non-matching call fall through to the gate.
+    fn structured_call(call_id: &str, tool: &str, arguments: serde_json::Value) -> AuthorizedCall {
+        AuthorizedCall {
+            call_id: call_id.into(),
+            tool: ToolName::new(tool),
+            category: ToolCategory::Read,
+            arguments,
+            rendered: format!("{tool}(...)"),
+            path_args: PathArgs::None,
+            render_kind: RenderKind::Structured,
+        }
+    }
+
     /// **With no hook runner and no hooks installed, `decide()` is
     /// unchanged.** The gate is consulted, allows, and nothing about the
     /// new hook step is even reachable -- proving the step is a true no-op
@@ -2014,6 +2075,113 @@ mod tests {
 
         assert_eq!(outcome, PermissionOutcome::Allow);
         assert_eq!(gate.call_count(), 1);
+    }
+
+    /// A `When::ArgsMatch` allow rule (the `[p]` field editor's grant)
+    /// auto-allows a call whose pinned field matches and spares the gate
+    /// (it is never reached); a call with a different value for the pinned
+    /// field is NOT covered and falls through to the gate. An empty `pinned`
+    /// map is the `tool:*` equivalent and matches every call for the tool.
+    /// A `ShellCommand` tool is refused for free by `gate_allows`, so an
+    /// `ArgsMatch` grant on `bash` authorizes nothing (board
+    /// `01KZDDPC5MMD49F6JPV9CW4TVM`'s posture preserved).
+    #[tokio::test]
+    async fn args_match_rule_auto_allows_matching_calls_and_refuses_shell() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        // Pin `path` to "/etc/hosts"; leave every other field wildcard.
+        let mut pinned = BTreeMap::new();
+        pinned.insert("path".to_string(), serde_json::json!("/etc/hosts"));
+        let installed = broker.remember_pattern_rule(
+            Rule::args_match_allow_rule("read", pinned),
+            PermissionScope::Session,
+            AgentId::new(),
+            PatternOrigin::Interactive,
+            Path::new("/"),
+        );
+        assert!(installed, "the ArgsMatch allow rule installs");
+
+        // Matching call: gate is NOT reached (auto-allowed by the pattern).
+        let matching = structured_call(
+            "c1",
+            "read",
+            serde_json::json!({"path":"/etc/hosts","offset":0}),
+        );
+        assert_eq!(
+            broker.decide(&ctx, &matching).await,
+            PermissionOutcome::Allow,
+        );
+        assert_eq!(
+            gate.call_count(),
+            0,
+            "a matching call must not reach the gate"
+        );
+
+        // Non-matching call (different pinned value): the rule does not
+        // cover it, so it falls through to the gate.
+        let other = structured_call("c2", "read", serde_json::json!({"path":"/etc/passwd"}));
+        broker.decide(&ctx, &other).await;
+        assert_eq!(gate.call_count(), 1, "a non-matching call reaches the gate");
+
+        // Missing pinned field: also a non-match (falls through to gate).
+        let missing = structured_call("c3", "read", serde_json::json!({"offset":0}));
+        broker.decide(&ctx, &missing).await;
+        assert_eq!(
+            gate.call_count(),
+            2,
+            "a call missing the pinned field reaches the gate"
+        );
+
+        // Key-order independence: the same object with reordered keys
+        // matches (canonical JSON equality, same primitive the cache hashes
+        // with).
+        let reordered = structured_call(
+            "c4",
+            "read",
+            serde_json::json!({"offset":0,"path":"/etc/hosts"}),
+        );
+        assert_eq!(
+            broker.decide(&ctx, &reordered).await,
+            PermissionOutcome::Allow,
+        );
+        assert_eq!(
+            gate.call_count(),
+            2,
+            "a reordered-keys match must not reach the gate"
+        );
+
+        // A different tool is not covered by this `select: Tools(["read"])`
+        // rule, so it reaches the gate.
+        let other_tool = structured_call("c5", "write", serde_json::json!({"path":"/etc/hosts"}));
+        broker.decide(&ctx, &other_tool).await;
+        assert_eq!(gate.call_count(), 3, "a different tool reaches the gate");
+
+        // An `ArgsMatch` grant on a `ShellCommand` tool authorizes nothing:
+        // `gate_allows` refuses it, so `bash` falls through to the gate
+        // regardless of the rule (the AMENDED section's posture).
+        let mut shell_pinned = BTreeMap::new();
+        shell_pinned.insert("command".to_string(), serde_json::json!("git status"));
+        assert!(
+            broker.remember_pattern_rule(
+                Rule::args_match_allow_rule("bash", shell_pinned),
+                PermissionScope::Session,
+                AgentId::new(),
+                PatternOrigin::Interactive,
+                Path::new("/"),
+            ),
+            "the ArgsMatch rule on bash installs (admission does not gate-check)",
+        );
+        let shell = bash_call("c6", "git status");
+        broker.decide(&ctx, &shell).await;
+        assert_eq!(
+            gate.call_count(),
+            4,
+            "an ArgsMatch grant on a shell tool must not auto-allow -- the gate is reached",
+        );
     }
 
     /// **The single most important test in this item.** `AutoAllow` mode

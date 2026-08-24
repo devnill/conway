@@ -11,6 +11,20 @@ description = "The `conway` CLI: interactive TUI, `-p` one-shot mode, and sessio
 name = "conway"
 path = "src/main.rs"
 
+[features]
+# Mirrors the facade's own `jsonl-store` feature name (`conway/Cargo.toml`)
+# so `src/first_party_plugins.rs` can `#[cfg(feature = "jsonl-store")]` on
+# whether `conway::memory::FsMemoryStore` (this crate's durable
+# `conway.memory` backing store) is actually compiled in, rather than
+# assuming it always is. On today's `conway = { path = "../conway" }` line
+# below (no `default-features = false`), `conway`'s own default features
+# already turn its `jsonl-store` on regardless of this crate's own feature
+# resolution -- this declaration exists so the cfg name is recognized (not
+# an `unexpected_cfgs` warning under `-D warnings`) and so the forwarding is
+# correct IF that dependency line ever adds `default-features = false`.
+default = ["jsonl-store"]
+jsonl-store = ["conway/jsonl-store"]
+
 [dependencies]
 conway = { path = "../conway" }
 # The first-party plugin tier (board item 01KZDC3JQ7W4DY1MG6MBCVB2DV): the
@@ -80,6 +94,24 @@ conway-plugin-mcp = { path = "../conway-plugin-mcp" }
 # lines above; NOT installed by default (an operator opts in the same way
 # they would for `conway-plugin-skeleton`/`conway-plugin-history`).
 conway-plugin-memory = { path = "../conway-plugin-memory" }
+# Board item 01M0PEFMG96SVBBD5D2E06H34A: `conway.path` -- the tool a model
+# calls to compose a session's context path (decision
+# 01M0K4QT6MBXPD6PXMBBBD2P7B). Resolved through the SAME `[plugins].install`
+# mechanism and the same `src/first_party_plugins.rs` choke point as the
+# lines above; NOT installed by default -- an operator opts in the same way
+# they would for `conway-plugin-memory`/`conway-plugin-skills`. This is the
+# dependency `conway-plugin-trim` itself never had, which is why naming
+# `"conway.trim"` in `[plugins].install` reaches nothing today -- see this
+# crate's own `first_party_plugins::bundle` doc.
+conway-plugin-path = { path = "../conway-plugin-path" }
+# Board item 01M0PS8J3AK7Z7253Z3E3RD3GY: `conway.discover` -- the tool a
+# model calls to find a session/record it does not already hold a
+# reference to, feeding `conway.path`'s `compose_context_path`. Resolved
+# through the SAME `[plugins].install` mechanism and the same
+# `src/first_party_plugins.rs` choke point as the lines above; NOT
+# installed by default -- an operator opts in the same way they would for
+# `conway-plugin-path`/`conway-plugin-memory`.
+conway-plugin-discover = { path = "../conway-plugin-discover" }
 clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }

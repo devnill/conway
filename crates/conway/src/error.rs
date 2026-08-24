@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use conway_core::error::{BackendError, RoutingError, RuntimeError, StoreError};
+use conway_core::error::{BackendError, PathStoreError, RoutingError, RuntimeError, StoreError};
 
 /// The `conway` crate's umbrella error type.
 ///
@@ -35,6 +35,11 @@ pub enum ConwayError {
     /// The session store reported an error.
     #[error("{0}")]
     Store(#[from] StoreError),
+
+    /// The path store reported an error (`FsPathStore::open`, at
+    /// `ConwayBuilder::build`'s path-store resolution step -- D1-3d-wire).
+    #[error("{0}")]
+    PathStore(#[from] PathStoreError),
 
     /// Routing could not resolve a candidate.
     #[error("{0}")]

@@ -28,7 +28,9 @@
 //! prints the child's session id instead, which `conway sessions show
 //! <id>`/`conway -p --resume <id> ...` can pick up from there.
 
-use conway::plugin::{CommandCtx, CommandOutcome};
+use std::sync::Arc;
+
+use conway::plugin::{CommandCtx, CommandOutcome, MemoryStore};
 use conway::{Conway, ForkSpec, SessionSpec};
 
 use crate::diag;
@@ -43,7 +45,18 @@ use crate::tui::commands::CommandRegistry;
 /// own "consume the remainder verbatim, no re-tokenization" rule for a
 /// plugin command's free-text argument (that module's own doc,
 /// `CommandCtx::args`'s doc).
-pub async fn run(args: &[String], conway: &Conway) -> conway::Result<ExitCode> {
+///
+/// `memory_store` is `main.rs`'s `build_conway`/`dispatch` forwarding the
+/// SAME `Arc<dyn MemoryStore>` `first_party_plugins::install` resolved for
+/// this process (board item `01M09V3S2AQYB2VK6MANFRH1JM`) -- handed straight
+/// through to [`first_party_plugins::installed_plugins`] below, never
+/// re-resolved here, so this call site cannot open a second `FsMemoryStore`
+/// over the same root.
+pub async fn run(
+    args: &[String],
+    conway: &Conway,
+    memory_store: Arc<dyn MemoryStore>,
+) -> conway::Result<ExitCode> {
     let Some(full_name) = args.first() else {
         // Unreachable through clap's own `external_subcommand`, which never
         // fires with zero captured tokens -- kept as an explicit usage
@@ -55,7 +68,7 @@ pub async fn run(args: &[String], conway: &Conway) -> conway::Result<ExitCode> {
     };
     let rest = args[1..].join(" ");
 
-    let plugins = first_party_plugins::installed_plugins(conway);
+    let plugins = first_party_plugins::installed_plugins(conway, memory_store);
     let registry = match CommandRegistry::build(&plugins) {
         Ok(registry) => registry,
         Err(e) => {

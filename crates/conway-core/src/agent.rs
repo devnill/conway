@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::{Artifact, ToolCategory, Usage};
 use crate::error::ConwayError;
-use crate::ids::{AgentId, LogSeq, RoleAlias, SessionId, ToolName};
+use crate::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId, ToolName};
+use crate::path::RecordRef;
 
 /// Fork vs spawn: re-exported from `log` (the canonical definition lives
 /// there because [`crate::log::ForkOrigin`] persists it). Do not redefine.
@@ -170,6 +171,30 @@ pub struct SubagentSpec {
     pub prompt: String,
     pub agent_def: Option<AgentDefRef>,
     pub role: Option<RoleAlias>,
+    /// Pins the child's model outright, overriding whatever it would
+    /// otherwise resolve (the fork-only inheritance fill's `agent_def.model`,
+    /// or -- absent that -- ordinary role-based routing). `None` (the
+    /// `fork`/`spawn` constructors' default) preserves the pre-existing
+    /// behavior exactly: `conway_runtime`'s `SubagentHost::start` derives the
+    /// child's pin solely from its (possibly inherited) `agent_def.model`,
+    /// with no way for a caller to name a specific model directly. `Some`
+    /// is the mechanism `conway`'s `ForkSpec::model` (INTENT.md §5c: "changing
+    /// model mid-session is ordinary") uses to switch a live conversation to
+    /// a named model without touching `role` at all -- the child still
+    /// inherits the forker's ENTIRE prior context (selection, per §5c,
+    /// survives a model change unchanged); only this pin, and therefore the
+    /// rendering the new model receives, differs. A pin the child's
+    /// inherited context does not fit produces the same loud
+    /// `RoutingError::ContextTooLarge` refusal an ordinary turn's admission
+    /// gate already gives -- never a silent fallback to the old model, and
+    /// never a silent trim.
+    ///
+    /// `#[serde(default)]` keeps already-persisted data readable: a
+    /// `SubagentSpec` serialized before this field existed still
+    /// deserializes, as `None` -- the pre-existing agent-def-only pin
+    /// resolution for every such spec.
+    #[serde(default)]
+    pub pin: Option<ModelRef>,
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
     /// A schema the child's final answer must satisfy. Evaluated on a
@@ -364,6 +389,99 @@ pub struct SubagentSpec {
     /// config" behavior for every such spec.
     #[serde(default)]
     pub plugin_config: Option<crate::ports::PluginConfig>,
+    /// The child's CHOSEN starting context path, as an ordered list of
+    /// already-resolved `(session, seq)` references -- the eighth axis
+    /// `ForkSpec` narrowed nothing on, before this field existed (`fork`
+    /// inherited the WHOLE forker transcript, `spawn` inherited none, and
+    /// there was no way to say "start with exactly these pieces").
+    ///
+    /// **What it carries, and why not a `PathSelection`/`SelectionKey`/op
+    /// list instead.** A flat `Vec<RecordRef>` mirrors `conway-plugin-path`'s
+    /// own `compose_context_path` tool argument shape (`include`) exactly --
+    /// the caller has already turned an operator's stated intent into
+    /// concrete references (its own session's records, or a completed
+    /// child's `transcript_ref`) by the time either surface is reached, so
+    /// neither should re-parse natural language. A raw `PathSelection` would
+    /// force a caller to hand-build `PathNode`s (stamp, provenance, and all)
+    /// for a value this crate can derive uniformly instead. A `SelectionKey`
+    /// -- content-addressed and already storable, which would let many
+    /// forks/spawns share one frozen selection ("start every reviewer from
+    /// the same base") -- is a real, disclosed follow-up: nothing in this
+    /// tree exposes a `SelectionKey` to a caller yet (`compose_context_path`
+    /// reports the resulting head's log position, not the selection's own
+    /// key), so there is nothing to hand one to today. This field is the
+    /// slice that has a producer on both ends.
+    ///
+    /// **How it composes with [`Self::mode`].** It sits BESIDE the Fork/Spawn
+    /// axis rather than replacing or refining it: `mode` still governs
+    /// store-level lineage (`SessionStore::fork` vs `::create`, sibling
+    /// sharing, `AgentNode.inherited_upto` tree bookkeeping) unchanged, and
+    /// `directive`/`prompt` is still appended as the child's own head content
+    /// record exactly as before. What changes is CONTEXT ASSEMBLY only: when
+    /// `Some`, `conway_runtime`'s `SubagentHost::start` writes the given
+    /// records as the child's very first `ContextPathSet` HEAD (via the same
+    /// `ContextPathHost::set_head`/`ValidatedPath::derive_with` machinery
+    /// `compose_context_path` calls mid-chain -- no second implementation of
+    /// path derivation), so `resolve_default_path`'s "head exists" branch --
+    /// not the "no head" ancestry-walk/whole-own-log default -- governs every
+    /// turn from the first one on. `None` (every `fork`/`spawn` constructor's
+    /// default) is a complete no-op: the mode's ordinary default (Fork's
+    /// inherited prefix, Spawn's clean slate) is exactly what runs, unchanged
+    /// down to the byte. `Some(vec![])` is not the same as `None` -- it is a
+    /// deliberate "replace the default with nothing", e.g. a fork that keeps
+    /// only its own directive and drops the forker's entire inherited
+    /// transcript, which was previously inexpressible.
+    ///
+    /// **Narrowing: none imposed, and that is a decision, not an oversight.**
+    /// `Self::resolve_records`-shaped resolution (`ContextPathHost::
+    /// resolve_records`, the SAME surface `compose_context_path` already
+    /// uses) can already read ANY session's records, honestly, through the
+    /// masked/ancestry-aware resolver -- decision `01M0K4QT6MBXPD6PXMBBBD2P7B`
+    /// states this mirrors `CurateCtx::store`'s existing "a curator may
+    /// reference any record in the store" grant. This field does not add a
+    /// second, narrower rule on top of an already-wide-open capability:
+    /// doing so would make an identical reference resolve at fork/spawn time
+    /// but not mid-chain (or vice versa), an inconsistency with no
+    /// corresponding security boundary to justify it (unlike `plugin_config`,
+    /// whose narrowing-only rule guards an operational/security-relevant
+    /// resource -- a filesystem root -- context CONTENT is not that). The
+    /// only rejection this field can produce is `resolve_records`'s existing
+    /// failure mode (a masked, unresolvable, or nonexistent record), enforced
+    /// at the one call site that resolves it (`SubagentHost::start`), never
+    /// silently dropped.
+    ///
+    /// **`covers_upto`, reasoned through, not assumed.** `write_head`'s
+    /// `covers_upto_for` derives the child's own-tail marker purely from the
+    /// GIVEN selection's own-attributed nodes -- and this selection, being a
+    /// child's very FIRST head, is written while the child's own log is still
+    /// completely empty. It therefore always lands on `LogSeq::ZERO`
+    /// (`covers_upto_for`'s documented no-own-records fallback), which here
+    /// means exactly what it says: "read this (currently empty) own log from
+    /// the beginning" -- never the silent-reversal trap finding
+    /// `01M0P50E04EY3BHQJHZX74HSSC` describes, because that trap requires a
+    /// PRIOR head that already excluded some own records for the reset to
+    /// silently resurrect; a brand-new child has no prior head and nothing to
+    /// resurrect. The directive/prompt record appended immediately after
+    /// (unconditionally, by the existing head-record step) becomes this
+    /// child's own tail from the very next read, exactly as intended. Pinned
+    /// by `conway-runtime`'s `subagent.rs` test suite, not merely asserted
+    /// here.
+    ///
+    /// **What this does NOT reach.** `Conway::fork_from`/`fork_child.rs` --
+    /// the SEPARATE mechanism that forks a PERSISTED session at an arbitrary,
+    /// possibly-earlier point with no live agent involved -- does not go
+    /// through `SubagentHost::start` at all, and already drops several other
+    /// `ForkSpec` fields for the same reason (`directive`'s own semantics
+    /// differ there, `model`, `ephemeral`, `ask_origin` are absent from its
+    /// narrower `ForkChildRequest`). Wiring `context` through that path too
+    /// is a disclosed follow-up, not this field's scope.
+    ///
+    /// `#[serde(default)]` keeps already-persisted data readable: a
+    /// `SubagentSpec` serialized before this field existed still
+    /// deserializes, as `None` -- the pre-existing behavior for every such
+    /// spec.
+    #[serde(default)]
+    pub context: Option<Vec<RecordRef>>,
 }
 
 impl SubagentSpec {
@@ -433,6 +551,7 @@ impl SubagentSpec {
             prompt: prompt.into(),
             agent_def: None,
             role: None,
+            pin: None,
             tools: None,
             budget,
             result_contract: None,
@@ -443,6 +562,7 @@ impl SubagentSpec {
             root: None,
             tag: None,
             plugin_config: None,
+            context: None,
         }
     }
 
@@ -453,6 +573,7 @@ impl SubagentSpec {
             prompt: prompt.into(),
             agent_def: Some(agent_def),
             role: None,
+            pin: None,
             tools: None,
             budget,
             result_contract: None,
@@ -463,6 +584,7 @@ impl SubagentSpec {
             root: None,
             tag: None,
             plugin_config: None,
+            context: None,
         }
     }
 }
@@ -895,6 +1017,7 @@ mod tests {
             prompt: "do it".into(),
             agent_def: None,
             role: None,
+            pin: None,
             tools: None,
             budget: Budget::default(),
             result_contract: None,
@@ -905,6 +1028,7 @@ mod tests {
             root: None,
             tag: None,
             plugin_config: None,
+            context: None,
         };
         assert!(spec.validate().is_ok());
     }

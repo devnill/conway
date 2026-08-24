@@ -80,12 +80,12 @@
 //!   process group is killed (best-effort SIGKILL on the group, synchronously
 //!   -- `Drop` cannot `await`). `kill_on_drop(true)` is ALSO set on the
 //!   `Command` as belt-and-suspenders. A long-lived child is never orphaned.
-//! - **`kill_group` is DUPLICATED, not shared** -- the same ~15-line
-//!   SIGTERM-then-SIGKILL sequence `conway-plugin-subprocess::unix::kill_group`
-//!   (itself a documented duplicate of `conway_tools::process::unix::kill_group`)
-//!   already implements. `conway-tools`'s module is private, and this crate
-//!   does not depend on `conway-plugin-subprocess`, so the sequence is
-//!   duplicated here a third time rather than widening anyone's visibility.
+//! - **`kill_group` is SHARED, not duplicated (board item
+//!   `01M0EKVR1BEXXS75NV2JC4HZZ9`)** -- `conway::plugin::kill_group` (the
+//!   ONE implementation every crate that needs this now calls, re-exported
+//!   from `conway_tools::process::unix::kill_group`) is used for the
+//!   graceful timeout kill; the synchronous `Drop`-time SIGKILL below still
+//!   uses `nix::sys::signal::kill` directly (`Drop` cannot `await`).
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -98,9 +98,8 @@ use tokio::process::{Child, ChildStdin};
 use tokio::sync::{oneshot, Mutex as AsyncMutex};
 use tokio::time::timeout;
 
-use conway::plugin::{CancellationToken, ToolError};
+use conway::plugin::{kill_group, CancellationToken, ToolError};
 
-use crate::unix::kill_group;
 use crate::wire::{
     initialize_request, initialized_notification, parse_initialize_response,
     parse_tools_list_response, tools_call_request, tools_list_request, CallOutcome,

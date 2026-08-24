@@ -435,6 +435,25 @@ Neither mode ever produces a silent hang or an `AllowAlways`: one-shot's gate
 never remembers a decision past the single call it was asked about, matching
 "a one-shot invocation must never prompt or wait."
 
+**A non-empty `--allowed-tools` also narrows what the model is TOLD it has,
+not just what it's permitted to call.** `conway -p "…" --allowed-tools
+'read,grep'` announces exactly `read`/`grep` to the model — `bash` is never
+in the request's tool schema at all, so a well-behaved model has no way to
+propose it in the first place, and the "propose it, get denied, recover"
+round trip (and its tokens) never happens. A `--deny-tools` entry subtracts
+from the announced set too, but only when it names the WHOLE tool (a bare
+`bash`, not a scoped `bash(rm *)`) — a scoped deny leaves the tool announced
+since most calls to it would still succeed; only the argument pattern is
+refused. Combined with `--agent`, the narrower of the two always wins: an
+`--allowed-tools` entry naming a tool the def's own `tools:` selector does
+not select is never announced, regardless of the flag.
+
+**An empty `--allowed-tools` (the default) is the one case left
+unnarrowed, deliberately.** Every tool stays announced even though none of
+them are permitted — see "A `report`/`bash` denial…" below for why
+collapsing the announced set to nothing here would trade a graceful denial
+for a confusing one, not remove it.
+
 ### Scoping an entry to specific arguments
 
 Each entry in `--allowed-tools`/`--deny-tools` is either a bare tool name
@@ -461,20 +480,26 @@ before the glob is even consulted. This gate does **not** apply to a bare
 tool-name entry: `--allowed-tools bash` already grants that tool
 unrestricted access, so there is nothing narrower left to protect.
 
-**A `report`/`bash` denial along the way, on an otherwise successful run, is
-expected, not a bug.** A one-shot session announces every built-in tool to
-the model (including `report`, which a session with no parent has no use
-for) unless you populate `--allowed-tools`; when the model tries one that's
-not allowed, the call is denied with feedback and the model falls back to
-answering in plain text instead — exactly what the `jsonl` excerpt above
-shows (`report`, then `bash`, each proposed and `denied_with_feedback`,
-followed by a `text_delta` answer regardless). In `text` mode this same
-sequence shows up as `conway: warning: tool call proposed: …`/`permission
-denied for call …` lines on stderr; **in `json` mode you won't see it at
-all** — that format carries only the terminal result, with no record of
-which tools were tried and denied along the way. List the tools you
-actually want the model to use via `--allowed-tools` to avoid the extra
-round trip.
+**A `report`/`bash` denial along the way, on an otherwise successful run
+with an EMPTY `--allowed-tools`, is expected, not a bug.** With no
+`--allowed-tools` at all, a one-shot session still announces every built-in
+tool to the model (including `report`, which a session with no parent has
+no use for) — see "Permissions with no human present" above for why that
+empty-list case is deliberately left unnarrowed. The model may still try
+one, get denied with feedback, and fall back to answering in plain text
+instead — exactly what the `jsonl` excerpt above shows (`report`, then
+`bash`, each proposed and `denied_with_feedback`, followed by a `text_delta`
+answer regardless). In `text` mode this same sequence shows up as `conway:
+warning: tool call proposed: …`/`permission denied for call …` lines on
+stderr; **in `json` mode you won't see it at all** — that format carries
+only the terminal result, with no record of which tools were tried and
+denied along the way.
+
+**List the tools you actually want the model to use via `--allowed-tools`
+and this round trip genuinely stops happening**, rather than merely being
+hidden: a non-empty `--allowed-tools` (see above) also narrows what the
+model is TOLD it has, so an excluded tool is never in its own request
+schema and a compliant model has no way to propose it at all.
 
 See [`permissions.md`](permissions.md) for pattern grants, project trust, and
 everything specific to interactive (`prompt`) mode — none of which applies
@@ -523,8 +548,8 @@ naming both flags rather than a silently dropped one.
 | --- | --- |
 | `-p, --print [PROMPT]` | Run one prompt and exit. With a value and no piped stdin, that value is the prompt; with none, the prompt is read from stdin instead; with both a value AND piped (non-terminal) stdin, they're joined — `PROMPT` as the directive, the piped text as the data, directive first. See "Invocation and input" above. Absent entirely → interactive TUI. |
 | `--output-format <text\|json\|jsonl>` | Selects the renderer (default `text`). See "Output formats" above. |
-| `--allowed-tools <name[,name…]>` | Comma-separated tool names to allow, consulted when `--permission-mode` is `allowlist` (the default). Each entry is a bare tool name or `tool_name(arg_glob)` to scope the grant to matching arguments (see "Scoping an entry to specific arguments" above). Empty (the default) denies every tool call. |
-| `--deny-tools <name[,name…]>` | Comma-separated tool names to deny even when `--allowed-tools` lists them; also accepts `tool_name(arg_glob)` entries; also consulted only in `allowlist` mode. |
+| `--allowed-tools <name[,name…]>` | Comma-separated tool names to allow, consulted when `--permission-mode` is `allowlist` (the default). Each entry is a bare tool name or `tool_name(arg_glob)` to scope the grant to matching arguments (see "Scoping an entry to specific arguments" above). When non-empty, also narrows the tool set announced to the model to exactly this list (intersected with `--agent`'s own `tools:` selector, if any) — see "Permissions with no human present" above. Empty (the default) denies every tool call but leaves the announced set alone. |
+| `--deny-tools <name[,name…]>` | Comma-separated tool names to deny even when `--allowed-tools` lists them; also accepts `tool_name(arg_glob)` entries; also consulted only in `allowlist` mode. A bare entry is also dropped from the announced set; a scoped (`tool(arg_glob)`) entry is not. |
 | `--permission-mode <allowlist\|deny>` | See "Permissions with no human present" above. |
 | `--role-override <role>` | Use this role instead of `default_role` for the session. |
 | `--model <backend/model>` | Pin a specific model instead of routing through a role's chain. |

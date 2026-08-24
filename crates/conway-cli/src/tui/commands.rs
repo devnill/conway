@@ -76,12 +76,13 @@ use std::sync::Arc;
 use conway::plugin::{Command, CommandCtx};
 use conway::{
     AgentId, AgentIntent, ContextReport, Conway, Event, ForkSpec, ModelRef, PermissionScope,
-    Provenance, RoutingReason, SessionHandle, SessionId, SpawnSpec, SubagentMode, ToolSelector,
-    TrustPermissionReport, Usage,
+    Provenance, RoleAlias, RoutingReason, SessionHandle, SessionId, SpawnSpec, SubagentMode,
+    ToolSelector, TrustPermissionReport, TrustPreview, Usage,
 };
 
 use super::state::{
-    AppState, AskFate, Entry, IntentChoice, IntentConfirm, Mode, PluginCommandEntry,
+    AppState, AskFate, Entry, IntentChoice, IntentConfirm, Mode, PluginCommandEntry, TrustDecision,
+    TrustPreviewCard,
 };
 
 /// One parsed slash command. Agent/session identifiers are still raw
@@ -126,6 +127,25 @@ pub enum SlashCommand {
     },
     Resume {
         sid: String,
+    },
+    /// `/model <backend/model>` (INTENT.md §5c: "changing model mid-session
+    /// is ordinary, and stays cheap"). `model` is still the raw, unparsed
+    /// `--model`-spelled string (`ModelRef::from_str` runs in [`execute`],
+    /// where a malformed value becomes a `Notice` like any other facade
+    /// failure, not a [`ParseError`]) -- see [`execute`]'s own `Model` arm
+    /// for the fork-based mechanism this drives.
+    Model {
+        model: String,
+    },
+    /// `/role <alias>` -- the same mid-session-switch mechanism as
+    /// [`SlashCommand::Model`], naming a role instead of pinning a model
+    /// directly. `role` is the raw alias text; an alias the configured
+    /// `[routing]` table does not recognize is not caught here (`parse`
+    /// stays state-free) -- it surfaces the first time the switched-to
+    /// child actually runs a turn, the same as any other roleless-fork
+    /// misconfiguration.
+    Role {
+        role: String,
     },
     Help,
     /// V4: opens the `/settings` menu (`view/settings.rs`), replacing the
@@ -228,6 +248,14 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
         "/resume" => {
             let sid = parse_one_arg(rest, "/resume <session-id>")?;
             Ok(SlashCommand::Resume { sid })
+        }
+        "/model" => {
+            let model = parse_one_arg(rest, "/model <backend/model>")?;
+            Ok(SlashCommand::Model { model })
+        }
+        "/role" => {
+            let role = parse_one_arg(rest, "/role <alias>")?;
+            Ok(SlashCommand::Role { role })
         }
         "/help" => {
             parse_no_arg(rest, "/help")?;
@@ -601,6 +629,19 @@ pub trait Host {
         granting_agent: AgentId,
     ) -> std::io::Result<TrustPermissionReport>;
 
+    /// `/trust permissions`'s read-only FIRST step (board item, split from
+    /// `01KZHVFCN6ZEAXV7K5JHRQN1YB`'s `(kind, id, digest)`/plugin-subject
+    /// generalisation, which this does not pre-empt): a thin passthrough to
+    /// `Conway::preview_trust_target`, reached through this trait like
+    /// every other facade call so `execute`'s `SlashCommand::Trust` arm
+    /// (which now opens a preview card instead of trusting immediately) is
+    /// unit-testable against a fake. Returns `std::io::Result`, matching
+    /// [`Self::trust_permission_file`]'s own choice and for the identical
+    /// reason: `Conway::preview_trust_target` already returns `std::io::
+    /// Result`, and this is a pure read, so there is no separate class of
+    /// facade-level error to fold in.
+    async fn preview_trust_target(&self, path: &std::path::Path) -> std::io::Result<TrustPreview>;
+
     /// Resolves a plugin command's full name (e.g. `"acme.greet"`, the same
     /// string [`SlashCommand::Plugin::full_name`] carries) against the
     /// installed [`CommandRegistry`], or `None` if nothing is registered
@@ -695,10 +736,18 @@ impl Host for LiveHost<'_> {
     ) -> std::io::Result<TrustPermissionReport> {
         // Collected fresh per call, exactly like the old `app.rs::submit`
         // interception did -- `Conway::trust_permission_file`'s own
-        // `TrustStore::trust` reads `env` for XDG resolution.
+        // `TrustStore::trust` reads `env` for user config resolution.
         let env_vars: HashMap<String, String> = std::env::vars().collect();
         self.conway
             .trust_permission_file(&env_vars, path, scope, granting_agent)
+    }
+
+    async fn preview_trust_target(&self, path: &std::path::Path) -> std::io::Result<TrustPreview> {
+        // Collected fresh per call, mirroring `trust_permission_file` just
+        // above -- `Conway::preview_trust_target`'s own `TrustStore::load`
+        // reads `env` for user config resolution.
+        let env_vars: HashMap<String, String> = std::env::vars().collect();
+        self.conway.preview_trust_target(&env_vars, path)
     }
 
     fn resolve_command(&self, full_name: &str) -> Option<Arc<dyn Command>> {
@@ -906,6 +955,64 @@ async fn bare_fork<H: Host>(
     }
 }
 
+/// The `/model`/`/role` execution path (INTENT.md §5c: "changing model
+/// mid-session is ordinary, and stays cheap"). Forks a fresh, interactive
+/// keep-alive child off `focused` with `spec` (already carrying a `.model`
+/// or `.role` override plus `.keep_alive(true)`/`.tools(..)`, built by each
+/// caller) and an EMPTY directive -- the identical idiom [`bare_fork`] uses,
+/// so the child inherits `focused`'s entire context (§5c: "a selection
+/// survives a model change; only the rendering ... does not") and idles
+/// rather than running a placeholder turn against blank input.
+///
+/// **Why fork, not a live mutation of `focused`'s own task.** `focused`'s
+/// running `AgentLoop` (`conway_runtime::agent_loop`) reads its role/pin
+/// from its own `AgentSpec`, fixed for that task's entire lifetime -- there
+/// is no message kind or shared cell that lets anything outside the task
+/// change it, and `AgentTree::attach` refuses a second registration under
+/// the same id besides, so "cancel and re-resume in place" is not available
+/// either (see `conway::Conway::resume_with`'s own doc for the
+/// process-restart path that IS this shape). Forking is the mechanism that
+/// already reaches a LIVE session without any of that: it is a wholly
+/// separate, already-running task from the moment it starts, so there is no
+/// existing task to mutate at all.
+///
+/// A malformed `--model`-shaped value or an admission refusal
+/// (`RoutingError::ContextTooLarge`, when the new pin/role's chain cannot
+/// take the inherited context) is never swallowed here: the malformed-value
+/// case fails before this function is even called (`execute`'s own `Model`
+/// arm), and an admission refusal cannot happen at fork time at all -- the
+/// child starts idle and only runs its router-facing admission check on its
+/// first REAL turn, which surfaces through the ordinary event stream
+/// `App::run` already renders, exactly like any other turn's refusal.
+///
+/// Pushes a `Notice` naming the switch and its target BEFORE returning
+/// `Effect::FocusNewSession`, so the transcript records the switch itself
+/// even though the routing decision it causes has not happened yet (that
+/// arrives later, as this child's own `Event::ModelDecision`, which `/why`
+/// then reports against the switch this notice already logged).
+async fn switch_session<H: Host>(
+    state: &mut AppState,
+    host: &H,
+    focused: AgentId,
+    describe: impl Into<String>,
+    spec: ForkSpec,
+) -> Effect {
+    match host.fork(focused, spec).await {
+        Ok(child) => {
+            notice(state, format!("{}: {focused} -> {child}", describe.into()));
+            Effect::FocusNewSession {
+                child,
+                parent: focused,
+                first_message: None,
+            }
+        }
+        Err(e) => {
+            notice(state, e.to_string());
+            Effect::None
+        }
+    }
+}
+
 /// The bare/implicit `/spawn` execution path (WI "bare /spawn & /fork open an
 /// interactive session"): a fresh, interactive KEEP-ALIVE session with an
 /// EMPTY prompt (the child idles until `first_message`, if given, is
@@ -1076,7 +1183,10 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
         SlashCommand::Context { agent } => {
             match resolve_agent(state, &agent) {
                 Ok(agent_id) => match host.context_report(agent_id).await {
-                    Ok(report) => render_context_report(&report, state),
+                    Ok(report) => {
+                        render_instruction_preamble(&report, state);
+                        render_context_report(&report, state);
+                    }
                     Err(e) => notice(state, e.to_string()),
                 },
                 Err(e) => notice(state, e),
@@ -1236,6 +1346,50 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 Effect::None
             }
         },
+        // `/model <backend/model>` -- see [`switch_session`]'s own doc for
+        // the fork-based mechanism and why it, not a live mutation of the
+        // focused agent's own running task, is what actually reaches a LIVE
+        // session (INTENT.md §5c).
+        SlashCommand::Model { model } => {
+            let focused = state.focused_agent;
+            match model.parse::<ModelRef>() {
+                Ok(model_ref) => {
+                    let spec = ForkSpec::new(String::new())
+                        .keep_alive(true)
+                        .tools(interactive_keep_alive_tools())
+                        .model(model_ref.clone());
+                    switch_session(
+                        state,
+                        host,
+                        focused,
+                        format!("switched model to {model_ref}"),
+                        spec,
+                    )
+                    .await
+                }
+                Err(e) => {
+                    notice(state, format!("/model {model}: {e}"));
+                    Effect::None
+                }
+            }
+        }
+        // `/role <alias>` -- same mechanism as `Model` above, naming a role
+        // instead of pinning a model directly.
+        SlashCommand::Role { role } => {
+            let focused = state.focused_agent;
+            let spec = ForkSpec::new(String::new())
+                .keep_alive(true)
+                .tools(interactive_keep_alive_tools())
+                .role(RoleAlias::new(role.clone()));
+            switch_session(
+                state,
+                host,
+                focused,
+                format!("switched role to {role}"),
+                spec,
+            )
+            .await
+        }
         // T7: `/help` opens the keybinding overlay (`view/help.rs`) instead
         // of dumping a command list into the transcript -- `AppState::open_help`
         // is a pure flag flip, pushing zero `Entry::Notice` lines.
@@ -1255,66 +1409,45 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
         // why. `parse` already rejected any argument other than the bare
         // form or `permissions`, so the only remaining case here is
         // "nothing to trust".
+        //
+        // Board item (split from `01KZHVFCN6ZEAXV7K5JHRQN1YB`'s `(kind,
+        // id, digest)`/plugin-subject generalisation, which this does not
+        // pre-empt): this arm used to call `Host::trust_permission_file`
+        // directly, installing and trusting in one action with nothing
+        // shown first. It now calls the read-only `Host::
+        // preview_trust_target` and opens the trust-preview card
+        // (`state.offer_trust_preview`) instead -- the actual trust call
+        // happens only after an explicit confirm, in
+        // [`apply_trust_decision`] below, driven by `app.rs`'s
+        // `Action::TrustDecision` arm exactly the way `Action::AskFate`
+        // drives [`apply_ask_fate`].
         SlashCommand::Trust => {
             match state.permission_paths.first().cloned() {
                 None => {
                     notice(state, "no project permissions file is configured to trust");
                 }
-                Some(path) => {
-                    let root_agent = state.root_agent();
-                    match host
-                        .trust_permission_file(&path, PermissionScope::Session, root_agent)
-                        .await
-                    {
-                        Ok(report) => {
-                            // B3: surface each registration error through
-                            // the SAME `Entry::Error { fatal: false }`
-                            // channel `load_permission_files`'s own
-                            // `registration_errors` uses.
-                            for err in report.registration_errors {
-                                state.transcript.push(Entry::Error {
-                                    text: format!(
-                                        "permission rule not installed: {} -- {}",
-                                        err.rule.describe(),
-                                        err.reason.describe()
-                                    ),
-                                    fatal: false,
-                                });
-                            }
-                            // A4: surface each partial-inertness notice
-                            // through the SAME `Entry::Notice` channel
-                            // `load_permission_files`'s own `notices` uses.
-                            for msg in report.notices {
-                                notice(state, msg);
-                            }
-                            notice(
-                                state,
-                                format!(
-                                    "trusted {} -- {} allow rule(s) installed for this \
-                                     session, and will load automatically until its \
-                                     content next changes",
-                                    path.display(),
-                                    report.installed
-                                ),
-                            );
-                        }
-                        Err(e) => {
-                            // Any failure here (not merely the "unrecognized
-                            // top-level key" case) is promoted to
-                            // `Entry::Error`, not `Entry::Notice` -- `/trust
-                            // permissions` is an explicit operator action,
-                            // so the operator's belief ("I just trusted this
-                            // file") diverging from reality ("nothing was
-                            // recorded") must never surface at a weaker
-                            // severity than `report.registration_errors`
-                            // does just above.
-                            state.transcript.push(Entry::Error {
-                                text: format!("could not trust {}: {e}", path.display()),
-                                fatal: false,
-                            });
-                        }
+                Some(path) => match host.preview_trust_target(&path).await {
+                    Ok(preview) => {
+                        state.offer_trust_preview(TrustPreviewCard {
+                            path,
+                            contents: preview.contents,
+                            status: preview.status,
+                            error: None,
+                        });
                     }
-                }
+                    Err(e) => {
+                        // A read failure here is promoted to `Entry::Error`,
+                        // same severity `apply_trust_decision`'s own confirm
+                        // failure uses below -- `/trust permissions` is an
+                        // explicit operator action, so a failure to even
+                        // show what would be trusted must never surface as
+                        // a routine notice.
+                        state.transcript.push(Entry::Error {
+                            text: format!("could not read {}: {e}", path.display()),
+                            fatal: false,
+                        });
+                    }
+                },
             }
             Effect::None
         }
@@ -1411,6 +1544,85 @@ pub async fn apply_ask_fate<H: Host>(fate: AskFate, state: &mut AppState, host: 
     }
 }
 
+/// Carries out the trust-preview card's decision (board item, split from
+/// `01KZHVFCN6ZEAXV7K5JHRQN1YB`): a no-op `notice` for [`TrustDecision::
+/// Cancel`] (there is nothing to undo -- nothing was ever written), or the
+/// SAME `Host::trust_permission_file` call this arm used to make
+/// immediately (before this item added the preview step) for
+/// [`TrustDecision::Confirm`]. Driven by `app.rs`'s `Action::TrustDecision`
+/// arm, mirroring [`apply_ask_fate`]'s own dispatch shape exactly: reads
+/// the open card from `state.mode`, is a no-op if none is open (the same
+/// defensive shape `apply_ask_fate` uses -- a stale action delivered after
+/// the card already closed some other way must never panic or act on
+/// nothing).
+pub async fn apply_trust_decision<H: Host>(
+    decision: TrustDecision,
+    state: &mut AppState,
+    host: &H,
+) {
+    let path = match &state.mode {
+        Mode::TrustPreview(card) => card.path.clone(),
+        _ => return,
+    };
+    match decision {
+        TrustDecision::Cancel => {
+            state.close_trust_preview();
+            notice(state, format!("not trusted: {}", path.display()));
+        }
+        TrustDecision::Confirm => {
+            let root_agent = state.root_agent();
+            match host
+                .trust_permission_file(&path, PermissionScope::Session, root_agent)
+                .await
+            {
+                Ok(report) => {
+                    state.close_trust_preview();
+                    // B3: surface each registration error through the SAME
+                    // `Entry::Error { fatal: false }` channel
+                    // `load_permission_files`'s own `registration_errors`
+                    // uses.
+                    for err in report.registration_errors {
+                        state.transcript.push(Entry::Error {
+                            text: format!(
+                                "permission rule not installed: {} -- {}",
+                                err.rule.describe(),
+                                err.reason.describe()
+                            ),
+                            fatal: false,
+                        });
+                    }
+                    // A4: surface each partial-inertness notice through the
+                    // SAME `Entry::Notice` channel `load_permission_files`'s
+                    // own `notices` uses.
+                    for msg in report.notices {
+                        notice(state, msg);
+                    }
+                    notice(
+                        state,
+                        format!(
+                            "trusted {} -- {} allow rule(s) installed for this \
+                             session, and will load automatically until its \
+                             content next changes",
+                            path.display(),
+                            report.installed
+                        ),
+                    );
+                }
+                Err(e) => {
+                    // The card STAYS OPEN with the error shown -- mirroring
+                    // `apply_ask_fate`'s own failure path -- rather than
+                    // silently falling through to "cancelled": the
+                    // operator's belief ("I just confirmed trusting this
+                    // file") diverging from reality ("nothing was
+                    // recorded") must never be camouflaged as a routine
+                    // notice.
+                    state.fail_trust_preview(format!("could not trust {}: {e}", path.display()));
+                }
+            }
+        }
+    }
+}
+
 /// Resolves `token` to a live agent id: a full ULID is accepted outright
 /// (no membership check -- the facade call itself rejects an agent outside
 /// this session), otherwise `token` is matched as a unique prefix against
@@ -1489,6 +1701,75 @@ fn render_tree_snapshot(state: &mut AppState) {
     }
 }
 
+/// The preamble section (board item `01M0K5MD59YZRSHE31JKZKFRMY`):
+/// renders `report.instruction_fragments` -- every plugin-declared
+/// instruction fragment this turn's assembly considered, WITH the
+/// (plugin_id, name) source attribution `Provenance::Skill` alone cannot
+/// carry (see `ContextReport::instruction_fragments`'s own doc). Called
+/// BEFORE [`render_context_report`] -- "instruction is the top of your
+/// context" (decision `01M0K5K8DCRVR523P54DZF4BY3`) -- and only when
+/// non-empty, so a session with no instruction-declaring plugin installed
+/// renders byte-identically to before this item (the per-segment listing
+/// below already shows the base idiom and any directory-authored skill by
+/// name, via `Provenance::AgentDef`/`Provenance::Skill`; this section adds
+/// only what that listing cannot: which PLUGIN a fragment came from, and
+/// whether it was withheld).
+///
+/// **Not the full illustrative header/table `/context`'s board item
+/// sketches** (`context · @root · claude-opus-5 · 11.8k / 200k`, a boxed
+/// `path` section, etc.) -- that is a broader `/context` rendering
+/// redesign the item's own text rules out ("`/context <agent>` already
+/// exists -- do not build a new viewer"). This renders the SAME one-
+/// notice-per-line shape [`render_context_report`] already uses, adding
+/// the source/reachability columns that shape can express.
+fn render_instruction_preamble(report: &ContextReport, state: &mut AppState) {
+    if report.instruction_fragments.is_empty() {
+        return;
+    }
+    let total_tokens: u32 = report
+        .instruction_fragments
+        .iter()
+        .map(|f| f.tokens_est)
+        .sum();
+    notice(
+        state,
+        format!(
+            "preamble: {} plugin-declared fragment{} · {total_tokens}tok",
+            report.instruction_fragments.len(),
+            if report.instruction_fragments.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+        ),
+    );
+    for fragment in &report.instruction_fragments {
+        if fragment.unreachable_tool_ids.is_empty() {
+            notice(
+                state,
+                format!(
+                    "  {}.{}  {}tok  <- {}",
+                    fragment.plugin_id, fragment.name, fragment.tokens_est, fragment.plugin_id
+                ),
+            );
+        } else {
+            let missing = fragment
+                .unreachable_tool_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            notice(
+                state,
+                format!(
+                    "  {}.{}  {}tok  \u{26a0} names {missing} -- not installed",
+                    fragment.plugin_id, fragment.name, fragment.tokens_est
+                ),
+            );
+        }
+    }
+}
+
 fn render_context_report(report: &ContextReport, state: &mut AppState) {
     if report.segments.is_empty() && report.dropped.is_empty() {
         notice(state, "empty context");
@@ -1549,6 +1830,16 @@ fn provenance_label(p: &Provenance) -> String {
 /// `/why`: renders `state.last_model_decision` (populated by `app.rs` on
 /// `Event::ModelDecision` -- this module never writes it). No facade call
 /// at all (module notes: "reads cached state with no facade call").
+///
+/// **Shows what changed** (this item, INTENT.md §5c: "changing model
+/// mid-session is ordinary"): when `state.previous_model_decision` is also
+/// `Some` (i.e. this is at least the second routing decision this session
+/// has seen -- ordinarily the child's first turn after a `/model`/`/role`
+/// switch), a changed `role`/`chosen` is rendered as `X -> Y` instead of
+/// bare `Y`, naming exactly what a `/model`/`/role` switch (or, equally, an
+/// ordinary fallback the router itself chose) actually changed. A field
+/// that did NOT change renders bare, unchanged from before this item --
+/// there is nothing to contrast it against.
 fn render_why(state: &mut AppState) {
     let Some(env) = state.last_model_decision.clone() else {
         notice(state, "no routing decision yet");
@@ -1568,8 +1859,33 @@ fn render_why(state: &mut AppState) {
         notice(state, "no routing decision yet");
         return;
     };
-    notice(state, format!("role: {role}"));
-    notice(state, format!("model: {chosen}"));
+    // `previous_model_decision` is only ever assigned an `Event::
+    // ModelDecision` envelope too (the SAME invariant as `last_model_
+    // decision`, `app.rs`'s run loop) -- a mismatched shape there degrades
+    // to "no previous decision to compare against" (`None`), same as a
+    // genuinely absent one, rather than panicking.
+    let previous = state.previous_model_decision.clone().and_then(|env| {
+        if let Event::ModelDecision {
+            role: prev_role,
+            chosen: prev_chosen,
+            ..
+        } = env.event
+        {
+            Some((prev_role, prev_chosen))
+        } else {
+            None
+        }
+    });
+    let role_text = match &previous {
+        Some((prev_role, _)) if *prev_role != role => format!("{prev_role} -> {role}"),
+        _ => role.to_string(),
+    };
+    let model_text = match &previous {
+        Some((_, prev_chosen)) if *prev_chosen != chosen => format!("{prev_chosen} -> {chosen}"),
+        _ => chosen.to_string(),
+    };
+    notice(state, format!("role: {role_text}"));
+    notice(state, format!("model: {model_text}"));
     notice(state, format!("reason: {}", render_routing_reason(&reason)));
     notice(state, format!("attempt: {attempt}"));
 }
@@ -1608,8 +1924,8 @@ mod tests {
     // `ContextReport` fixtures reaches into `conway-core` directly, exactly
     // as `exit.rs`/`oneshot.rs`/`render/*.rs`'s existing tests already do
     // (see this crate's `Cargo.toml` `[dev-dependencies]` comment).
-    use conway_core::ids::SegmentId;
-    use conway_core::provenance::ContextReportEntry;
+    use conway_core::ids::{SegmentId, ToolName};
+    use conway_core::provenance::{ContextReportEntry, InstructionFragmentEntry};
 
     use super::*;
     use crate::tui::state::{NodeStatus, TreeNode};
@@ -1802,6 +2118,38 @@ mod tests {
     fn resume_missing_sid_is_a_parse_error_naming_the_form() {
         let err = parse("/resume").unwrap_err();
         assert!(err.to_string().contains("/resume <session-id>"));
+    }
+
+    #[test]
+    fn model_parses() {
+        assert_eq!(
+            parse("/model anthropic/claude-sonnet-4-6"),
+            Ok(SlashCommand::Model {
+                model: "anthropic/claude-sonnet-4-6".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn model_missing_value_is_a_parse_error_naming_the_form() {
+        let err = parse("/model").unwrap_err();
+        assert!(err.to_string().contains("/model <backend/model>"));
+    }
+
+    #[test]
+    fn role_parses() {
+        assert_eq!(
+            parse("/role planner"),
+            Ok(SlashCommand::Role {
+                role: "planner".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn role_missing_value_is_a_parse_error_naming_the_form() {
+        let err = parse("/role").unwrap_err();
+        assert!(err.to_string().contains("/role <alias>"));
     }
 
     #[test]
@@ -2026,6 +2374,13 @@ mod tests {
         /// success path (installed rules, notices, registration errors) and
         /// the failure path (`Entry::Error`, not `Entry::Notice`).
         trust_result: Option<TrustPermissionReport>,
+        /// Board item (split from `01KZHVFCN6ZEAXV7K5JHRQN1YB`): when
+        /// `Some`, `preview_trust_target` succeeds with this preview;
+        /// otherwise it fails with a fixed `std::io::Error` -- lets a
+        /// trust-preview test exercise both the card-opens path (any of
+        /// the three `TrustStatus` cases) and the read-failure path
+        /// (`Entry::Error`, no card opened).
+        preview_result: Option<TrustPreview>,
     }
 
     impl FakeHost {
@@ -2043,6 +2398,7 @@ mod tests {
                 classify_intent: None,
                 plugin_commands: HashMap::new(),
                 trust_result: None,
+                preview_result: None,
             }
         }
 
@@ -2061,6 +2417,13 @@ mod tests {
         /// that field's own doc.
         fn with_trust_result(mut self, report: TrustPermissionReport) -> Self {
             self.trust_result = Some(report);
+            self
+        }
+
+        /// Scripts `preview_trust_target` to succeed with `preview` -- see
+        /// that field's own doc.
+        fn with_preview_result(mut self, preview: TrustPreview) -> Self {
+            self.preview_result = Some(preview);
             self
         }
     }
@@ -2179,6 +2542,16 @@ mod tests {
             self.calls.lock().unwrap().push("trust_permission_file");
             self.trust_result.clone().ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "fake: trust failed")
+            })
+        }
+
+        async fn preview_trust_target(
+            &self,
+            _path: &std::path::Path,
+        ) -> std::io::Result<TrustPreview> {
+            self.calls.lock().unwrap().push("preview_trust_target");
+            self.preview_result.clone().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "fake: preview read failed")
             })
         }
 
@@ -3320,27 +3693,110 @@ mod tests {
     // off `SlashCommand`, not a pre-parser string comparison.
     // ---------------------------------------------------------------
 
+    /// The headline property this item exists to prove: `/trust
+    /// permissions` opens the preview card FIRST, showing the file's
+    /// current content and status -- it must NOT call
+    /// `trust_permission_file` (which would both install and trust in the
+    /// same action) until an explicit confirm.
     #[tokio::test]
-    async fn trust_installs_rules_and_records_the_installed_count() {
+    async fn trust_opens_a_preview_card_before_trusting_anything() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
-        state.permission_paths = vec![std::path::PathBuf::from("/tmp/permissions.json")];
+        let path = std::path::PathBuf::from("/tmp/permissions.json");
+        state.permission_paths = vec![path.clone()];
+        let host = FakeHost::new(root).with_preview_result(TrustPreview {
+            contents: r#"{"allow":["bash:cargo test"]}"#.to_string(),
+            status: conway::TrustStatus::New,
+        });
+
+        let effect = execute(SlashCommand::Trust, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(
+            host.calls(),
+            vec!["preview_trust_target"],
+            "must read and show the content, and must NOT trust anything yet"
+        );
+        match &state.mode {
+            Mode::TrustPreview(card) => {
+                assert_eq!(card.path, path);
+                assert_eq!(card.contents, r#"{"allow":["bash:cargo test"]}"#);
+                assert_eq!(card.status, conway::TrustStatus::New);
+                assert!(card.error.is_none());
+            }
+            other => panic!("expected Mode::TrustPreview, got {other:?}"),
+        }
+    }
+
+    /// Confirming the open card is what actually calls
+    /// `trust_permission_file` and records the installed count -- the SAME
+    /// facade call and message shape `/trust permissions` used to produce
+    /// immediately, before this item added the preview step.
+    #[tokio::test]
+    async fn confirming_the_trust_preview_installs_rules_and_records_the_installed_count() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let path = std::path::PathBuf::from("/tmp/permissions.json");
+        state.offer_trust_preview(TrustPreviewCard {
+            path: path.clone(),
+            contents: "{}".to_string(),
+            status: conway::TrustStatus::New,
+            error: None,
+        });
         let host = FakeHost::new(root).with_trust_result(TrustPermissionReport {
             installed: 3,
             registration_errors: Vec::new(),
             notices: Vec::new(),
         });
 
-        let effect = execute(SlashCommand::Trust, &mut state, &host).await;
+        apply_trust_decision(TrustDecision::Confirm, &mut state, &host).await;
 
-        assert!(matches!(effect, Effect::None));
         assert_eq!(host.calls(), vec!["trust_permission_file"]);
+        assert!(
+            matches!(state.mode, Mode::Normal),
+            "a successful confirm must close the card"
+        );
         assert!(
             state.transcript.iter().any(|e| matches!(
                 e,
                 Entry::Notice { text } if text.contains("trusted") && text.contains("3 allow rule")
             )),
             "the installed count must be surfaced: {:?}",
+            state.transcript
+        );
+    }
+
+    /// Cancelling the open card makes NO facade call at all -- there is
+    /// nothing to undo when nothing was ever written.
+    #[tokio::test]
+    async fn cancelling_the_trust_preview_makes_no_facade_call() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let path = std::path::PathBuf::from("/tmp/permissions.json");
+        state.offer_trust_preview(TrustPreviewCard {
+            path: path.clone(),
+            contents: "{}".to_string(),
+            status: conway::TrustStatus::New,
+            error: None,
+        });
+        let host = FakeHost::new(root);
+
+        apply_trust_decision(TrustDecision::Cancel, &mut state, &host).await;
+
+        assert!(
+            host.calls().is_empty(),
+            "cancelling must never call trust_permission_file"
+        );
+        assert!(
+            matches!(state.mode, Mode::Normal),
+            "cancel must close the card"
+        );
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("not trusted")
+            )),
+            "{:?}",
             state.transcript
         );
     }
@@ -3358,7 +3814,7 @@ mod tests {
         assert!(matches!(effect, Effect::None));
         assert!(
             host.calls().is_empty(),
-            "nothing to trust -- trust_permission_file must never be called"
+            "nothing to trust -- preview_trust_target must never be called"
         );
         assert!(
             state.transcript.iter().any(|e| matches!(
@@ -3370,28 +3826,67 @@ mod tests {
         );
     }
 
-    /// A facade failure is promoted to `Entry::Error`, never `Entry::Notice`
-    /// -- `/trust permissions` is an explicit operator action, so a failure
-    /// to do what it says must never be camouflaged as a routine notice
-    /// (mirrors `Conway::trust_permission_file`'s own doc).
+    /// A preview read failure is promoted to `Entry::Error`, never
+    /// `Entry::Notice`, and opens no card -- `/trust permissions` is an
+    /// explicit operator action, so a failure to even show what would be
+    /// trusted must never be camouflaged as a routine notice.
     #[tokio::test]
-    async fn trust_facade_failure_is_an_error_entry_not_a_notice() {
+    async fn trust_preview_read_failure_is_an_error_entry_not_a_notice() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
         state.permission_paths = vec![std::path::PathBuf::from("/tmp/permissions.json")];
-        let host = FakeHost::new(root); // trust_result: None -> fake io::Error
+        let host = FakeHost::new(root); // preview_result: None -> fake io::Error
 
         let effect = execute(SlashCommand::Trust, &mut state, &host).await;
 
         assert!(matches!(effect, Effect::None));
         assert!(
+            matches!(state.mode, Mode::Normal),
+            "a read failure must not open a card"
+        );
+        assert!(
             state.transcript.iter().any(|e| matches!(
                 e,
-                Entry::Error { text, fatal: false } if text.contains("could not trust")
+                Entry::Error { text, fatal: false } if text.contains("could not read")
             )),
             "a facade failure must be an Entry::Error, not a Notice: {:?}",
             state.transcript
         );
+    }
+
+    /// A facade failure on CONFIRM keeps the card open with the error shown
+    /// (mirroring `apply_ask_fate`'s own failure path) rather than silently
+    /// falling through to "cancelled" -- `/trust permissions` is an
+    /// explicit operator action, so the operator's belief ("I just
+    /// confirmed trusting this file") diverging from reality ("nothing was
+    /// recorded") must never be camouflaged.
+    #[tokio::test]
+    async fn confirm_facade_failure_keeps_the_card_open_with_the_error_shown() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let path = std::path::PathBuf::from("/tmp/permissions.json");
+        state.offer_trust_preview(TrustPreviewCard {
+            path: path.clone(),
+            contents: "{}".to_string(),
+            status: conway::TrustStatus::New,
+            error: None,
+        });
+        let host = FakeHost::new(root); // trust_result: None -> fake io::Error
+
+        apply_trust_decision(TrustDecision::Confirm, &mut state, &host).await;
+
+        match &state.mode {
+            Mode::TrustPreview(card) => {
+                assert!(
+                    card.error
+                        .as_deref()
+                        .is_some_and(|e| e.contains("could not trust")),
+                    "expected an in-card error, got {:?}",
+                    card.error
+                );
+            }
+            other => panic!("a failed confirm must keep the card open, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -3772,6 +4267,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_forks_the_focused_agent_with_a_pinned_model_and_focuses_the_child() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child_focus = AgentId::new();
+        state.focus_agent(child_focus);
+        let mut host = FakeHost::new(root);
+        let child = AgentId::new();
+        host.fork_child = Some(child);
+
+        let effect = execute(
+            SlashCommand::Model {
+                model: "anthropic/claude-haiku".to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert_eq!(host.calls(), vec!["fork"]);
+        match effect {
+            Effect::FocusNewSession {
+                child: focused,
+                parent,
+                first_message,
+            } => {
+                assert_eq!(focused, child);
+                assert_eq!(
+                    parent, child_focus,
+                    "/model forks the FOCUSED agent, not the root"
+                );
+                assert_eq!(first_message, None, "/model never carries a first message");
+            }
+            _ => panic!("expected Effect::FocusNewSession, got a different effect"),
+        }
+        let spec = host
+            .last_fork_spec
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("fork should have been called");
+        assert!(spec.keep_alive, "/model's fork must be keep_alive");
+        assert_eq!(spec.directive, "", "/model carries no directive of its own");
+        assert_eq!(
+            spec.model,
+            Some(
+                "anthropic/claude-haiku"
+                    .parse::<ModelRef>()
+                    .expect("valid model ref")
+            )
+        );
+        assert_eq!(
+            spec.tools,
+            Some(ToolSelector::Except(vec!["report".into()])),
+            "/model's fork, like a bare /fork, must exclude `report`"
+        );
+        assert!(matches!(
+            state.transcript.last(),
+            Some(Entry::Notice { text })
+                if text.contains("anthropic/claude-haiku") && text.contains(&child_focus.to_string())
+        ));
+    }
+
+    #[tokio::test]
+    async fn model_with_a_malformed_ref_is_a_notice_and_never_calls_fork() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Model {
+                model: "not-a-valid-ref".to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            host.calls().is_empty(),
+            "a malformed --model must never reach fork"
+        );
+        assert!(matches!(
+            state.transcript.last(),
+            Some(Entry::Notice { text }) if text.contains("not-a-valid-ref")
+        ));
+    }
+
+    #[tokio::test]
+    async fn role_forks_the_focused_agent_with_the_named_role_and_focuses_the_child() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        let child = AgentId::new();
+        host.fork_child = Some(child);
+
+        let effect = execute(
+            SlashCommand::Role {
+                role: "planner".to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert_eq!(host.calls(), vec!["fork"]);
+        assert!(matches!(effect, Effect::FocusNewSession { child: c, .. } if c == child));
+        let spec = host
+            .last_fork_spec
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("fork should have been called");
+        assert!(spec.keep_alive, "/role's fork must be keep_alive");
+        assert_eq!(spec.role, Some(RoleAlias::new("planner")));
+        assert!(matches!(
+            state.transcript.last(),
+            Some(Entry::Notice { text }) if text.contains("planner")
+        ));
+    }
+
+    #[tokio::test]
     async fn why_makes_no_facade_call() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
@@ -3835,6 +4452,73 @@ mod tests {
         assert!(texts.iter().any(|t| t.contains('1')));
     }
 
+    /// A `/model`/`/role` switch (or an ordinary router fallback) shows up
+    /// in `/why` as an `X -> Y` diff on whichever field changed -- see
+    /// `render_why`'s own doc for why this needs `previous_model_decision`
+    /// at all (a session's SECOND `ModelDecision`, not its first).
+    #[tokio::test]
+    async fn why_after_a_model_switch_shows_what_changed() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let old_model = conway::ModelRef {
+            backend: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+        };
+        let new_model = conway::ModelRef {
+            backend: "anthropic".into(),
+            model: "claude-haiku".into(),
+        };
+        state.previous_model_decision = Some(conway::Envelope {
+            seq: 1,
+            ts: chrono::Utc::now(),
+            session: SessionId::new(),
+            agent: root,
+            event: Event::ModelDecision {
+                role: "planner".into(),
+                chosen: old_model,
+                reason: RoutingReason::PinnedByApi,
+                attempt: 1,
+            },
+        });
+        state.last_model_decision = Some(conway::Envelope {
+            seq: 2,
+            ts: chrono::Utc::now(),
+            session: SessionId::new(),
+            agent: root,
+            event: Event::ModelDecision {
+                role: "planner".into(),
+                chosen: new_model.clone(),
+                reason: RoutingReason::PinnedByApi,
+                attempt: 1,
+            },
+        });
+
+        execute(SlashCommand::Why, &mut state, &host).await;
+
+        let texts: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("claude-sonnet-4-6") && t.contains("claude-haiku")),
+            "expected an `old -> new` model diff, got: {texts:?}"
+        );
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.starts_with("role:") && t.contains("->")),
+            "role did not change and must render bare"
+        );
+    }
+
     #[tokio::test]
     async fn unknown_slash_command_never_reaches_the_model() {
         // The app-level guarantee this criterion is about lives in
@@ -3875,6 +4559,7 @@ mod tests {
             total_tokens_est: 52,
             dropped: Vec::new(),
             curator_failed: None,
+            instruction_fragments: Vec::new(),
         });
 
         execute(
@@ -3913,6 +4598,110 @@ mod tests {
         );
     }
 
+    /// Board item `01M0K5MD59YZRSHE31JKZKFRMY`: `/context` renders a
+    /// "preamble" section from `report.instruction_fragments`, ahead of
+    /// the ordinary per-segment lines -- carrying the (plugin_id, name)
+    /// source attribution the per-segment listing alone cannot express.
+    #[tokio::test]
+    async fn context_renders_a_preamble_section_with_plugin_source() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        host.context = Some(ContextReport {
+            agent_id: root,
+            turn: 1,
+            tokenizer: "heuristic-chars4".to_string(),
+            segments: Vec::new(),
+            total_tokens_est: 0,
+            dropped: Vec::new(),
+            curator_failed: None,
+            instruction_fragments: vec![InstructionFragmentEntry {
+                plugin_id: "conway.trim".to_string(),
+                name: "when-to-compose".to_string(),
+                tokens_est: 7,
+                unreachable_tool_ids: Vec::new(),
+            }],
+        });
+
+        execute(
+            SlashCommand::Context {
+                agent: root.to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let lines: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lines[0].contains("preamble") && lines[0].contains("1 plugin-declared fragment"),
+            "expected a preamble header line, got: {:?}",
+            lines
+        );
+        assert!(
+            lines[1].contains("conway.trim.when-to-compose")
+                && lines[1].contains("7tok")
+                && lines[1].contains("conway.trim"),
+            "expected the fragment's name, size, and plugin source, got: {:?}",
+            lines[1]
+        );
+    }
+
+    /// The reachability failure "renders inline" (decision
+    /// `01M0K5K8DCRVR523P54DZF4BY3`): an unreachable fragment's preamble
+    /// line names the missing tool id rather than silently vanishing.
+    #[tokio::test]
+    async fn context_renders_an_unreachable_fragment_inline() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        host.context = Some(ContextReport {
+            agent_id: root,
+            turn: 1,
+            tokenizer: "heuristic-chars4".to_string(),
+            segments: Vec::new(),
+            total_tokens_est: 0,
+            dropped: Vec::new(),
+            curator_failed: None,
+            instruction_fragments: vec![InstructionFragmentEntry {
+                plugin_id: "conway.trim".to_string(),
+                name: "when-to-compose".to_string(),
+                tokens_est: 7,
+                unreachable_tool_ids: vec![ToolName::new("compose_path")],
+            }],
+        });
+
+        execute(
+            SlashCommand::Context {
+                agent: root.to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let lines: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lines[1].contains("compose_path") && lines[1].contains("not installed"),
+            "expected the missing tool named inline, got: {:?}",
+            lines[1]
+        );
+    }
+
     #[tokio::test]
     async fn context_with_zero_segments_renders_an_explicit_empty_line() {
         let root = AgentId::new();
@@ -3926,6 +4715,7 @@ mod tests {
             total_tokens_est: 0,
             dropped: Vec::new(),
             curator_failed: None,
+            instruction_fragments: Vec::new(),
         });
 
         execute(

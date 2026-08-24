@@ -2,7 +2,7 @@
 //! mandatory Anthropic subscription OAuth-token rejection.
 //!
 //! `load` is a pure, network-free, deterministic function of five ordered
-//! sources (default < XDG < project < env < CLI). See `merge.rs` for the
+//! sources (default < user < project < env < CLI). See `merge.rs` for the
 //! precedence/env-mapping/validation logic and `schema.rs` for the wire
 //! shape, including the reconciliations against already-committed
 //! `conway_core` types disclosed there.
@@ -12,13 +12,16 @@ pub mod merge;
 pub mod model_metadata;
 pub mod schema;
 pub mod trust;
+pub mod writer;
 
 pub use discovery::discover;
 pub use merge::{
-    apply_cli, load, load_ignoring_xdg, merged_document, validate, CliOverrides, LoadOptions,
+    apply_cli, load, load_ignoring_user_config, merged_document, validate, CliOverrides,
+    LoadOptions,
 };
 pub use model_metadata::ModelMetadata;
 pub use schema::ConwayConfig;
+pub use writer::set_plugin_installed;
 
 /// The result of [`load`]: the validated config plus any non-fatal
 /// warnings (headroom-vs-context-window, and -- Stage 2a -- a `[tui]`
@@ -50,13 +53,26 @@ pub enum WarningCode {
     /// variable) is present in the merged document, but `ConwayConfig` no
     /// longer defines that key (Stage 2a moved `TuiSection` and its
     /// presentation-shaped siblings to `conway-cli`, the one reader that
-    /// renders them). `load`/`load_ignoring_xdg` accept the rest of the
+    /// renders them). `load`/`load_ignoring_user_config` accept the rest of the
     /// document and discard `[tui]` rather than hard-failing the whole
     /// load on it -- the accepted-and-ignored-with-a-warning choice
     /// recorded for this migration; see `merge::merged_document`'s own doc
     /// for the escape hatch `conway-cli` uses to still read and act on
     /// `[tui]` itself.
     PresentationConfigIgnored,
+    /// `[session].root` is unset (resolving to the central, project-keyed
+    /// default -- board item `01M0QK9GRM8HSNWRAR414TCX42`), AND a
+    /// project-local `<cwd>/.conway/sessions` directory already exists and
+    /// is non-empty. The "leave and point" route that item argued for:
+    /// existing sessions are never read, moved, or migrated by this
+    /// resolution, only detected -- this warning is how an operator learns
+    /// what happened from conway itself, since `sessions list`/`--resume`
+    /// silently seeing nothing there would otherwise be the only signal.
+    /// Repeats on every `load` until the operator either sets
+    /// `[session].root` explicitly (to the old path, to keep using it, or
+    /// anywhere else) or moves the old directory's contents into the new
+    /// default themselves.
+    LegacyProjectSessionsNotMigrated,
 }
 
 #[cfg(test)]

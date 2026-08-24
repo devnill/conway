@@ -1,7 +1,7 @@
-//! Process-group execution primitives shared by every consumer in this
-//! crate that spawns a child process and must guarantee no orphaned
-//! grandchild survives a timeout or cancellation (ONE implementation,
-//! callers call it rather than restating it).
+//! Process-group execution primitives shared by every consumer that spawns
+//! a child process and must guarantee no orphaned grandchild survives a
+//! timeout or cancellation (ONE implementation, callers call it rather than
+//! restating it).
 //!
 //! Extracted from `crates/conway-tools/src/shell/bash.rs`'s private `unix`
 //! module: `BashTool` and
@@ -11,6 +11,42 @@
 //! termination path signals) and both need the identical
 //! SIGTERM-then-SIGKILL group-kill sequence on their timeout path. This is
 //! that sequence, called by both rather than restated by either.
+//!
+//! **Published, not private (board item `01M0EKVR1BEXXS75NV2JC4HZZ9`).**
+//! This module used to be `mod process;` (private), which is why
+//! `conway-plugin-subprocess` and `conway-plugin-mcp` each hand-copied
+//! [`unix::kill_group`] instead of reusing it -- a first-party plugin
+//! crate may not depend on `conway-tools` directly (the plugin tier gets
+//! exactly the `conway` facade, nothing more privileged), so a private
+//! module here left every downstream author with two choices: copy the
+//! function, or breach that discipline. Every author correctly chose to
+//! copy, and the count reached five call sites across three crates before
+//! this item consolidated them. Now `pub`, and re-exported through
+//! `conway::plugin::kill_group` (`crates/conway/src/lib.rs`, gated on this
+//! crate's own `builtin-tools` feature -- see that re-export's doc for the
+//! full argument for landing it on the facade rather than leaving it
+//! duplicated or publishing this crate directly).
+//!
+//! **The five-way diff, and the one behavioral difference it found.** All
+//! five copies used the identical `TERM_GRACE = Duration::from_secs(2)`
+//! and the identical SIGTERM-then-wait-then-SIGKILL-then-wait shape. They
+//! differed in exactly one place: this crate's original returned
+//! `Option<ExitStatus>` via `match tokio::time::timeout(..).await { Ok(Ok(status))
+//! => Some(status), _ => { ..SIGKILL.. } }` -- so ANY non-success outcome
+//! within the grace period (a timeout elapsing, OR `child.wait()` itself
+//! returning an `Err`) falls through to the SIGKILL fallback. The two
+//! plugin crates' copies instead wrote `if timeout(..).await.is_err() {
+//! ..SIGKILL.. }`, which only checks whether the OUTER timeout elapsed --
+//! an inner `Ok(Err(_))` from `child.wait()` (the wait syscall itself
+//! failing, not the child exiting) would silently skip the SIGKILL
+//! fallback in those two copies. This is this crate's own
+//! `kill_group`, kept as the specification: it is strictly more
+//! defensive (an extra guaranteed SIGKILL is harmless -- `kill`/`wait` on
+//! an already-reaped or already-dead pid just returns an error that is
+//! already discarded) and it hands the caller the exit status the two
+//! plugin copies' callers never needed but this crate's own `shell::bash`
+//! does (to report the timed-out command's own exit code). The
+//! consolidated function below is this signature, unchanged.
 
 #[cfg(unix)]
 pub mod unix {

@@ -40,10 +40,17 @@
 //! footing `[hooks].rules[].command` and `[plugins].subprocess[]` already
 //! have (see `conway-plugin-subprocess`'s own crate doc for the full
 //! argument). Board item `01KZHVFCN6ZEAXV7K5JHRQN1YB` (a `plugin` trust
-//! subject kind keyed on a content digest) is under a STANDING OPERATOR
-//! DEFERRAL and is explicitly NOT built here. Naming an MCP server in
-//! `settings.json` is exactly as trusted, and exactly as unaudited, as naming
-//! a `[hooks].rules[].command` already is today.
+//! subject kind keyed on a content digest) was reopened once both
+//! out-of-process transports shipped (decision `01M0R4RWCDJJ6RMNVFYCNHW0NK`
+//! lifted the 2026-08-12 standing deferral) and worked to a conclusion:
+//! DECLINED, for the reasons `conway-plugin-subprocess`'s own crate doc now
+//! states in full -- a digest check gated onto only the out-of-process
+//! transports, while `[hooks].rules[].command` stays permanently ungated,
+//! would assert a distinction (plugins reviewed, hooks not) that the
+//! identical unsandboxed, full-privilege execution underneath both does not
+//! support. Naming an MCP server in `settings.json` is exactly as trusted,
+//! and exactly as unaudited, as naming a `[hooks].rules[].command` already
+//! is today.
 //!
 //! **HTTP+SSE MCP transport is a SEPARATE item -- do NOT fold it in.** This
 //! crate is stdio only.
@@ -192,39 +199,14 @@ impl McpPluginError {
     }
 }
 
-#[cfg(unix)]
-pub(crate) mod unix {
-    //! **Deliberately duplicated a third time, not shared.** The identical
-    //! SIGTERM-then-SIGKILL process-group kill sequence
-    //! `conway-plugin-subprocess::unix::kill_group` (itself a documented
-    //! duplicate of `conway_tools::process::unix::kill_group`) already
-    //! implements. `conway-tools`'s module is private, and this crate does NOT
-    //! depend on `conway-plugin-subprocess` (the two transports are siblings,
-    //! not a layering -- see `lib.rs`'s own module doc), so the sequence is
-    //! duplicated here a third time rather than widening anyone's visibility.
-    //! Same ~15-line sequence, cited by name. The persistent path's
-    //! `Drop`-time cleanup uses a synchronous `nix::sys::signal::kill(-pgid,
-    //! SIGKILL)` directly (`Drop` cannot `await` `kill_group`); see
-    //! `session::McpSession::drop`.
-
-    use nix::sys::signal::{kill, Signal};
-    use nix::unistd::Pid;
-    use tokio::process::Child;
-    use tokio::time::Duration;
-
-    pub const TERM_GRACE: Duration = Duration::from_secs(2);
-
-    pub async fn kill_group(child: &mut Child, pgid: i32) {
-        let _ = kill(Pid::from_raw(-pgid), Signal::SIGTERM);
-        if tokio::time::timeout(TERM_GRACE, child.wait())
-            .await
-            .is_err()
-        {
-            let _ = kill(Pid::from_raw(-pgid), Signal::SIGKILL);
-            let _ = child.wait().await;
-        }
-    }
-}
+// `crate::unix` (this crate's own hand-copied `kill_group`, the third
+// standalone copy of the identical sequence `conway-plugin-subprocess` and
+// `conway-tools` each carried) used to live here. Board item
+// `01M0EKVR1BEXXS75NV2JC4HZZ9` replaced all three with a single
+// implementation reached through `conway::plugin::kill_group` (see that
+// re-export's own doc in `crates/conway/src/lib.rs`, and
+// `conway_tools::process`'s own doc for the five-way diff this
+// consolidation is built on). `session.rs` imports the same re-export.
 
 /// A [`Plugin`] backed by an MCP-over-stdio server: the server is spawned
 /// ONCE at [`McpPlugin::discover`], the `initialize`/`notifications/

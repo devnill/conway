@@ -4,6 +4,7 @@
 use clap::{Args, Subcommand};
 use conway::{
     BreakerKind, BreakerState, Conway, EntryOutcome, ExplainEntry, ExplainReport, RoutingReason,
+    TokenCountFidelity,
 };
 use serde_json::{json, Value};
 
@@ -92,8 +93,9 @@ fn print_text(report: &ExplainReport) {
         };
         let model_ref = entry.model_ref.to_string();
         let breaker = render_breaker_state(&entry.breaker.state);
+        let tokens = render_token_fidelity(entry.token_fidelity);
         println!(
-            "  {marker} {model_ref:<width$}{word:<8} {reason}  (breaker: {breaker})",
+            "  {marker} {model_ref:<width$}{word:<8} {reason}  (breaker: {breaker}, tokens: {tokens})",
             width = width,
         );
     }
@@ -140,6 +142,7 @@ fn entry_json(e: &ExplainEntry) -> Value {
         "model": e.model_ref.to_string(),
         "outcome": outcome,
         "reason": reason,
+        "token_fidelity": render_token_fidelity(e.token_fidelity),
     })
 }
 
@@ -199,6 +202,26 @@ fn breaker_state_tag(state: &BreakerState) -> &'static str {
         BreakerState::HalfOpen => "half_open",
         BreakerState::Open { .. } => "open",
         _ => "unknown",
+    }
+}
+
+/// Renders `ExplainEntry::token_fidelity` (board item
+/// 01M0ASX466G3PW3SJJS3KGNS55) for both `print_text` and `entry_json` --
+/// the operator-visible answer to "how much should I trust this backend's
+/// token estimate?" that `Backend::token_fidelity` exists to force a
+/// deliberate answer to. `None` (the producing `RoutingExplainer` could not
+/// reach a live backend instance, e.g. `MinimalRouter`'s config-only
+/// fallback) and an unrecognized future `TokenCountFidelity` variant (this
+/// crate's dependency is `#[non_exhaustive]`) both render `"unknown"` --
+/// deliberately the same string, since neither is a claim this call site can
+/// tell apart from the operator's point of view.
+fn render_token_fidelity(fidelity: Option<TokenCountFidelity>) -> &'static str {
+    match fidelity {
+        None => "unknown",
+        Some(TokenCountFidelity::Exact) => "exact",
+        Some(TokenCountFidelity::Calibrated) => "calibrated",
+        Some(TokenCountFidelity::Heuristic) => "heuristic",
+        Some(_) => "unknown",
     }
 }
 
@@ -268,5 +291,26 @@ mod tests {
         assert_eq!(render_breaker_state(&BreakerState::HalfOpen), "half-open");
         assert_eq!(breaker_state_tag(&BreakerState::Closed), "closed");
         assert_eq!(breaker_state_tag(&BreakerState::HalfOpen), "half_open");
+    }
+
+    /// Board item 01M0ASX466G3PW3SJJS3KGNS55: an operator asking "how much
+    /// should I trust this backend's token estimate?" reads one of these
+    /// three named answers, or `"unknown"` when the router could not reach
+    /// a live backend instance at all -- never a bare `Debug` dump.
+    #[test]
+    fn token_fidelity_renders_every_declared_variant_and_none_as_unknown() {
+        assert_eq!(
+            render_token_fidelity(Some(TokenCountFidelity::Exact)),
+            "exact"
+        );
+        assert_eq!(
+            render_token_fidelity(Some(TokenCountFidelity::Calibrated)),
+            "calibrated"
+        );
+        assert_eq!(
+            render_token_fidelity(Some(TokenCountFidelity::Heuristic)),
+            "heuristic"
+        );
+        assert_eq!(render_token_fidelity(None), "unknown");
     }
 }

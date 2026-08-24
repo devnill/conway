@@ -84,5 +84,15 @@ impl App {
         // parking slot empty rather than leaving a classified intent
         // dangling in `pending_intent_confirm` at process exit.
         let _ = self.state.take_pending_intent_confirm();
+        // Board item (split from `01KZHVFCN6ZEAXV7K5JHRQN1YB`): drain a
+        // parked trust-preview card on exit too, for the identical reason
+        // the intent-confirm card just above needs it -- no live child to
+        // purge (nothing has been created OR written yet, since the actual
+        // trust call only happens on an explicit confirm), so quitting
+        // with the card open IS the cancel outcome. A card currently LIVE
+        // in `Mode::TrustPreview` (rather than parked) needs no special
+        // handling either: the process is exiting, and nothing was ever
+        // written for it, so there is nothing left to undo.
+        let _ = self.state.take_pending_trust_preview();
     }
 }

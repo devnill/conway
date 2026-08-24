@@ -111,6 +111,7 @@ fn root_simple_input() -> ContextInput {
             agent_def: "reviewer".into(),
             text: "You are a careful reviewer.".into(),
         }),
+        instructions: vec![],
         skills: vec![SkillFragment {
             name: "diff-review".into(),
             text: "Review diffs for races.".into(),
@@ -202,6 +203,7 @@ fn fork_inherited_input() -> ContextInput {
             agent_def: "reviewer".into(),
             text: "You are a careful reviewer.".into(),
         }),
+        instructions: vec![],
         skills: vec![SkillFragment {
             name: "diff-review".into(),
             text: "Review diffs for races.".into(),
@@ -223,6 +225,7 @@ fn spawn_clean_input() -> ContextInput {
             agent_def: "triage".into(),
             text: "You triage failing CI jobs.".into(),
         }),
+        instructions: vec![],
         skills: vec![SkillFragment {
             name: "ci-triage".into(),
             text: "Look at logs first.".into(),
@@ -314,6 +317,7 @@ fn steer_and_toolresults_input() -> ContextInput {
             agent_def: "reviewer".into(),
             text: "You are a careful reviewer.".into(),
         }),
+        instructions: vec![],
         skills: vec![SkillFragment {
             name: "diff-review".into(),
             text: "Review diffs for races.".into(),

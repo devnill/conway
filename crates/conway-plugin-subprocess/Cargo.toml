@@ -22,6 +22,10 @@ description = "The subprocess plugin host (board item 01KZY8PATND84AKY0J376E3DWV
 # directly, even though it is a HOST-side adapter rather than a leaf
 # plugin, because the whole point is that a subprocess plugin host needs
 # nothing more privileged than what any other plugin author already has.
+# No `default-features = false` here (deliberately): this crate's own
+# `kill_group` call (`src/lib.rs`, `session.rs`) is `conway::plugin::
+# kill_group`, which `conway` only re-exports when its `builtin-tools`
+# feature is on (default-on) -- board item `01M0EKVR1BEXXS75NV2JC4HZZ9`.
 conway = { path = "../conway" }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -39,13 +43,13 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "time", "rt", "sync", "macros"] }
 
 [target.'cfg(unix)'.dependencies]
-# The identical SIGTERM-then-SIGKILL process-group kill primitive
-# `conway_tools::process::unix::kill_group` already implements for
-# `ProcessHookRunner`/`BashTool` -- `conway-tools`'s own module is private
-# (`mod process;`, not `pub mod`), so it cannot be reused across the crate
-# boundary from here; see `src/lib.rs`'s own module doc for the disclosed
-# duplication this causes (same ~15 lines, same shape, cited by name) rather
-# than a silent reinvention.
+# NOT for the SIGTERM-then-SIGKILL process-group kill any more (board item
+# `01M0EKVR1BEXXS75NV2JC4HZZ9`: that primitive is `conway::plugin::
+# kill_group` now, one implementation reached through the facade instead of
+# a hand-copy in this crate). Still needed for `PersistentSession::drop`'s
+# own synchronous, best-effort group SIGKILL (`Drop` cannot `await` the
+# graceful `kill_group`, so it sends `nix::sys::signal::kill(-pgid,
+# SIGKILL)` directly) -- see `session.rs`'s own module doc.
 nix = { workspace = true, features = ["signal", "process"] }
 
 [dev-dependencies]

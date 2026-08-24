@@ -54,14 +54,68 @@ pub fn write_script(dir: &std::path::Path, name: &str, contents: &str) -> PathBu
     path
 }
 
+/// Executes `path` once, with stdin closed, and discards everything about
+/// the result -- before returning, so any caller sequencing `warm` before a
+/// timed call pays this cost OUTSIDE the clock, not inside it.
+///
+/// Identical rationale and caveats to
+/// `conway_plugin_subprocess`'s own `tests/common::warm` (board item
+/// `01M09MPZ9C188AHNBKWEJ3CEQA`, measured 2026-08-21): executing a
+/// FRESHLY WRITTEN script for the first time on this OS can block for
+/// seconds at ~0% CPU before the script's own code ever runs (23.5s at 0%
+/// CPU measured once; 44ms/35ms on the SAME file's second/third exec).
+/// `write_script` above writes a fresh file into a fresh temp dir moments
+/// before a test execs it under a bounded `timeout_ms`, so without warming
+/// that tax lands inside the timed assertion rather than the handshake it
+/// is meant to bound. The 0%-CPU blocking is MEASURED; attributing it to
+/// Gatekeeper/XProtect specifically is INFERENCE (see the sibling crate's
+/// doc for what was and was not confirmed).
+///
+/// Every current fixture server here either loops "one line at a time"
+/// over stdin (and simply exits when stdin is closed/empty) or fails fast
+/// on empty input -- none reaches an unconditional sleep with no input.
+/// Do not reuse `warm` for a fixture that would.
+pub async fn warm(path: &std::path::Path) {
+    let child = tokio::process::Command::new(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Ok(mut child) = child {
+        let _ = child.wait().await;
+    }
+}
+
 /// Builds an [`McpPluginSpec`] pointing at `dir/<script_name>` written with
-/// `contents`. Uses the default [`McpPluginSpec::timeout_ms`] (5000ms) -- long
-/// enough for Python cold-start + a normal handshake/call, the same default
-/// `conway-plugin-subprocess`'s own fixtures use. For the timeout/cancel
-/// tests that specifically exercise the per-call deadline, use
-/// [`spec_with_timeout`] with a short `timeout_ms`.
+/// `contents`. Uses the default [`McpPluginSpec::timeout_ms`] (5000ms). Does
+/// NOT warm the fixture -- use this only for a spec that is never handed to
+/// a timed call against a freshly-written script (e.g.
+/// `discover_fails_closed_when_the_command_cannot_be_spawned`'s nonexistent
+/// path, which writes nothing). For any spec built from a real fixture
+/// script and handed to `McpPlugin::discover`, use [`spec_for_warmed`]
+/// instead: this crate's own default margin turned out NOT to be enough
+/// (board item `01M09MPZ9C188AHNBKWEJ3CEQA`) -- 8 of 10 tests in
+/// `mcp_end_to_end.rs` that called this function directly were measured
+/// failing `TimedOut` under load before they were switched to
+/// [`spec_for_warmed`]; the previous claim here that "5000ms already has
+/// enough margin" was an untested assumption, not a measurement.
 pub fn spec_for(dir: &std::path::Path, script_name: &str, contents: &str) -> McpPluginSpec {
     let path = write_script(dir, script_name, contents);
+    McpPluginSpec::new("test-fixture", vec![path.display().to_string()])
+}
+
+/// Same as [`spec_for`], but pays the fresh-script first-exec tax (see
+/// [`warm`]'s doc; board item `01M09MPZ9C188AHNBKWEJ3CEQA`) BEFORE
+/// returning the spec, so a caller that immediately hands the spec to
+/// `McpPlugin::discover` under the crate's default `timeout_ms` measures
+/// the handshake it means to measure, not a first-exec OS cost.
+pub async fn spec_for_warmed(
+    dir: &std::path::Path,
+    script_name: &str,
+    contents: &str,
+) -> McpPluginSpec {
+    let path = write_script(dir, script_name, contents);
+    warm(&path).await;
     McpPluginSpec::new("test-fixture", vec![path.display().to_string()])
 }
 
@@ -69,13 +123,27 @@ pub fn spec_for(dir: &std::path::Path, script_name: &str, contents: &str) -> Mcp
 /// timeout/cancel tests that exercise the per-call deadline (a short deadline
 /// fails a stuck server fast, proving the deadline bounds a hang without
 /// making the suite wait seconds for it).
-pub fn spec_with_timeout(
+///
+/// `async` (unlike [`spec_for`]) because a SHORT `timeout_ms` is exactly the
+/// shape that pays the first-execution OS tax [`warm`]'s doc describes
+/// (board item `01M09MPZ9C188AHNBKWEJ3CEQA`): this fixture is exec'd for
+/// the first time, moments after being written, under the same tight
+/// budget the caller is asserting against. `warm` pays that tax here,
+/// discarded, before `timeout_ms` starts governing anything, so the
+/// caller's deadline measures the handshake/call it says it measures, not
+/// an OS-dependent first-exec cost. This helper exists as a separate
+/// function (rather than a `timeout_ms` parameter on [`spec_for_warmed`])
+/// because a caller-chosen SHORT deadline is the shape most likely to
+/// notice the tax; [`spec_for_warmed`] warms unconditionally too, for the
+/// same reason (see its own doc).
+pub async fn spec_with_timeout(
     dir: &std::path::Path,
     script_name: &str,
     contents: &str,
     timeout_ms: u64,
 ) -> McpPluginSpec {
     let path = write_script(dir, script_name, contents);
+    warm(&path).await;
     let mut spec = McpPluginSpec::new("test-fixture", vec![path.display().to_string()]);
     spec.timeout_ms = timeout_ms;
     spec

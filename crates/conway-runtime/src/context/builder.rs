@@ -97,10 +97,12 @@ use conway_core::canon::canonical_json_bytes;
 use conway_core::capabilities::CacheMode;
 use conway_core::content::{ContentBlock, Role, ToolResult, ToolSpec};
 use conway_core::error::RuntimeError;
-use conway_core::ids::{AgentId, ModelId, PrefixKey, SegmentId, SeqRange, SessionId};
+use conway_core::ids::{AgentId, ModelId, PrefixKey, SegmentId, SeqRange, SessionId, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::path::{NodeStamp, ResolvedPath};
-use conway_core::provenance::{ContextReport, ContextReportEntry, Provenance};
+use conway_core::provenance::{
+    ContextReport, ContextReportEntry, InstructionFragmentEntry, Provenance,
+};
 use conway_core::segment::{CacheHint, CacheTtl, PromptSegment};
 
 use super::prefix;
@@ -129,6 +131,37 @@ pub struct SystemPromptSpec {
 pub struct SkillFragment {
     pub name: String,
     pub text: String,
+}
+
+/// One `conway_core::ports::plugin::Plugin::instructions()` fragment,
+/// resolved to the plugin that declared it -- the runtime-side counterpart
+/// of `conway_core::ports::plugin::InstructionFragment` (board item
+/// `01M0K5MD59YZRSHE31JKZKFRMY`). `conway_core::ports::plugin::
+/// InstructionFragment` itself carries no `plugin_id` (an author never
+/// picks their own namespace, the same rule `EventDecl`/`CommandSpec`
+/// establish); this type is what the facade's `ConwayBuilder::build`
+/// produces once it has paired each declared fragment with its declaring
+/// plugin's `PluginManifest::id`, and it is what every `AgentSpec.skills`
+/// producer (today: `runtime::root::resolve_instructions`; subagents are
+/// not wired -- see that function's own doc) threads into
+/// [`ContextInput::instructions`].
+///
+/// **In caller-supplied (stable) order**, the same discipline
+/// [`SkillFragment`] already documents for itself -- see
+/// [`ContextBuilder::build`]'s own "Plugin instruction fragments" section
+/// for the fixed cross-source precedence this type's OWN position in
+/// [`ContextInput`] participates in (base idiom, then these, then
+/// operator-authored skills).
+#[derive(Clone, Debug)]
+pub struct PluginInstruction {
+    pub plugin_id: String,
+    pub name: String,
+    pub text: String,
+    /// Tool ids `text` assumes the model can call, exactly as the plugin
+    /// declared them. Checked HERE, in [`ContextBuilder::build`], against
+    /// `ContextInput.tools` -- see that method's own doc for why the check
+    /// runs at this seam rather than at `ConwayBuilder::build` or in CI.
+    pub tool_ids: Vec<ToolName>,
 }
 
 /// A verbatim prefix inherited from a parent session at fork time
@@ -180,6 +213,12 @@ pub struct ContextInput {
     pub model: ModelId,
     pub cache_mode: CacheMode,
     pub system_prompt: Option<SystemPromptSpec>,
+    /// Plugin-declared instruction fragments (board item
+    /// `01M0K5MD59YZRSHE31JKZKFRMY`), rendered BEFORE `skills` below --
+    /// see [`ContextBuilder::build`]'s own "Plugin instruction fragments"
+    /// section for the precedence argument and the reachability check
+    /// this field's own entries are subject to.
+    pub instructions: Vec<PluginInstruction>,
     pub skills: Vec<SkillFragment>,
     pub tools: Vec<ToolSpec>,
     pub path: ResolvedPath,
@@ -236,7 +275,79 @@ impl ContextBuilder {
             ));
         }
 
-        // [1] SkillFragments*
+        // [1] PluginInstructions* -- board item 01M0K5MD59YZRSHE31JKZKFRMY.
+        //
+        // **Precedence, argued.** Positioned AFTER `[0] SystemPrompt` (the
+        // base idiom an `AgentDef` carries) and BEFORE `[1b] SkillFragments*`
+        // (an operator's own, directory-authored skills). The tree already
+        // established this exact "declare a policy once, and let every
+        // installed source layer through it in a fixed order" shape for
+        // hooks and curators (`ConwayBuilder::build`: an embedder's
+        // injected hook/curator first, THEN every plugin's own, in
+        // `with_plugin` order) -- this repeats that shape one level down,
+        // for context CONTENT rather than for a callback. Base-first,
+        // capability-declared-second, operator-authored-last also matches
+        // this item's own illustrative `/context` rendering verbatim
+        // (`conway.idiom` "base" -> `conway.trim`/`conway.memory`
+        // plugin-sourced -> `house-style` "(yours)") -- the spec's example
+        // IS the ordering decision, not merely a picture of it. Multiple
+        // plugins' fragments render in `ContextInput.instructions`' own
+        // (caller-supplied, `with_plugin`/`install_selected`) order, the
+        // SAME "stable caller order" discipline `[1b] SkillFragments*`
+        // already documents for itself.
+        //
+        // **The reachability check runs HERE, not at `ConwayBuilder::build`
+        // and not in CI** -- per decision `01M0K5K8DCRVR523P54DZF4BY3`:
+        // "the failure is configuration-dependent... no CI grep can see
+        // that." This is the one seam that already knows, for THIS turn,
+        // exactly which tools are reachable (`input.tools`, the tool set
+        // this turn's request actually announces) -- the same set breakpoint
+        // A's `ToolSchemas` segment below is built from. An unreachable
+        // fragment's text is WITHHELD (never pushed as a segment, so the
+        // model never reads an instruction naming a tool it cannot call);
+        // it is still recorded in `report.instruction_fragments` (built
+        // below, via `instruction_reports`) so `/context`'s preamble
+        // section can render the omission inline rather than only warn once
+        // in a log line. A fragment naming a tool id its OWN declaring
+        // plugin also provides (`Plugin::tools`) can never land here --
+        // both are contributed by the same `with_plugin` call, so they are
+        // reachable by construction; see `Plugin::instructions`'s own doc.
+        let known_tool_ids: HashSet<&ToolName> = input.tools.iter().map(|t| &t.name).collect();
+        let mut instruction_reports: Vec<InstructionFragmentEntry> =
+            Vec::with_capacity(input.instructions.len());
+        for instruction in &input.instructions {
+            let unreachable_tool_ids: Vec<ToolName> = instruction
+                .tool_ids
+                .iter()
+                .filter(|id| !known_tool_ids.contains(id))
+                .cloned()
+                .collect();
+            if unreachable_tool_ids.is_empty() {
+                segments.push(PromptSegment::new(
+                    Role::System,
+                    text_block(&instruction.text),
+                    Provenance::Skill {
+                        name: instruction.name.clone(),
+                    },
+                ));
+            } else {
+                tracing::warn!(
+                    plugin_id = %instruction.plugin_id,
+                    fragment = %instruction.name,
+                    missing = ?unreachable_tool_ids,
+                    "instruction fragment names a tool not reachable for this turn; its text is \
+                     withheld from the assembled context (see /context's preamble section)",
+                );
+            }
+            instruction_reports.push(InstructionFragmentEntry {
+                plugin_id: instruction.plugin_id.clone(),
+                name: instruction.name.clone(),
+                tokens_est: estimate_tokens(&text_block(&instruction.text)),
+                unreachable_tool_ids,
+            });
+        }
+
+        // [1b] SkillFragments*
         for skill in &input.skills {
             segments.push(PromptSegment::new(
                 Role::System,
@@ -413,6 +524,7 @@ impl ContextBuilder {
             &segments,
             dropped,
             input.curator_failed.clone(),
+            instruction_reports,
         );
 
         Ok((segments, report))
@@ -449,7 +561,13 @@ impl ContextBuilder {
 /// during the original assembly and its removals are not recoverable from
 /// `segments` afterwards, so re-deriving here would silently produce an
 /// empty list -- replacing the silent drop this field exists to expose with
-/// a second one, on every turn a `ContextHook` is registered.
+/// a second one, on every turn a `ContextHook` is registered. `instruction_fragments`
+/// is threaded forward for the SAME reason (`build_report`'s own doc):
+/// `ContextBuilder::build`'s reachability check already ran, and any
+/// fragment it withheld is no longer distinguishable in `segments` from
+/// "this plugin declared no such fragment" -- re-deriving here would
+/// silently lose both the withheld fragment's record and every reachable
+/// one's plugin attribution.
 pub(crate) fn retotal(
     agent_id: AgentId,
     turn: u32,
@@ -457,6 +575,7 @@ pub(crate) fn retotal(
     tools: &[ToolSpec],
     dropped: Vec<String>,
     curator_failed: Option<String>,
+    instruction_fragments: Vec<InstructionFragmentEntry>,
 ) -> ContextReport {
     for segment in segments.iter_mut() {
         segment.tokens_est = Some(estimate_tokens(&segment.content));
@@ -468,7 +587,14 @@ pub(crate) fn retotal(
     {
         segment.tokens_est = Some(estimate_tool_schemas_tokens(tools));
     }
-    build_report(agent_id, turn, segments, dropped, curator_failed)
+    build_report(
+        agent_id,
+        turn,
+        segments,
+        dropped,
+        curator_failed,
+        instruction_fragments,
+    )
 }
 
 /// `dropped` is threaded in rather than recomputed: by the time a report is
@@ -478,12 +604,15 @@ pub(crate) fn retotal(
 /// (DESIGN §11.6) is threaded for the same reason: the curator ran
 /// pre-assembly, so by report-build time nothing in `segments` remembers it
 /// failed, and a re-totalled report would silently lose the record.
+/// `instruction_fragments` (board item `01M0K5MD59YZRSHE31JKZKFRMY`) is
+/// threaded for the identical reason -- see [`retotal`]'s own doc.
 fn build_report(
     agent_id: AgentId,
     turn: u32,
     segments: &[PromptSegment],
     dropped: Vec<String>,
     curator_failed: Option<String>,
+    instruction_fragments: Vec<InstructionFragmentEntry>,
 ) -> ContextReport {
     let entries: Vec<ContextReportEntry> = segments
         .iter()
@@ -504,6 +633,7 @@ fn build_report(
         total_tokens_est,
         dropped,
         curator_failed,
+        instruction_fragments,
     }
 }
 
@@ -1106,7 +1236,15 @@ mod estimator_tests {
             text: "a".repeat(40),
         }];
 
-        let report = retotal(agent_id, 3, &mut segments, &[], Vec::new(), None);
+        let report = retotal(
+            agent_id,
+            3,
+            &mut segments,
+            &[],
+            Vec::new(),
+            None,
+            Vec::new(),
+        );
 
         let expected = estimate_tokens(&segments[0].content);
         assert_eq!(segments[0].tokens_est, Some(expected));
@@ -1124,7 +1262,15 @@ mod estimator_tests {
             _ => true,
         });
 
-        let report = retotal(agent_id, 0, &mut segments, &[], Vec::new(), None);
+        let report = retotal(
+            agent_id,
+            0,
+            &mut segments,
+            &[],
+            Vec::new(),
+            None,
+            Vec::new(),
+        );
         assert_eq!(report.segments.len(), 1);
     }
 
@@ -1172,7 +1318,15 @@ mod estimator_tests {
         )];
         let tools = vec![sample_tool("read"), sample_tool("write")];
 
-        let report = retotal(agent_id, 0, &mut segments, &tools, Vec::new(), None);
+        let report = retotal(
+            agent_id,
+            0,
+            &mut segments,
+            &tools,
+            Vec::new(),
+            None,
+            Vec::new(),
+        );
 
         let expected = estimate_tool_schemas_tokens(&tools);
         assert!(expected > 0);
@@ -1194,6 +1348,7 @@ mod estimator_tests {
             model: ModelId::new("m"),
             cache_mode: CacheMode::None,
             system_prompt: None,
+            instructions: vec![],
             skills: vec![],
             tools: tools.clone(),
             path: path_from_legacy(
@@ -1225,6 +1380,184 @@ mod estimator_tests {
         assert!(
             report.total_tokens_est >= expected,
             "the report's total must include the tool-schema estimate"
+        );
+    }
+
+    /// Board item `01M0K5MD59YZRSHE31JKZKFRMY`: a `PluginInstruction`
+    /// naming a tool id that IS present in `ContextInput.tools` is fully
+    /// reachable -- its text is injected as its own `Role::System` segment
+    /// (`Provenance::Skill { name }`, tagged with the fragment's own bare
+    /// name) AND recorded in `report.instruction_fragments` with the
+    /// declaring plugin's id and an empty `unreachable_tool_ids`.
+    #[test]
+    fn reachable_plugin_instruction_is_injected_and_reported() {
+        let tool = sample_tool("compose_path");
+        let input = ContextInput {
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode: CacheMode::None,
+            system_prompt: None,
+            instructions: vec![PluginInstruction {
+                plugin_id: "conway.trim".into(),
+                name: "when-to-compose".into(),
+                text: "Compose a focused context before a long task.".into(),
+                tool_ids: vec![tool.name.clone()],
+            }],
+            skills: vec![],
+            tools: vec![tool],
+            path: path_from_legacy(
+                None,
+                &[LogRecord::UserTurn {
+                    seq: LogSeq(0),
+                    ts: Utc::now(),
+                    text: "hi".into(),
+                    prov: Provenance::UserPrompt,
+                }],
+                SessionId::new(),
+            )
+            .unwrap(),
+            cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
+        };
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        let injected = segments
+            .iter()
+            .find(|s| matches!(&s.provenance, Provenance::Skill { name } if name == "when-to-compose"))
+            .expect("a reachable instruction fragment must be injected as its own segment");
+        assert_eq!(
+            injected.content,
+            text_block("Compose a focused context before a long task.")
+        );
+
+        assert_eq!(report.instruction_fragments.len(), 1);
+        let entry = &report.instruction_fragments[0];
+        assert_eq!(entry.plugin_id, "conway.trim");
+        assert_eq!(entry.name, "when-to-compose");
+        assert!(entry.unreachable_tool_ids.is_empty());
+        assert!(entry.tokens_est > 0);
+    }
+
+    /// The reachability check's other branch: a `PluginInstruction` naming a
+    /// tool id ABSENT from `ContextInput.tools` is withheld entirely -- no
+    /// segment is pushed (the model never reads an instruction naming a
+    /// tool it cannot call), but `report.instruction_fragments` still
+    /// records it, with the missing tool id named -- this is `/context`'s
+    /// "⚠ names X -- not installed" inline render's data source, and the
+    /// durable proof the harness never silently produces an agent that
+    /// tries and fails forever.
+    #[test]
+    fn unreachable_plugin_instruction_is_withheld_and_reported() {
+        let input = ContextInput {
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode: CacheMode::None,
+            system_prompt: None,
+            instructions: vec![PluginInstruction {
+                plugin_id: "conway.trim".into(),
+                name: "when-to-compose".into(),
+                text: "Compose a focused context before a long task.".into(),
+                tool_ids: vec![conway_core::ids::ToolName::new("compose_path")],
+            }],
+            skills: vec![],
+            tools: vec![], // compose_path is NOT installed
+            path: path_from_legacy(
+                None,
+                &[LogRecord::UserTurn {
+                    seq: LogSeq(0),
+                    ts: Utc::now(),
+                    text: "hi".into(),
+                    prov: Provenance::UserPrompt,
+                }],
+                SessionId::new(),
+            )
+            .unwrap(),
+            cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
+        };
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        assert!(
+            !segments.iter().any(
+                |s| matches!(&s.provenance, Provenance::Skill { name } if name == "when-to-compose")
+            ),
+            "an unreachable fragment's text must never reach the model"
+        );
+
+        assert_eq!(report.instruction_fragments.len(), 1);
+        let entry = &report.instruction_fragments[0];
+        assert_eq!(entry.plugin_id, "conway.trim");
+        assert_eq!(entry.name, "when-to-compose");
+        assert_eq!(
+            entry.unreachable_tool_ids,
+            vec![conway_core::ids::ToolName::new("compose_path")]
+        );
+        assert!(
+            entry.tokens_est > 0,
+            "a withheld fragment must still be sized, from its own text"
+        );
+    }
+
+    /// Precedence (board item `01M0K5MD59YZRSHE31JKZKFRMY`, open question
+    /// 1, argued and decided in `Plugin::instructions`'s own doc): base
+    /// idiom (`[0] SystemPrompt`), then plugin instruction fragments,
+    /// then operator-authored skills -- in that segment order.
+    #[test]
+    fn plugin_instructions_render_between_system_prompt_and_skills() {
+        let input = ContextInput {
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode: CacheMode::None,
+            system_prompt: Some(SystemPromptSpec {
+                agent_def: "reviewer".into(),
+                text: "base idiom".into(),
+            }),
+            instructions: vec![PluginInstruction {
+                plugin_id: "conway.trim".into(),
+                name: "when-to-compose".into(),
+                text: "plugin instruction".into(),
+                tool_ids: vec![],
+            }],
+            skills: vec![SkillFragment {
+                name: "house-style".into(),
+                text: "operator skill".into(),
+            }],
+            tools: vec![],
+            path: path_from_legacy(
+                None,
+                &[LogRecord::UserTurn {
+                    seq: LogSeq(0),
+                    ts: Utc::now(),
+                    text: "hi".into(),
+                    prov: Provenance::UserPrompt,
+                }],
+                SessionId::new(),
+            )
+            .unwrap(),
+            cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
+        };
+        let (segments, _report) = ContextBuilder::new().build(&input).unwrap();
+
+        let names: Vec<String> = segments
+            .iter()
+            .filter_map(|s| match &s.provenance {
+                Provenance::AgentDef { name } => Some(format!("agentdef:{name}")),
+                Provenance::Skill { name } => Some(format!("skill:{name}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "agentdef:reviewer".to_string(),
+                "skill:when-to-compose".to_string(),
+                "skill:house-style".to_string(),
+            ],
+            "base idiom, then plugin instructions, then operator skills, in that order"
         );
     }
 }
@@ -1284,6 +1617,7 @@ mod own_segment_provenance_tests {
             model: ModelId::new("echo-model"),
             cache_mode: CacheMode::None,
             system_prompt: None,
+            instructions: vec![],
             skills: vec![],
             tools: vec![],
             path: path_from_legacy(
@@ -1383,6 +1717,7 @@ mod breakpoint_indices_tests {
             model: ModelId::new("m"),
             cache_mode: CacheMode::None,
             system_prompt: None,
+            instructions: vec![],
             skills: vec![],
             tools: vec![],
             path: path_from_legacy(Some(&inherited), &head_log(), SessionId::new()).unwrap(),
@@ -1423,6 +1758,7 @@ mod breakpoint_indices_tests {
             model: ModelId::new("m"),
             cache_mode: CacheMode::None,
             system_prompt: None,
+            instructions: vec![],
             skills: vec![],
             tools: vec![],
             path: path_from_legacy(None, &head_log(), SessionId::new()).unwrap(),
@@ -1522,6 +1858,7 @@ mod tool_call_pairing_tests {
             model: ModelId::new("m"),
             cache_mode,
             system_prompt: None,
+            instructions: vec![],
             skills: vec![],
             tools: vec![],
             path: path_from_legacy(None, &own_log, SessionId::new()).unwrap(),
@@ -1549,6 +1886,7 @@ mod tool_call_pairing_tests {
             model: ModelId::new("m"),
             cache_mode: CacheMode::None,
             system_prompt: None,
+            instructions: vec![],
             skills: vec![],
             tools: vec![],
             path: path_from_legacy(Some(&inherited), &own_log, SessionId::new()).unwrap(),
@@ -1762,6 +2100,7 @@ mod tool_call_pairing_tests {
             &[],
             report.dropped.clone(),
             Some("synthetic curator failure".to_string()),
+            report.instruction_fragments.clone(),
         );
         assert_eq!(after.dropped, vec!["b".to_string()]);
         // §11.6: a re-totalled report must not lose the curator record --

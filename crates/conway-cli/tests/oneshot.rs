@@ -549,7 +549,7 @@ async fn exit_2_bad_config() {
         .current_dir(dir.path())
         // Isolate user-scoped config discovery from a real ~/.conway (see
         // `common::command`).
-        .env("XDG_CONFIG_HOME", dir.path())
+        .env("CONWAY_CONFIG_DIR", dir.path())
         .arg("--config")
         .arg(&config_path)
         .args(["-p", "hi"])
@@ -828,8 +828,32 @@ async fn denied_calls_stay_in_turn_until_budget() {
     );
 }
 
+/// Board item `01M0PSKJT91WE0DEH2BWSSSNJM` narrowed the ANNOUNCED tool set
+/// to match `--allowed-tools`/`--deny-tools` (`oneshot::resolve_tools`).
+/// Before that fix, this test named a tool NOT in `--allowed-tools` at all
+/// (`bash`, with only `read` allowed) to prove a denied call still gets
+/// graceful, in-turn feedback. That scenario is now a contradiction in
+/// terms: the whole point of the fix is that a tool absent from
+/// `--allowed-tools` is never announced, so a compliant model can no longer
+/// propose it -- and if a NON-compliant caller does anyway (as this
+/// deterministic mock could, since it does not actually reason about what
+/// was announced), the call is now denied at a DIFFERENT, harder layer
+/// (`conway_plugin_backends::tool_calls::validate::SchemaValidator`'s
+/// "unknown tool" `BackendError::ToolParse`, not the runtime's
+/// `AllowListGate`) -- `resolve_tools`'s own doc comment has the full
+/// mechanism and why that is the intended, disclosed trade-off, not a bug.
+///
+/// This test now exercises the scenario that STILL needs graceful, in-turn
+/// denial after that fix: a tool the model was genuinely told about
+/// (`--allowed-tools` includes it, argument-scoped: `bash(git *)`) but
+/// calls with arguments outside that scope. `resolve_tools` deliberately
+/// leaves an argument-scoped `--allowed-tools`/`--deny-tools` entry's tool
+/// name IN the announced set (only a BARE entry is ever removed) precisely
+/// so this combination stays possible -- the schema validator still knows
+/// `bash`, so the call decodes fine and reaches `AllowListGate`, which
+/// denies THIS argument value gracefully.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unlisted_tool_gets_feedback() {
+async fn arg_scoped_allow_denies_mismatched_args_with_feedback() {
     let mock = MockBackend::start(Script(vec![
         vec![
             tool_call_chunk("bash", "echo hi"),
@@ -845,7 +869,7 @@ async fn unlisted_tool_gets_feedback() {
             "-p",
             "hi",
             "--allowed-tools",
-            "read",
+            "read,bash(git *)",
             "--output-format",
             "jsonl",
         ],
@@ -895,6 +919,137 @@ async fn unlisted_tool_gets_feedback() {
     assert!(
         named_bash,
         "expected a tool_result ContextSegmentAdded naming `bash` for call {call_id}; lines: {lines:#?}"
+    );
+}
+
+/// Board item `01M0PSKJT91WE0DEH2BWSSSNJM`: `--allowed-tools` must narrow
+/// what the model is TOLD it has, not merely what it is PERMITTED to call --
+/// asserted here directly on the wire request `MockHandle::requests`
+/// captures, which is the one place the announced set is actually
+/// observable from outside the process (there is no CLI flag or jsonl event
+/// that reports it -- see `oneshot::resolve_tools`'s own doc for the
+/// mechanism, and this file's own doc comment on why `requests()` is the
+/// right seam: it is the literal `tools` array
+/// `openai_compat::wire::build_request_body` puts on the wire, which is
+/// exactly what the model reads its own capabilities from).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn allowed_tools_narrows_the_announced_tool_set() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let out = run_conway(&["-p", "hi", "--allowed-tools", "read,grep"], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1);
+    let announced: std::collections::BTreeSet<String> = requests[0]["tools"]
+        .as_array()
+        .expect("request carries a `tools` array")
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        announced,
+        std::collections::BTreeSet::from(["read".to_string(), "grep".to_string()]),
+        "the model must be told about exactly `read`/`grep` -- neither more \
+         (e.g. `bash`, which this fix's own dogfooding session found the \
+         model reaching for and getting denied) nor fewer"
+    );
+}
+
+/// Acceptance criterion 2: `--deny-tools` subtracts from the announced set
+/// too, not just from permission -- but only a BARE entry does (see
+/// `oneshot::resolve_tools`'s own doc for why an argument-scoped entry
+/// deliberately does not). `bash` is named by both flags here: `--deny-
+/// tools` always wins at the gate, and since the entry is bare (no `(...)`
+/// scope) there is no path left for `bash` to ever succeed, so it is
+/// honestly dropped from the announced set too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deny_tools_subtracts_a_bare_entry_from_the_announced_set() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let out = run_conway(
+        &[
+            "-p",
+            "hi",
+            "--allowed-tools",
+            "read,bash",
+            "--deny-tools",
+            "bash",
+        ],
+        &fixture,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let requests = mock.requests();
+    let announced: std::collections::BTreeSet<String> = requests[0]["tools"]
+        .as_array()
+        .expect("request carries a `tools` array")
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        announced,
+        std::collections::BTreeSet::from(["read".to_string()]),
+        "a bare --deny-tools entry names a tool with no path to ever succeeding, so it must \
+         not be announced either"
+    );
+}
+
+/// The scoped-entry counterpart of the test above: `bash(git *)` in
+/// `--deny-tools` only blocks calls matching that glob -- most calls to
+/// `bash` would still succeed -- so `oneshot::resolve_tools` deliberately
+/// leaves `bash` in the announced set rather than dropping it wholesale
+/// (dropping it would mean lying by omission about a tool that mostly
+/// works, and would reintroduce the wire-level `ToolParse` hazard that
+/// function's own doc comment describes for a tool the model is not told
+/// about at all).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deny_tools_scoped_entry_does_not_remove_the_tool_from_the_announced_set() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let out = run_conway(
+        &[
+            "-p",
+            "hi",
+            "--allowed-tools",
+            "read,bash",
+            "--deny-tools",
+            "bash(git *)",
+        ],
+        &fixture,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let requests = mock.requests();
+    let announced: std::collections::BTreeSet<String> = requests[0]["tools"]
+        .as_array()
+        .expect("request carries a `tools` array")
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        announced,
+        std::collections::BTreeSet::from(["read".to_string(), "bash".to_string()]),
+        "a scoped --deny-tools entry must not remove `bash` from the announced set -- most \
+         calls to it would still succeed"
     );
 }
 
@@ -1035,4 +1190,78 @@ fn fixtures_only_ever_point_at_loopback() {
     // harness source itself rather than re-deriving the guarantee.
     let mock_backend_src = include_str!("common/mock_backend.rs");
     assert!(mock_backend_src.contains("127.0.0.1:0"));
+}
+
+/// A tool call going NORMALLY must not print as a warning, and a tool call
+/// that FAILS must still be visible without `--verbose`.
+///
+/// Board item `01M0PSJZ18R02JJ5NHH3G6ZV9S`, filed from actually using
+/// conway rather than from reading the renderer. The whole lifecycle --
+/// proposed, started, finished, `ok` -- was emitted at warning level, so a
+/// healthy run printed dozens of `conway: warning:` lines and a genuine
+/// tool failure was indistinguishable among them. Nothing about that is
+/// visible in source; it only shows up when a real run scrolls past.
+///
+/// This asserts on the real binary's stderr, because the level is only
+/// observable there -- a unit test of the renderer cannot see it, since
+/// `diag` writes to stderr rather than to the renderer's own writer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_successful_tool_call_is_not_a_warning_on_stderr() {
+    let mock = MockBackend::start(Script(vec![
+        vec![
+            tool_call_chunk("bash", "echo one"),
+            Chunk::Finish("tool_calls"),
+        ],
+        vec![Chunk::Text("done"), Chunk::Finish("stop")],
+    ]))
+    .await;
+    let fixture = write_fixture(&mock, 4);
+
+    let out = run_conway(&["-p", "hi", "--allowed-tools", "bash"], &fixture);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    // The routine lifecycle is `info`, which `diag` gates behind
+    // `--verbose`, so at the default verbosity it should not appear at all
+    // -- and most certainly not as a warning.
+    assert!(
+        !stderr.contains("warning: tool call proposed"),
+        "a proposed tool call is routine progress, not a warning: {stderr}"
+    );
+    assert!(
+        !stderr.contains("warning: tool call started"),
+        "a started tool call is routine progress, not a warning: {stderr}"
+    );
+    assert!(
+        !stderr.contains("): ok"),
+        "a SUCCESSFUL tool call must not be announced at the default \
+         verbosity at all -- that is the noise that hid a real failure: {stderr}"
+    );
+}
+
+/// The other half of the pair above: quieting the routine lifecycle must
+/// not also quiet a genuine failure. `--verbose` reveals the full trace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn verbose_reveals_the_routine_tool_lifecycle() {
+    let mock = MockBackend::start(Script(vec![
+        vec![
+            tool_call_chunk("bash", "echo one"),
+            Chunk::Finish("tool_calls"),
+        ],
+        vec![Chunk::Text("done"), Chunk::Finish("stop")],
+    ]))
+    .await;
+    let fixture = write_fixture(&mock, 4);
+
+    let out = run_conway(&["-p", "hi", "--allowed-tools", "bash", "-v"], &fixture);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        stderr.contains("tool call proposed"),
+        "`--verbose` must still show the lifecycle -- quieting it by \
+         default is only correct if it remains reachable: {stderr}"
+    );
+    assert!(
+        !stderr.contains("warning: tool call proposed"),
+        "even under --verbose, routine progress is not a warning: {stderr}"
+    );
 }

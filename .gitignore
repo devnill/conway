@@ -1,7 +1,21 @@
 /target
 **/*.rs.bk
 .DS_Store
-.conway/sessions/
+# `.conway/` holds BOTH generated state and deliberately-tracked project
+# configuration, so this is an allowlist rather than a denylist: ignore
+# everything, then re-admit the files a team is meant to share.
+#
+# It is written this way because the denylist form failed. It named the
+# generated directories individually (`sessions/`, `paths/`), and when the
+# path store's directory was derived from a renamed session root it became
+# `<root>-paths` — the pattern silently stopped matching and test runs left
+# content-addressed blobs in seven crate directories with nothing to announce
+# it. An allowlist ignores a newly-invented generated directory by default;
+# a denylist tracks it by default. Board item 01M0QK9GRM8HSNWRAR414TCX42.
+**/.conway/*
+!**/.conway/permissions.json
+!**/.conway/settings.json
+!**/.conway/agents/
 
 # ideate metadata — local-only tooling state (not tracked)
 .ideate/

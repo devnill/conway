@@ -1,12 +1,15 @@
-//! The three mutually-exclusive modal-bearing surfaces
+//! The four mutually-exclusive modal-bearing surfaces
 //! ([`Mode::AwaitingPermission`], [`Mode::AskModal`],
-//! [`Mode::IntentConfirm`]) and their shared park/promote priority queue
-//! ([`AppState::promote_next_surface`]): the `/ask` single-turn modal (B5:
-//! [`AskModal`], [`AskFate`]), the permission-prompt surface itself
-//! ([`AppState::offer_prompt`], [`AppState::resolve_current_prompt`]), and
-//! the two informational overlays that share its mutual-exclusion rules
-//! without being a [`Mode`] variant ([`AppState::open_help`],
-//! [`AppState::open_settings`] -- see [`Mode`]'s own doc for why).
+//! [`Mode::IntentConfirm`], [`Mode::TrustPreview`]) and their shared
+//! park/promote priority queue ([`AppState::promote_next_surface`]): the
+//! `/ask` single-turn modal (B5: [`AskModal`], [`AskFate`]), the
+//! permission-prompt surface itself ([`AppState::offer_prompt`],
+//! [`AppState::resolve_current_prompt`]), the trust-preview card
+//! ([`TrustPreviewCard`], [`TrustDecision`] -- board item, split from
+//! `01KZHVFCN6ZEAXV7K5JHRQN1YB`), and the two informational overlays that
+//! share its mutual-exclusion rules without being a [`Mode`] variant
+//! ([`AppState::open_help`], [`AppState::open_settings`] -- see [`Mode`]'s
+//! own doc for why).
 //!
 //! The NL intent confirmation card's own state (`IntentConfirm`,
 //! `IntentChoice`) and its `offer`/`close`/`begin_edit` lifecycle live on
@@ -15,6 +18,11 @@
 //! source-level surface check, so this seam only owns
 //! [`AppState::take_pending_intent_confirm`] (the drain the quit path
 //! uses) and the `Mode::IntentConfirm` variant/park-queue plumbing.
+//! [`TrustPreviewCard`]/[`TrustDecision`] carry no such external pin, so
+//! this seam owns their full lifecycle
+//! ([`AppState::offer_trust_preview`]/[`AppState::close_trust_preview`]/
+//! [`AppState::fail_trust_preview`]/[`AppState::take_pending_trust_preview`])
+//! directly, the same way it owns [`AskModal`]'s.
 
 use super::*;
 
@@ -52,6 +60,46 @@ pub enum AskFate {
     Discard,
 }
 
+/// The trust-preview surface's state (board item, split from
+/// `01KZHVFCN6ZEAXV7K5JHRQN1YB`'s `(kind, id, digest)`/plugin-subject
+/// generalisation, which this does not pre-empt): `path`'s current
+/// content, read once by `commands::execute`'s `SlashCommand::Trust` arm
+/// via `Host::preview_trust_target`, shown to the operator BEFORE any
+/// trust decision is recorded. `status` came from the SAME preview call --
+/// `conway::TrustStatus::New`/`Changed`/`Unchanged` -- and is what lets one
+/// surface carry two (really three) modes of wording rather than needing a
+/// second card type: see `view::draw_trust_preview`'s own doc for exactly
+/// how each status renders and, for `Changed`, the plain statement that the
+/// PRIOR content cannot be shown (`conway::TrustStore` never retains it --
+/// see that module's own doc).
+///
+/// `error` mirrors [`AskModal::error`] exactly: `Some` only after a confirm
+/// attempt FAILED (`commands::apply_trust_decision`'s error path) -- the
+/// card stays open with the error shown, since a failed trust attempt must
+/// never silently vanish the way falling through to "cancelled" would.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrustPreviewCard {
+    pub path: std::path::PathBuf,
+    pub contents: String,
+    pub status: conway::TrustStatus,
+    pub error: Option<String>,
+}
+
+/// The trust-preview card's two ways out -- there is no third: quitting
+/// with the card open is the cancel outcome (`app.rs`'s quit path drops it
+/// on the floor, mirroring the intent-confirm card exactly, since nothing
+/// has been created or written yet). Each maps to at most one facade call
+/// (`commands::apply_trust_decision`): `Confirm` -> `Host::
+/// trust_permission_file` (the SAME call the surface used to make
+/// immediately, with no preview, before this item); `Cancel` makes no
+/// facade call at all -- there is nothing to undo when nothing was ever
+/// written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustDecision {
+    Confirm,
+    Cancel,
+}
+
 /// `Normal` (the input line submits a prompt or a `/command`) or
 /// `AwaitingPermission` (the input line is inert; `y`/`a`/`n`/`Esc` resolve
 /// the pending prompt -- see `input.rs`). Only one prompt is shown at a
@@ -84,6 +132,31 @@ pub enum Mode {
     /// the surface clears -- the three modal-bearing surfaces
     /// (`AwaitingPermission`, `AskModal`, `IntentConfirm`) never stack.
     IntentConfirm(IntentConfirm),
+    /// The trust-preview card (board item, split from
+    /// `01KZHVFCN6ZEAXV7K5JHRQN1YB`): `/trust permissions` opens this
+    /// FIRST, showing `path`'s current content and status, rather than
+    /// installing and trusting in the same action the way it used to.
+    /// While this is the mode, the input line is inert and
+    /// `input.rs::handle_trust_preview_key` swallows every key except
+    /// `y`/`Enter` (confirm), `n`/`Esc` (cancel), and the quit keys
+    /// (`Ctrl-C`/`Ctrl-D`, which pass through -- like the intent-confirm
+    /// card, and unlike the `/ask` modal, no agent has been created yet, so
+    /// there is nothing to purge). A permission prompt arriving while the
+    /// card is open queues in `queued_prompts` exactly as it does behind
+    /// another prompt, and a trust preview arriving while any of the other
+    /// three modal-bearing surfaces is showing parks in
+    /// `pending_trust_preview` until the surface clears -- none of the four
+    /// modal-bearing surfaces (`AwaitingPermission`, `AskModal`,
+    /// `IntentConfirm`, `TrustPreview`) ever stack.
+    TrustPreview(TrustPreviewCard),
+    /// The `[p]` field editor (opened from `AwaitingPermission` for a
+    /// `RenderKind::Structured` tool). While this is the mode, the input
+    /// line is inert and `input.rs::handle_editing_pattern_key` swallows
+    /// every key except the field-navigation/toggle/grant/cancel keys and
+    /// the quit keys. It does not stack: it opens only from
+    /// `AwaitingPermission`, and cancel returns there, submit restores
+    /// there (the dispatch arm then resolves the prompt).
+    EditingPattern(EditingPatternState),
 }
 
 impl std::fmt::Debug for Mode {
@@ -96,6 +169,12 @@ impl std::fmt::Debug for Mode {
             Mode::AskModal(m) => write!(f, "AskModal(child={})", m.child),
             Mode::IntentConfirm(ic) => {
                 write!(f, "IntentConfirm(recipe={:?})", ic.intent.recipe)
+            }
+            Mode::TrustPreview(card) => {
+                write!(f, "TrustPreview(path={})", card.path.display())
+            }
+            Mode::EditingPattern(ed) => {
+                write!(f, "EditingPattern(tool={})", ed.tool)
             }
         }
     }
@@ -168,10 +247,60 @@ impl AppState {
         self.pending_intent_confirm.take()
     }
 
+    /// Opens the trust-preview card (board item, split from
+    /// `01KZHVFCN6ZEAXV7K5JHRQN1YB`), parking it in `pending_trust_preview`
+    /// instead whenever another modal surface currently owns `mode` --
+    /// mirrors [`Self::offer_ask_modal`]/[`Self::offer_intent_confirm`]'s
+    /// own queue-if-busy shape exactly.
+    pub fn offer_trust_preview(&mut self, card: TrustPreviewCard) {
+        if matches!(self.mode, Mode::Normal) {
+            self.mode = Mode::TrustPreview(card);
+            self.modal_scroll = 0;
+        } else {
+            self.pending_trust_preview = Some(card);
+        }
+    }
+
+    /// Closes the trust-preview card after a decision that needs no further
+    /// input from it (a successful confirm, via `commands::
+    /// apply_trust_decision`'s success path, or a cancel), promoting the
+    /// next parked/queued surface via `Self::promote_next_surface`. A
+    /// no-op when no trust-preview card is open.
+    pub fn close_trust_preview(&mut self) {
+        if !matches!(self.mode, Mode::TrustPreview(_)) {
+            return;
+        }
+        self.mode = Mode::Normal;
+        self.promote_next_surface();
+    }
+
+    /// Records a confirm attempt's FAILURE on the open card (`commands::
+    /// apply_trust_decision`'s error path): the card STAYS OPEN with the
+    /// error shown, mirroring [`Self::fail_ask_modal`] exactly -- a failed
+    /// trust attempt never silently vanishes. A no-op when no card is open.
+    pub fn fail_trust_preview(&mut self, error: String) {
+        if let Mode::TrustPreview(card) = &mut self.mode {
+            card.error = Some(error);
+        }
+    }
+
+    /// Drains a card parked in `pending_trust_preview`. Used by `app.rs`'s
+    /// quit path so a card parked behind another surface when the user
+    /// quits does not leave a dangling trust decision -- mirrors
+    /// [`Self::take_pending_intent_confirm`] exactly: no live child to
+    /// purge (nothing has been created OR written yet), so draining here
+    /// just means dropping it on the floor. Returns the parked card if one
+    /// was waiting, else `None`; either way `pending_trust_preview` is
+    /// cleared.
+    pub fn take_pending_trust_preview(&mut self) -> Option<TrustPreviewCard> {
+        self.pending_trust_preview.take()
+    }
+
     /// The shared "what surfaces gets promoted next after a modal/prompt
-    /// closes" logic (C2 generalizes B5's two-surface version to three).
-    /// Called with `mode` already reset to `Mode::Normal` by the caller
-    /// ([`Self::close_ask_modal`], [`Self::close_intent_confirm`],
+    /// closes" logic (C2 generalizes B5's two-surface version to three;
+    /// this item generalizes it again to four). Called with `mode` already
+    /// reset to `Mode::Normal` by the caller ([`Self::close_ask_modal`],
+    /// [`Self::close_intent_confirm`], [`Self::close_trust_preview`],
     /// [`Self::resolve_current_prompt`]). Priority order:
     /// 1. A queued permission prompt ([`Self::queued_prompts`]) -- the
     ///    gate's pending prompts are always the highest-priority surface
@@ -180,7 +309,10 @@ impl AppState {
     ///    that completed while a prompt was showing.
     /// 3. A parked intent card ([`Self::pending_intent_confirm`]) -- a
     ///    classify that completed while a prompt or an ask was showing.
-    /// 4. Nothing -- `mode` stays `Normal`.
+    /// 4. A parked trust-preview card ([`Self::pending_trust_preview`]) --
+    ///    a `/trust permissions` that completed while any of the above was
+    ///    showing.
+    /// 5. Nothing -- `mode` stays `Normal`.
     ///
     /// Exactly one surface (at most) is promoted per call; the next call
     /// happens when THAT surface closes.
@@ -205,6 +337,11 @@ impl AppState {
         }
         if let Some(card) = self.pending_intent_confirm.take() {
             self.mode = Mode::IntentConfirm(card);
+            self.modal_scroll = 0;
+            return;
+        }
+        if let Some(card) = self.pending_trust_preview.take() {
+            self.mode = Mode::TrustPreview(card);
             self.modal_scroll = 0;
         }
     }
@@ -682,6 +819,152 @@ mod tests {
             "a no-card edit must not touch the input line"
         );
         assert!(matches!(state.mode, Mode::Normal));
+    }
+
+    fn trust_card(path: &str) -> TrustPreviewCard {
+        TrustPreviewCard {
+            path: std::path::PathBuf::from(path),
+            contents: "{}".to_string(),
+            status: conway::TrustStatus::New,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn offer_trust_preview_opens_immediately_in_normal_mode() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(matches!(state.mode, Mode::Normal));
+
+        state.offer_trust_preview(trust_card("/repo/.conway/permissions.json"));
+
+        assert!(
+            matches!(&state.mode, Mode::TrustPreview(c) if c.path.display().to_string() == "/repo/.conway/permissions.json"),
+            "the card must open immediately, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn offer_trust_preview_parks_behind_a_permission_prompt_and_opens_once_it_resolves() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_prompt(permission_prompt("bash: ls"));
+        assert!(matches!(state.mode, Mode::AwaitingPermission(_)));
+
+        state.offer_trust_preview(trust_card("/parked"));
+
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "the permission prompt must keep the floor; the card parks, got: {:?}",
+            state.mode
+        );
+
+        state.resolve_current_prompt(conway::PermissionDecision::AllowOnce);
+
+        assert!(
+            matches!(&state.mode, Mode::TrustPreview(c) if c.path.display().to_string() == "/parked"),
+            "the parked card must open once the prompt queue drains, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn offer_trust_preview_parks_behind_an_intent_confirm_card_and_opens_once_it_closes() {
+        // None of the four modal-bearing surfaces ever stack: a trust
+        // preview arriving while the intent-confirm card owns the floor
+        // parks in `pending_trust_preview`, and `close_intent_confirm`
+        // promotes it via `promote_next_surface` (the lowest-priority slot,
+        // checked last).
+        let mut state = AppState::new(AgentId::new());
+        state.offer_intent_confirm(intent_card("q"));
+        assert!(matches!(state.mode, Mode::IntentConfirm(_)));
+
+        state.offer_trust_preview(trust_card("/parked-behind-intent"));
+
+        assert!(
+            matches!(state.mode, Mode::IntentConfirm(_)),
+            "the intent card must keep the floor; the trust card parks, got: {:?}",
+            state.mode
+        );
+
+        state.close_intent_confirm();
+
+        assert!(
+            matches!(&state.mode, Mode::TrustPreview(c) if c.path.display().to_string() == "/parked-behind-intent"),
+            "the parked trust card must open once the intent card closes, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn take_pending_trust_preview_drains_a_parked_card_and_clears_the_slot() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_prompt(permission_prompt("bash: ls"));
+        state.offer_trust_preview(trust_card("/parked"));
+
+        let drained = state.take_pending_trust_preview();
+        assert!(
+            matches!(&drained, Some(c) if c.path.display().to_string() == "/parked"),
+            "the parked card must be returned, got: {drained:?}"
+        );
+        assert!(
+            state.take_pending_trust_preview().is_none(),
+            "the slot must be cleared after the take"
+        );
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "take must NOT clobber the surface currently owning `mode`"
+        );
+    }
+
+    #[test]
+    fn close_trust_preview_returns_to_normal() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_trust_preview(trust_card("/repo/.conway/permissions.json"));
+
+        state.close_trust_preview();
+
+        assert!(matches!(state.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn close_trust_preview_promotes_a_prompt_queued_while_the_card_was_open() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_trust_preview(trust_card("/repo/.conway/permissions.json"));
+        state.offer_prompt(permission_prompt("bash: ls"));
+        assert!(matches!(state.mode, Mode::TrustPreview(_)));
+
+        state.close_trust_preview();
+
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "closing the card must promote the queued prompt, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn fail_trust_preview_keeps_the_card_open_with_the_error_shown() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_trust_preview(trust_card("/repo/.conway/permissions.json"));
+
+        state.fail_trust_preview(
+            "could not trust /repo/.conway/permissions.json: denied".to_string(),
+        );
+
+        match &state.mode {
+            Mode::TrustPreview(c) => {
+                assert_eq!(
+                    c.error.as_deref(),
+                    Some("could not trust /repo/.conway/permissions.json: denied")
+                );
+                assert_eq!(
+                    c.path.display().to_string(),
+                    "/repo/.conway/permissions.json",
+                    "the card's content is untouched"
+                );
+            }
+            other => panic!("a failed confirm must KEEP the card open, got: {other:?}"),
+        }
     }
 
     #[test]

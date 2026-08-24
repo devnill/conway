@@ -290,6 +290,10 @@ impl SessionHandle {
             // `None` -> the runtime inherits the parent's effective role
             // (`subagent.rs`'s inheritance fallback), same routing as the asker.
             role: None,
+            // `None` -> the runtime inherits the parent's (possibly
+            // inherited-def) model pin, unchanged -- an ask is not a model
+            // switch.
+            pin: None,
             tools: None,
             budget: Budget::default(),
             result_contract: None,
@@ -315,6 +319,11 @@ impl SessionHandle {
             // `[S1.5]`: same rationale as `cwd`/`root` above -- inherit the
             // asker's per-agent plugin config too.
             plugin_config: None,
+            // An ask is fork+await-text, never a chosen-context fork: `None`
+            // preserves the pre-existing "inherit the asker's entire
+            // context" behavior unchanged -- see `SubagentSpec::context`'s
+            // own doc.
+            context: None,
         };
         // Subscribe BEFORE `start` so the child's first events cannot race
         // past this handle's stream (see the doc above).

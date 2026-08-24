@@ -14,7 +14,7 @@
 mod common;
 
 use common::mock_backend::{Chunk, MockBackend, Script};
-use common::{run_conway, write_fixture, Fixture};
+use common::{open_conway, run_conway, write_fixture, Fixture};
 
 /// Writes `.conway/agents/<name>.md` inside `fixture`'s own temp dir (the
 /// process cwd `common::command` sets for the spawned binary), with
@@ -95,6 +95,64 @@ async fn agent_flag_unknown_name_is_a_usage_error_not_a_silent_no_op() {
         "stderr must name the requested agent: {stderr}"
     );
     assert!(mock.requests().is_empty(), "no request must have been sent");
+}
+
+/// Board item `01M0PSKJT91WE0DEH2BWSSSNJM`, resolution (C): `--allowed-tools`
+/// composes with a named `--agent` def's own `tools` selector by
+/// INTERSECTION, never by widening it. The def below declares
+/// `tools: [read, grep]`; `--allowed-tools bash,grep` names `bash` (which
+/// the def does not select at all) and `grep` (which it does). The honest
+/// announced set is `{grep}` alone -- `bash` is dropped even though the
+/// call site explicitly named it, because the def's own selector is the
+/// ceiling `oneshot::resolve_tools` never exceeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn allowed_tools_composes_with_agent_def_tools_by_intersection_not_union() {
+    let mock = MockBackend::start(ok_script()).await;
+    let fixture = write_fixture(&mock, 10);
+    // `write_agent_def` only writes a `name:`-only frontmatter with `body`
+    // as the prompt text -- this test needs a real `tools:` key, which that
+    // helper has no parameter for, so the file is written directly instead.
+    let dir = fixture.dir.path().join(".conway").join("agents");
+    std::fs::create_dir_all(&dir).expect("create .conway/agents");
+    std::fs::write(
+        dir.join("narrow.md"),
+        "---\nname: narrow\ntools: [read, grep]\n---\nbe narrow\n",
+    )
+    .expect("write agent def with a tools: selector");
+
+    let out = run_conway(
+        &[
+            "-p",
+            "hi",
+            "--agent",
+            "narrow",
+            "--allowed-tools",
+            "bash,grep",
+        ],
+        &fixture,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let requests = mock.requests();
+    let announced: std::collections::BTreeSet<String> = requests.last().expect("one request")
+        ["tools"]
+        .as_array()
+        .expect("request carries a `tools` array")
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        announced,
+        std::collections::BTreeSet::from(["grep".to_string()]),
+        "the agent def's own `tools: [read, grep]` is the ceiling: `bash` (named by \
+         --allowed-tools but not by the def) must never be announced, and `read` (named by \
+         the def but not by --allowed-tools) must not be announced either -- only the \
+         intersection, `grep`"
+    );
 }
 
 /// `--agent` combined with `--resume` is a usage error: a resumed session's
@@ -469,25 +527,7 @@ async fn agent_flag_composes_with_fork_from() {
     );
 }
 
-/// Mirrors `tests/continuity.rs`'s own `open_conway` helper -- a fresh,
-/// read-only `Conway` against `fixture`'s on-disk session store, for
-/// reading back facts the compiled binary's subprocess just wrote.
-async fn open_conway(fixture: &Fixture) -> conway::Conway {
-    use std::sync::Arc;
-
-    use conway::config::CliOverrides;
-    use conway::gates::AllowListGate;
-    use conway::{ConwayBuilder, PermissionGate};
-
-    let gate: Arc<dyn PermissionGate> = Arc::new(AllowListGate::new(Vec::new(), Vec::new()));
-    ConwayBuilder::from_config_only(&fixture.config_path)
-        .expect("load fixture config")
-        .with_cli_overrides(CliOverrides {
-            cwd: Some(fixture.dir.path().to_path_buf()),
-            ..Default::default()
-        })
-        .with_permission_gate(gate)
-        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
-        .build()
-        .expect("build conway against the fixture's own store")
-}
+// `open_conway` moved to `common` (board item `01M0QK9GRM8HSNWRAR414TCX42`)
+// -- see that function's own doc for why a local `CliOverrides::cwd`
+// override alone stopped being enough once `[session].root`'s
+// central-default resolution moved into `config::load` itself.

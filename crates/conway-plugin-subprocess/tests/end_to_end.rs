@@ -151,7 +151,7 @@ fn build_conway(
 #[tokio::test]
 async fn tool_is_callable_end_to_end_through_a_real_turn() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "greet.py", common::GREET_PLUGIN);
+    let spec = common::spec_for_warmed(dir.path(), "greet.py", common::GREET_PLUGIN).await;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("discovery against the real fixture must succeed");

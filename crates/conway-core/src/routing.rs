@@ -24,7 +24,7 @@ use crate::capabilities::{
 use crate::content::SamplingParams;
 use crate::error::RoutingError;
 use crate::ids::{AgentId, BackendId, EndpointId, ModelId, ModelRef, RoleAlias};
-use crate::ports::{HealthRegistry, Router, RoutingExplainer};
+use crate::ports::{HealthRegistry, Router, RoutingExplainer, TokenCountFidelity};
 
 fn default_headroom_tokens() -> u32 {
     DEFAULT_HEADROOM_TOKENS
@@ -195,7 +195,8 @@ pub enum EntryOutcome {
 
 /// One evaluated candidate: its place in the chain (or `None` for a pin),
 /// whether it was selected or skipped and why, its capability summary (when
-/// indexed), and its breaker snapshot.
+/// indexed), its breaker snapshot, and how much its backend's own token
+/// estimate can be trusted.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExplainEntry {
     pub model_ref: ModelRef,
@@ -203,6 +204,15 @@ pub struct ExplainEntry {
     pub outcome: EntryOutcome,
     pub capabilities: Option<CapabilitySummary>,
     pub breaker: BreakerSnapshot,
+    /// This candidate's backend's declared [`crate::ports::TokenCountFidelity`]
+    /// (board item 01M0ASX466G3PW3SJJS3KGNS55) -- the operator-visible
+    /// surface for `Backend::token_fidelity`. `None` when the producing
+    /// `RoutingExplainer` cannot answer: today, only `MinimalRouter`'s
+    /// config-only fallback, which never reaches a live `Backend` instance
+    /// (see its own `explain` impl). `#[serde(default)]` so a report decoded
+    /// from before this field existed still parses.
+    #[serde(default)]
+    pub token_fidelity: Option<TokenCountFidelity>,
 }
 
 /// The full "why did this model run, and why not the others" answer for one
@@ -609,6 +619,10 @@ impl RoutingExplainer for MinimalRouter {
                     breaker: BreakerSnapshot {
                         state: BreakerState::Closed,
                     },
+                    // `MinimalRouter` holds only `RoutingConfig` -- no
+                    // `Arc<dyn Backend>`, so it has no honest answer, the
+                    // same reason `capabilities` above is `None` here too.
+                    token_fidelity: None,
                 }
             })
             .collect();
@@ -887,6 +901,7 @@ mod tests {
         ));
         for entry in &report.entries {
             assert_eq!(entry.capabilities, None);
+            assert_eq!(entry.token_fidelity, None);
             assert_eq!(
                 entry.breaker,
                 BreakerSnapshot {
@@ -894,6 +909,57 @@ mod tests {
                 }
             );
         }
+    }
+
+    /// `token_fidelity` (board item 01M0ASX466G3PW3SJJS3KGNS55) must
+    /// `#[serde(default)]`: an `ExplainEntry` encoded before this field
+    /// existed has no `token_fidelity` key at all, and must still decode --
+    /// to `None`, not a decode error. Built by serializing a real entry and
+    /// stripping the key, rather than a hand-written literal, so this test
+    /// does not silently drift from the other fields' actual wire shape.
+    #[test]
+    fn explain_entry_without_token_fidelity_key_decodes_to_none() {
+        let entry = ExplainEntry {
+            model_ref: "local/m1".parse().unwrap(),
+            chain_position: Some(0),
+            outcome: EntryOutcome::Selected {
+                reason: RoutingReason::PinnedByApi,
+            },
+            capabilities: None,
+            breaker: BreakerSnapshot {
+                state: BreakerState::Closed,
+            },
+            token_fidelity: Some(TokenCountFidelity::Calibrated),
+        };
+        let mut value = serde_json::to_value(&entry).unwrap();
+        value
+            .as_object_mut()
+            .expect("ExplainEntry serializes to an object")
+            .remove("token_fidelity")
+            .expect("token_fidelity key present before removal");
+
+        let decoded: ExplainEntry =
+            serde_json::from_value(value).expect("pre-field-existing shape still decodes");
+        assert_eq!(decoded.token_fidelity, None);
+    }
+
+    #[test]
+    fn explain_entry_token_fidelity_round_trips() {
+        let entry = ExplainEntry {
+            model_ref: "local/m1".parse().unwrap(),
+            chain_position: Some(0),
+            outcome: EntryOutcome::Selected {
+                reason: RoutingReason::PinnedByApi,
+            },
+            capabilities: None,
+            breaker: BreakerSnapshot {
+                state: BreakerState::Closed,
+            },
+            token_fidelity: Some(TokenCountFidelity::Calibrated),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: ExplainEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, entry);
     }
 
     #[test]

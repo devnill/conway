@@ -290,6 +290,43 @@ impl App {
         // path -- `git rev-parse` is fast, but the spawn isolates us from
         // a hung `git` or a slow filesystem.
         state.git_branch = read_git_branch().await;
+        // The plugin browser's own read surface (board item
+        // `01M0KARX71A64NTSYTDBVANVPF`): every compiled-in first-party
+        // plugin candidate, not only the `plugins` param's already-
+        // filtered, installed-only subset -- a browser must show what is
+        // available-but-off too. Derived from `crate::first_party_plugins
+        // ::all_bundle_plugins` directly (same crate, same single bundle
+        // `installed_plugins` itself filters -- never a second,
+        // independently-derived candidate list) rather than threaded in as
+        // a new `App::new` parameter, which would have forced every one of
+        // this crate's ~30 existing `App::new` call sites to name one.
+        //
+        // A throwaway `InMemoryMemoryStore` backs the `conway.memory`
+        // candidate here, deliberately -- this scan only ever calls
+        // `.manifest()`/`.description()` on each candidate, never a method
+        // that touches the store, so opening the REAL durable store again
+        // here would violate `first_party_plugins::resolve_memory_store`'s
+        // own "exactly one `FsMemoryStore::open` call site" invariant for
+        // no benefit. Mirrors that module's own fallback for an unselected
+        // build ("unused, cheap, no I/O").
+        let browse_memory_store: std::sync::Arc<dyn conway::plugin::MemoryStore> =
+            std::sync::Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let install_ids = &conway.config().plugins.install;
+        state.plugin_browser = crate::first_party_plugins::all_bundle_plugins(
+            &conway.config().cwd,
+            browse_memory_store,
+        )
+        .iter()
+        .map(|p| {
+            let manifest = p.manifest();
+            crate::tui::state::PluginBrowserEntry {
+                installed: install_ids.contains(&manifest.id),
+                id: manifest.id,
+                version: manifest.version,
+                description: p.description(),
+            }
+        })
+        .collect();
         let (modal_ask_tx, modal_ask_rx) = mpsc::unbounded_channel();
         let (plugin_cmd_tx, plugin_cmd_rx) = mpsc::unbounded_channel();
         Ok(Self {
@@ -343,6 +380,7 @@ mod tests {
 
     use std::sync::Arc;
 
+    use conway::config::{CliOverrides, LoadOptions};
     use conway::{ConwayBuilder, PermissionGate};
     use conway_core::agent::PermissionDecision;
     use conway_core::ids::{BackendId, ModelId};
@@ -351,6 +389,51 @@ mod tests {
     use super::super::fixtures::{build_conway_with_echo_backend, minimal_cli};
     use super::App;
     use crate::tui::state::Entry;
+
+    /// Loads `config_path` through the REAL `config::load` merge pipeline
+    /// (default < project < env < CLI -- three sources, `include_user_config:
+    /// No`), exactly what both this module's own callers below actually
+    /// need to prove ("reached through `config::load`, not `from_parts`");
+    /// neither cares about the operator's REAL `~/.conway/settings.json`
+    /// content. **Deliberately not `ConwayBuilder::from_config`/
+    /// `from_config_only`**: both always build their own `LoadOptions` via
+    /// `LoadOptions::default()` -- this TEST PROCESS's real `std::env::
+    /// vars()` and real `std::env::current_dir()` (this crate's manifest
+    /// directory, not `cwd`) -- with no seam to inject an isolated `env`/
+    /// `cwd` of this fixture's own. Before board item
+    /// `01M0QK9GRM8HSNWRAR414TCX42`, that didn't matter here: every path
+    /// either caller's assembled `ConwayConfig` needed (`agents.dir`,
+    /// `models.metadata_path`) resolves at `build()` time, after `cwd` is
+    /// already known. `[session].root`'s central-default resolution
+    /// happens INSIDE `config::load` itself, using `LoadOptions.cwd`/`.env`
+    /// directly -- against this test process's real ambient values, that
+    /// would (harmlessly, since both callers inject a `FakeStore`, so
+    /// `build()` never opens it -- but NOT harmlessly for the legacy-
+    /// directory check `config::load` also runs, which depends on whatever
+    /// this test process's REAL cwd's `.conway/sessions` happens to
+    /// contain on the machine running it) resolve against real ambient
+    /// state instead of this fixture's own isolated tempdir. Passing `cwd`/
+    /// an isolated `env` explicitly here removes that dependency entirely.
+    fn isolated_from_config(
+        config_path: &std::path::Path,
+        cwd: &std::path::Path,
+    ) -> conway::Result<ConwayBuilder> {
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            cwd.to_string_lossy().into_owned(),
+        );
+        ConwayBuilder::from_options_ignoring_user_config(LoadOptions {
+            cwd: cwd.to_path_buf(),
+            explicit_path: Some(config_path.to_path_buf()),
+            env,
+            cli_overrides: CliOverrides {
+                cwd: Some(cwd.to_path_buf()),
+                ..Default::default()
+            },
+            model_metadata_refresh: false,
+        })
+    }
 
     /// `App::new`'s own initial
     /// `AppState::session_head_seq` fetch -- a fresh session's head is
@@ -371,6 +454,84 @@ mod tests {
         assert_eq!(app.state.session_head_seq, Some(conway::LogSeq(0)));
     }
 
+    /// Board item `01M0KARX71A64NTSYTDBVANVPF`: `App::new` populates
+    /// `state.plugin_browser` from EVERY compiled-in first-party plugin
+    /// candidate (`first_party_plugins::all_bundle_plugins`), not only
+    /// the ones actually selected -- a fresh build's `[plugins].install`
+    /// is empty (`base_config`'s own `PluginsConfig::default()`), so every
+    /// candidate must appear with `installed: false` and a non-empty
+    /// description, never silently absent from the browser just because
+    /// nothing is on yet.
+    #[tokio::test]
+    async fn app_new_populates_the_plugin_browser_with_every_candidate_off_by_default() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        for expected_id in [
+            conway_plugin_skeleton::PLUGIN_ID,
+            conway_plugin_history::PLUGIN_ID,
+            conway_plugin_stepguard::PLUGIN_ID,
+            conway_plugin_skills::PLUGIN_ID,
+            conway_plugin_memory::PLUGIN_ID,
+            conway_plugin_path::PLUGIN_ID,
+        ] {
+            let entry = app
+                .state
+                .plugin_browser
+                .iter()
+                .find(|e| e.id == expected_id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{expected_id} missing from the browser: {:?}",
+                        app.state.plugin_browser
+                    )
+                });
+            assert!(
+                !entry.installed,
+                "{expected_id} must be OFF on a fresh install with no [plugins].install entry"
+            );
+            assert!(
+                !entry.description.summary.is_empty(),
+                "{expected_id} must carry a real description, not the trait's empty default"
+            );
+        }
+    }
+
+    /// The counterpart: a plugin named in `[plugins].install` shows up
+    /// `installed: true` in the browser.
+    #[tokio::test]
+    async fn app_new_marks_a_configured_plugin_as_installed_in_the_browser() {
+        let mut config = super::super::fixtures::base_config();
+        config.plugins.install = vec![conway_plugin_memory::PLUGIN_ID.to_string()];
+        let conway = super::super::fixtures::build_conway_with_config(config);
+        let cli = minimal_cli();
+        let app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let entry = app
+            .state
+            .plugin_browser
+            .iter()
+            .find(|e| e.id == conway_plugin_memory::PLUGIN_ID)
+            .expect("conway.memory must be present in the browser");
+        assert!(entry.installed);
+
+        let off_entry = app
+            .state
+            .plugin_browser
+            .iter()
+            .find(|e| e.id == conway_plugin_skills::PLUGIN_ID)
+            .expect("conway.skills must be present in the browser");
+        assert!(
+            !off_entry.installed,
+            "an unselected plugin must stay OFF in the browser"
+        );
+    }
+
     /// A1: a permission rule that fails registration is
     /// OPERATOR-VISIBLE at load time. The assertion is on the observable
     /// transcript/rendered screen -- what the operator actually reads --
@@ -380,7 +541,7 @@ mod tests {
     /// (Structured render -- can never match reliably) written as a `deny`
     /// rule, because deny rules are validated and refused BEFORE any trust
     /// gating (deny applies from every file, trusted or not), so the test
-    /// needs no recorded trust decision and no XDG env isolation.
+    /// needs no recorded trust decision and no user config env isolation.
     #[tokio::test]
     async fn registration_error_surfaces_as_a_transcript_error() {
         let project = tempfile::TempDir::new().expect("tempdir");
@@ -567,7 +728,7 @@ mod tests {
             backend: BackendId::new("fake"),
             model: ModelId::new("echo-model"),
         }));
-        let conway = ConwayBuilder::from_config(&config_path)
+        let conway = isolated_from_config(&config_path, dir.path())
             .expect("from_config should load the fixture and compute its headroom warning")
             .with_backend(backend)
             .with_session_store(Arc::new(FakeStore::new()))
@@ -575,7 +736,7 @@ mod tests {
             .with_router(router)
             // `conway` no longer
             // compiles either dialect in -- `from_config` also layers in
-            // whatever the live XDG-global `settings.json` declares (this
+            // whatever the live user config-global `settings.json` declares (this
             // function's own doc), so both factories are registered here,
             // matching the real binary's own always-both default.
             .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
@@ -660,7 +821,7 @@ mod tests {
         // point every dispatch target shares -- this would hard-fail here
         // if [tui] were still handed to ConwayConfig's
         // #[serde(deny_unknown_fields)] deserialize unstripped.
-        let conway = ConwayBuilder::from_config(&config_path)
+        let conway = isolated_from_config(&config_path, dir.path())
             .expect("a settings.json with a [tui] block must still load through the facade")
             .with_backend(backend)
             .with_session_store(Arc::new(FakeStore::new()))

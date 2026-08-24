@@ -27,7 +27,7 @@ fn assert_no_esc_byte(bytes: &[u8]) {
 }
 
 fn sessions_dir(fixture: &Fixture) -> std::path::PathBuf {
-    fixture.dir.path().join(".conway/sessions")
+    common::session_dir(fixture)
 }
 
 /// Scans `fixture`'s session store for the single session file it expects
@@ -526,6 +526,51 @@ fn routes_explain_text_shows_position_reason_and_breaker() {
     assert!(text.contains("SELECTED"));
     assert!(text.contains("primary for role `default`"));
     assert!(text.contains("breaker: closed"));
+    // Board item 01M0ASX466G3PW3SJJS3KGNS55: this fixture names no
+    // `[plugins].install` entry, so `ConwayBuilder::build` falls back to
+    // `conway_core::routing::MinimalRouter` (see `docs/routing.md`'s
+    // "Asking why a route was chosen") -- it holds no `Arc<dyn Backend>` at
+    // all, so it honestly reports "unknown" rather than guessing.
+    // `routes_explain_with_routing_plugin_shows_declared_token_fidelity`
+    // below proves the non-degenerate answer through the same real binary.
+    assert!(
+        text.contains("tokens: unknown"),
+        "stdout must surface token fidelity per candidate: {text:?}"
+    );
+}
+
+#[test]
+fn routes_explain_with_routing_plugin_shows_declared_token_fidelity() {
+    let fixture = static_fixture();
+    let mut value: Value =
+        serde_json::from_str(&std::fs::read_to_string(&fixture.config_path).unwrap()).unwrap();
+    value["plugins"] = serde_json::json!({ "install": ["conway.routing"] });
+    std::fs::write(&fixture.config_path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+    let out = run_conway(&["routes", "explain", "default"], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8(out.stdout).unwrap();
+    // Board item 01M0ASX466G3PW3SJJS3KGNS55: with `conway.routing` (the
+    // `DeclarativeRouter` factory) installed exactly as a real operator
+    // would in `settings.json`, the router actually reaches the
+    // constructed `mock` (`openai-compat`) backend's own
+    // `Backend::token_fidelity()`, which declares `Heuristic` honestly --
+    // an operator asking "how much should I trust this backend's token
+    // estimate?" gets a real, named answer without reading source.
+    assert!(
+        text.contains("tokens: heuristic"),
+        "stdout must surface the routing plugin's real token fidelity: {text:?}"
+    );
+
+    let out = run_conway(&["routes", "explain", "default", "--json"], &fixture);
+    assert!(out.status.success());
+    let value: Value = serde_json::from_slice(&out.stdout).expect("stdout is one JSON object");
+    let chain = value["chain"].as_array().expect("chain is an array");
+    assert_eq!(chain[0]["token_fidelity"], "heuristic");
 }
 
 #[test]
@@ -547,6 +592,12 @@ fn routes_explain_json_has_role_chain_skipped_health() {
     assert!(obj["skipped"].as_array().is_some());
     let health = obj["health"].as_array().expect("health is an array");
     assert_eq!(health.len(), 1);
+    // Board item 01M0ASX466G3PW3SJJS3KGNS55: every chain entry carries the
+    // same operator-visible answer the text renderer above does -- "unknown"
+    // here for the same `MinimalRouter` reason documented on the text test
+    // above; `routes_explain_with_routing_plugin_shows_declared_token_fidelity`
+    // proves the non-degenerate "heuristic" answer through the real binary.
+    assert_eq!(chain[0]["token_fidelity"], "unknown");
 }
 
 #[test]

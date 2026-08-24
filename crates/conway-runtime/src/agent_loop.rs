@@ -25,17 +25,24 @@
 //! half of a two-sided fix -- see `supervisor.rs`'s module doc for the
 //! other half) -- see `finish`'s own doc.
 //!
-//! ## `inherited` context
+//! ## `inherited` context (superseded by `resolve_default_path`, D1-3d-wire)
 //!
-//! `AgentLoop` gained one field this item: `inherited: Option<InheritedPrefix>`.
-//! For a root agent or a spawned child it is `None` and every turn's
-//! `ContextInput.path` carries no `Inherited`-stamped nodes, exactly as
-//! before. For a fork child, `subagent.rs`'s `SubagentHost::start` resolves
-//! it exactly once (via `conway_core::transcript::TranscriptResolver`, at
-//! fork time, before any of the child's own records exist) and this loop
-//! simply hands it to `path_from_legacy` each turn unchanged -- see the
-//! field's own doc for why no turn-boundary re-resolution is needed or
-//! correct.
+//! `AgentLoop` carries `inherited: Option<InheritedPrefix>`, resolved once at
+//! fork time by `subagent.rs`'s `SubagentHost::start` (via
+//! `conway_core::transcript::TranscriptResolver`, before any of the child's
+//! own records exist). Every turn's path assembly used to hand it to
+//! `path_from_legacy` unchanged; as of this item it calls
+//! `context::path::resolve_default_path` instead, which re-derives the same
+//! inherited prefix itself, every turn, straight from the session's own
+//! `meta.origin` (read via the store) rather than from this cached field --
+//! see that function's own doc (`context/path.rs`, step 3) for the
+//! ancestry-walk fix that made this safe to wire in. `self.inherited` and its
+//! construction sites (`subagent.rs`, `runtime/root.rs`) stay unchanged --
+//! only `run_inner` stops reading the field, it is not dead: `subagent.rs`
+//! also derives `inherited_upto` (`AgentNode` tree bookkeeping, unrelated to
+//! context assembly) from the SAME fork-time resolve call, so removing the
+//! construction site would take that with it too. `path_from_legacy` is
+//! kept as a cheaper, store-free test fixture builder (see its own doc).
 //!
 //! `AgentSpec::report_slot` (An earlier review found: ) is this item's
 //! one additive hook for a live caller: after each successful
@@ -134,12 +141,12 @@ use conway_core::capabilities::{CacheMode, HeadroomPolicy, RequiredCaps, ToolCal
 use conway_core::content::{ContentBlock, ToolResult, ToolSpec, Usage};
 use conway_core::error::{ConwayError, RoutingError, RuntimeError};
 use conway_core::event::Event;
-use conway_core::ids::{AgentId, ModelId, ModelRef, RoleAlias, SeqRange, SessionId};
+use conway_core::ids::{AgentId, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::LogRecord;
 use conway_core::path::ResolvedPath;
 use conway_core::ports::{
     ArtifactWriteHandle, ContextHookCtx, ContextPayload, CurateCtx, CwdHandle, ObservedCall,
-    ObserverCtx, OverflowInfo, PluginConfig, PluginEventEmitter, PluginEventHandle,
+    ObserverCtx, OverflowInfo, PathStore, PluginConfig, PluginEventEmitter, PluginEventHandle,
     RegisteredObserver, Router, SessionStore, SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
@@ -148,10 +155,10 @@ use conway_core::segment::{CacheTtl, PromptSegment};
 use tokio_util::sync::CancellationToken;
 
 use crate::attempt::{AttemptEngine, AttemptOutcome, AttemptRequest};
-use crate::context::path::path_from_legacy;
+use crate::context::path::resolve_default_path;
 use crate::context::{
-    ContextBuilder, ContextInput, GuardedContextHook, InheritedPrefix, SkillFragment,
-    SystemPromptSpec,
+    ContextBuilder, ContextInput, GuardedContextHook, InheritedPrefix, PluginInstruction,
+    SkillFragment, SystemPromptSpec,
 };
 use crate::events::EventBus;
 use crate::mailbox::{self, MailboxReceiver, MailboxSender};
@@ -164,6 +171,15 @@ use crate::tree::AgentTree;
 #[derive(Clone, Debug)]
 pub struct AgentSpec {
     pub system_prompt: Option<SystemPromptSpec>,
+    /// Plugin-declared instruction fragments (board item
+    /// `01M0K5MD59YZRSHE31JKZKFRMY`), rendered before `skills` -- see
+    /// `ContextInput::instructions`'s own doc for the precedence argument.
+    /// Resolved for a ROOT agent by `runtime::root::resolve_instructions`;
+    /// a spawned/forked child gets `Vec::new()` today, matching `skills`'
+    /// own pre-existing "a subagent gets no directory-sourced skills
+    /// either" gap (`subagent.rs`'s `SubagentHost::start` -- unaddressed by
+    /// this item, out of its scope; see that call site's own comment).
+    pub instructions: Vec<PluginInstruction>,
     pub skills: Vec<SkillFragment>,
     /// `None` behaves as [`ToolSelector::All`] (see
     /// [`PluginRegistry::specs`]).
@@ -230,6 +246,11 @@ pub struct AgentSpec {
 /// `Arc`).
 pub struct LoopDeps {
     pub store: Arc<dyn SessionStore>,
+    /// Backing store for named/frozen context selections (DESIGN §2.5) --
+    /// see `RuntimeDeps::path_store`'s own doc (`runtime.rs`) for what
+    /// sources it. `run_inner`'s per-turn path assembly hands this straight
+    /// to `resolve_default_path` alongside `store` and `resolver`.
+    pub path_store: Arc<dyn PathStore>,
     pub router: Arc<dyn Router>,
     pub attempt: Arc<AttemptEngine>,
     pub registry: Arc<PluginRegistry>,
@@ -238,6 +259,19 @@ pub struct LoopDeps {
     /// implementation exists yet; a fake or a not-yet-wired real
     /// host is injected by the caller.
     pub subagents: Arc<dyn SubagentHost>,
+    /// The context-path composition capability (decision
+    /// `01M0K4QT6MBXPD6PXMBBBD2P7B`) every turn's `ToolBatchCtx` threads
+    /// straight through to `ToolRunner::run_batch` -- see `ToolBatchCtx::
+    /// context_path_host`'s own doc. One runtime-wide instance
+    /// (`Runtime::new`), narrowed per call to that call's own session.
+    pub context_path_host: Arc<dyn conway_core::ports::ContextPathHost>,
+    /// The cross-session discovery capability (board item
+    /// `01M0PS8J3AK7Z7253Z3E3RD3GY`) every turn's `ToolBatchCtx` threads
+    /// straight through to `ToolRunner::run_batch`, mirroring
+    /// `context_path_host` immediately above exactly -- one runtime-wide
+    /// instance (`Runtime::new`), never narrowed to a session (discovery is
+    /// cross-session by construction).
+    pub session_discovery_host: Arc<dyn conway_core::ports::SessionDiscoveryHost>,
     pub plugin_config: Arc<PluginConfig>,
     pub bus: Arc<EventBus>,
     pub builder: Arc<ContextBuilder>,
@@ -551,8 +585,8 @@ impl AgentLoop {
     /// calls `self.inbox.drain()`, is what makes "no code path injects into
     /// a context outside `drain_inbox`" hold structurally: a steer becomes
     /// visible by first becoming a stored record, read back exactly like
-    /// any other own record (`path_from_legacy` below), never by this function
-    /// handing a segment to anyone directly.
+    /// any other own record (`resolve_default_path`'s own fresh store read,
+    /// below), never by this function handing a segment to anyone directly.
     ///
     /// A soft cancel only sets `self.pending_cancel`, consumed by the
     /// caller immediately after this returns. A hard cancel was already
@@ -919,6 +953,7 @@ impl AgentLoop {
                 &tools,
                 report.dropped,
                 report.curator_failed,
+                report.instruction_fragments,
             );
         }
     }
@@ -1053,11 +1088,6 @@ impl AgentLoop {
                 Event::TurnStarted { turn: state.turn },
             );
 
-            let all_records = try_rt!(
-                state,
-                self.deps.store.read(&self.session, SeqRange::full()).await
-            );
-
             let tool_specs = self.deps.registry.specs(self.spec.tools.as_ref());
             let model_hint = self
                 .spec
@@ -1066,10 +1096,27 @@ impl AgentLoop {
                 .map(|pin| pin.model.clone())
                 .unwrap_or_else(|| ModelId::new("unrouted"));
 
-            let path = try_rt!(
+            // `resolve_default_path` runs its own fresh `SessionStore::read`
+            // internally (`context/path.rs`'s step 1) -- the same "no
+            // injection outside `drain_inbox`" guarantee `path_from_legacy`
+            // (the constructor this replaces) relied on `all_records` for,
+            // preserved here without a second, now-redundant read of the
+            // same range. `self.deps.resolver`/`self.deps.path_store` are
+            // the SAME `Arc`s the curator stage's `CurateCtx` reads below --
+            // one resolver, one path store, both shared across every turn.
+            let validated_path = try_rt!(
                 state,
-                path_from_legacy(self.inherited.as_ref(), &all_records, self.session)
+                resolve_default_path(
+                    &self.deps.resolver,
+                    self.deps.store.as_ref(),
+                    self.deps.path_store.as_ref(),
+                    &self.session,
+                )
+                .await
             );
+            let path = ResolvedPath {
+                nodes: validated_path.into_nodes(),
+            };
             // Pre-assembly curator stage (DESIGN §11.4): a registered
             // `Curator` may derive a new path from `path` before assembly
             // renders it. `None` (the default) is a zero-cost pass-through --
@@ -1087,6 +1134,7 @@ impl AgentLoop {
                 model: model_hint,
                 cache_mode: self.spec.cache_mode.clone(),
                 system_prompt: self.spec.system_prompt.clone(),
+                instructions: self.spec.instructions.clone(),
                 skills: self.spec.skills.clone(),
                 tools: tool_specs.clone(),
                 path,
@@ -1149,6 +1197,7 @@ impl AgentLoop {
                     &announced_tools,
                     report.dropped,
                     report.curator_failed,
+                    report.instruction_fragments,
                 );
             }
 
@@ -1245,6 +1294,7 @@ impl AgentLoop {
                         &announced_tools,
                         report.dropped,
                         report.curator_failed,
+                        report.instruction_fragments,
                     );
                 }
             }
@@ -1486,6 +1536,8 @@ impl AgentLoop {
                 chdir: chdir.clone(),
                 cancel: self.cancel.clone(),
                 subagents: self.deps.subagents.clone(),
+                context_path_host: self.deps.context_path_host.clone(),
+                session_discovery_host: self.deps.session_discovery_host.clone(),
                 // [S1.5]: this agent's own EFFECTIVE per-agent config
                 // (`self.plugin_config`, resolved once at construction --
                 // see that field's own doc), not the shared, process-wide

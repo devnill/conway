@@ -83,24 +83,36 @@
 //! sandboxing, no allow/deny list, no argument sanitization here...an
 //! operator's review of the command...is the control point, not this
 //! type"), never a new, wider one. Board item `01KZHVFCN6ZEAXV7K5JHRQN1YB`
-//! (a `plugin` trust subject kind keyed on a content digest) is under a
-//! STANDING OPERATOR DEFERRAL and is explicitly out of scope here -- this
-//! crate does not build it, and does not work around its absence by
-//! inventing a parallel trust mechanism of its own. The honest state this
-//! leaves: naming a subprocess plugin in `settings.json` is exactly as
-//! trusted, and exactly as unaudited, as naming a `[hooks].rules[].command`
-//! already is today -- an operator who would not paste an unknown shell
-//! command into a hook rule should not paste an unknown command into a
-//! subprocess plugin entry either. See `docs/plugins/trust-and-security.md`
-//! for where this crate's entry in that page's inventory lives.
+//! (a `plugin` trust subject kind keyed on a content digest) was reopened
+//! once this crate shipped (decision `01M0R4RWCDJJ6RMNVFYCNHW0NK` lifted the
+//! 2026-08-12 standing deferral) and worked to a conclusion: DECLINED, not
+//! left open for lack of a consumer. A digest check on a plugin's own
+//! entrypoint file is a real, honest integrity primitive -- digest equality
+//! is a decidable claim it can actually keep, unlike the shell-metacharacter
+//! blocklist GP-13 records as a cautionary tale, which tried to infer safety
+//! it could not verify -- but gating only this crate's `command` with one,
+//! while `[hooks].rules[].command` stays permanently ungated, would
+//! manufacture exactly the false distinction the paragraph above argues
+//! against: the two run with identical, full, unsandboxed operator
+//! privileges, and a checkmark on only one of them would read as "plugins
+//! are vetted, hooks are not," which is false. This crate does not build a
+//! trust mechanism, and does not work around its absence by inventing a
+//! parallel one of its own. The honest state this leaves: naming a
+//! subprocess plugin in `settings.json` is exactly as trusted, and exactly
+//! as unaudited, as naming a `[hooks].rules[].command` already is today --
+//! an operator who would not paste an unknown shell command into a hook
+//! rule should not paste an unknown command into a subprocess plugin entry
+//! either. See `docs/plugins/trust-and-security.md` for where this crate's
+//! entry in that page's inventory lives, and for the full reasoning behind
+//! the decline.
 
 use std::process::Stdio;
 use std::sync::Arc;
 
 use conway::plugin::{
-    async_trait, EventSinkHandle, PathArgs, Plugin, PluginManifest, PluginPermissionRule,
-    PluginPermissionVerdict, PluginStatusContribution, RenderKind, Tool, ToolCall, ToolCtx,
-    ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
+    async_trait, kill_group, EventSinkHandle, PathArgs, Plugin, PluginManifest,
+    PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution, RenderKind, Tool,
+    ToolCall, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
 
 mod session;
@@ -215,7 +227,7 @@ pub enum SubprocessPluginError {
     Spawn { config_id: String, detail: String },
     /// The spawned process did not finish within `timeout_ms` and was
     /// killed (process-group SIGTERM, then SIGKILL after a grace period --
-    /// see `unix::kill_group`).
+    /// see `conway::plugin::kill_group`).
     #[error("plugin '{config_id}' timed out after {after_ms}ms")]
     TimedOut { config_id: String, after_ms: u64 },
     /// The process ran and exited, but not with status 0. `code` is `None`
@@ -315,45 +327,15 @@ impl SubprocessPluginError {
     }
 }
 
-#[cfg(unix)]
-pub(crate) mod unix {
-    //! **Deliberately duplicated, not reused, from `conway-tools`'s
-    //! `crate::process::unix::kill_group`.** That module is `mod process;`
-    //! (private) in `crates/conway-tools/src/lib.rs`, unreachable from
-    //! outside the crate, and `conway-tools` is not among this item's
-    //! owned paths -- widening its visibility is exactly the kind of edit
-    //! this item's own instructions ask to flag rather than make silently.
-    //! This is the identical ~15-line SIGTERM-then-SIGKILL sequence, cited
-    //! by name rather than silently reinvented; see this item's completion
-    //! report for the follow-up this leaves ("expose `conway_tools::
-    //! process` publicly so a third reuse doesn't have to duplicate again
-    //! either"). This module is `pub(crate)` so `session.rs` (the persistent
-    //! transport, board item `01M03VJHG1WFECFJB4ZH3CKWDX`) reuses this SAME
-    //! `kill_group` for its graceful per-call-timeout kill -- a third reuse
-    //! of the identical sequence, still WITHOUT widening
-    //! `conway_tools::process`'s visibility (out of this item's owned
-    //! paths). The persistent path's `Drop`-time cleanup uses a synchronous
-    //! `nix::sys::signal::kill(-pgid, SIGKILL)` directly (`Drop` cannot
-    //! `await` `kill_group`); see `session::PersistentSession::drop`.
-
-    use nix::sys::signal::{kill, Signal};
-    use nix::unistd::Pid;
-    use tokio::process::Child;
-    use tokio::time::Duration;
-
-    pub const TERM_GRACE: Duration = Duration::from_secs(2);
-
-    pub async fn kill_group(child: &mut Child, pgid: i32) {
-        let _ = kill(Pid::from_raw(-pgid), Signal::SIGTERM);
-        if tokio::time::timeout(TERM_GRACE, child.wait())
-            .await
-            .is_err()
-        {
-            let _ = kill(Pid::from_raw(-pgid), Signal::SIGKILL);
-            let _ = child.wait().await;
-        }
-    }
-}
+// `crate::unix` (this crate's own hand-copied `kill_group`) used to live
+// here, `pub(crate)` so `session.rs` (the persistent transport) could reuse
+// it. Board item `01M0EKVR1BEXXS75NV2JC4HZZ9` replaced it -- and the
+// identical copy `conway-plugin-mcp` carried, and the one `conway-tools`
+// kept private -- with a single implementation reached through
+// `conway::plugin::kill_group` (see that re-export's own doc in
+// `crates/conway/src/lib.rs` for the full argument, and
+// `conway_tools::process`'s own doc for the five-way diff). `session.rs`
+// imports the SAME re-export, not a second module here.
 
 /// Spawns `spec.command` fresh, writes `payload` to its stdin (closing it
 /// afterward so a well-behaved subprocess sees EOF), reads stdout/stderr to
@@ -471,7 +453,7 @@ async fn spawn_one_shot(
                 detail: format!("failed to wait for plugin process: {err}"),
             }),
             Err(_elapsed) => {
-                unix::kill_group(&mut child, pgid).await;
+                kill_group(&mut child, pgid).await;
                 Err(SubprocessPluginError::TimedOut {
                     config_id: spec.config_id.clone(),
                     after_ms: spec.timeout_ms,
@@ -853,10 +835,13 @@ impl Tool for SubprocessTool {
 
     /// PRE (from the trait): `call.arguments` is already schema-validated.
     /// Checks `ctx.cancel` before spawning at all (mirrors
-    /// `conway_tools::common::check_cancel`, unreachable from here for the
-    /// same private-module reason `unix::kill_group`'s own doc names) --
-    /// a call already cancelled by the time it reaches this tool never
-    /// spawns a process it would only have to kill moments later.
+    /// `conway_tools::common::check_cancel`, unreachable from here because
+    /// this crate may not depend on `conway-tools` directly -- unlike
+    /// `conway_tools::process::unix::kill_group`, `check_cancel` has no
+    /// facade re-export, since nothing outside `conway-tools` has needed
+    /// one yet) -- a call already cancelled by the time it reaches this
+    /// tool never spawns a process it would only have to kill moments
+    /// later.
     ///
     /// **Every distinct subprocess failure mode maps to a typed
     /// `ToolError`, never a hang and never a panic** -- the guarantee this

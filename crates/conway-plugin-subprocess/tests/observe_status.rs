@@ -93,8 +93,12 @@ async fn a_subscribed_observe_plugin_receives_events_and_stays_alive() {
     // BEFORE `discover` spawns the persistent child. Only THIS test uses
     // `OBSERVE_LOG`, so a parallel test cannot clobber it.
     std::env::set_var("OBSERVE_LOG", &observe_log);
-    let spec =
-        common::persistent_spec_for(dir.path(), "observe.py", common::PERSISTENT_OBSERVE_PLUGIN);
+    let spec = common::persistent_spec_for_warmed(
+        dir.path(),
+        "observe.py",
+        common::PERSISTENT_OBSERVE_PLUGIN,
+    )
+    .await;
     assert_eq!(spec.transport, SubprocessTransport::Persistent);
 
     let plugin = SubprocessPlugin::discover(spec)
@@ -191,11 +195,12 @@ async fn a_tags_selector_drops_non_matching_events_and_keeps_the_session_alive()
     // A DISTINCT env var from the `["*"]` test's `OBSERVE_LOG` so the two
     // parallel tests cannot clobber each other's log path.
     std::env::set_var("OBSERVE_TAGS_LOG", &observe_log);
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "observe_tags.py",
         common::PERSISTENT_OBSERVE_TAGS_PLUGIN,
-    );
+    )
+    .await;
     assert_eq!(spec.transport, SubprocessTransport::Persistent);
 
     let plugin = SubprocessPlugin::discover(spec)
@@ -295,8 +300,12 @@ async fn a_tags_selector_drops_non_matching_events_and_keeps_the_session_alive()
 #[tokio::test]
 async fn a_status_declaring_plugin_surfaces_contributions_with_unknown_degraded_to_failed() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec =
-        common::persistent_spec_for(dir.path(), "status.py", common::PERSISTENT_STATUS_PLUGIN);
+    let spec = common::persistent_spec_for_warmed(
+        dir.path(),
+        "status.py",
+        common::PERSISTENT_STATUS_PLUGIN,
+    )
+    .await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -363,11 +372,12 @@ async fn a_status_declaring_plugin_surfaces_contributions_with_unknown_degraded_
 #[tokio::test]
 async fn an_unsupported_observe_version_degrades_not_refuses() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "observe_ver.py",
         common::PERSISTENT_OBSERVE_VERSION_MISMATCH_PLUGIN,
-    );
+    )
+    .await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -393,11 +403,12 @@ async fn an_unsupported_observe_version_degrades_not_refuses() {
 #[tokio::test]
 async fn an_unsupported_status_declare_version_degrades_not_refuses() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "status_ver.py",
         common::PERSISTENT_STATUS_VERSION_MISMATCH_PLUGIN,
-    );
+    )
+    .await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -429,11 +440,12 @@ async fn an_unsupported_status_declare_version_degrades_not_refuses() {
 #[tokio::test]
 async fn a_plugin_declaring_neither_point_loads_normally_with_no_observer_surfaces() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "handshake_ok.py",
         common::PERSISTENT_HANDSHAKE_OK_PLUGIN,
-    );
+    )
+    .await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await

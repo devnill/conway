@@ -117,7 +117,10 @@ pub enum Selector {
     DefaultRule,
     /// A curation plugin with id `id` ran operation `op`.
     Plugin { id: String, op: OpLabel },
-    /// The operator, through `conway path` verbs (DESIGN §4.5, §10).
+    /// The operator's stated intent put this node here — composed by a model
+    /// through a tool a plugin provides, not by a built-in verb (decision
+    /// `01M0K4QT6MBXPD6PXMBBBD2P7B`; DESIGN §4.5, §10, §11.7). No such tool
+    /// exists in the tree yet, so this variant currently has no producer.
     Operator,
 }
 

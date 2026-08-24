@@ -199,13 +199,13 @@ fn project_dir_with_permissions(contents: &str) -> TempDir {
 }
 
 fn isolated_env() -> (TempDir, HashMap<String, String>) {
-    let xdg = TempDir::new().expect("tempdir");
+    let config_dir = TempDir::new().expect("tempdir");
     let mut env = HashMap::new();
     env.insert(
-        "XDG_CONFIG_HOME".to_string(),
-        xdg.path().display().to_string(),
+        "CONWAY_CONFIG_DIR".to_string(),
+        config_dir.path().display().to_string(),
     );
-    (xdg, env)
+    (config_dir, env)
 }
 
 /// Finds the `(rule, origin)` pair for a given wire form -- the identity
@@ -233,7 +233,7 @@ async fn revoking_one_pattern_leaves_the_other_in_force() {
     std::fs::write(&read_path, "fixture content").expect("write read fixture");
     let read_path = read_path.display().to_string();
     let write_path = cwd.path().join("write_me.txt").display().to_string();
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     let gate = RecordingGate::new();
     let conway = build_conway(
         cwd.path(),
@@ -303,7 +303,7 @@ async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
     std::fs::write(&read_path, "fixture content").expect("write read fixture");
     let read_path = read_path.display().to_string();
     let write_path = project.path().join("write_me.txt").display().to_string();
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     let path = project.path().join(".conway").join("permissions.json");
     let agent = AgentId::new();
 
@@ -382,8 +382,8 @@ async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
 #[tokio::test]
 async fn revoking_a_global_rule_persists_with_no_retrust_ceremony() {
     let cwd = TempDir::new().expect("tempdir with no project file");
-    let (xdg, env) = isolated_env();
-    let global_dir = xdg.path().join("conway");
+    let (config_dir, env) = isolated_env();
+    let global_dir = config_dir.path().to_path_buf();
     std::fs::create_dir_all(&global_dir).expect("mkdir global dir");
     let global_path = global_dir.join("permissions.json");
     std::fs::write(&global_path, r#"{"allow": ["bash:git status"]}"#)
@@ -423,7 +423,7 @@ async fn revoking_a_global_rule_persists_with_no_retrust_ceremony() {
 
     // No `trust.json` should have been created for the global path -- the
     // global file is never a trust subject.
-    let trust_json = xdg.path().join("conway").join("trust.json");
+    let trust_json = config_dir.path().join("trust.json");
     assert!(
         !trust_json.exists(),
         "revoking a global-origin rule must never write a trust record"
@@ -437,7 +437,7 @@ async fn revoking_a_global_rule_persists_with_no_retrust_ceremony() {
 #[tokio::test]
 async fn revoking_an_interactive_rule_creates_no_file() {
     let cwd = TempDir::new().expect("tempdir");
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     let gate = RecordingGate::new();
     let conway = build_conway(cwd.path(), vec![], gate as Arc<dyn PermissionGate>);
     let agent = AgentId::new();
@@ -475,7 +475,7 @@ async fn revoking_an_interactive_rule_creates_no_file() {
 #[tokio::test]
 async fn a_persist_failure_still_revokes_for_the_session_and_reports_the_failure() {
     let project = project_dir_with_permissions(r#"{"allow": ["bash:git status"]}"#);
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     let path = project.path().join(".conway").join("permissions.json");
     let agent = AgentId::new();
 
@@ -530,7 +530,7 @@ async fn a_persist_failure_still_revokes_for_the_session_and_reports_the_failure
 #[tokio::test]
 async fn revoking_a_grant_that_is_not_installed_reports_not_found() {
     let cwd = TempDir::new().expect("tempdir");
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     let gate = RecordingGate::new();
     let conway = build_conway(cwd.path(), vec![], gate as Arc<dyn PermissionGate>);
 
@@ -549,7 +549,7 @@ async fn revoking_a_grant_that_is_not_installed_reports_not_found() {
 #[tokio::test]
 async fn revoke_all_still_clears_every_grant() {
     let cwd = TempDir::new().expect("tempdir");
-    let (_xdg, env) = isolated_env();
+    let (_config_dir, env) = isolated_env();
     let _ = &env; // unused in this test beyond satisfying the helper shape
     let gate = RecordingGate::new();
     let conway = build_conway(cwd.path(), vec![], gate as Arc<dyn PermissionGate>);

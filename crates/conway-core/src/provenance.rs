@@ -209,6 +209,25 @@ pub struct ContextReport {
     /// existed still decodes, with no curator failure recorded.
     #[serde(default)]
     pub curator_failed: Option<String>,
+    /// Every `crate::ports::plugin::Plugin::instructions()` fragment this
+    /// turn's context assembly considered, in plugin install order --
+    /// board item `01M0K5MD59YZRSHE31JKZKFRMY`. A reachable fragment
+    /// (`unreachable_tool_ids` empty) ALSO appears in [`Self::segments`]
+    /// as a `Provenance::Skill { name }` entry (the same machinery
+    /// operator-authored skills render through -- see that method's own
+    /// "not `conway.skills`" doc for why the two nonetheless stay distinct
+    /// contributions); this list is what carries the (plugin_id, name)
+    /// attribution `Provenance::Skill` alone does not, so `/context`'s
+    /// preamble section can show a SOURCE column without guessing at a
+    /// segment name. An UNREACHABLE fragment (`unreachable_tool_ids`
+    /// non-empty) appears ONLY here -- its text was withheld from
+    /// [`Self::segments`] entirely, never sent to the model, so this is
+    /// the sole durable record of both the omission and its cause.
+    ///
+    /// `#[serde(default)]`: every session log written before this field
+    /// existed still decodes, with no instruction fragments recorded.
+    #[serde(default)]
+    pub instruction_fragments: Vec<InstructionFragmentEntry>,
 }
 
 /// One segment's entry in a [`ContextReport`].
@@ -218,6 +237,35 @@ pub struct ContextReportEntry {
     pub provenance: Provenance,
     pub tokens_est: u32,
     pub estimated: bool,
+}
+
+/// One `crate::ports::plugin::Plugin::instructions()` fragment as it
+/// landed in a [`ContextReport`] -- see [`ContextReport::instruction_fragments`]'s
+/// own doc for why this exists as a list distinct from
+/// [`ContextReportEntry`], and `conway_runtime::context::builder::
+/// ContextBuilder::build`'s "Plugin instruction fragments" section (in
+/// that crate, not this one -- `conway-core` performs no context
+/// assembly) for the reachability check that decides which fields are
+/// populated how.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InstructionFragmentEntry {
+    /// The declaring plugin's own [`crate::ports::PluginManifest::id`].
+    pub plugin_id: String,
+    /// This fragment's bare [`crate::ports::InstructionFragment::name`].
+    pub name: String,
+    /// This fragment's estimated token cost, using the SAME
+    /// `heuristic-chars4` estimator (`ContextReport::tokenizer`) every
+    /// other entry in this report uses -- computed even for a withheld
+    /// (unreachable) fragment, from its own text, since
+    /// [`ContextReport::segments`] carries no segment to source the
+    /// estimate from in that case.
+    pub tokens_est: u32,
+    /// Tool ids this fragment's [`crate::ports::InstructionFragment::tool_ids`]
+    /// named that no tool in this turn's assembled tool set provides.
+    /// Empty -- the common case -- means the fragment's text WAS injected
+    /// as a segment; non-empty means it was withheld, and this names
+    /// exactly why.
+    pub unreachable_tool_ids: Vec<ToolName>,
 }
 
 /// Appends `report` as an ordinary `LogRecord::ContextReportRecord` through
@@ -469,6 +517,12 @@ mod tests {
             total_tokens_est: 42,
             dropped: vec!["call_9".into()],
             curator_failed: Some("curator refused".into()),
+            instruction_fragments: vec![InstructionFragmentEntry {
+                plugin_id: "conway.trim".into(),
+                name: "when-to-compose".into(),
+                tokens_est: 7,
+                unreachable_tool_ids: vec![ToolName::new("compose_path")],
+            }],
         };
         let json = serde_json::to_string(&report).unwrap();
         let back: ContextReport = serde_json::from_str(&json).unwrap();

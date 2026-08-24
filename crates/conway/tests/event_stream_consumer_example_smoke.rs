@@ -27,7 +27,7 @@ async fn event_stream_consumer_example_flow_assembles_the_reply_from_the_stream_
         cli_overrides: conway::config::CliOverrides::default(),
         model_metadata_refresh: false,
     })
-    .expect("load with no XDG/project layer must still succeed via built-in defaults");
+    .expect("load with no user/project layer must still succeed via built-in defaults");
     let config: ConwayConfig = outcome.config;
 
     let backend = Arc::new(FakeBackend::echo(BackendId::new("fake")));

@@ -48,7 +48,9 @@ use conway_runtime::hook_dispatch::{
 use conway_runtime::permission::{AgentRoot, PermissionBroker};
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_runtime::tools::{PluginRegistry, ToolBatchCtx, ToolRunner};
-use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, FakeSubagentHost};
+use conway_testkit::{
+    FakeGate, FakeHealth, FakePathStore, FakeRouter, FakeStore, FakeSubagentHost,
+};
 use tokio_util::sync::CancellationToken as TokioCancellationToken;
 
 /// A `HookRunner` that records every event name it saw and then FAILS.
@@ -131,6 +133,12 @@ fn tool_batch_ctx() -> ToolBatchCtx {
         chdir: conway_core::ports::CwdHandle::new(PathBuf::from("/tmp")),
         cancel: TokioCancellationToken::new(),
         subagents: Arc::new(FakeSubagentHost::new(AgentId::new())) as Arc<dyn SubagentHost>,
+        context_path_host: Arc::new(conway_runtime::context::RuntimeContextPathHost::new(
+            Arc::new(FakeStore::new()),
+            Arc::new(FakePathStore::new()),
+            Arc::new(conway_core::transcript::TranscriptResolver::new(4)),
+        )),
+        session_discovery_host: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         plugin_config: Arc::new(PluginConfig::default()),
         max_parallel_tools: 4,
         root: AgentRoot::Unconfined,
@@ -357,15 +365,19 @@ fn build_runtime_with_store() -> (Arc<Runtime>, Arc<FakeStore>) {
 
     let rt = Runtime::new(RuntimeDeps {
         store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
         router,
         health: Arc::new(FakeHealth::new()),
         backends,
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        instructions: Vec::new(),
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
     });
     (rt, fake)
 }

@@ -65,7 +65,7 @@ the routing plugin is installed. `tool_calling` and `reasoning` are
 currently informational.
 
 Create the files under `.conway/` in your project directory (or under
-`~/.conway/` — or `$XDG_CONFIG_HOME/conway/` if that's set — for a config
+`~/.conway/` — or `$CONWAY_CONFIG_DIR/` if that's set — for a config
 that follows you across projects).
 
 ### Anthropic
@@ -241,10 +241,9 @@ for what that tier is for. Turn one on with a distinct `plugins` key (not
 `conway.plugin_skeleton` is the tier's own worked example
 (`crates/conway-plugin-skeleton`): it registers one `skeleton_ping` tool
 and does nothing else. `conway.history` (`crates/conway-plugin-history`) is `/conway.history.rewind
-<seq>`: forks the current session at an explicit, persisted sequence
-number (never free text — see that crate's own module doc for why) and
-switches the TUI to drive the resulting child, with the original session's
-own log untouched. Once installed, the status line's `session <id>`
+<seq>`: starts a new agent from an explicit, persisted sequence number
+(never free text — see that crate's own module doc for why) and switches the
+TUI to drive it, with the original agent's own log untouched. Once installed, the status line's `session <id>`
 field grows to `session <id>@<seq>` so there is something to type.
 `conway.stepguard` (`crates/conway-plugin-stepguard`) notices when an agent
 calls the same tool with the same arguments three times and writes a note
@@ -280,16 +279,41 @@ by default and prompts the same way:
 ```
 ┌ PERMISSION REQUIRED ────────────────────────────────────────────┐
 │echo pong                                                        │
-│[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback│
+│[y] allow once  [a] allow always  [n] deny  [Esc] deny w/ feedback│
 └───────────────────────────────────────────────────────────────────┘
 ```
 
 This is asking whether conway may run that exact command right now. `[y]`
-allows it once; `[a]` allows it and remembers the decision for the rest of
-the session; `[p]` grants a narrow, reusable pattern (a prefix match, so
-"allow `git status`" doesn't also allow `git push`); `[n]` denies it;
-`Esc` denies it and tells the model to try a different approach. Press `y`
-to let it run and watch the tool call resolve in the transcript. See
+allows it once; `[a]` allows it and remembers the decision for the rest of the
+session; `[n]` denies it; `Esc` denies it and tells the model to try a different
+approach. Press `y` to let it run and watch the tool call resolve in the
+transcript.
+
+Note there is no `[p]` on a shell command. A pattern grant over free-form shell
+text is unsafe — the matched text is a combiner, so "allow `git status`" could
+be evaded or chained (`git status; rm -rf …`), and conway does not judge a call
+from its text. Shell commands get only the exact-call keys (`[y]`/`[a]`);
+narrowing shell grants to discrete subcommands is a plugin's job, not the core
+gate's (see the `permission_pattern` module doc). Structured tools, on the
+other hand, do offer `[p]`:
+
+```
+┌ PERMISSION REQUIRED ────────────────────────────────────────────┐
+│read({"path":"/etc/hosts"})                                       │
+│[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback│
+└───────────────────────────────────────────────────────────────────┘
+```
+
+`[p]` opens a field editor for the call's structured arguments. Each argument
+field starts **wildcard** (match any value — the default is the broad `tool:*`
+grant), and you press `space` to **pin** a field to its exact value (narrow the
+grant so only calls carrying that value are auto-allowed). `↑`/`↓`/`tab` move
+between fields, `s` cycles the grant scope (this session / this agent / this
+agent's subtree), `enter` installs the grant and allows the current call, and
+`esc` cancels back to the prompt. Matching structured fields is safe because
+nothing interprets a field value as a combiner — there is no shell chaining
+over JSON. At session scope the grant is also appended to the project's
+`permissions.json`, the same as an ordinary pattern grant — see
 [`interactive.md`](interactive.md) for the full TUI reference and
 [`permissions.md`](permissions.md) for how pattern grants, project trust,
 and persistence work.

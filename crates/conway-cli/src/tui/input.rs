@@ -13,7 +13,7 @@
 use conway::{AgentId, PermissionDecision, PermissionScope};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::state::{AppState, AskFate, IntentChoice, Mode};
+use super::state::{AppState, AskFate, IntentChoice, Mode, TrustDecision};
 
 /// What a keypress means for the app loop to carry out.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +53,17 @@ pub enum Action {
     /// never hardcoded, so a narrowed grant the operator asked for is the
     /// grant the broker records.
     GrantPermissionPattern(conway::PatternRule, PermissionScope),
+    /// The structured-argument counterpart to [`Action::GrantPermissionPattern`]:
+    /// a `When::ArgsMatch` allow rule built by the `[p]` field editor
+    /// (`Mode::EditingPattern`) from the fields the operator pinned. The
+    /// carried [`PermissionScope`] is `state.permission_grant_scope` -- the
+    /// one the prompt's `s` key had cycled to, the same source
+    /// [`Action::GrantPermissionPattern`] reads. The app loop installs it via
+    /// `Conway::grant_permission_rule` and resolves THIS call as `AllowOnce`
+    /// (the grant covers FUTURE calls; this one is decided separately), so a
+    /// pinned-field grant the operator asked for is the grant the broker
+    /// records -- never a hardcoded scope or an all-wildcard default.
+    GrantPermissionRule(conway::Rule, PermissionScope),
     /// V2b: cycle prompt -> plan -> AUTO-ALLOW. The app loop writes the
     /// broker (the authority) and refreshes the display mirror together.
     CyclePermissionMode,
@@ -79,6 +90,18 @@ pub enum Action {
     /// `Conway::revoke_hook_rule` can never address a different rule than
     /// the one the operator actually selected.
     RevokeHookRule(String, String),
+    /// Board item `01M0KARX71A64NTSYTDBVANVPF`: `Enter` on a plugin's own
+    /// toggle leaf in `/settings`' plugins section -- carries the
+    /// plugin's own manifest id (never an index; the row that produced
+    /// this action is keyed by id, see `view::settings::
+    /// LEAF_TOGGLE_PLUGIN_PREFIX`'s own doc) and the DESIRED new
+    /// `installed` state, resolved from `AppState::plugin_browser`'s
+    /// current mirror in the SAME call that built the tree this row came
+    /// from -- mirroring `RevokePermissionPattern`'s own "resolved
+    /// against the mirror in the same call" shape, so the app loop never
+    /// has to re-derive "on or off" from state that may have changed by
+    /// the time it acts.
+    TogglePlugin(String, bool),
     /// `End` (T6): snap the transcript straight to its own tail --
     /// re-engages `follow_tail`. Fires only while the input line is empty
     /// (mirroring the dual-meaning precedent `Enter`'s empty-input arm
@@ -111,6 +134,11 @@ pub enum Action {
     /// classified prompt into `state.input` and closed the card via
     /// `AppState::begin_intent_confirm_edit`).
     IntentConfirm(IntentChoice),
+    /// A decision key was pressed while the trust-preview card was open
+    /// (`y`/`Enter` confirm / `n`/`Esc` cancel). The app loop runs
+    /// `commands::apply_trust_decision`; this module only reports which
+    /// decision was made.
+    TrustDecision(TrustDecision),
 }
 
 /// Routes a keypress based on `state.mode`, mutating `state.input`/`cursor`
@@ -142,6 +170,8 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
         Mode::AwaitingPermission(_) => handle_permission_key(state, key),
         Mode::AskModal(_) => handle_ask_modal_key(state, key),
         Mode::IntentConfirm(_) => handle_intent_confirm_key(state, key),
+        Mode::TrustPreview(_) => handle_trust_preview_key(state, key),
+        Mode::EditingPattern(_) => handle_editing_pattern_key(state, key),
         Mode::Normal => handle_normal_key(state, key),
     }
 }
@@ -324,6 +354,24 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                 if let Some(rule) = state.hook_rules.get(idx) {
                     return Some(Action::RevokeHookRule(rule.event.clone(), rule.id.clone()));
                 }
+            } else if let Some(plugin_id) =
+                id.strip_prefix(super::view::settings::LEAF_TOGGLE_PLUGIN_PREFIX)
+            {
+                // resolved against
+                // `state.plugin_browser` in the SAME call that just built
+                // the tree this row came from -- the desired state is the
+                // OPPOSITE of whatever this entry's mirror currently says,
+                // never re-derived downstream from a possibly-stale read.
+                if let Some(entry) = state
+                    .plugin_browser
+                    .iter()
+                    .find(|entry| entry.id == plugin_id)
+                {
+                    return Some(Action::TogglePlugin(
+                        plugin_id.to_string(),
+                        !entry.installed,
+                    ));
+                }
             }
             // `LEAF_TOOL_PREVIEW_LINES`: Enter has nothing to activate on
             // the numeric leaf -- it is adjusted with Left/Right instead
@@ -455,6 +503,142 @@ fn handle_intent_confirm_key(state: &mut AppState, key: KeyEvent) -> Action {
     }
 }
 
+/// The trust-preview card's key handling (board item, split from
+/// `01KZHVFCN6ZEAXV7K5JHRQN1YB`): exactly two ways out -- `y`/`Enter`
+/// (confirm) and `n`/`Esc` (cancel). Everything else is SWALLOWED, mirroring
+/// [`handle_ask_modal_key`]/[`handle_intent_confirm_key`]'s shape exactly:
+/// the input line is inert, `/agents` is neither visible nor available, and
+/// the quit keys (`Ctrl-C`/`Ctrl-D`) still pass through as `Action::CtrlC`/
+/// `Action::Quit` -- quitting with the card open IS the cancel outcome
+/// (nothing has been created or written yet, so there is nothing to purge
+/// or undo; `app.rs`'s quit path drops a parked card on the floor the same
+/// way it does the intent-confirm card).
+///
+/// The card scrolls past its capped height exactly like the other three
+/// (`view/mod.rs::draw_trust_preview`'s own doc) -- checked before the
+/// decision keys' bare-keypress guard, mirroring every other modal-bearing
+/// surface's key handler here.
+///
+/// `y`/`n` only fire on a bare keypress -- a modifier held (Ctrl-Y, Alt-N,
+/// ...) is NOT a decision, the same B5 M2 guard every other modal-bearing
+/// surface's key handler applies.
+fn handle_trust_preview_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    match key.code {
+        KeyCode::PageDown => {
+            adjust_modal_scroll(state, 1);
+            return Action::None;
+        }
+        KeyCode::PageUp => {
+            adjust_modal_scroll(state, -1);
+            return Action::None;
+        }
+        _ => {}
+    }
+    if !key.modifiers.is_empty() {
+        return Action::None;
+    }
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+            Action::TrustDecision(TrustDecision::Confirm)
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            Action::TrustDecision(TrustDecision::Cancel)
+        }
+        _ => Action::None,
+    }
+}
+
+/// The `[p]` field editor's key handling (`Mode::EditingPattern`). Mirrors
+/// [`handle_intent_confirm_key`]'s shape: `Ctrl-C`/`Ctrl-D` pass through as
+/// quit (no live resource to purge -- the prompt is parked in
+/// [`EditingPatternState`] and restored on cancel, but a hard quit drops
+/// the whole session anyway), `PageUp`/`PageDown` scroll the field list, and
+/// every other key is bare-only (a held modifier is NOT a field action --
+/// same M2-shape guard as the other modals). The field keys: `Up`/`Down`/`
+/// `Tab` move the selected row, `Space` toggles a field between pinned
+/// (match this exact value) and wildcard (match any value), `s` cycles the
+/// grant scope (the shared `permission_grant_scope`, same as the prompt's
+/// `s`), `Enter` builds the `When::ArgsMatch` rule from the pinned fields
+/// and returns [`Action::GrantPermissionRule`] (submitting also restores
+/// `AwaitingPermission` so the dispatch arm can resolve THIS call via the
+/// existing `resolve_current_prompt` path), and `Esc` cancels back to the
+/// prompt.
+fn handle_editing_pattern_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    match key.code {
+        KeyCode::PageDown => {
+            adjust_modal_scroll(state, 1);
+            return Action::None;
+        }
+        KeyCode::PageUp => {
+            adjust_modal_scroll(state, -1);
+            return Action::None;
+        }
+        _ => {}
+    }
+    // Every field key fires only on a BARE keypress -- a held modifier is
+    // NOT a field action (same guard as the other modals' decision keys).
+    if !key.modifiers.is_empty() {
+        return Action::None;
+    }
+    if let Mode::EditingPattern(ed) = &mut state.mode {
+        match key.code {
+            KeyCode::Up => {
+                if ed.cursor > 0 {
+                    ed.cursor -= 1;
+                }
+                Action::None
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                if ed.cursor + 1 < ed.fields.len() {
+                    ed.cursor += 1;
+                }
+                Action::None
+            }
+            // Toggle the selected field's pinned state. A pinned field must
+            // match its value exactly; an unpinned one is wildcard. Every
+            // field starts wildcard, so the all-wildcard default IS today's
+            // `tool:*` grant -- the operator pins to narrow from there.
+            KeyCode::Char(' ') => {
+                if let Some(f) = ed.fields.get_mut(ed.cursor) {
+                    f.pinned = !f.pinned;
+                }
+                Action::None
+            }
+            // Cycle the grant scope the prompt's `s` key cycles -- the edit
+            // modal and the prompt share one scope source.
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                state.cycle_permission_grant_scope();
+                Action::None
+            }
+            KeyCode::Enter => match state.submit_editing_pattern() {
+                Some((rule, scope)) => Action::GrantPermissionRule(rule, scope),
+                None => Action::None,
+            },
+            KeyCode::Esc => {
+                state.cancel_editing_pattern();
+                Action::None
+            }
+            _ => Action::None,
+        }
+    } else {
+        Action::None
+    }
+}
+
 /// The shared modal body scroll step (originated as the permission
 /// overlay's own step, bug fix; V1 generalizes it
 /// to every modal-bearing surface via [`adjust_modal_scroll`]):
@@ -535,17 +719,22 @@ fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
             state.cycle_permission_grant_scope();
             Action::None
         }
-        // V2b: `p` grants the OFFERED pattern -- the narrow two-token
-        // prefix `suggested_rule` derives for a shell-shaped rendering, or
-        // the registerable `tool:*` wildcard for a `Structured` one (a
-        // prefix over a JSON dump is a registration error, so it is never
-        // offered); either way the prompt states the grant's breadth in
-        // words before the operator presses anything. For a shell command
-        // carrying metacharacters no offer is made and this key does
-        // nothing rather than granting something the gate would refuse to
-        // honor anyway.
+        // V2b: `p` opens the structured-argument field editor -- the
+        // operator pins per-field to narrow (a pinned field must match
+        // exactly; an unpinned one is wildcard), then `Enter` grants a
+        // `When::ArgsMatch` rule covering FUTURE calls and resolves THIS
+        // call as `AllowOnce`. Today's all-wildcard default preserves the
+        // old `[p]`-then-grant = `tool:*` semantics; the operator narrows
+        // from there. Offered only for `RenderKind::Structured` tools (where
+        // `suggested_rule` returns `Some`): a shell command gets no offer
+        // and this key does nothing, rather than granting a text prefix the
+        // gate refuses to honor (board 01KZDDPC5MMD49F6JPV9CW4TVM) or
+        // pretending a JSON dump is a prefix.
         KeyCode::Char('p') | KeyCode::Char('P') => match state.offered_permission_rule() {
-            Some(rule) => Action::GrantPermissionPattern(rule, state.permission_grant_scope),
+            Some(_) => {
+                state.offer_editing_pattern();
+                Action::None
+            }
             None => Action::None,
         },
         KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -1828,8 +2017,16 @@ mod tests {
         );
     }
 
-    /// The `p` (pattern) grant carries the cycled scope too, so a narrowed
+    /// The `[p]` field editor's `Enter` carries the cycled scope: a narrowed
     /// pattern grant reaches the broker as narrow as the operator asked.
+    ///
+    /// The flow is now two steps -- `p` opens `Mode::EditingPattern`
+    /// (returns `Action::None`; the editor is the modal), and `Enter`
+    /// submits, emitting `Action::GrantPermissionRule` carrying the scope
+    /// the prompt's `s` key cycled to. (It used to be one step -- `p`
+    /// granted `tool:*` immediately -- before the field editor generalized
+    /// `[p]` into "choose which argument fields to pin"; the all-wildcard
+    /// default preserves the old `tool:*` breadth when no field is pinned.)
     ///
     /// Driven through a `Structured` tool. It used to use `bash`, which is
     /// a `ShellCommand` tool and no longer has a pattern grant to offer at
@@ -1854,22 +2051,123 @@ mod tests {
             });
         state.mode = Mode::AwaitingPermission(prompt);
 
+        // `s` cycles the grant scope Session -> Agent -> AgentSubtree.
         handle_permission_key(&mut state, key(KeyCode::Char('s')));
-        let action = handle_permission_key(&mut state, key(KeyCode::Char('p')));
+        assert_eq!(state.permission_grant_scope, PermissionScope::Agent);
+        // `p` opens the field editor -- no grant action yet.
+        let open = handle_permission_key(&mut state, key(KeyCode::Char('p')));
+        assert!(
+            matches!(open, Action::None),
+            "`p` should open the editor (Action::None), not grant immediately; got {open:?}"
+        );
+        assert!(matches!(state.mode, Mode::EditingPattern(_)));
+        // `Enter` submits the editor and carries the cycled scope. This
+        // keystroke routes through `handle_key` (the mode dispatcher), not
+        // `handle_permission_key`: the mode is now `EditingPattern`, so the
+        // editing handler -- not the permission handler -- must field it.
+        let action = handle_key(&mut state, key(KeyCode::Enter));
         match action {
-            Action::GrantPermissionPattern(rule, scope) => {
-                assert_eq!(
-                    rule.command_prefix, "*",
-                    "a Structured tool's only registrable offer is the wildcard"
-                );
+            Action::GrantPermissionRule(_rule, scope) => {
                 assert_eq!(
                     scope,
                     PermissionScope::Agent,
                     "the pattern grant must carry the scope the operator cycled to"
                 );
             }
-            other => panic!("expected a pattern grant action, got {other:?}"),
+            other => panic!("expected a GrantPermissionRule action, got {other:?}"),
         }
+    }
+
+    /// The field editor's `Space` toggles a field to `pinned`, and `Enter`
+    /// then builds an `ArgsMatch` rule carrying ONLY the pinned fields. With
+    /// a single-field call, pinning that one field yields a rule whose
+    /// `describe` names it; leaving it wildcard (no `Space`) yields the
+    /// all-wildcard `tool:*`-equivalent ("any call"). This pins the
+    /// narrowing-is-deliberate property: every field starts wildcard, the
+    /// operator pins to narrow.
+    #[test]
+    fn editing_pattern_space_pins_a_field_and_enter_grants_only_pinned() {
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("report"),
+                category: conway::ToolCategory::Read,
+                arguments: serde_json::json!({ "path": "/a" }),
+                rendered: r#"report({"path":"/a"})"#.to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::Structured,
+            });
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        // No pin: Enter grants the all-wildcard (tool:*) equivalent.
+        handle_permission_key(&mut state, key(KeyCode::Char('p')));
+        assert!(matches!(state.mode, Mode::EditingPattern(_)));
+        let wildcard = handle_key(&mut state, key(KeyCode::Enter));
+        match wildcard {
+            Action::GrantPermissionRule(rule, _scope) => {
+                assert_eq!(
+                    rule.describe(),
+                    "report (any call)",
+                    "an all-wildcard grant is the tool:* equivalent",
+                );
+            }
+            other => panic!("expected GrantPermissionRule (wildcard), got {other:?}"),
+        }
+
+        // Now re-open and PIN the single field, then grant: the rule names
+        // the pinned field. Cancel-first restores the prompt so `p` can open
+        // the editor again (the wildcard grant above already resolved the
+        // prompt, so re-establish one).
+        let (prompt2, _rx2) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("report"),
+                category: conway::ToolCategory::Read,
+                arguments: serde_json::json!({ "path": "/a" }),
+                rendered: r#"report({"path":"/a"})"#.to_string(),
+                call_id: "tc_2".to_string(),
+                render_kind: conway::RenderKind::Structured,
+            });
+        state.mode = Mode::AwaitingPermission(prompt2);
+        handle_permission_key(&mut state, key(KeyCode::Char('p')));
+        // `Space` pins the selected (only) field.
+        handle_key(&mut state, key(KeyCode::Char(' ')));
+        let pinned = handle_key(&mut state, key(KeyCode::Enter));
+        match pinned {
+            Action::GrantPermissionRule(rule, _scope) => {
+                assert_eq!(
+                    rule.describe(),
+                    "report with path=\"/a\" pinned",
+                    "a pinned-field grant names exactly the pinned field",
+                );
+            }
+            other => panic!("expected GrantPermissionRule (pinned), got {other:?}"),
+        }
+
+        // `Esc` cancels the editor and restores the prompt unresolved.
+        let (prompt3, _rx3) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("report"),
+                category: conway::ToolCategory::Read,
+                arguments: serde_json::json!({ "path": "/a" }),
+                rendered: r#"report({"path":"/a"})"#.to_string(),
+                call_id: "tc_3".to_string(),
+                render_kind: conway::RenderKind::Structured,
+            });
+        state.mode = Mode::AwaitingPermission(prompt3);
+        handle_permission_key(&mut state, key(KeyCode::Char('p')));
+        assert!(matches!(state.mode, Mode::EditingPattern(_)));
+        let cancel = handle_key(&mut state, key(KeyCode::Esc));
+        assert!(matches!(cancel, Action::None), "Esc cancels with no action");
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "Esc restores the prompt to the screen unresolved",
+        );
     }
 
     /// The scope choice is per-prompt: a narrowing chosen for one call must
@@ -3101,6 +3399,76 @@ mod tests {
                 "deny-prompts".to_string(),
             )),
             "must name the SECOND row's own event/id, not the first"
+        );
+    }
+
+    /// Board item `01M0KARX71A64NTSYTDBVANVPF`: `Enter` on an ON plugin's
+    /// own toggle row resolves to `Action::TogglePlugin(id, false)` -- the
+    /// OPPOSITE of its current mirrored state, carrying the id, never an
+    /// index.
+    #[test]
+    fn enter_on_an_installed_plugins_toggle_row_yields_toggle_plugin_false() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.plugin_browser = vec![crate::tui::state::PluginBrowserEntry {
+            id: "conway.memory".to_string(),
+            version: "0.9.0".to_string(),
+            installed: true,
+            description: conway::plugin::PluginDescription::default(),
+        }];
+
+        let rows = crate::tui::view::settings::build_tree(&state).rows();
+        let idx = rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    &r.kind,
+                    crate::tui::view::menu::MenuRowKind::Leaf { id }
+                        if id.starts_with(crate::tui::view::settings::LEAF_TOGGLE_PLUGIN_PREFIX)
+                )
+            })
+            .expect("the toggle row must render");
+        state.settings_selected = idx;
+
+        let action = activate_settings_selection(&mut state);
+        assert_eq!(
+            action,
+            Some(Action::TogglePlugin("conway.memory".to_string(), false)),
+            "an installed plugin's toggle must resolve to turning it OFF"
+        );
+    }
+
+    /// The OFF-plugin counterpart: resolves to `Action::TogglePlugin(id,
+    /// true)`.
+    #[test]
+    fn enter_on_an_uninstalled_plugins_toggle_row_yields_toggle_plugin_true() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.plugin_browser = vec![crate::tui::state::PluginBrowserEntry {
+            id: "conway.trim".to_string(),
+            version: "0.9.0".to_string(),
+            installed: false,
+            description: conway::plugin::PluginDescription::default(),
+        }];
+
+        let rows = crate::tui::view::settings::build_tree(&state).rows();
+        let idx = rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    &r.kind,
+                    crate::tui::view::menu::MenuRowKind::Leaf { id }
+                        if id.starts_with(crate::tui::view::settings::LEAF_TOGGLE_PLUGIN_PREFIX)
+                )
+            })
+            .expect("the toggle row must render");
+        state.settings_selected = idx;
+
+        let action = activate_settings_selection(&mut state);
+        assert_eq!(
+            action,
+            Some(Action::TogglePlugin("conway.trim".to_string(), true)),
+            "an uninstalled plugin's toggle must resolve to turning it ON"
         );
     }
 

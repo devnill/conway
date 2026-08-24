@@ -14,20 +14,28 @@
 //! links.
 //!
 //! **This bundle is a worked example, not a commitment to any of its
-//! members individually.** Today it contains two plugin entries --
+//! members individually.** Today it contains five plugin entries --
 //! `conway-plugin-skeleton`, a skeleton proving nothing beyond the install
-//! mechanism (see that crate's own module doc), and `conway-plugin-history`,
-//! `/conway.history.rewind`'s real
-//! capability. Dynamic routing is built (`conway-plugin-routing`, resolved
-//! through `router_bundle` below, not this list). Context compaction,
-//! memory, skills, MCP support, and `/checkout`/`ContextMask` are not; each
-//! is separate, later work, and none has a landed yet as of
-//! 2026-08-13 (`scripts/board-claims.md`'s `UNFILED` entry records the gap)
-//! -- each adds its own entry here when it lands --
-//! through `ConwayBuilder::with_backend_factory`/`with_router_factory` too,
-//! not only `with_plugin`, since nothing about `[plugins].install` itself
-//! is tool-specific -- `router_bundle` and `backend_bundle` below are
-//! exactly those other two channels.
+//! mechanism (see that crate's own module doc); `conway-plugin-history`,
+//! `/conway.history.rewind`/`/conway.history.mask`/`/conway.history.checkout`
+//! -- so `/checkout` and a reachable `ContextMask` are built too, not only
+//! `/rewind` (see that crate's own module doc); `conway-plugin-stepguard`,
+//! repeated-tool-call detection moved out of the agent loop; `conway-plugin-
+//! skills`, progressive skill disclosure; and `conway-plugin-memory`, a
+//! mutable `MemoryStore`-backed context hook. Dynamic routing is built too
+//! (`conway-plugin-routing`, resolved through `router_bundle` below, not
+//! this list), and so is MCP client support -- through a separate mechanism
+//! entirely, `[plugins].mcp` wired by this crate's own `mcp_plugins` module,
+//! never through `bundle` here (see that module's own doc). Context
+//! compaction is the one first-party-plugin-tier capability still unbuilt
+//! (`scripts/board-claims.md`'s `absent: conway\.compaction` predicate pins
+//! this so the claim goes stale loudly, not silently, the moment that
+//! changes) -- it adds its own entry here when it lands, through
+//! `ConwayBuilder::with_plugin`, `with_backend_factory`, or
+//! `with_router_factory`, whichever channel fits it, since nothing about
+//! `[plugins].install` itself is tool-specific -- `router_bundle` and
+//! `backend_bundle` below are exactly the other two of those three
+//! channels.
 //!
 //! Resolution below matches an id against each candidate's own identity.
 //! `Backend` carries an `id()` of its own (`conway_core::ports::backend`),
@@ -85,7 +93,7 @@
 
 use std::sync::Arc;
 
-use conway::plugin::Plugin;
+use conway::plugin::{MemoryStore, Plugin};
 use conway::{BackendFactory, ConwayBuilder, ConwayError, RouterFactory};
 
 /// Every first-party plugin this binary links, in no particular order.
@@ -109,7 +117,16 @@ use conway::{BackendFactory, ConwayBuilder, ConwayError, RouterFactory};
 /// build first. The fallback only ever triggers for a directory this
 /// binary can read but the timing of `bundle()` happens to race with --
 /// never observed in practice, and safe by construction if it did.
-fn bundle(cwd: &std::path::Path) -> Vec<Arc<dyn Plugin>> {
+///
+/// `memory_store` backs the `conway.memory` entry below -- ALREADY
+/// resolved (durable vs in-memory, board item `01M09V3S2AQYB2VK6MANFRH1JM`)
+/// by the caller via `resolve_memory_store`, never opened here. `bundle`
+/// itself stays synchronous and side-effect-free: both of its callers
+/// (`install`, `installed_plugins`) hand it whichever already-constructed
+/// `Arc<dyn MemoryStore>` they are carrying, so calling `bundle` twice in
+/// one process (exactly what happens today) constructs two `Plugin`
+/// candidate lists that share the SAME underlying store, never two stores.
+fn bundle(cwd: &std::path::Path, memory_store: Arc<dyn MemoryStore>) -> Vec<Arc<dyn Plugin>> {
     let skills_plugin =
         conway_plugin_skills::SkillsPlugin::from_dir(&cwd.join(".conway").join("skills"))
             .unwrap_or_else(|_| {
@@ -153,29 +170,66 @@ fn bundle(cwd: &std::path::Path) -> Vec<Arc<dyn Plugin>> {
         // wiring, exactly like the skills plugin above. Opt-in like every
         // other member of this bundle.
         //
-        // **`InMemoryMemoryStore`, not the durable `conway::memory::
-        // FsMemoryStore`, deliberately, for now.** `bundle` (this
-        // function) is synchronous and takes only `cwd`, but
-        // `FsMemoryStore::open` performs real I/O and is `async`; wiring it
-        // here needs the same kind of sync/async bridge `conway`'s own
-        // `build_default_store`/`block_on` already discloses for the
-        // session store, extended across `bundle`'s TWO callers
-        // (`install`, called once per process, and `installed_plugins`,
-        // re-derived independently for the TUI command registry -- see
-        // that function's own doc) without silently constructing two
-        // independent, unsynchronized stores. That is a real, separately
-        // scoped wiring item, not a one-line change belonging to the item
-        // that reworked this plugin's internals -- filed as a reportable
-        // follow-up rather than rushed in here. `InMemoryMemoryStore` is a
-        // fully real, non-mock `MemoryStore` (every remember/forget/
-        // list_memories acceptance property holds) -- it simply does not
-        // survive a process restart, matching this bundle's existing
-        // opt-in, non-default posture.
+        // Board item `01M09V3S2AQYB2VK6MANFRH1JM`: the durable
+        // `conway::memory::FsMemoryStore`, not `InMemoryMemoryStore`, when
+        // `conway.memory` is actually selected (`memory_store`, resolved by
+        // [`resolve_memory_store`], is threaded in by both of `bundle`'s
+        // callers rather than opened here -- see that function's own doc for
+        // the single-open-site guarantee this depends on, and `install`'s
+        // doc for why `InMemoryMemoryStore` is still what an UNSELECTED
+        // build passes here).
         Arc::new(conway_plugin_memory::MemoryPlugin::new(
-            Arc::new(conway_plugin_memory::InMemoryMemoryStore::new()),
+            memory_store,
             conway_plugin_memory::MemoryConfig::default(),
         )),
+        // `conway.path` -- the tool a model calls to compose a session's
+        // context path (board item `01M0PEFMG96SVBBD5D2E06H34A`, decision
+        // `01M0K4QT6MBXPD6PXMBBBD2P7B`): the first production caller of
+        // `write_head`/`ValidatedPath::derive_with`, which existed with no
+        // caller anywhere in a running build before this entry. Needs no
+        // constructor argument (unlike `conway.memory` above) -- every
+        // dispatched tool's `ToolCtx::context_path` is already populated by
+        // the runtime itself, regardless of which plugin owns the tool
+        // reading it. Opt-in like every other member of this bundle: this
+        // entry is what makes `[plugins].install = ["conway.path"]` reach
+        // real code at all -- `conway-plugin-trim`'s own defect (a
+        // workspace member `conway-cli` never depended on, so no
+        // `[plugins].install` entry could ever have reached it) is exactly
+        // what this entry closes for `conway.path`.
+        Arc::new(conway_plugin_path::PathPlugin),
+        // `conway.discover` -- the tool a model calls to find a session or
+        // record it does not already hold a reference to (board item
+        // `01M0PS8J3AK7Z7253Z3E3RD3GY`), feeding `conway.path`'s
+        // `compose_context_path` immediately above -- the two are meant to
+        // be installed together, though nothing here enforces that (an
+        // operator who installs `conway.discover` alone gets a tool that
+        // can find but not compose; see this crate's own module doc for
+        // why every candidate here stays independently opt-in). Needs no
+        // constructor argument, exactly like `conway.path` -- every
+        // dispatched tool's `ToolCtx::session_discovery` is already
+        // populated by the runtime itself.
+        Arc::new(conway_plugin_discover::DiscoverPlugin),
     ]
+}
+
+/// Every first-party `Plugin` this binary links, REGARDLESS of
+/// `[plugins].install` selection -- the plugin browser's own read surface
+/// (board item `01M0KARX71A64NTSYTDBVANVPF`, `crates/conway-cli/src/tui/
+/// app/startup.rs`'s `App::new`, the one caller). A thin, same-shaped
+/// wrapper over `bundle` (private to this module) rather than a second candidate list: `bundle`
+/// already IS "every first-party plugin this binary links", unfiltered --
+/// [`installed_plugins`] filters it down to the SELECTED subset for
+/// command-registry purposes, and this function is the other read the same
+/// unfiltered list needs, for a browser that must show what is
+/// AVAILABLE-but-off, not only what is on. Never re-derives the candidate
+/// set independently, so the browser's own "N installed of M compiled-in"
+/// count can never drift from what `[plugins].install` actually resolves
+/// against.
+pub fn all_bundle_plugins(
+    cwd: &std::path::Path,
+    memory_store: Arc<dyn MemoryStore>,
+) -> Vec<Arc<dyn Plugin>> {
+    bundle(cwd, memory_store)
 }
 
 /// Every first-party `RouterFactory` this binary links, in no particular
@@ -221,6 +275,99 @@ fn backend_bundle() -> Vec<Arc<dyn BackendFactory>> {
     ]
 }
 
+/// Resolves the ONE `Arc<dyn MemoryStore>` `bundle`'s `conway.memory` entry
+/// is constructed with -- board item `01M09V3S2AQYB2VK6MANFRH1JM`, closing
+/// the gap the prior item deferred (see `bundle`'s own former inline note,
+/// now removed, and this module's `01M09V3S2AQYB2VK6MANFRH1JM`
+/// history for the reasoning this replaces).
+///
+/// **Called exactly once per process, from [`install`] alone.** This is the
+/// ONLY line in this crate that ever calls `FsMemoryStore::open` -- not "the
+/// only line that is SUPPOSED to", but literally the only call site the
+/// source contains -- so a second, independent, unsynchronized store over
+/// the same root is unrepresentable by construction, not merely avoided by
+/// discipline: making a second one would require a second call to THIS
+/// function to exist somewhere, and none does. [`installed_plugins`] (the
+/// TUI's own re-derivation of `bundle`'s selected subset, `commands::
+/// plugin::run`'s identical need) never opens a store itself; both receive
+/// the SAME `Arc` [`install`] already resolved, threaded through
+/// `main.rs`'s `build_conway`/`dispatch` as a plain parameter -- see those
+/// functions' own docs. This closes exactly the race `FsMemoryStore::
+/// put_lock`'s own doc warns two independent instances over one directory
+/// would reopen (`crates/conway-session/src/memory_store.rs`).
+///
+/// **Only actually opens the durable store when `conway.memory` is named in
+/// `install_ids`.** `bundle` unconditionally includes a `conway.memory`
+/// candidate regardless of selection (exactly like every other entry --
+/// `install_selected` is what actually filters), so constructing ITS
+/// dependency unconditionally would mean an operator who has never opted
+/// into `conway.memory` at all could still have the CLI refuse to start over
+/// a memory directory it will never touch. An unselected build gets a fresh
+/// [`conway_plugin_memory::InMemoryMemoryStore`] instead -- unused, cheap,
+/// no I/O -- matching this crate's pre-item behavior for anyone who never
+/// asked for durability.
+///
+/// **Failure posture, decided: fail closed, no silent fallback.** When
+/// `conway.memory` IS selected and the durable store cannot be opened
+/// (permissions, read-only filesystem, the `jsonl-store` feature disabled in
+/// this build), this returns `Err` and [`install`] propagates it --
+/// `build_conway` surfaces it on stderr and the process exits nonstarting,
+/// the same "no silent fallback, by design" posture `backend_bundle`'s own
+/// doc already establishes for a `[backends.<id>]` entry naming a declined
+/// kind. Falling back to `InMemoryMemoryStore` here instead would recreate,
+/// silently, the EXACT invisible-limitation defect this item exists to fix
+/// -- a user who explicitly opted into durable memory would get the
+/// non-durable kind back with no visible signal that anything degraded.
+/// Mirrors `conway::builder::build_default_store`'s own session-store
+/// precedent (`ConwayBuilder::build`), which already propagates rather than
+/// falling back when `jsonl-store` is off and no store was injected.
+///
+/// **No `block_on` bridge, unlike `build_default_store`.** That function is
+/// reached from `ConwayBuilder::build`'s deliberately *synchronous* public
+/// signature (an embedder may not be running inside `tokio` at all), so it
+/// has to bridge sync-to-async itself. Every caller of THIS function in this
+/// binary is already inside an `async fn` (`main.rs`'s `#[tokio::main]`
+/// `main` all the way down through `build_conway`) -- `.await`ing
+/// `FsMemoryStore::open` directly is the whole of the bridge needed here;
+/// inventing a second `block_on`-style thread-spawn would solve a problem
+/// this call site does not have.
+async fn resolve_memory_store(
+    cwd: &std::path::Path,
+    install_ids: &[String],
+) -> Result<Arc<dyn MemoryStore>, ConwayError> {
+    if !install_ids
+        .iter()
+        .any(|id| id == conway_plugin_memory::PLUGIN_ID)
+    {
+        return Ok(Arc::new(conway_plugin_memory::InMemoryMemoryStore::new()));
+    }
+    #[cfg(feature = "jsonl-store")]
+    {
+        let root = cwd.join(".conway").join("memory");
+        conway::memory::FsMemoryStore::open(root.clone())
+            .await
+            .map(|store| Arc::new(store) as Arc<dyn MemoryStore>)
+            .map_err(|e| ConwayError::Build {
+                message: format!(
+                    "conway.memory: cannot open the durable memory store at {} ({e}) -- fix the \
+                     directory's permissions/filesystem, or remove \"conway.memory\" from \
+                     [plugins].install to run without it",
+                    root.display()
+                ),
+            })
+    }
+    #[cfg(not(feature = "jsonl-store"))]
+    {
+        let _ = cwd;
+        Err(ConwayError::Build {
+            message: "conway.memory is named in [plugins].install but this binary was built \
+                      without the 'jsonl-store' feature, so no durable memory store is \
+                      available"
+                .to_string(),
+        })
+    }
+}
+
 /// Hands this binary's three linked bundles (`bundle`, `router_bundle`,
 /// `backend_bundle`) to [`ConwayBuilder::install_selected`] -- the
 /// facade's own resolution of `[plugins].install` UNIONED with
@@ -238,9 +385,22 @@ fn backend_bundle() -> Vec<Arc<dyn BackendFactory>> {
 /// not any more". What is left here is exactly the part that is genuinely
 /// CLI-specific: which plugin/router-factory/backend-factory CRATES this
 /// binary links at all.
-pub fn install(builder: ConwayBuilder) -> Result<ConwayBuilder, ConwayError> {
+///
+/// **Now `async fn`, and returns the resolved `Arc<dyn MemoryStore>`
+/// alongside the built `ConwayBuilder`** (board item
+/// `01M09V3S2AQYB2VK6MANFRH1JM`) -- see `resolve_memory_store`'s own doc
+/// for why this is the ONE place that store is ever opened, and `main.rs`'s
+/// `build_conway`/`dispatch` for how the returned `Arc` reaches
+/// [`installed_plugins`]'s later, independent call, unopened, as a plain
+/// parameter.
+pub async fn install(
+    builder: ConwayBuilder,
+) -> Result<(ConwayBuilder, Arc<dyn MemoryStore>), ConwayError> {
     let cwd = builder.config().cwd.clone();
-    builder.install_selected(bundle(&cwd), router_bundle(), backend_bundle())
+    let memory_store = resolve_memory_store(&cwd, &builder.config().plugins.install).await?;
+    let plugins = bundle(&cwd, memory_store.clone());
+    let builder = builder.install_selected(plugins, router_bundle(), backend_bundle())?;
+    Ok((builder, memory_store))
 }
 
 /// The subset of `bundle` actually selected by `conway`'s own
@@ -264,10 +424,21 @@ pub fn install(builder: ConwayBuilder) -> Result<ConwayBuilder, ConwayError> {
 /// computing "is id X installed" from the SAME public config field can never
 /// disagree about a first-party plugin's own install status, even though
 /// they are, mechanically, two call sites.
-pub fn installed_plugins(conway: &conway::Conway) -> Vec<Arc<dyn Plugin>> {
+///
+/// `memory_store` is the SAME `Arc` [`install`] resolved (via
+/// `resolve_memory_store`) for this same process -- passed in rather than
+/// re-resolved here, so this function never opens a second `FsMemoryStore`
+/// over the same root (see `resolve_memory_store`'s own doc for why that
+/// matters). `main.rs`'s `build_conway` returns it precisely so `dispatch`
+/// has it in hand to pass to this call and to `commands::plugin::run`'s
+/// identical need.
+pub fn installed_plugins(
+    conway: &conway::Conway,
+    memory_store: Arc<dyn MemoryStore>,
+) -> Vec<Arc<dyn Plugin>> {
     let install = &conway.config().plugins.install;
     let cwd = conway.config().cwd.clone();
-    bundle(&cwd)
+    bundle(&cwd, memory_store)
         .into_iter()
         .filter(|plugin| install.contains(&plugin.manifest().id))
         .collect()
@@ -327,7 +498,8 @@ mod tests {
         // safe fallback), so a temp dir with no `.conway/skills` is fine for
         // this wiring-only check.
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
-        let found = bundle(&cwd)
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let found = bundle(&cwd, memory_store)
             .iter()
             .any(|p| p.manifest().id == conway_plugin_skeleton::PLUGIN_ID);
         assert!(
@@ -344,7 +516,8 @@ mod tests {
     #[test]
     fn bundle_carries_the_memory_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
-        let found = bundle(&cwd)
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let found = bundle(&cwd, memory_store)
             .iter()
             .any(|p| p.manifest().id == conway_plugin_memory::PLUGIN_ID);
         assert!(
@@ -353,6 +526,34 @@ mod tests {
              otherwise `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
             conway_plugin_memory::PLUGIN_ID
         );
+    }
+
+    /// `all_bundle_plugins` must return the SAME candidates `bundle` itself
+    /// does, unfiltered by `[plugins].install` -- the plugin browser's own
+    /// "available but off" rows depend on seeing every linked candidate,
+    /// not only a selected subset.
+    #[test]
+    fn all_bundle_plugins_returns_every_linked_candidate_unfiltered() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let ids: Vec<String> = all_bundle_plugins(&cwd, memory_store)
+            .iter()
+            .map(|p| p.manifest().id)
+            .collect();
+        for expected in [
+            conway_plugin_skeleton::PLUGIN_ID,
+            conway_plugin_history::PLUGIN_ID,
+            conway_plugin_stepguard::PLUGIN_ID,
+            conway_plugin_skills::PLUGIN_ID,
+            conway_plugin_memory::PLUGIN_ID,
+            conway_plugin_path::PLUGIN_ID,
+            conway_plugin_discover::PLUGIN_ID,
+        ] {
+            assert!(
+                ids.contains(&expected.to_string()),
+                "missing {expected} in {ids:?}"
+            );
+        }
     }
 
     /// Same wiring-only check, for `backend_bundle`: both published kind
@@ -387,6 +588,114 @@ mod tests {
             ids.contains(&conway_plugin_routing::ROUTER_ID),
             "missing '{}' in the linked router-factory bundle: {ids:?}",
             conway_plugin_routing::ROUTER_ID
+        );
+    }
+
+    /// Board item `01M09V3S2AQYB2VK6MANFRH1JM`, acceptance criterion 2
+    /// ("exactly one `FsMemoryStore` instance per process per root --
+    /// demonstrated, not asserted"). `resolve_memory_store`'s own doc claims
+    /// its `FsMemoryStore::open` call is the ONLY one in this file --
+    /// checked here by grepping this file's own source rather than trusting
+    /// the doc comment, so a future edit that reintroduced a second call
+    /// site (e.g. `installed_plugins` opening its own store again instead of
+    /// receiving one) fails THIS test rather than silently reopening the
+    /// TOCTOU race `FsMemoryStore::put_lock`'s own doc
+    /// (`conway-session/src/memory_store.rs`) describes.
+    #[test]
+    fn fs_memory_store_is_opened_from_exactly_one_call_site() {
+        let source = include_str!("first_party_plugins.rs");
+        // Scoped to the PRODUCTION portion of this file (everything before
+        // this very `mod tests` block) -- `resolve_memory_store_opens_the_
+        // durable_store_when_selected_and_it_persists`, below, deliberately
+        // opens a SECOND, independent `FsMemoryStore` over the same root to
+        // prove durability, which is legitimate TEST code proving a
+        // different claim, not a production call site this invariant is
+        // about (see that test's own doc).
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("split always yields at least the text before the delimiter");
+        let occurrences = production_source.matches("FsMemoryStore::open(").count();
+        assert_eq!(
+            occurrences, 1,
+            "expected exactly one `FsMemoryStore::open(` call site in this file's production \
+             code (inside `resolve_memory_store`) -- found {occurrences}; a second call site \
+             over the same root reintroduces the two-independent-stores race `put_lock`'s own \
+             doc exists to close"
+        );
+    }
+
+    /// `resolve_memory_store` must not touch disk at all when `conway.memory`
+    /// is absent from `[plugins].install` -- an operator who never opted
+    /// into memory must never have the CLI's ability to start depend on a
+    /// directory it will never use.
+    #[tokio::test]
+    async fn resolve_memory_store_skips_disk_io_when_conway_memory_is_not_selected() {
+        let cwd = tempfile::tempdir().expect("tempdir");
+        let store = resolve_memory_store(cwd.path(), &[])
+            .await
+            .expect("must not fail when conway.memory is not selected");
+        assert!(
+            !cwd.path().join(".conway").join("memory").exists(),
+            "resolve_memory_store must not create the durable store's directory when \
+             conway.memory is unselected"
+        );
+        // Still a real, usable MemoryStore (InMemoryMemoryStore) -- an
+        // unselected build's bundle() entry is unattached, but bundle()
+        // itself still needs a concrete value to construct it with.
+        let memory = conway::plugin::Memory {
+            id: conway::MemoryId::new(),
+            text: "unused".to_string(),
+            created: chrono::Utc::now(),
+            provenance: None,
+        };
+        store
+            .put(memory)
+            .await
+            .expect("in-memory store accepts a put");
+    }
+
+    /// `resolve_memory_store` opens the REAL, durable `FsMemoryStore` at
+    /// `<cwd>/.conway/memory` when `conway.memory` IS selected -- and what it
+    /// writes is visible to an independently-opened `FsMemoryStore` over the
+    /// same root afterward, the actual durability property this item exists
+    /// to deliver (the CLI-level, separate-PROCESS version of the same claim
+    /// is `tests/durable_memory.rs`, driven against the real compiled
+    /// binary; this is the unit-level proof that `resolve_memory_store`
+    /// itself wires the right root).
+    #[tokio::test]
+    async fn resolve_memory_store_opens_the_durable_store_when_selected_and_it_persists() {
+        let cwd = tempfile::tempdir().expect("tempdir");
+        let install_ids = vec![conway_plugin_memory::PLUGIN_ID.to_string()];
+        let store = resolve_memory_store(cwd.path(), &install_ids)
+            .await
+            .expect("must open the durable store when conway.memory is selected");
+        let memory = conway::plugin::Memory {
+            id: conway::MemoryId::new(),
+            text: "durable across opens".to_string(),
+            created: chrono::Utc::now(),
+            provenance: None,
+        };
+        let id = memory.id;
+        store
+            .put(memory)
+            .await
+            .expect("durable store accepts a put");
+
+        // A SEPARATE `FsMemoryStore::open` (deliberately not going through
+        // `resolve_memory_store` again -- this proves the ROOT is right and
+        // durable, not that this crate's call-site count stays at one, which
+        // `fs_memory_store_is_opened_from_exactly_one_call_site` already
+        // checks on its own) over the identical root sees the write.
+        let root = cwd.path().join(".conway").join("memory");
+        let reopened = conway::memory::FsMemoryStore::open(root)
+            .await
+            .expect("reopen the same root");
+        let recalled = reopened.get(&id).await.expect("get the remembered id");
+        assert_eq!(
+            recalled.text, "durable across opens",
+            "a memory written through resolve_memory_store's store must be readable by a fresh \
+             FsMemoryStore opened over the same root"
         );
     }
 }

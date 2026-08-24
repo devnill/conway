@@ -56,8 +56,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use conway::plugin::{
-    EventDecl, ObservedCall, ObserverAnswer, ObserverCtx, ObserverNote, Plugin, PluginManifest,
-    Tool, ToolObserver,
+    EventDecl, ObservedCall, ObserverAnswer, ObserverCtx, ObserverNote, Plugin, PluginDescription,
+    PluginManifest, Tool, ToolObserver,
 };
 
 /// The install id an operator names in `plugins.install`.
@@ -246,6 +246,19 @@ impl Plugin for StepGuardPlugin {
         }
     }
 
+    fn description(&self) -> PluginDescription {
+        PluginDescription {
+            summary: "notices when the same tool call repeats".to_string(),
+            you_get: "a note in the transcript the THIRD time the same tool call (same tool, \
+                      same arguments) repeats in a row -- once, not every time after"
+                .to_string(),
+            you_lose: "nothing else -- repeated-call detection goes silent, the call itself is \
+                       never blocked either way"
+                .to_string(),
+            costs: "a small per-call digest computed for every tool call".to_string(),
+        }
+    }
+
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         Vec::new()
     }
@@ -275,6 +288,17 @@ mod tests {
         ObserverCtx {
             events: PluginEventHandle::noop(PLUGIN_ID),
         }
+    }
+
+    /// The plugin browser's own read surface (board item
+    /// `01M0KARX71A64NTSYTDBVANVPF`): a real description, never the
+    /// trait's empty default.
+    #[test]
+    fn description_is_non_empty() {
+        let description = StepGuardPlugin::new().description();
+        assert!(!description.summary.is_empty());
+        assert!(!description.you_get.is_empty());
+        assert!(!description.you_lose.is_empty());
     }
 
     fn call(agent: AgentId, tool: &str, args: serde_json::Value, seq: u64) -> ObservedCall {

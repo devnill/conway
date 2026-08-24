@@ -176,10 +176,11 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use conway::plugin::{
-    async_trait, ContentBlock, ContextHook, ContextHookCtx, ContextPayload, Memory,
-    MemoryProvenance, MemoryStore, MemoryStoreError, PathArgs, PermissionClass, Plugin,
-    PluginManifest, PromptSegment, Provenance, RenderKind, Role, Tool, ToolCall, ToolCategory,
-    ToolCtx, ToolError, ToolOutput, ToolSpec, TruncationPolicy,
+    async_trait, Command, CommandCtx, CommandOutcome, CommandSpec, ContentBlock, ContextHook,
+    ContextHookCtx, ContextPayload, Memory, MemoryProvenance, MemoryStore, MemoryStoreError,
+    PathArgs, PermissionClass, Plugin, PluginDescription, PluginManifest, PromptSegment,
+    Provenance, RenderKind, Role, Tool, ToolCall, ToolCategory, ToolCtx, ToolError, ToolOutput,
+    ToolSpec, TruncationPolicy,
 };
 use conway::{MemoryId, ToolName};
 
@@ -194,6 +195,20 @@ pub const REMEMBER_TOOL_NAME: &str = "remember";
 pub const FORGET_TOOL_NAME: &str = "forget";
 /// The bare name `ListMemoriesTool` registers under.
 pub const LIST_MEMORIES_TOOL_NAME: &str = "list_memories";
+
+/// The bare name `ListCommand` registers under -- reachable in the TUI as
+/// `/{PLUGIN_ID}.{COMMAND_NAME_LIST}`, i.e. `/conway.memory.list`
+/// (`conway_cli::tui::commands::CommandRegistry::build` prefixes it with
+/// this plugin's own manifest id), and as `conway conway.memory.list` on
+/// the CLI (`commands::plugin::run` resolves the same registry).
+pub const COMMAND_NAME_LIST: &str = "list";
+/// The bare name `RememberCommand` registers under -- reachable as
+/// `/conway.memory.remember <text>`. This plugin's second command (module
+/// doc: "the operator surface").
+pub const COMMAND_NAME_REMEMBER: &str = "remember";
+/// The bare name `ForgetCommand` registers under -- reachable as
+/// `/conway.memory.forget <id>`. This plugin's third command.
+pub const COMMAND_NAME_FORGET: &str = "forget";
 
 /// The default cap on how many memories one turn's hook will inject
 /// (open question 2).
@@ -241,13 +256,17 @@ pub struct MemoryPlugin {
 impl MemoryPlugin {
     /// `store` is caller-constructed: an embedder wanting durable,
     /// filesystem-backed memory passes `conway::memory::FsMemoryStore::
-    /// open(root).await` (behind the facade's `jsonl-store` feature); a
-    /// caller that only needs process-lifetime memory (e.g. this crate's
-    /// own tests, or a CLI bundle not yet wired for durability -- see this
-    /// crate's own completion report) passes [`InMemoryMemoryStore`]
-    /// instead. Either way this plugin is generic over the port, never the
-    /// implementation (mirrors `SkillsPlugin::new` taking an
-    /// already-loaded skills map rather than resolving a path itself).
+    /// open(root).await` (behind the facade's `jsonl-store` feature) -- the
+    /// real `conway` CLI binary does exactly this when `conway.memory` is
+    /// named in `[plugins].install` (board item `01M09V3S2AQYB2VK6MANFRH1JM`,
+    /// `conway-cli`'s `first_party_plugins::resolve_memory_store`). A caller
+    /// that only needs process-lifetime memory (this crate's own tests, or
+    /// the SAME CLI bundle when `conway.memory` is not selected at all, so
+    /// there is nothing to open a durable store for) passes
+    /// [`InMemoryMemoryStore`] instead. Either way this plugin is generic
+    /// over the port, never the implementation (mirrors `SkillsPlugin::new`
+    /// taking an already-loaded skills map rather than resolving a path
+    /// itself).
     pub fn new(store: Arc<dyn MemoryStore>, config: MemoryConfig) -> Self {
         Self { store, config }
     }
@@ -264,6 +283,29 @@ impl Plugin for MemoryPlugin {
                 ToolName::new(LIST_MEMORIES_TOOL_NAME),
             ],
             required_host_caps: vec![],
+        }
+    }
+
+    /// **Deliberately does NOT say "an instruction telling the model when
+    /// to write things down"** -- this crate declares no
+    /// `Plugin::instructions()` fragment (`grep -n "fn instructions"` in
+    /// this file finds nothing); recall is entirely a
+    /// `ContextHook`-injected `Provenance::Memory` segment, and the model
+    /// writes something down only by choosing to call `remember` on its
+    /// own or via an operator's `/conway.memory.remember`. Claiming an
+    /// instruction that is not shipped would violate "nothing may claim
+    /// to be reached that isn't" -- if this plugin later ships one, this
+    /// text should change to say so.
+    fn description(&self) -> PluginDescription {
+        PluginDescription {
+            summary: "notes that survive a restart".to_string(),
+            you_get: format!(
+                "3 tools ({REMEMBER_TOOL_NAME}, {FORGET_TOOL_NAME}, {LIST_MEMORIES_TOOL_NAME}) \
+                 and 3 commands (/{PLUGIN_ID}.list, /{PLUGIN_ID}.remember, /{PLUGIN_ID}.forget) \
+                 -- the model can write something down and recall it in a later session"
+            ),
+            you_lose: "nothing else -- recall falls back to context".to_string(),
+            costs: "a small read at the start of every turn".to_string(),
         }
     }
 
@@ -286,6 +328,32 @@ impl Plugin for MemoryPlugin {
             store: self.store.clone(),
             config: self.config.clone(),
         })]
+    }
+
+    /// The operator surface (board item `01M0EMD54BWAVZGYWPXP4S5P1J`):
+    /// `remember`/`forget`/`list_memories` above are `Tool`s -- reachable
+    /// only from the MODEL. Before this, an operator could not see what had
+    /// been remembered about them, add a note by hand, or remove one --
+    /// exactly the gap `Selector::Operator` already named for a different
+    /// mechanism. These three commands close it, following
+    /// `conway-plugin-history`'s proven shape (`Plugin::commands()`,
+    /// `<plugin-id>.<command>` namespacing, reached identically by the TUI's
+    /// `/`-prefixed dispatch and `conway <plugin-id>.<command>` on the CLI)
+    /// rather than inventing a second one. See `ListCommand`,
+    /// `RememberCommand`, `ForgetCommand` (this module, private -- not part
+    /// of the crate's public surface) for the per-command contract.
+    fn commands(&self) -> Vec<Arc<dyn Command>> {
+        vec![
+            Arc::new(ListCommand {
+                store: self.store.clone(),
+            }),
+            Arc::new(RememberCommand {
+                store: self.store.clone(),
+            }),
+            Arc::new(ForgetCommand {
+                store: self.store.clone(),
+            }),
+        ]
     }
 }
 
@@ -563,6 +631,32 @@ fn truncate_for_display(text: &str) -> String {
     format!("{head}... (elided in this listing; the stored memory is intact)")
 }
 
+/// Sort (oldest-`created` first, ties broken by [`MemoryId`] -- the SAME
+/// deterministic order [`MemoryInjectHook`] uses) and render `memories` as
+/// one line each: id, creation timestamp, and [`truncate_for_display`]'d
+/// text. Shared by [`ListMemoriesTool`] (the model-facing surface) and
+/// [`ListCommand`] (the operator-facing one, board item
+/// `01M0EMD54BWAVZGYWPXP4S5P1J`) so there is exactly one truncation policy
+/// and exactly one rendering, not a second copy drifting from the first.
+fn render_memory_listing(mut memories: Vec<Memory>) -> String {
+    memories.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
+    if memories.is_empty() {
+        return "no memories stored".to_string();
+    }
+    memories
+        .iter()
+        .map(|m| {
+            format!(
+                "{} ({}): {}",
+                m.id,
+                m.created.to_rfc3339(),
+                truncate_for_display(&m.text)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The read half that closes R3's loop: without this, a caller could
 /// `remember` and `forget` but never discover an id to forget by. Renders
 /// each memory as one line: id, creation timestamp, and text (truncated in
@@ -587,24 +681,8 @@ impl Tool for ListMemoriesTool {
 
     async fn invoke(&self, _call: ToolCall, _ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
         Ok(match self.store.list().await {
-            Ok(mut memories) => {
-                memories.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
-                let text = if memories.is_empty() {
-                    "no memories stored".to_string()
-                } else {
-                    memories
-                        .iter()
-                        .map(|m| {
-                            format!(
-                                "{} ({}): {}",
-                                m.id,
-                                m.created.to_rfc3339(),
-                                truncate_for_display(&m.text)
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                };
+            Ok(memories) => {
+                let text = render_memory_listing(memories);
                 ToolOutput {
                     blocks: vec![ContentBlock::Text { text }],
                     is_error: false,
@@ -628,6 +706,165 @@ impl Tool for ListMemoriesTool {
     }
     fn render_kind(&self) -> RenderKind {
         RenderKind::Structured
+    }
+}
+
+// -----------------------------------------------------------------------
+// The operator surface: `/conway.memory.list`, `/conway.memory.remember`,
+// `/conway.memory.forget` (board item `01M0EMD54BWAVZGYWPXP4S5P1J`).
+//
+// Before these, `remember`/`forget`/`list_memories` above were `Tool`s --
+// reachable only from the MODEL. An operator could not see what had been
+// remembered about them, add a note by hand, or remove one. Follows
+// `conway-plugin-history`'s proven `Plugin::commands()` shape rather than
+// inventing a second mechanism: each command below is an ordinary
+// `Command` impl capturing the SAME `Arc<dyn MemoryStore>` the tools above
+// share (constructor-captured, mirroring [`RememberTool`]/[`ForgetTool`]/
+// [`ListMemoriesTool`] exactly), registered through [`MemoryPlugin::
+// commands`].
+// -----------------------------------------------------------------------
+
+/// `/conway.memory.list`: reports every currently stored memory, one line
+/// each, using the exact same [`render_memory_listing`] rendering
+/// `list_memories` (the model-facing tool) uses -- one truncation policy,
+/// reused, not duplicated (the board item's first deliberate decision).
+/// Takes no arguments; any non-empty `ctx.args` is a named
+/// [`CommandOutcome::Error`] rather than a silently-ignored typo.
+struct ListCommand {
+    store: Arc<dyn MemoryStore>,
+}
+
+#[async_trait]
+impl Command for ListCommand {
+    fn spec(&self) -> CommandSpec {
+        CommandSpec {
+            name: COMMAND_NAME_LIST.to_string(),
+            summary: "lists every currently remembered piece of text, with its id and \
+                      creation time, e.g. `/conway.memory.list`"
+                .to_string(),
+        }
+    }
+
+    async fn invoke(&self, ctx: CommandCtx) -> CommandOutcome {
+        let trimmed = ctx.args.trim();
+        if !trimmed.is_empty() {
+            return CommandOutcome::Error(format!(
+                "usage: /{PLUGIN_ID}.{COMMAND_NAME_LIST} -- takes no arguments, got {trimmed:?}"
+            ));
+        }
+        match self.store.list().await {
+            Ok(memories) => CommandOutcome::Output(
+                render_memory_listing(memories)
+                    .lines()
+                    .map(str::to_string)
+                    .collect(),
+            ),
+            Err(e) => CommandOutcome::Error(format!("could not list memories: {e}")),
+        }
+    }
+}
+
+/// `/conway.memory.remember <text>`: stores `ctx.args`, trimmed, verbatim
+/// under a fresh [`MemoryId`] -- with `provenance: None`.
+///
+/// **Decision, recorded here (the board item's second deliberate
+/// decision).** [`RememberTool`] attaches the calling session's id because
+/// `ToolCtx::session_id` makes it free and a MODEL synthesizing "remember
+/// X" is doing so mid-conversation. An operator typing
+/// `/conway.memory.remember <text>` is not citing a session at all -- they
+/// are authoring a standalone note, often (via `conway
+/// conway.memory.remember`, `commands::plugin::run`'s own module doc) in a
+/// fresh, prompt-less, throwaway session created solely to carry this one
+/// command. Attaching that -- or any -- session id would be a
+/// specific-looking reference to nothing in particular: exactly the
+/// "honesty theater" this crate's own module doc names for `RememberTool`'s
+/// `range: None`, applied here to the whole `MemoryProvenance` rather than
+/// just one of its fields. `Option<MemoryProvenance>` being optional at the
+/// port level (`crates/conway-core/src/ports/memory_store.rs`) is exactly
+/// what makes this honest choice representable at all.
+struct RememberCommand {
+    store: Arc<dyn MemoryStore>,
+}
+
+#[async_trait]
+impl Command for RememberCommand {
+    fn spec(&self) -> CommandSpec {
+        CommandSpec {
+            name: COMMAND_NAME_REMEMBER.to_string(),
+            summary: "remembers a piece of freeform text by hand, with no session \
+                      provenance attached, e.g. `/conway.memory.remember the deploy secret \
+                      lives in vault`"
+                .to_string(),
+        }
+    }
+
+    async fn invoke(&self, ctx: CommandCtx) -> CommandOutcome {
+        let trimmed = ctx.args.trim();
+        if trimmed.is_empty() {
+            return CommandOutcome::Error(format!(
+                "usage: /{PLUGIN_ID}.{COMMAND_NAME_REMEMBER} <text> -- expected freeform text \
+                 to remember, got empty input"
+            ));
+        }
+        let memory = Memory {
+            id: MemoryId::new(),
+            text: trimmed.to_string(),
+            created: Utc::now(),
+            // See this type's own doc: a hand-typed note carries no session
+            // to honestly attach.
+            provenance: None,
+        };
+        let id = memory.id;
+        match self.store.put(memory).await {
+            Ok(()) => CommandOutcome::Output(vec![format!("remembered (id: {id})")]),
+            Err(e) => CommandOutcome::Error(format!("could not remember: {e}")),
+        }
+    }
+}
+
+/// `/conway.memory.forget <id>`: parses `ctx.args` as a bare [`MemoryId`]
+/// and removes it -- the operator-facing half of [`ForgetTool`]'s
+/// mechanism, closing the loop `/conway.memory.list` opens (a caller must
+/// be able to see an id before naming it here). Any argument that does not
+/// parse as a `MemoryId`, or is empty, is a named [`CommandOutcome::Error`],
+/// mirroring the discipline `conway-plugin-history`'s `rewind`/`checkout`
+/// commands already establish for a malformed identifier argument.
+/// An id that parses but names nothing stored (already forgotten, or never
+/// existed) is likewise a named error, never a silent no-op.
+struct ForgetCommand {
+    store: Arc<dyn MemoryStore>,
+}
+
+#[async_trait]
+impl Command for ForgetCommand {
+    fn spec(&self) -> CommandSpec {
+        CommandSpec {
+            name: COMMAND_NAME_FORGET.to_string(),
+            summary: "forgets (permanently removes) a previously remembered piece of text by \
+                      its id, e.g. `/conway.memory.forget 01J...` -- see `/conway.memory.list` \
+                      for the id"
+                .to_string(),
+        }
+    }
+
+    async fn invoke(&self, ctx: CommandCtx) -> CommandOutcome {
+        let trimmed = ctx.args.trim();
+        let id = match MemoryId::from_str(trimmed) {
+            Ok(id) => id,
+            Err(e) => {
+                return CommandOutcome::Error(format!(
+                    "usage: /{PLUGIN_ID}.{COMMAND_NAME_FORGET} <id> -- expected a valid memory \
+                     id, got {trimmed:?} ({e})"
+                ))
+            }
+        };
+        match self.store.remove(&id).await {
+            Ok(()) => CommandOutcome::Output(vec![format!("forgot memory {id}")]),
+            Err(MemoryStoreError::NotFound { .. }) => {
+                CommandOutcome::Error(format!("no such memory: {id}"))
+            }
+            Err(e) => CommandOutcome::Error(format!("could not forget {id}: {e}")),
+        }
     }
 }
 
@@ -1146,5 +1383,241 @@ mod tests {
         assert_eq!(manifest.tools.len(), 3);
         assert_eq!(plugin.tools().len(), 3);
         assert_eq!(plugin.context_hooks().len(), 1);
+    }
+
+    /// The plugin browser's own read surface (board item
+    /// `01M0KARX71A64NTSYTDBVANVPF`): a real description, never the
+    /// trait's empty default, and honest about NOT shipping an
+    /// instruction fragment (see `description`'s own doc comment).
+    #[test]
+    fn description_is_non_empty_and_does_not_claim_an_instruction_fragment() {
+        let plugin = MemoryPlugin::new(
+            Arc::new(InMemoryMemoryStore::new()),
+            MemoryConfig::default(),
+        );
+        let description = plugin.description();
+        assert!(!description.summary.is_empty());
+        assert!(!description.you_get.is_empty());
+        assert!(!description.you_lose.is_empty());
+        assert!(!description.costs.is_empty());
+        assert!(
+            plugin.instructions().is_empty(),
+            "this crate ships no instruction fragment today -- if that changes, \
+             description()'s you_get text must be updated to say so honestly"
+        );
+        assert!(
+            !description.you_get.to_lowercase().contains("instruction"),
+            "description must not claim an instruction fragment this plugin does not ship: \
+             {}",
+            description.you_get
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // The operator surface: `/conway.memory.list`, `.remember`, `.forget`
+    // (board item 01M0EMD54BWAVZGYWPXP4S5P1J).
+    // ------------------------------------------------------------------
+
+    fn command_ctx(args: &str) -> CommandCtx {
+        CommandCtx {
+            focused_agent: conway::AgentId::new(),
+            root_agent: conway::AgentId::new(),
+            session_id: conway::SessionId::new(),
+            args: args.to_string(),
+        }
+    }
+
+    #[test]
+    fn plugin_declares_all_three_operator_commands_under_their_bare_names() {
+        let plugin = MemoryPlugin::new(
+            Arc::new(InMemoryMemoryStore::new()),
+            MemoryConfig::default(),
+        );
+        let commands = plugin.commands();
+        assert_eq!(commands.len(), 3);
+        let names: Vec<String> = commands.iter().map(|c| c.spec().name).collect();
+        assert_eq!(
+            names,
+            vec![
+                COMMAND_NAME_LIST.to_string(),
+                COMMAND_NAME_REMEMBER.to_string(),
+                COMMAND_NAME_FORGET.to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_command_reports_no_memories_stored_on_an_empty_store() {
+        let command = ListCommand {
+            store: Arc::new(InMemoryMemoryStore::new()),
+        };
+        let outcome = command.invoke(command_ctx("")).await;
+        assert_eq!(
+            outcome,
+            CommandOutcome::Output(vec!["no memories stored".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn list_command_reports_every_stored_memory_using_the_shared_rendering() {
+        let store = Arc::new(InMemoryMemoryStore::new());
+        let id = seed(&store, "hand-typed note", 0).await;
+        let command = ListCommand {
+            store: store.clone(),
+        };
+        let outcome = command.invoke(command_ctx("")).await;
+        match outcome {
+            CommandOutcome::Output(lines) => {
+                assert_eq!(lines.len(), 1);
+                assert!(lines[0].contains(&id.to_string()));
+                assert!(lines[0].contains("hand-typed note"));
+            }
+            other => panic!("expected CommandOutcome::Output, got {other:?}"),
+        }
+    }
+
+    /// `/conway.memory.list` takes no arguments -- stray input is a named
+    /// error, not silently ignored.
+    #[tokio::test]
+    async fn list_command_rejects_stray_arguments() {
+        let command = ListCommand {
+            store: Arc::new(InMemoryMemoryStore::new()),
+        };
+        let outcome = command.invoke(command_ctx("unexpected")).await;
+        match outcome {
+            CommandOutcome::Error(message) => {
+                assert!(message.contains("unexpected"), "{message}");
+                assert!(message.contains("usage"), "{message}");
+            }
+            other => panic!("expected CommandOutcome::Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn remember_command_stores_the_typed_text_verbatim_with_no_provenance() {
+        let store = Arc::new(InMemoryMemoryStore::new());
+        let command = RememberCommand {
+            store: store.clone(),
+        };
+        let outcome = command
+            .invoke(command_ctx("the deploy secret lives in vault"))
+            .await;
+        assert!(matches!(outcome, CommandOutcome::Output(_)));
+        let memories = store.list().await.unwrap();
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].text, "the deploy secret lives in vault");
+        assert_eq!(
+            memories[0].provenance, None,
+            "a hand-typed note must carry no session provenance (see this command's own doc)"
+        );
+    }
+
+    #[tokio::test]
+    async fn remember_command_trims_surrounding_whitespace() {
+        let store = Arc::new(InMemoryMemoryStore::new());
+        let command = RememberCommand {
+            store: store.clone(),
+        };
+        command.invoke(command_ctx("  spaced note  ")).await;
+        let memories = store.list().await.unwrap();
+        assert_eq!(memories[0].text, "spaced note");
+    }
+
+    #[tokio::test]
+    async fn remember_command_rejects_empty_text() {
+        let command = RememberCommand {
+            store: Arc::new(InMemoryMemoryStore::new()),
+        };
+        let outcome = command.invoke(command_ctx("   ")).await;
+        assert!(matches!(outcome, CommandOutcome::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn forget_command_removes_a_memory_by_id() {
+        let store = Arc::new(InMemoryMemoryStore::new());
+        let id = seed(&store, "gone soon", 0).await;
+        let command = ForgetCommand {
+            store: store.clone(),
+        };
+        let outcome = command.invoke(command_ctx(&id.to_string())).await;
+        assert!(matches!(outcome, CommandOutcome::Output(_)));
+        assert!(store.list().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn forget_command_trims_surrounding_whitespace() {
+        let store = Arc::new(InMemoryMemoryStore::new());
+        let id = seed(&store, "gone soon", 0).await;
+        let command = ForgetCommand {
+            store: store.clone(),
+        };
+        let outcome = command.invoke(command_ctx(&format!("  {id}  "))).await;
+        assert!(matches!(outcome, CommandOutcome::Output(_)));
+    }
+
+    /// The discriminating half: an id that parses but names nothing stored
+    /// is a named error, never a silent no-op.
+    #[tokio::test]
+    async fn forget_command_names_an_unknown_id_as_an_error() {
+        let command = ForgetCommand {
+            store: Arc::new(InMemoryMemoryStore::new()),
+        };
+        let outcome = command
+            .invoke(command_ctx(&MemoryId::new().to_string()))
+            .await;
+        match outcome {
+            CommandOutcome::Error(message) => assert!(message.contains("no such memory")),
+            other => panic!("expected CommandOutcome::Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn forget_command_rejects_a_malformed_id_with_a_named_error() {
+        let command = ForgetCommand {
+            store: Arc::new(InMemoryMemoryStore::new()),
+        };
+        let outcome = command.invoke(command_ctx("not-a-memory-id")).await;
+        match outcome {
+            CommandOutcome::Error(message) => {
+                assert!(message.contains("not-a-memory-id"), "{message}");
+                assert!(message.contains("usage"), "{message}");
+            }
+            other => panic!("expected CommandOutcome::Error, got {other:?}"),
+        }
+    }
+
+    /// Round trip across the three commands: remember by hand, list shows
+    /// it, forget by the id list reported, list shows it gone.
+    #[tokio::test]
+    async fn remember_list_forget_round_trip_through_the_commands_alone() {
+        let store: Arc<dyn MemoryStore> = Arc::new(InMemoryMemoryStore::new());
+        let list = ListCommand {
+            store: store.clone(),
+        };
+        let remember = RememberCommand {
+            store: store.clone(),
+        };
+        let forget = ForgetCommand {
+            store: store.clone(),
+        };
+
+        remember.invoke(command_ctx("operator note")).await;
+        let CommandOutcome::Output(lines) = list.invoke(command_ctx("")).await else {
+            panic!("expected Output")
+        };
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("operator note"));
+        let id_str = lines[0]
+            .split_whitespace()
+            .next()
+            .expect("first token is the id");
+
+        let outcome = forget.invoke(command_ctx(id_str)).await;
+        assert!(matches!(outcome, CommandOutcome::Output(_)));
+
+        let CommandOutcome::Output(lines_after) = list.invoke(command_ctx("")).await else {
+            panic!("expected Output")
+        };
+        assert_eq!(lines_after, vec!["no memories stored".to_string()]);
     }
 }

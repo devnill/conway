@@ -47,69 +47,18 @@
 
 mod common;
 
-use std::sync::Arc;
-
-use common::{command, run_conway, write_fixture, Fixture};
-use conway::config::CliOverrides;
-use conway::gates::AllowListGate;
-use conway::{Conway, ConwayBuilder, PermissionGate, SessionFilter, SessionId};
+use common::{command, open_conway, run_conway, write_fixture, Fixture};
+use conway::{SessionFilter, SessionId};
 
 use common::mock_backend::{Chunk, MockBackend, Script};
 
-/// Opens a fresh, read-only `Conway` against `fixture`'s on-disk session
-/// store -- the same store the compiled binary's subprocess runs wrote to.
-///
-/// Uses `ConwayBuilder::from_config_only` , not `from_config`: this helper runs
-/// in-process, in the *test* process, not a subprocess -- `common::command`'s
-/// own `XDG_CONFIG_HOME` isolation only reaches the compiled `conway` binary
-/// it spawns, never this test binary's own calls into the `conway` library.
-/// `from_config` would read this test binary's ambient
-/// `~/.conway/settings.json` unconditionally and deep-merge it into the
-/// fixture config, which is what made this suite fail against any operator
-/// config naming an unregistered backend kind (the facade links no backend
-/// adapters -- see the module-level history above `open_conway`'s own
-/// callers for the reproduction).
-///
-/// Two deviations from just calling
-/// `ConwayBuilder::from_config_only(..).build()`, both required only because
-/// this helper builds a `Conway` directly rather than going through
-/// `main.rs`'s own construction path:
-/// - `CliOverrides::cwd` is set explicitly to `fixture.dir.path()` rather
-///   than relying on `ConwayConfig`'s own `default_cwd()` (a serde default
-///   evaluated at JSON-parse time against *this test process's* cwd, which
-///   is the crate root, not the fixture's temp dir) -- without this
-///   override, the default `.conway/sessions` session-store path would
-///   resolve relative to the wrong directory and this function would
-///   silently open an empty store.
-/// - A gate is supplied explicitly: the fixture's `conway.json` leaves
-///   `permissions.mode` at its config-level default (`"prompt"`, meant for
-///   an interactive embedder), and `ConwayBuilder::build` refuses to
-///   assemble a `Conway` for `"prompt"` mode without one (`main.rs`'s own
-///   one-shot dispatch path supplies `oneshot::build_gate`'s
-///   `AllowListGate` for exactly this reason before ever calling
-///   `build_conway`). This helper only ever calls read-only `Conway`
-///   methods (`resume`/`sessions`/`transcript`), so which concrete gate is
-///   used is immaterial -- an empty, fail-closed `AllowListGate` (the same
-///   default `oneshot::build_gate` itself produces) is enough to satisfy
-///   `build`'s validation.
-async fn open_conway(fixture: &Fixture) -> Conway {
-    let gate: Arc<dyn PermissionGate> = Arc::new(AllowListGate::new(Vec::new(), Vec::new()));
-    ConwayBuilder::from_config_only(&fixture.config_path)
-        .expect("load fixture config")
-        .with_cli_overrides(CliOverrides {
-            cwd: Some(fixture.dir.path().to_path_buf()),
-            ..Default::default()
-        })
-        .with_permission_gate(gate)
-        // `conway` no longer
-        // compiles the fixture template's `kind = "openai-compat"` entry
-        // in -- the same factory `main.rs`'s own `build_conway` attaches by
-        // default, registered explicitly here since this helper builds a
-        // `Conway` directly rather than going through that choke point.
-        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
-        .build()
-        .expect("build conway against the fixture's own store")
-}
+// `open_conway` used to be a byte-identical copy local to this file; it
+// moved to `common` (board item `01M0QK9GRM8HSNWRAR414TCX42`) once
+// `[session].root`'s central-default resolution stopped being fixable by
+// this file's own `CliOverrides::cwd` trick alone -- see that function's
+// own doc for the full reasoning, including the module-level history above
+// naming the original `from_config` ambient-read bug this helper (both
+// versions) exists to avoid.
 
 /// The one session a freshly-populated fixture has created so far.
 async fn only_session_id(fixture: &Fixture) -> SessionId {

@@ -119,8 +119,11 @@ jobs:
   # compiles every test target. So 1.88.0 is what the tree genuinely supports
   # and what it now declares.
   #
-  # `--no-run` for the test targets, matching `feature-matrix` below: the point
-  # is that everything COMPILES on the MSRV, not that the suite runs twice.
+  # `--no-run` for the test targets: the point here is that everything
+  # COMPILES on the MSRV, not full behavioural coverage a second time --
+  # `feature-matrix` below (all six combinations) and `test` above
+  # (`--all-features`) already run the suite for real on the pinned
+  # toolchain; this job only needs to confirm the MSRV floor itself compiles.
   msrv:
     name: cargo build (MSRV 1.88.0)
     runs-on: ubuntu-latest
@@ -216,13 +219,46 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   feature-matrix:
-    # `cargo test --no-run` rather than `cargo check`: it compiles the test
-    # binaries too, so a test that cannot build under a given feature
-    # combination fails here instead of hiding. That is the gap the old
-    # workflow had. It does not RUN the tests -- the `test` job above does
-    # that once, with every feature on -- so the added cost is compile time
-    # for test targets, not six full suite executions.
-    name: cargo test --no-run -p conway (${{ matrix.name }})
+    # DECISION (board item 01M0JMEK24ZPRSP3PT3HJG0VHD): this job RUNS the
+    # suite under all six combinations, it does not just compile it.
+    #
+    # It used to be `cargo test --no-run`: compile the test binaries so a
+    # test that cannot build under a given combination fails here instead of
+    # hiding (the gap the pre-`feature-matrix.yml` `cargo check`-only guard
+    # had), but never execute anything. That silently hid a real defect:
+    # under `--no-default-features --features builtin-tools` (and every
+    # other non-default combination missing `jsonl-store`), 19 of 27 tests in
+    # `crates/conway/tests/builder.rs` failed the moment they were actually
+    # run -- they call `build()` and expect it to succeed, which requires a
+    # `PathStore`, which without `jsonl-store` a facade-only caller has no
+    # way to supply (`PathStore` is engine-internal and not re-exported --
+    # board item 01M0EMCK55628YJXGBQY8YGXHE). CI had been green throughout
+    # because `--no-run` never reached that failure. Those tests are gated
+    # on `jsonl-store` now (stacked with `builtin-tools` where both applied)
+    # -- they were never meant to run without it, not a defect in that
+    # configuration -- and all six combinations pass for real, not just
+    # compile.
+    #
+    # Dropping `--no-run` was not a judgement call against CI time: running
+    # the already-compiled `conway` test binaries takes on the order of five
+    # seconds per combination (measured locally: 0.00s-5.05s across all six),
+    # against tens of seconds of compile time paid either way. Execution is
+    # not the cost here; compiling six times is, and that cost does not
+    # change.
+    #
+    # WHAT THIS STILL DOES NOT CATCH, stated because a gate whose blind spots
+    # are unstated is the same defect one level up:
+    #   * Only `-p conway` runs here. A test in another workspace crate that
+    #     is only reachable through one of these six combinations (there is
+    #     no reason to expect one, but nothing here rules it out) is
+    #     uncovered by this job; the `test` job's `--all-features` run is the
+    #     only thing exercising the rest of the workspace.
+    #   * A behaviour that only breaks under a combination NOT in this matrix
+    #     (e.g. `metadata-refresh` or `testkit` toggled independently) is not
+    #     covered; the six entries below were chosen to cover the two
+    #     genuine feature axes (`builtin-tools`, `jsonl-store`) and their
+    #     absence, not every point in the full feature lattice.
+    name: cargo test -p conway (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -255,5 +291,5 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: cargo test --no-run -p conway
-        run: cargo test --no-run -p conway ${{ matrix.args }}
+      - name: cargo test -p conway
+        run: cargo test -p conway ${{ matrix.args }}

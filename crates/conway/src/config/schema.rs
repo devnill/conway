@@ -167,10 +167,34 @@ impl ConwayConfig {
 }
 
 /// `[session]`.
+///
+/// **`root` is `Option<PathBuf>`, and the two states mean genuinely
+/// different things (board item `01M0QK9GRM8HSNWRAR414TCX42`, ruled by
+/// decision `01M0QK8J757ZH6R06WYJ0PQGEM`).** `None` -- the default, and
+/// what an unmodified `settings.json` (or none at all) leaves this at -- is
+/// resolved by `config::load`/`load_ignoring_user_config` into the central,
+/// project-keyed default under `~/.conway/sessions/<project-key>/` (or
+/// `$CONWAY_CONFIG_DIR/sessions/<project-key>/`); see
+/// `config::discovery::session_root`'s own doc for exactly how the key is
+/// derived. `Some(path)` is an operator (or embedder) who set `[session]
+/// .root` explicitly, and it keeps the field's OLD, direct meaning
+/// unchanged from before this item: `path` names the sessions directory
+/// itself, resolved against `cwd` if relative -- narrowing to a single
+/// directory is still the field's job the moment a caller names one, so a
+/// value already sitting in an existing `settings.json` behaves exactly as
+/// it always did.
+///
+/// **This resolution happens at `config::load` time, not inside
+/// `ConwayBuilder::build`.** A config assembled directly via
+/// `ConwayBuilder::from_parts`, bypassing `load` entirely, can still reach
+/// `build()` with `root` at `None` -- see `build_default_store`'s own doc
+/// in `builder.rs` for what that falls back to, and why resolving the
+/// central default requires the load-scoped `env`/`cwd` `build()` has no
+/// seam of its own for.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SessionConfig {
-    pub root: PathBuf,
+    pub root: Option<PathBuf>,
     pub fsync: FsyncMode,
     pub fsync_interval_ms: u64,
 }
@@ -178,7 +202,7 @@ pub struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            root: PathBuf::from(".conway/sessions"),
+            root: None,
             fsync: FsyncMode::Interval,
             fsync_interval_ms: 200,
         }
@@ -617,8 +641,12 @@ impl Default for ToolsConfig {
 /// unknown id there is a hard config error precisely because the full
 /// candidate set is known here, at compile time
 /// (`config::merge::validate`'s check 8). A first-party plugin (dynamic
-/// routing, compaction, memory, skills, MCP — the six named in
-/// `PHILOSOPHY.md`) is never such a candidate: THIS crate does not, and
+/// routing, compaction, memory, skills, MCP — the five named in
+/// `PHILOSOPHY.md` §5, "First-party plugins, and why they are not
+/// defaults": "Every serious harness has compaction, memory, skills, MCP,
+/// and a policy for choosing which model gets a turn" and "Dynamic routing,
+/// context compaction, memory, skills, MCP support" -- five each time, not
+/// six) is never such a candidate: THIS crate does not, and
 /// must never, depend on any of them — a first-party plugin
 /// sits on the exact same footing as a third-party one from `conway`'s own
 /// point of view, never a privileged one folded into the built-in
@@ -716,16 +744,18 @@ pub struct PluginsConfig {
     ///
     /// **Trust, stated here because this is the field that grants the
     /// capability.** Board item `01KZHVFCN6ZEAXV7K5JHRQN1YB` (a `plugin`
-    /// trust subject kind, digest-keyed) is under a STANDING OPERATOR
-    /// DEFERRAL and is explicitly NOT built by this field's addition --
-    /// naming a command here is on the exact same trust footing as naming
-    /// one in `[hooks].rules[].command` already is (no sandboxing, no
-    /// digest check, the operator's own review of what they typed is the
-    /// only control point) -- see `conway_plugin_subprocess`'s own crate
-    /// doc for the full argument. This is a genuine widening of what a
-    /// `settings.json` can make a shipped binary execute, disclosed rather
-    /// than smuggled in as an "inert wire shape" claim that would
-    /// otherwise be misleading for THIS particular field.
+    /// trust subject kind, digest-keyed) was reopened once both
+    /// out-of-process transports shipped and worked to a conclusion:
+    /// considered and DECLINED, not deferred -- naming a command here is on
+    /// the exact same trust footing as naming one in
+    /// `[hooks].rules[].command` already is (no sandboxing, no digest
+    /// check, the operator's own review of what they typed is the only
+    /// control point) -- see `conway_plugin_subprocess`'s own crate doc and
+    /// `docs/plugins/trust-and-security.md` for the full argument. This is
+    /// a genuine widening of what a `settings.json` can make a shipped
+    /// binary execute, disclosed rather than smuggled in as an "inert wire
+    /// shape" claim that would otherwise be misleading for THIS particular
+    /// field.
     #[serde(default)]
     pub subprocess: Vec<SubprocessPluginEntry>,
     /// **DISCLOSED, PROMINENTLY FLAGGED addition (board item
@@ -753,7 +783,9 @@ pub struct PluginsConfig {
     /// `[hooks].rules[].command` and `[plugins].subprocess[]` already have
     /// (`conway_plugin_mcp`'s own crate doc has the full argument). Board item
     /// `01KZHVFCN6ZEAXV7K5JHRQN1YB` (a digest-keyed `plugin` trust subject)
-    /// is under a STANDING OPERATOR DEFERRAL and is NOT built here -- naming
+    /// was reopened once both out-of-process transports shipped and worked
+    /// to a conclusion: considered and DECLINED, not deferred -- see
+    /// `docs/plugins/trust-and-security.md` for the full reasoning. Naming
     /// an MCP server here is exactly as trusted, and exactly as unaudited, as
     /// naming a `[hooks].rules[].command` already is today. This is a genuine
     /// widening of what a `settings.json` can make a shipped binary execute,
@@ -875,8 +907,15 @@ pub enum SubprocessTransport {
 /// MCP server often needs credentials (an API key the server forwards to its
 /// upstream model provider), and naming them here makes the child's env
 /// ADDITIVE on the parent's rather than relying on whatever the parent
-/// happens to have set -- the identical shape a `[hooks].rules[]` entry's env
-/// carries.
+/// happens to have set. **No hooks parity to lean on here, checked and
+/// rejected rather than assumed:** [`HookEntry`] has no `env` field under any
+/// spelling, on itself or on any nested type (its fields are `id`, `event`,
+/// `match_tool`, `command`, `timeout_ms`, `enabled`), and
+/// `conway_tools::hook_runner::ProcessHookRunner` spawns a hook's command
+/// with no `.env()`/`.env_clear()` call at all -- a hook simply inherits the
+/// parent process's whole environment, unfiltered, with no additive
+/// mechanism of any kind. This entry's explicit, additive `env` is its own
+/// invention, not a shape borrowed from hooks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct McpPluginEntry {
@@ -905,8 +944,10 @@ pub struct McpPluginEntry {
     /// a hook command has. Name credentials here (e.g. an API key the MCP
     /// server forwards to its upstream provider) rather than relying on the
     /// parent process having them set -- the child gets the parent env PLUS
-    /// these, the identical additive shape a `[hooks].rules[]` entry's env
-    /// carries.
+    /// these. There is no hooks-side counterpart to be additive ON TOP of:
+    /// a `[hooks].rules[]` entry ([`HookEntry`]) has no `env` field at all,
+    /// and its command inherits the parent's environment whole, with no
+    /// additive mechanism of any kind.
     #[serde(default)]
     pub env: Vec<(String, String)>,
 }

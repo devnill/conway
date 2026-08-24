@@ -258,8 +258,18 @@ fn build_loop(
     let subagents: Arc<dyn SubagentHost> = Arc::new(conway_testkit::FakeSubagentHost::new(agent));
     let tree = Arc::new(AgentTree::new(bus.clone()));
 
+    let path_store: Arc<dyn conway_core::ports::PathStore> =
+        std::sync::Arc::new(conway_testkit::FakePathStore::new());
+    let resolver = Arc::new(conway_core::transcript::TranscriptResolver::new(64));
     let deps = Arc::new(LoopDeps {
         store: store.clone(),
+        path_store: path_store.clone(),
+        context_path_host: Arc::new(conway_runtime::context::RuntimeContextPathHost::new(
+            store.clone(),
+            path_store.clone(),
+            resolver.clone(),
+        )),
+        session_discovery_host: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         router,
         attempt,
         registry: plugin_registry,
@@ -271,7 +281,7 @@ fn build_loop(
         headroom: Arc::new(HeadroomPolicy::default()),
         tree: tree.clone(),
         context_hook: std::sync::RwLock::new(None),
-        resolver: Arc::new(conway_core::transcript::TranscriptResolver::new(64)),
+        resolver,
         context_curator: std::sync::RwLock::new(None),
         observers: Vec::new(),
         plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
@@ -279,6 +289,7 @@ fn build_loop(
 
     let spec = AgentSpec {
         system_prompt: None,
+        instructions: vec![],
         skills: vec![],
         tools: None,
         role: RoleAlias::new("planner"),
@@ -649,12 +660,13 @@ async fn steer_lands_only_at_the_next_turn_boundary_as_a_parent_steer_segment() 
 
 /// Criterion (source-level/structural): no code path injects into a
 /// context outside `drain_inbox` -- `ContextInput` is constructed exactly
-/// once per turn, and its `path` is always derived from `all_records`
-/// (sourced from a fresh `SessionStore::read` via `path_from_legacy`),
-/// never from anything `drain_inbox` returns directly (`drain_inbox`
-/// returns `()`, not records -- see `mailbox::DrainEffect::Persist`'s own
-/// doc on why a steer becomes visible only by first becoming a stored
-/// record).
+/// once per turn, and its `path` is always derived from
+/// `resolve_default_path` (D1-3d-wire; runs its own fresh `SessionStore::
+/// read` internally, replacing the transitional `path_from_legacy` +
+/// `all_records` shape this test used to pin), never from anything
+/// `drain_inbox` returns directly (`drain_inbox` returns `()`, not records --
+/// see `mailbox::DrainEffect::Persist`'s own doc on why a steer becomes
+/// visible only by first becoming a stored record).
 #[test]
 fn context_own_is_only_ever_populated_from_a_fresh_store_read() {
     let src = include_str!("../src/agent_loop.rs");
@@ -664,8 +676,10 @@ fn context_own_is_only_ever_populated_from_a_fresh_store_read() {
         "ContextInput must be constructed in exactly one place"
     );
     assert!(
-        src.contains("path_from_legacy(self.inherited.as_ref(), &all_records, self.session)"),
-        "path must be derived from path_from_legacy over all_records, sourced from a fresh store read"
+        src.contains(
+            "resolve_default_path(\n                    &self.deps.resolver,\n                    self.deps.store.as_ref(),\n                    self.deps.path_store.as_ref(),\n                    &self.session,\n                )"
+        ),
+        "path must be derived from resolve_default_path over this session's own store/resolver/path_store"
     );
     assert!(
         src.contains("async fn drain_inbox(&mut self) -> Result<(), RuntimeError>"),

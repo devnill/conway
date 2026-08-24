@@ -333,6 +333,11 @@ async fn start_and_maybe_await(
         prompt: req.prompt,
         agent_def: req.agent_def.map(AgentDefRef),
         role: req.role.map(RoleAlias::new),
+        // The model-invoked `conway_fork`/`conway_spawn` tools have no
+        // model-pin argument -- pinning a specific model is an
+        // operator-only surface (`ForkSpec::model`, the TUI's `/model`),
+        // never something the model itself can invoke on its own behalf.
+        pin: None,
         tools: req.tools.map(ToolSelector::Only),
         budget: resolve_budget(req.budget, &ctx.config)?,
         result_contract,
@@ -368,6 +373,17 @@ async fn start_and_maybe_await(
         // model-initiated fork/spawn always inherits the parent's own
         // effective config unchanged.
         plugin_config: None,
+        // Choosing a starting context is an embedder-only surface for this
+        // first slice too (mirrors `root`/`tag`/`plugin_config` above) --
+        // neither model-invoked tool has a `context` argument in its args
+        // schema yet, so a model-initiated fork/spawn always gets the
+        // mode's ordinary default (Fork's inherited prefix / Spawn's clean
+        // slate), unchanged. Wiring a `context` argument onto
+        // `conway_fork`/`conway_spawn` so a MODEL (not only an embedder)
+        // can choose a child's starting context is a disclosed follow-up,
+        // not built here -- see `conway_core::agent::SubagentSpec::
+        // context`'s own doc.
+        context: None,
     };
 
     let child = ctx.subagents.start(spec).await.map_err(ToolError::from)?;

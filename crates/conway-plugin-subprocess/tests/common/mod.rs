@@ -42,6 +42,78 @@ pub fn write_script(dir: &std::path::Path, name: &str, contents: &str) -> PathBu
     path
 }
 
+/// Executes `path` once, with stdin closed, and discards everything about
+/// the result -- before returning, so any caller sequencing `warm` before a
+/// timed call pays this cost OUTSIDE the clock, not inside it.
+///
+/// # Why this exists (board item `01M09MPZ9C188AHNBKWEJ3CEQA`, measured
+/// 2026-08-21)
+///
+/// Executing a FRESHLY WRITTEN script for the first time on this OS can
+/// block for seconds at ~0% CPU before the script's own code ever runs --
+/// one measurement on this machine caught 23.5s wall clock at 0% CPU for a
+/// brand-new two-line `#!/usr/bin/env python3` file; the SAME file's
+/// second and third executions cost 44ms and 35ms. 0% CPU while blocked
+/// means the delay is a kernel/OS-service-side check on the file, not
+/// computation -- consistent with (but not proven to be; see below) macOS
+/// scanning a newly created executable the first time it is exec'd, the
+/// way it scans a downloaded one.
+///
+/// `write_script` writes a fresh file into a fresh temp dir and the tests
+/// in this suite exec it moments later under a bounded `timeout_ms` --
+/// exactly the shape that pays this tax. Left unwarmed, the tax lands
+/// INSIDE the timed assertion, so a budget sized to bound the mechanism
+/// under test (a handshake, a hang) instead measures a first-execution OS
+/// cost that has nothing to do with this crate. That is why the failure
+/// always showed up on the promptly-answering DISCOVERY step rather than
+/// the hang the test actually exercises, and why it tracked parallelism
+/// (more test binaries => more fresh fixtures competing for the same
+/// scan) rather than CPU load as such.
+///
+/// Calling `warm(&path)` before constructing the timed spec pays this cost
+/// once, discarded, so the timed call downstream measures the mechanism it
+/// says it measures, not an OS-dependent first-exec tax. Do NOT "fix" a
+/// flaky timeout test by raising its budget again without first checking
+/// whether it execs a fixture `write_script` just wrote -- if so, warm it
+/// instead of guessing a bigger number.
+///
+/// Every current fixture in this module either reads stdin then fails
+/// fast on empty/invalid input, or loops "one line at a time" and simply
+/// ends when stdin is empty -- none of them reach an unconditional sleep
+/// on closed/empty stdin. Do not reuse `warm` for a fixture that would
+/// (it would turn the warm-up into the sleep itself).
+///
+/// One caveat this item is explicit about keeping honest: the 0%-CPU
+/// blocking above is MEASURED. Attributing it specifically to Gatekeeper
+/// or XProtect is INFERENCE, not measurement -- this repro re-run (on this
+/// machine, this session) found a much smaller tax (~150-250ms, not
+/// 23.5s), and confirmed the created file DOES carry a
+/// `com.apple.provenance` extended attribute (checked with `xattr -l`),
+/// which is the kind of tag first-launch trust checks key off on current
+/// macOS -- suggestive, not conclusive. `log show` for `syspolicyd`/
+/// `amfid` around an exec produced no matching entries on this machine,
+/// which is inconclusive (could mean no such check ran, or could mean
+/// this user's log visibility does not cover it) rather than a
+/// disconfirmation. The fix does not depend on knowing which OS service is
+/// responsible: it depends only on the measured fact that the SAME file's
+/// first exec is slow and its later execs are fast.
+pub async fn warm(path: &std::path::Path) {
+    let child = tokio::process::Command::new(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Ok(mut child) = child {
+        // Outcome deliberately discarded: warming only cares that the exec
+        // happened (and whatever OS-side check gates it completed), not
+        // what the script did with no input.
+        let _ = child.wait().await;
+    }
+    // A spawn failure here is not this helper's problem to report -- the
+    // real, timed call immediately after will hit (and report) the same
+    // spawn failure if the path is genuinely bad.
+}
+
 /// The full-featured fixture: declares one tool, `greet`, taking a
 /// required `name: string` argument. `tool/1` for `greet` replies with
 /// `"hello, <name>"` -- unless `name` is exactly `"__boom__"`, which
@@ -128,6 +200,24 @@ pub fn spec_for(dir: &std::path::Path, script_name: &str, contents: &str) -> Sub
     SubprocessPluginSpec::new("test-fixture", vec![path.display().to_string()])
 }
 
+/// Same as [`spec_for`], but pays the fresh-script first-exec tax (see
+/// [`warm`]'s doc; board item `01M09MPZ9C188AHNBKWEJ3CEQA`) BEFORE
+/// returning the spec, so a caller that immediately hands the spec to
+/// `SubprocessPlugin::discover` under the crate's default `timeout_ms`
+/// measures the mechanism it means to measure, not a first-exec OS cost.
+/// Do not reach for this on a fixture that would hang forever on
+/// closed/empty stdin (see `warm`'s own caveat) -- none of the ONE-SHOT
+/// fixtures in this suite do.
+pub async fn spec_for_warmed(
+    dir: &std::path::Path,
+    script_name: &str,
+    contents: &str,
+) -> SubprocessPluginSpec {
+    let path = write_script(dir, script_name, contents);
+    warm(&path).await;
+    SubprocessPluginSpec::new("test-fixture", vec![path.display().to_string()])
+}
+
 /// A spec configured for the PERSISTENT NDJSON transport (board item
 /// `01M03VJHG1WFECFJB4ZH3CKWDX`): same as [`spec_for`] but with
 /// `transport` set to `Persistent`, so `tool/1` calls dispatch over one
@@ -138,6 +228,26 @@ pub fn persistent_spec_for(
     contents: &str,
 ) -> SubprocessPluginSpec {
     let path = write_script(dir, script_name, contents);
+    let mut spec = SubprocessPluginSpec::new("test-fixture", vec![path.display().to_string()]);
+    spec.transport = conway_plugin_subprocess::SubprocessTransport::Persistent;
+    spec
+}
+
+/// Same as [`persistent_spec_for`], but pays the fresh-script first-exec tax
+/// (see [`warm`]'s doc; board item `01M09MPZ9C188AHNBKWEJ3CEQA`) BEFORE
+/// returning the spec, so a caller that immediately hands the spec to
+/// `SubprocessPlugin::discover` under the crate's default `timeout_ms`
+/// measures the handshake it means to measure, not a first-exec OS cost.
+/// Use this over [`persistent_spec_for`] whenever the test does not already
+/// warm the fixture itself (e.g. because it needs the raw path for its own
+/// purposes, as `tests/mechanism.rs` and `tests/persistent.rs` do).
+pub async fn persistent_spec_for_warmed(
+    dir: &std::path::Path,
+    script_name: &str,
+    contents: &str,
+) -> SubprocessPluginSpec {
+    let path = write_script(dir, script_name, contents);
+    warm(&path).await;
     let mut spec = SubprocessPluginSpec::new("test-fixture", vec![path.display().to_string()]);
     spec.transport = conway_plugin_subprocess::SubprocessTransport::Persistent;
     spec

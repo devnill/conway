@@ -66,7 +66,9 @@ fn text_of(output: &conway::plugin::ToolOutput) -> String {
 #[tokio::test]
 async fn persistent_transport_reuses_the_same_child_across_calls() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(dir.path(), "pid.py", common::PERSISTENT_PID_PLUGIN);
+    let spec =
+        common::persistent_spec_for_warmed(dir.path(), "pid.py", common::PERSISTENT_PID_PLUGIN)
+            .await;
     assert_eq!(
         spec.transport,
         SubprocessTransport::Persistent,
@@ -108,7 +110,7 @@ async fn persistent_transport_reuses_the_same_child_across_calls() {
 async fn one_shot_transport_spawns_a_fresh_process_per_call() {
     let dir = tempfile::tempdir().expect("tempdir");
     // Default transport (one-shot) -- use spec_for, NOT persistent_spec_for.
-    let spec = common::spec_for(dir.path(), "pid.py", common::PERSISTENT_PID_PLUGIN);
+    let spec = common::spec_for_warmed(dir.path(), "pid.py", common::PERSISTENT_PID_PLUGIN).await;
     assert_eq!(
         spec.transport,
         SubprocessTransport::OneShot,
@@ -150,11 +152,12 @@ async fn one_shot_transport_spawns_a_fresh_process_per_call() {
 #[tokio::test]
 async fn a_session_that_dies_mid_session_fails_closed_on_the_next_call() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "die.py",
         common::PERSISTENT_DIE_AFTER_ONE_PLUGIN,
-    );
+    )
+    .await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -201,16 +204,36 @@ async fn a_session_that_dies_mid_session_fails_closed_on_the_next_call() {
 #[tokio::test]
 async fn a_call_that_never_answers_times_out_within_timeout_ms() {
     let dir = tempfile::tempdir().expect("tempdir");
-    // The DEFAULT timeout_ms (5000ms) bounds BOTH the one-shot discovery and
-    // the tool/1 call. Discovery answers the manifest immediately; only the
-    // tool/1 call sleeps. 5000ms is the same budget every other persistent
-    // test relies on for a fresh python3 interpreter's startup under the
-    // workspace's parallel test load -- a tighter budget (an earlier 500ms
-    // draft) flaked under that load, timing out the DISCOVERY spawn rather
-    // than the call. The fixture sleeps 10s, so a 5s per-call deadline still
-    // fires well before the fixture would answer.
-    let spec =
-        common::persistent_spec_for(dir.path(), "sleepy.py", common::PERSISTENT_SLEEPY_PLUGIN);
+    // Warm the fixture BEFORE building the timed spec. Historically this
+    // budget relied on the crate's DEFAULT timeout_ms (5000ms) precisely
+    // because it bounds BOTH the one-shot discovery spawn AND the
+    // persistent session spawn `discover` does for a persistent-transport
+    // plugin -- a tighter budget (an earlier 500ms draft) flaked under
+    // this workspace's parallel test load, timing out one of those
+    // DISCOVERY-time spawns rather than the tool/1 call this test means to
+    // pin (board item `01M09MPZ9C188AHNBKWEJ3CEQA`: a freshly-written,
+    // freshly-chmod'd script's first exec can cost seconds at ~0% CPU; see
+    // `common::warm`'s doc). `warm` pays that tax here, once, discarded,
+    // so `discover`'s spawns no longer need 5000ms of runway.
+    let path = common::write_script(dir.path(), "sleepy.py", common::PERSISTENT_SLEEPY_PLUGIN);
+    common::warm(&path).await;
+    let mut spec = conway_plugin_subprocess::SubprocessPluginSpec::new(
+        "test-fixture",
+        vec![path.display().to_string()],
+    );
+    spec.transport = SubprocessTransport::Persistent;
+    // Brought DOWN from the 5000ms default now that `warm` above has
+    // already paid the first-exec tax that made 5000ms necessary here: a
+    // warm `python3` startup measures in the tens of milliseconds on this
+    // machine, so 1500ms leaves ample margin for `discover`'s two
+    // sequential warm spawns (matching `tests/handshake.rs`'s identical,
+    // separately-justified choice for the same "warm interpreter startup
+    // under parallel load" bound) while still being a meaningfully tighter
+    // assertion than 5000ms, which -- tax gone -- would tolerate a
+    // near-1.5-second regression in this per-call deadline before ever
+    // failing. Do not raise this back up without first checking `warm` is
+    // still being called.
+    spec.timeout_ms = 1500;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -223,13 +246,13 @@ async fn a_call_that_never_answers_times_out_within_timeout_ms() {
         .await
         .expect_err("a call that never answers within timeout_ms must fail closed");
     assert!(
-        start.elapsed() >= Duration::from_secs(4),
+        start.elapsed() >= Duration::from_millis(1_200),
         "the call must actually wait for the per-call deadline (not fail instantly for a wrong \
          reason): took {:?}",
         start.elapsed()
     );
     assert!(
-        start.elapsed() < Duration::from_secs(10),
+        start.elapsed() < Duration::from_secs(8),
         "the call must return once timeout_ms elapses, not wait for the fixture's 10s sleep: \
          took {:?}",
         start.elapsed()
@@ -259,8 +282,12 @@ async fn a_call_that_never_answers_times_out_within_timeout_ms() {
 #[tokio::test]
 async fn a_partial_frame_then_eof_is_a_typed_parse_error() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec =
-        common::persistent_spec_for(dir.path(), "half.py", common::PERSISTENT_HALF_LINE_PLUGIN);
+    let spec = common::persistent_spec_for_warmed(
+        dir.path(),
+        "half.py",
+        common::PERSISTENT_HALF_LINE_PLUGIN,
+    )
+    .await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -298,8 +325,12 @@ async fn a_partial_frame_then_eof_is_a_typed_parse_error() {
 #[tokio::test]
 async fn an_invalid_json_line_is_a_typed_parse_error() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec =
-        common::persistent_spec_for(dir.path(), "badjson.py", common::PERSISTENT_BAD_JSON_PLUGIN);
+    let spec = common::persistent_spec_for_warmed(
+        dir.path(),
+        "badjson.py",
+        common::PERSISTENT_BAD_JSON_PLUGIN,
+    )
+    .await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -356,11 +387,12 @@ async fn a_wedged_child_that_stops_draining_stdin_times_out_on_the_write() {
     // write -- so this test reuses the default 5000ms every other persistent
     // test relies on, and proves the per-call WRITE deadline still bounds a
     // wedged child (the write blocks 5s, not a hang) within the same window.
-    let spec = common::persistent_spec_for(
+    let spec = common::persistent_spec_for_warmed(
         dir.path(),
         "wedge.py",
         common::PERSISTENT_WEDGE_ON_WRITE_PLUGIN,
-    );
+    )
+    .await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -432,7 +464,9 @@ async fn the_default_transport_is_one_shot() {
 #[tokio::test]
 async fn a_successful_call_over_persistent_returns_the_real_reply() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(dir.path(), "greet.py", common::PERSISTENT_GREET_PLUGIN);
+    let spec =
+        common::persistent_spec_for_warmed(dir.path(), "greet.py", common::PERSISTENT_GREET_PLUGIN)
+            .await;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("discovery must succeed");
@@ -453,7 +487,9 @@ async fn a_successful_call_over_persistent_returns_the_real_reply() {
 #[tokio::test]
 async fn a_subprocess_declared_error_over_persistent_maps_to_the_typed_tool_error() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::persistent_spec_for(dir.path(), "greet.py", common::PERSISTENT_GREET_PLUGIN);
+    let spec =
+        common::persistent_spec_for_warmed(dir.path(), "greet.py", common::PERSISTENT_GREET_PLUGIN)
+            .await;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("discovery must succeed");

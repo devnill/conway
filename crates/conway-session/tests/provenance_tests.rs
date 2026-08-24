@@ -51,6 +51,7 @@ fn report(turn: u32, segments: Vec<ContextReportEntry>) -> ContextReport {
         total_tokens_est,
         dropped: Vec::new(),
         curator_failed: None,
+        instruction_fragments: Vec::new(),
     }
 }
 

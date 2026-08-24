@@ -28,7 +28,7 @@ conway = { path = "../conway" }
   `.conway/settings.json`, same precedence as `getting-started.md`
   describes), `from_config(path)` (an explicit path, still layered under
   the same precedence — including the ambient
-  `$XDG_CONFIG_HOME/conway/settings.json`/`~/.conway/settings.json` layer,
+  `$CONWAY_CONFIG_DIR/settings.json`/`~/.conway/settings.json` layer,
   which always merges in regardless of `path`), `from_config_only(path)`
   (identical, except that ambient user layer is never read — `path` plus
   env plus any `CliOverrides` is the *entire* input; see "Loading config
@@ -66,7 +66,7 @@ means naming every one of them — `ConwayConfig` has no `Default`, on
 purpose (see "Discovery, not a struct literal" below). But you almost never
 need to build one by hand: `ConwayBuilder::discover()` already layers a
 documented, built-in default over all fourteen — the same five-source
-precedence chain (default < XDG < project < env < CLI) a `settings.json`,
+precedence chain (default < user < project < env < CLI) a `settings.json`,
 an environment variable, or a CLI flag all flow through — so a host with no
 `~/.conway/settings.json` anywhere still gets a fully-formed, valid config
 back, not an error and not a struct-literal ceremony. `crates/conway/
@@ -217,7 +217,7 @@ both supply their fake backend with no `backends` table entry at all.
 ### Loading config without the ambient user layer
 
 `discover()` and `from_config(path)` both read
-`$XDG_CONFIG_HOME/conway/settings.json` (falling back to
+`$CONWAY_CONFIG_DIR/settings.json` (falling back to
 `~/.conway/settings.json`) unconditionally, deep-merged in *before* whatever
 `discover()`/`path` finds — `explicit_path` in `LoadOptions` only ever
 replaces the project-scoped layer, never the user-scoped one. For a `conway`
@@ -230,17 +230,17 @@ merging into your program's config, and neither does a test fixture that
 wants to assert against exactly the config it wrote.
 
 `ConwayBuilder::from_config_only(path)` is that seam: identical to
-`from_config`, except the XDG/user layer is never read — the merge becomes
+`from_config`, except the user layer is never read — the merge becomes
 `default < path < env < CliOverrides`, four sources instead of five.
-`conway::config::load_ignoring_xdg` is the underlying `config::load`
+`conway::config::load_ignoring_user_config` is the underlying `config::load`
 sibling, for callers who want the lower-level `LoadOutcome` (config plus
 warnings) rather than a `ConwayBuilder`.
 
-**This suppresses the XDG layer only — not `env`.** `CONWAY_*` environment
+**This suppresses the user layer only — not `env`.** `CONWAY_*` environment
 variables are how CI and container entrypoints hand a specific invocation
 its credentials and overrides; they are supplied by the caller of *this*
 invocation, not left over from someone else's home directory, so
-`from_config_only`/`load_ignoring_xdg` merge them in exactly as `from_config`
+`from_config_only`/`load_ignoring_user_config` merge them in exactly as `from_config`
 does. A caller that also wants an env-free load already has the tool for
 that: build `LoadOptions` with a hand-assembled (possibly empty) `env` map,
 or use `from_parts(ConwayConfig)` directly.
@@ -248,7 +248,7 @@ or use `from_parts(ConwayConfig)` directly.
 ### Layering flag-shaped overrides: `CliOverrides`
 
 `conway::config::merge::CliOverrides` is the fifth and highest-precedence of
-`load`'s five merge sources (default < XDG < project < env < CLI-overrides),
+`load`'s five merge sources (default < user < project < env < CLI-overrides),
 and the only one that isn't a settings-file-shaped table: a struct of
 `Option<T>` fields shaped like command-line flags (`default_role`,
 `cwd`, `permission_mode`, `allowed_tools`, `denied_tools`, `max_steps`,
@@ -424,6 +424,48 @@ let child = conway.fork_from(parent_session, at_seq, spec).await?;
 `Conway::resume` has no result-contract override surface at all — it takes
 only the `SessionId` to reattach, with no per-call spec of any kind to carry
 one on.
+
+### Choosing a child's starting context: `ForkSpec`/`SpawnSpec::context`
+
+`fork` otherwise inherits the forker's ENTIRE transcript and `spawn`
+otherwise inherits none — before this field, there was no way to say "start
+this child with exactly these pieces." `context` takes an ordered
+`Vec<RecordRef>` of already-resolved `(session, seq)` references (your own
+session's earlier records, or a completed fork/spawn/ask child's
+`transcript_ref`) and REPLACES the mode's ordinary default outright:
+
+```rust
+use conway::RecordRef;
+
+// Start a fresh reviewer primed with three specific records from another
+// agent's work, instead of the forker's whole transcript.
+let child = session.fork(
+    session.root(),
+    ForkSpec::new("review the three attached records")
+        .context(vec![
+            RecordRef { session: other_session, seq: LogSeq(4) },
+            RecordRef { session: other_session, seq: LogSeq(7) },
+            RecordRef { session: other_session, seq: LogSeq(9) },
+        ]),
+).await?;
+```
+
+The directive/prompt is still appended as the child's own head content
+record either way — `context` only changes what precedes it. `Some(vec![])`
+is a deliberate "replace the default with nothing" (a fork that keeps only
+its own directive, dropping the forker's transcript entirely), distinct
+from leaving the field `None`. Reading is unrestricted — the same masked,
+ancestry-aware resolution `conway.path`'s `compose_context_path` tool
+already uses mid-chain (see [`docs/plugins/path.md`](plugins/path.md)); a
+reference to a masked, unresolvable, or nonexistent record fails the
+fork/spawn itself with a typed error. Not honored by `Conway::fork_from`
+(the persisted-session, no-live-agent path, `fork_child.rs`) — that
+mechanism already omits several other `ForkSpec` fields (`directive`,
+`model`, `ephemeral`, `ask_origin`) for the same structural reason, and
+wiring `context` through it is a disclosed follow-up. Not yet reachable
+from the model-invoked `conway_fork`/`conway_spawn` tools either — an
+embedder-only surface for this first slice, matching `cwd`/`root`'s own
+precedent.
 
 `build()` no longer registers all four `conway-tools` built-ins
 unconditionally. `fs`, `subagent`, and `report` are still on by default;

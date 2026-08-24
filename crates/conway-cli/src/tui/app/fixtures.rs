@@ -70,6 +70,26 @@ pub(super) fn build_conway_with_echo_backend() -> Conway {
         .expect("build should succeed with every port injected")
 }
 
+/// Mirrors [`build_conway_with_echo_backend`], accepting a caller-supplied
+/// `ConwayConfig` instead of always [`base_config`] -- for a test that
+/// needs to vary a config field (e.g. `plugins.install`) while keeping
+/// every other port the same fully in-memory shape.
+pub(super) fn build_conway_with_config(config: ConwayConfig) -> Conway {
+    let backend: Arc<dyn conway::Backend> = Arc::new(FakeBackend::echo(BackendId::new("fake")));
+    let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
+        backend: BackendId::new("fake"),
+        model: ModelId::new("echo-model"),
+    }));
+    ConwayBuilder::from_parts(config)
+        .with_backend(backend)
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(gate)
+        .with_router(router)
+        .build()
+        .expect("build should succeed with every port injected")
+}
+
 pub(super) fn minimal_cli() -> Cli {
     Cli {
         print: None,

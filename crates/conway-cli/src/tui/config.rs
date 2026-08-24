@@ -13,7 +13,7 @@
 //! ## How `[tui]` still reaches the CLI
 //!
 //! `conway::config::ConwayConfig` no longer defines a `tui` field at all --
-//! `conway::config::load`/`load_ignoring_xdg` (used by
+//! `conway::config::load`/`load_ignoring_user_config` (used by
 //! `ConwayBuilder::from_config`/`discover`, `build_conway`'s own choke
 //! point) strip a top-level `tui` key out of the merged document before
 //! `ConwayConfig`'s `#[serde(deny_unknown_fields)]` deserialize, so an
@@ -30,7 +30,7 @@
 //! `conway::config::merge::merged_document` (the same five-source
 //! precedence merge `load` performs internally, exposed as raw JSON before
 //! that strip) and deserializes the `tui` key back out of it into
-//! [`TuiSection`] -- SAME file(s), SAME precedence (default < XDG <
+//! [`TuiSection`] -- SAME file(s), SAME precedence (default < user config <
 //! project < env < CLI's `--config`), SAME `CONWAY_TUI__*` env var mapping,
 //! independently `#[serde(deny_unknown_fields)]`-checked against this
 //! crate's own schema. A typo inside `[tui.theme]` still fails loudly for
@@ -74,7 +74,7 @@ pub struct TuiSection {
     #[serde(default)]
     pub tool_preview_lines: Option<u32>,
     /// `[tui.history_size]` (T8): the cap on the persisted input-history
-    /// FIFO (`~/.conway/history`, or `$XDG_CONFIG_HOME/conway/history` when
+    /// FIFO (`~/.conway/history`, or `$CONWAY_CONFIG_DIR/history` when
     /// set -- see `conway::config::discovery::history_file_path`). Loaded at
     /// startup and appended to on every submit; oldest entries are evicted
     /// once the cap is exceeded. `None` (the default) means the TUI's
@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn absent_tui_section_loads_to_defaults() {
         let cwd_dir = tempfile::tempdir().expect("tempdir");
-        let xdg_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
         let path = cwd_dir.path().join("settings.json");
         std::fs::write(
             &path,
@@ -246,8 +246,8 @@ mod tests {
 
         let mut env = HashMap::new();
         env.insert(
-            "XDG_CONFIG_HOME".to_string(),
-            xdg_dir.path().to_string_lossy().to_string(),
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
         );
         let options = conway::config::LoadOptions {
             cwd: cwd_dir.path().to_path_buf(),
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn a_real_settings_json_with_a_full_theme_block_loads_into_tui_section() {
         let cwd_dir = tempfile::tempdir().expect("tempdir");
-        let xdg_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
         let path = cwd_dir.path().join("settings.json");
         std::fs::write(
             &path,
@@ -290,8 +290,8 @@ mod tests {
 
         let mut env = HashMap::new();
         env.insert(
-            "XDG_CONFIG_HOME".to_string(),
-            xdg_dir.path().to_string_lossy().to_string(),
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
         );
         let options = conway::config::LoadOptions {
             cwd: cwd_dir.path().to_path_buf(),
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn a_typo_inside_tui_theme_is_a_surfaced_parse_error() {
         let cwd_dir = tempfile::tempdir().expect("tempdir");
-        let xdg_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
         let path = cwd_dir.path().join("settings.json");
         std::fs::write(
             &path,
@@ -347,8 +347,8 @@ mod tests {
 
         let mut env = HashMap::new();
         env.insert(
-            "XDG_CONFIG_HOME".to_string(),
-            xdg_dir.path().to_string_lossy().to_string(),
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
         );
         let options = conway::config::LoadOptions {
             cwd: cwd_dir.path().to_path_buf(),
@@ -372,11 +372,11 @@ mod tests {
     #[test]
     fn env_var_override_reaches_tui_section_through_the_same_layered_merge() {
         let cwd_dir = tempfile::tempdir().expect("tempdir");
-        let xdg_dir = tempfile::tempdir().expect("tempdir");
+        let user_config_dir = tempfile::tempdir().expect("tempdir");
         let mut env = HashMap::new();
         env.insert(
-            "XDG_CONFIG_HOME".to_string(),
-            xdg_dir.path().to_string_lossy().to_string(),
+            "CONWAY_CONFIG_DIR".to_string(),
+            user_config_dir.path().to_string_lossy().to_string(),
         );
         env.insert(
             "CONWAY_TUI__STATUS_LINE__FIELDS".to_string(),

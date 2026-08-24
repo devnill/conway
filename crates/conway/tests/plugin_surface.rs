@@ -38,9 +38,9 @@ use conway::plugin::{
     async_trait, Artifact, ArtifactKind, ArtifactWriteError, ArtifactWriteHandle, ArtifactWriter,
     CancellationToken, ContentBlock, ContextHook, ContextHookCtx, ContextPayload, CwdError, Fact,
     HookAnswer, HookEvent, HookFailure, HookInvocation, HookPermissionVerdict, HookRunner,
-    OverflowInfo, PathArgs, PermissionClass, Plugin, PluginConfig, PluginManifest, PromptSegment,
-    Provenance, RenderKind, Role, SubagentError, Tool, ToolCall, ToolCategory, ToolCtx, ToolError,
-    ToolName, ToolOutput, ToolSpec, TruncationPolicy,
+    InstructionFragment, OverflowInfo, PathArgs, PermissionClass, Plugin, PluginConfig,
+    PluginManifest, PromptSegment, Provenance, RenderKind, Role, SubagentError, Tool, ToolCall,
+    ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
 // D1-8: the curator port + the §11.5 read surface, facade-only. The port
 // types and the `SeqRange`/`StoreError` pair needed to CALL
@@ -136,6 +136,20 @@ impl Plugin for EchoPlugin {
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![Arc::new(EchoTool)]
+    }
+
+    /// F8 liveness for `Plugin::instructions` (board item
+    /// `01M0K5MD59YZRSHE31JKZKFRMY`): a third-party plugin author
+    /// constructs `InstructionFragment` using nothing but the curated
+    /// `conway::plugin` surface, naming the SAME tool this plugin already
+    /// declares via `Self::tools` above -- the structurally-reachable case
+    /// that method's own doc argues can never fail the assembly-time check.
+    fn instructions(&self) -> Vec<InstructionFragment> {
+        vec![InstructionFragment {
+            name: "when-to-echo".to_string(),
+            text: "Call echo when the operator asks you to repeat something verbatim.".to_string(),
+            tool_ids: vec![ToolName::new("echo")],
+        }]
     }
 }
 
@@ -282,7 +296,7 @@ fn facade_only_config(
         default_role: RoleAlias::new("coder"),
         cwd: std::path::PathBuf::from("."),
         session: SessionConfig {
-            root: session_root,
+            root: Some(session_root),
             ..SessionConfig::default()
         },
         limits: LimitsConfig::default(),
@@ -389,6 +403,14 @@ fn authored_plugin_and_tool_are_self_consistent() {
     };
     assert_eq!(output.artifacts.len(), 1);
     assert_eq!(output.artifacts[0].kind, ArtifactKind::File);
+
+    // Board item `01M0K5MD59YZRSHE31JKZKFRMY`: the fragment's `tool_ids`
+    // must actually name a tool this same plugin's `Self::tools` declares
+    // -- that is the structural half of the reachability argument, checked
+    // here rather than merely asserted in prose.
+    let instructions = plugin.instructions();
+    assert_eq!(instructions.len(), 1);
+    assert_eq!(instructions[0].tool_ids, manifest.tools);
 }
 
 /// C3: `Fact`, `CwdError`, and `SubagentError` are constructible/matchable
@@ -520,6 +542,14 @@ async fn authored_hook_transforms_payloads() {
 //
 // Note this file still never imports `conway_core`: `Curator` is implemented
 // and the read surface is CALLED entirely through `conway::plugin`.
+//
+// `PathStore` is deliberately absent from both `CurateCtx` above and this
+// file's imports (board item `01M0EMCK55628YJXGBQY8YGXHE`, decided:
+// engine-internal). `RecallCurator` below is the liveness evidence that
+// decision rests on: it reads a foreign session, names a `PathOp`, and lets
+// `base.derive(..)` do the deriving -- it never needs to `put`/`get` a
+// `PathSelection` directly. See `conway_core::ports::PathStore`'s own doc
+// for the full reasoning.
 // ---------------------------------------------------------------------------
 
 struct RecallCurator;

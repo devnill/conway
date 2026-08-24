@@ -40,6 +40,51 @@ fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     }))
 }
 
+/// The "default" role's plain chain under [`pin_aware_router`] -- what a
+/// `RouteRequest` with `pin: None` resolves to.
+fn default_model_ref() -> ModelRef {
+    ModelRef {
+        backend: BackendId::new("fake"),
+        model: ModelId::new("default-model"),
+    }
+}
+
+/// A distinct model, never in any role's own chain -- reachable ONLY via an
+/// explicit pin, exactly like `conway-runtime/tests/subagent_fork_spawn.rs`'s
+/// own `pinned_model_ref`.
+fn pinned_model_ref() -> ModelRef {
+    ModelRef {
+        backend: BackendId::new("fake"),
+        model: ModelId::new("pinned-model"),
+    }
+}
+
+/// A REAL `MinimalRouter` (not `FakeRouter::single`, which returns the same
+/// fixed route regardless of `RouteRequest::pin` and so could never
+/// discriminate `Conway::resume_with`'s `model` override from a plain
+/// `resume`) -- the "default" role's chain resolves to [`default_model_ref`]
+/// when unpinned; a `RouteRequest::pin` of [`pinned_model_ref`] resolves to
+/// it directly, `MinimalRouter`'s own pin-first precedence.
+fn pin_aware_router() -> Arc<dyn conway_core::ports::Router> {
+    let mut roles = BTreeMap::new();
+    roles.insert(
+        "default".to_string(),
+        conway_core::routing::RoleConfig {
+            chain: vec![default_model_ref()],
+            required: conway_core::capabilities::RequiredCaps::default(),
+            params: conway_core::content::SamplingParams::default(),
+            headroom_tokens: None,
+        },
+    );
+    Arc::new(conway_core::routing::MinimalRouter::new(
+        conway_core::routing::RoutingConfig {
+            roles,
+            health: conway_core::routing::HealthConfig::default(),
+            default_headroom_tokens: 4096,
+        },
+    ))
+}
+
 /// A fixed-text, zero-usage `GenerateResponse` -- for `ScriptedBackend`
 /// scripts driving the drivability tests below, mirroring
 /// `conway-runtime/tests/resume_root.rs`'s own `text_response` helper (this
@@ -193,6 +238,184 @@ async fn resume_on_nonexistent_session_returns_store_error_naming_the_id() {
         }
         other => panic!("expected ConwayError::Store, got {other:?}"),
     }
+}
+
+/// `Conway::resume_with(sid, None, None)` is exactly `Conway::resume(sid)`
+/// (INTENT.md §5c: "changing model mid-session is ordinary, and stays
+/// cheap"; this method's own doc says `resume` is defined in terms of it).
+/// Under [`pin_aware_router`] (which actually resolves `pin`, unlike
+/// `FakeRouter::single`), an override-free resume must still route the
+/// "default" role's plain chain -- proving the new `ResumeSpec::model`
+/// plumbing does not, by itself, change behavior when the caller asks for
+/// nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_with_no_overrides_behaves_exactly_like_resume() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let sid;
+    {
+        let backend: Arc<dyn Backend> = Arc::new(
+            ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("first"))])
+                .with_id(BackendId::new("fake")),
+        );
+        let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+        let conway = ConwayBuilder::from_parts(base_config())
+            .with_backend(backend)
+            .with_session_store(store.clone())
+            .with_permission_gate(gate)
+            .with_router(pin_aware_router())
+            .build()
+            .expect("build should succeed");
+        let handle = conway
+            .new_session(SessionSpec::default())
+            .await
+            .expect("new_session should succeed");
+        let turn = handle
+            .prompt("first turn text")
+            .await
+            .expect("prompt should succeed");
+        let _ = tokio::time::timeout(Duration::from_secs(5), turn.result())
+            .await
+            .expect("result() must not hang")
+            .expect("result() should succeed");
+        sid = handle.id();
+    }
+
+    let backend2 = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("second"))])
+            .with_id(BackendId::new("fake")),
+    );
+    let gate2 = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let conway2 = ConwayBuilder::from_parts(base_config())
+        .with_backend(backend2.clone())
+        .with_session_store(store)
+        .with_permission_gate(gate2)
+        .with_router(pin_aware_router())
+        .build()
+        .expect("build should succeed");
+    let resumed = conway2
+        .resume_with(sid, None, None)
+        .await
+        .expect("resume_with(None, None) should succeed exactly like resume");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let turn = resumed
+        .prompt("second turn text")
+        .await
+        .expect("prompt on a resume_with-resumed handle must succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), turn.result())
+        .await
+        .expect("result() must not hang")
+        .expect("result() should succeed");
+
+    let calls = backend2.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].model,
+        default_model_ref().model,
+        "no override: the resumed agent must still route the role's plain default"
+    );
+}
+
+/// The headline criterion (board item "no way to change model mid-session"):
+/// `--model`/`--role-override` combined with `--resume` (`Conway::
+/// resume_with`) actually changes which model the resumed agent's very next
+/// turn routes to -- proven the same way `conway-runtime/tests/
+/// subagent_fork_spawn.rs`'s fork-side pin guards are: reading the model
+/// that reached the real `GenerateRequest` back off `ScriptedBackend::
+/// calls()`, under a router that genuinely resolves `pin`
+/// ([`pin_aware_router`]). `pinned_model_ref` is reachable ONLY via an
+/// explicit pin -- no role's chain in [`pin_aware_router`] ever names it --
+/// so a passing assertion here is possible only if `resume_with`'s `model`
+/// argument genuinely reached the resumed agent's own `AgentSpec::pin`,
+/// through `ResumeSpec::model` (`conway-runtime`'s `resume_root`).
+///
+/// **Selection survives (§5c).** The resumed turn's own assembled context
+/// still contains the PRE-restart turn's text -- the persisted transcript a
+/// plain `resume` would also read -- proving the model-pin override changed
+/// only which model rendered that same selection, not what was selected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_with_a_model_override_routes_the_next_turn_to_the_pinned_model() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let sid;
+    {
+        let backend: Arc<dyn Backend> = Arc::new(
+            ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("first"))])
+                .with_id(BackendId::new("fake")),
+        );
+        let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+        let conway = ConwayBuilder::from_parts(base_config())
+            .with_backend(backend)
+            .with_session_store(store.clone())
+            .with_permission_gate(gate)
+            .with_router(pin_aware_router())
+            .build()
+            .expect("build should succeed");
+        let handle = conway
+            .new_session(SessionSpec::default())
+            .await
+            .expect("new_session should succeed");
+        let turn = handle
+            .prompt("first turn text")
+            .await
+            .expect("prompt should succeed");
+        let _ = tokio::time::timeout(Duration::from_secs(5), turn.result())
+            .await
+            .expect("result() must not hang")
+            .expect("result() should succeed");
+        sid = handle.id();
+        // `conway`/`handle` drop here, simulating a process restart -- the
+        // same shape `resumed_handle_prompt_succeeds_and_continues_the_
+        // transcript` above uses.
+    }
+
+    let backend2 = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("second"))])
+            .with_id(BackendId::new("fake")),
+    );
+    let gate2 = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let conway2 = ConwayBuilder::from_parts(base_config())
+        .with_backend(backend2.clone())
+        .with_session_store(store)
+        .with_permission_gate(gate2)
+        .with_router(pin_aware_router())
+        .build()
+        .expect("build should succeed");
+    let resumed = conway2
+        .resume_with(sid, None, Some(pinned_model_ref()))
+        .await
+        .expect("resume_with a model override should succeed");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let turn = resumed
+        .prompt("second turn text")
+        .await
+        .expect("prompt on a resume_with-resumed handle must succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), turn.result())
+        .await
+        .expect("result() must not hang")
+        .expect("result() should succeed");
+
+    let calls = backend2.calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "expected exactly one call, calls: {calls:?}"
+    );
+    assert_eq!(
+        calls[0].model,
+        pinned_model_ref().model,
+        "resume_with's model override must reach the resumed agent's own routing request -- \
+         expected the pin {:?}, the role's plain default is {:?}, got {:?}",
+        pinned_model_ref().model,
+        default_model_ref().model,
+        calls[0].model
+    );
+    let text = request_text(&calls[0]);
+    assert!(
+        text.contains("first turn text"),
+        ": a model override must not affect WHICH records are selected -- expected the \
+         resumed turn's context to still contain the pre-restart turn text, got: {text}"
+    );
 }
 
 #[tokio::test]

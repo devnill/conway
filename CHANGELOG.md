@@ -7,8 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: sessions now default to a central, project-keyed location
+  under `~/.conway/sessions/<project-key>/` (or
+  `$CONWAY_CONFIG_DIR/sessions/<project-key>/`) instead of
+  `<cwd>/.conway/sessions/`** — operator ruling (decision
+  `01M0QK8J757ZH6R06WYJ0PQGEM`), the same argument already settled for
+  `settings.json` (`~/.conway/settings.json` unconditionally), and the
+  prerequisite for cross-session discovery: with one root holding every
+  project's sessions, "which projects exist" becomes a directory listing
+  instead of a filesystem crawl or a registry. The project key is your
+  invocation directory's absolute path with `/` replaced by `-` (mirroring
+  Claude Code's own `~/.claude/projects/<encoded-path>/` convention) —
+  readable, not hashed, so `ls ~/.conway/sessions/` shows real project
+  paths. `[session].root`, when set explicitly, keeps its old, direct
+  meaning unchanged (it names the sessions directory itself, resolved
+  against `cwd` if relative) — this only changes what an *unset* `root`
+  means. **An existing project-local `.conway/sessions` is never read,
+  moved, or deleted automatically** — conway detects it and warns, naming
+  both the old and new locations and how to keep using the old one
+  (`[session].root` set explicitly) or switch over (move the contents
+  yourself); the warning repeats on every run until you do one or the
+  other. See [`docs/sessions.md`](docs/sessions.md#where-session-data-lives-on-disk)
+  for the full behavior, including the two-directories-two-stores property
+  (subdirectory invocations still key separately) this preserves unchanged
+  from before.
+
 ### Fixed
 
+- **One-shot's `--allowed-tools` now narrows what the model is TOLD it has,
+  not just what it's permitted to call** — a dogfooding session found
+  `conway -p '…' --allowed-tools 'read,grep'` opening with the model
+  proposing `bash`, denied, then `glob`, denied, before it ever reached for
+  a tool it actually had, burning two avoidable round trips (and their
+  tokens) discovering a gap that gate-only enforcement never closed. A
+  non-empty `--allowed-tools` now also narrows the announced tool set
+  (intersected with `--agent`'s own `tools:` selector, so narrowing never
+  widens); a bare `--deny-tools` entry is dropped from the announced set
+  too, while an argument-scoped one (`bash(rm *)`) is left announced since
+  most calls to it would still succeed. An EMPTY `--allowed-tools` (the
+  existing fail-closed default) deliberately keeps announcing every tool,
+  reversing this fix's own first draft after an empirical check found the
+  obvious alternative unsafe: the announced set is also what the backend's
+  own tool-call decoder validates responses against, so a call naming
+  anything outside it is a harder, backend-level parse failure instead of a
+  graceful runtime denial — collapsing the empty-allow-list case to nothing
+  announced would turn every stray tool call under the default, no-flags
+  invocation into a confusing routing failure. See `docs/scripting.md`'s
+  "Permissions with no human present" section for the full behavior.
 - **`ForkSpec::result_contract` is now honoured by `Conway::fork_from`**, not
   only by `SessionHandle::fork`'s live path. A contract set on the facade
   fork path previously reached no enforcement at all — silently, because
@@ -34,6 +81,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`/trust permissions` now shows you the file BEFORE you trust it, not
+  after.** Typing it opens a preview card — the same bottom-anchored modal
+  the permission prompt and `/ask` use — showing the project permission
+  file's current content, with `[y]`/`Enter` to confirm and `[n]`/`Esc` to
+  cancel; nothing is trusted or installed until you confirm. This is a
+  preview, not a diff: conway's trust store keeps only a digest of a prior
+  trust decision, never its content, so there is nothing to compare the
+  current bytes against — the card says this plainly when a previously
+  trusted file changed, rather than implying a comparison it can't produce.
+  One-shot (`conway -p`) is unaffected either way: it has no trust surface
+  at all (no slash commands, no read of `trust.json`), so a new trust
+  decision can never be made there, only one already made through the TUI
+  can apply. See [`docs/permissions.md`](docs/permissions.md)'s "Trust"
+  section and [`docs/plugins/trust-and-security.md`](docs/plugins/trust-and-security.md)
+  for the full posture, including what remains out of reach without new
+  storage.
+- **A plugin browser in the `/settings` menu: turn a first-party plugin on
+  or off without recompiling, and see what changes before you do.** A new
+  **plugins** section lists every plugin `conway` links in, on or off,
+  each with a one-line summary and, in the operator's own framing, **you
+  get** / **you lose** / **costs** — what turning it on adds, what's
+  different with it off, and its ongoing cost, if any. Toggling one
+  (`Enter` on its row) writes `~/.conway/settings.json`'s `plugins.install`
+  array directly (`$CONWAY_CONFIG_DIR/settings.json` when that's set) —
+  the first config *writer* anywhere in conway, closing a gap `/settings`'
+  own doc has named since it was built ("persisting a toggle means
+  inventing a writer, and 'which layer' has no good answer" — now
+  answered). The write is a targeted text splice, not a
+  parse-mutate-reserialize round trip: it touches only the one array
+  element that changed, leaving every other key, its ordering, and its
+  formatting exactly as you left them, whether or not you hand-edit the
+  file (proven against a fixture carrying `"//"`-keyed comments, unusual
+  key ordering, and unrelated sections). The toggle applies on your next
+  restart, never live — plugins install once, at startup — and the footer
+  says so plainly. Every plugin gains a `Plugin::description()` (a new
+  trait method with a zero-cost default, alongside `Plugin::instructions()`
+  — the two are separate types, addressing two different audiences: the
+  model reads an instruction fragment, the operator reads a description).
+  See [`docs/interactive.md`](docs/interactive.md)'s "The plugins section"
+  and [`docs/plugins/hooks.md`](docs/plugins/hooks.md) for the full
+  `Plugin` trait surface.
+- **A model can now compose what a session sends as context on its next
+  turn: `conway.path`'s `compose_context_path` tool.** `write_head`/
+  `ValidatedPath::derive_with` — the writer and the composer the context-path
+  mechanism was built around — existed with no production caller anywhere
+  in a running build until now; this tool is that caller. Bring specific
+  records in from another session (`include`, resolved `(session, seq)`
+  pairs — never a free-text description, since the operator's stated intent
+  has already been interpreted by the model calling this tool), leave
+  specific records of this session's own history out (`exclude`), or drop
+  the whole own tail deliberately (`drop_own_tail: true`, off by default).
+  Reports what was brought in and whether the change falls inside the
+  cached portion of context — structure, never a token guess, matching the
+  operator ruling that a token cost is the backend's admission gate to
+  compute, nobody else's. A composition that would strand a tool call or
+  its result is REFUSED (the orphan named, two repairs offered) and
+  persists nothing, never silently patched. Fixes a real trap along the
+  way: composing a selection that happens to carry none of a session's own
+  records resets its "own tail" marker to the very beginning, which would
+  otherwise let an earlier, deliberate exclusion silently reappear the
+  moment anything else is said — this tool always composes from the
+  session's current path (which already carries its own tail) and keeps
+  just enough of it to prevent that reappearance even when
+  `drop_own_tail: true` is used. Opt-in like every other first-party
+  plugin: `{ "plugins": { "install": ["conway.path"] } }`. See
+  [`docs/plugins/path.md`](docs/plugins/path.md) for the full contract,
+  [`docs/plugins/hooks.md`](docs/plugins/hooks.md) point 18 for the new
+  `ToolCtx::context_path` extension point this tool is the first consumer
+  of, and [`docs/plugins/trust-and-security.md`](docs/plugins/trust-and-security.md)
+  for its trust posture (an ordinary gated tool call; reads any session's
+  records honestly, through the same masked resolution the harness already
+  uses; writes only the calling session's own head, never another's).
+- **A model can now find a session it did not already hold a reference
+  to: `conway.discover`'s `search_sessions` tool.** `compose_context_path`
+  (above) takes resolved `(session, seq)` pairs, correctly — but a model
+  could only ever resolve intent into a reference it ALREADY held (its own
+  session, or a completed subagent's `transcript_ref`), so "bring in what
+  we worked out about the retry logic yesterday" had no way to resolve at
+  all. This tool closes that: metadata-only by default (which sessions
+  exist, when, labeled how — zero record content read), or, with a `text`
+  argument, a bounded content scan (`max_sessions` caps how many sessions
+  are ever opened and read, in either mode) that returns matching
+  `(session, seq)` pairs ready to hand to `compose_context_path`'s
+  `include`. Every reply states what was actually searched and what it
+  cost — project/session/record counts, and whether more existed beyond
+  `max_sessions` (`truncated`). Scoped to this project's own sessions by
+  default (`scope: "current_project"`); `scope: "all_projects"` is an
+  explicit widening across every project under the central sessions root
+  (made possible by the session-relocation change above — one directory
+  listing, never a filesystem crawl or a registry). Opt-in like every
+  other first-party plugin, installed alongside `conway.path`:
+  `{ "plugins": { "install": ["conway.discover", "conway.path"] } }`. See
+  [`docs/plugins/discover.md`](docs/plugins/discover.md) for the full
+  contract, [`docs/plugins/hooks.md`](docs/plugins/hooks.md) point 20 for
+  the new `ToolCtx::session_discovery` extension point this tool is the
+  first consumer of, and
+  [`docs/plugins/trust-and-security.md`](docs/plugins/trust-and-security.md)'s
+  "Finding a session" section for its trust posture (an ordinary gated tool
+  call; read-only, never writes; content search is bounded and its cost is
+  always reported).
+- **A parent can now start a child with a CHOSEN context instead of an
+  inherited one: `ForkSpec`/`SpawnSpec::context`.** Before this field,
+  context was the one axis of a child agent that was purely inherited —
+  `fork` always got the forker's entire transcript, `spawn` always got
+  none, and there was no way to say "start this child with exactly these
+  pieces." `context` takes an ordered list of already-resolved
+  `(session, seq)` references and replaces the mode's ordinary default
+  outright — the directive/prompt is still appended as the child's own
+  head content record either way. This is the cache-free counterpart of
+  `compose_context_path` (above): curation is nearly free at an agent
+  BOUNDARY, where there is no prefix yet to invalidate, and shares that
+  tool's own `derive_with`/`set_head` machinery rather than reimplementing
+  it. Reading is unrestricted — the same masked, wide-open resolution
+  `compose_context_path` already uses mid-chain — a reference to a masked,
+  unresolvable, or nonexistent record fails the fork/spawn itself with a
+  typed error, never silently. A brand-new child's `covers_upto` correctly
+  lands on `LogSeq::ZERO` (its own log is still empty when the head is
+  written), which is the harmless reading, not the silent-reversal trap a
+  mid-chain reset can hit — the child has no prior head for anything to be
+  reversed against. Embedder-facing only for this first slice, matching
+  `cwd`/`root`'s own precedent: not yet reachable from the model-invoked
+  `conway_fork`/`conway_spawn` tools, and not honored by
+  `Conway::fork_from` (the separate, persisted-session, no-live-agent fork
+  path). See
+  [`docs/embedding.md`](docs/embedding.md#choosing-a-childs-starting-context-forkspecspawnspeccontext)
+  for the full contract and a worked example.
 - **A shipped `conway` binary can gain a tool without a rebuild: subprocess
   plugins.** A thin, disclosed slice of the out-of-process plugin host —
   `tool.spec/1` (manifest discovery) and `tool/1` (execution) only, one-shot
@@ -70,6 +243,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A plugin can now ship instruction text alongside its tools, not just
+  the tools themselves.** `Plugin::instructions()` declares zero or more
+  named fragments (name, text, the tool ids the text assumes); the
+  fragment's text is injected as its own segment right after the base
+  system prompt and before an operator's own directory-authored skills.
+  Unlike text a plugin used to have to inject by mutating an assembled
+  request from inside a context hook, a declared fragment is inspectable
+  data: `/context <agent>` now shows a **preamble** section naming every
+  fragment, its size, and which plugin it came from — so it is obvious that
+  uninstalling the plugin removes the paragraph. A fragment naming a tool
+  id that is not actually installed for the session is never sent to the
+  model; it is withheld and reported inline instead (`⚠ names <tool> — not
+  installed`), so a stale instruction can never quietly produce an agent
+  that tries a tool and fails forever. Two installed plugins declaring the
+  same fragment name is a build-time error, naming both plugins. **Known
+  limitation: only root agents receive instruction fragments** — a forked or
+  spawned child gets none, even when it holds a tool whose plugin declares
+  one, matching the limitation directory-loaded skills already have for
+  child agents. See
+  [`docs/plugins/hooks.md`](docs/plugins/hooks.md) point 17 for the full
+  mechanism, [`docs/interactive.md`](docs/interactive.md) for the `/context`
+  preamble, and [`docs/plugins/trust-and-security.md`](docs/plugins/trust-and-security.md)
+  for its trust posture (no new gate; no new capability beyond what a
+  context hook already had).
 - **`scripts/dogfood-note.sh` — one command from "using conway just now was
   awkward" to a board item**, plus [`docs/dogfooding.md`](docs/dogfooding.md)
   documenting the loop. Three modes (`friction`, `comment`, `session`), each
@@ -109,9 +306,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AnthropicBackend`/`OpenAiCompatBackend`) override `admit` with their own
   wire-body-aware estimate but declare `TokenCountFidelity::Heuristic`
   honestly — neither vendors a tokenizer nor has a measured calibration
-  factor. Note the scope: this is visible to code inspecting the trait, not
-  yet to an operator — no production path (probe report, routing engine, CLI
-  output) reads `token_fidelity()` today. Surfacing it is filed separately.
+  factor.
+- **`conway routes explain` now shows how much to trust each candidate's own
+  token estimate** — an operator-visible answer to `Backend::token_fidelity`
+  above, closing the gap its own introduction left open (no production path
+  read it; only tests did). `CapabilityIndex::from_backends` — already the
+  code that reads each constructed backend's `Backend::capabilities()` at
+  startup — now reads `Backend::token_fidelity()` too, once per backend id
+  (a `Backend`-level declaration, not per-model like `Capabilities`, so it is
+  a new, dedicated side table rather than a field added to `Capabilities`
+  itself, which is constructed at ~40 call sites across the workspace and
+  answers an unrelated question). `ExplainEntry` gains a `token_fidelity`
+  field (`#[serde(default)]`, so a report encoded before this field existed
+  still decodes); `conway routes explain`'s text output gains a `tokens:
+  <exact|calibrated|heuristic|unknown>` suffix per candidate, `--json` gains
+  a matching `"token_fidelity"` key. `unknown` covers the one case that
+  cannot answer: `conway_core::routing::MinimalRouter`'s config-only
+  fallback, which holds no `Arc<dyn Backend>` at all and reports `None`
+  rather than guessing.
 - **`conway.fs` enforces its own confinement root for all six of its tools —
   `read`, `write`, `edit`, `cd`, `glob`, `grep` — and does so
   open-relative**, closing a symlink-swap TOCTOU race that a check-then-open
@@ -840,10 +1052,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/tests/hook_revoke_seam.rs`, `docs/interactive.md`)
 
 - **A way to load config while ignoring the ambient user layer**. Every config load merges five sources --
-  `default < XDG < project < env < CLI` -- and `LoadOptions::explicit_path`
+  `default < user < project < env < CLI` -- and `LoadOptions::explicit_path`
   (and therefore `ConwayBuilder::from_config(path)`) only ever replaces the
-  *project* layer: the XDG/user layer
-  (`$XDG_CONFIG_HOME/conway/settings.json`, or `~/.conway/settings.json`) was
+  *project* layer: the user layer
+  (`$CONWAY_CONFIG_DIR/settings.json`, or `~/.conway/settings.json`) was
   read unconditionally, before it, every time -- `from_config`'s own doc
   comment ("still layered under XDG/env/CLI precedence") was accurate, but
   there was no way anywhere in the public API to opt OUT of that layer. Two
@@ -853,13 +1065,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not link -- the operator's own config was correct; the gap was that
   nothing let a caller say "ignore it."
   `ConwayBuilder::from_config_only(path)` and its underlying
-  `conway::config::load_ignoring_xdg` are the new seam: identical to
-  `from_config`/`load`, except the XDG/user layer is never read (the merge
+  `conway::config::load_ignoring_user_config` are the new seam: identical to
+  `from_config`/`load`, except the user layer is never read (the merge
   becomes `default < project < env < CLI`, four sources instead of five).
   `env` is deliberately NOT suppressed by this seam -- `CONWAY_*` variables
   are how CI and container entrypoints hand a specific invocation its own
   credentials, not ambient state left over from someone else's home
-  directory; see `load_ignoring_xdg`'s own doc for the full reasoning.
+  directory; see `load_ignoring_user_config`'s own doc for the full reasoning.
   `from_config`'s documented behavior is unchanged. A structural guard
   (`crates/conway/tests/config_isolation_guard.rs`) now fails the suite if a
   future in-process test starts reading ambient config again.
@@ -1049,7 +1261,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the two methods itself; and every `event` other than `pre_tool_use`
   remains parsed-and-validated only. Guarded end to end rather than at the
   seam -- an integration test drives the real compiled binary through a
-  one-shot with an isolated `XDG_CONFIG_HOME`, and asserts the on-disk
+  one-shot with an isolated `CONWAY_CONFIG_DIR`, and asserts the on-disk
   session transcript's denial names the HOOK ID. That precision is
   load-bearing: with the injection removed the call is still denied, by the
   default allow-list gate (`tool 'bash' is not in the allow list`), so a

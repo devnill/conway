@@ -100,7 +100,7 @@ silently inert, not an error.
 A rule that fires on every tool call is not the first hook anyone wants —
 `match` is what narrows one. This
 rule logs one line every time (and only when) `bash` runs, in
-`~/.conway/settings.json` (or `$XDG_CONFIG_HOME/conway/settings.json` if
+`~/.conway/settings.json` (or `$CONWAY_CONFIG_DIR/settings.json` if
 that's set — see "Where things live" below for the exact discovery order):
 
 ```json
@@ -182,7 +182,7 @@ the same walk-up-from-cwd, project-then-global precedence
 `docs/getting-started.md`'s "Configure a provider" section documents for
 everything else in that file (`.conway/settings.json` found by walking up
 from your current directory takes precedence over `~/.conway/settings.json`
-— or `$XDG_CONFIG_HOME/conway/settings.json` if that variable is set,
+— or `$CONWAY_CONFIG_DIR/settings.json` if that variable is set,
 *instead of* `~/.conway/settings.json`, not in addition to it). What's still
 true from before: **there is no runtime inventory surface.** `hooks.md`
 names this directly: other harnesses' documented failure mode is "a rule set
@@ -492,6 +492,29 @@ async fn main() -> conway::Result<()> {
 
 with `settings.json`'s `plugins.install: ["my.first_plugin"]` naming it.
 
+**Optional: describe your plugin for the operator, not only the model.**
+`Plugin::description()` (`hooks.md` point 19) is a separate, zero-cost-
+default trait method a plugin browser (`conway`'s own `/settings` plugins
+section) reads to show a summary and a you-get/you-lose/costs panel before
+someone turns your plugin on:
+
+```rust,ignore
+impl Plugin for MyFirstPlugin {
+    // ... manifest()/tools() unchanged from above ...
+    fn description(&self) -> conway::plugin::PluginDescription {
+        conway::plugin::PluginDescription {
+            summary: "greets someone by name".to_string(),
+            you_get: "1 tool (greet)".to_string(),
+            you_lose: "nothing else".to_string(),
+            costs: "none".to_string(),
+        }
+    }
+}
+```
+
+Leaving it unimplemented is fine -- the browser renders an honest
+"(no description)" rather than a blank row.
+
 **Executed against the real thing, not sketched:** the exact shape above (the
 `spec()`/`invoke()` bodies are elided here for length only — the scratch
 crate's own `GreetTool` is a complete, ordinary `Tool` impl, nothing hidden)
@@ -546,6 +569,25 @@ implementable from a facade-only crate — `PermissionGate`, `Tool`, `Plugin`,
 via the separate `conway::backend` module — is implementable the same way:
 name the trait at the facade root, name its supporting types from the
 matching curated module, register through the builder.
+
+### Spawning a child process from a `Tool`
+
+If your `Tool::invoke` spawns a child process (`tokio::process::Command`),
+you own reaping it: a child that outlives the tool call that spawned it is a
+leaked, possibly-still-running process. `conway::plugin::kill_group` is the
+supported way to do that — spawn with `.process_group(0)` (the child becomes
+its own process-group leader, so its pid doubles as the pgid), then on your
+timeout/cancellation path call `kill_group(&mut child, pgid).await`, which
+SIGTERMs the whole group, gives it a grace period, and SIGKILLs-and-reaps if
+it hasn't exited. This is the exact primitive `conway-plugin-subprocess` and
+`conway-plugin-mcp` use for their own spawned children (board item
+`01M0EKVR1BEXXS75NV2JC4HZZ9` consolidated what used to be independent
+hand-copies in each of those crates plus `conway-tools` itself into this one
+re-export) — reuse it rather than re-deriving the SIGTERM-then-SIGKILL
+sequence yourself. Unix-only (`#[cfg(unix)]`), and only present when
+`conway`'s `builtin-tools` feature is on (the default) — a binary that opts
+out of default features and still spawns child processes owns its own
+reaping, exactly as it would if built-in tools had never existed.
 
 ### `ToolCtx`'s handle fields
 

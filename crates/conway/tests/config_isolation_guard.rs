@@ -5,13 +5,13 @@
 //!
 //! `ConwayBuilder::from_config`, `ConwayBuilder::discover`, and
 //! `config::load`/`LoadOptions::default()` all read
-//! `$XDG_CONFIG_HOME/conway/settings.json` (or `~/.conway/settings.json`,
+//! `$CONWAY_CONFIG_DIR/settings.json` (or `~/.conway/settings.json`,
 //! the invoking user's OWN file, unrelated to any test fixture) and deep-
 //! merge it into whatever config the test believes it built. That is
 //! precisely the defect this item closed: `crates/conway-cli/tests/
 //! continuity.rs` and `oneshot_ask.rs` failed on any operator machine whose
 //! real settings named a backend kind this facade does not link (board
-//! item's own reproduction). `from_config_only`/`load_ignoring_xdg` are the
+//! item's own reproduction). `from_config_only`/`load_ignoring_user_config` are the
 //! honest seam; this guard is what keeps a future in-process test call site
 //! from silently reintroducing the ambient read the seam exists to avoid.
 //!
@@ -20,7 +20,7 @@
 //! A compiled-binary subprocess test (`crates/conway-cli/tests/common/
 //! mod.rs`'s `command`/`run_conway`) is unaffected by this guard and by the
 //! defect it guards against: that harness already redirects the SUBPROCESS's
-//! own `XDG_CONFIG_HOME` explicitly, every invocation. The gap was always
+//! own `CONWAY_CONFIG_DIR` explicitly, every invocation. The gap was always
 //! in-process calls into the `conway` library, made by the TEST binary
 //! itself, which that subprocess-level redirection never reaches.
 //!
@@ -153,28 +153,28 @@ fn strip_comments_and_strings(content: &str) -> String {
 }
 
 /// The banned in-process, ambient-reading call patterns, and why each one
-/// is banned (all read `$XDG_CONFIG_HOME`/`~/.conway/settings.json`
+/// is banned (all read `$CONWAY_CONFIG_DIR`/`~/.conway/settings.json`
 /// unconditionally unless the caller explicitly isolates `env`, which none
 /// of these three do on their own).
 const BANNED_PATTERNS: &[(&str, &str)] = &[
     (
         "ConwayBuilder::from_config(",
-        "reads the ambient XDG/user layer unconditionally -- use \
+        "reads the ambient user layer unconditionally -- use \
          ConwayBuilder::from_config_only(..) for an in-process test that \
          wants isolation",
     ),
     (
         "ConwayBuilder::discover(",
         "runs the full five-source discovery chain, including the ambient \
-         XDG/user layer, against this TEST process's own real environment",
+         user layer, against this TEST process's own real environment",
     ),
     (
         "LoadOptions::default()",
         "seeds `env` from this test process's own std::env::vars() and \
-         resolves the XDG layer against its real $HOME -- construct \
+         resolves the user layer against its real $HOME -- construct \
          LoadOptions explicitly with an isolated `env` map (see \
          crates/conway/tests/support/mod.rs::isolated_env) or call \
-         config::load_ignoring_xdg instead",
+         config::load_ignoring_user_config instead",
     ),
 ];
 

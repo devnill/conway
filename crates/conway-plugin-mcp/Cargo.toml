@@ -28,6 +28,10 @@ description = "An MCP-over-stdio client plugin (board item 01M03GPNF0KN59FHAEEAE
 # reason `conway-plugin-subprocess` does not: the whole point is that an MCP
 # client plugin needs nothing more privileged than what any other plugin
 # author already has.
+# No `default-features = false` here (deliberately): this crate's own
+# `kill_group` call (`src/session.rs`) is `conway::plugin::kill_group`,
+# which `conway` only re-exports when its `builtin-tools` feature is on
+# (default-on) -- board item `01M0EKVR1BEXXS75NV2JC4HZZ9`.
 conway = { path = "../conway" }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -43,14 +47,13 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "time", "rt", "sync", "macros"] }
 
 [target.'cfg(unix)'.dependencies]
-# The identical SIGTERM-then-SIGKILL process-group kill primitive
-# `conway-plugin-subprocess`'s own `unix` module duplicates (itself a
-# documented duplicate of `conway_tools::process::unix::kill_group`, whose
-# module is private and out of this item's owned paths). Duplicated here again
-# rather than shared: `conway_tools::process` stays private, and this crate
-# does not depend on `conway-plugin-subprocess` (the two transports are
-# siblings, not a layering -- see the package doc above). Same ~15-line
-# sequence, cited by name.
+# NOT for the SIGTERM-then-SIGKILL process-group kill any more (board item
+# `01M0EKVR1BEXXS75NV2JC4HZZ9`: that primitive is `conway::plugin::
+# kill_group` now, one implementation reached through the facade instead of
+# a third hand-copy in this crate). Still needed for `McpSession::drop`'s
+# own synchronous, best-effort group SIGKILL (`Drop` cannot `await` the
+# graceful `kill_group`, so it sends `nix::sys::signal::kill(-pgid,
+# SIGKILL)` directly) -- see `session.rs`'s own module doc.
 nix = { workspace = true, features = ["signal", "process"] }
 
 [dev-dependencies]

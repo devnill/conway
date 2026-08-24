@@ -168,6 +168,11 @@ pub(crate) async fn fork_child(
             session: child,
             agent_def: None,
             role: None,
+            // `fork_from`/`ForkChildRequest` exposes no model-pin override
+            // today -- the persisted child resolves its pin the same way an
+            // ordinary resume does (agent_def's own configured model, if
+            // any). Adding one is a natural follow-on, not this item's scope.
+            model: None,
             tools: req.tools,
             budget: req.budget,
             cwd: None,

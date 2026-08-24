@@ -33,6 +33,7 @@ pub mod agents;
 mod builder;
 pub mod config;
 mod conway;
+mod discovery_host;
 mod error;
 mod event_stream;
 mod fork_child;
@@ -48,13 +49,14 @@ pub mod skills;
 mod subagent_spec;
 
 pub use builder::{ConwayBuilder, PluginSelection};
+pub use config::trust::TrustStatus;
 pub use conway::{Conway, HookRuleView};
 pub use error::{ConwayError, Result};
 pub use event_stream::EventStream;
 pub use host_caps::HostCaps;
 pub use intent::AgentIntent;
 pub use output_schema::compile_output_schema;
-pub use permissions::{PermissionLoadReport, RevokeOutcome, TrustPermissionReport};
+pub use permissions::{PermissionLoadReport, RevokeOutcome, TrustPermissionReport, TrustPreview};
 pub use session_handle::{SessionHandle, SessionSpec, TurnHandle};
 pub use subagent_spec::{ForkSpec, SpawnSpec};
 
@@ -331,6 +333,15 @@ pub mod plugin {
     /// establishes for commands, plus `carries_tool_name` (whether a
     /// `[hooks].rules[]` entry may pair this event with `match`).
     pub use conway_core::ports::EventDecl;
+    /// [`Plugin::instructions`]'s own return-type element -- a plugin
+    /// author constructs one of these per instruction fragment it
+    /// declares, the SAME "declare, host attributes/checks it" shape
+    /// [`EventDecl`]/[`CommandSpec`] establish immediately above and below.
+    pub use conway_core::ports::InstructionFragment;
+    /// [`Plugin::description`]'s own return type -- see that method's own
+    /// doc for why this is a distinct type from [`InstructionFragment`],
+    /// argued rather than assumed (two audiences, two cardinalities).
+    pub use conway_core::ports::PluginDescription;
     pub use conway_core::ports::{
         ArtifactWriteHandle, ArtifactWriter, CancellationToken, Command, CommandCtx,
         CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, CurateCtx,
@@ -348,6 +359,49 @@ pub mod plugin {
     /// `CurateCtx`'s `pub resolver: Arc<TranscriptResolver>` field would
     /// otherwise be unspellable from a crate depending only on `conway`.
     pub use conway_core::transcript::TranscriptResolver;
+
+    /// The Drop-time / timeout-time process-group SIGKILL a `Tool` or
+    /// `ContextHook` that spawns a child process needs so the child does
+    /// not outlive its spawner: SIGTERM the whole group, give it a grace
+    /// period, SIGKILL and reap if it hasn't exited.
+    ///
+    /// **Why this landed here (board item `01M0EKVR1BEXXS75NV2JC4HZZ9`).**
+    /// The identical ~15-line sequence was hand-copied five times across
+    /// three crates -- `conway-tools` (behind a private module), and
+    /// `conway-plugin-subprocess`/`conway-plugin-mcp` (each copied it
+    /// because the plugin tier may not depend on `conway-tools` directly,
+    /// and a private module gave them no other way to reach it). That is
+    /// not a tidiness problem, it is a gap in the extension surface: conway
+    /// asks a plugin author to spawn and reap child processes and gave
+    /// them no supported way to do the reaping. Three ways to close it were
+    /// weighed, not assumed: publish `conway-tools` itself (cheapest, and
+    /// wrong -- it stays an internal engine crate `conway-cli`'s own
+    /// `no_forbidden_deps` guard exists to keep plugin-tier code out of);
+    /// leave it duplicated and document the split (legitimate in general,
+    /// but five SILENT copies were an accident, not a decision, and this
+    /// primitive is exactly the kind of thing every other plugin-facing
+    /// capability in this module already reaches through this same
+    /// facade); or re-export it here, alongside everything else a plugin
+    /// author needs. This module took the third option: `Tool`/
+    /// `ContextHook` are already only reachable through `conway::plugin`,
+    /// and a plugin that spawns a child is exercising the exact same kind
+    /// of capability `ToolCtx`'s other handles already broker -- putting
+    /// one more process primitive next to them is consistent, not a
+    /// widening of what this facade is for.
+    ///
+    /// Gated on `builtin-tools` (default-on), UNLIKE `Tool`/`ContextHook`
+    /// themselves (those come from `conway_core::ports`, unconditionally):
+    /// this implementation lives in `conway_tools::process` (see that
+    /// module's own doc for the five-way diff and the one behavioral
+    /// difference it resolved), the same optional, default-on crate
+    /// `ConwayBuilder`'s own built-in-tools wiring depends on
+    /// (`crates/conway/src/builder.rs`'s `#[cfg(feature = "builtin-tools")]`
+    /// items). A binary that disables `conway`'s default features loses
+    /// this the same way it loses every other `conway-tools`-sourced name
+    /// in this crate; it still owns its own reaping in that configuration,
+    /// exactly as it would if built-in tools had never existed.
+    #[cfg(all(unix, feature = "builtin-tools"))]
+    pub use conway_tools::process::unix::{kill_group, TERM_GRACE};
 }
 
 /// The `Backend` authoring surface:
@@ -496,13 +550,47 @@ pub use conway_core::canon::canonical_json_bytes;
 /// `derive_reordered` constructors, and `Derivation`. Re-exported so a
 /// facade-only crate can name `RecordRef`/`PathNode`/`PathSelection`/
 /// `SelectionKey`/`PathOp`/`CostEstimate`/`PathError`/`ValidatedPath`/
-/// `Derivation` without depending on `conway-core` directly. The tolerant
-/// constructor (`default_path`), the `PathStore` port, head resolution and
-/// assembly land in later sub-units and live elsewhere.
+/// `Derivation` without depending on `conway-core` directly.
+///
+/// **`PathStore` is deliberately NOT among these re-exports, and not in
+/// `pub mod plugin` either (board item `01M0EMCK55628YJXGBQY8YGXHE`).**
+/// Every other port trait this facade curates is either re-exported for a
+/// third party to *implement* or reached indirectly through a ctx field
+/// whose concrete `Arc<dyn Trait>` needs no import to call (`CurateCtx`'s
+/// `store: Arc<dyn SessionStore>` is the latter). `PathStore` is neither:
+/// `CurateCtx` hands a curator `store` and `resolver`, never a path store,
+/// and `01M0EMAC4CCDQ8QJYM21RXPKRY`'s real curator (`conway-plugin-trim`)
+/// confirmed that the §11.5 read surface those two fields provide is
+/// sufficient — it names ops and lets the engine derive; it never stores or
+/// fetches a `PathSelection` directly. See
+/// [`conway_core::ports::PathStore`]'s own doc for why: a second
+/// implementation would put the write-once, content-addressed guarantee the
+/// retention index depends on in a third party's hands rather than the
+/// engine's, for a capability nothing outside the engine's own context
+/// assembly currently exercises (`resolve_default_path` in `conway-runtime`
+/// is `.get`'s only production caller; nothing calls `.put` outside
+/// `FsPathStore`'s own construction). The tolerant constructor
+/// (`default_path`) and head resolution land in later sub-units and stay
+/// engine-internal for the same reason.
 pub use conway_core::path::{
     CostEstimate, Derivation, DivergenceKind, HarnessDrop, NodeProvenance, NodeStamp, OpLabel,
     Orphan, PathError, PathNode, PathOp, PathSelection, RecordRef, SelectionKey, Selector,
     ValidatedPath,
+};
+
+/// The cross-session discovery vocabulary (board item
+/// `01M0PS8J3AK7Z7253Z3E3RD3GY`): pure value types a `Tool` builds a
+/// [`conway_core::ports::SessionSearchQuery`] from and reads a
+/// [`conway_core::ports::SessionSearchResult`] back into -- re-exported at
+/// the root for the SAME reason the context-path vocabulary immediately
+/// above is: a facade-only crate constructs and reads these without
+/// depending on `conway-core` directly. `SessionDiscoveryHost`/
+/// `SessionDiscoveryHandle` are deliberately NOT re-exported (mirroring
+/// `ContextPathHost`/`ContextPathHandle`'s own precedent, `conway_core::
+/// ports::ContextPathHandle`'s doc): `ToolCtx::session_discovery`'s methods
+/// are reachable by dispatch alone, never by naming the handle/host types.
+pub use conway_core::ports::{
+    MatchedRecord, SessionMatch, SessionSearchQuery, SessionSearchResult, SessionSearchScope,
 };
 
 // Amended by:
@@ -518,6 +606,18 @@ pub use conway_core::path::{
 pub use conway_core::routing::{
     BreakerSnapshot, CapabilitySummary, EntryOutcome, ExplainEntry, ExplainReport,
 };
+
+// Board item 01M0ASX466G3PW3SJJS3KGNS55: `ExplainEntry::token_fidelity` is a
+// public field of a type re-exported above, so this facade must let a
+// caller name its type too -- the identical reasoning `RoutingConfig`/
+// `HeadroomPolicy`/`ModelOverrides` below already establish for
+// `RouterBuildContext`/`BackendBuildContext`'s own field types. Already
+// re-exported inside `pub mod backend` (for a third-party `Backend`
+// implementing `token_fidelity()`); this is a second, root-level re-export
+// for the unrelated reason that `conway routes explain`'s own caller needs
+// to name it without depending on `conway-core` directly, the same
+// dual-export shape `Provenance` already has (root, and `pub mod plugin`).
+pub use conway_core::ports::TokenCountFidelity;
 
 // `RouterFactory` joins the
 // extension surface above, so the field types of what its `build` receives

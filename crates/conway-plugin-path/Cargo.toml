@@ -1,0 +1,44 @@
+[package]
+name = "conway-plugin-path"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin (board item 01M0PEFMG96SVBBD5D2E06H34A): conway.path, the tool a model calls to compose a session's context path -- the first production caller of write_head/derive_with (decision 01M0K4QT6MBXPD6PXMBBBD2P7B)"
+
+# Versioned WITH the workspace, like every other first-party plugin -- see
+# `conway-plugin-skeleton`'s own Cargo.toml doc comment for the full
+# reasoning (this crate carries none of `conway-core`'s strict-semver
+# discipline; that discipline exists for the crate third-party plugins
+# depend on, and from `conway`'s own point of view this is just another
+# consumer of the public facade).
+
+[dependencies]
+# The ONLY workspace crate this plugin depends on -- the public facade, the
+# exact surface a third-party plugin author gets (GP-03/P-6). `Tool`,
+# `ToolCtx` (whose `context_path: ContextPathHandle` field this crate calls
+# by method dispatch only, never by naming the handle/host types --
+# `ContextPathHandle`/`ContextPathHost` are deliberately NOT re-exported,
+# mirroring `SubagentHandle`/`SubagentHost`), `ValidatedPath`, `PathOp`,
+# `Selector`, `PathError`, `RecordRef`, `LogRecord` are all reachable
+# through `conway`/`conway::plugin` alone.
+conway = { path = "../conway" }
+async-trait = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Test-only: builds a real, in-memory `Conway` (fake backend/gate/router,
+# real disk-backed `FsPathStore` under a tempdir) to drive this plugin's
+# tool through real turns end to end -- the same precedent
+# `conway-plugin-memory`'s own `tests/memory_end_to_end.rs` establishes.
+conway-testkit = { path = "../conway-testkit" }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+# Draining `SessionHandle::events()` (an `EventStream`) turn-boundary-exact,
+# mirroring `conway/tests/keep_alive.rs`'s own `drain_n_turn_finished` --
+# `EventStream: Stream` and this crate needs the trait's `poll_next` in
+# scope to drive it manually (`std::future::poll_fn`).
+futures-core = { workspace = true }

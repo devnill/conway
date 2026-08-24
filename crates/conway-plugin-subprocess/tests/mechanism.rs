@@ -40,7 +40,7 @@ fn call(tool: &str, arguments: serde_json::Value) -> ToolCall {
 #[tokio::test]
 async fn discover_builds_a_plugin_from_a_real_subprocess_manifest() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "greet.py", common::GREET_PLUGIN);
+    let spec = common::spec_for_warmed(dir.path(), "greet.py", common::GREET_PLUGIN).await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -97,7 +97,7 @@ async fn discover_fails_closed_on_timeout() {
 #[tokio::test]
 async fn discover_fails_closed_on_nonzero_exit() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "failing.py", common::FAILING_PLUGIN);
+    let spec = common::spec_for_warmed(dir.path(), "failing.py", common::FAILING_PLUGIN).await;
 
     let err = SubprocessPlugin::discover(spec)
         .await
@@ -114,7 +114,7 @@ async fn discover_fails_closed_on_nonzero_exit() {
 #[tokio::test]
 async fn discover_fails_closed_on_garbage_output() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "garbage.py", common::GARBAGE_PLUGIN);
+    let spec = common::spec_for_warmed(dir.path(), "garbage.py", common::GARBAGE_PLUGIN).await;
 
     let err = SubprocessPlugin::discover(spec)
         .await
@@ -133,7 +133,7 @@ import sys, json
 sys.stdin.read()
 print(json.dumps({"id": "acme.empty", "version": "0.1.0", "tools": []}))
 "#;
-    let spec = common::spec_for(dir.path(), "empty.py", empty_manifest);
+    let spec = common::spec_for_warmed(dir.path(), "empty.py", empty_manifest).await;
 
     let err = SubprocessPlugin::discover(spec)
         .await
@@ -159,7 +159,7 @@ tool = {
 }
 print(json.dumps({"id": "acme.dup", "version": "0.1.0", "tools": [tool, tool]}))
 "#;
-    let spec = common::spec_for(dir.path(), "dup.py", dup_manifest);
+    let spec = common::spec_for_warmed(dir.path(), "dup.py", dup_manifest).await;
 
     let err = SubprocessPlugin::discover(spec)
         .await
@@ -184,7 +184,7 @@ print(json.dumps({"id": "acme.dup", "version": "0.1.0", "tools": [tool, tool]}))
 #[tokio::test]
 async fn discover_maps_a_declared_known_host_cap_into_the_manifest() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "cap.py", common::CAP_REQUIRED_PLUGIN);
+    let spec = common::spec_for_warmed(dir.path(), "cap.py", common::CAP_REQUIRED_PLUGIN).await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -207,7 +207,8 @@ async fn discover_maps_a_declared_known_host_cap_into_the_manifest() {
 #[tokio::test]
 async fn discover_fails_closed_on_an_unknown_required_host_cap_tag() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "unknown_cap.py", common::UNKNOWN_CAP_PLUGIN);
+    let spec =
+        common::spec_for_warmed(dir.path(), "unknown_cap.py", common::UNKNOWN_CAP_PLUGIN).await;
 
     let err = SubprocessPlugin::discover(spec)
         .await
@@ -225,7 +226,7 @@ async fn discover_fails_closed_on_an_unknown_required_host_cap_tag() {
 #[tokio::test]
 async fn discover_loads_a_manifest_omitting_required_host_caps_as_empty() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "greet.py", common::GREET_PLUGIN);
+    let spec = common::spec_for_warmed(dir.path(), "greet.py", common::GREET_PLUGIN).await;
 
     let plugin = SubprocessPlugin::discover(spec)
         .await
@@ -243,7 +244,7 @@ async fn discover_loads_a_manifest_omitting_required_host_caps_as_empty() {
 #[tokio::test]
 async fn a_successful_call_reaches_the_real_subprocess_and_returns_its_reply() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "greet.py", common::GREET_PLUGIN);
+    let spec = common::spec_for_warmed(dir.path(), "greet.py", common::GREET_PLUGIN).await;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("discovery must succeed");
@@ -272,7 +273,7 @@ async fn a_successful_call_reaches_the_real_subprocess_and_returns_its_reply() {
 #[tokio::test]
 async fn a_subprocess_declared_error_maps_to_the_matching_typed_tool_error() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let spec = common::spec_for(dir.path(), "greet.py", common::GREET_PLUGIN);
+    let spec = common::spec_for_warmed(dir.path(), "greet.py", common::GREET_PLUGIN).await;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("discovery must succeed");
@@ -321,7 +322,7 @@ if req.get("op") == "tool.spec/1":
 else:
     sys.exit(1)
 "#;
-    let spec = common::spec_for(dir.path(), "crasher.py", crashing);
+    let spec = common::spec_for_warmed(dir.path(), "crasher.py", crashing).await;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("discovery must succeed even though invocation will crash");
@@ -364,7 +365,23 @@ else:
     // interpreter's own startup under concurrent test load while still
     // proving the invoke call (which hits a 10s sleep) times out well
     // before that sleep would ever finish.
+    //
+    // This test used to fail intermittently under full-suite parallel runs
+    // with `TimedOut` on DISCOVERY, not the hang below -- root-caused
+    // 2026-08-21 (board item `01M09MPZ9C188AHNBKWEJ3CEQA`) to a
+    // first-execution OS cost paid by any freshly-written, freshly-chmod'd
+    // script's first exec (measured up to 23.5s at 0% CPU on one run; see
+    // `common::warm`'s doc for the full measurement). `discover` execs
+    // THIS file for the handshake under the SAME 1500ms budget, so the tax
+    // landed inside the timed assertion. `common::warm` below pays that
+    // tax here, discarded, before the clock starts, so 1500ms only has to
+    // cover a warm `python3` interpreter's own startup under contention --
+    // which it comfortably does. Do not raise this number to paper over a
+    // failure without first checking `warm` is still being called; if it
+    // is and this still flakes, the tax is bigger than warming amortizes
+    // and that is new information, not a reason to guess a bigger budget.
     let path = common::write_script(dir.path(), "hangs.py", hangs_on_invoke);
+    common::warm(&path).await;
     let mut spec = conway_plugin_subprocess::SubprocessPluginSpec::new(
         "hangs",
         vec![path.display().to_string()],
@@ -413,7 +430,7 @@ if req.get("op") == "tool.spec/1":
 else:
     print("this is not json")
 "#;
-    let spec = common::spec_for(dir.path(), "garbler.py", garbage_on_invoke);
+    let spec = common::spec_for_warmed(dir.path(), "garbler.py", garbage_on_invoke).await;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("discovery must succeed");
@@ -459,7 +476,7 @@ else:
 "#,
         marker = marker.display().to_string()
     );
-    let spec = common::spec_for(dir.path(), "marker.py", &marks_and_answers);
+    let spec = common::spec_for_warmed(dir.path(), "marker.py", &marks_and_answers).await;
     let plugin = SubprocessPlugin::discover(spec)
         .await
         .expect("discovery legitimately runs the fixture once, so the marker exists now");

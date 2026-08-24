@@ -129,11 +129,12 @@ use conway_core::permission_pattern::{PatternOrigin, Rule, Select, Then, When};
 use conway_core::ports::CapabilityIndex;
 use conway_core::ports::{
     Backend, BackendBuildContext, BackendFactory, ContextHook, CurateOutcome, Curator,
-    HealthRegistry, HookRunner, PermissionGate, Plugin, PluginPermissionRule,
+    HealthRegistry, HookRunner, PathStore, PermissionGate, Plugin, PluginPermissionRule,
     PluginPermissionVerdict, PluginStatusContribution, Router, RouterBuildContext, RouterBundle,
     RouterFactory, RoutingExplainer, SessionStore,
 };
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
+use conway_runtime::context::PluginInstruction;
 use conway_runtime::events::EventBus;
 use conway_runtime::hook_dispatch::{declared_plugin_events, HookSpec, DISPATCHED_EVENTS};
 use conway_runtime::permission::PreToolUseHookSpec;
@@ -143,6 +144,7 @@ use crate::agents;
 use crate::config::schema::{BackendEntry, ConwayConfig};
 use crate::config::{self, CliOverrides, ConfigWarning, LoadOptions};
 use crate::conway::Conway;
+use crate::discovery_host;
 use crate::error::{ConwayError, Result};
 use crate::gates;
 use crate::host_caps::HostCaps;
@@ -233,6 +235,12 @@ pub struct ConwayBuilder {
     /// [`Self::with_prompt_handler`]'s own doc for what setting this closes.
     prompt_handler: Option<gates::PromptHandler>,
     store: Option<Arc<dyn SessionStore>>,
+    /// `None` (the default) means [`Self::build`]'s step 8 co-locates a
+    /// `conway_session::FsPathStore` with the default `store` at
+    /// `config.session.root` (D1-3d-wire: `RuntimeDeps::path_store`'s own
+    /// doc), exactly mirroring `store`'s own injected-else-default
+    /// precedence immediately above.
+    path_store: Option<Arc<dyn PathStore>>,
     router: Option<Arc<dyn Router>>,
     /// `None` (the default) means
     /// `build()`'s router step falls through to compiling its own
@@ -293,10 +301,10 @@ pub struct ConwayBuilder {
 
 impl ConwayBuilder {
     /// Loads config from an explicit path (bypassing discovery), still
-    /// layered under XDG/env/CLI precedence.
+    /// layered under user/env/CLI precedence.
     ///
-    /// **This still reads the ambient XDG/user layer**
-    /// (`$XDG_CONFIG_HOME/conway/settings.json`, or `~/.conway/settings.json`)
+    /// **This still reads the ambient user layer**
+    /// (`$CONWAY_CONFIG_DIR/settings.json`, or `~/.conway/settings.json`)
     /// unconditionally, before `path` — exactly as documented above, and
     /// unchanged by. A caller that
     /// wants `path` to be the *only* config file read — a test fixture, or
@@ -312,7 +320,7 @@ impl ConwayBuilder {
         Ok(Self::from_parts(outcome.config).with_warnings(outcome.warnings))
     }
 
-    /// Loads config from an explicit path, ignoring the ambient XDG/user
+    /// Loads config from an explicit path, ignoring the ambient user/user
     /// layer entirely — the merge
     /// this method drives is `default < path < env < CLI`, four sources
     /// instead of [`Self::from_config`]'s five.
@@ -321,10 +329,10 @@ impl ConwayBuilder {
     /// variables are how CI and container entrypoints hand a specific
     /// invocation its credentials and overrides, a caller-supplied input to
     /// *this* invocation, not ambient state left over from someone else's.
-    /// See [`crate::config::merge::load_ignoring_xdg`]'s own doc for the
+    /// See [`crate::config::merge::load_ignoring_user_config`]'s own doc for the
     /// full reasoning. A caller that also wants an env-free load already
     /// has the tool for that: [`Self::from_parts`] with a manually
-    /// assembled [`ConwayConfig`], or `config::load_ignoring_xdg` with a
+    /// assembled [`ConwayConfig`], or `config::load_ignoring_user_config` with a
     /// hand-built (possibly empty) `env` map.
     ///
     /// The second consumer this seam serves, beyond test isolation: a host
@@ -337,7 +345,7 @@ impl ConwayBuilder {
             explicit_path: Some(path.as_ref().to_path_buf()),
             ..LoadOptions::default()
         };
-        let outcome = config::load_ignoring_xdg(options)?;
+        let outcome = config::load_ignoring_user_config(options)?;
         Ok(Self::from_parts(outcome.config).with_warnings(outcome.warnings))
     }
 
@@ -346,6 +354,41 @@ impl ConwayBuilder {
     /// defaults to `std::env::current_dir()`).
     pub fn discover() -> Result<Self> {
         let outcome = config::load(LoadOptions::default())?;
+        Ok(Self::from_parts(outcome.config).with_warnings(outcome.warnings))
+    }
+
+    /// [`Self::discover`]/[`Self::from_config`], but from CALLER-SUPPLIED
+    /// `options` rather than `LoadOptions::default()` -- the seam none of
+    /// `discover`/`from_config`/`from_config_only` have: each hard-codes
+    /// `cwd: std::env::current_dir()`/`env: std::env::vars()`, this
+    /// PROCESS's real ambient values, with no way for an in-process caller
+    /// to supply its own instead. Board item `01M0QK9GRM8HSNWRAR414TCX42`
+    /// is what surfaced the gap: `[session].root`'s central-default
+    /// resolution happens INSIDE `config::load` itself, using
+    /// `LoadOptions.cwd`/`.env` directly, so a caller that needs THAT
+    /// resolved against something other than this process's real
+    /// environment (a fixture's own isolated `CONWAY_CONFIG_DIR`/`cwd`, the
+    /// case every in-process test building a `Conway` against a temp-dir
+    /// fixture is in) previously had no way to get it -- a LATER
+    /// `CliOverrides.cwd`/`with_cli_overrides` fix-up, applied at `build()`
+    /// time, is too late for a resolution that already happened inside
+    /// `load`. Still the full five-source chain (`default < user < project
+    /// < env < CLI`) -- `options.env`'s own `CONWAY_CONFIG_DIR` still
+    /// decides whether the "user" layer means a real `~/.conway/
+    /// settings.json` or an isolated fixture directory with none;
+    /// [`Self::from_options_ignoring_user_config`] is the sibling that
+    /// drops that layer entirely, mirroring `from_config_only`.
+    pub fn from_options(options: LoadOptions) -> Result<Self> {
+        let outcome = config::load(options)?;
+        Ok(Self::from_parts(outcome.config).with_warnings(outcome.warnings))
+    }
+
+    /// [`Self::from_options`]'s `from_config_only`-shaped sibling: the merge
+    /// is `default < project < env < CLI` (four sources, `options.explicit_
+    /// path`/`options.cwd`-discovered project layer, no user layer), from
+    /// CALLER-SUPPLIED `options` rather than `LoadOptions::default()`.
+    pub fn from_options_ignoring_user_config(options: LoadOptions) -> Result<Self> {
+        let outcome = config::load_ignoring_user_config(options)?;
         Ok(Self::from_parts(outcome.config).with_warnings(outcome.warnings))
     }
 
@@ -360,6 +403,7 @@ impl ConwayBuilder {
             gate: None,
             prompt_handler: None,
             store: None,
+            path_store: None,
             router: None,
             router_factory: None,
             backend_factories: Vec::new(),
@@ -709,6 +753,23 @@ impl ConwayBuilder {
         self
     }
 
+    /// Overrides the default `FsPathStore` (co-located with the session
+    /// store at `config.session.root` when neither this nor
+    /// [`Self::with_session_store`]'s implicit default applies).
+    ///
+    /// **`PathStore` itself is not re-exported through `conway::plugin`**
+    /// (board item `01M0EMCK55628YJXGBQY8YGXHE`, decided: engine-internal —
+    /// see `conway_core::ports::PathStore`'s own doc for the full
+    /// reasoning). This method exists for parity with
+    /// [`Self::with_session_store`] and for callers already depending on
+    /// `conway-core` directly; a facade-only caller (the intended shape for
+    /// a `Tool`/`Curator`/`ContextHook` author) cannot name this method's
+    /// parameter type and is not expected to need to.
+    pub fn with_path_store(mut self, path_store: Arc<dyn PathStore>) -> Self {
+        self.path_store = Some(path_store);
+        self
+    }
+
     /// Overrides the default router (:
     /// `conway_core::routing::MinimalRouter`, the config-only core resolver
     /// `build()` compiles when neither this nor `with_router_factory` is
@@ -999,6 +1060,7 @@ impl ConwayBuilder {
             gate,
             prompt_handler,
             store,
+            path_store,
             router,
             router_factory,
             backend_factories,
@@ -1035,6 +1097,18 @@ impl ConwayBuilder {
         //     probing, step 5) carries the identical path list.
         let env: HashMap<String, String> = std::env::vars().collect();
         let profile_file_paths = config::discovery::provider_profile_file_paths(&cwd, &env);
+
+        // 2c. Session discovery (board item `01M0PS8J3AK7Z7253Z3E3RD3GY`):
+        //     the SAME `env` immediately above, reused (not re-read) for the
+        //     identical central-config-directory resolution `session.root`'s
+        //     own central-default branch performs -- pure, no I/O, just
+        //     naming where the central sessions root WOULD be. Step 8 below
+        //     builds the real `FsSessionDiscoveryHost` from these once
+        //     `store` exists.
+        let discovery_project_key =
+            config::discovery::encode_project_key(&config::discovery::normalize_lexically(&cwd));
+        let discovery_central_root = config::discovery::user_config_path(&env)
+            .and_then(|p| p.parent().map(|d| d.join("sessions")));
 
         // 3+3b+4. Duplicate-kind check over every registered factory FIRST
         //         (before any factory's own `build` runs, regardless of
@@ -1218,10 +1292,62 @@ impl ConwayBuilder {
         };
 
         // 8. Store: injected, else JsonlSessionStore::open (jsonl-store
-        //    feature), else a Build error.
+        //    feature), else a Build error. `config.session.root` is `Some`
+        //    for any config that reached here through `config::load`/
+        //    `load_ignoring_user_config` -- the central-default resolution
+        //    (board item `01M0QK9GRM8HSNWRAR414TCX42`) happens THERE, using
+        //    the load-scoped `env`/`cwd` this function has no seam of its
+        //    own to receive (see `SessionConfig`'s own doc). A config
+        //    assembled directly via `ConwayBuilder::from_parts`, bypassing
+        //    `load` entirely, can still reach here with `root` unresolved
+        //    (`None`) -- rather than reading THIS PROCESS's ambient
+        //    environment here too (a strictly larger blast radius than the
+        //    already-disclosed ambient read three steps up,
+        //    `provider_profile_file_paths`: that one only ever looks for an
+        //    optional file, this one would go on to CREATE a directory),
+        //    an unresolved `root` falls back to the exact fixed default
+        //    `session.root` always had before this item existed,
+        //    `.conway/sessions` relative to `cwd` -- byte-identical
+        //    behavior for every existing `from_parts` caller (this crate's
+        //    own test suite included) that never named a `session.root` of
+        //    its own.
+        let effective_session_root = config
+            .session
+            .root
+            .clone()
+            .unwrap_or_else(|| Path::new(".conway/sessions").to_path_buf());
         let store: Arc<dyn SessionStore> = match store {
             Some(store) => store,
-            None => build_default_store(&cwd, &config.session.root)?,
+            None => build_default_store(&cwd, &effective_session_root)?,
+        };
+        // 8a2. Session discovery (board item `01M0PS8J3AK7Z7253Z3E3RD3GY`):
+        //      built from `store` above (whichever it is -- injected or
+        //      the default just constructed) plus the pre-resolved
+        //      project key/central root from step 2c. Not injectable via a
+        //      builder method the way `store`/`path_store` are: nothing in
+        //      this crate's public surface names `SessionDiscoveryHost`
+        //      (T4 keeps it out of `conway-runtime`, and this facade has
+        //      not yet had a reason to widen `with_*` to it) -- an embedder
+        //      needing a different discovery implementation depends on
+        //      `conway-core`/`conway-runtime` directly and builds a
+        //      `RuntimeDeps` of their own, the same escape hatch every
+        //      facade-only limitation here has.
+        let session_discovery: Arc<dyn conway_core::ports::SessionDiscoveryHost> =
+            Arc::new(discovery_host::FsSessionDiscoveryHost::new(
+                store.clone(),
+                discovery_project_key,
+                discovery_central_root,
+            ));
+        // 8b. Path store: injected, else `FsPathStore::open`, co-located as
+        //     a SIBLING of the effective session root the session store
+        //     just resolved against -- see `build_default_path_store`'s own
+        //     doc for exactly where (a sibling of the root itself, not of
+        //     its parent, since this item's central default nests the root
+        //     one level deeper than the fixed default/an explicit value
+        //     ever did).
+        let path_store: Arc<dyn PathStore> = match path_store {
+            Some(path_store) => path_store,
+            None => build_default_path_store(&cwd, &effective_session_root)?,
         };
 
         // 9. Gate: injected, else selected from config.permissions --
@@ -1365,6 +1491,59 @@ impl ConwayBuilder {
             .iter()
             .flat_map(|p| p.permission_rules())
             .collect();
+        // Collect each installed plugin's own `Plugin::instructions()`
+        // contributions BEFORE `resolved_plugins` is moved into `RuntimeDeps`
+        // below (board item `01M0K5MD59YZRSHE31JKZKFRMY`) -- the SAME
+        // collect-before-move shape `plugin_context_hooks`/`plugin_curators`/
+        // `plugin_permission_rules` establish above. Each fragment is paired
+        // with its declaring plugin's own `PluginManifest::id` here and
+        // nowhere else (the SAME "an author never picks their own
+        // namespace" attribution `Runtime::new`'s `observers` collection
+        // already performs for `Plugin::observers()`).
+        //
+        // Only ONE check happens here, and it is deliberately NOT the
+        // reachability check: a duplicate fragment `name` across every
+        // installed plugin is a plain authoring bug -- unlike reachability,
+        // it does not depend on what `plugins.install` resolved to for THIS
+        // operator (the SAME set of names is either unique or is not,
+        // regardless of which tools happen to be installed), so it is
+        // exactly the kind of build-time, configuration-INDEPENDENT fact
+        // this method already refuses to build on (mirrors the duplicate-
+        // plugin-id check above). Reachability itself is checked once per
+        // turn, in `conway_runtime::context::builder::ContextBuilder::build`,
+        // against that turn's own resolved tool set -- see
+        // `conway_core::ports::plugin::Plugin::instructions`'s own doc for
+        // the full argument for why it lives there instead of here or in CI.
+        // Keyed by fragment name -> the id of the plugin that declared it
+        // FIRST, rather than a bare set of names: resolving a collision means
+        // editing one of the two declarations, so the operator needs BOTH
+        // ids. A set can only name the plugin being processed when the clash
+        // is detected, leaving the other side as "some earlier plugin" for
+        // the reader to hunt down by hand.
+        let mut seen_instruction_names: HashMap<String, String> = HashMap::new();
+        let mut plugin_instructions: Vec<PluginInstruction> = Vec::new();
+        for plugin in &resolved_plugins {
+            let plugin_id = plugin.manifest().id;
+            for fragment in plugin.instructions() {
+                if let Some(first_plugin_id) = seen_instruction_names.get(&fragment.name).cloned() {
+                    return Err(ConwayError::Build {
+                        message: format!(
+                            "duplicate instruction fragment name '{}': plugins '{first_plugin_id}' \
+                             and '{plugin_id}' both declare a Plugin::instructions() fragment with \
+                             this name. Fragment names are global -- rename one of them",
+                            fragment.name
+                        ),
+                    });
+                }
+                seen_instruction_names.insert(fragment.name.clone(), plugin_id.clone());
+                plugin_instructions.push(PluginInstruction {
+                    plugin_id: plugin_id.clone(),
+                    name: fragment.name,
+                    text: fragment.text,
+                    tool_ids: fragment.tool_ids,
+                });
+            }
+        }
         // Collect each installed plugin's own `Plugin::status_contributions()`
         // and `Plugin::observe_sink()` contributions BEFORE `resolved_plugins`
         // is moved into `RuntimeDeps` below (board item
@@ -1442,15 +1621,18 @@ impl ConwayBuilder {
         }
         let rt = Runtime::new(RuntimeDeps {
             store: store.clone(),
+            path_store,
             router,
             health,
             backends: backend_map,
             plugins: resolved_plugins,
             gate,
             agent_defs,
+            instructions: plugin_instructions,
             skills: skill_defs,
             event_bus,
             headroom: Arc::new(headroom_policy),
+            session_discovery,
         });
         // `RuntimeDeps` has no `context_hook` field (out of that
         // item's file scope to add -- see `conway_runtime::runtime`'s
@@ -1739,6 +1921,351 @@ impl ContextHook for ChainedContextHook {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod compose_context_hooks_tests {
+    //! Covers [`compose_context_hooks`]'s 0/1/2+ branches and
+    //! [`ChainedContextHook`]'s chaining, which nothing else in the tree
+    //! drives -- see this item's own filing (board item
+    //! `01M090HJEJBK24SX70Z9E25PZ4`): `grep -rln "compose_context_hooks\|
+    //! ChainedContextHook" crates/` matched only this file before these
+    //! tests existed.
+    //!
+    //! **Characterization, not specification.** These tests pin the
+    //! existing behavior of `compose_context_hooks`/`ChainedContextHook`;
+    //! they do not change it. Where a finding below reads like a defect,
+    //! it is reported as one (see the worker's completion report for this
+    //! item), not silently "fixed" here.
+    //!
+    //! **The asymmetry with [`compose_curators_tests`], confirmed by
+    //! reading the actual contract first** (`conway_core::ports::plugin`'s
+    //! `ContextHook` doc, and `conway_runtime::context::hook_guard`'s
+    //! `GuardedContextHook`), not assumed from `Curator`'s shape:
+    //!
+    //! - `ContextHook` has NO `Failed`/refusal variant at all.
+    //!   `before_request` returns a bare `ContextPayload`, not a
+    //!   `Result`/enum a hook could use to signal failure, so
+    //!   `ChainedContextHook::before_request` has nothing to branch on --
+    //!   every hook in the chain always runs, in order, on the previous
+    //!   hook's output. `on_overflow`'s `None` means "I can't help", not an
+    //!   error, and (unlike `Curator`'s `Failed`) does NOT stop the chain --
+    //!   every remaining hook still gets a turn. This is the load-bearing
+    //!   divergence from `compose_curators`' Failed-stops-the-chain rule,
+    //!   and is asserted directly below
+    //!   (`on_overflow_runs_every_hook_even_after_an_earlier_one_already_shrank`).
+    //! - A `ContextHook`'s edit is a rewrite the harness re-validates via
+    //!   `GuardedContextHook`, not a construction-time-guaranteed
+    //!   `Derivation` the way a `Curator`'s is (`Curator` needed no such
+    //!   wrapper -- see `compose_curators`'s own doc). Read
+    //!   `Runtime::set_context_hook` (`conway_runtime::runtime`):  it wraps
+    //!   whatever `compose_context_hooks` returns -- the single hook
+    //!   directly, or the whole `ChainedContextHook` -- in exactly ONE
+    //!   `GuardedContextHook`. So coherence is re-validated once, on the
+    //!   chain's FINAL output, never on an intermediate hook's output: a
+    //!   hook that orphans a tool call and a later hook that repairs it
+    //!   would never be refused, and only a hook that leaves the chain's
+    //!   last output incoherent trips the guard. That is worth pinning, but
+    //!   `GuardedContextHook::before_request`/`on_overflow` are
+    //!   `pub(crate)` to `conway-runtime` (see that type's own doc) and
+    //!   this item's blast radius is `crates/conway/` only, so it is
+    //!   recorded here as a documented finding rather than exercised by a
+    //!   test in this module -- `conway_runtime::context::hook_guard`'s own
+    //!   `context_hook_wrapping_tests` module is where that guard's
+    //!   behavior is actually driven.
+    //! - No retry loop lives in `ChainedContextHook` itself: each hook's
+    //!   `on_overflow` runs exactly once per call to the composed hook.
+    //!   The bounded re-attempt loop the doc for `on_overflow`'s retry
+    //!   path might suggest (`MAX_OVERFLOW_ATTEMPTS`) is `AgentLoop::
+    //!   route_and_attempt`'s concern (`conway-runtime`, out of this
+    //!   item's scope), which simply calls the SAME composed (guarded)
+    //!   hook's `on_overflow` again on a subsequent attempt -- nothing
+    //!   about that requires `ChainedContextHook` itself to retry
+    //!   anything.
+
+    use super::*;
+    use conway_core::content::{ContentBlock, Role};
+    use conway_core::ids::{AgentId, SessionId};
+    use conway_core::ports::{ArtifactWriteHandle, ContextHookCtx, ContextPayload, OverflowInfo};
+    use conway_core::provenance::Provenance;
+    use conway_core::segment::PromptSegment;
+
+    fn hook_ctx() -> ContextHookCtx {
+        let agent_id = AgentId::new();
+        ContextHookCtx {
+            agent_id,
+            agent_path: vec![agent_id],
+            session_id: SessionId::new(),
+            turn: 1,
+            model: None,
+            estimated_tokens: 100,
+            artifacts: ArtifactWriteHandle::noop(agent_id),
+            tag: None,
+        }
+    }
+
+    fn segment(text: &str) -> PromptSegment {
+        PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+            Provenance::UserPrompt,
+        )
+    }
+
+    fn payload(segments: Vec<PromptSegment>) -> ContextPayload {
+        ContextPayload {
+            segments,
+            tools: Vec::new(),
+        }
+    }
+
+    fn overflow() -> OverflowInfo {
+        OverflowInfo {
+            max_context_tokens: 100,
+            headroom_tokens: 10,
+            required_tokens: 200,
+            shortfall_tokens: 100,
+        }
+    }
+
+    /// Appends one marker segment in `before_request`, recording how many
+    /// segments it saw on entry -- the analogue of `compose_curators_tests`'
+    /// `OmitAt`, which records `base_len_seen`.
+    struct AppendsMarker {
+        marker: &'static str,
+        segments_seen: std::sync::Mutex<Option<usize>>,
+    }
+
+    impl AppendsMarker {
+        fn new(marker: &'static str) -> Arc<Self> {
+            Arc::new(Self {
+                marker,
+                segments_seen: std::sync::Mutex::new(None),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ContextHook for AppendsMarker {
+        async fn before_request(
+            &self,
+            _ctx: &ContextHookCtx,
+            mut payload: ContextPayload,
+        ) -> ContextPayload {
+            *self.segments_seen.lock().unwrap() = Some(payload.segments.len());
+            payload.segments.push(segment(self.marker));
+            payload
+        }
+    }
+
+    /// Shrinks an overflowing payload to `keep` segments if it currently
+    /// has more than that; otherwise declines (`None`) -- exactly the
+    /// "I can't help, defer to the next hook" case the port doc names.
+    /// Records the segment count it was CALLED with, so a chain test can
+    /// prove the second hook saw the first's output rather than the
+    /// original payload.
+    struct ShrinksOnOverflow {
+        keep: usize,
+        segments_seen: std::sync::Mutex<Option<usize>>,
+    }
+
+    impl ShrinksOnOverflow {
+        fn new(keep: usize) -> Arc<Self> {
+            Arc::new(Self {
+                keep,
+                segments_seen: std::sync::Mutex::new(None),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ContextHook for ShrinksOnOverflow {
+        async fn before_request(
+            &self,
+            _ctx: &ContextHookCtx,
+            payload: ContextPayload,
+        ) -> ContextPayload {
+            payload
+        }
+
+        async fn on_overflow(
+            &self,
+            _ctx: &ContextHookCtx,
+            payload: ContextPayload,
+            _overflow: OverflowInfo,
+        ) -> Option<ContextPayload> {
+            *self.segments_seen.lock().unwrap() = Some(payload.segments.len());
+            if payload.segments.len() > self.keep {
+                let mut shrunk = payload;
+                shrunk.segments.truncate(self.keep);
+                Some(shrunk)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Records whether it ran at all, regardless of what an earlier hook in
+    /// the chain returned -- proves the on_overflow chain does NOT stop
+    /// early the way `ComposedCurator` stops on `Failed`.
+    struct RecordsThatItRan {
+        ran: std::sync::Mutex<bool>,
+    }
+
+    #[async_trait::async_trait]
+    impl ContextHook for RecordsThatItRan {
+        async fn before_request(
+            &self,
+            _ctx: &ContextHookCtx,
+            payload: ContextPayload,
+        ) -> ContextPayload {
+            payload
+        }
+
+        async fn on_overflow(
+            &self,
+            _ctx: &ContextHookCtx,
+            _payload: ContextPayload,
+            _overflow: OverflowInfo,
+        ) -> Option<ContextPayload> {
+            *self.ran.lock().unwrap() = true;
+            // Declines -- the point is that it ran at all, not that it
+            // shrinks anything.
+            None
+        }
+    }
+
+    #[test]
+    fn compose_of_none_is_none_so_the_runtimes_hook_stays_unset() {
+        assert!(compose_context_hooks(Vec::new()).is_none());
+    }
+
+    #[tokio::test]
+    async fn compose_of_one_installs_it_directly_without_a_chained_wrapper() {
+        let only: Arc<dyn ContextHook> = AppendsMarker::new("only");
+        let composed =
+            compose_context_hooks(vec![only.clone()]).expect("one hook composes to Some");
+        // The SAME Arc, not a ChainedContextHook wrapping it.
+        assert!(Arc::ptr_eq(&composed, &only));
+
+        // And it behaves exactly like calling the hook directly -- no
+        // wrapper changes what `before_request` returns.
+        let out = composed
+            .before_request(&hook_ctx(), payload(vec![segment("base")]))
+            .await;
+        assert_eq!(out.segments.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn chained_before_request_feeds_the_first_hooks_output_to_the_second() {
+        let first = AppendsMarker::new("first");
+        let second = AppendsMarker::new("second");
+        let composed = compose_context_hooks(vec![first.clone(), second.clone()])
+            .expect("two hooks compose to Some");
+
+        let out = composed
+            .before_request(&hook_ctx(), payload(vec![segment("base")]))
+            .await;
+
+        assert_eq!(first.segments_seen.lock().unwrap().unwrap(), 1);
+        // The load-bearing assertion: the second hook's input is the
+        // FIRST's output (2 segments: base + "first"), not the original
+        // 1-segment payload.
+        assert_eq!(second.segments_seen.lock().unwrap().unwrap(), 2);
+        assert_eq!(
+            out.segments.len(),
+            3,
+            "base + first's marker + second's marker"
+        );
+    }
+
+    #[tokio::test]
+    async fn chained_on_overflow_feeds_the_first_hooks_shrunk_payload_to_the_second() {
+        let first = ShrinksOnOverflow::new(2);
+        let second = ShrinksOnOverflow::new(1);
+        let composed = compose_context_hooks(vec![first.clone(), second.clone()])
+            .expect("two hooks compose to Some");
+
+        let three_segments = payload(vec![segment("a"), segment("b"), segment("c")]);
+        let out = composed
+            .on_overflow(&hook_ctx(), three_segments, overflow())
+            .await;
+
+        assert_eq!(first.segments_seen.lock().unwrap().unwrap(), 3);
+        // The load-bearing assertion: the second hook saw the FIRST's
+        // shrunk-to-2 output, not the original 3-segment payload.
+        assert_eq!(second.segments_seen.lock().unwrap().unwrap(), 2);
+        let out = out.expect("at least one hook shrank -- Some");
+        assert_eq!(out.segments.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_hook_that_declines_defers_the_unshrunk_payload_to_the_next() {
+        // `first` keeps up to 10 -- a 2-segment payload never exceeds that,
+        // so it declines (`None`) and the ORIGINAL payload passes to
+        // `second` untouched.
+        let first = ShrinksOnOverflow::new(10);
+        let second = ShrinksOnOverflow::new(1);
+        let composed = compose_context_hooks(vec![first.clone(), second.clone()])
+            .expect("two hooks compose to Some");
+
+        let two_segments = payload(vec![segment("a"), segment("b")]);
+        let out = composed
+            .on_overflow(&hook_ctx(), two_segments, overflow())
+            .await;
+
+        assert_eq!(first.segments_seen.lock().unwrap().unwrap(), 2);
+        assert_eq!(
+            second.segments_seen.lock().unwrap().unwrap(),
+            2,
+            "second sees the ORIGINAL 2-segment payload, since first declined rather than shrinking"
+        );
+        assert_eq!(out.expect("second shrank -- Some").segments.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn on_overflow_is_none_when_every_hook_in_the_chain_declines() {
+        // Mirrors a single hook's default `on_overflow`: no hook shrank
+        // anything, so the composed result is `None` -- the runtime's hard
+        // `ContextTooLarge`, exactly as if no hook (or a single
+        // never-shrinks hook) were registered.
+        let composed =
+            compose_context_hooks(vec![ShrinksOnOverflow::new(10), ShrinksOnOverflow::new(10)])
+                .expect("two hooks compose to Some");
+
+        let two_segments = payload(vec![segment("a"), segment("b")]);
+        let out = composed
+            .on_overflow(&hook_ctx(), two_segments, overflow())
+            .await;
+
+        assert!(out.is_none());
+    }
+
+    #[tokio::test]
+    async fn on_overflow_runs_every_hook_even_after_an_earlier_one_already_shrank() {
+        // The divergence from `ComposedCurator`, which stops on `Failed`:
+        // `ContextHook` has no failure/refusal concept at all, so nothing
+        // in the chain ever short-circuits. `first` shrinks (returns
+        // `Some`) and `second` still gets its turn.
+        let first = ShrinksOnOverflow::new(1);
+        let second = Arc::new(RecordsThatItRan {
+            ran: std::sync::Mutex::new(false),
+        });
+        let composed =
+            compose_context_hooks(vec![first, second.clone()]).expect("two hooks compose to Some");
+
+        let two_segments = payload(vec![segment("a"), segment("b")]);
+        let _ = composed
+            .on_overflow(&hook_ctx(), two_segments, overflow())
+            .await;
+
+        assert!(
+            *second.ran.lock().unwrap(),
+            "every hook in the chain runs, regardless of what an earlier hook returned"
+        );
     }
 }
 
@@ -2267,6 +2794,95 @@ fn build_default_store(_cwd: &Path, _root: &Path) -> Result<Arc<dyn SessionStore
     Err(ConwayError::Build {
         message: "no session store configured: enable the 'jsonl-store' feature or call \
                   ConwayBuilder::with_session_store"
+            .to_string(),
+    })
+}
+
+/// [`build_default_store`]'s counterpart for the path store (D1-3d-wire):
+/// `FsPathStore::open`, in a `paths/` directory ALONGSIDE the session root
+/// rather than inside it.
+///
+/// **Why not co-located in the session root, which was the first attempt.**
+/// `FsPathStore` writes `paths-index.jsonl` at the top of whatever root it is
+/// given, and `JsonlSessionStore`'s own filenames (`<sid>.jsonl`,
+/// `index.jsonl`) do not collide with it -- so sharing looked safe on a
+/// filename analysis. It is not, for a reason a filename analysis cannot see:
+/// **the session directory is an operator-visible artifact with its own
+/// readers.** `conway sessions list`/`show`/`export` enumerate it, and
+/// `PHILOSOPHY.md` §1 promises the log is "one file per session ... so will
+/// anything else you point at a line-delimited JSON file". A non-session file
+/// sitting in there breaks that promise for every reader, not just ours --
+/// which is exactly what eight `sessions_*` tests caught by asserting the
+/// directory holds exactly one session file.
+///
+/// A sibling directory keeps both stores' invariants intact and costs
+/// nothing.
+///
+/// **Sibling of `sessions_root` ITSELF, not of its parent** (board item
+/// `01M0QK9GRM8HSNWRAR414TCX42` -- a correction to this function's own
+/// first cut, caught before landing by actually running it against the
+/// real central default rather than only a project-local fixture). The
+/// original formula -- `sessions_root.parent().join("paths")` -- silently
+/// assumed `sessions_root`'s parent is ALREADY project-exclusive, true of
+/// the old fixed default (`<cwd>/.conway/sessions`, parent `<cwd>/.conway`)
+/// and of an operator's own explicit `session.root`, but false of the new
+/// central, project-keyed default: `~/.conway/sessions/<project-key>/`'s
+/// parent is `~/.conway/sessions/`, the ONE directory shared by every
+/// project. Every project would have collided on the identical
+/// `~/.conway/sessions/paths/` -- confirmed live, not hypothetically: an
+/// in-process test that reached this function without isolating
+/// `CONWAY_CONFIG_DIR` created exactly that directory under this
+/// machine's own real `~/.conway/`. Keying off `sessions_root`'s own file
+/// name instead of its parent's fixes the central case and leaves the
+/// fixed-default/explicit cases merely relocated (`<cwd>/.conway/
+/// sessions-paths` instead of `<cwd>/.conway/paths`) -- a safe, silent
+/// rename with no practical migration cost: nothing in this workspace's
+/// production code writes through `PathStore` yet (`RuntimeDeps::
+/// path_store`'s own doc), so no operator has real data sitting in the old
+/// location to lose.
+#[cfg(feature = "jsonl-store")]
+fn build_default_path_store(cwd: &Path, root: &Path) -> Result<Arc<dyn PathStore>> {
+    let sessions_root = resolve_path(cwd, root);
+    let paths_root = match sessions_root.file_name() {
+        Some(name) => {
+            let mut paths_name = std::ffi::OsString::from(name);
+            paths_name.push("-paths");
+            sessions_root.with_file_name(paths_name)
+        }
+        // A root with no file name (e.g. `/`) is pathological; fall back to
+        // a nested `paths/` so we still never write a stray file into the
+        // session directory itself.
+        None => sessions_root.join("paths"),
+    };
+    let path_store = block_on(conway_session::FsPathStore::open(paths_root))?;
+    Ok(Arc::new(path_store))
+}
+
+/// The `jsonl-store`-off arm, mirroring [`build_default_store`]'s own: no
+/// default path store to fall back to once `conway-session` is unlinked.
+///
+/// **Does not repeat [`build_default_store`]'s "or call
+/// `with_session_store`" shape.** That advice is actionable there because
+/// `SessionStore` is re-exported through the facade (`conway::SessionStore`).
+/// `PathStore` is not (board item `01M0EMCK55628YJXGBQY8YGXHE`, decided
+/// deliberately -- see [`ConwayBuilder::with_path_store`]'s own doc), so a
+/// facade-only caller cannot name `with_path_store`'s parameter type at all.
+/// Naming an escape hatch the reader cannot reach is worse than a plain
+/// refusal, so this message states the real constraint instead: with
+/// `jsonl-store` off, there is currently no way for a facade-only caller
+/// (one depending only on the `conway` crate) to supply a path store, even
+/// alongside an injected `with_session_store`. Enabling `jsonl-store` is
+/// the only lever such a caller has; `with_path_store` remains real, just
+/// reachable only by a caller that also depends on `conway-core` directly.
+#[cfg(not(feature = "jsonl-store"))]
+fn build_default_path_store(_cwd: &Path, _root: &Path) -> Result<Arc<dyn PathStore>> {
+    Err(ConwayError::Build {
+        message: "no path store configured: this configuration (jsonl-store disabled) has \
+                  no default path store and no way for a facade-only caller to supply one -- \
+                  `PathStore` is engine-internal and not re-exported through the `conway` \
+                  facade (board item 01M0EMCK55628YJXGBQY8YGXHE). Enable the 'jsonl-store' \
+                  feature to get the default FsPathStore; `ConwayBuilder::with_path_store` is \
+                  only reachable by a caller that also depends on conway-core directly."
             .to_string(),
     })
 }
