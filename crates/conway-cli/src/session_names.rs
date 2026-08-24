@@ -143,8 +143,15 @@ impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "invalid session reference {:?}: not a valid session id (ULID) and no session is \
-             named that",
+            // Names the accepted FORM, not just what was wrong with the
+            // input -- the same shape `session_ref::ParseError` uses, and
+            // the property `continuity.rs`'s
+            // `fork_from_malformed_ref_exits_2` pins. Adding name lookup
+            // ahead of the ULID grammar must not cost the operator the
+            // grammar itself: "that is not valid" without "here is what is"
+            // is the defect this project has an item about.
+            "invalid session reference {:?}: expected `<session-id>[@<seq>]` \
+             (not a valid session id (ULID) and no session is named that)",
             self.0
         )
     }
