@@ -189,8 +189,7 @@ impl Plugin for TrimPlugin {
     /// SHAPE of what it drops rather than a tool an operator would call.
     fn description(&self) -> PluginDescription {
         PluginDescription {
-            summary: "drops old tool call/result round-trips to save context room"
-                .to_string(),
+            summary: "drops old tool call/result round-trips to save context room".to_string(),
             you_get: format!(
                 "tool call/result round-trips older than {} turns behind the current one are \
                  omitted from what the model sees, never reordered",

@@ -214,9 +214,9 @@ same captured run shown in [`scripting.md`](scripting.md#json)'s
 ```
 
 `--resume` takes `transcript_ref`, not `agent_id` — `conway --resume
-01KYWYFT24KYFWXSBS95GHCQMN …` reattaches to this session.
-`01KYWYFT24JSQPR1EYQXHMNQX2`, the same object's `agent_id`, names the agent
-rather than the session; passing it to `--resume` instead fails with
+<transcript_ref> …`, using the value shown above, reattaches to this
+session. The same object's `agent_id` names the agent rather than the
+session; passing it to `--resume` instead fails with
 `session … not found`.
 
 `agent_def`/`role`/`cwd` are **not** overridable on resume — they come back

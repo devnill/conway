@@ -161,10 +161,9 @@ useful for correlating this result with the `agent`/`agent_spawned`/
 below), but not a session id. It is also the more visually prominent of the
 two — first in the object, and the field most output formats lead with — so
 it is the one a script is likeliest to reach for first. Passing it to
-`--resume` fails: `conway --resume 01KYWYFT24JSQPR1EYQXHMNQX2 …` (this run's
-`agent_id`, not its `transcript_ref`) errors with `session … not found`
-instead of reattaching. Pass `transcript_ref` — `01KYWYFT24KYFWXSBS95GHCQMN`
-above — instead.
+`--resume` fails: `conway --resume <agent_id> …` errors with
+`session … not found` instead of reattaching. Pass the `transcript_ref`
+value from the same object instead.
 
 ### `jsonl`
 
