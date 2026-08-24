@@ -974,6 +974,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`/tree`'s own doc comment claimed its rendering "always matches what `/agents` shows"; it no longer does, since `01M0RWKJD04JBR5NCVKBQXYHV4` gave the `/agents` panel a screen-relative short id** — board item `01M0TNCAP1HH4YNC5K9753YG26`. Decided in favor of keeping `/tree` on full ids: a transcript line outlives the row set that made a short prefix unique, so it needs a durable reference, not a screen affordance. `commands.rs`, `docs/agents.md`, and `docs/interactive.md` now say so explicitly instead of claiming parity that doesn't hold.
 
+### Fixed
+
+- **`ARCHITECTURE.md` §2b, `PHILOSOPHY.md` §6, and `docs/plugins/README.md` had all drifted from the twelve plugin crates actually in the tree** — board item `01M0TV7GFSNNRZV522XCRMTHVX`: `ARCHITECTURE.md` §2b named nine of the twelve `conway-plugin-*` crates, silently omitting `conway-plugin-discover`, `conway-plugin-path`, and `conway-plugin-trim`; `PHILOSOPHY.md` §6's two "Where the tree is today" notes had the same gap; `docs/plugins/README.md` still said "Five shipped first-party plugins," missing `conway.trim` now that it is fully wired into the shipped binary (identical status to `conway.path`/`conway.discover`/`conway.memory`). All three now enumerate all twelve crates, with the plugin-*crates-that-exist* population kept distinct from the smaller *installable-id* roster `conway-cli`'s `first_party_plugins::bundle()` actually resolves. `docs/README.md` also gained a `docs/dogfooding.md` row — the page existed, linked from `GUIDE.md`, but was reachable from no index.
+
 ## [0.9.0] — 2026-08-13
 
 ### Added

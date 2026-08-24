@@ -196,6 +196,22 @@ Members today:
   `MemoryStore` the model can write to in its own words, injected into
   context by a `ContextHook`. A rework of an earlier label-based curator;
   see the crate's own module doc for why that design was replaced.
+- **`crates/conway-plugin-path`** (`conway.path`) — the `compose_context_path`
+  tool a model calls to compose what a session sends as context on its next
+  turn: bring specific records in from another session, leave specific
+  records of this session's own history out, or both. Refuses (never
+  silently patches) a composition that would strand a tool call or its
+  result.
+- **`crates/conway-plugin-discover`** (`conway.discover`) — the
+  `search_sessions` tool that feeds `conway.path` immediately above: finds a
+  session or record the model does not already hold a reference to.
+  Metadata-only by default; a `text` argument turns it into a bounded
+  content scan. Meant to be installed alongside `conway.path`, though
+  nothing enforces that pairing.
+- **`crates/conway-plugin-trim`** (`conway.trim`) — a `Curator` that omits
+  tool call/result round-trips older than a configurable turn window: the
+  smallest honest curator over the path/curation machinery above, which had
+  no production consumer before it.
 - **`crates/conway-plugin-subprocess`** — the out-of-process plugin host: an
   external program named in `[plugins].subprocess[]` is spawned and speaks
   conway's own wire protocol (`tool/1`, `permission.policy/1`, `observe/1`,

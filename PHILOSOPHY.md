@@ -633,9 +633,10 @@ costing the other.
 
 > **Where the tree is today.** The binary does not yet turn on anything
 > beyond the harness's own default set described above. `conway.routing`,
-> `conway.stepguard`, `conway.skills`, `conway.memory`, `conway.path`, and
-> MCP client support all exist and install, but ship off; compaction is the
-> one first-party capability not written yet — see the note under
+> `conway.stepguard`, `conway.skills`, `conway.memory`, `conway.path`,
+> `conway.discover`, `conway.trim`, and MCP client support all exist and
+> install, but ship off; compaction is the one first-party capability not
+> written yet — see the note under
 > [First-party plugins](#first-party-plugins-and-why-they-are-not-defaults)
 > for exactly what exists. Becoming the opinionated, fully-equipped binary
 > this section describes is tracked work, not a description of what
@@ -678,12 +679,17 @@ default. Dynamic routing, context compaction, memory, skills, MCP support. You
 get them by choosing them.
 
 > **Where the tree is today.** Dynamic routing, memory (`conway.memory`), and
-> skills (`conway.skills`) are all built and installable, as are five members
-> this list does not name by capability — the provider adapters, a
+> skills (`conway.skills`) are all built and installable, as are seven
+> members this list does not name by capability — the provider adapters, a
 > session-rewind command, repeated-step detection (`conway.stepguard`, which
-> §6 below is about), the out-of-process subprocess plugin host, and
+> §6 below is about), the out-of-process subprocess plugin host,
 > context-path composition (`conway.path` — the tool a model calls to
-> compose what a session sends as context on its next turn). MCP
+> compose what a session sends as context on its next turn), the session
+> search that feeds it (`conway.discover` — the `search_sessions` tool a
+> model calls to find a session or record it does not already hold a
+> reference to), and a curator that ages out old tool round-trips
+> (`conway.trim` — omits tool call/result pairs older than a configurable
+> turn window). MCP
 > support is built too, but does not name a plugin id the way the others
 > do: an operator lists an external MCP server under `[plugins].mcp` and its
 > tools attach directly, the same shape as the subprocess host one line

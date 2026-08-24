@@ -43,6 +43,7 @@ everything else assumes that page's setup.
 | --- | --- | --- |
 | [`whitepaper.md`](whitepaper.md) | Why is conway shaped this way — the failure modes it's built against, the primitives fork/spawn and non-compaction rest on, and what they buy you? | You want the reasoning behind conway's design, not just how to drive it. |
 | [`vision/`](vision/README.md) | What is conway *for*, how far along is it, and what is being worked on next? | You're contributing to conway's direction rather than using it. Not a user-facing page. |
+| [`dogfooding.md`](dogfooding.md) | How do I turn friction I hit while using conway into a board item, in about the same number of keystrokes as shrugging and moving on? | You're using conway on its own tree and something's awkward — recording it now beats reconstructing it from memory later. Not a user-facing page. |
 
 For the system-level picture — the crate layout, the core primitives, and
 the data flow of one turn — see [`/ARCHITECTURE.md`](../ARCHITECTURE.md).
