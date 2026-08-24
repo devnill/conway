@@ -36,7 +36,7 @@
 //! reserve).
 
 // `pub(crate)` for item A3: `tui::commands`'s `/tree` snapshot renderer
-// reuses `agents::recipe_parts`/`agents::ancestor_depth` so the hidden
+// reuses `agents::recipe_parts`/`agents::ancestor_depth` so the `/tree`
 // alias can never drift from what the panel draws.
 pub(crate) mod agents;
 mod header;

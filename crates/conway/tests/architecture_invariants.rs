@@ -511,3 +511,98 @@ fn t9_tui_has_no_parser_bypasses() {
          class board item `01KZVZ5XV162XCQR96AQKCCCF7` removed."
     );
 }
+
+/// T10: every `SlashCommand` variant is reachable from the slash palette.
+///
+/// Board item `01M0RW29F2ATVGCV0R8H0GQEYH` made the palette derive from
+/// `commands::describe`, an exhaustive `match` with no catch-all -- so a new
+/// variant cannot ship with MISSING or STALE description text; the compiler
+/// refuses to build until an arm exists. That closes half the problem.
+///
+/// The other half is not compiler-closable. `describe` maps a variant to its
+/// text, but something still has to ENUMERATE the variants, and Rust has no
+/// built-in variant reflection without a derive macro (C-04: not worth a
+/// dependency). `commands::builtin_variant_samples` is therefore a
+/// hand-written list, and a variant omitted from it wholesale compiles
+/// cleanly, passes every other test, and is silently absent from the palette
+/// -- which is EXACTLY the defect that item existed to remove, surviving in
+/// the one list still maintained by hand.
+///
+/// So it is closed the way this file already closes T9: by reading the
+/// source and asserting the property, rather than by hoping. A grep-based
+/// source guard is a weaker instrument than a compile error and is used here
+/// only because no compile-time construction exists at acceptable cost --
+/// but it fails loudly and immediately, which a promise to remember does
+/// not. The project's own lesson, from three declarations going stale in one
+/// cycle while the one file under mechanical check stayed correct:
+/// compliance is what fails, and the machine check is what does not.
+///
+/// `Plugin` is the one deliberate exclusion: it is not a built-in, carries
+/// no static description, and reaches the palette through
+/// `CommandRegistry::palette_entries` instead.
+#[test]
+fn t10_every_slash_command_variant_reaches_the_palette() {
+    let src = read("crates/conway-cli/src/tui/commands.rs");
+
+    let enum_body = src
+        .split_once("pub enum SlashCommand {")
+        .expect("SlashCommand enum not found -- did it move or get renamed?")
+        .1
+        .split_once("\n}\n")
+        .expect("SlashCommand enum has no closing brace at column 0")
+        .0;
+
+    // A variant is a line at exactly four spaces of indent starting with an
+    // uppercase letter. Field lines sit at eight, doc comments start `///`.
+    let declared: std::collections::BTreeSet<String> = enum_body
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("    ")?;
+            if rest.starts_with(' ') || !rest.starts_with(char::is_uppercase) {
+                return None;
+            }
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            (!name.is_empty()).then_some(name)
+        })
+        .filter(|name| name != "Plugin")
+        .collect();
+
+    let samples_body = src
+        .split_once("fn builtin_variant_samples() -> Vec<SlashCommand> {")
+        .expect("builtin_variant_samples not found -- did it move or get renamed?")
+        .1
+        .split_once("\n}\n")
+        .expect("builtin_variant_samples has no closing brace at column 0")
+        .0;
+
+    let sampled: std::collections::BTreeSet<String> = samples_body
+        .match_indices("SlashCommand::")
+        .map(|(idx, _)| {
+            samples_body[idx + "SlashCommand::".len()..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect()
+        })
+        .collect();
+
+    assert!(
+        declared.len() >= 15,
+        "T10 is not reading the enum correctly -- only found {} variants ({declared:?}). \
+         The scan, not the code, is what broke; fix the parse before trusting a pass.",
+        declared.len()
+    );
+
+    let missing: Vec<&String> = declared.difference(&sampled).collect();
+    assert!(
+        missing.is_empty(),
+        "T10 CHANGED: {missing:?} exist as `SlashCommand` variants but are absent from \
+         `commands::builtin_variant_samples`, so they never reach the slash palette and \
+         nobody can discover them by typing `/`. `describe`'s exhaustive match forced you \
+         to write their description text; NOTHING forces this list, which is why this \
+         guard exists. Add a sample instance for each. This is the exact defect board item \
+         `01M0RW29F2ATVGCV0R8H0GQEYH` closed for `/trust` and `/tree`."
+    );
+}

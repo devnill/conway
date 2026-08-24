@@ -91,7 +91,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
 ///
 /// `pub(crate)` so item A3's `/tree` snapshot renderer (`tui::commands`)
 /// composes the SAME label text the panel draws instead of duplicating the
-/// logic -- the panel and the hidden alias can never drift apart.
+/// logic -- the panel and the `/tree` alias can never drift apart.
 pub(crate) fn recipe_parts(node: &TreeNode) -> Vec<String> {
     let mut parts = Vec::new();
     match node.kind {

@@ -193,6 +193,238 @@ pub enum SlashCommand {
     },
 }
 
+/// One palette entry: a command's name (leading `/` included, matching
+/// [`SlashCommand`]'s own convention), its usage form, and a one-line
+/// description.
+///
+/// Board item `01M0RW29F2ATVGCV0R8H0GQEYH`: this is now the ONLY type
+/// carrying that text -- `view::palette::COMMANDS` used to be a second,
+/// independent hand-kept array (`view/palette.rs`'s own module doc called
+/// this "disclosed duplication"), and it drifted: `/trust` and `/tree`
+/// worked and were never listed, `/exit`/`/quit` were listed and a naive
+/// grep over the parser's `match` arms looked like they were not (they
+/// were -- see [`parse`]'s combined `"/quit" | "/exit"` arm; the grep just
+/// cannot see a disjunctive pattern). See [`describe`] for the mechanism
+/// that makes the missing-`/trust`-and-`/tree` half of that drift
+/// impossible to reintroduce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandSpec {
+    pub name: &'static str,
+    pub usage: &'static str,
+    pub description: &'static str,
+}
+
+/// Describes one built-in [`SlashCommand`] variant for the palette --
+/// **the single declaration site this item's spec asked for**: name, usage
+/// and description live nowhere else, and both the palette
+/// (`view::palette::draw_overlay`, via [`builtin_commands`]) and this
+/// module's own tests read it.
+///
+/// **Why a `match` with no catch-all arm, not a shared array `parse` and
+/// the palette both consult.** A shared array is DATA: nothing stops a new
+/// arm being added to [`parse`]'s own `match word { .. }` (which is CODE)
+/// without a corresponding array entry -- exactly the class of drift this
+/// item exists to close, since the two would still be two independently
+/// maintained things a person has to remember to keep in sync. Matching
+/// exhaustively on the real [`SlashCommand`] enum instead ties the
+/// obligation to the TYPE: adding a new variant (the established way this
+/// codebase adds a command -- see this module's own doc on `/trust`,
+/// `/agents`, `/ask`, each "a new `SlashCommand` variant, an `execute` arm
+/// ... with no new pre-parser interception") makes this `match` stop
+/// compiling, everywhere in the crate, until a `CommandSpec` is given for
+/// it -- a compile failure, not a runtime gap someone has to notice. This
+/// crate already uses the identical idiom for behaviour: [`execute`]'s own
+/// dispatch `match cmd { .. }` has no catch-all either, so a new variant
+/// already fails to build there today; this extends the same guarantee to
+/// the DESCRIPTION half.
+///
+/// [`SlashCommand::Plugin`] is deliberately excluded from ordinary
+/// coverage and panics if reached: a plugin command's name/description are
+/// resolved at TUI startup from whichever plugins are installed (never
+/// known at compile time -- see `CommandRegistry::palette_entries`, the
+/// mechanism that already stays correct, module notes' "Plugin commands
+/// are the one entry this module does NOT hand-keep"), so nothing may ever
+/// call `describe` with one; the panic is what makes that misuse loud
+/// rather than returning made-up text (`tests::
+/// describing_a_plugin_command_panics` is the direct proof).
+pub fn describe(cmd: &SlashCommand) -> CommandSpec {
+    match cmd {
+        SlashCommand::Ask { .. } => CommandSpec {
+            name: "/ask",
+            usage: "/ask <text>",
+            description: "ask an ephemeral fork a question (does not affect the live session)",
+        },
+        SlashCommand::Agents => CommandSpec {
+            name: "/agents",
+            usage: "/agents",
+            description: "toggle the below-chat agent-tree panel",
+        },
+        SlashCommand::Settings => CommandSpec {
+            name: "/settings",
+            usage: "/settings",
+            description: "open the settings menu (display preferences -- session only)",
+        },
+        SlashCommand::Trust => CommandSpec {
+            name: "/trust",
+            usage: "/trust permissions",
+            description: "preview and trust the project permissions file",
+        },
+        SlashCommand::Steer { .. } => CommandSpec {
+            name: "/steer",
+            usage: "/steer <agent> <text>",
+            description: "send a steer message to a running agent",
+        },
+        SlashCommand::Context { .. } => CommandSpec {
+            name: "/context",
+            usage: "/context <agent>",
+            description: "show an agent's assembled context",
+        },
+        SlashCommand::Tree => CommandSpec {
+            name: "/tree",
+            usage: "/tree",
+            description: "show the agent tree (same view /agents shows)",
+        },
+        SlashCommand::Why => CommandSpec {
+            name: "/why",
+            usage: "/why",
+            description: "show the last routing decision",
+        },
+        SlashCommand::Fork { .. } => CommandSpec {
+            name: "/fork",
+            usage: "/fork [<text>] | @<agent> <directive>",
+            description: "open an interactive fork of the focused agent (or fork a specific agent)",
+        },
+        SlashCommand::Spawn { .. } => CommandSpec {
+            name: "/spawn",
+            usage: "/spawn [@<agent_def>] [<prompt>]",
+            description:
+                "open an interactive spawned agent (inherits parent's role/model if no @agent_def)",
+        },
+        SlashCommand::Resume { .. } => CommandSpec {
+            name: "/resume",
+            usage: "/resume <session-id>",
+            description: "resume a prior session",
+        },
+        SlashCommand::Model { .. } => CommandSpec {
+            name: "/model",
+            usage: "/model <backend/model>",
+            description:
+                "switch the focused agent to a pinned model (forks; see /why for the reason)",
+        },
+        SlashCommand::Role { .. } => CommandSpec {
+            name: "/role",
+            usage: "/role <alias>",
+            description:
+                "switch the focused agent to a different role (forks; see /why for the reason)",
+        },
+        SlashCommand::Help => CommandSpec {
+            name: "/help",
+            usage: "/help",
+            description: "show this help",
+        },
+        SlashCommand::Quit => CommandSpec {
+            name: "/quit",
+            usage: "/quit",
+            description: "exit",
+        },
+        SlashCommand::Plugin { .. } => panic!(
+            "describe() called with SlashCommand::Plugin -- plugin commands are described \
+             dynamically (CommandRegistry::palette_entries), never through this table; this \
+             indicates a caller reaching for the wrong mechanism"
+        ),
+    }
+}
+
+/// One placeholder instance per describable [`SlashCommand`] variant
+/// (everything [`describe`] covers -- i.e. everything except
+/// [`SlashCommand::Plugin`], which is dynamic and has no fixed instance to
+/// place here), in palette display order. Field values are arbitrary empty/
+/// `None` placeholders: [`describe`] only inspects which VARIANT it
+/// received, never the field values, since this list exists purely to
+/// enumerate variants for the palette, not to represent real parsed input.
+///
+/// **What this does NOT protect against** (disclosed, module notes' own
+/// habit): a new `SlashCommand` variant added without a matching sample
+/// here would still compile -- [`describe`]'s own `match` is what forces a
+/// *description* to exist; nothing at the type level forces this Vec's
+/// membership too, since Rust has no built-in "list every variant of this
+/// enum" reflection without a derive macro (C-04: no new dependency for
+/// one). Two test-time guards close that gap between them, and the split
+/// matters because each catches what the other cannot:
+///
+/// - `tests::builtin_commands_round_trips_through_parse` catches a STALE or
+///   mis-ordered entry -- every row this function produces must parse back
+///   into a `SlashCommand` whose own [`describe`] agrees. It cannot see an
+///   entry that was never produced, because it only iterates what is here.
+/// - `conway`'s `architecture_invariants::t10_every_slash_command_variant_reaches_the_palette`
+///   catches a WHOLLY MISSING one. It reads this file's own source, extracts
+///   every `SlashCommand` variant from the enum declaration, and asserts each
+///   (except `Plugin`) appears in this list. Verified to fail: deleting the
+///   `Tree` sample leaves the crate compiling cleanly and every other test
+///   green, and T10 alone reports it by name.
+fn builtin_variant_samples() -> Vec<SlashCommand> {
+    vec![
+        SlashCommand::Ask {
+            question: String::new(),
+        },
+        SlashCommand::Agents,
+        SlashCommand::Settings,
+        SlashCommand::Trust,
+        SlashCommand::Steer {
+            target: String::new(),
+            text: String::new(),
+        },
+        SlashCommand::Context {
+            agent: String::new(),
+        },
+        SlashCommand::Tree,
+        SlashCommand::Why,
+        SlashCommand::Fork {
+            agent: None,
+            directive: None,
+        },
+        SlashCommand::Spawn {
+            agent_def: None,
+            prompt: None,
+        },
+        SlashCommand::Resume { sid: String::new() },
+        SlashCommand::Model {
+            model: String::new(),
+        },
+        SlashCommand::Role {
+            role: String::new(),
+        },
+        SlashCommand::Help,
+        SlashCommand::Quit,
+    ]
+}
+
+/// Every built-in command's palette entry, generated from [`describe`] --
+/// the palette's whole built-in half (`view::palette::matches` merges
+/// plugin commands in after this, unchanged). Display order matches
+/// `builtin_variant_samples`'s own order, with `/exit` appended last.
+/// (Plain code span, not an intra-doc link: that function is private and
+/// this one is public, which the `-D warnings` rustdoc gate rejects.)
+///
+/// **`/exit` is the one entry not derived from a `SlashCommand` variant.**
+/// It is a second accepted SPELLING of `/quit` -- [`parse`]'s own
+/// `"/quit" | "/exit"` arm -- not a distinct variant, so it cannot come
+/// from the exhaustive match [`describe`] performs. Represented explicitly
+/// here instead of silently dropped (dropping it would make a working
+/// command undiscoverable again, the exact defect class this item exists
+/// to close); `tests::exit_and_quit_both_parse_to_the_same_described_variant`
+/// proves the two spellings really do parse to the identical command, so
+/// this hand-written row cannot silently drift from `parse`'s own alias.
+pub fn builtin_commands() -> Vec<CommandSpec> {
+    let mut specs: Vec<CommandSpec> = builtin_variant_samples().iter().map(describe).collect();
+    specs.push(CommandSpec {
+        name: "/exit",
+        usage: "/exit",
+        description: "alias for /quit",
+    });
+    specs
+}
+
 /// A malformed slash command. `Display` always names the expected form, so
 /// it can be surfaced verbatim as a transcript [`Entry::Notice`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,11 +453,16 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             Ok(SlashCommand::Steer { target, text })
         }
         "/tree" => {
-            // Item A3: `/tree` stays parseable as a HIDDEN alias (dropped
-            // from the palette, but never a breaking removal; T7 removed
-            // the transcript-dump `/help` listing it used to be excluded
-            // from too) -- `execute` renders it from `state.tree`, the same
-            // view the `/agents` panel draws.
+            // Item A3 introduced `/tree` as an alias for the `/agents`
+            // panel's own view (`execute` renders it from `state.tree`, no
+            // facade call). Board item `01M0RW29F2ATVGCV0R8H0GQEYH`
+            // reverses A3's OTHER choice -- hiding it from the palette --
+            // which was itself the exact defect class this item exists to
+            // close: a working command a person could not discover by
+            // typing `/`. `/tree` is now described like any other command
+            // (see [`describe`]); T7's removal of the transcript-dump
+            // `/help` listing it used to be excluded from is unrelated and
+            // still stands.
             parse_no_arg(rest, "/tree")?;
             Ok(SlashCommand::Tree)
         }
@@ -1174,7 +1411,7 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             Effect::None
         }
         SlashCommand::Tree => {
-            // Item A3: no facade call -- the hidden alias renders from
+            // Item A3: no facade call -- the alias renders from
             // `state.tree` (the panel's own view), so its text always
             // matches what `/agents` shows, recipe labels included.
             render_tree_snapshot(state);
@@ -1661,8 +1898,8 @@ fn resolve_agent(state: &AppState, token: &str) -> Result<AgentId, String> {
 }
 
 /// Renders `state.tree` (the `/agents` panel's own `AgentTreeView`) into the
-/// transcript as one `Notice` line per agent. Item A3: `/tree` is now a
-/// hidden alias for the panel, so its text derives from the SAME nodes and
+/// transcript as one `Notice` line per agent. Item A3: `/tree` is an
+/// alias for the panel, so its text derives from the SAME nodes and
 /// recipe labels (`view::agents::recipe_parts`) the panel draws -- never
 /// from the runtime's `AgentTreeSnapshot`, so `execute` makes no facade
 /// call for it at all. `TreeNode` carries no `steps`/`budget`/`role`, so a
@@ -2283,6 +2520,149 @@ mod tests {
     fn unknown_command_is_a_parse_error() {
         let err = parse("/nope").unwrap_err();
         assert!(err.to_string().contains("/nope"));
+    }
+
+    // ---------------------------------------------------------------
+    // describe() / builtin_commands() (board item
+    // `01M0RW29F2ATVGCV0R8H0GQEYH`): the palette's single source of truth.
+    // ---------------------------------------------------------------
+
+    /// The verification anchor's own measured drift, proven fixed: `/trust`
+    /// and `/tree` -- both real, working commands -- were absent from the
+    /// old hand-kept `view::palette::COMMANDS` table. They must now appear,
+    /// generated automatically rather than by someone remembering to add a
+    /// row.
+    #[test]
+    fn trust_and_tree_are_discoverable_in_builtin_commands() {
+        let names: Vec<&str> = builtin_commands().iter().map(|c| c.name).collect();
+        assert!(
+            names.contains(&"/trust"),
+            "/trust must be discoverable: {names:?}"
+        );
+        assert!(
+            names.contains(&"/tree"),
+            "/tree must be discoverable: {names:?}"
+        );
+    }
+
+    /// `/ask` and `/agents` (the two the operator named explicitly) must
+    /// still be listed -- and, per this item's own finding, the mechanism
+    /// by which they are listed is no longer a special case at all: both
+    /// are ordinary `SlashCommand` variants reached through the identical
+    /// `describe` match every other built-in goes through (see this
+    /// module's own top-of-file doc on `/settings`, `/trust`, `/agents`,
+    /// `/ask` "are ordinary commands now" -- board item
+    /// `01KZVZ5XV162XCQR96AQKCCCF7` already closed the pre-parser
+    /// interception this item's spec describes as the reason they needed
+    /// separate handling). There is no "handled elsewhere" case left to
+    /// model for them.
+    #[test]
+    fn ask_and_agents_are_still_listed_as_ordinary_described_variants() {
+        let names: Vec<&str> = builtin_commands().iter().map(|c| c.name).collect();
+        assert!(names.contains(&"/ask"));
+        assert!(names.contains(&"/agents"));
+        // Both reach `describe` through the SAME exhaustive match as
+        // `/steer`/`/trust`/every other built-in -- proven directly by
+        // constructing each and calling `describe`, exactly like any other
+        // variant, with no special-cased branch anywhere in this test.
+        assert_eq!(
+            describe(&SlashCommand::Ask {
+                question: String::new()
+            })
+            .name,
+            "/ask"
+        );
+        assert_eq!(describe(&SlashCommand::Agents).name, "/agents");
+    }
+
+    /// `describe` refuses to describe a plugin command -- plugin commands
+    /// are resolved dynamically at TUI startup (`CommandRegistry::
+    /// palette_entries`), never through this static table; this is the
+    /// direct proof that misuse is loud, not a silently wrong description.
+    #[test]
+    #[should_panic(expected = "describe() called with SlashCommand::Plugin")]
+    fn describing_a_plugin_command_panics() {
+        let _ = describe(&SlashCommand::Plugin {
+            full_name: "acme.greet".to_string(),
+            args: String::new(),
+        });
+    }
+
+    /// Every row [`builtin_commands`] produces really does parse (criterion
+    /// 3: "nothing is advertised that does not work"), and the variant it
+    /// parses into is described by `describe` with the SAME name the row
+    /// itself carries -- catching a stale/renamed row even though (module
+    /// notes on `builtin_variant_samples`) it cannot catch a wholly
+    /// omitted one. Each row's minimal valid input is built from its own
+    /// `usage` field's shape rather than hand-duplicated per command, so a
+    /// changed `usage` string cannot silently desync from this test's own
+    /// example.
+    #[test]
+    fn builtin_commands_round_trips_through_parse() {
+        for row in builtin_commands() {
+            let example = match row.name {
+                "/steer" => "/steer a1 hello".to_string(),
+                "/context" => "/context a1".to_string(),
+                "/fork" => "/fork".to_string(),
+                "/spawn" => "/spawn".to_string(),
+                "/resume" => "/resume 01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+                "/model" => "/model anthropic/claude".to_string(),
+                "/role" => "/role reviewer".to_string(),
+                "/trust" => "/trust".to_string(),
+                "/ask" => "/ask is this safe?".to_string(),
+                // Every other row is already valid input verbatim (bare
+                // commands: `/agents`, `/settings`, `/tree`, `/why`,
+                // `/help`, `/quit`, `/exit`).
+                other => other.to_string(),
+            };
+            let cmd = parse(&example)
+                .unwrap_or_else(|e| panic!("row {:?} example {example:?} failed: {e}", row.name));
+            // `/resume`'s argument is only shape-validated by `parse`
+            // itself (SessionId parsing happens in `execute`), so this
+            // still reaches a real `SlashCommand::Resume` -- fine to
+            // `describe` like everything else.
+            if row.name == "/exit" {
+                // The one row NOT derived from a `SlashCommand` variant --
+                // see `builtin_commands`'s own doc. Proven separately,
+                // below, that it round-trips to the same variant as
+                // `/quit`.
+                assert_eq!(cmd, SlashCommand::Quit);
+                continue;
+            }
+            assert_eq!(
+                describe(&cmd).name,
+                row.name,
+                "row {:?} parsed into a variant `describe` names differently",
+                row.name
+            );
+        }
+    }
+
+    /// The one row [`builtin_commands`] carries that is NOT a distinct
+    /// `SlashCommand` variant: `/exit` is a second accepted spelling of
+    /// `/quit`. Proves the two spellings really do parse to the identical
+    /// command, so the hand-written `/exit` row cannot silently drift from
+    /// `parse`'s own `"/quit" | "/exit"` alias.
+    #[test]
+    fn exit_and_quit_both_parse_to_the_same_described_variant() {
+        assert_eq!(parse("/quit"), parse("/exit"));
+        assert_eq!(describe(&parse("/quit").unwrap()).name, "/quit");
+    }
+
+    /// No two rows share a name -- a duplicate would mean the same command
+    /// listed twice (and would silently swallow one of them in the
+    /// palette's prefix filter behaving oddly), never a legitimate state.
+    #[test]
+    fn builtin_commands_has_no_duplicate_names() {
+        let names: Vec<&str> = builtin_commands().iter().map(|c| c.name).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            names.len(),
+            "duplicate name in builtin_commands(): {names:?}"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -3414,7 +3794,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // /tree (item A3: hidden alias rendering `state.tree`)
+    // /tree (item A3: alias rendering `state.tree`)
     // ---------------------------------------------------------------
 
     /// Builds one `TreeNode` fixture directly (the fields are all `pub` --
@@ -3452,7 +3832,7 @@ mod tests {
             .collect()
     }
 
-    /// Item A3: `/tree` is a hidden alias for the `/agents` panel -- it
+    /// Item A3: `/tree` is an alias for the `/agents` panel -- it
     /// makes NO facade call, and renders from `state.tree` alone. (The
     /// `Host` seam no longer even EXPOSES a runtime tree snapshot -- item
     /// A3 removed `Host::tree` once this became its only caller -- so

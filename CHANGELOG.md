@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `/` command palette now generates itself from the same command
+  table `commands.rs` parses, instead of a hand-kept second listing** —
+  board item `01M0RW29F2ATVGCV0R8H0GQEYH`. The two had drifted: `/trust`
+  and `/tree` were real, working commands invisible to anyone who only
+  discovered commands by typing `/`. `commands::describe` is now the
+  single declaration of every built-in's name/usage/description, matched
+  exhaustively against the real `SlashCommand` enum with no catch-all arm
+  — adding a command without describing it is a compile error, not a
+  runtime gap someone has to notice. `/ask` and `/agents` are listed
+  through the identical mechanism as every other built-in, not a special
+  case: both are ordinary `SlashCommand` variants reached through
+  `commands::parse` (closed by an earlier item, `01KZVZ5XV162XCQR96AQKCCCF7`).
+  `/exit` and `/quit` were already both accepted by the parser (a single
+  `"/quit" | "/exit"` match arm) — no behavior change there, just a stale
+  diagnostic that couldn't see a disjunctive pattern. Plugin commands are
+  unaffected: still merged in dynamically after the built-ins. See
+  [`docs/interactive.md`](docs/interactive.md#slash-commands).
+
 ### Changed
 
 - **The `/settings` plugins section now separates the switch from the

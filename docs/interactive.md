@@ -195,13 +195,17 @@ shrinking the candidate list).
 | `/model` | `/model <backend/model>` | Switch the focused agent to a pinned model, mid-conversation. |
 | `/role` | `/role <alias>` | Switch the focused agent to a different role, mid-conversation. |
 | `/trust permissions` | `/trust permissions` | Opens a preview card showing the project's `.conway/permissions.json` at its current content; `[y]`/`Enter` confirms (trusting it and installing its `allow` rules for this session), `[n]`/`Esc` cancels having written nothing. See [`permissions.md`](permissions.md). |
+| `/tree` | `/tree` | Print the same agent tree the `/agents` panel shows, as plain transcript lines you can scroll back to or copy. |
 | `/help` | `/help` | Open a read-only keybinding reference overlay. |
 | `/quit` or `/exit` | `/quit` | Exit conway. |
 
 A message that doesn't start with `/` is sent to the model as an ordinary
 prompt. An unrecognized `/command` is reported as an error rather than
-sent to the model. `/trust permissions` doesn't appear in the `/` palette
-list above (typing it in full still works) — every other command does.
+sent to the model. Every command in the table above is discoverable by
+typing `/` — the `/` palette is generated from the same command table this
+page's own list is, so the two cannot drift apart the way they once did
+(board item `01M0RW29F2ATVGCV0R8H0GQEYH`: `/trust` and `/tree` used to work
+while being absent from the palette).
 
 ### `/context`: the preamble section
 
