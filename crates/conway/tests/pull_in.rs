@@ -22,12 +22,14 @@ use conway::{Conway, ConwayBuilder, ConwayError, Provenance, SessionHandle, Sess
 use conway_core::agent::PermissionDecision;
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
+use conway_core::event::Event;
 use conway_core::ids::{
     AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SeqRange, SessionId,
 };
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
 use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use futures_core::Stream as _;
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {
@@ -284,6 +286,122 @@ async fn pull_in_merges_the_ask_child_verbatim_then_purges_it() {
             .any(|n| n.agent_id == child_agent),
         "the child's tree node must survive the purge"
     );
+}
+
+// ---------------------------------------------------------------------
+// The live surface (board item `01M0RWT9V7GNYRR53MTTQ2Y07K`): the merge
+// above was always durable — this proves it is now ALSO visible, live, to
+// a subscriber on the parent's own event stream, without a resume.
+// ---------------------------------------------------------------------
+
+/// **The load-bearing new test for this item.** The happy-path test above
+/// (`pull_in_merges_the_ask_child_verbatim_then_purges_it`) already proves
+/// the STORAGE side; it asserts nothing about the event stream, which is
+/// exactly why the bug this item fixes shipped past it — a test that
+/// `pull_in` was *called* (or even that it durably merged) cannot see that
+/// its result was invisible. This test instead subscribes to
+/// `handle.events()` — the SAME primitive a library embedder or any other
+/// non-TUI `EventStream` consumer would use, not a TUI-internal type —
+/// BEFORE calling `Conway::pull_in`, then asserts the merged question and
+/// answer actually arrive on that live stream, in order, naming the
+/// parent. Driving the production `Conway::pull_in` call (not a unit test
+/// of a rendering function) is deliberate: only the live path can show
+/// this bug is fixed.
+#[tokio::test]
+async fn pull_in_emits_the_merged_question_and_answer_on_the_parents_live_stream() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(text_response("parent ack")),
+            ScriptedTurn::Respond(text_response("the ask answer")),
+        ])
+        .with_id(BackendId::new("fake")),
+    );
+    let conway = build_conway_with_backend(store.clone(), backend);
+
+    let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
+
+    // Subscribe BEFORE pull_in, on the PARENT-scoped stream: unlike
+    // `AgentPromoted` (stamped under the CHILD's own session — see
+    // `promote.rs`'s own test), the merge's events are emitted under the
+    // PARENT's own session/agent, since this is the parent's own
+    // transcript growing, not the (about-to-be-purged) child's.
+    let mut events = handle.events();
+
+    conway
+        .pull_in(child_agent)
+        .await
+        .expect("pull_in of a completed ephemeral ask child must succeed");
+
+    // Drain the parent's live stream until the marker, the question AND
+    // the answer have all been seen — a BOUNDED collection, so a bug that
+    // emits nothing (this item's own reported symptom) fails this test
+    // instead of hanging it.
+    let (marker, question, answer) = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut marker = None;
+        let mut question = None;
+        let mut answer = None;
+        while question.is_none() || answer.is_none() {
+            let envelope = std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx))
+                .await
+                .expect("event stream open");
+            match envelope.event {
+                Event::AgentProgress { note } if marker.is_none() => {
+                    marker = Some((envelope.agent, envelope.session, note));
+                }
+                Event::UserTurn { text, prov } if question.is_none() => {
+                    question = Some((envelope.agent, envelope.session, text, prov));
+                }
+                Event::TextDelta { text } if answer.is_none() => {
+                    answer = Some((envelope.agent, envelope.session, text));
+                }
+                _ => {}
+            }
+        }
+        (marker, question, answer)
+    })
+    .await
+    .expect(
+        "timed out waiting for the merged question and answer to reach the parent's live \
+         stream — pull_in must EMIT them, not merely persist them",
+    );
+
+    // The marker (this item's answer to "what exactly should appear" —
+    // `Provenance::MergedAsk`'s own doc says the merge origin stays
+    // "explicit and inspectable", so the live surface must say so too, not
+    // render the merged turns indistinguishable from an ordinary
+    // prompt/reply) precedes the content, names the parent, and names the
+    // child session the merge came from.
+    let (marker_agent, marker_session, marker_note) =
+        marker.expect("an Event::AgentProgress marker must precede the merged content");
+    assert_eq!(marker_agent, handle.root());
+    assert_eq!(marker_session, handle.id());
+    assert!(
+        marker_note.contains(&child_session.to_string()),
+        "the marker must name the child session the merge came from, got: {marker_note}"
+    );
+
+    // The question: same text, and the SAME `MergedAsk` provenance the
+    // persisted record carries (proven separately by the happy-path test
+    // above) — the live event is not a different, weaker signal.
+    let (q_agent, q_session, q_text, q_prov) = question.expect("set inside the loop above");
+    assert_eq!(q_agent, handle.root(), "the merge is the PARENT's own turn");
+    assert_eq!(q_session, handle.id());
+    assert_eq!(q_text, "an ephemeral aside");
+    assert_eq!(
+        q_prov,
+        Provenance::MergedAsk {
+            from: child_session
+        },
+        "the live event must carry the same MergedAsk provenance the persisted record does"
+    );
+
+    // The answer: the child's real reply text, also on the parent's own
+    // stream.
+    let (a_agent, a_session, a_text) = answer.expect("set inside the loop above");
+    assert_eq!(a_agent, handle.root());
+    assert_eq!(a_session, handle.id());
+    assert_eq!(a_text, "the ask answer");
 }
 
 // ---------------------------------------------------------------------

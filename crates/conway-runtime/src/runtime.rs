@@ -1423,9 +1423,51 @@ impl Runtime {
         }
 
         // Append to the parent's log; the store re-sequences each record
-        // to the parent's head (see the doc above).
+        // to the parent's head (see the doc above). Board item
+        // `01M0RWT9V7GNYRR53MTTQ2Y07K`: each successfully appended record
+        // ALSO gets its live `Event` twin emitted on the PARENT's own
+        // stream, right here, in the same order the records were just
+        // appended -- closing the gap where the merge was durable (the
+        // records really do land in the parent's log) but invisible (no
+        // event ever announced it, so the transcript never grew). This
+        // mirrors, deliberately, the exact `LogRecord` -> `Event` shapes
+        // `conway`'s own `record_to_event` uses to replay a resumed
+        // session (`UserTurn` -> `Event::UserTurn`, `Assistant` ->
+        // `Event::TextDelta`) -- see `pull_in_merged_event`'s own doc for
+        // why that mapping is duplicated here rather than called directly.
+        // A subscriber watching the parent's event stream live therefore
+        // sees, in order and without a restart, the SAME transcript shape
+        // a fresh `--resume` would reconstruct from the log -- true for
+        // the TUI and for any other `EventStream` consumer alike, since
+        // this emits from the facade-level operation itself, not from a
+        // renderer re-reading the log after the fact.
+        //
+        // A single `Event::AgentProgress` marker precedes the FIRST
+        // emitted twin (not one per record -- this is one ask's outcome
+        // landing in the parent's log, not N independent occurrences each
+        // needing their own label). `Provenance::MergedAsk`'s own doc says
+        // the merge origin "stays explicit and inspectable"; rendering the
+        // merged turns indistinguishable from an ordinary prompt/reply
+        // would discard that at the display layer even though the log
+        // itself keeps it via `prov`. The marker names the child session
+        // pulled_in came from, so it is inspectable, not just labeled.
+        let mut marker_emitted = false;
         for record in merged {
+            let event = pull_in_merged_event(&record);
             self.store.append(&parent_session, record).await?;
+            if let Some(event) = event {
+                if !marker_emitted {
+                    self.bus.emit(
+                        parent_session,
+                        parent_agent,
+                        Event::AgentProgress {
+                            note: format!("pulled in from /ask (session {child_session})"),
+                        },
+                    );
+                    marker_emitted = true;
+                }
+                self.bus.emit(parent_session, parent_agent, event);
+            }
         }
 
         // Purge the child. B1's guards re-run authoritatively here; the
@@ -1606,6 +1648,37 @@ impl Runtime {
 pub struct EphemeralTurnOutcome {
     pub reply: String,
     pub result: AgentResult,
+}
+
+/// Maps one of [`Runtime::pull_in`]'s merged records to its live [`Event`]
+/// twin (board item `01M0RWT9V7GNYRR53MTTQ2Y07K`), mirroring exactly the
+/// two arms of `conway`'s own `record_to_event` that a resumed session's
+/// replay produces for the SAME record kinds. `conway-runtime` cannot call
+/// that function directly -- `conway` (the facade crate) depends on
+/// `conway-runtime`, never the other way around -- so this is a narrow,
+/// the same two arms `record_to_event` maps when REPLAYING a resumed
+/// session, so a live pull-in and a resumed one render identically. The
+/// text narrowing they share is `conway_core::content::assistant_text` --
+/// one implementation, called from both, rather than two that a comment
+/// asks someone to keep in step.
+///
+/// `None` for every other record kind mirrors `pull_in`'s own merge set
+/// (see that method's doc): nothing else is ever appended by `pull_in`, so
+/// nothing else needs an event here. `LogRecord::UserTurn`'s `prov` is
+/// carried through untouched -- already `Provenance::MergedAsk` by the
+/// time this runs (`pull_in` re-stamps it before appending) -- so the
+/// event tells a subscriber exactly what the persisted record says.
+fn pull_in_merged_event(record: &LogRecord) -> Option<Event> {
+    match record {
+        LogRecord::UserTurn { text, prov, .. } => Some(Event::UserTurn {
+            text: text.clone(),
+            prov: prov.clone(),
+        }),
+        LogRecord::Assistant { content, .. } => Some(Event::TextDelta {
+            text: conway_core::content::assistant_text(content),
+        }),
+        _ => None,
+    }
 }
 
 fn empty_report(agent_id: AgentId) -> ContextReport {

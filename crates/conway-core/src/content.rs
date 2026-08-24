@@ -47,6 +47,32 @@ pub enum ContentBlock {
     },
 }
 
+/// Every [`ContentBlock::Text`] block's text, concatenated in order.
+///
+/// The ONE narrowing from a block sequence to the plain text a transcript
+/// shows. It lives here, in the crate that owns [`ContentBlock`], because
+/// two crates need it and neither can call the other: `conway`'s
+/// `record_to_event` maps a persisted record to an event when REPLAYING a
+/// resumed session, and `conway-runtime`'s `pull_in` maps the identical
+/// record to the identical event LIVE when merging a pulled-in `/ask`. The
+/// two must agree exactly -- a resumed transcript and a live one showing
+/// different text for the same record is the defect -- and the way to make
+/// two things agree is one implementation, not two and a comment asking
+/// the next person to keep them in step.
+///
+/// Non-text blocks are dropped: thinking, tool use, tool results and
+/// images have their own rendering paths and are not part of the text a
+/// transcript line carries.
+pub fn assistant_text(content: &[ContentBlock]) -> String {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// A role-tagged sequence of content blocks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Message {
