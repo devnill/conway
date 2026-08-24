@@ -94,6 +94,29 @@ pub enum SlashCommand {
         target: String,
         text: String,
     },
+    /// `/cancel <agent> [<reason>]` (INTENT.md §7a: anything a model can do
+    /// to the session's agents, the operator can do from the terminal with
+    /// one typed command -- the model already has `conway_cancel`; the
+    /// operator had no counterpart, only `/quit`, which loses the parent's
+    /// in-flight work too). `target` resolves through the SAME
+    /// [`resolve_agent`] every other agent-targeted command uses (full id,
+    /// exact name, unique prefix) -- see that function's own doc; `/cancel`
+    /// invents no new grammar. `reason` is optional free text; `execute`
+    /// supplies a default ("cancelled by operator") when it is `None`,
+    /// mirroring `conway_cancel`'s own tool-facing default. Always
+    /// `CancelMode::Immediate` -- the operator surface exposes no `mode`
+    /// argument (see [`execute`]'s own `Cancel` arm for why: this is a
+    /// "possibly non-focused subagent" instant-stop control, not a second
+    /// place to reach `Graceful`, which stays reachable only through the
+    /// model-facing `conway_cancel` tool). Cancelling the session's own
+    /// ROOT agent is refused by `execute` before any facade call -- doing
+    /// so would end the whole session, which this command's acceptance
+    /// ("without ending the session") forbids; `/quit` remains the way to
+    /// end the session.
+    Cancel {
+        target: String,
+        reason: Option<String>,
+    },
     Tree,
     /// `agent` is `None` for a bare `/context` (board item
     /// `01M0RWKJD04JBR5NCVKBQXYHV4`: the only way to learn an id from the
@@ -281,6 +304,11 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
             usage: "/steer <agent> <text>",
             description: "send a steer message to a running agent",
         },
+        SlashCommand::Cancel { .. } => CommandSpec {
+            name: "/cancel",
+            usage: "/cancel <agent> [<reason>]",
+            description: "cancel a running agent immediately (does not end the session)",
+        },
         SlashCommand::Context { .. } => CommandSpec {
             name: "/context",
             usage: "/context [<agent>]",
@@ -381,6 +409,10 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
             target: String::new(),
             text: String::new(),
         },
+        SlashCommand::Cancel {
+            target: String::new(),
+            reason: None,
+        },
         SlashCommand::Context { agent: None },
         SlashCommand::Tree,
         SlashCommand::Why,
@@ -456,6 +488,10 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
         "/steer" => {
             let (target, text) = parse_two_arg(rest, "/steer <agent> <text>")?;
             Ok(SlashCommand::Steer { target, text })
+        }
+        "/cancel" => {
+            let (target, reason) = parse_cancel(rest, "/cancel <agent> [<reason>]")?;
+            Ok(SlashCommand::Cancel { target, reason })
         }
         "/tree" => {
             // Item A3 introduced `/tree` as an alias for the `/agents`
@@ -611,6 +647,32 @@ fn parse_two_arg(rest: &str, form: &str) -> Result<(String, String), ParseError>
     match rest.split_once(char::is_whitespace) {
         Some((first, text)) if !text.trim().is_empty() => Ok((first.to_string(), text.to_string())),
         _ => Err(ParseError(format!("usage: {form}"))),
+    }
+}
+
+/// Parses `/cancel`'s argument list: `<agent>` is required, `<reason>` is
+/// NOT -- unlike [`parse_two_arg`] (`/steer`'s parser, which requires its
+/// second argument), a cancel is well-formed with no reason at all; `execute`
+/// supplies a default when this returns `None`, mirroring `conway_cancel`'s
+/// own tool-facing `CancelArgs::reason` default. `<agent>` is still
+/// unresolved here -- `execute`'s [`resolve_agent`] call is what turns it
+/// into a live id.
+fn parse_cancel(rest: &str, form: &str) -> Result<(String, Option<String>), ParseError> {
+    let trimmed = rest.trim_start();
+    if trimmed.is_empty() {
+        return Err(ParseError(format!("usage: {form}")));
+    }
+    match trimmed.split_once(char::is_whitespace) {
+        Some((agent, reason)) => {
+            let reason = reason.trim();
+            let reason = if reason.is_empty() {
+                None
+            } else {
+                Some(reason.to_string())
+            };
+            Ok((agent.to_string(), reason))
+        }
+        None => Ok((trimmed.to_string(), None)),
     }
 }
 
@@ -834,6 +896,17 @@ pub trait Host {
     async fn fork(&self, from: AgentId, spec: ForkSpec) -> conway::Result<AgentId>;
     async fn spawn(&self, from: AgentId, spec: SpawnSpec) -> conway::Result<AgentId>;
     async fn steer(&self, target: AgentId, text: String) -> conway::Result<()>;
+    /// `/cancel <agent> [<reason>]`: a thin passthrough to
+    /// `SessionHandle::cancel` (always `CancelMode::Immediate` -- see
+    /// [`SlashCommand::Cancel`]'s own doc for why the operator surface
+    /// exposes no `mode` argument), the SAME facade method the model-facing
+    /// `conway_cancel` tool's convenience wrapper (`SubagentHandle::cancel`)
+    /// reduces to internally -- both ultimately reach `SubagentHost::cancel`
+    /// on the one shared `Runtime`, so an operator cancel and a model cancel
+    /// of the same agent do the identical thing. Routed through this trait
+    /// like every other facade call so `execute`'s `SlashCommand::Cancel`
+    /// arm is unit-testable against `tests::FakeHost`.
+    async fn cancel(&self, target: AgentId, reason: String) -> conway::Result<()>;
     async fn resume(&self, sid: SessionId) -> conway::Result<SessionHandle>;
     /// The `/ask` modal's three fates (B5) -- one facade op each: promote
     /// (B3, `[f]` keep), pull_in (B4, `[p]` merge into the parent), purge
@@ -953,6 +1026,10 @@ impl Host for LiveHost<'_> {
 
     async fn steer(&self, target: AgentId, text: String) -> conway::Result<()> {
         self.handle.steer(target, text).await
+    }
+
+    async fn cancel(&self, target: AgentId, reason: String) -> conway::Result<()> {
+        self.handle.cancel(target, &reason).await
     }
 
     async fn resume(&self, sid: SessionId) -> conway::Result<SessionHandle> {
@@ -1423,6 +1500,26 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                     Ok(()) => notice(state, format!("steer queued for {agent}")),
                     Err(e) => notice(state, e.to_string()),
                 },
+                Err(e) => notice(state, e),
+            }
+            Effect::None
+        }
+        SlashCommand::Cancel { target, reason } => {
+            match resolve_agent(state, &target) {
+                Ok(agent) if agent == state.root_agent() => notice(
+                    state,
+                    format!(
+                        "cannot cancel {agent}: it is this session's own root agent, and \
+                         cancelling it would end the session -- use /quit instead"
+                    ),
+                ),
+                Ok(agent) => {
+                    let reason = reason.unwrap_or_else(|| "cancelled by operator".to_string());
+                    match host.cancel(agent, reason.clone()).await {
+                        Ok(()) => notice(state, format!("cancelled {agent}: {reason}")),
+                        Err(e) => notice(state, e.to_string()),
+                    }
+                }
                 Err(e) => notice(state, e),
             }
             Effect::None
@@ -2312,6 +2409,34 @@ mod tests {
     }
 
     #[test]
+    fn cancel_parses_agent_with_no_reason() {
+        assert_eq!(
+            parse("/cancel a7"),
+            Ok(SlashCommand::Cancel {
+                target: "a7".to_string(),
+                reason: None,
+            })
+        );
+    }
+
+    #[test]
+    fn cancel_parses_agent_and_preserves_internal_whitespace_in_the_reason() {
+        assert_eq!(
+            parse("/cancel a7 burning tokens, stop it"),
+            Ok(SlashCommand::Cancel {
+                target: "a7".to_string(),
+                reason: Some("burning tokens, stop it".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn cancel_missing_agent_is_a_parse_error_naming_the_form() {
+        let err = parse("/cancel").unwrap_err();
+        assert!(err.to_string().contains("/cancel <agent> [<reason>]"));
+    }
+
+    #[test]
     fn tree_parses() {
         assert_eq!(parse("/tree"), Ok(SlashCommand::Tree));
     }
@@ -2720,6 +2845,7 @@ mod tests {
         for row in builtin_commands() {
             let example = match row.name {
                 "/steer" => "/steer a1 hello".to_string(),
+                "/cancel" => "/cancel a1".to_string(),
                 "/context" => "/context a1".to_string(),
                 "/fork" => "/fork".to_string(),
                 "/spawn" => "/spawn".to_string(),
@@ -2863,6 +2989,11 @@ mod tests {
         /// `fake_error()` -- lets a fate test exercise both the close-modal
         /// and the keep-open-with-error paths of `apply_ask_fate`.
         fate_ok: bool,
+        /// When `true`, `cancel` succeeds; otherwise it fails with
+        /// `fake_error()` -- mirrors `fate_ok`'s own shape, so a `/cancel`
+        /// test can exercise both the "it stops" success path and ordinary
+        /// facade-error propagation.
+        cancel_ok: bool,
         /// C2: when `Some`, `classify_agent_intent` succeeds with this
         /// intent; otherwise it fails with `FacadeError::IntentClassification`
         /// -- lets a free-text `/fork`/`/spawn` test exercise both the
@@ -2907,6 +3038,7 @@ mod tests {
                 last_fork_spec: Mutex::new(None),
                 last_spawn_spec: Mutex::new(None),
                 fate_ok: false,
+                cancel_ok: false,
                 classify_intent: None,
                 plugin_commands: HashMap::new(),
                 trust_result: None,
@@ -2940,6 +3072,12 @@ mod tests {
         /// that field's own doc.
         fn with_preview_result(mut self, preview: TrustPreview) -> Self {
             self.preview_result = Some(preview);
+            self
+        }
+
+        /// Scripts `cancel` to succeed -- see the `cancel_ok` field's own doc.
+        fn with_cancel_ok(mut self) -> Self {
+            self.cancel_ok = true;
             self
         }
     }
@@ -2995,6 +3133,15 @@ mod tests {
         async fn steer(&self, _target: AgentId, _text: String) -> conway::Result<()> {
             self.calls.lock().unwrap().push("steer");
             Err(fake_error())
+        }
+
+        async fn cancel(&self, _target: AgentId, _reason: String) -> conway::Result<()> {
+            self.calls.lock().unwrap().push("cancel");
+            if self.cancel_ok {
+                Ok(())
+            } else {
+                Err(fake_error())
+            }
         }
 
         async fn resume(&self, _sid: SessionId) -> conway::Result<SessionHandle> {
@@ -3365,6 +3512,133 @@ mod tests {
 
         assert!(matches!(effect, Effect::None));
         assert_eq!(host.calls(), vec!["steer"]);
+    }
+
+    // ---------------------------------------------------------------
+    // /cancel
+    // ---------------------------------------------------------------
+
+    /// Acceptance 1/2: cancelling a running, NON-focused subagent (mirrors
+    /// `/steer`'s own targeting -- `resolve_agent` reaches an agent whether
+    /// or not it is the one currently in view) stops it -- proved here by
+    /// exactly one `cancel` facade call reaching `host` -- and the SESSION
+    /// itself keeps working: `Effect::None`, never `Effect::Quit`, and the
+    /// outcome is surfaced as a transcript `Notice` an operator watching the
+    /// screen would see (acceptance 2's "visible to the operator" -- the
+    /// AGENT's own tree-node status flip to `Cancelled`/the `-` marker is a
+    /// separate, pre-existing mechanism: `AgentFinished { Cancelled }` ->
+    /// `AppState::apply_agent_finished`, unrelated to this command's own
+    /// dispatch and untouched by this item).
+    #[tokio::test]
+    async fn cancel_a_running_non_focused_subagent_stops_it_and_the_session_lives() {
+        let root = AgentId::new();
+        let child = AgentId::new();
+        let mut state = AppState::new(root);
+        state.tree.nodes.push(TreeNode {
+            agent_id: child,
+            parent: Some(root),
+            agent_def: None,
+            status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
+        });
+        // `state.focused_agent` stays on `root` (`AppState::new`'s default)
+        // -- `child` is deliberately NOT the focused agent.
+        assert_ne!(state.focused_agent, child);
+        let host = FakeHost::new(root).with_cancel_ok();
+
+        let effect = execute(
+            SlashCommand::Cancel {
+                target: child.to_string(),
+                reason: Some("burning tokens".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(
+            matches!(effect, Effect::None),
+            "the parent session must keep working, not quit"
+        );
+        assert_eq!(host.calls(), vec!["cancel"]);
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains(&child.to_string()) && line.contains("burning tokens")),
+            "the cancellation must be visible in the transcript: {:?}",
+            notice_lines(&state)
+        );
+    }
+
+    /// Acceptance 5, half 2: cancelling an unknown ref is a typed error and
+    /// NOTHING dies -- `resolve_agent` fails before `host.cancel` is ever
+    /// reached (zero facade calls), and `execute` still returns
+    /// `Effect::None`, exactly like an unresolvable `/steer` target already
+    /// does.
+    #[tokio::test]
+    async fn cancel_an_unknown_ref_is_a_typed_error_and_nothing_dies() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Cancel {
+                target: "not-a-real-agent".to_string(),
+                reason: None,
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(host.calls().is_empty(), "no facade call may be made");
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains("no agent matches")),
+            "the failure must be a named, typed notice: {:?}",
+            notice_lines(&state)
+        );
+    }
+
+    /// Determination question 3: cancelling the session's own ROOT agent is
+    /// refused loudly, before any facade call -- `CancelMode::Immediate`
+    /// propagates to the whole subtree structurally, so cancelling root
+    /// would end the entire session, which this command's acceptance
+    /// ("without ending the session") forbids. `/quit` remains the way to
+    /// end a session; this guard fires even when `target` is spelled out as
+    /// root's own full id, matching `resolve_agent`'s full-id pass.
+    #[tokio::test]
+    async fn cancel_targeting_the_session_root_is_refused_before_any_facade_call() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root).with_cancel_ok();
+
+        let effect = execute(
+            SlashCommand::Cancel {
+                target: root.to_string(),
+                reason: None,
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            host.calls().is_empty(),
+            "the root guard must fire before host.cancel is ever called"
+        );
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains("cannot cancel") && line.contains("/quit")),
+            "the refusal must name the reason and point at /quit: {:?}",
+            notice_lines(&state)
+        );
     }
 
     // ---------------------------------------------------------------
