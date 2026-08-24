@@ -85,14 +85,32 @@ async fn name_then_list_shows_the_name_and_unnamed_rows_stay_blank() {
     let text_out = run_conway(&["sessions", "list"], &fixture);
     assert!(text_out.status.success());
     let text = String::from_utf8(text_out.stdout).expect("utf8 stdout");
+    // Find the row BY THE NAME, not by the id prefix. `fmt::id_short` takes
+    // a fixed first eight characters with no uniqueness computation, and a
+    // ULID's first eight characters encode the high bits of its millisecond
+    // timestamp -- so two sessions created within about a second of each
+    // other, as these two are, render an IDENTICAL short id. Searching by
+    // prefix matched whichever row came first and made this test fail
+    // against a correct implementation. (That the listing cannot visually
+    // distinguish them is a real defect, tracked separately; this test is
+    // about the NAME column, so it must not depend on that.)
     let named_short = &named.to_string()[..8];
     let named_line = text
         .lines()
-        .find(|l| l.starts_with(named_short))
-        .unwrap_or_else(|| panic!("no row for {named_short} in {text:?}"));
+        .find(|l| l.contains("daily"))
+        .unwrap_or_else(|| panic!("no row showing the name in {text:?}"));
     assert!(
-        named_line.contains("daily"),
-        "named row must show the name: {named_line:?}"
+        named_line.starts_with(named_short),
+        "the row showing `daily` must be the named session's: {named_line:?}"
+    );
+    let blank_rows = text
+        .lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty() && !l.contains("daily"))
+        .count();
+    assert_eq!(
+        blank_rows, 1,
+        "the unnamed session's row must stay blank in the NAME column: {text:?}"
     );
 }
 
