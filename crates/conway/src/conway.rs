@@ -1469,6 +1469,17 @@ impl Conway {
     /// `RuntimeError::Store` -> `FacadeError::Store` flattening
     /// [`Self::promote`]'s own doc explains.
     ///
+    /// **That flattening is what tells a caller whether anything happened**
+    /// (board item `01M0TNBACHQSAMMJ3TY14S47MX`). The merge is several
+    /// appends and the store cannot roll them back, so a failure part-way
+    /// leaves records behind. Every failure that mutated NOTHING — the
+    /// whole guard matrix, plus a merge whose very first append failed —
+    /// arrives here as [`FacadeError::Store`]; a failure that already
+    /// mutated the parent's log arrives as [`FacadeError::Runtime`] wrapping
+    /// `RuntimeError::PullInIncomplete`, which carries how many of how many
+    /// records landed. Retrying after the latter would DUPLICATE whatever
+    /// already merged, so the two must not be treated alike.
+    ///
     /// Pull-in is a lifecycle operation on two existing agents' logs, NOT
     /// a new subagent primitive — no fork, no spawn, no new session is
     /// created here.
