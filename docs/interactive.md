@@ -195,7 +195,7 @@ shrinking the candidate list).
 | `/model` | `/model <backend/model>` | Switch the focused agent to a pinned model, mid-conversation. |
 | `/role` | `/role <alias>` | Switch the focused agent to a different role, mid-conversation. |
 | `/trust permissions` | `/trust permissions` | Opens a preview card showing the project's `.conway/permissions.json` at its current content; `[y]`/`Enter` confirms (trusting it and installing its `allow` rules for this session), `[n]`/`Esc` cancels having written nothing. See [`permissions.md`](permissions.md). |
-| `/tree` | `/tree` | Print the same agent tree the `/agents` panel shows, as plain transcript lines you can scroll back to or copy. |
+| `/tree` | `/tree` | Print the same agent tree the `/agents` panel shows, as plain transcript lines you can scroll back to or copy — with each agent's **full** id rather than the panel's short one, since a printed line may be pasted elsewhere long after the row set on screen has changed. |
 | `/help` | `/help` | Open a read-only keybinding reference overlay. |
 | `/quit` or `/exit` | `/quit` | Exit conway. |
 

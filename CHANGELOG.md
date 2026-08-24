@@ -957,6 +957,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moved to `crates/conway-testkit/tests/fakes_conformance.rs` unchanged in
   substance.
 
+### Fixed
+
+- **`/tree`'s own doc comment claimed its rendering "always matches what `/agents` shows"; it no longer does, since `01M0RWKJD04JBR5NCVKBQXYHV4` gave the `/agents` panel a screen-relative short id** — board item `01M0TNCAP1HH4YNC5K9753YG26`. Decided in favor of keeping `/tree` on full ids: a transcript line outlives the row set that made a short prefix unique, so it needs a durable reference, not a screen affordance. `commands.rs`, `docs/agents.md`, and `docs/interactive.md` now say so explicitly instead of claiming parity that doesn't hold.
+
 ## [0.9.0] — 2026-08-13
 
 ### Added
