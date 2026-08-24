@@ -472,7 +472,7 @@ Read their answers first.
 ## 8. What "good" means here
 
 Ordered, most important first. **The numbered points below are cited elsewhere as
-§8.1 through §8.9** — there is no sub-heading to jump to, so a citation like §8.3
+§8.1 through §8.10** — there is no sub-heading to jump to, so a citation like §8.3
 means point 3 of this list.
 
 1. **An open question is a failure of the spec, not a gap in the code.** If
@@ -601,6 +601,47 @@ means point 3 of this list.
    A mode that learns what you always approve is a plugin's job, not the core's.
    The thing that must not happen is a permissions model so elaborate that it
    cannot be replaced.
+10. **The cost of changing something is part of whether it is good.** A tree can
+    pass every test, match every page of the specification, and still be getting
+    worse — because the thing that decays first is not correctness, it is how
+    expensive the next change is. That cost is invisible in a green CI run, which
+    is why it has to be written down as a value rather than left to be noticed.
+
+    > **The test: when this decision changes, how many places must change with
+    > it — and would forgetting one of them be a bug?** One place is right. Five
+    > places that must move together is one piece of knowledge with five
+    > representations, and the bug is already written; it is just waiting for
+    > someone to update four of them.
+
+    The unit is **knowledge, not text**. A default, a precedence order, a name's
+    meaning, a validation rule, an error taxonomy, a piece of policy — each has one
+    authoritative place it is written down. Two functions that look identical but
+    change *for different reasons* are correctly separate, and merging them couples
+    two things that had no reason to be coupled. Similar is not duplicate, and the
+    test above is what distinguishes them.
+
+    This point is downstream of the ones above it rather than in tension with them,
+    and both boundaries matter because each is a way to get it wrong.
+
+    **Repetition that exists because the core stays agnostic is correct.** §8.2
+    makes an opinion in the core a thing every extension routes around forever, and
+    that boundary is worth paying for twice. Where the tree repeats itself to keep a
+    judgment out of the core, that is the design working — label it and leave it,
+    rather than consolidating a judgment inward.
+
+    **An abstraction whose second consumer is hypothetical is not shared
+    knowledge.** It is indirection with a cost and no payer, and §8.5 already rules
+    it out: nothing is built on theory. The same sequencing applies to removing
+    duplication as to adding a seam — consolidate when the second caller exists, not
+    in anticipation of it.
+
+    Two consequences, because they are what make this actionable rather than
+    aspirational. **Prefer the consolidation you can back out of**: one that can be
+    undone in an afternoon may be attempted on a hunch, and one that cannot must be
+    justified on evidence. And **a proposal to consolidate must name a change that
+    is currently hard and would become easy** — if it cannot, it is a preference
+    about how the code looks, and how the code looks is not what this point is
+    about.
 
 ---
 

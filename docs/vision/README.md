@@ -1,6 +1,6 @@
 # Direction
 
-Where conway is going, why, and how far along it is. These four pages are for
+Where conway is going, why, and how far along it is. These pages are for
 the operator and for agents working on the project — not for someone learning to
 use conway, who wants [`docs/README.md`](../README.md) instead.
 
@@ -9,7 +9,8 @@ use conway, who wants [`docs/README.md`](../README.md) instead.
 | [`INTENT.md`](INTENT.md) | What conway is *for* and what "good" means, in the operator's terms. The authority on intent — `PHILOSOPHY.md` is downstream of it. | Permanent. Added to, never replaced. |
 | [`STATE-OF-THE-UNION.md`](STATE-OF-THE-UNION.md) | Where the tree actually stands against that intent, at block-diagram altitude. | Snapshot. Replaced each review. |
 | [`PLAN.md`](PLAN.md) | The work that follows, split into domains that can run in parallel without colliding. | Snapshot. Replaced each review. |
-| [`REVIEW-PROMPT.md`](REVIEW-PROMPT.md) | The re-runnable prompt that regenerates the two snapshots. | Amended when the process changes. |
+| [`REVIEW-PROMPT.md`](REVIEW-PROMPT.md) | The re-runnable prompt that regenerates the two snapshots. Paste §2 into a fresh session; it dispatches the reviewers. | Amended when the process changes. |
+| [`review/`](review/) | What each reviewer reads: shared conduct plus one lens per perspective. Loaded by the reviewer that needs it, not pasted. | Accumulates. |
 
 ## How these relate to the rest of the documentation
 
