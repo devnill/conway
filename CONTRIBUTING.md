@@ -272,6 +272,25 @@ The procedure:
   under all six combinations, at negligible added cost over the compile time
   already paid. Any gap still open is priced and stated in `.github/workflows/ci.yml`
   itself, not papered over.
+- **A verification instruction that names some of the gates is read as naming
+  all of them.** CI runs eight gates (`.github/workflows/ci.yml`); a worker
+  told to run "build, test, clippy and fmt" reasonably reads that as
+  complete, because nothing said otherwise. Two workers in the same batch, on
+  2026-08-24, each shipped a public doc comment linking to a private item —
+  `error: public documentation for X links to private item Y` under
+  `RUSTDOCFLAGS=-D warnings` — because neither instruction, nor either
+  worker's own list of commands, named the `cargo doc` job (board item
+  `01M0TJC2GY2C81Y9R1KKWT5PJJ`). CI's `doc` job would have caught both before
+  merge either way, so the real cost was a wasted round-trip and a manual
+  catch, not a shipped defect — but a check that only runs when someone
+  happens to remember it is not the check its job name promises.
+  `scripts/check-fast-gates.sh` now runs the five CI gates that are fast,
+  network-free, and need no extra toolchain (fmt, design claims, board
+  citations, rustdoc, clippy) in one invocation, naming each gate as it runs
+  so a bare pass/fail can't hide which one refused; `.github/workflows/ci.yml`
+  invokes the same script per gate rather than a second, hand-kept spelling of
+  each command, so the local and CI invocations cannot drift apart the way
+  this incident's absence did. See [`README.md`](README.md#development).
 
 ---
 

@@ -301,10 +301,20 @@ the facade and serves as the API smoke test.
 
 ```console
 cargo build --workspace
-cargo test  --workspace
-cargo clippy --workspace --all-targets
-cargo fmt --all
+scripts/check-disk-floor.sh && scripts/run-workspace-tests.sh   # cargo test --workspace --all-features
+scripts/check-disk-floor.sh && scripts/check-fast-gates.sh      # fmt, design claims, board citations, rustdoc, clippy
 ```
+
+`.github/workflows/ci.yml` runs eight gates; `scripts/check-fast-gates.sh` runs
+the five that are fast, network-free, and need no toolchain beyond the one
+this repo already pins (`rust-toolchain.toml`) — including `cargo doc -D
+warnings`, which catches a public doc comment linking to a private item and is
+easy to omit if you only run build/test/clippy/fmt by hand (board item
+`01M0TJC2GY2C81Y9R1KKWT5PJJ`). The other three CI gates — the MSRV build (a
+second toolchain), `cargo deny check` (a network fetch of the advisories
+database), and the six-way feature matrix (re-runs the suite six times) — are
+CI-only; see `.github/workflows/ci.yml` for their exact invocations if you
+need to reproduce one locally.
 
 ## Licensing
 

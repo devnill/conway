@@ -49,8 +49,13 @@ jobs:
       # No Swatinem/rust-cache here on purpose: nothing is compiled, so there
       # is no build output worth restoring and the cache round trip would cost
       # more than the check.
+      #
+      # `scripts/check-fast-gates.sh --gate "<name>"` rather than the command
+      # inline: this and the local `check-fast-gates.sh` run are the same
+      # code path, not two hand-kept spellings of the same command that can
+      # drift apart (board item 01M0TJC2GY2C81Y9R1KKWT5PJJ).
       - name: cargo fmt --all --check
-        run: cargo fmt --all --check
+        run: scripts/check-fast-gates.sh --gate "cargo fmt (--check)"
 
   test:
     name: cargo test (workspace, all features)
@@ -88,8 +93,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Same invocation as `scripts/check-fast-gates.sh --gate "design claims
+      # (board-sourced predicates)"` -- kept as one code path so the local and
+      # CI runs cannot spell this gate two different ways (01M0TJC2GY2C81Y9R1KKWT5PJJ).
       - name: python3 scripts/check-design-claims.py
-        run: python3 scripts/check-design-claims.py
+        run: scripts/check-fast-gates.sh --gate "design claims (board-sourced predicates)"
 
   # The steering-shorthand half of `check-board-citations.py` -- bare `GP-*`/
   # `P-*`/`C-*` ids from `.ideate/steering/` (gitignored, unresolvable outside
@@ -108,8 +116,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Same invocation as `scripts/check-fast-gates.sh --gate "board
+      # citations (steering-shorthand half)"` -- one code path, not two
+      # spellings that can drift apart (01M0TJC2GY2C81Y9R1KKWT5PJJ).
       - name: python3 scripts/check-board-citations.py
-        run: python3 scripts/check-board-citations.py
+        run: scripts/check-fast-gates.sh --gate "board citations (steering-shorthand half)"
 
   # The MSRV declared in the workspace manifest, built on that exact toolchain.
   # `rust-version` used to be set to 1.94.0 -- the same version the toolchain
@@ -195,10 +206,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # `scripts/check-fast-gates.sh --gate "cargo doc (-D warnings)"` sets
+      # RUSTDOCFLAGS itself -- this is the exact gate two workers missed in
+      # one batch on 2026-08-24 (01M0TJC2GY2C81Y9R1KKWT5PJJ); it is now the
+      # same script a worker is told to run locally, not a second spelling of
+      # the same command that can silently disagree with this one.
       - name: cargo doc --workspace --no-deps
-        run: cargo doc --workspace --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: -D warnings
+        run: scripts/check-fast-gates.sh --gate "cargo doc (-D warnings)"
 
   clippy:
     name: cargo clippy (-D warnings)
@@ -215,8 +229,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Same invocation as `scripts/check-fast-gates.sh --gate "cargo clippy
+      # (-D warnings)"` -- one code path, not two spellings that can drift
+      # apart (01M0TJC2GY2C81Y9R1KKWT5PJJ).
       - name: cargo clippy --workspace --all-targets --all-features -- -D warnings
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: scripts/check-fast-gates.sh --gate "cargo clippy (-D warnings)"
 
   feature-matrix:
     # DECISION (board item 01M0JMEK24ZPRSP3PT3HJG0VHD): this job RUNS the
