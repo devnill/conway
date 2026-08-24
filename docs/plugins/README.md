@@ -58,9 +58,9 @@ full design describes (a persistent connection, `permission.policy/1`,
 `context.hook/1`, `observe/1`, a `plugin` trust subject) is not, and that
 page's own "What's left" section names each gap.
 
-## Five shipped first-party plugins
+## Six shipped first-party plugins
 
-Five capabilities beyond the mechanism itself now ship, each installable
+Six capabilities beyond the mechanism itself now ship, each installable
 with a one-line `settings.json` edit and no rebuild:
 
 - [`memory.md`](memory.md) — `conway.memory`, a mutable store the model can
@@ -89,6 +89,11 @@ with a one-line `settings.json` edit and no rebuild:
   into a bounded content scan. Reports what it searched and what that cost.
   Install alongside `conway.path`: this tool finds, `compose_context_path`
   composes.
+- `conway.trim` — a `Curator` that omits tool call/result round-trips older
+  than a configurable turn window, keeping context small as a session grows
+  long. Fully wired into the shipped binary, same footing as the five
+  above — no dedicated page in this set yet; see `conway-plugin-trim`'s own
+  crate-level doc for the full design.
 
 ## Everything not in this set
 
