@@ -374,6 +374,126 @@ fn fake_store_set_ephemeral_enforces_the_one_way_promote_guard() {
 }
 
 // ---------------------------------------------------------------------
+// FakeStore's append-failure seam (board item `01M0TNBACHQSAMMJ3TY14S47MX`).
+//
+// The seam itself is tested here, not only through the caller that needed
+// it: a failure-injection knob that fires on the wrong call, or that
+// records the record it claims to have rejected, would make every test
+// built on it measure the wrong thing while still going green.
+// ---------------------------------------------------------------------
+
+/// `fail_nth_append` fires on exactly the Nth append after arming, records
+/// NOTHING for the call it fails, and disarms itself afterwards.
+#[test]
+fn fake_store_fail_nth_append_fires_once_on_the_nth_call_and_records_nothing() {
+    let store = FakeStore::new();
+    let sid = block_on(store.create(sample_session_meta(SessionId::new(), None))).unwrap();
+
+    // Appends BEFORE arming are not counted -- the count starts at the arm,
+    // so a test never has to know how many appends its own setup made.
+    block_on(store.append(&sid, sample_user_turn(0))).unwrap();
+
+    let injected = StoreError::Io {
+        detail: "injected append failure".into(),
+    };
+    store.fail_nth_append(2, injected.clone());
+
+    // 1st after arming: unaffected.
+    block_on(store.append(&sid, sample_user_turn(1))).unwrap();
+    // 2nd: the injected error, verbatim.
+    let err = block_on(store.append(&sid, sample_user_turn(2))).unwrap_err();
+    assert_eq!(err, injected, "the armed error must surface verbatim");
+    // 3rd: the knob disarmed itself when it fired.
+    block_on(store.append(&sid, sample_user_turn(3))).unwrap();
+
+    // The failed append recorded nothing: three appends succeeded, so the
+    // head is 3 and the failing record is absent from the log.
+    assert_eq!(
+        block_on(store.head(&sid)).unwrap(),
+        LogSeq(3),
+        "a failed append must not advance the head"
+    );
+    let texts: Vec<String> = block_on(store.read(&sid, SeqRange::full()))
+        .unwrap()
+        .into_iter()
+        .map(|r| match r {
+            LogRecord::UserTurn { text, .. } => text,
+            other => panic!("expected UserTurns, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["turn 0", "turn 1", "turn 3"],
+        "the rejected record must be absent, and the surviving ones unshuffled"
+    );
+
+    // And the surviving records are still contiguously re-sequenced -- a
+    // failed append must not leave a seq hole behind either.
+    for (i, record) in block_on(store.read(&sid, SeqRange::full()))
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(record.seq(), Some(LogSeq(i as u64)));
+    }
+}
+
+/// `fail_appends_from` is the sticky variant: it models a store that has
+/// gone away rather than one line that would not write, and stays armed
+/// until `clear_append_failure`.
+#[test]
+fn fake_store_fail_appends_from_sticks_until_cleared() {
+    let store = FakeStore::new();
+    let sid = block_on(store.create(sample_session_meta(SessionId::new(), None))).unwrap();
+
+    let injected = StoreError::Io {
+        detail: "the store is gone".into(),
+    };
+    store.fail_appends_from(2, injected.clone());
+
+    block_on(store.append(&sid, sample_user_turn(0))).unwrap();
+    for _ in 0..3 {
+        assert_eq!(
+            block_on(store.append(&sid, sample_user_turn(1))).unwrap_err(),
+            injected,
+            "a sticky failure must not disarm itself after firing"
+        );
+    }
+    assert_eq!(block_on(store.head(&sid)).unwrap(), LogSeq(1));
+
+    store.clear_append_failure();
+    block_on(store.append(&sid, sample_user_turn(1))).unwrap();
+    assert_eq!(block_on(store.head(&sid)).unwrap(), LogSeq(2));
+}
+
+/// An armed failure preempts the session lookup, so the caller sees the
+/// INJECTED error and never has to wonder whether it got a real
+/// `NotFound` instead. (Documented on `armed_append_failure`; asserted
+/// here so the ordering cannot drift.)
+#[test]
+fn fake_store_injected_append_failure_preempts_not_found() {
+    let store = FakeStore::new();
+    let injected = StoreError::Io {
+        detail: "injected".into(),
+    };
+    store.fail_nth_append(1, injected.clone());
+    let err = block_on(store.append(&SessionId::new(), sample_user_turn(0))).unwrap_err();
+    assert_eq!(err, injected);
+}
+
+/// An unarmed store never fails an append -- the knob is opt-in, so every
+/// existing test that never touches it is unaffected.
+#[test]
+fn fake_store_append_never_fails_unless_armed() {
+    let store = FakeStore::new();
+    let sid = block_on(store.create(sample_session_meta(SessionId::new(), None))).unwrap();
+    for i in 0..5 {
+        block_on(store.append(&sid, sample_user_turn(i))).unwrap();
+    }
+    assert_eq!(block_on(store.head(&sid)).unwrap(), LogSeq(5));
+}
+
+// ---------------------------------------------------------------------
 // FakeGate
 // ---------------------------------------------------------------------
 

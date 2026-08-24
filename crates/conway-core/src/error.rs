@@ -537,6 +537,48 @@ pub enum RuntimeError {
         method: HookMethod,
         orphans: Vec<HookOrphan>,
     },
+    /// A `Runtime::pull_in` that had ALREADY mutated the parent's log when
+    /// it failed -- the `/ask` merge is neither complete nor a no-op, and
+    /// the caller is told so instead of being handed a bare
+    /// [`RuntimeError::Store`] it cannot distinguish from the guard
+    /// refusals that fail before any mutation.
+    ///
+    /// **Why this variant exists at all.** `SessionStore` is append-only
+    /// and offers no multi-record append and no rollback (`remove` is
+    /// whole-session; there is no truncate), so `pull_in`'s merge -- N
+    /// separate `append` calls -- cannot be made atomic at the port. A
+    /// failure part-way through therefore leaves durable state behind, and
+    /// the only honest thing to do is disclose exactly how much. Every
+    /// `pull_in` failure that left the parent's log untouched is still a
+    /// plain [`RuntimeError::Store`] (or a guard variant); this one, and
+    /// only this one, means "something landed".
+    ///
+    /// - `merged` of `of` records reached the parent's log. `merged < of`
+    ///   is a TRUNCATED merge (the question may be present without its
+    ///   answer); `merged == of` means the whole merge landed and the
+    ///   child's purge is what failed.
+    /// - `note_appended` is whether a `LogRecord::SystemNote` recording the
+    ///   truncation was successfully appended after it. Only ever `true`
+    ///   when `merged < of` (a complete merge has nothing to annotate).
+    ///   When `false` on a truncated merge, the parent's log has been left
+    ///   with an unannotated dangling question -- the note append failed
+    ///   too, which usually means the store itself is unavailable.
+    /// - The child session is **never** purged on this path, so its records
+    ///   are intact and the ask's content is recoverable. Retrying the same
+    ///   `pull_in` would DUPLICATE whatever already landed, so a caller
+    ///   that retries must reconcile the parent's log first.
+    #[error(
+        "pull_in of child session {child} into parent session {parent} did not complete: {merged} of {of} records were merged (truncation note appended: {note_appended}); the child was NOT purged and still holds the ask; cause: {cause}"
+    )]
+    PullInIncomplete {
+        parent: SessionId,
+        child: SessionId,
+        merged: usize,
+        of: usize,
+        note_appended: bool,
+        #[source]
+        cause: StoreError,
+    },
 }
 
 /// Errors produced by [`crate::ports::SubagentHandle`]'s five fallible

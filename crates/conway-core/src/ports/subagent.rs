@@ -395,7 +395,16 @@ fn translate(err: RuntimeError) -> SubagentError {
         // view, not a mistake in the caller's own supplied `agent_id`/
         // `SubagentSpec`, so `Host` (not a new caller-mistake variant) is the
         // honest answer if a future path ever does surface it here.
-        | RuntimeError::ContextHookIncoherent { .. } => {
+        | RuntimeError::ContextHookIncoherent { .. }
+        // `PullInIncomplete` is likewise not reachable through this port:
+        // `pull_in` is a facade/TUI lifecycle operation on an `/ask` child
+        // the OPERATOR chose a fate for, not one of this trait's five
+        // methods. `Host` for the same reason as the two above -- from a
+        // tool's point of view a half-landed merge is an infrastructure
+        // failure, not a mistake in its own supplied arguments -- and the
+        // rendered `Display` carries the merged/of counts through verbatim
+        // if a future path ever does surface it here.
+        | RuntimeError::PullInIncomplete { .. } => {
             SubagentError::Host { detail: rendered }
         }
     }

@@ -7,6 +7,14 @@
 //! live (`AgentNotLive`), child has children (`NotRemovable`), non-ephemeral
 //! child (`NotRemovable`), unknown child (`AgentNotFound`) — each refusing
 //! BEFORE the parent's log is mutated.
+//!
+//! And, since board item `01M0TNBACHQSAMMJ3TY14S47MX`, the failures that
+//! happen AFTER the mutation starts — which every guard test above is by
+//! construction blind to. The merge is N separate appends with no rollback
+//! available, so `FakeStore`'s injected-append-failure seam drives a merge
+//! into failure part-way and pins down the state it leaves behind: an
+//! annotated (not dangling) parent log, an un-purged child, and a
+//! `RuntimeError::PullInIncomplete` saying how far it got.
 
 mod support;
 
@@ -402,6 +410,391 @@ async fn pull_in_emits_the_merged_question_and_answer_on_the_parents_live_stream
     assert_eq!(a_agent, handle.root());
     assert_eq!(a_session, handle.id());
     assert_eq!(a_text, "the ask answer");
+}
+
+// ---------------------------------------------------------------------
+// Partial merges (board item `01M0TNBACHQSAMMJ3TY14S47MX`): the merge is
+// N separate appends and `SessionStore` has no multi-record append and no
+// rollback, so a failure part-way through leaves durable records behind.
+// The guard-matrix tests below all refuse BEFORE any mutation, so none of
+// them can see this; these three drive the mutation itself into failure,
+// using `FakeStore`'s injected-append-failure seam.
+// ---------------------------------------------------------------------
+
+/// Builds the same `Conway` the helper above does, but keeps the CONCRETE
+/// `FakeStore` handle so a test can reach its injected-failure knobs (the
+/// `Arc<dyn SessionStore>` the builder takes cannot).
+fn build_conway_with_fake_store(
+    store: Arc<FakeStore>,
+    backend: Arc<dyn Backend>,
+) -> (Conway, Arc<dyn SessionStore>) {
+    let dyn_store: Arc<dyn SessionStore> = store.clone();
+    let conway = build_conway_with_backend(dyn_store.clone(), backend);
+    (conway, dyn_store)
+}
+
+fn two_turn_backend() -> Arc<dyn Backend> {
+    Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(text_response("parent ack")),
+            ScriptedTurn::Respond(text_response("the ask answer")),
+        ])
+        .with_id(BackendId::new("fake")),
+    )
+}
+
+/// **The load-bearing test for this item.** A pull-in whose SECOND append
+/// fails: the question has already landed in the parent's durable log and
+/// cannot be withdrawn, so the answer never arriving would leave the
+/// parent's transcript — and, on the next turn, the MODEL's assembled
+/// context — holding a question that nothing answers. The fix is a
+/// forward-written `SystemNote` (the only repair an append-only log
+/// admits) plus an error that says how far the merge got.
+///
+/// Every assertion below except the "nothing was purged" pair fails
+/// against the pre-fix code, which `?`-propagated the append error: it
+/// returned `FacadeError::Store(Io)` (not `PullInIncomplete`) and left the
+/// parent's log ending on the dangling question with no note after it.
+#[tokio::test]
+async fn pull_in_whose_second_append_fails_annotates_the_truncation_and_reports_how_far_it_got() {
+    let fake = Arc::new(FakeStore::new());
+    let (conway, store) = build_conway_with_fake_store(fake.clone(), two_turn_backend());
+
+    let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
+
+    // Precondition: the merge set really is exactly two records (the
+    // ForkDirective-headed question + one Assistant answer), so "the
+    // second append" is unambiguously the answer's.
+    let child_records = read_all(&store, child_session).await;
+    let merge_set = child_records
+        .iter()
+        .filter(|r| {
+            matches!(
+                r,
+                LogRecord::ForkDirective { .. }
+                    | LogRecord::Assistant { .. }
+                    | LogRecord::UserTurn { .. }
+            )
+        })
+        .count();
+    assert_eq!(
+        merge_set, 2,
+        "precondition: question + answer, got: {child_records:?}"
+    );
+    let child_head_before = store.head(&child_session).await.expect("head");
+    let parent_head_before = store.head(&handle.id()).await.expect("head");
+
+    // Subscribe before the failure so the live surface can be checked too:
+    // the operator has ALREADY been shown the question by the time the
+    // answer's append fails, so the truncation has to reach the transcript
+    // as well as the log, or the two disagree.
+    let mut events = handle.events();
+
+    // Arm the seam: the next append (the question) succeeds, the one after
+    // it (the answer) fails. The knob is one-shot, so the note's own
+    // append — the third — succeeds.
+    fake.fail_nth_append(
+        2,
+        StoreError::Io {
+            detail: "injected: the answer's append failed".into(),
+        },
+    );
+
+    let err = conway
+        .pull_in(child_agent)
+        .await
+        .expect_err("a merge whose second append fails must not report success");
+
+    // (1) The caller is told the merge is INCOMPLETE, and how far it got —
+    // not handed a bare store error indistinguishable from the guard
+    // refusals, which mutate nothing. FAILS pre-fix: `Store(Io)`.
+    match &err {
+        FacadeError::Runtime(RuntimeError::PullInIncomplete {
+            parent,
+            child,
+            merged,
+            of,
+            note_appended,
+            cause,
+        }) => {
+            assert_eq!(*parent, handle.id());
+            assert_eq!(*child, child_session);
+            assert_eq!(
+                (*merged, *of),
+                (1, 2),
+                "one of the two merge-set records landed"
+            );
+            assert!(
+                *note_appended,
+                "the store only failed one append, so the truncation note must have landed"
+            );
+            assert!(
+                matches!(cause, StoreError::Io { detail } if detail.contains("injected")),
+                "the underlying store error must be carried through, got: {cause:?}"
+            );
+        }
+        other => panic!("expected PullInIncomplete, got: {other:?}"),
+    }
+
+    // (2) The parent's log is COHERENT: the question that landed is
+    // followed by a SystemNote saying the merge was truncated, so the next
+    // turn's context assembly cannot show the model a question with no
+    // answer. FAILS pre-fix: the log gained ONE record (the bare question)
+    // and ends there.
+    let parent_records = read_all(&store, handle.id()).await;
+    let before = parent_head_before.0 as usize;
+    assert_eq!(
+        parent_records.len(),
+        before + 2,
+        "expected the question + the truncation note, got: {parent_records:?}"
+    );
+    match &parent_records[before] {
+        LogRecord::UserTurn { text, prov, .. } => {
+            assert_eq!(text, "an ephemeral aside");
+            assert_eq!(
+                *prov,
+                Provenance::MergedAsk {
+                    from: child_session
+                }
+            );
+        }
+        other => panic!("expected the merged question, got: {other:?}"),
+    }
+    match &parent_records[before + 1] {
+        LogRecord::SystemNote {
+            text, reason, prov, ..
+        } => {
+            assert_eq!(
+                reason, "pull_in_truncated",
+                "the note carries a machine-readable reason, not only prose"
+            );
+            assert_eq!(
+                *prov,
+                Provenance::SystemNote {
+                    reason: "pull_in_truncated".to_string()
+                }
+            );
+            assert!(
+                text.contains(&child_session.to_string()),
+                "the note must name the child that still holds the ask, got: {text}"
+            );
+        }
+        other => panic!("expected a truncation SystemNote after the question, got: {other:?}"),
+    }
+
+    // (3) The child was NOT purged and its records are untouched — the
+    // only surviving copy of the answer that did not merge. (Also true
+    // pre-fix, by accident: the `?` skipped the purge. Asserted because
+    // it is now a DELIBERATE guarantee, not a side effect.)
+    store
+        .meta(&child_session)
+        .await
+        .expect("the child must survive a failed merge — it holds the unmerged answer");
+    assert_eq!(
+        store.head(&child_session).await.expect("head"),
+        child_head_before,
+        "the child's own log must be untouched"
+    );
+
+    // (4) The transcript says what the log says: the marker and the
+    // question were already emitted, and the truncation note follows them
+    // live. FAILS pre-fix: no third event ever arrives, so this times out.
+    let notes = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut notes: Vec<String> = Vec::new();
+        loop {
+            let envelope = std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx))
+                .await
+                .expect("event stream open");
+            // Scoped to the PARENT's own session/agent, like the merge
+            // events themselves — anything emitted elsewhere is not this
+            // operation's live surface, and a note that landed under the
+            // wrong session times this out rather than passing.
+            if envelope.session != handle.id() || envelope.agent != handle.root() {
+                continue;
+            }
+            if let Event::AgentProgress { note } = envelope.event {
+                let done = note.contains("did not complete");
+                notes.push(note);
+                if done {
+                    return notes;
+                }
+            }
+        }
+    })
+    .await
+    .expect(
+        "timed out waiting for the truncation to reach the parent's live stream — the operator \
+         was already shown the question, so the log and the transcript must not disagree",
+    );
+    assert!(
+        notes.len() >= 2 && notes[0].contains("pulled in from /ask"),
+        "the merge marker must still precede the truncation note, got: {notes:?}"
+    );
+    assert!(
+        notes
+            .last()
+            .expect("non-empty")
+            .contains(&child_session.to_string()),
+        "the live truncation note must name the child too, got: {notes:?}"
+    );
+}
+
+/// A merge whose FIRST append fails mutated nothing, so it stays an
+/// ordinary `FacadeError::Store` — the same shape every guard refusal
+/// returns. This is the other half of "the caller can tell nothing-happened
+/// from something-happened": without it, `PullInIncomplete` would be
+/// evidence of nothing.
+#[tokio::test]
+async fn pull_in_whose_first_append_fails_is_a_clean_no_op() {
+    let fake = Arc::new(FakeStore::new());
+    let (conway, store) = build_conway_with_fake_store(fake.clone(), two_turn_backend());
+
+    let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
+    let parent_head_before = store.head(&handle.id()).await.expect("head");
+
+    fake.fail_nth_append(
+        1,
+        StoreError::Io {
+            detail: "injected: the question's append failed".into(),
+        },
+    );
+
+    let err = conway
+        .pull_in(child_agent)
+        .await
+        .expect_err("a merge whose first append fails must be reported");
+    assert!(
+        matches!(&err, FacadeError::Store(StoreError::Io { detail }) if detail.contains("injected")),
+        "nothing landed, so this must stay an ordinary store error, got: {err:?}"
+    );
+    assert!(
+        !matches!(
+            err,
+            FacadeError::Runtime(RuntimeError::PullInIncomplete { .. })
+        ),
+        "PullInIncomplete must mean something landed, or it means nothing at all"
+    );
+
+    assert_eq!(
+        store.head(&handle.id()).await.expect("head"),
+        parent_head_before,
+        "no record — not even a truncation note — may be written when nothing merged"
+    );
+    store
+        .meta(&child_session)
+        .await
+        .expect("the child must survive");
+}
+
+/// When the store has gone away entirely, the best-effort truncation note
+/// cannot be written either — and that is reported (`note_appended:
+/// false`) rather than silently swallowed, because it is the difference
+/// between a log left annotated and a log left with a dangling question.
+#[tokio::test]
+async fn pull_in_reports_when_even_the_truncation_note_cannot_be_written() {
+    let fake = Arc::new(FakeStore::new());
+    let (conway, store) = build_conway_with_fake_store(fake.clone(), two_turn_backend());
+
+    let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
+    let parent_head_before = store.head(&handle.id()).await.expect("head");
+
+    // Sticky: the answer's append fails AND so does the note's.
+    fake.fail_appends_from(
+        2,
+        StoreError::Io {
+            detail: "injected: the store is gone".into(),
+        },
+    );
+
+    let err = conway
+        .pull_in(child_agent)
+        .await
+        .expect_err("the merge must be reported as incomplete");
+    assert!(
+        matches!(
+            err,
+            FacadeError::Runtime(RuntimeError::PullInIncomplete {
+                merged: 1,
+                of: 2,
+                note_appended: false,
+                ..
+            })
+        ),
+        "expected an unannotated truncation, got: {err:?}"
+    );
+
+    // The honest end state: exactly the one record that landed, and no
+    // note claiming otherwise.
+    let parent_records = read_all(&store, handle.id()).await;
+    assert_eq!(parent_records.len(), parent_head_before.0 as usize + 1);
+    assert!(
+        matches!(parent_records.last(), Some(LogRecord::UserTurn { .. })),
+        "got: {parent_records:?}"
+    );
+    store
+        .meta(&child_session)
+        .await
+        .expect("the child must survive");
+}
+
+/// The second half of the same disclosure problem: a merge that landed in
+/// FULL and then failed to purge the child. Pre-fix this returned a bare
+/// `NotRemovable` — byte-identical in shape to the pre-check guard that
+/// refuses before writing anything — so a caller could read "nothing
+/// happened", retry, and merge the ask twice. It now reports
+/// `PullInIncomplete` with `merged == of`: nothing was truncated (so there
+/// is no note, and the log is coherent), only the purge is outstanding.
+#[tokio::test]
+async fn pull_in_whose_purge_fails_reports_a_complete_but_unpurged_merge() {
+    let fake = Arc::new(FakeStore::new());
+    let (conway, store) = build_conway_with_fake_store(fake.clone(), two_turn_backend());
+
+    let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
+    let parent_head_before = store.head(&handle.id()).await.expect("head");
+
+    fake.fail_nth_remove(
+        1,
+        StoreError::Io {
+            detail: "injected: the purge failed".into(),
+        },
+    );
+
+    let err = conway
+        .pull_in(child_agent)
+        .await
+        .expect_err("a failed purge after a complete merge must be reported");
+    assert!(
+        matches!(
+            &err,
+            FacadeError::Runtime(RuntimeError::PullInIncomplete {
+                child,
+                merged: 2,
+                of: 2,
+                note_appended: false,
+                ..
+            }) if *child == child_session
+        ),
+        "expected a complete-but-unpurged report, got: {err:?}"
+    );
+
+    // The merge itself is whole and unannotated — there is nothing
+    // incoherent about it, so nothing to annotate.
+    let parent_records = read_all(&store, handle.id()).await;
+    assert_eq!(
+        parent_records.len(),
+        parent_head_before.0 as usize + 2,
+        "the whole merge set landed, got: {parent_records:?}"
+    );
+    assert!(
+        !parent_records
+            .iter()
+            .any(|r| matches!(r, LogRecord::SystemNote { .. })),
+        "a COMPLETE merge must not be annotated as truncated, got: {parent_records:?}"
+    );
+    store
+        .meta(&child_session)
+        .await
+        .expect("the un-purged child is exactly what this error reports");
 }
 
 // ---------------------------------------------------------------------

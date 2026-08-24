@@ -1298,8 +1298,9 @@ impl Runtime {
     /// authoritatively under the store's lifecycle lock, so a concurrent
     /// fork of the child between the pre-check and the purge is still
     /// refused (that race leaves the appended records in the parent AND
-    /// the child unpurged -- disclosed as the one non-atomic seam in this
-    /// operation, unchanged by this move).
+    /// the child unpurged -- the one non-atomic seam in this operation,
+    /// which is now REPORTED rather than merely disclosed: see "Partial
+    /// merges" below).
     ///
     /// The child's tree node is NOT detached (`AgentTree` never detaches),
     /// so the tree keeps a provenance record that the ask happened even
@@ -1308,6 +1309,48 @@ impl Runtime {
     /// Pull-in is a lifecycle operation on two existing agents' logs, NOT
     /// a new subagent primitive -- no fork, no spawn, no new session is
     /// created here.
+    ///
+    /// # Partial merges (board item `01M0TNBACHQSAMMJ3TY14S47MX`)
+    ///
+    /// The guard matrix above governs refusals BEFORE any mutation. It
+    /// says nothing about the merge itself, which is N separate
+    /// `SessionStore::append` calls -- and the store offers no multi-record
+    /// append and no rollback (`remove` is whole-session; there is no
+    /// truncate, and the port's own contract says a record acknowledged as
+    /// stored must never be silently discarded). **So the merge cannot be
+    /// made atomic at this layer, and a partial merge is a reachable
+    /// state, not a hypothetical.** What this method guarantees instead:
+    ///
+    /// 1. **Nothing-or-something is always distinguishable.** If the FIRST
+    ///    append fails, no record landed and no event fired: that is a
+    ///    clean no-op and reports as an ordinary
+    ///    [`RuntimeError::Store`], the same as the guard refusals. Every
+    ///    other post-mutation failure -- a later append, or the child's
+    ///    purge -- reports as [`RuntimeError::PullInIncomplete`], which
+    ///    carries how many of how many records landed. A caller therefore
+    ///    never has to guess whether a retry would duplicate content.
+    /// 2. **A truncated merge is annotated, not left dangling.** The merge
+    ///    set is ordered question-then-answer, so a merge that stops
+    ///    part-way can leave the parent's log holding a question with no
+    ///    answer -- which the next turn's `ContextBuilder` would assemble
+    ///    verbatim, showing the model a question nothing ever answered.
+    ///    Since the appended records cannot be withdrawn, the repair an
+    ///    append-only log admits is another record: a
+    ///    `LogRecord::SystemNote` (reason `pull_in_truncated`) saying the
+    ///    merge is truncated, appended immediately and emitted live, so the
+    ///    model's view and the operator's transcript both stay coherent.
+    ///    It is best-effort -- the store that just failed may fail again --
+    ///    and whether it landed is reported as
+    ///    `PullInIncomplete::note_appended`.
+    /// 3. **The child is never purged on a failure path**, deliberately.
+    ///    Its records are the ONLY surviving copy of anything that did not
+    ///    make it into the parent, so purging on failure would destroy
+    ///    exactly the content the failure prevented from being merged.
+    ///    Leaving it keeps the ask recoverable -- the operator can retry,
+    ///    read it, or discard it explicitly through the same `/ask` fates
+    ///    as before -- at the cost of an ephemeral session outliving its
+    ///    modal, which B5's `sweep_stale_modal_asks` already exists to
+    ///    reap.
     pub async fn pull_in(&self, child: AgentId) -> Result<(), RuntimeError> {
         // 1+2. Live-tree resolution and the parent liveness guard, from one
         // snapshot (nodes never detach, so this cannot race stale).
@@ -1454,10 +1497,52 @@ impl Runtime {
         // would discard that at the display layer even though the log
         // itself keeps it via `prov`. The marker names the child session
         // pulled_in came from, so it is inspectable, not just labeled.
+        //
+        // PARTIAL-FAILURE HANDLING (board item `01M0TNBACHQSAMMJ3TY14S47MX`)
+        // is the whole reason this loop is written out rather than
+        // `?`-chained. See this method's own "Partial merges" doc section
+        // above for the reasoning; the mechanics are: count what landed,
+        // and on the first failing append stop, annotate, and report.
+        let total = merged.len();
+        let mut appended = 0usize;
         let mut marker_emitted = false;
         for record in merged {
             let event = pull_in_merged_event(&record);
-            self.store.append(&parent_session, record).await?;
+            match self.store.append(&parent_session, record).await {
+                Ok(_) => appended += 1,
+                Err(cause) if appended == 0 => {
+                    // Nothing landed: the parent's log is untouched, no
+                    // event fired, the child is intact. This IS a clean
+                    // no-op, so it keeps the ordinary store error the
+                    // guard refusals above also produce -- a caller
+                    // matching `Store(_)` may rely on "nothing happened".
+                    return Err(RuntimeError::Store(cause));
+                }
+                Err(cause) => {
+                    // Something landed and cannot be taken back. Annotate
+                    // the parent's log so the truncation is visible to the
+                    // NEXT turn's context assembly (a `SystemNote` becomes
+                    // a system-role segment), then tell the caller exactly
+                    // how far this got.
+                    let note_appended = self
+                        .append_pull_in_truncation_note(
+                            parent_session,
+                            parent_agent,
+                            child_session,
+                            appended,
+                            total,
+                        )
+                        .await;
+                    return Err(RuntimeError::PullInIncomplete {
+                        parent: parent_session,
+                        child: child_session,
+                        merged: appended,
+                        of: total,
+                        note_appended,
+                        cause,
+                    });
+                }
+            }
             if let Some(event) = event {
                 if !marker_emitted {
                     self.bus.emit(
@@ -1475,8 +1560,90 @@ impl Runtime {
 
         // Purge the child. B1's guards re-run authoritatively here; the
         // pre-checks above only exist for failure ordering.
-        self.store.remove(&child_session).await?;
+        //
+        // A failure HERE is the second half of the same disclosure
+        // problem: the merge is fully durable and fully emitted, and only
+        // the purge failed -- yet before this item the caller got a bare
+        // `NotRemovable`, indistinguishable from pre-check guard 3, which
+        // refuses before anything is written. A caller that read that as
+        // "nothing happened" and retried would merge the ask TWICE. It
+        // reports as `PullInIncomplete` with `merged == of` (nothing was
+        // truncated, so there is no note to write and nothing incoherent
+        // in the log -- the only residue is the un-purged child).
+        if let Err(cause) = self.store.remove(&child_session).await {
+            return Err(RuntimeError::PullInIncomplete {
+                parent: parent_session,
+                child: child_session,
+                merged: appended,
+                of: total,
+                note_appended: false,
+                cause,
+            });
+        }
         Ok(())
+    }
+
+    /// Best-effort repair for a TRUNCATED `/ask` merge: appends a
+    /// `LogRecord::SystemNote` to the parent's log saying the merge stopped
+    /// part-way, and emits its live twin. Returns whether the note actually
+    /// landed -- the caller reports that as
+    /// `RuntimeError::PullInIncomplete::note_appended`.
+    ///
+    /// **Why a forward-written note rather than a rollback.**
+    /// `SessionStore` is append-only: there is no truncate and no
+    /// multi-record append, so the records that already landed cannot be
+    /// removed (see [`Self::pull_in`]'s own doc). The one repair an
+    /// append-only log admits is another record, and a `SystemNote` is
+    /// exactly the right one: `ContextBuilder` renders it as a system-role
+    /// segment, so the NEXT turn's model sees "here is a question whose
+    /// answer did not merge" instead of a question that simply has no
+    /// answer -- which is the incoherence this whole path exists to
+    /// prevent.
+    ///
+    /// **Why the failure of THIS append is tolerated.** It is a repair for
+    /// a store that just failed; insisting on it would only replace one
+    /// undisclosed state with another. Returning the outcome instead lets
+    /// the caller distinguish "annotated, coherent" from "unannotated, the
+    /// store is likely gone".
+    ///
+    /// `Event::AgentProgress` is the live twin because no `Event` variant
+    /// mirrors `SystemNote` (`pull_in_merged_event` maps only the two
+    /// merge-set kinds), and because it is the same shape the merge marker
+    /// already uses -- so the operator's transcript ends up saying what the
+    /// log says, rather than trailing an orphaned question forever.
+    async fn append_pull_in_truncation_note(
+        &self,
+        parent_session: SessionId,
+        parent_agent: AgentId,
+        child_session: SessionId,
+        appended: usize,
+        total: usize,
+    ) -> bool {
+        let text = format!(
+            "the /ask pull-in from session {child_session} did not complete: {appended} of \
+             {total} records were merged, so the merged content above is truncated (an answer \
+             may be missing). The child session was not purged and still holds the full ask."
+        );
+        let note = LogRecord::SystemNote {
+            // Placeholder only -- the store re-sequences on append, exactly
+            // as it does for the merged records above.
+            seq: LogSeq::ZERO,
+            ts: Utc::now(),
+            text: text.clone(),
+            reason: PULL_IN_TRUNCATED.to_string(),
+            prov: Provenance::SystemNote {
+                reason: PULL_IN_TRUNCATED.to_string(),
+            },
+        };
+        if self.store.append(&parent_session, note).await.is_err() {
+            return false;
+        }
+        self.bus.emit(
+            parent_session,
+            parent_agent,
+            Event::AgentProgress { note: text },
+        );
+        true
     }
 
     /// Purges an ephemeral `/ask` child outright, WITHOUT merging its turns
@@ -1652,6 +1819,14 @@ pub struct EphemeralTurnOutcome {
     pub reply: String,
     pub result: AgentResult,
 }
+
+/// The `reason` stamped on the `LogRecord::SystemNote`
+/// `Runtime::pull_in` appends when a merge stops part-way (see
+/// `Runtime::append_pull_in_truncation_note`). A machine-readable
+/// discriminator in the same snake_case shape as the agent loop's own
+/// note reasons, so a log reader can find every truncated merge without
+/// matching on prose.
+const PULL_IN_TRUNCATED: &str = "pull_in_truncated";
 
 /// Maps one of [`Runtime::pull_in`]'s merged records to its live [`Event`]
 /// twin (board item `01M0RWT9V7GNYRR53MTTQ2Y07K`), mirroring exactly the
