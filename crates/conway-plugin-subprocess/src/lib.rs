@@ -110,7 +110,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use conway::plugin::{
-    async_trait, kill_group, EventSinkHandle, PathArgs, Plugin, PluginManifest,
+    async_trait, kill_group, ChildSessionError, EventSinkHandle, PathArgs, Plugin, PluginManifest,
     PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution, RenderKind, Tool,
     ToolCall, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
@@ -303,6 +303,48 @@ pub enum SubprocessPluginError {
     /// answer is this variant, not the accept branch.
     #[error("plugin '{config_id}' sent a malformed initialize answer: {detail}")]
     HandshakeMalformed { config_id: String, detail: String },
+}
+
+/// The one-line-per-variant mapping this crate's own error enum needs to
+/// consume the shared process-lifecycle layer (board item
+/// `01M0TV7ZDS8X4F4TEJPRZB9P6T`): `conway::plugin::ChildSession` constructs
+/// its four shared failure causes generically, through this trait, rather
+/// than each session type hand-rolling the identical `match`/`kill_all`
+/// bookkeeping. `SubprocessPluginError`'s own variants and `Display` text
+/// are UNCHANGED by this -- this impl only tells `ChildSession` which
+/// variant of THIS enum each cause becomes. `HandshakeRefused`/
+/// `HandshakeMalformed` are NOT part of this trait -- they are this crate's
+/// OWN version-negotiation outcomes, constructed locally in `session.rs`,
+/// not shared with `conway-plugin-mcp`'s different (single
+/// `HandshakeFailed`) handshake taxonomy.
+impl ChildSessionError for SubprocessPluginError {
+    fn spawn(config_id: &str, detail: String) -> Self {
+        SubprocessPluginError::Spawn {
+            config_id: config_id.to_string(),
+            detail,
+        }
+    }
+
+    fn timed_out(config_id: &str, after_ms: u64) -> Self {
+        SubprocessPluginError::TimedOut {
+            config_id: config_id.to_string(),
+            after_ms,
+        }
+    }
+
+    fn session_died(config_id: &str, detail: String) -> Self {
+        SubprocessPluginError::SessionDied {
+            config_id: config_id.to_string(),
+            detail,
+        }
+    }
+
+    fn malformed_frame(config_id: &str, detail: String) -> Self {
+        SubprocessPluginError::MalformedFrame {
+            config_id: config_id.to_string(),
+            detail,
+        }
+    }
 }
 
 impl SubprocessPluginError {

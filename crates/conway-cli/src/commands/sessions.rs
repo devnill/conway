@@ -1,7 +1,27 @@
-//! `conway sessions {list,show,tree,export}`: pure formatters over
-//! `Conway::sessions`/`Conway::resume`/`SessionHandle::transcript` -- no
-//! method here reads a session store file directly, everything goes
-//! through the `conway` facade.
+//! `conway sessions {list,show,tree,export,name,unname}`: pure formatters
+//! over `Conway::sessions`/`Conway::resume`/`SessionHandle::transcript` --
+//! no method here reads a session store `<session-id>.jsonl` file
+//! directly, everything goes through the `conway` facade. `name`/`unname`
+//! are the one exception with any disk access of their own: they read and
+//! write `crate::session_names::NamesStore`'s sidecar
+//! (`session-names.json`, beside the session files but never one of them)
+//! -- see that module's own doc for why a name lives there and not in a
+//! session record.
+//!
+//! # Why a subcommand pair, not a `--name` creation flag
+//!
+//! Naming a session is not part of *creating* one -- it is furniture hung
+//! on a session that already exists (INTENT.md §7b), and a session's own
+//! id is available the moment creation finishes (a one-shot run's
+//! `--output-format json` output already prints it as `transcript_ref`;
+//! see `docs/sessions.md`'s own worked example). `sessions name <id>
+//! <name>` covers "name it right after creating it" and "rename it later"
+//! with the exact same call, so a second, narrower surface (a root `--name`
+//! flag, usable only on the arms of `--session`/`--resume`/`--fork-from`
+//! that create rather than reattach) would be one more flag, one more
+//! combination to validate against `--resume`, for a capability this one
+//! subcommand pair already covers completely. Smallest honest surface: one
+//! mechanism, not two.
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -12,6 +32,7 @@ use conway::{Conway, LogRecord, SessionFilter, SessionId, SessionMeta, SubagentM
 use crate::commands::fmt;
 use crate::diag;
 use crate::exit::ExitCode;
+use crate::session_names::{self, NamesStore};
 
 #[derive(Args, Debug)]
 pub struct SessionsArgs {
@@ -44,6 +65,19 @@ pub enum SessionsAction {
         #[arg(long = "out")]
         out: Option<PathBuf>,
     },
+    /// Attach an operator-chosen name to a session, or rename its existing
+    /// one. `ID` accepts a session id or an existing name, exactly like
+    /// `--session`/`--resume`. Refuses a `NAME` that parses as a valid ULID,
+    /// and refuses a `NAME` already bound to a different session, naming
+    /// which one holds it -- never a silent overwrite. This is the whole
+    /// naming surface -- see this module's own doc comment for why there is
+    /// no separate creation-time flag.
+    Name { id: String, name: String },
+    /// Remove whichever name is bound to a session -- `ID` accepts a
+    /// session id or the name itself. The session and its transcript are
+    /// entirely unaffected: this only removes an entry from the separate
+    /// name table.
+    Unname { id: String },
 }
 
 pub async fn run(args: &SessionsArgs, conway: &Conway) -> conway::Result<ExitCode> {
@@ -54,17 +88,31 @@ pub async fn run(args: &SessionsArgs, conway: &Conway) -> conway::Result<ExitCod
         SessionsAction::Show { id, json } => show(conway, id, *json).await,
         SessionsAction::Tree { id } => tree(conway, id).await,
         SessionsAction::Export { id, out } => export(conway, id, out.clone()).await,
+        SessionsAction::Name { id, name: new_name } => name(conway, id, new_name).await,
+        SessionsAction::Unname { id } => unname(conway, id).await,
     }
 }
 
-/// Parses a CLI-supplied session id, reporting a usage error (exit 2)
-/// rather than propagating a parse failure through `main`'s
-/// `ExitCode::from_error` (which would map a bare `FacadeError::Parse` to
-/// `AgentFailed`, 1) -- every failure mode reachable before a real session
-/// lookup happens is a usage error, never an agent failure.
-fn parse_session_id(id: &str) -> Result<SessionId, ExitCode> {
-    id.parse::<SessionId>().map_err(|e| {
-        diag::error(format!("invalid session id {id:?}: {e}"));
+/// Loads this `Conway`'s session-names sidecar, reporting a usage error
+/// (exit 2) on an unreadable/corrupt sidecar rather than propagating an
+/// I/O error as an `AgentFailed` -- matches every other failure mode in
+/// this file: nothing here reaches an agent, so `AgentFailed` is never the
+/// right classification.
+fn load_names(conway: &Conway) -> Result<NamesStore, ExitCode> {
+    NamesStore::load(&session_names::session_root(conway)).map_err(|e| {
+        diag::error(e.to_string());
+        ExitCode::Usage
+    })
+}
+
+/// Resolves a CLI-supplied `id-or-name` token (`session_names::resolve`: a
+/// full ULID used directly, any other string looked up by name), reporting
+/// a usage error (exit 2) rather than propagating a parse failure through
+/// `main`'s `ExitCode::from_error` -- every failure mode reachable before a
+/// real session lookup happens is a usage error, never an agent failure.
+fn resolve_session_ref(id: &str, names: &NamesStore) -> Result<SessionId, ExitCode> {
+    session_names::resolve(id, names).map_err(|e| {
+        diag::error(e.to_string());
         ExitCode::Usage
     })
 }
@@ -118,9 +166,13 @@ fn origin_json(meta: &SessionMeta) -> serde_json::Value {
     }
 }
 
-fn session_row(meta: &SessionMeta) -> Vec<String> {
+/// The `NAME` cell is blank for an unnamed session (`names.name_of` returns
+/// `None`) -- never a synthesized placeholder like `-` or `<unnamed>`, per
+/// this item's acceptance criteria.
+fn session_row(meta: &SessionMeta, names: &NamesStore) -> Vec<String> {
     vec![
         fmt::id_short(meta.id),
+        names.name_of(meta.id).unwrap_or_default().to_string(),
         fmt::ts(meta.created),
         meta.role
             .as_ref()
@@ -130,9 +182,10 @@ fn session_row(meta: &SessionMeta) -> Vec<String> {
     ]
 }
 
-fn session_json(meta: &SessionMeta) -> serde_json::Value {
+fn session_json(meta: &SessionMeta, names: &NamesStore) -> serde_json::Value {
     serde_json::json!({
         "id": meta.id.to_string(),
+        "name": names.name_of(meta.id),
         "created": fmt::ts(meta.created),
         "role": meta.role.as_ref().map(|r| r.to_string()),
         "origin": origin_json(meta),
@@ -145,6 +198,10 @@ async fn list(
     label: Option<String>,
     json: bool,
 ) -> conway::Result<ExitCode> {
+    let names = match load_names(conway) {
+        Ok(names) => names,
+        Err(code) => return Ok(code),
+    };
     let filter = SessionFilter {
         limit,
         label,
@@ -153,21 +210,28 @@ async fn list(
     let sessions = conway.sessions(filter).await?;
 
     if json {
-        let arr: Vec<_> = sessions.iter().map(session_json).collect();
+        let arr: Vec<_> = sessions.iter().map(|m| session_json(m, &names)).collect();
         println!(
             "{}",
             serde_json::to_string(&arr).expect("session list always serializes")
         );
     } else {
-        let rows = sessions.iter().map(session_row).collect();
-        print!("{}", fmt::table(&["ID", "CREATED", "ROLE", "ORIGIN"], rows));
+        let rows = sessions.iter().map(|m| session_row(m, &names)).collect();
+        print!(
+            "{}",
+            fmt::table(&["ID", "NAME", "CREATED", "ROLE", "ORIGIN"], rows)
+        );
     }
     let _ = std::io::stdout().flush();
     Ok(ExitCode::Completed)
 }
 
 async fn show(conway: &Conway, id: &str, json: bool) -> conway::Result<ExitCode> {
-    let sid = match parse_session_id(id) {
+    let names = match load_names(conway) {
+        Ok(names) => names,
+        Err(code) => return Ok(code),
+    };
+    let sid = match resolve_session_ref(id, &names) {
         Ok(sid) => sid,
         Err(code) => return Ok(code),
     };
@@ -196,7 +260,11 @@ async fn show(conway: &Conway, id: &str, json: bool) -> conway::Result<ExitCode>
 }
 
 async fn tree(conway: &Conway, id: &str) -> conway::Result<ExitCode> {
-    let sid = match parse_session_id(id) {
+    let names = match load_names(conway) {
+        Ok(names) => names,
+        Err(code) => return Ok(code),
+    };
+    let sid = match resolve_session_ref(id, &names) {
         Ok(sid) => sid,
         Err(code) => return Ok(code),
     };
@@ -245,7 +313,11 @@ async fn tree(conway: &Conway, id: &str) -> conway::Result<ExitCode> {
 }
 
 async fn export(conway: &Conway, id: &str, out: Option<PathBuf>) -> conway::Result<ExitCode> {
-    let sid = match parse_session_id(id) {
+    let names = match load_names(conway) {
+        Ok(names) => names,
+        Err(code) => return Ok(code),
+    };
+    let sid = match resolve_session_ref(id, &names) {
         Ok(sid) => sid,
         Err(code) => return Ok(code),
     };
@@ -271,4 +343,56 @@ async fn export(conway: &Conway, id: &str, out: Option<PathBuf>) -> conway::Resu
         }
     }
     Ok(ExitCode::Completed)
+}
+
+/// `sessions name <id-or-name> <name>`. Confirms `id` names a real session
+/// before writing anything -- a typo'd id must not create a name entry
+/// that resolves nowhere useful -- then delegates the actual bind (ULID-
+/// shape refusal, collision refusal, idempotent re-bind, and rename-by-
+/// moving-the-one-name-a-session-carries) entirely to `NamesStore::set`.
+async fn name(conway: &Conway, id: &str, new_name: &str) -> conway::Result<ExitCode> {
+    let mut names = match load_names(conway) {
+        Ok(names) => names,
+        Err(code) => return Ok(code),
+    };
+    let sid = match resolve_session_ref(id, &names) {
+        Ok(sid) => sid,
+        Err(code) => return Ok(code),
+    };
+    if conway.resume(sid).await.is_err() {
+        diag::error(format!("unknown session {id}"));
+        return Ok(ExitCode::Usage);
+    }
+    match names.set(new_name, sid) {
+        Ok(()) => {
+            println!("{sid}  {new_name}");
+            let _ = std::io::stdout().flush();
+            Ok(ExitCode::Completed)
+        }
+        Err(e) => {
+            diag::error(e.to_string());
+            Ok(ExitCode::Usage)
+        }
+    }
+}
+
+/// `sessions unname <id-or-name>`. Removes whichever name is bound to the
+/// resolved session -- the session's own record is never touched, only
+/// this entry in the separate name table.
+async fn unname(conway: &Conway, id: &str) -> conway::Result<ExitCode> {
+    let mut names = match load_names(conway) {
+        Ok(names) => names,
+        Err(code) => return Ok(code),
+    };
+    let sid = match resolve_session_ref(id, &names) {
+        Ok(sid) => sid,
+        Err(code) => return Ok(code),
+    };
+    match names.unset(&sid.to_string()) {
+        Ok(()) => Ok(ExitCode::Completed),
+        Err(e) => {
+            diag::error(e.to_string());
+            Ok(ExitCode::Usage)
+        }
+    }
 }

@@ -1596,9 +1596,20 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                     // session-scoped), so it is carried across the reset by
                     // hand, the one field `/resume` intentionally does not
                     // clear.
+                    // The installed agent-name store is carried across
+                    // for the identical reason (board item
+                    // `01M0TV5BSE98S16SFYECG9G9WP`): which plugins this
+                    // process installed is startup configuration, not
+                    // session state, so `/resume` must not silently strip
+                    // `/steer <name>` of its ability to resolve. The NAMES
+                    // themselves are per-agent and the resumed session has
+                    // new agents, so nothing stale carries over -- only the
+                    // store handle does.
+                    let agent_names = state.agent_names.clone();
                     let plugin_commands = state.plugin_commands.clone();
                     *state = AppState::new(handle.root());
                     state.plugin_commands = plugin_commands;
+                    state.agent_names = agent_names;
                     notice(state, format!("resumed session {sid}"));
                     Effect::Resumed(handle)
                 }
@@ -1896,14 +1907,71 @@ pub async fn apply_trust_decision<H: Host>(
     }
 }
 
-/// Resolves `token` to a live agent id: a full ULID is accepted outright
-/// (no membership check -- the facade call itself rejects an agent outside
-/// this session), otherwise `token` is matched as a unique prefix against
+/// Resolves `token` to a live agent id, in three passes: a full ULID is
+/// accepted outright (no membership check -- the facade call itself rejects
+/// an agent outside this session); else an exact operator-chosen NAME, if
+/// `conway.names` is installed; else `token` as a unique prefix against
 /// `state.tree`'s known agent ids (module notes: "an ambiguous prefix is a
 /// `ParseError` listing the candidates").
+///
+/// **The name pass is entirely new (board item
+/// `01M0TV5BSE98S16SFYECG9G9WP`), and it is what makes `/steer scout ...`
+/// work.** Every agent-targeted command already routes through this one
+/// function, so accepting a name here is the whole of the payoff and costs
+/// no new verbs. With `conway.names` uninstalled,
+/// [`AppState::agent_names`] is `None`, this pass matches nothing, and the
+/// two surrounding passes behave exactly as they did before this item.
+///
+/// **Ordering, decided: exact id, then exact name, then prefix.** Both of
+/// the first two passes are EXACT matches on an identifier the operator
+/// typed in full -- one canonical, one chosen -- while the third is an
+/// approximate match on an abbreviation. Putting the name pass ahead of the
+/// prefix pass means a name can never be shadowed by an accidental
+/// prefix collision with some other agent's id, which is the genuinely
+/// confusing case; putting it AFTER the full-id parse means this function's
+/// oldest, most load-bearing behaviour is untouched (and
+/// `conway_plugin_names::validate_name` refuses to store a name that is
+/// itself a valid ULID, so nothing can hide behind that branch anyway).
+///
+/// **A name resolves only against agents in THIS session's tree**, the
+/// same set the prefix pass ranges over. The store is flat and global
+/// across projects (`conway_plugin_names`'s own module doc), so a name
+/// belonging to an agent from another session must fall through to "no
+/// agent matches" rather than resolve to something the operator cannot see.
+///
+/// **Two agents sharing a name is an ambiguity, not a refusal.** The store
+/// deliberately allows duplicates (it cannot know which agents are on
+/// screen), so this function reports them the SAME way it already reports
+/// an ambiguous prefix -- one message shape, listing every candidate --
+/// rather than inventing a second failure mode.
 fn resolve_agent(state: &AppState, token: &str) -> Result<AgentId, String> {
     if let Ok(id) = token.parse::<AgentId>() {
         return Ok(id);
+    }
+    if let Some(names) = &state.agent_names {
+        let named: Vec<AgentId> = state
+            .tree
+            .nodes
+            .iter()
+            .map(|n| n.agent_id)
+            .filter(|id| names.get(id).as_deref() == Some(token))
+            .collect();
+        match named.as_slice() {
+            // Not a name in this tree -- fall through to the prefix pass,
+            // which owns the "nothing matched" message for both.
+            [] => {}
+            [id] => return Ok(*id),
+            _ => {
+                return Err(format!(
+                    "ambiguous agent name `{token}`; candidates: {}",
+                    named
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            }
+        }
     }
     let matches: Vec<AgentId> = state
         .tree
@@ -5581,5 +5649,236 @@ mod tests {
                 .any(|row| row.contains(&crate::tui::view::agents::short_agent_id(child))),
             "the rendered status line must name the newly focused child: {rendered:?}"
         );
+    }
+
+    /// Board item `01M0TV5BSE98S16SFYECG9G9WP`, **acceptance 1 -- the whole
+    /// loop, closed**: an operator names an agent they can see, through the
+    /// PLUGIN'S OWN `/conway.names.rename` command, and then steers it by
+    /// that name through `resolve_agent`. Neither half proves this alone
+    /// (this project has shipped a test of one half before), so the test
+    /// drives both across the seam that joins them -- one `AgentNames`
+    /// `Arc` held by the plugin and by `AppState`, exactly as `main.rs`
+    /// threads it.
+    ///
+    /// The fixture is deliberately not vacuous: `root` and `child` share
+    /// the same `agent_def` (`None`), so the panel labels both rows
+    /// `"agent"` -- the case a name exists to disambiguate -- and the name
+    /// is resolved against a tree containing BOTH, so a resolver that
+    /// returned any-old-agent would fail the `assert_eq!`.
+    #[tokio::test]
+    async fn a_name_set_through_the_plugin_command_resolves_back_to_the_same_agent() {
+        let root: AgentId = "01HF7YAT000000000000000001"
+            .parse()
+            .expect("valid ULID string");
+        let child: AgentId = "01J000000000000000000000A2"
+            .parse()
+            .expect("valid ULID string");
+
+        // The ONE store, held by the plugin and by the app state -- a
+        // compiled interface, not two readers of a file (decision
+        // `01M0TV3ZZBDKSSV7MD0FW3FSY7`). `InMemoryAgentNames`, not
+        // `FsAgentNames`: this test is about the loop, and it must never
+        // write into the operator's own `~/.conway/`. Durability across a
+        // restart is proven separately, over a tempdir, in
+        // `conway-plugin-names`'s own `tests/names_end_to_end.rs`.
+        let store: std::sync::Arc<dyn conway_plugin_names::AgentNames> =
+            std::sync::Arc::new(conway_plugin_names::InMemoryAgentNames::new());
+        let plugin: std::sync::Arc<dyn conway::plugin::Plugin> =
+            std::sync::Arc::new(conway_plugin_names::NamesPlugin::new(store.clone()));
+        // Reached the way an operator reaches it: the typed line is parsed,
+        // and the resulting full name is looked up in the SAME registry
+        // `App` builds from the installed plugin set. A test that called
+        // `Plugin::commands()[0]` directly would not show that the string
+        // an operator types arrives anywhere.
+        let registry = CommandRegistry::build(&[plugin]).expect("the names plugin registers");
+
+        let mut state = AppState::new(root);
+        state.tree.nodes.push(TreeNode {
+            agent_id: child,
+            parent: Some(root),
+            agent_def: None, // same as root's -- both rows read "agent"
+            status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
+        });
+        state.agent_names = Some(store);
+        state.focus_agent(child);
+
+        // Before the rename, `scout` is nobody -- so the assertion below
+        // cannot pass on a resolver that ignores the token entirely.
+        assert!(
+            resolve_agent(&state, "scout").is_err(),
+            "precondition: nothing answers to `scout` yet"
+        );
+
+        // The operator types it.
+        let typed = parse("/conway.names.rename scout").expect("the line must parse");
+        let SlashCommand::Plugin { full_name, args } = typed else {
+            panic!("a dotted command word must parse as a plugin command, got {typed:?}");
+        };
+        assert_eq!(full_name, "conway.names.rename");
+        let rename = registry
+            .resolve(&full_name)
+            .unwrap_or_else(|| panic!("/{full_name} must be registered"));
+        let outcome = rename
+            .invoke(conway::plugin::CommandCtx {
+                focused_agent: state.focused_agent,
+                root_agent: root,
+                session_id: conway::SessionId::new(),
+                args,
+            })
+            .await;
+        assert!(
+            matches!(outcome, conway::plugin::CommandOutcome::Output(_)),
+            "the rename must succeed: {outcome:?}"
+        );
+
+        // ... and steers it by that name. `/steer <agent> <text>` and every
+        // other agent-targeted command reach exactly this call.
+        let resolved = resolve_agent(&state, "scout")
+            .unwrap_or_else(|e| panic!("the name just set must resolve: {e}"));
+        assert_eq!(
+            resolved, child,
+            "`scout` must resolve to the agent that was named, not to some other row"
+        );
+
+        // The name is also what the operator sees on the row they pointed
+        // at -- the panel and the resolver agreeing is the affordance.
+        state.agent_view_open = true;
+        let rows = crate::tui::test_support::render(&state, RENDER_WIDTH, 24);
+        assert!(
+            rows.iter().any(|row| row.contains("scout")),
+            "the /agents panel must show the name that was just set: {rows:?}"
+        );
+
+        // And removing it puts the operator back exactly where they were.
+        let unname = registry
+            .resolve("conway.names.unname")
+            .expect("/conway.names.unname must be registered");
+        unname
+            .invoke(conway::plugin::CommandCtx {
+                focused_agent: state.focused_agent,
+                root_agent: root,
+                session_id: conway::SessionId::new(),
+                args: String::new(),
+            })
+            .await;
+        assert!(
+            resolve_agent(&state, "scout").is_err(),
+            "a removed name must stop resolving"
+        );
+    }
+
+    /// A name is matched only against agents in THIS session's tree. The
+    /// store is flat and global across projects
+    /// (`conway_plugin_names`'s own module doc), so a name belonging to an
+    /// agent nobody here can see must fall through to the SAME "no agent
+    /// matches" message an unknown prefix already produces -- never resolve
+    /// to something off screen.
+    #[test]
+    fn a_name_for_an_agent_outside_this_tree_does_not_resolve() {
+        let root = AgentId::new();
+        let stranger = AgentId::new();
+        let store: std::sync::Arc<dyn conway_plugin_names::AgentNames> =
+            std::sync::Arc::new(conway_plugin_names::InMemoryAgentNames::new());
+        store.set(&stranger, "scout").expect("set");
+        let mut state = AppState::new(root);
+        state.agent_names = Some(store);
+        let err = resolve_agent(&state, "scout").expect_err("a stranger's name must not resolve");
+        assert!(
+            err.contains("no agent matches"),
+            "it must fail the way an unknown token already fails: {err:?}"
+        );
+    }
+
+    /// Two live agents given the same name is an AMBIGUITY reported with
+    /// every candidate named -- the same shape `resolve_agent` already uses
+    /// for a colliding id prefix, deliberately not a second failure mode
+    /// (determination question 3: duplicates are allowed at write time,
+    /// because only the resolver knows which agents are on screen).
+    #[test]
+    fn two_agents_sharing_a_name_are_reported_as_ambiguous_with_both_candidates() {
+        let root: AgentId = "01HF7YAT000000000000000001".parse().expect("ULID");
+        let other: AgentId = "01J000000000000000000000A2".parse().expect("ULID");
+        let store: std::sync::Arc<dyn conway_plugin_names::AgentNames> =
+            std::sync::Arc::new(conway_plugin_names::InMemoryAgentNames::new());
+        store.set(&root, "scout").expect("set");
+        store.set(&other, "scout").expect("set");
+        let mut state = AppState::new(root);
+        state.tree.nodes.push(TreeNode {
+            agent_id: other,
+            parent: Some(root),
+            agent_def: None,
+            status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
+        });
+        state.agent_names = Some(store);
+        let err = resolve_agent(&state, "scout").expect_err("a duplicate name must not pick one");
+        assert!(
+            err.contains("ambiguous")
+                && err.contains(&root.to_string())
+                && err.contains(&other.to_string()),
+            "both candidates must be named, as the prefix path already does: {err:?}"
+        );
+    }
+
+    /// An exact name beats an id PREFIX that would also have matched --
+    /// `resolve_agent`'s decided ordering (exact id, exact name, then
+    /// prefix). Without it, naming an agent `01J` while another agent's id
+    /// starts with `01J` would make the deliberate name unreachable behind
+    /// an accident.
+    #[test]
+    fn an_exact_name_wins_over_an_id_prefix_that_would_also_have_matched() {
+        let named: AgentId = "01HF7YAT000000000000000001".parse().expect("ULID");
+        let prefixed: AgentId = "01J000000000000000000000A2".parse().expect("ULID");
+        let store: std::sync::Arc<dyn conway_plugin_names::AgentNames> =
+            std::sync::Arc::new(conway_plugin_names::InMemoryAgentNames::new());
+        store.set(&named, "01J0").expect("set");
+        let mut state = AppState::new(named);
+        state.tree.nodes.push(TreeNode {
+            agent_id: prefixed,
+            parent: Some(named),
+            agent_def: None,
+            status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
+        });
+        state.agent_names = Some(store);
+        assert_eq!(
+            resolve_agent(&state, "01J0").expect("the name must resolve"),
+            named,
+            "an exact name must not be shadowed by another agent's id prefix"
+        );
+        // The prefix path still works for a token no name claims.
+        assert_eq!(
+            resolve_agent(&state, "01J00").expect("the prefix must still resolve"),
+            prefixed
+        );
+    }
+
+    /// With `conway.names` uninstalled -- `AppState::agent_names` `None`,
+    /// which is what every `AppState::new` produces -- `resolve_agent` is
+    /// exactly the two-pass function it was before this item. Stated as its
+    /// own test because "uninstalled changes nothing" is half of this
+    /// item's deliverable, and the pre-existing resolver tests above (which
+    /// this file did not edit) are the other half.
+    #[test]
+    fn with_no_names_store_installed_resolve_agent_is_unchanged() {
+        let root: AgentId = "01HF7YAT000000000000000001".parse().expect("ULID");
+        let state = AppState::new(root);
+        assert!(
+            state.agent_names.is_none(),
+            "precondition: a plain AppState has no names store"
+        );
+        assert_eq!(
+            resolve_agent(&state, &root.to_string()).expect("full id"),
+            root
+        );
+        assert_eq!(resolve_agent(&state, "01HF7YAT0").expect("prefix"), root);
+        assert!(resolve_agent(&state, "scout").is_err());
     }
 }

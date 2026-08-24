@@ -127,6 +127,22 @@ conway-plugin-discover = { path = "../conway-plugin-discover" }
 # proves `"conway.trim"` in `[plugins].install` reaches this plugin's own
 # `Curator` against the real compiled binary, not merely that it compiles.
 conway-plugin-trim = { path = "../conway-plugin-trim" }
+# Board item 01M0TV5BSE98S16SFYECG9G9WP (decision 01M0TV3ZZBDKSSV7MD0FW3FSY7):
+# `conway.names`, operator-chosen names for agents. Resolved through the
+# SAME `[plugins].install` mechanism and the same
+# `src/first_party_plugins.rs` choke point as every other line in this
+# list; NOT installed by default -- an operator opts in the same way they
+# would for `conway.trim`/`conway.memory`.
+#
+# This dependency carries one thing none of the others do: the
+# `AgentNames` TRAIT itself, which this crate names directly (in
+# `src/tui/state.rs`, `src/tui/commands.rs`'s `resolve_agent`, and
+# `src/tui/view/agents.rs`). That is deliberate and is the whole shape of
+# the decision -- the trait lives beside its implementation in the plugin
+# crate so that `conway-core` never learns the word "name", and this
+# already-existing dependency edge is what makes naming it here legal. See
+# `crates/conway-plugin-names/src/lib.rs`'s module doc.
+conway-plugin-names = { path = "../conway-plugin-names" }
 clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }

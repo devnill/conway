@@ -85,8 +85,9 @@ async fn main() -> std::process::ExitCode {
         (Some(gate), None)
     };
 
-    let (conway, memory_store) = match build_conway(&cli, gate_override, is_tui).await {
-        Ok(pair) => pair,
+    let (conway, memory_store, agent_names) = match build_conway(&cli, gate_override, is_tui).await
+    {
+        Ok(built) => built,
         Err(e) => {
             diag::error(e.to_string());
             return to_process_code(ExitCode::from_error(&e));
@@ -116,7 +117,7 @@ async fn main() -> std::process::ExitCode {
         }
     }
 
-    let result = dispatch(&cli, conway, tui_gate_rx, memory_store).await;
+    let result = dispatch(&cli, conway, tui_gate_rx, memory_store, agent_names).await;
 
     match result {
         Ok(code) => to_process_code(code),
@@ -177,11 +178,27 @@ async fn main() -> std::process::ExitCode {
 /// plugin::run`'s identical need). See `first_party_plugins::
 /// resolve_memory_store`'s own doc for why this is the ONE store instance
 /// this whole process ever constructs.
+///
+/// **And the `Arc<dyn conway_plugin_names::AgentNames>` alongside it**
+/// (board item `01M0TV5BSE98S16SFYECG9G9WP`), on exactly the same footing
+/// and for exactly the same reason -- one store instance per process,
+/// threaded rather than re-opened. It travels one hop further than the
+/// memory store: [`dispatch`] hands it to `tui::run`, which parks it on
+/// `AppState` so `resolve_agent` can accept a name and the `/agents` panel
+/// can show one. Naming `conway_plugin_names::AgentNames` here is legal
+/// precisely because this binary already links that crate in order to
+/// install it -- see `first_party_plugins::resolve_agent_names`, and
+/// `conway_plugin_names`'s own module doc for why the trait lives in the
+/// plugin crate rather than in `conway-core`.
 async fn build_conway(
     cli: &Cli,
     gate: Option<Arc<dyn PermissionGate>>,
     is_tui: bool,
-) -> conway::Result<(Conway, Arc<dyn conway::plugin::MemoryStore>)> {
+) -> conway::Result<(
+    Conway,
+    Arc<dyn conway::plugin::MemoryStore>,
+    Arc<dyn conway_plugin_names::AgentNames>,
+)> {
     let builder = match &cli.config {
         Some(path) => ConwayBuilder::from_config(path)?,
         None => ConwayBuilder::discover()?,
@@ -225,7 +242,7 @@ async fn build_conway(
     // `[plugins]` section in `settings.json` at all. Every dispatch target
     // sees this union from the SAME choke point, so the property holds for
     // the TUI and every one-shot/subcommand invocation identically.
-    let (builder, memory_store) = first_party_plugins::install(builder).await?;
+    let (builder, memory_store, agent_names) = first_party_plugins::install(builder).await?;
     // The subprocess plugin tier (board item 01KZY8PATND84AKY0J376E3DWV):
     // a SEPARATE choke point from the line above -- see
     // `subprocess_plugins`'s own module doc for why this is a distinct
@@ -242,7 +259,7 @@ async fn build_conway(
     // `subprocess_plugins::install` is -- the handshake spawns a real process.
     let builder = mcp_plugins::install(builder).await?;
     let conway = builder.build()?;
-    Ok((conway, memory_store))
+    Ok((conway, memory_store, agent_names))
 }
 
 /// If `command.is_some()` -> `commands::{sessions,routes}::run`; else if
@@ -254,6 +271,7 @@ async fn dispatch(
     conway: Conway,
     tui_gate_rx: Option<tui::gate::GateReceiver>,
     memory_store: Arc<dyn conway::plugin::MemoryStore>,
+    agent_names: Arc<dyn conway_plugin_names::AgentNames>,
 ) -> conway::Result<ExitCode> {
     match &cli.command {
         Some(Command::Sessions(args)) => commands::sessions::run(args, &conway).await,
@@ -266,7 +284,9 @@ async fn dispatch(
         // target; there is no seam that lets `commands::plugin::run` be
         // reached any other way. See `commands::plugin`'s own module doc
         // for what it does.
-        Some(Command::External(args)) => commands::plugin::run(args, &conway, memory_store).await,
+        Some(Command::External(args)) => {
+            commands::plugin::run(args, &conway, memory_store, agent_names).await
+        }
         None if cli.print.is_some() => oneshot::run(cli, conway).await,
         None => {
             let gate_rx = tui_gate_rx.expect("tui_gate_rx is constructed whenever is_tui is true");
@@ -278,8 +298,16 @@ async fn dispatch(
             // second resolution algorithm. `memory_store` is the SAME `Arc`
             // that call resolved (board item `01M09V3S2AQYB2VK6MANFRH1JM`),
             // never a second `FsMemoryStore::open` over the same root.
-            let plugins = first_party_plugins::installed_plugins(&conway, memory_store);
-            tui::run(cli, conway, gate_rx, &plugins).await
+            // `agent_names` is the SAME `Arc` on the same footing (board
+            // item `01M0TV5BSE98S16SFYECG9G9WP`) and is CLONED rather than
+            // moved, because it has two destinations here: the
+            // `conway.names` plugin inside `plugins` (which writes a name)
+            // and `tui::run` (which reads one back to resolve `/steer
+            // <name>` and to draw the `/agents` panel). Handing those two a
+            // store each would break the loop silently.
+            let plugins =
+                first_party_plugins::installed_plugins(&conway, memory_store, agent_names.clone());
+            tui::run(cli, conway, gate_rx, &plugins, agent_names).await
         }
     }
 }

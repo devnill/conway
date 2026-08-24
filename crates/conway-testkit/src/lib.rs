@@ -373,6 +373,48 @@ pub struct FakeStore {
     /// A test injects a STALE owner via [`Self::set_live_owner`] to drive the
     /// sweep's "stale marker → reap" branch without waiting on a clock.
     live_owner: Mutex<Option<LiveOwner>>,
+    /// The armed `append` failure, if any — see [`FakeStore::fail_nth_append`].
+    /// `None` (the default) means every append succeeds, which is what every
+    /// test that never arms the knob sees.
+    append_failure: Mutex<Option<ArmedFailure>>,
+    /// The armed `remove` failure, if any — see [`FakeStore::fail_nth_remove`].
+    /// Same shape and same default as `append_failure`.
+    remove_failure: Mutex<Option<ArmedFailure>>,
+}
+
+/// An armed injected failure inside a [`FakeStore`] — the state behind
+/// [`FakeStore::fail_nth_append`] / [`FakeStore::fail_appends_from`] /
+/// [`FakeStore::fail_nth_remove`].
+///
+/// `countdown` is how many more calls to the armed method must arrive
+/// before this fires; it is decremented on EVERY such call (successful ones
+/// included), so "the Nth call from now" is literally the Nth call.
+/// `sticky` decides what happens once it reaches zero: a one-shot failure
+/// disarms itself (later calls succeed again), a sticky one stays armed
+/// forever.
+#[derive(Debug)]
+struct ArmedFailure {
+    countdown: usize,
+    sticky: bool,
+    err: StoreError,
+}
+
+/// Counts one call against `armed` and returns the error when it is this
+/// call's turn to fail. Shared by every injected-failure knob on
+/// [`FakeStore`] so they all count identically.
+fn take_armed_failure(armed: &Mutex<Option<ArmedFailure>>) -> Option<StoreError> {
+    let mut armed = armed.lock().unwrap();
+    let failure = armed.as_mut()?;
+    failure.countdown = failure.countdown.saturating_sub(1);
+    if failure.countdown > 0 {
+        return None;
+    }
+    if failure.sticky {
+        // Stays armed at zero: every subsequent call fails too.
+        Some(failure.err.clone())
+    } else {
+        armed.take().map(|f| f.err)
+    }
 }
 
 impl FakeStore {
@@ -399,6 +441,75 @@ impl FakeStore {
     /// must not sleep.
     pub fn set_live_owner(&self, owner: Option<LiveOwner>) {
         *self.live_owner.lock().unwrap() = owner;
+    }
+
+    /// Test knob: make the `nth` `append` call issued AFTER this returns
+    /// fail with `err`, ONCE. `nth` is 1-based and counts every append to
+    /// every session in this store, so `fail_nth_append(1, ..)` fails the
+    /// very next one and `fail_nth_append(2, ..)` lets one through first.
+    /// A failed append records nothing (the session's records and head are
+    /// exactly what they were), matching a real store that could not
+    /// persist the line. Once it fires the knob disarms itself: the append
+    /// after the failing one succeeds normally.
+    ///
+    /// This exists because several multi-record operations — `Runtime`'s
+    /// `/ask` pull-in merge above all — append N records in a loop with no
+    /// way to roll the earlier ones back, so their PARTIAL-failure
+    /// behaviour is a real, reachable state that cannot be tested without
+    /// a store that fails on demand. Arming immediately before the call
+    /// under test keeps the count independent of however many appends the
+    /// test's own setup performed.
+    ///
+    /// Calling this again replaces any previously armed failure. `nth` must
+    /// be at least 1.
+    pub fn fail_nth_append(&self, nth: usize, err: StoreError) {
+        self.arm_append_failure(nth, false, err);
+    }
+
+    /// Test knob: like [`Self::fail_nth_append`], but the failure STICKS —
+    /// the `nth` append after this returns fails, and so does every append
+    /// after it, until [`Self::clear_append_failure`] disarms it. Models a
+    /// store that has gone away entirely (a full disk, a vanished
+    /// directory) rather than one line that would not write, which is what
+    /// distinguishes a caller's best-effort recovery append succeeding from
+    /// it failing too.
+    pub fn fail_appends_from(&self, nth: usize, err: StoreError) {
+        self.arm_append_failure(nth, true, err);
+    }
+
+    /// Disarms whatever [`Self::fail_nth_append`] / [`Self::fail_appends_from`]
+    /// armed, whether or not it ever fired. A no-op when nothing is armed.
+    pub fn clear_append_failure(&self) {
+        *self.append_failure.lock().unwrap() = None;
+    }
+
+    /// Test knob: make the `nth` `remove` call issued AFTER this returns
+    /// fail with `err`, ONCE — the sibling of [`Self::fail_nth_append`], and
+    /// for the same reason. `Runtime::pull_in` purges the `/ask` child AFTER
+    /// merging its records, so a failing `remove` is the one way to reach
+    /// the state "the merge landed in full and only the purge did not",
+    /// which a caller must be able to tell apart from a guard refusal that
+    /// happened before anything was written.
+    ///
+    /// An armed failure fires BEFORE the guard matrix runs, so the injected
+    /// error is what the caller sees — never a `NotFound`/`NotRemovable`
+    /// the test did not ask for — and nothing is deleted.
+    pub fn fail_nth_remove(&self, nth: usize, err: StoreError) {
+        assert!(nth >= 1, "fail_nth_remove: `nth` is 1-based, got {nth}");
+        *self.remove_failure.lock().unwrap() = Some(ArmedFailure {
+            countdown: nth,
+            sticky: false,
+            err,
+        });
+    }
+
+    fn arm_append_failure(&self, nth: usize, sticky: bool, err: StoreError) {
+        assert!(nth >= 1, "fail_*_append: `nth` is 1-based, got {nth}");
+        *self.append_failure.lock().unwrap() = Some(ArmedFailure {
+            countdown: nth,
+            sticky,
+            err,
+        });
     }
 }
 
@@ -440,7 +551,15 @@ impl SessionStore for FakeStore {
         Ok(id)
     }
 
+    /// Honours the injected-failure knob ([`FakeStore::fail_nth_append`])
+    /// before doing anything else — so an injected failure preempts even
+    /// `StoreError::NotFound`, and the caller is never left wondering which
+    /// of the two it got. A failed append records nothing: the session's
+    /// records and head are untouched.
     async fn append(&self, sid: &SessionId, rec: LogRecord) -> Result<LogSeq, StoreError> {
+        if let Some(err) = take_armed_failure(&self.append_failure) {
+            return Err(err);
+        }
         let mut sessions = self.sessions.write().unwrap();
         let session = sessions
             .get_mut(sid)
@@ -576,6 +695,9 @@ impl SessionStore for FakeStore {
     /// the trait-level doc): ephemeral-only, and ANY children — ephemeral
     /// ones included — block removal.
     async fn remove(&self, sid: &SessionId) -> Result<(), StoreError> {
+        if let Some(err) = take_armed_failure(&self.remove_failure) {
+            return Err(err);
+        }
         let mut sessions = self.sessions.write().unwrap();
         let session = sessions
             .get(sid)

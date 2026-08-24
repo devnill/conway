@@ -394,6 +394,45 @@ pub mod plugin {
     #[cfg(all(unix, feature = "builtin-tools"))]
     pub use conway_tools::process::unix::{kill_group, TERM_GRACE};
 
+    /// The shared child-process SESSION lifecycle (spawn once, an
+    /// id-correlated NDJSON round trip, a per-call timeout, and fail-closed
+    /// teardown) `conway_plugin_mcp::session::McpSession` and
+    /// `conway_plugin_subprocess::session::PersistentSession` each build
+    /// their OWN wire dialect on top of (board item
+    /// `01M0TV7ZDS8X4F4TEJPRZB9P6T`).
+    ///
+    /// **Extends this facade's existing route, does not invent a third.**
+    /// [`ChildSession`] is re-exported from `conway_tools::process::
+    /// child_session` the SAME way [`kill_group`] immediately above already
+    /// is, for the SAME reason: it calls `conway_tools::process::unix::
+    /// kill_group` directly on its own timeout path, so it needs exactly
+    /// `kill_group`'s own dependency (`conway-tools`' nix-backed
+    /// process-group signalling), present only when the optional,
+    /// default-on `builtin-tools` feature pulls `conway-tools` in. Gated
+    /// identically: `cfg(all(unix, feature = "builtin-tools"))`.
+    ///
+    /// **What moved here, and what deliberately did not.** The pending-table
+    /// and its dead/death-reason bookkeeping, the long-lived reader task,
+    /// the write-then-await round trip, the graceful timeout kill, and the
+    /// synchronous `Drop`-time SIGKILL -- the mechanics every child-process
+    /// session in this workspace needs, and a SAFETY property (fail-closed
+    /// on child death/timeout/malformed frame), not a stylistic choice.
+    /// Each wire dialect's OWN request/response shapes, version negotiation,
+    /// and per-point refuse-vs-degrade rules stay in their owning crate
+    /// (INTENT §8.10: "similar is not duplicate") -- see
+    /// `conway_tools::process::child_session`'s own module doc for the full
+    /// argument and the divergence this extraction preserves rather than
+    /// collapses (`NotificationRoute`'s two variants).
+    ///
+    /// Each crate's own public error enum (`McpPluginError`/
+    /// `SubprocessPluginError`) is UNCHANGED by this -- same variants, same
+    /// `Display` text -- by implementing [`ChildSessionError`] as a thin,
+    /// one-line-per-variant mapping onto its own type.
+    #[cfg(all(unix, feature = "builtin-tools"))]
+    pub use conway_tools::process::child_session::{
+        ChildSession, ChildSessionError, NotificationRoute, PendingGuard,
+    };
+
     /// Applied when a plugin-host spec (`conway_plugin_mcp::McpPluginSpec`,
     /// `conway_plugin_subprocess::SubprocessPluginSpec`) does not name its
     /// own `timeout_ms`: long enough for a typical local plugin process

@@ -188,6 +188,8 @@ fn sessions_list_on_empty_store_prints_header_only() {
         ])
         .assert()
         .success()
-        .stdout("ID  CREATED  ROLE  ORIGIN\n")
+        // `NAME` (added alongside `sessions name`/`unname`) sits right
+        // after `ID` -- see `commands/sessions.rs::list`.
+        .stdout("ID  NAME  CREATED  ROLE  ORIGIN\n")
         .stderr(predicate::str::is_empty());
 }
