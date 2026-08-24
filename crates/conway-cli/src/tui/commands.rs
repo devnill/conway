@@ -1429,8 +1429,11 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
         }
         SlashCommand::Tree => {
             // Item A3: no facade call -- the alias renders from
-            // `state.tree` (the panel's own view), so its text always
-            // matches what `/agents` shows, recipe labels included.
+            // `state.tree` (the panel's own view), so its labels, recipe
+            // parts, indent and status match what `/agents` shows. The
+            // agent id does NOT: board item `01M0TNCAP1HH4YNC5K9753YG26`
+            // decided the two deliberately differ there. See
+            // `render_tree_snapshot`'s own doc for why.
             render_tree_snapshot(state);
             Effect::None
         }
@@ -1930,8 +1933,21 @@ fn resolve_agent(state: &AppState, token: &str) -> Result<AgentId, String> {
 /// from the runtime's `AgentTreeSnapshot`, so `execute` makes no facade
 /// call for it at all. `TreeNode` carries no `steps`/`budget`/`role`, so a
 /// line is exactly what the panel row shows (indent, label, recipe parts,
-/// status) plus the full agent id -- kept so a transcript line can be
-/// copied straight into `/steer`/`/context`.
+/// status).
+///
+/// **The agent id is deliberately NOT what the panel shows** (board item
+/// `01M0TNCAP1HH4YNC5K9753YG26`, which found the two had drifted and this
+/// doc comment was claiming a parity that no longer held). The panel row
+/// prints [`super::view::agents::panel_agent_id`]'s screen-relative short
+/// id -- an affordance sized to what is on screen right now. This line
+/// prints `node.agent_id`'s full 26-character ULID via `Display`, because a
+/// `/tree` line is transcript text: it can be scrolled back to, pasted into
+/// a script, a commit message, or a bug report, arbitrarily far from the
+/// moment it was printed and the row set that made a short prefix unique
+/// then. A durable reference needs no "unique among what was on screen"
+/// caveat; the full id is that reference, and `resolve_agent` accepts it
+/// unchanged. Both forms resolve to the same agent either way -- this is a
+/// choice between two valid identifiers, not a bug in either one.
 ///
 /// Unlike the panel, the snapshot deliberately does NOT honor the
 /// `AgentVisibility` filter: it shows ALL nodes, terminal ones included.
@@ -3885,6 +3901,16 @@ mod tests {
     /// "renders `state.tree` even when the runtime host tree would differ"
     /// holds by construction; the empty `host.calls()` assertion is what a
     /// regression back to a facade lookup would trip.)
+    ///
+    /// This is ALSO the pinning test for board item
+    /// `01M0TNCAP1HH4YNC5K9753YG26`'s id-format decision: `child.to_string()`
+    /// is the FULL 26-character ULID (`AgentId`'s `Display`, not
+    /// `view::agents::panel_agent_id`'s screen-relative short form), and the
+    /// assertion below is deliberately looking for that exact full string,
+    /// not a prefix of it. `/tree` keeps printing full ids on purpose (see
+    /// `render_tree_snapshot`'s doc for why); if a future change makes
+    /// `/tree` print short ids instead, this assertion must be rewritten to
+    /// say so, not silently relaxed to `starts_with`.
     #[tokio::test]
     async fn tree_makes_no_facade_call_and_renders_state_tree_not_the_host_snapshot() {
         let root = AgentId::new();

@@ -967,6 +967,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   substance.
 - **`conway.trim` is wired into the shipped `conway` binary** — board item `01M0TV447NAJ1R06S455DZPP54`: `conway-cli` now depends on `conway-plugin-trim`, so naming `"conway.trim"` in `[plugins].install` resolves through the same first-party mechanism as every other id and its `Curator` actually runs, closing the gap where it was compiled, tested, and unreachable from the binary.
 
+### Fixed
+
+- **`/tree`'s own doc comment claimed its rendering "always matches what `/agents` shows"; it no longer does, since `01M0RWKJD04JBR5NCVKBQXYHV4` gave the `/agents` panel a screen-relative short id** — board item `01M0TNCAP1HH4YNC5K9753YG26`. Decided in favor of keeping `/tree` on full ids: a transcript line outlives the row set that made a short prefix unique, so it needs a durable reference, not a screen affordance. `commands.rs`, `docs/agents.md`, and `docs/interactive.md` now say so explicitly instead of claiming parity that doesn't hold.
+
 ## [0.9.0] — 2026-08-13
 
 ### Added
