@@ -965,6 +965,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `conway-testkit`, above. `crates/conway-core/tests/fakes_conformance.rs`
   moved to `crates/conway-testkit/tests/fakes_conformance.rs` unchanged in
   substance.
+- **`conway.trim` is wired into the shipped `conway` binary** — board item `01M0TV447NAJ1R06S455DZPP54`: `conway-cli` now depends on `conway-plugin-trim`, so naming `"conway.trim"` in `[plugins].install` resolves through the same first-party mechanism as every other id and its `Curator` actually runs, closing the gap where it was compiled, tested, and unreachable from the binary.
 
 ## [0.9.0] — 2026-08-13
 

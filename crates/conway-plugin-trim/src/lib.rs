@@ -64,7 +64,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use conway::plugin::{
-    ContentBlock, CurateCtx, CurateOutcome, Curator, Plugin, PluginManifest, Tool,
+    ContentBlock, CurateCtx, CurateOutcome, Curator, Plugin, PluginDescription, PluginManifest,
+    Tool,
 };
 use conway::{LogRecord, PathOp, ValidatedPath};
 
@@ -180,6 +181,31 @@ impl Plugin for TrimPlugin {
         }
     }
 
+    /// The plugin browser's own read surface (board item
+    /// `01M0KARX71A64NTSYTDBVANVPF`) -- an honest "what does flipping this
+    /// on/off change" for an operator, not the trait's empty default. No
+    /// tool/command/instruction to name (this plugin's whole contribution
+    /// is the curator itself, see `curators` below), so `you_get` names the
+    /// SHAPE of what it drops rather than a tool an operator would call.
+    fn description(&self) -> PluginDescription {
+        PluginDescription {
+            summary: "drops old tool call/result round-trips to save context room"
+                .to_string(),
+            you_get: format!(
+                "tool call/result round-trips older than {} turns behind the current one are \
+                 omitted from what the model sees, never reordered",
+                self.0.keep_turns
+            ),
+            you_lose: "the model can no longer see or reference a tool result once it ages out \
+                       of the window -- including any prose the same response mixed in with the \
+                       call, since omission works at whole-record granularity"
+                .to_string(),
+            costs: "one pass over the session's path per turn to decide what to drop; no \
+                    network or disk I/O of its own"
+                .to_string(),
+        }
+    }
+
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         Vec::new()
     }
@@ -203,6 +229,18 @@ mod tests {
         assert_eq!(plugin.manifest().id, PLUGIN_ID);
         assert_eq!(plugin.curators().len(), 1);
         assert!(plugin.tools().is_empty());
+    }
+
+    /// The plugin browser's own read surface (board item
+    /// `01M0KARX71A64NTSYTDBVANVPF`): a real description, never the
+    /// trait's empty default -- matches the same standard every other
+    /// first-party plugin's own `description_is_non_empty` test pins.
+    #[test]
+    fn description_is_non_empty() {
+        let description = TrimPlugin::new().description();
+        assert!(!description.summary.is_empty());
+        assert!(!description.you_get.is_empty());
+        assert!(!description.you_lose.is_empty());
     }
 
     #[tokio::test]
