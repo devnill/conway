@@ -26,7 +26,7 @@ use conway::config::schema::{
 };
 use conway::plugin::{PluginManifest, Tool};
 use conway::{
-    BackendBuildContext, BackendFactory, Conway, ConwayBuilder, ConwayError, CoreConwayError,
+    BackendBuildContext, BackendFactory, Conway, ConwayBuilder, CoreConwayError, FacadeError,
     HealthRegistry, Plugin, Router, RouterBuildContext, RouterBundle, RouterFactory,
 };
 use conway_core::agent::PermissionDecision;
@@ -105,7 +105,7 @@ fn base_config() -> ConwayConfig {
 
 /// `Conway` deliberately does not derive `Debug`, mirroring
 /// `crates/conway/tests/builder.rs`'s own `expect_build_err`.
-fn expect_build_err(result: Result<Conway, ConwayError>, msg: &str) -> ConwayError {
+fn expect_build_err(result: Result<Conway, FacadeError>, msg: &str) -> FacadeError {
     match result {
         Err(err) => err,
         Ok(_) => panic!("{msg}"),
@@ -219,11 +219,11 @@ fn plugin_id_resolves_and_attaches_via_with_plugin() {
          must collide",
     );
     match err {
-        ConwayError::Build { message } => {
+        FacadeError::Build { message } => {
             assert!(message.contains("duplicate plugin id"), "{message}");
             assert!(message.contains("test.echo"), "{message}");
         }
-        other => panic!("expected ConwayError::Build, got {other:?}"),
+        other => panic!("expected FacadeError::Build, got {other:?}"),
     }
 }
 
@@ -336,7 +336,7 @@ fn backend_factory_id_resolves_from_default_backends_with_no_install_entry() {
 }
 
 /// The stated outcome for "a configured id matches nothing in the supplied
-/// bundles": a hard, named `ConwayError::Config`, never a silent no-op --
+/// bundles": a hard, named `FacadeError::Config`, never a silent no-op --
 /// matching `first_party_plugins::install`'s own pre-existing behavior,
 /// extended to name whichever bundles THIS caller supplied. The message
 /// names the offending id and lists every id each of the three supplied
@@ -447,13 +447,13 @@ fn a_supplied_backend_factory_not_selected_is_diagnosed_as_declined_not_unknown(
         "a [backends.<id>] entry naming a supplied-but-unselected kind must fail build()",
     );
     match err {
-        ConwayError::Config { message, .. } => {
+        FacadeError::Config { message, .. } => {
             assert!(message.contains("declined"), "{message}");
             assert!(
                 !message.to_lowercase().contains("unknown kind"),
                 "{message}"
             );
         }
-        other => panic!("expected ConwayError::Config, got {other:?}"),
+        other => panic!("expected FacadeError::Config, got {other:?}"),
     }
 }

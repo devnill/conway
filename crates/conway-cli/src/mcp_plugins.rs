@@ -46,14 +46,14 @@
 
 use std::sync::Arc;
 
-use conway::{ConwayBuilder, ConwayError};
+use conway::{ConwayBuilder, FacadeError};
 use conway_plugin_mcp::{McpPlugin, McpPluginSpec};
 
 /// Discovers and attaches every `[plugins].mcp[]` entry in `builder`'s own
 /// config, in list order. A discovery failure (spawn, timeout, handshake
 /// refusal, or an invalid `tools/list` answer -- every
 /// [`conway_plugin_mcp::McpPluginError`] variant) fails the WHOLE call as
-/// [`ConwayError::Build`], naming the offending entry's own `id` -- never
+/// [`FacadeError::Build`], naming the offending entry's own `id` -- never
 /// silently skipped, matching `subprocess_plugins::install`'s own
 /// "an unresolvable entry fails the whole build" posture for the SAME reason:
 /// an operator who named an MCP server in `settings.json` and got nothing for
@@ -71,7 +71,7 @@ pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
         };
         let plugin = McpPlugin::discover(spec)
             .await
-            .map_err(|err| ConwayError::Build {
+            .map_err(|err| FacadeError::Build {
                 message: format!("[plugins].mcp entry '{}': {err}", entry.id),
             })?;
         builder = builder.with_plugin(Arc::new(plugin));

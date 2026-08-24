@@ -18,7 +18,7 @@
 //! naming every kind it does recognise.
 //!
 //! This item establishes the crate skeleton: dependency wiring,
-//! the cargo feature flags below, the crate-level [`ConwayError`]/[`Result`],
+//! the cargo feature flags below, the crate-level [`FacadeError`]/[`Result`],
 //! and the curated re-export list from `conway-core`. Every other module
 //! named in the facade module's implementation notes (`config`, `agents`,
 //! `gates`, `presets`, `builder`, `conway`, `session_handle`,
@@ -51,7 +51,7 @@ mod subagent_spec;
 pub use builder::{ConwayBuilder, PluginSelection};
 pub use config::trust::TrustStatus;
 pub use conway::{Conway, HookRuleView};
-pub use error::{ConwayError, Result};
+pub use error::{FacadeError, Result};
 pub use event_stream::EventStream;
 pub use host_caps::HostCaps;
 pub use intent::AgentIntent;
@@ -96,22 +96,13 @@ pub use conway_core::ports::{
     Tool,
 };
 
-/// The shared error type
-/// [`RouterFactory::build`] and [`BackendFactory::build`] both return.
-/// Re-exported under this name, not `ConwayError` (already this crate's own
-/// root error type, [`crate::error::ConwayError`], returned by every OTHER
-/// fallible public API here) -- the two are deliberately distinct types with
-/// the same short name at different crate depths (`conway_core::error::
-/// ConwayError` vs. `conway::error::ConwayError`), so re-exporting the
-/// former under the latter's own name at this SAME root would shadow one
-/// with the other. `CoreConwayError` names which one a factory
-/// implementation must actually return -- `RouterFactory::build`'s own
-/// signature already committed to this type (`crates/conway-core/src/ports/
-/// routing.rs`) before this item existed; this re-export is what finally
-/// makes that signature spellable from a crate depending only on `conway`,
-/// closing a latent gap `RouterFactory` alone never had a compile-guarded
-/// test to catch (`crates/conway/tests/backend_parity.rs`'s extension,
-/// this item's own, is the first such test either factory port has had).
+/// The shared error type [`RouterFactory::build`] and [`BackendFactory::
+/// build`] both return -- `conway_core::error::ConwayError`, distinct from
+/// this crate's own umbrella [`error::FacadeError`] (board item CON-3
+/// renamed the latter so the two no longer share a bare name). Re-exported
+/// under `CoreConwayError` so a factory implementation can spell
+/// `RouterFactory`/`BackendFactory`'s own signature type from a crate
+/// depending only on `conway`, without a direct `conway-core` dependency.
 pub use conway_core::error::ConwayError as CoreConwayError;
 
 /// The extension surface -- there is exactly one extension mechanism, and

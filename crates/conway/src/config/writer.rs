@@ -64,7 +64,7 @@
 //! A file that does not parse as strict JSON at all is never touched --
 //! [`set_plugin_installed`] validates the WHOLE document with
 //! `serde_json::from_str` before attempting any edit and returns a named
-//! [`crate::error::ConwayError::Config`] instead, mirroring
+//! [`crate::error::FacadeError::Config`] instead, mirroring
 //! `rewrite_permission_file_removing`'s own "not valid JSON, refusing to
 //! rewrite it blindly" posture. A goal state already holding (the id is
 //! already present when turning a plugin ON, or already absent when
@@ -74,7 +74,7 @@
 
 use std::path::Path;
 
-use crate::error::{ConwayError, Result};
+use crate::error::{FacadeError, Result};
 
 /// Backstop on the patch loop in [`set_plugin_installed`]. Each pass
 /// strictly shrinks the document (or stops), so a real file converges in
@@ -104,7 +104,7 @@ pub fn set_plugin_installed(path: &Path, plugin_id: &str, installed: bool) -> Re
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(ConwayError::Io(e)),
+        Err(e) => return Err(FacadeError::Io(e)),
     };
 
     let new_text = if text.trim().is_empty() {
@@ -124,7 +124,7 @@ pub fn set_plugin_installed(path: &Path, plugin_id: &str, installed: bool) -> Re
         // touching anything -- refuse to rewrite blindly otherwise (this
         // module's own doc, "Safety posture").
         if let Err(e) = serde_json::from_str::<serde_json::Value>(&text) {
-            return Err(ConwayError::Config {
+            return Err(FacadeError::Config {
                 path: Some(path.to_path_buf()),
                 message: format!(
                     "{} is not valid JSON, refusing to rewrite it blindly: {e}",
@@ -156,7 +156,7 @@ pub fn set_plugin_installed(path: &Path, plugin_id: &str, installed: bool) -> Re
                 }
                 Ok(None) => break,
                 Err(msg) => {
-                    return Err(ConwayError::Config {
+                    return Err(FacadeError::Config {
                         path: Some(path.to_path_buf()),
                         message: format!("{}: {msg}", path.display()),
                     })

@@ -855,7 +855,7 @@ pub trait Host {
     /// verbatim passthrough `AgentIntent` carrying that recipe, the raw
     /// text, and no agent def (so a classifier failure can never break the
     /// command), while a real backend failure propagates as
-    /// `ConwayError::IntentClassification` -- see `conway::intent`'s
+    /// `FacadeError::IntentClassification` -- see `conway::intent`'s
     /// module doc for the full untrusted-output validation policy.
     async fn classify_agent_intent(
         &self,
@@ -870,7 +870,7 @@ pub trait Host {
     /// `SlashCommand::Trust` arm is unit-testable against a fake. Returns
     /// `std::io::Result`, NOT `conway::Result` -- deliberately: `Conway::
     /// trust_permission_file`'s own signature already returns `std::io::
-    /// Result`, and converting through `conway::ConwayError::Io` would
+    /// Result`, and converting through `conway::FacadeError::Io` would
     /// prepend that variant's `"io error: "` `Display` prefix onto every
     /// message the old `app.rs::submit` interception used to show verbatim
     /// (e.g. the unrecognized-top-level-key case's own message), which
@@ -1014,7 +1014,7 @@ impl Host for LiveHost<'_> {
 /// plugin command rather than silently dropping or overwriting it --
 /// "a surfaced, named error at install time, not a silent win or a silent
 /// loss" (this item's own acceptance). `App::new` propagates this as a
-/// startup failure (`ConwayError::Config`), so a defect here stops the TUI
+/// startup failure (`FacadeError::Config`), so a defect here stops the TUI
 /// from starting with a clear message, the same severity every OTHER
 /// startup misconfiguration (a malformed permissions file, an unknown
 /// `[plugins].install` id) already gets.
@@ -1488,7 +1488,7 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             // `agent: Some(..)` for a leading `@`), the facade classifier
             // runs and a confirmation card opens on `Ok` (including the
             // verbatim passthrough -- the user confirms the raw text as
-            // the prompt). A propagated `ConwayError::IntentClassification`
+            // the prompt). A propagated `FacadeError::IntentClassification`
             // (a real backend failure, NOT the passthrough) falls back to
             // today's manual flow with a notice; the card must not appear
             // for a hard error. Bare `/fork` (no text) is unchanged: no
@@ -2188,7 +2188,7 @@ mod tests {
     use std::sync::Mutex;
 
     use conway::plugin::{CommandOutcome, CommandSpec};
-    use conway::{AgentId, ConwayError, SessionId, SubagentMode};
+    use conway::{AgentId, FacadeError, SessionId, SubagentMode};
     // Test-only: `ContextReportEntry`/`SegmentId` are not part of this
     // crate's curated `conway` re-export list -- constructing
     // `ContextReport` fixtures reaches into `conway-core` directly, exactly
@@ -2780,7 +2780,7 @@ mod tests {
         /// and the keep-open-with-error paths of `apply_ask_fate`.
         fate_ok: bool,
         /// C2: when `Some`, `classify_agent_intent` succeeds with this
-        /// intent; otherwise it fails with `ConwayError::IntentClassification`
+        /// intent; otherwise it fails with `FacadeError::IntentClassification`
         /// -- lets a free-text `/fork`/`/spawn` test exercise both the
         /// card-opens path (Ok, including a scripted passthrough) and the
         /// manual-fallback path (Err). The default (`None` -> Err) keeps
@@ -2860,8 +2860,8 @@ mod tests {
         }
     }
 
-    fn fake_error() -> ConwayError {
-        ConwayError::Config {
+    fn fake_error() -> FacadeError {
+        FacadeError::Config {
             path: None,
             message: "fake error".to_string(),
         }
@@ -2960,7 +2960,7 @@ mod tests {
             self.calls.lock().unwrap().push("classify_agent_intent");
             match &self.classify_intent {
                 Some(intent) => Ok(intent.clone()),
-                None => Err(conway::ConwayError::IntentClassification {
+                None => Err(conway::FacadeError::IntentClassification {
                     message: "fake: intent role unconfigured".to_string(),
                 }),
             }

@@ -19,7 +19,7 @@ use conway::config::schema::{
     ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
     ToolsConfig,
 };
-use conway::{AgentIntent, Conway, ConwayBuilder, ConwayError, SessionHandle, SessionSpec};
+use conway::{AgentIntent, Conway, ConwayBuilder, FacadeError, SessionHandle, SessionSpec};
 use conway_core::agent::{PermissionDecision, SubagentMode};
 use conway_core::content::ContentBlock;
 use conway_core::error::BackendError;
@@ -450,7 +450,7 @@ async fn classify_an_invalid_recipe_value_passes_through_with_the_callers_defaul
 
 /// "Other errors propagate": the intent turn failing (here a backend
 /// error, folded into a `Failed` terminal by the agent loop) surfaces as
-/// `ConwayError::IntentClassification` -- NOT a passthrough -- and the
+/// `FacadeError::IntentClassification` -- NOT a passthrough -- and the
 /// intent session is STILL purged.
 #[tokio::test]
 async fn classify_propagates_a_failed_intent_turn_and_still_purges() {
@@ -473,7 +473,7 @@ async fn classify_propagates_a_failed_intent_turn_and_still_purges() {
     .expect_err("a failed intent turn must propagate, not pass through");
 
     assert!(
-        matches!(err, ConwayError::IntentClassification { .. }),
+        matches!(err, FacadeError::IntentClassification { .. }),
         "expected IntentClassification, got: {err:?}"
     );
     assert_eq!(

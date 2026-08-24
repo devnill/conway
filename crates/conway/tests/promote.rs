@@ -22,7 +22,7 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, ConwayError, SessionSpec};
+use conway::{Conway, ConwayBuilder, FacadeError, SessionSpec};
 use conway_core::agent::PermissionDecision;
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
@@ -258,7 +258,7 @@ async fn promote_flips_header_tree_and_listing_and_emits_agent_promoted() {
         .await
         .expect_err("a double promote must fail");
     assert!(
-        matches!(err, ConwayError::Store(StoreError::NotPromotable { .. })),
+        matches!(err, FacadeError::Store(StoreError::NotPromotable { .. })),
         "double promote must be NotPromotable, got: {err:?}"
     );
 }
@@ -295,7 +295,7 @@ async fn promote_a_non_ephemeral_agent_is_refused() {
         .await
         .expect_err("promoting a non-ephemeral session must fail");
     assert!(
-        matches!(err, ConwayError::Store(StoreError::NotPromotable { session, .. }) if session == handle.id()),
+        matches!(err, FacadeError::Store(StoreError::NotPromotable { session, .. }) if session == handle.id()),
         "non-ephemeral promote must be NotPromotable for the root's own session, got: {err:?}"
     );
 
@@ -342,7 +342,7 @@ async fn promote_an_unknown_agent_is_refused() {
         .await
         .expect_err("an unknown agent must fail");
     assert!(
-        matches!(err, ConwayError::Runtime(RuntimeError::AgentNotFound { agent }) if agent == unknown),
+        matches!(err, FacadeError::Runtime(RuntimeError::AgentNotFound { agent }) if agent == unknown),
         "unknown agent must be AgentNotFound, got: {err:?}"
     );
 }

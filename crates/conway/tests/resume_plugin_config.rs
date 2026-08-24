@@ -153,9 +153,9 @@ fn fs_root_config(root: &Path) -> PluginConfig {
 /// own identical helper's doc), so `Result::expect_err` cannot be used
 /// directly on a `Result<SessionHandle, _>` here.
 fn expect_session_err(
-    result: Result<SessionHandle, conway::ConwayError>,
+    result: Result<SessionHandle, conway::FacadeError>,
     msg: &str,
-) -> conway::ConwayError {
+) -> conway::FacadeError {
     match result {
         Err(err) => err,
         Ok(_) => panic!("{msg}"),

@@ -94,7 +94,7 @@
 use std::sync::Arc;
 
 use conway::plugin::{MemoryStore, Plugin};
-use conway::{BackendFactory, ConwayBuilder, ConwayError, RouterFactory};
+use conway::{BackendFactory, ConwayBuilder, FacadeError, RouterFactory};
 
 /// Every first-party plugin this binary links, in no particular order.
 /// `Vec<Arc<dyn Plugin>>` rather than a `HashMap` keyed by id: the bundle
@@ -334,7 +334,7 @@ fn backend_bundle() -> Vec<Arc<dyn BackendFactory>> {
 async fn resolve_memory_store(
     cwd: &std::path::Path,
     install_ids: &[String],
-) -> Result<Arc<dyn MemoryStore>, ConwayError> {
+) -> Result<Arc<dyn MemoryStore>, FacadeError> {
     if !install_ids
         .iter()
         .any(|id| id == conway_plugin_memory::PLUGIN_ID)
@@ -347,7 +347,7 @@ async fn resolve_memory_store(
         conway::memory::FsMemoryStore::open(root.clone())
             .await
             .map(|store| Arc::new(store) as Arc<dyn MemoryStore>)
-            .map_err(|e| ConwayError::Build {
+            .map_err(|e| FacadeError::Build {
                 message: format!(
                     "conway.memory: cannot open the durable memory store at {} ({e}) -- fix the \
                      directory's permissions/filesystem, or remove \"conway.memory\" from \
@@ -359,7 +359,7 @@ async fn resolve_memory_store(
     #[cfg(not(feature = "jsonl-store"))]
     {
         let _ = cwd;
-        Err(ConwayError::Build {
+        Err(FacadeError::Build {
             message: "conway.memory is named in [plugins].install but this binary was built \
                       without the 'jsonl-store' feature, so no durable memory store is \
                       available"
@@ -395,7 +395,7 @@ async fn resolve_memory_store(
 /// parameter.
 pub async fn install(
     builder: ConwayBuilder,
-) -> Result<(ConwayBuilder, Arc<dyn MemoryStore>), ConwayError> {
+) -> Result<(ConwayBuilder, Arc<dyn MemoryStore>), FacadeError> {
     let cwd = builder.config().cwd.clone();
     let memory_store = resolve_memory_store(&cwd, &builder.config().plugins.install).await?;
     let plugins = bundle(&cwd, memory_store.clone());

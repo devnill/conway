@@ -64,7 +64,7 @@ fn config_with_one_shot_preset() -> ConwayConfig {
 /// ACCEPTANCE (this item's own verification anchor): a `Conway` built from
 /// `presets::default_permissions_for_one_shot()`, unmodified, actually
 /// builds -- and once built, a turn can be driven through it. Fails today
-/// against the unfixed validator with a `ConwayError::Config` naming
+/// against the unfixed validator with a `FacadeError::Config` naming
 /// `permissions.mode = "allowlist"` / `allowed_tools`, because
 /// `ConwayBuilder::build()` re-validates via `config::merge::apply_cli`
 /// (its own step 1) even for a config assembled through `from_parts`.

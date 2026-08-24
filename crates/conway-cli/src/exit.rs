@@ -13,7 +13,7 @@
 //! module:
 //!
 //! 1. **There is no permission-denied code, deliberately.** Exit code 3
-//!    (`PermissionDenied`) was declared for "a `ConwayError` whose terminal
+//!    (`PermissionDenied`) was declared for "a `FacadeError` whose terminal
 //!    cause is a permission denial" and removed rather than wired, because
 //!    the premise is wrong for one-shot mode: a permission denial (either
 //!    `PermissionDecision::Deny` or `::DenyWithFeedback`) collapses to a
@@ -30,7 +30,7 @@
 //!    unassigned.
 //! 2. **`NoHealthyBackend` (4) is wired through `from_result`, not
 //!    `from_error`.** A routing failure mid-turn never propagates out of
-//!    `oneshot::run` as a `ConwayError`: `AgentLoop::run_inner`'s generic
+//!    `oneshot::run` as a `FacadeError`: `AgentLoop::run_inner`'s generic
 //!    `Err` path folds every `RuntimeError` -- `RuntimeError::Routing`
 //!    included -- into `ResultStatus::Failed { error: err.to_string() }`
 //!    (`conway-runtime/src/agent_loop.rs`'s `finish_error`: "everything
@@ -43,7 +43,7 @@
 //!    points.
 //!
 //! **The classification mechanism itself (disclosed):** the `conway`
-//! facade re-exports `ConwayError` but not the
+//! facade re-exports `FacadeError` but not the
 //! `conway_core::error::{RoutingError, RuntimeError}` types nested inside
 //! its `Routing`/`Runtime` variants (see `crates/conway/src/lib.rs`'s
 //! re-export list) -- and this crate's manifest is machine-checked to
@@ -54,7 +54,7 @@
 //! looks for is pinned by a `conway-core/src/error.rs` test (named at the
 //! match site), so a wording change upstream fails a test upstream instead
 //! of silently reclassifying here. A future facade change adding
-//! classifier methods on `ConwayError` itself (e.g. `is_routing_rejection()`)
+//! classifier methods on `FacadeError` itself (e.g. `is_routing_rejection()`)
 //! would let this module drop the string match; flagged as a follow-up,
 //! not fixed here (out of scope).
 //!
@@ -67,7 +67,7 @@
 //! of* the interrupt" precedence rule, and `oneshot::run` is the one place
 //! that knows both facts at once.
 
-use conway::{AgentResult, ConwayError, ResultStatus};
+use conway::{AgentResult, FacadeError, ResultStatus};
 
 /// The CLI's process exit status vocabulary. Discriminants are the
 /// contract: `code()` casts `self` directly to `i32`, so these values are
@@ -125,30 +125,30 @@ impl ExitCode {
         }
     }
 
-    /// Maps a terminal `ConwayError` to an exit code. Routing failures a
+    /// Maps a terminal `FacadeError` to an exit code. Routing failures a
     /// live `-p` run can trigger do not reach this function (they arrive as
     /// `ResultStatus::Failed` -- module doc, entry 2); this arm still
     /// classifies them correctly for any caller that does produce one, so
     /// both entry points agree.
-    pub fn from_error(e: &ConwayError) -> ExitCode {
+    pub fn from_error(e: &FacadeError) -> ExitCode {
         match e {
-            ConwayError::Config { .. }
-            | ConwayError::AgentDef { .. }
-            | ConwayError::Build { .. }
-            | ConwayError::UnsupportedFeature { .. } => ExitCode::Usage,
-            ConwayError::Routing(_) | ConwayError::Runtime(_) => {
+            FacadeError::Config { .. }
+            | FacadeError::AgentDef { .. }
+            | FacadeError::Build { .. }
+            | FacadeError::UnsupportedFeature { .. } => ExitCode::Usage,
+            FacadeError::Routing(_) | FacadeError::Runtime(_) => {
                 classify_runtime_or_routing(&e.to_string())
             }
-            ConwayError::Io(_) | ConwayError::Backend(_) | ConwayError::Store(_) => {
+            FacadeError::Io(_) | FacadeError::Backend(_) | FacadeError::Store(_) => {
                 ExitCode::AgentFailed
             }
-            // `ConwayError` is `#[non_exhaustive]`.
+            // `FacadeError` is `#[non_exhaustive]`.
             _ => ExitCode::AgentFailed,
         }
     }
 }
 
-/// Substring classification over a `ConwayError::{Routing,Runtime}`'s or a
+/// Substring classification over a `FacadeError::{Routing,Runtime}`'s or a
 /// `ResultStatus::Failed`'s `Display` text -- see this module's doc comment
 /// for why a string match is the only mechanism available without a new
 /// dependency, and for the wiring that makes routing failures reach it.
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn config_load_error_is_two() {
-        let e = ConwayError::Config {
+        let e = FacadeError::Config {
             path: None,
             message: "bad config".into(),
         };
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn unknown_role_agent_def_error_is_two() {
-        let e = ConwayError::AgentDef {
+        let e = FacadeError::AgentDef {
             path: "reviewer.toml".into(),
             message: "unknown role".into(),
         };
@@ -298,7 +298,7 @@ mod tests {
             role: RoleAlias::new("coder"),
             considered: Vec::new(),
         };
-        let e = ConwayError::Routing(routing_err);
+        let e = FacadeError::Routing(routing_err);
         assert_eq!(ExitCode::from_error(&e).code(), 4);
     }
 
@@ -306,18 +306,18 @@ mod tests {
     fn no_candidate_via_fallback_chain_exhaustion_is_four() {
         // Mirrors `conway-runtime/src/attempt.rs`'s wrapping: the router's
         // `RoutingError::NoCandidate` boxed inside `RuntimeError::Routing`,
-        // then `ConwayError::Runtime`.
+        // then `FacadeError::Runtime`.
         let routing_err = RoutingError::NoCandidate {
             role: RoleAlias::new("coder"),
             considered: Vec::new(),
         };
-        let e = ConwayError::Runtime(RuntimeError::Routing(routing_err));
+        let e = FacadeError::Runtime(RuntimeError::Routing(routing_err));
         assert_eq!(ExitCode::from_error(&e).code(), 4);
     }
 
     #[test]
     fn unknown_role_via_routing_variant_is_four() {
-        let e = ConwayError::Routing(RoutingError::UnknownRole {
+        let e = FacadeError::Routing(RoutingError::UnknownRole {
             role: RoleAlias::new("doesnotexist"),
         });
         assert_eq!(ExitCode::from_error(&e).code(), 4);

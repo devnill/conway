@@ -1,11 +1,21 @@
 //! The crate-level error type: every fallible `conway` public API returns
-//! [`Result<T>`], an alias for `Result<T, ConwayError>`.
+//! [`Result<T>`], an alias for `Result<T, FacadeError>`.
 
 use std::path::PathBuf;
 
 use conway_core::error::{BackendError, PathStoreError, RoutingError, RuntimeError, StoreError};
 
 /// The `conway` crate's umbrella error type.
+///
+/// Named `FacadeError`, not `ConwayError` (board item CON-3): `conway-core`
+/// already has its own `ConwayError` (`conway_core::error::ConwayError`,
+/// re-exported here as [`crate::CoreConwayError`]), a distinct, wider type
+/// this crate's own `#[from]` impls draw from selectively rather than wrap.
+/// The two used to share the bare name at different crate depths, which
+/// meant every "ConwayError" reference — in code, in a bug report — had to
+/// specify which one. `FacadeError` names this type by what it actually is:
+/// the umbrella error of the embeddable *facade* (`conway`, the crate
+/// `docs/embedding.md` calls "the facade"), not of the harness core.
 ///
 /// `#[non_exhaustive]`: new failure modes are expected as sibling work items
 /// land (config validation, agent-def loading, builder assembly), so
@@ -16,7 +26,7 @@ use conway_core::error::{BackendError, PathStoreError, RoutingError, RuntimeErro
 /// to inspect the failure programmatically rather than parse the message.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
-pub enum ConwayError {
+pub enum FacadeError {
     /// Configuration failed to load, deserialize, or validate.
     #[error("{message}")]
     Config {
@@ -54,7 +64,7 @@ pub enum ConwayError {
     AgentDef { path: PathBuf, message: String },
 
     /// A skill definition file (`.conway/skills/*/SKILL.md`) failed to load
-    /// or parse. Mirrors [`ConwayError::AgentDef`]'s shape exactly —
+    /// or parse. Mirrors [`FacadeError::AgentDef`]'s shape exactly —
     /// `crate::skills::load_skill_defs` is the same discovery/parse shape as
     /// `crate::agents::load_agent_defs`, just for `conway_core::config::SkillDef`.
     #[error("{message}")]
@@ -70,7 +80,7 @@ pub enum ConwayError {
     /// Backend selection (Anthropic vs. OpenAI-compatible) never has a
     /// producer here: it is not a cargo-feature axis at all, and this crate does not even depend on either
     /// dialect's implementation crate any more -- a `[backends.<id>].kind`
-    /// this build cannot resolve is `ConwayError::Config`, naming the
+    /// this build cannot resolve is `FacadeError::Config`, naming the
     /// offending value, not this variant. The sole remaining producer is
     /// `config::model_metadata::refresh`, gated on the still-genuinely-
     /// optional `metadata-refresh` feature (no HTTP client
@@ -93,6 +103,6 @@ pub enum ConwayError {
     IntentClassification { message: String },
 }
 
-/// Alias for `std::result::Result<T, ConwayError>`, exported from the crate
+/// Alias for `std::result::Result<T, FacadeError>`, exported from the crate
 /// root as `conway::Result`.
-pub type Result<T> = std::result::Result<T, ConwayError>;
+pub type Result<T> = std::result::Result<T, FacadeError>;

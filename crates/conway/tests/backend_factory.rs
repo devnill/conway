@@ -35,7 +35,7 @@
 //!    `build` runs, regardless of whether any `[backends.<id>]` entry names
 //!    that kind (`duplicate_factory_kind_is_a_build_error_before_either_
 //!    build_runs`).
-//! 4. A factory whose `build` returns `Err` surfaces as `ConwayError::Build`,
+//! 4. A factory whose `build` returns `Err` surfaces as `FacadeError::Build`,
 //!    naming both the factory's own kind id and the underlying message
 //!    (`factory_build_error_surfaces_as_build_error`).
 //!
@@ -53,7 +53,7 @@ use conway::config::schema::{
     ToolsConfig,
 };
 use conway::{
-    BackendBuildContext, BackendFactory, Conway, ConwayBuilder, ConwayError, CoreConwayError,
+    BackendBuildContext, BackendFactory, Conway, ConwayBuilder, CoreConwayError, FacadeError,
     SessionSpec,
 };
 use conway_core::agent::PermissionDecision;
@@ -221,7 +221,7 @@ impl BackendFactory for ErrBackendFactory {
 /// `Conway` deliberately does not derive `Debug`, so `expect_err`/
 /// `unwrap_err` cannot be used on a `Result<Conway, _>` -- mirrors
 /// `tests/builder.rs`/`tests/router_factory.rs`'s own `expect_build_err`.
-fn expect_build_err(result: Result<Conway, ConwayError>, msg: &str) -> ConwayError {
+fn expect_build_err(result: Result<Conway, FacadeError>, msg: &str) -> FacadeError {
     match result {
         Err(err) => err,
         Ok(_) => panic!("{msg}"),
@@ -370,13 +370,13 @@ fn duplicate_factory_kind_is_a_build_error_before_either_build_runs() {
         "two factories reporting the same BackendFactory::id() must fail build()",
     );
     match err {
-        ConwayError::Build { message } => {
+        FacadeError::Build { message } => {
             assert!(
                 message.contains("duplicate-kind"),
                 "the Build error must name the duplicated kind id: {message}"
             );
         }
-        other => panic!("expected ConwayError::Build, got a different variant: {other:?}"),
+        other => panic!("expected FacadeError::Build, got a different variant: {other:?}"),
     }
     assert_eq!(
         calls_a.load(Ordering::SeqCst),
@@ -388,7 +388,7 @@ fn duplicate_factory_kind_is_a_build_error_before_either_build_runs() {
 }
 
 /// Property 4: a factory whose `build` returns `Err` fails the whole
-/// `build()` call as `ConwayError::Build`, naming both the factory's own
+/// `build()` call as `FacadeError::Build`, naming both the factory's own
 /// kind id and the underlying message -- never silently swallowed, never a
 /// fallback that drops the kind and proceeds.
 #[test]
@@ -413,7 +413,7 @@ fn factory_build_error_surfaces_as_build_error() {
         "a factory build() error must fail the whole build()",
     );
     match err {
-        ConwayError::Build { message } => {
+        FacadeError::Build { message } => {
             assert!(
                 message.contains("exploding-kind"),
                 "the Build error must name the failing factory's own kind id: {message}"
@@ -423,7 +423,7 @@ fn factory_build_error_surfaces_as_build_error() {
                 "the Build error must carry the underlying message: {message}"
             );
         }
-        other => panic!("expected ConwayError::Build, got a different variant: {other:?}"),
+        other => panic!("expected FacadeError::Build, got a different variant: {other:?}"),
     }
 }
 

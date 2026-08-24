@@ -16,7 +16,7 @@
 //!    guard fails to skip would be observed here even if its RESULT were
 //!    otherwise discarded.
 //! 3. A factory whose `build` returns `Err` surfaces as
-//!    `ConwayError::Build`, naming both the factory's own id and the
+//!    `FacadeError::Build`, naming both the factory's own id and the
 //!    underlying message (`factory_build_error_surfaces_as_build_error`).
 //!
 //! break-the-guard run for property 2 is recorded in this item's own
@@ -32,7 +32,7 @@ use conway::config::schema::{
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
 use conway::{
-    Conway, ConwayBuilder, ConwayError, HealthRegistry, Router, RouterBuildContext, RouterBundle,
+    Conway, ConwayBuilder, FacadeError, HealthRegistry, Router, RouterBuildContext, RouterBundle,
     RouterFactory,
 };
 use conway_core::agent::PermissionDecision;
@@ -159,7 +159,7 @@ impl RouterFactory for ErrRouterFactory {
 /// which does not either), so `Result::expect_err`/`unwrap_err` (which both
 /// require `T: Debug`) cannot be used on a `Result<Conway, _>` here --
 /// mirrors `crates/conway/tests/builder.rs`'s own `expect_build_err`.
-fn expect_build_err(result: Result<Conway, ConwayError>, msg: &str) -> ConwayError {
+fn expect_build_err(result: Result<Conway, FacadeError>, msg: &str) -> FacadeError {
     match result {
         Err(err) => err,
         Ok(_) => panic!("{msg}"),
@@ -241,7 +241,7 @@ fn factory_is_not_used_or_constructed_when_with_router_is_also_set() {
 }
 
 /// Property 3: a factory whose `build` returns `Err` surfaces as
-/// `ConwayError::Build`, naming both the factory's own id and the
+/// `FacadeError::Build`, naming both the factory's own id and the
 /// underlying message -- never silently swallowed, never a fallback to the
 /// compiled router.
 #[test]
@@ -267,7 +267,7 @@ fn factory_build_error_surfaces_as_build_error() {
         "a factory build() error must fail the whole build()",
     );
     match err {
-        ConwayError::Build { message } => {
+        FacadeError::Build { message } => {
             assert!(
                 message.contains("exploding-router"),
                 "the Build error must name the failing factory's own id: {message}"
@@ -277,6 +277,6 @@ fn factory_build_error_surfaces_as_build_error() {
                 "the Build error must carry the underlying message: {message}"
             );
         }
-        other => panic!("expected ConwayError::Build, got a different variant: {other:?}"),
+        other => panic!("expected FacadeError::Build, got a different variant: {other:?}"),
     }
 }

@@ -17,7 +17,7 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{AskOrigin, Conway, ConwayBuilder, ConwayError, SessionHandle, SessionSpec};
+use conway::{AskOrigin, Conway, ConwayBuilder, FacadeError, SessionHandle, SessionSpec};
 use conway_core::agent::PermissionDecision;
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
@@ -199,7 +199,7 @@ async fn purge_an_unknown_agent_is_refused() {
         .await
         .expect_err("an unknown agent must fail");
     assert!(
-        matches!(err, ConwayError::Runtime(RuntimeError::AgentNotFound { agent }) if agent == unknown),
+        matches!(err, FacadeError::Runtime(RuntimeError::AgentNotFound { agent }) if agent == unknown),
         "unknown agent must be AgentNotFound, got: {err:?}"
     );
 }
@@ -230,7 +230,7 @@ async fn purge_a_promoted_child_is_refused() {
         .await
         .expect_err("purge of a promoted (non-ephemeral) child must be refused");
     assert!(
-        matches!(err, ConwayError::Store(StoreError::NotRemovable { session, .. }) if session == child_session),
+        matches!(err, FacadeError::Store(StoreError::NotRemovable { session, .. }) if session == child_session),
         "expected NotRemovable naming the child session, got: {err:?}"
     );
     store
@@ -284,7 +284,7 @@ async fn purge_a_still_running_child_is_refused() {
         .await
         .expect_err("purge of a still-running child must be refused");
     assert!(
-        matches!(err, ConwayError::Store(StoreError::NotRemovable { .. })),
+        matches!(err, FacadeError::Store(StoreError::NotRemovable { .. })),
         "expected NotRemovable for a still-running child, got: {err:?}"
     );
     store

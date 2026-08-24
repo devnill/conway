@@ -59,7 +59,7 @@ pub async fn run(args: &SessionsArgs, conway: &Conway) -> conway::Result<ExitCod
 
 /// Parses a CLI-supplied session id, reporting a usage error (exit 2)
 /// rather than propagating a parse failure through `main`'s
-/// `ExitCode::from_error` (which would map a bare `ConwayError::Parse` to
+/// `ExitCode::from_error` (which would map a bare `FacadeError::Parse` to
 /// `AgentFailed`, 1) -- every failure mode reachable before a real session
 /// lookup happens is a usage error, never an agent failure.
 fn parse_session_id(id: &str) -> Result<SessionId, ExitCode> {
@@ -71,7 +71,7 @@ fn parse_session_id(id: &str) -> Result<SessionId, ExitCode> {
 
 /// Looks up `id` via `Conway::resume`, collapsing "not found" (or any other
 /// resume failure) to a usage error rather than the `AgentFailed` a raw
-/// `ConwayError::Store` would map to through `from_error` -- matches
+/// `FacadeError::Store` would map to through `from_error` -- matches
 /// `show <unknown-id>`/`tree <unknown-id>`/`export <unknown-id>`'s shared
 /// "exits 2 with empty stdout" contract.
 async fn resume_or_usage_error(

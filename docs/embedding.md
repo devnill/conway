@@ -132,7 +132,7 @@ second, competing construction path.
 **Permissions default to `"prompt"`, which needs a handler.** Discovery's
 built-in default sets `permissions.mode = "prompt"` — the friendliest
 default, "ask," rather than "deny" or "allow everything" — and `build()`
-fails with a named `ConwayError::Config` if it resolves to `"prompt"` with
+fails with a named `FacadeError::Config` if it resolves to `"prompt"` with
 neither a handler nor an injected gate, rather than silently picking one
 for you. Two ways to satisfy it: `ConwayBuilder::with_prompt_handler(..)`
 (the direct path — hand it the one closure your host already has for "may
@@ -300,7 +300,7 @@ ways to supply one, in order of how much you need to write:
   Sync>` (`conway::gates::PromptHandler`). `gates::from_config` wraps it in
   a `PromptingGate` for you. Not calling this (and not calling
   `with_permission_gate` either) leaves `mode = "prompt"` failing `build()`
-  with a named `ConwayError::Config` — never a silent `AllowAlways`/`DenyAll`
+  with a named `FacadeError::Config` — never a silent `AllowAlways`/`DenyAll`
   substitute.
 - **`ConwayBuilder::with_permission_gate(gate)`** — supply your own gate
   outright, for policy a single closure can't express (per-tool audit
@@ -668,7 +668,7 @@ both, `build()` falls through to `conway_core::routing::MinimalRouter` —
 the config-only core resolver (this
 crate no longer compiles a capability-/health-filtering router engine in at
 all). A factory whose `build` returns `Err` fails the whole `build()` call
-as `ConwayError::Build`, naming the factory's own id and the underlying
+as `FacadeError::Build`, naming the factory's own id and the underlying
 message — never silently swallowed, never a silent fallback to
 `MinimalRouter`.
 

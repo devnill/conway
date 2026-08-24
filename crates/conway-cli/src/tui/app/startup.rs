@@ -94,7 +94,7 @@ impl App {
     ) -> conway::Result<Self> {
         let command_registry = std::sync::Arc::new(
             crate::tui::commands::CommandRegistry::build(plugins).map_err(|e| {
-                conway::ConwayError::Config {
+                conway::FacadeError::Config {
                     path: None,
                     message: e.to_string(),
                 }

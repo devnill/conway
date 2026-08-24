@@ -114,7 +114,7 @@ async fn malformed_model_fails_identically_in_both_modes() {
         .expect_err("a malformed --model must be a usage error, not build a spec")
         .to_string();
     assert_eq!(
-        ExitCode::from_error(&conway::ConwayError::Config {
+        ExitCode::from_error(&conway::FacadeError::Config {
             path: None,
             message: tui_err.clone(),
         }),

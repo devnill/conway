@@ -9,12 +9,12 @@
 //! generalizes the compile-and-classify step `crate::agents::
 //! compile_result_contract` already applies to an agent def's own
 //! frontmatter-declared `result_contract`: that helper stays private and
-//! `AgentDef`-specific (its errors are `ConwayError::AgentDef`, carrying the
+//! `AgentDef`-specific (its errors are `FacadeError::AgentDef`, carrying the
 //! `.md` file's own path); this one is the public entry point for a schema
 //! from any source, so its errors are the source-agnostic
-//! `ConwayError::Config` instead.
+//! `FacadeError::Config` instead.
 
-use crate::error::{ConwayError, Result};
+use crate::error::{FacadeError, Result};
 
 /// Validates `value` compiles as a JSON Schema document (draft 2020-12,
 /// `jsonschema`'s default when no `$schema` keyword is present -- the same
@@ -32,18 +32,18 @@ use crate::error::{ConwayError, Result};
 /// compiles but does not deserialize into `RootSchema`'s shape (fails only
 /// for a document that is not even a JSON *object*, e.g. a bare `true`/
 /// `false` boolean schema, which `jsonschema` accepts as valid but
-/// `RootSchema` cannot represent) -- report as [`ConwayError::Config`] with
+/// `RootSchema` cannot represent) -- report as [`FacadeError::Config`] with
 /// `path: None`, naming the underlying error's own message. The caller
 /// (`conway-cli`'s `oneshot::resolve_session`, for `--output-schema`) is
 /// expected to wrap this in its own usage-error framing that names the flag
 /// and the file it read `value` from; this function itself has no file to
 /// name.
 pub fn compile_output_schema(value: serde_json::Value) -> Result<schemars::schema::RootSchema> {
-    jsonschema::validator_for(&value).map_err(|err| ConwayError::Config {
+    jsonschema::validator_for(&value).map_err(|err| FacadeError::Config {
         path: None,
         message: format!("invalid JSON Schema: {err}"),
     })?;
-    serde_json::from_value(value).map_err(|err| ConwayError::Config {
+    serde_json::from_value(value).map_err(|err| FacadeError::Config {
         path: None,
         message: format!("invalid JSON Schema: {err}"),
     })
@@ -72,7 +72,7 @@ mod tests {
         // compile time, before any instance is ever checked against it.
         let err = compile_output_schema(serde_json::json!({"type": "not-a-real-type"}))
             .expect_err("malformed schema must not silently compile");
-        assert!(matches!(err, ConwayError::Config { .. }));
+        assert!(matches!(err, FacadeError::Config { .. }));
         assert!(
             err.to_string().contains("invalid JSON Schema"),
             "error should say the document is not a valid schema: {err}"

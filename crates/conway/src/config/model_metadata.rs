@@ -12,7 +12,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{ConwayError, Result};
+use crate::error::{FacadeError, Result};
 
 /// Local model capability metadata, keyed by `"backend/model"` (the
 /// `ModelRef::to_string()` format) — matching the `chain` entries in
@@ -44,12 +44,12 @@ pub struct ModelMetadataEntry {
 /// with no declared capabilities yet).
 pub fn load(path: &Path) -> Result<ModelMetadata> {
     match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text).map_err(|e| ConwayError::Config {
+        Ok(text) => serde_json::from_str(&text).map_err(|e| FacadeError::Config {
             path: Some(path.to_path_buf()),
             message: format!("invalid model metadata JSON at {}: {e}", path.display()),
         }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ModelMetadata::empty()),
-        Err(e) => Err(ConwayError::Config {
+        Err(e) => Err(FacadeError::Config {
             path: Some(path.to_path_buf()),
             message: format!("failed to read model metadata at {}: {e}", path.display()),
         }),
@@ -65,7 +65,7 @@ pub fn load(path: &Path) -> Result<ModelMetadata> {
 /// forbids naming even under a disabled cfg.
 #[cfg(feature = "metadata-refresh")]
 pub async fn refresh(_url: &str, _dest: &Path) -> Result<()> {
-    Err(ConwayError::UnsupportedFeature {
+    Err(FacadeError::UnsupportedFeature {
         feature: "metadata-refresh",
         message: "model_metadata::refresh has no client implementation yet".into(),
     })

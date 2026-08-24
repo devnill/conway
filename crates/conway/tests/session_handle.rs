@@ -439,14 +439,14 @@ async fn transcript_unknown_agent_returns_runtime_error_naming_the_agent() {
         .await
         .expect_err("an unknown agent id must be rejected");
     match err {
-        conway::ConwayError::Runtime(inner) => {
+        conway::FacadeError::Runtime(inner) => {
             let message = inner.to_string();
             assert!(
                 message.contains(&unknown.to_string()),
                 "error must name the unknown agent id: {message}"
             );
         }
-        other => panic!("expected ConwayError::Runtime, got {other:?}"),
+        other => panic!("expected FacadeError::Runtime, got {other:?}"),
     }
 }
 

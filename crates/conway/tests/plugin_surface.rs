@@ -325,7 +325,7 @@ fn facade_only_config(
 /// Gated on `jsonl-store`: this test never calls `with_session_store`, so
 /// `build()` synthesizes the default `JsonlSessionStore` pointed at `dir`
 /// (`facade_only_config`'s own doc, above) -- without that feature
-/// `build_default_store` is `Err(ConwayError::Build)` and the `.expect`
+/// `build_default_store` is `Err(FacadeError::Build)` and the `.expect`
 /// below panics. **Not** gated on any backend feature: `construct_backend`
 /// has no cfg-gated path left to fail on for `kind = "anthropic"` (board
 /// item: retire the backend compile-time feature flags) -- this test used

@@ -23,7 +23,7 @@ use conway::config::schema::{
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
 use conway::{
-    CancelMode, Conway, ConwayBuilder, ConwayError, ForkSpec, Plugin, SessionHandle, SessionId,
+    CancelMode, Conway, ConwayBuilder, FacadeError, ForkSpec, Plugin, SessionHandle, SessionId,
     SessionSpec, SpawnSpec, Tool,
 };
 use conway_core::agent::{Budget, PermissionDecision, ResultStatus, SubagentMode};
@@ -446,7 +446,7 @@ async fn fork_rejects_a_from_agent_that_belongs_to_a_different_session() {
         .await
         .expect_err("a foreign session's root must be rejected");
     match err {
-        ConwayError::Runtime(inner) => {
+        FacadeError::Runtime(inner) => {
             // Resolved in a later item: `conway_core::error::RuntimeError`
             // now has a dedicated `AgentNotInSession { agent, session }`
             // variant (see `SessionHandle::ensure_agent_in_session`'s doc)
@@ -458,7 +458,7 @@ async fn fork_rejects_a_from_agent_that_belongs_to_a_different_session() {
                 "error must name the rejected agent id: {inner}"
             );
         }
-        other => panic!("expected ConwayError::Runtime, got {other:?}"),
+        other => panic!("expected FacadeError::Runtime, got {other:?}"),
     }
 }
 
@@ -480,10 +480,10 @@ async fn steer_await_and_cancel_reject_a_target_belonging_to_another_session() {
         .await
         .expect_err("cross-session steer must be rejected");
     match steer_err {
-        ConwayError::Runtime(inner) => {
+        FacadeError::Runtime(inner) => {
             assert!(inner.to_string().contains(&handle_b.root().to_string()));
         }
-        other => panic!("expected ConwayError::Runtime, got {other:?}"),
+        other => panic!("expected FacadeError::Runtime, got {other:?}"),
     }
 
     let await_err = handle_a
@@ -491,10 +491,10 @@ async fn steer_await_and_cancel_reject_a_target_belonging_to_another_session() {
         .await
         .expect_err("cross-session await_agent must be rejected");
     match await_err {
-        ConwayError::Runtime(inner) => {
+        FacadeError::Runtime(inner) => {
             assert!(inner.to_string().contains(&handle_b.root().to_string()));
         }
-        other => panic!("expected ConwayError::Runtime, got {other:?}"),
+        other => panic!("expected FacadeError::Runtime, got {other:?}"),
     }
 
     let cancel_err = handle_a
@@ -502,10 +502,10 @@ async fn steer_await_and_cancel_reject_a_target_belonging_to_another_session() {
         .await
         .expect_err("cross-session cancel must be rejected");
     match cancel_err {
-        ConwayError::Runtime(inner) => {
+        FacadeError::Runtime(inner) => {
             assert!(inner.to_string().contains(&handle_b.root().to_string()));
         }
-        other => panic!("expected ConwayError::Runtime, got {other:?}"),
+        other => panic!("expected FacadeError::Runtime, got {other:?}"),
     }
 
     // Same-session: `handle_b` acting on its own root must still succeed --
@@ -553,7 +553,7 @@ async fn spawn_rejects_an_unknown_from_agent() {
         .spawn(unknown, SpawnSpec::new("y").agent_def("x"))
         .await
         .expect_err("an unknown from agent must be rejected");
-    assert!(matches!(err, ConwayError::Runtime(_)));
+    assert!(matches!(err, FacadeError::Runtime(_)));
 }
 
 // ---------------------------------------------------------------------
@@ -572,10 +572,10 @@ async fn steer_on_unknown_target_returns_runtime_error() {
         .await
         .expect_err("steering an unknown target must fail");
     match err {
-        ConwayError::Runtime(inner) => {
+        FacadeError::Runtime(inner) => {
             assert!(inner.to_string().contains(&unknown.to_string()));
         }
-        other => panic!("expected ConwayError::Runtime, got {other:?}"),
+        other => panic!("expected FacadeError::Runtime, got {other:?}"),
     }
 }
 
@@ -618,10 +618,10 @@ async fn await_agent_on_unknown_agent_returns_runtime_error_naming_the_id() {
         .await
         .expect_err("an unknown agent must be rejected");
     match err {
-        ConwayError::Runtime(inner) => {
+        FacadeError::Runtime(inner) => {
             assert!(inner.to_string().contains(&unknown.to_string()));
         }
-        other => panic!("expected ConwayError::Runtime, got {other:?}"),
+        other => panic!("expected FacadeError::Runtime, got {other:?}"),
     }
 }
 
@@ -728,7 +728,7 @@ async fn cancel_resolves_the_root_turn_handles_result_as_cancelled() {
         .cancel(AgentId::new(), "x")
         .await
         .expect_err("cancelling an unknown agent must fail");
-    assert!(matches!(err, ConwayError::Runtime(_)));
+    assert!(matches!(err, FacadeError::Runtime(_)));
 }
 
 // ---------------------------------------------------------------------
@@ -1112,9 +1112,9 @@ async fn agent_events_on_an_unknown_agent_returns_an_error() {
     let unknown = AgentId::new();
     let result = handle.agent_events(unknown).await;
     match result {
-        Err(ConwayError::Runtime(_)) => {}
+        Err(FacadeError::Runtime(_)) => {}
         Ok(_) => panic!("an unknown agent must be rejected"),
-        Err(other) => panic!("expected ConwayError::Runtime, got {other:?}"),
+        Err(other) => panic!("expected FacadeError::Runtime, got {other:?}"),
     }
 }
 
