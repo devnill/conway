@@ -14,7 +14,7 @@
 //! links.
 //!
 //! **This bundle is a worked example, not a commitment to any of its
-//! members individually.** Today it contains eight plugin entries --
+//! members individually.** Today it contains nine plugin entries --
 //! `conway-plugin-skeleton`, a skeleton proving nothing beyond the install
 //! mechanism (see that crate's own module doc); `conway-plugin-history`,
 //! `/conway.history.rewind`/`/conway.history.mask`/`/conway.history.checkout`
@@ -29,7 +29,11 @@
 //! configurable turn window (board item `01M0TV447NAJ1R06S455DZPP54` --
 //! this crate did not depend on it at all before that item, so naming
 //! `"conway.trim"` in `[plugins].install` used to reach nothing; see that
-//! crate's own module doc for the rest of the history). Dynamic routing is
+//! crate's own module doc for the rest of the history); and
+//! `conway-plugin-names`, which lets an operator name an agent and then
+//! steer it by that name, and which is the tier's worked proof that a real
+//! capability needs no core change at all (board item
+//! `01M0TV5BSE98S16SFYECG9G9WP`). Dynamic routing is
 //! built too (`conway-plugin-routing`, resolved through `router_bundle`
 //! below, not this list), and so is MCP client support -- through a
 //! separate mechanism entirely, `[plugins].mcp` wired by this crate's own
