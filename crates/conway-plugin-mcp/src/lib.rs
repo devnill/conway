@@ -68,13 +68,18 @@ mod wire;
 pub use session::McpSession;
 use wire::CallOutcome;
 
-/// Applied when a [`McpPluginSpec`] does not name its own `timeout_ms` -- the
-/// SAME 5000ms default `conway-plugin-subprocess::DEFAULT_TIMEOUT_MS` uses
-/// (itself the same default `[hooks].rules[].timeout_ms` uses), for the
-/// identical reason: long enough for a typical local MCP server to answer,
-/// short enough that a hung server process cannot silently stall an agent
-/// turn indefinitely.
-pub const DEFAULT_TIMEOUT_MS: u64 = 5000;
+/// Applied when a [`McpPluginSpec`] does not name its own `timeout_ms`.
+///
+/// **Re-exported, not restated (board item `01M0TV6E2K6QF9VXP6C7TFH06X`).**
+/// This used to be its own `pub const` declaring the same 5000ms value,
+/// kept "the same" as `conway-plugin-subprocess`'s identical constant by a
+/// doc comment alone -- nothing enforced the two literals actually
+/// agreeing. The value now lives once, at `conway::plugin::DEFAULT_TIMEOUT_MS` (see
+/// that item's own doc for why it is declared directly on the facade rather
+/// than routed through `conway-tools` the way [`conway::plugin::kill_group`]
+/// is); this is that same constant, re-exported so the old
+/// `conway_plugin_mcp::DEFAULT_TIMEOUT_MS` path still resolves.
+pub use conway::plugin::DEFAULT_TIMEOUT_MS;
 
 /// One operator-configured MCP-over-stdio plugin entry: the command to spawn
 /// (the external MCP server), how long any single framed JSON-RPC round-trip
