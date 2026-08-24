@@ -161,7 +161,9 @@ fn sessions_list_empty_store_prints_header_only() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(out.stdout, b"ID  CREATED  ROLE  ORIGIN\n".to_vec());
+    // `NAME` (added alongside `sessions name`/`unname`) sits right after
+    // `ID` -- see `commands/sessions.rs::list`.
+    assert_eq!(out.stdout, b"ID  NAME  CREATED  ROLE  ORIGIN\n".to_vec());
     assert_no_esc_byte(&out.stdout);
 }
 

@@ -974,6 +974,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`/tree`'s own doc comment claimed its rendering "always matches what `/agents` shows"; it no longer does, since `01M0RWKJD04JBR5NCVKBQXYHV4` gave the `/agents` panel a screen-relative short id** — board item `01M0TNCAP1HH4YNC5K9753YG26`. Decided in favor of keeping `/tree` on full ids: a transcript line outlives the row set that made a short prefix unique, so it needs a durable reference, not a screen affordance. `commands.rs`, `docs/agents.md`, and `docs/interactive.md` now say so explicitly instead of claiming parity that doesn't hold.
 
+### Added
+
+- **Sessions can carry an operator-chosen name** — board item `01M0TV5CYSP844XR8PJ59D8QM4` (INTENT.md §7b: "a session an operator will return to can carry a name the operator chose"). New `conway sessions name <id-or-name> <name>` attaches a name or renames an existing one; `conway sessions unname <id-or-name>` removes it. `--session`/`--resume`/`--fork-from` and `sessions show|tree|export` now accept a name wherever they accepted a bare ULID. A name that itself parses as a valid ULID is refused at naming time, and a name already bound to a different session is refused too, naming which session holds it — never a silent guess or overwrite. `sessions list`'s table and `--json` output gain a `NAME` column/field, blank (never a synthesized placeholder) for an unnamed session. The name lives in a new sidecar file, `session-names.json`, beside the project's session store (`crates/conway-cli/src/session_names.rs`) — a side table keyed by session id, never a field on the session's own append-only log record, so naming or renaming a session never rewrites anything the log itself wrote.
+
 ## [0.9.0] — 2026-08-13
 
 ### Added

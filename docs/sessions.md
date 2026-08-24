@@ -118,12 +118,12 @@ will not show sessions created from the other:
 
 ```console
 $ cd my-project && conway -p "..." && conway sessions list
-ID        CREATED               ROLE   ORIGIN
-01KYWYAD  2026-07-31T20:37:14Z  coder
+ID        NAME  CREATED               ROLE   ORIGIN
+01KYWYAD        2026-07-31T20:37:14Z  coder
 
 $ cd my-project/src && conway -p "..." && conway sessions list
-ID        CREATED               ROLE   ORIGIN
-01KYWYK9  2026-07-31T20:42:04Z  coder
+ID        NAME  CREATED               ROLE   ORIGIN
+01KYWYK9        2026-07-31T20:42:04Z  coder
 ```
 
 Two different directories, two disjoint session stores (now
@@ -296,15 +296,19 @@ What happens to it next depends on the path:
 `conway sessions <subcommand>` reads persisted sessions through the same
 facade an embedder uses (`Conway::sessions`/`::resume`,
 `SessionHandle::transcript`) — nothing here reads a session file off disk
-directly. Every subcommand below was run against a real, freshly-created
-session store to confirm its exact behavior, not just read from source.
+directly. `list`/`show`/`tree`/`export` were each run against a real,
+freshly-created session store to confirm their exact behavior, not just
+read from source; `name`/`unname` (below) were not — see that row's own
+note.
 
 | Subcommand | Effect |
 | --- | --- |
-| `sessions list [--limit N] [--label L] [--json]` | Lists sessions (id, created, role, origin), newest first. `--json` prints a JSON array instead of a table. Excludes ephemeral sessions; there's no flag to include them. |
-| `sessions show <id> [--json]` | Prints that session's ancestry-resolved transcript — its own records plus, if it's a fork child, everything it inherited. Default output is one `--- <kind> seq=<n> ---` block per record in Rust debug form; `--json` prints one compact JSON object per line (JSONL), the same wire shape the log itself uses. |
-| `sessions tree <id>` | Prints the session's fork/spawn tree as indented text: one line per node (role), starting from `<id>` itself and indenting each descendant under its parent. |
-| `sessions export <id> [--out PATH]` | Writes the ancestry-resolved transcript as JSONL — to `PATH` if given, else stdout. Same content as `show --json`, without the interleaved per-line inspection framing. |
+| `sessions list [--limit N] [--label L] [--json]` | Lists sessions (id, name, created, role, origin), newest first. `--json` prints a JSON array instead of a table. Excludes ephemeral sessions; there's no flag to include them. |
+| `sessions show <id-or-name> [--json]` | Prints that session's ancestry-resolved transcript — its own records plus, if it's a fork child, everything it inherited. Default output is one `--- <kind> seq=<n> ---` block per record in Rust debug form; `--json` prints one compact JSON object per line (JSONL), the same wire shape the log itself uses. |
+| `sessions tree <id-or-name>` | Prints the session's fork/spawn tree as indented text: one line per node (role), starting from `<id-or-name>` itself and indenting each descendant under its parent. |
+| `sessions export <id-or-name> [--out PATH]` | Writes the ancestry-resolved transcript as JSONL — to `PATH` if given, else stdout. Same content as `show --json`, without the interleaved per-line inspection framing. |
+| `sessions name <id-or-name> <name>` | Attaches `<name>` to a session, or — if `<id-or-name>` is itself an existing name — renames it. Refuses a `<name>` that parses as a valid ULID, and refuses one already bound to a *different* session, naming which session holds it — never a silent overwrite. A session carries at most one name; naming an already-named session moves its one name rather than adding a second. |
+| `sessions unname <id-or-name>` | Removes whichever name is bound to the resolved session. The session and its transcript are entirely unaffected — see [Where a name lives](#where-a-name-lives) below. |
 
 A few things worth knowing before you rely on the output:
 
@@ -327,9 +331,35 @@ A few things worth knowing before you rely on the output:
   distinction shows up. `sessions list --json`'s `origin` object carries the
   same distinction as a `"mode": "fork"`/`"mode": "spawn"` field.
 - Values passed to `--session`/`--resume`/`--fork-from` and
-  `sessions show|tree|export <id>` must be full ULIDs — the CLI does not
-  accept a shortened/prefix id anywhere, even though `list`/`tree`'s own
-  table output truncates ids for display.
+  `sessions show|tree|export|name|unname <id-or-name>` accept either a full
+  ULID or an operator-chosen name (below) — never a shortened/prefix id,
+  even though `list`/`tree`'s own table output truncates ids for display.
+
+### Where a name lives
+
+`sessions name`/`unname`, and every flag above that resolves an
+`<id-or-name>` value, are the only CLI surface with disk access outside the
+`conway` facade: they read and write one small sidecar file,
+`session-names.json`, kept beside the session store it names (the same
+`root` directory `--session`/`--resume` create/reattach sessions in — see
+[Where session data lives on disk](#where-session-data-lives-on-disk)
+above), holding nothing but a flat `{name: session-id}` JSON object.
+
+This is deliberate, and it is what makes naming and renaming safe: a
+session's identity is its own append-only `<session-id>.jsonl` file, and
+naming code never opens it. Attaching, moving, or removing a name is
+entirely a read/mutate/write cycle over the separate sidecar — the
+session's own persisted record is byte-for-byte unaffected either way, and
+a lost or corrupted sidecar loses labels, never sessions.
+
+**Not live-verified against a real, freshly-created session store the way
+`list`/`show`/`tree`/`export` above were** — `sessions name`/`unname` and
+name resolution for `--session`/`--resume`/`--fork-from` are covered by an
+integration suite run against the compiled binary
+(`crates/conway-cli/tests/session_names.rs`) plus in-crate unit tests for
+the sidecar itself (`crates/conway-cli/src/session_names.rs`), but neither
+was exercised by hand against a live invocation the way this page's other
+worked examples were.
 
 ## Dropped tool calls
 
