@@ -412,7 +412,7 @@ pub mod plugin {
     /// identically: `cfg(all(unix, feature = "builtin-tools"))`.
     ///
     /// **What moved here, and what deliberately did not.** The pending-table
-    /// + dead/death-reason bookkeeping, the long-lived NDJSON reader task,
+    /// and its dead/death-reason bookkeeping, the long-lived reader task,
     /// the write-then-await round trip, the graceful timeout kill, and the
     /// synchronous `Drop`-time SIGKILL -- the mechanics every child-process
     /// session in this workspace needs, and a SAFETY property (fail-closed

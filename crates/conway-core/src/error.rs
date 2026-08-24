@@ -576,8 +576,14 @@ pub enum RuntimeError {
         merged: usize,
         of: usize,
         note_appended: bool,
+        /// Boxed to keep `RuntimeError` -- and through
+        /// `ConwayError::Runtime`, every `Result<_, ConwayError>` in the
+        /// workspace -- under `clippy::result_large_err`'s threshold. This
+        /// variant is the widest in the enum (two `SessionId`s, two counts,
+        /// a flag and a nested store failure) and it is also the rarest, so
+        /// the indirection is paid only on the path that already failed.
         #[source]
-        cause: StoreError,
+        cause: Box<StoreError>,
     },
 }
 

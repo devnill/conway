@@ -1539,7 +1539,7 @@ impl Runtime {
                         merged: appended,
                         of: total,
                         note_appended,
-                        cause,
+                        cause: Box::new(cause),
                     });
                 }
             }
@@ -1577,7 +1577,7 @@ impl Runtime {
                 merged: appended,
                 of: total,
                 note_appended: false,
-                cause,
+                cause: Box::new(cause),
             });
         }
         Ok(())

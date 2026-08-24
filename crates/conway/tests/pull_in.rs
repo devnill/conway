@@ -529,7 +529,7 @@ async fn pull_in_whose_second_append_fails_annotates_the_truncation_and_reports_
                 "the store only failed one append, so the truncation note must have landed"
             );
             assert!(
-                matches!(cause, StoreError::Io { detail } if detail.contains("injected")),
+                matches!(&**cause, StoreError::Io { detail } if detail.contains("injected")),
                 "the underlying store error must be carried through, got: {cause:?}"
             );
         }
