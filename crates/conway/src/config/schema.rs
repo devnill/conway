@@ -834,9 +834,10 @@ pub struct SubprocessPluginEntry {
     pub command: Vec<String>,
     /// Milliseconds any single spawn (manifest discovery, or one `tool/1`
     /// call) is allowed to run before the reading binary/embedder kills
-    /// it. Same default and reasoning as [`HookEntry::timeout_ms`]. For the
-    /// persistent transport this is a PER-CALL deadline on the framed read,
-    /// not a session-wide idle kill.
+    /// it. Same default as [`HookEntry::timeout_ms`] -- both draw from
+    /// `default_hook_timeout_ms`, so the two cannot drift apart silently.
+    /// For the persistent transport this is a PER-CALL deadline on the
+    /// framed read, not a session-wide idle kill.
     #[serde(default = "default_hook_timeout_ms")]
     pub timeout_ms: u64,
     /// Which transport `tool/1` calls use. Defaults to
@@ -932,9 +933,10 @@ pub struct McpPluginEntry {
     pub command: Vec<String>,
     /// Milliseconds any single framed JSON-RPC round-trip (`initialize`,
     /// `tools/list`, or one `tools/call`) is allowed to run before the reading
-    /// binary/embedder kills the process group. Same default and reasoning as
-    /// [`SubprocessPluginEntry::timeout_ms`]. A PER-CALL deadline, not a
-    /// session-wide idle kill.
+    /// binary/embedder kills the process group. Same default as
+    /// [`SubprocessPluginEntry::timeout_ms`] -- both draw from
+    /// `default_hook_timeout_ms`, so the two cannot drift apart silently.
+    /// A PER-CALL deadline, not a session-wide idle kill.
     #[serde(default = "default_hook_timeout_ms")]
     pub timeout_ms: u64,
     /// Explicit environment pairs the child inherits IN ADDITION to the parent
@@ -1237,11 +1239,17 @@ pub struct HookEntry {
     /// `pre_tool_use` rule, by `ConwayBuilder::build`'s translation into
     /// `conway_runtime::permission::PreToolUseHookSpec::timeout_ms` (board
     /// item); still only READ, never enforced,
-    /// for any other `event` (see [`HooksConfig`]'s own doc). Default
-    /// 5000ms, chosen the same way `crates/conway-tools/src/shell/bash.rs`'s
-    /// own `DEFAULT_TIMEOUT_MS` was: long enough for a typical local script
-    /// (lint, format-check, a small HTTP call) to finish, short enough that
-    /// a hung hook cannot silently stall an agent turn indefinitely.
+    /// for any other `event` (see [`HooksConfig`]'s own doc). Defaults to
+    /// [`crate::plugin::DEFAULT_TIMEOUT_MS`] (5000ms, via
+    /// `default_hook_timeout_ms`) -- chosen the same WAY `crates/
+    /// conway-tools/src/shell/bash.rs`'s own `DEFAULT_TIMEOUT_MS` (120s) was:
+    /// long enough for a typical local script (lint, format-check, a small
+    /// HTTP call) to finish, short enough that a hung hook cannot silently
+    /// stall an agent turn indefinitely. NOT the same VALUE as bash's --
+    /// bash's own timeout bounds a single tool invocation the operator wrote
+    /// the command line for and may legitimately run long (a build, a test
+    /// suite); a hook is a narrower, more frequent callout, and the two are
+    /// deliberately allowed to diverge.
     #[serde(default = "default_hook_timeout_ms")]
     pub timeout_ms: u64,
     /// Whether this rule is active. Defaults to `true`.
@@ -1285,8 +1293,26 @@ impl Default for HookEntry {
     }
 }
 
+/// Shared by `HookEntry::timeout_ms`, `SubprocessPluginEntry::timeout_ms`,
+/// and `McpPluginEntry::timeout_ms` -- all three are the same knowledge
+/// (board item `01M0TX5EB6WDK6W4WKZJ29AD9F`): the default number of
+/// milliseconds conway waits, before killing it, on an operator-configured
+/// local child process it spawned itself -- a hook command, a subprocess
+/// plugin's call, or an MCP server's round trip are three call shapes over
+/// the identical underlying risk (a hung child silently stalling an agent
+/// turn), and nothing about which shape is being waited on gives a reason
+/// for the default to differ. Delegates to `crate::plugin::
+/// DEFAULT_TIMEOUT_MS` -- the SAME authority `conway_plugin_mcp::
+/// McpPluginSpec`/`conway_plugin_subprocess::SubprocessPluginSpec` fall back
+/// to when a caller constructs one without config at all (board item
+/// `01M0TV6E2K6QF9VXP6C7TFH06X`) -- rather than restating the literal a
+/// second time in this crate: this function and that constant used to each
+/// declare `5000` with only a doc comment asserting they agreed, exactly the
+/// "must match, nothing enforces it" defect CON-1 fixed one layer up. One
+/// number, one place it can be edited; every config-level default here moves
+/// with it.
 fn default_hook_timeout_ms() -> u64 {
-    5000
+    crate::plugin::DEFAULT_TIMEOUT_MS
 }
 
 fn default_hook_enabled() -> bool {

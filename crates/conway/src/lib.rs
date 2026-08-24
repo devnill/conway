@@ -437,9 +437,7 @@ pub mod plugin {
     /// `conway_plugin_subprocess::SubprocessPluginSpec`) does not name its
     /// own `timeout_ms`: long enough for a typical local plugin process
     /// (MCP server or subprocess tool) to answer, short enough that a hung
-    /// child cannot silently stall an agent turn indefinitely -- the same
-    /// reasoning `crates/conway/src/config/schema.rs`'s
-    /// `HookEntry::timeout_ms` default states for the identical value.
+    /// child cannot silently stall an agent turn indefinitely.
     ///
     /// **One authority, not two (board item `01M0TV6E2K6QF9VXP6C7TFH06X`).**
     /// `conway-plugin-mcp` and `conway-plugin-subprocess` each used to
@@ -450,6 +448,23 @@ pub mod plugin {
     /// conway::plugin::DEFAULT_TIMEOUT_MS`) rather than restating it, so
     /// their old public paths still resolve but there is exactly one place
     /// the value can be edited.
+    ///
+    /// **A third caller draws from the same authority now, by the same
+    /// route (board item `01M0TX5EB6WDK6W4WKZJ29AD9F`).**
+    /// `crates/conway/src/config/schema.rs`'s `default_hook_timeout_ms`
+    /// backs `HookEntry::timeout_ms`, `SubprocessPluginEntry::timeout_ms`,
+    /// and `McpPluginEntry::timeout_ms` -- a hook callout, a subprocess
+    /// plugin call, and an MCP round trip are three shapes of the identical
+    /// underlying risk (an operator-configured local child process this
+    /// crate spawned and must not let stall a turn forever), so that item
+    /// answered "same knowledge" and had that function RETURN this constant
+    /// instead of restating the literal a second time in this crate --
+    /// `default_hook_timeout_ms` no longer states "the identical value" in
+    /// prose, it IS this value, structurally. Both are still free to diverge
+    /// in a LATER item that argues a concrete reason (e.g. hooks running
+    /// operator scripts of unpredictable length); nothing here forecloses
+    /// that, it only removes the "must match, nothing enforces it" defect
+    /// while they happen to agree.
     ///
     /// **Why here, not sourced from `conway-tools` like [`kill_group`]
     /// immediately above.** `kill_group` needs `conway-tools`' `nix`-backed
