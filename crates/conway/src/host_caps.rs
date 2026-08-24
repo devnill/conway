@@ -67,9 +67,15 @@ impl HostCaps {
     /// real in the config/builder, not hardcoded:
     ///
     /// - [`HostCapability::Subagent`] -- the `conway` runtime unconditionally
-    ///   provides a `SubagentHost` (`impl SubagentHost for Runtime`; there is
-    ///   no `with_subagent_host` injection point that could remove it), so the
-    ///   host always offers this cap. This is the honest derivation, not a
+    ///   provides a `SubagentHost` (`impl SubagentHost for Runtime`). There is
+    ///   deliberately no `with_subagent_host` injection point, and none is
+    ///   coming: fork and spawn are mechanism with exactly one
+    ///   implementation, and the runtime that keeps the log is the only thing
+    ///   that may fork it (INTENT.md §7 -- *"if it wants them" means
+    ///   uncalled, not replaced*). Unlike every other cap in this file, an
+    ///   embedder cannot supply its own `SubagentHost`; it can only decline
+    ///   to use the one the runtime always provides, so the host always
+    ///   offers this cap. This is still the honest derivation, not a
     ///   hardcoded `true`: the cap is offered because the built runtime
     ///   genuinely provides the host, not because this method declares it by
     ///   fiat.
@@ -82,7 +88,8 @@ impl HostCaps {
     pub fn from_config(config: &crate::config::schema::ConwayConfig) -> Self {
         let mut caps = HostCaps::empty();
         // Subagent: always offered -- the runtime provides a SubagentHost
-        // unconditionally (no injection point removes it).
+        // unconditionally. No injection point removes it, by design: see
+        // this method's own doc and INTENT.md §7.
         caps.offer(HostCapability::Subagent);
         // PersistentTransport: offered iff at least one subprocess entry is
         // configured persistent.

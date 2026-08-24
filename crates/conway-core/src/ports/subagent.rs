@@ -5,6 +5,24 @@
 //! mechanically enforced): the tools are thin wrappers with no privileged
 //! access.
 //!
+//! ## Exactly one intended implementor
+//!
+//! Unlike every other port a host embedding conway can supply its own
+//! implementation of, this trait has exactly one intended implementor: the
+//! runtime that keeps the log (`conway_runtime::Runtime`). This is a
+//! decided design, not an unfilled seam -- INTENT.md §7: fork and spawn are
+//! mechanism with exactly one implementation, because "the runtime that
+//! keeps the log is the only thing that may fork it"; a second authority
+//! over what a session's ancestry means would be a second answer to a
+//! question that has one. An embedder can decline to call fork/spawn at
+//! all ("if it wants them" means uncalled), but it cannot replace what
+//! forking or spawning means by handing the host a different
+//! `SubagentHost`. A second implementor of this trait is therefore
+//! out-of-contract at this port, not merely unsupported by a missing
+//! builder method -- the invariant lives here (INTENT.md §8.6: an
+//! invariant belongs to the seam, not to its call sites), so it holds
+//! regardless of which crate assembles the host.
+//!
 //! ## `caller` on `steer`/`await_result`/`cancel`
 //!
 //! Every implementation MUST enforce that `caller` may act on `target` only
