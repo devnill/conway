@@ -53,29 +53,50 @@ pub fn parse_sid(s: &str) -> Result<SessionId, ParseError> {
         .map_err(|_| ParseError::new(s, "not a valid session id (ULID)"))
 }
 
-/// Parses a `--fork-from` value: `<session-id>` or `<session-id>@<seq>`.
-/// `<seq>` is a [`LogSeq`] in D-11's LOCAL units (the target session's own
-/// sequence numbering, not any ancestor's) -- `oneshot::run` passes it
-/// straight through to `Conway::fork_from` unchanged.
-pub fn parse_fork_ref(s: &str) -> Result<(SessionId, Option<LogSeq>), ParseError> {
+/// Splits `<session-id>[@<seq>]` into its sid-half and its parsed `@<seq>`
+/// suffix, if present -- **the sid-half is returned unvalidated** (not
+/// parsed as a `SessionId` here) so a caller that also accepts an
+/// operator-chosen name in that position (`crate::session_names::
+/// resolve_fork_ref`) can resolve it without this pure, no-I/O module
+/// needing to know names exist at all. [`parse_fork_ref`] is this
+/// function plus that one validation step, for callers that only ever want
+/// a bare id.
+pub fn split_fork_ref(s: &str) -> Result<(&str, Option<LogSeq>), ParseError> {
     match s.split_once('@') {
-        None => Ok((parse_sid(s)?, None)),
+        None => {
+            if s.is_empty() {
+                return Err(ParseError::new(s, "empty session reference"));
+            }
+            Ok((s, None))
+        }
         Some((sid_part, seq_part)) => {
-            // Name the FULL ref the user typed in the error, not the bare
-            // sid substring: `--fork-from @142` should
-            // report `@142`, not an empty string.
-            let sid = sid_part
-                .parse::<SessionId>()
-                .map_err(|_| ParseError::new(s, "not a valid session id (ULID)"))?;
+            if sid_part.is_empty() {
+                return Err(ParseError::new(s, "missing session id/name before `@`"));
+            }
             if seq_part.is_empty() {
                 return Err(ParseError::new(s, "empty `@<seq>` suffix"));
             }
             let seq: LogSeq = seq_part
                 .parse()
                 .map_err(|_| ParseError::new(s, "`@<seq>` is not a valid non-negative integer"))?;
-            Ok((sid, Some(seq)))
+            Ok((sid_part, Some(seq)))
         }
     }
+}
+
+/// Parses a `--fork-from` value: `<session-id>` or `<session-id>@<seq>`.
+/// `<seq>` is a [`LogSeq`] in D-11's LOCAL units (the target session's own
+/// sequence numbering, not any ancestor's) -- `oneshot::run` passes it
+/// straight through to `Conway::fork_from` unchanged.
+pub fn parse_fork_ref(s: &str) -> Result<(SessionId, Option<LogSeq>), ParseError> {
+    let (sid_part, seq) = split_fork_ref(s)?;
+    // Name the FULL ref the user typed in the error, not the bare sid
+    // substring: `--fork-from @142` should report `@142`, not an empty
+    // string.
+    let sid = sid_part
+        .parse::<SessionId>()
+        .map_err(|_| ParseError::new(s, "not a valid session id (ULID)"))?;
+    Ok((sid, seq))
 }
 
 #[cfg(test)]

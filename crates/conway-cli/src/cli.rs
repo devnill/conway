@@ -154,15 +154,22 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub output_schema: Option<PathBuf>,
 
-    /// Use (creating if new) a specific session id.
+    /// Use (creating if new) a specific session id. Also accepts an
+    /// operator-chosen name (`conway sessions name`) wherever it accepts an
+    /// id -- since a name is only ever bound to a session that already
+    /// exists, passing one here always resolves to the "already exists,
+    /// use --resume instead" usage error below, exactly as passing that
+    /// session's own id would.
     #[arg(long, conflicts_with_all = ["resume", "fork_from"])]
     pub session: Option<String>,
 
-    /// Reattach to a persisted session and continue its transcript.
+    /// Reattach to a persisted session and continue its transcript. Also
+    /// accepts an operator-chosen name (`conway sessions name`) wherever it
+    /// accepts an id.
     #[arg(long, conflicts_with_all = ["session", "fork_from"])]
     pub resume: Option<String>,
 
-    /// Branch a new session from `<session-id>[@<seq>]`.
+    /// Branch a new session from `<session-id-or-name>[@<seq>]`.
     #[arg(long, value_name = "SID[@SEQ]", conflicts_with_all = ["session", "resume"])]
     pub fork_from: Option<String>,
 

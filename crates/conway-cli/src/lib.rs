@@ -26,6 +26,7 @@ pub mod mcp_plugins;
 mod model_pin;
 pub mod oneshot;
 pub mod render;
+pub mod session_names;
 pub mod session_ref;
 pub mod signal;
 pub mod subprocess_plugins;

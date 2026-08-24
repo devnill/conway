@@ -257,7 +257,8 @@ use schemars::schema::RootSchema;
 use crate::cli::{Cli, PermissionMode};
 use crate::exit::ExitCode;
 use crate::model_pin::{parse_model_pin, usage_error};
-use crate::{diag, render, session_ref, signal};
+use crate::session_names::{self, NamesStore};
+use crate::{diag, render, signal};
 
 /// One-shot mode's entry point (dispatched from `main.rs` when
 /// `cli.print.is_some()`). `conway`'s `Runtime` already has this module's
@@ -414,6 +415,14 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
     let budget = resolve_budget(cli, conway);
     let tools = resolve_tools(cli, agent_def.as_ref());
 
+    // Loaded once, up front, exactly like `agent_def`/`output_schema`
+    // above -- every arm below that resolves a `--session`/`--resume`/
+    // `--fork-from` value sees the identical, already-loaded name table
+    // (this item: `--session`/`--resume`/`--fork-from` accept an
+    // operator-chosen name wherever they accept an id).
+    let names = NamesStore::load(&session_names::session_root(conway))
+        .map_err(|e| usage_error(e.to_string()))?;
+
     match (&cli.session, &cli.resume, &cli.fork_from) {
         (None, None, None) => {
             let role = cli
@@ -446,7 +455,7 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
         // that same typed store error, still surfaced as a usage error via
         // the `map_err` below, just with a less specific message.
         (Some(id), None, None) => {
-            let sid = session_ref::parse_sid(id).map_err(|e| usage_error(e.to_string()))?;
+            let sid = session_names::resolve(id, &names).map_err(|e| usage_error(e.to_string()))?;
             if conway.resume(sid).await.is_ok() {
                 return Err(usage_error(format!(
                     "--session {sid}: session already exists; pass --resume {sid} to continue \
@@ -493,7 +502,7 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
         // to the operator through the same event stream `run`'s renderer
         // already drives, never intercepted or swallowed here.
         (None, Some(id), None) => {
-            let sid = session_ref::parse_sid(id).map_err(|e| usage_error(e.to_string()))?;
+            let sid = session_names::resolve(id, &names).map_err(|e| usage_error(e.to_string()))?;
             let role = cli
                 .role_override
                 .as_ref()
@@ -525,8 +534,8 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
                      the parent session's cwd",
                 ));
             }
-            let (parent, seq) =
-                session_ref::parse_fork_ref(r).map_err(|e| usage_error(e.to_string()))?;
+            let (parent, seq) = session_names::resolve_fork_ref(r, &names)
+                .map_err(|e| usage_error(e.to_string()))?;
             let at = match seq {
                 Some(seq) => seq,
                 None => {
