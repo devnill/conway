@@ -101,7 +101,7 @@ while you're composing:
 | `Ctrl-W` | Delete the previous word. |
 | `Home` / `End` | With the input box empty, jump the transcript to the top/tail instead of moving the cursor. |
 | `PageUp` / `PageDown` | Scroll the transcript a page at a time. |
-| `Ctrl-C` | Interrupt the current turn (or, pressed with nothing running, does nothing destructive on its own). |
+| `Ctrl-C` | Interrupt the current turn (or, pressed with nothing running, does nothing destructive on its own). Also abandons an in-flight `/ask`, if one is running — see below. |
 | `Ctrl-D` | Quit, when the input box is empty. |
 
 Your input history persists across sessions (`~/.conway/history`, or under
@@ -183,7 +183,7 @@ shrinking the candidate list).
 
 | Command | Usage | Effect |
 | --- | --- | --- |
-| `/ask` | `/ask <text>` | Ask an ephemeral fork a side question — it doesn't affect the live session. Answer opens in its own modal; choose to fork it into a real session, pull the Q&A into your transcript, or discard it. |
+| `/ask` | `/ask <text>` | Ask an ephemeral fork a side question — it doesn't affect the live session. While it's in flight, the `activity` status field shows `⠋ asking… Ns`, same as an ordinary turn; `Ctrl-C` abandons it (cancels the child and, if it's stuck waiting on a tool permission decision, discards that prompt too — nothing is left running). Once it answers, the reply opens in its own modal; choose to fork it into a real session, pull the Q&A into your transcript, or discard it. |
 | `/agents` | `/agents` | Toggle the below-chat agent-tree panel. |
 | `/settings` | `/settings` | Open the settings menu (display preferences, permission mode, and grant management). |
 | `/steer` | `/steer <agent> <text>` | Send a steering message to a running agent. |
@@ -406,7 +406,7 @@ session | lineage | mode | model | ctx | tokens | activity | hint
 | `model` | `anthropic/claude-sonnet-4-6` | The focused agent's serving model. Omitted until its first turn has routed. |
 | `ctx` | `ctx 42%`, or `ctx 12.3k` when the model's context window isn't known | Cumulative context-window occupancy for the focused agent, from `models.metadata_path`. |
 | `tokens` | `1.4k tok (88% cached)` | The focused agent's cumulative token spend; the cached-percentage parenthetical is the prompt-cache hit rate — `cache_read / (input + cache_read + cache_write)` — and is omitted when there's no cache activity yet. |
-| `activity` | `⠋ thinking… 12s · +45 tok` while active, `idle` otherwise | The working indicator: elapsed time and new context tokens added this turn. |
+| `activity` | `⠋ thinking… 12s · +45 tok` while active, `⠋ asking… 12s` while an `/ask` is in flight, `idle` otherwise | The working indicator: elapsed time and new context tokens added this turn. An in-flight `/ask` takes this field over outright (its own clock, no token figure — it's a different agent than the one this field otherwise tracks). |
 | `hint` | `Enter submit · Ctrl-E expand · /help · /agents to view` | A persistent reminder of the essentials. Also names the focused agent when you're off-root and `lineage` isn't part of your configured fields. |
 | `git` | the current branch name | Read once at startup; omitted outside a git repo. |
 | `cwd` | the session's working directory | Omitted when unset. |
@@ -425,8 +425,13 @@ anything at all.
 `/quit` or `/exit` end the session cleanly. `Ctrl-D` does the same when
 the input box is empty. Two consecutive `Ctrl-C` presses force an
 immediate exit even if a turn is stuck. Quitting with an `/ask` modal open
-discards that ephemeral fork first; quitting with a fork/spawn
-confirmation card open falls back to the manual (unclassified) flow;
-quitting with `/trust permissions`'s preview card open is the same as
-pressing `[n]` — nothing was ever trusted or written, so there is nothing
-to undo. None of these leave anything half-created behind.
+discards that ephemeral fork first; quitting with an `/ask` still in
+flight (no answer yet) abandons it the same way `Ctrl-C` does — the
+child is cancelled and any pending permission prompt for it is discarded,
+without waiting for it to actually finish, since the process is exiting
+either way; any residue is swept up automatically on the next startup.
+Quitting with a fork/spawn confirmation card open falls back to the
+manual (unclassified) flow; quitting with `/trust permissions`'s preview
+card open is the same as pressing `[n]` — nothing was ever trusted or
+written, so there is nothing to undo. None of these leave anything
+half-created behind.

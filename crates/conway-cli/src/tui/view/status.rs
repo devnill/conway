@@ -728,6 +728,22 @@ fn tokens_label(state: &AppState) -> String {
 /// rather than the two of them fighting `activity` for the last few
 /// columns.
 fn activity_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
+    // Board item `01M0RWFH6V709B7WTAFRZGFKG3`: an in-flight `/ask` takes
+    // this field over outright, rather than being folded in alongside
+    // whatever the FOCUSED agent's own `activity` happens to be. The ask's
+    // ephemeral child is never the focused agent (`Activity`'s own doc:
+    // scoped to focused-agent events only), so before this item there was
+    // no reader of `ask_in_flight` anywhere in `view/` at all -- an ask
+    // that needed a tool call and a plain "the focused agent is idle" read
+    // identically on screen. Reusing the SAME spinner glyph/elapsed-seconds
+    // visual language an ordinary turn already uses (not inventing a
+    // second one), just with its own phrase and its own clock
+    // (`ask_started_at`, stamped at submit time -- see that field's own
+    // doc) since the two clocks measure different things and neither
+    // should silently borrow the other's number.
+    if state.ask_in_flight {
+        return ask_activity_ladder(state, theme);
+    }
     if !should_animate(&state.activity) {
         return vec![vec![Span::raw("idle")], vec![]];
     }
@@ -755,6 +771,34 @@ fn activity_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
             ),
         ],
         vec![Span::styled(format!("{glyph} {phrase}"), style)],
+        vec![],
+    ]
+}
+
+/// The `activity` field's ladder while an `/ask` is in flight (board item
+/// `01M0RWFH6V709B7WTAFRZGFKG3`) -- same shape as the ordinary ladder
+/// above (full rung: glyph + phrase + live elapsed; one degrade step:
+/// glyph + phrase alone; floor: omitted), so it degrades under width
+/// pressure exactly the way the ordinary activity field already does. No
+/// token figure -- `turn_running_tokens` belongs to the focused agent's own
+/// turn, which this is deliberately not folding in (see the caller's own
+/// doc).
+fn ask_activity_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
+    let style = theme.spinner;
+    let glyph = SPINNER_FRAMES
+        .get(state.spinner_frame % SPINNER_FRAMES.len())
+        .copied()
+        .unwrap_or("");
+    let elapsed = state
+        .ask_started_at
+        .map(|t| t.elapsed().as_secs())
+        .unwrap_or(0);
+    vec![
+        vec![
+            Span::styled(format!("{glyph} asking…"), style),
+            Span::styled(format!(" {elapsed}s"), theme.status_dim),
+        ],
+        vec![Span::styled(format!("{glyph} asking…"), style)],
         vec![],
     ]
 }

@@ -468,6 +468,34 @@ pub struct AppState {
     /// (the modal is a single-question surface; concurrent asks would
     /// compete for the one [`Mode::AskModal`] slot).
     pub ask_in_flight: bool,
+    /// The ephemeral ask child's `AgentId`, known once `app::ask::AskUpdate::
+    /// Started` arrives (the fork succeeded -- `SessionHandle::ask` returned
+    /// a `TurnHandle`, before its single turn has necessarily finished).
+    /// `None` from submit until that update arrives, and again once the ask
+    /// resolves (answered, abandoned, or failed to fork at all). This is
+    /// what a keyboard abandon (`App::abandon_ask`) needs to target --
+    /// `ask_in_flight` alone names THAT something is running, not WHICH
+    /// agent to cancel.
+    pub ask_child: Option<AgentId>,
+    /// When the current `/ask` started (board item
+    /// `01M0RWFH6V709B7WTAFRZGFKG3`): stamped at submit time (`commands::
+    /// execute`'s `SlashCommand::Ask` arm, alongside `ask_in_flight`), read
+    /// by the status line's `activity` field to show live elapsed seconds
+    /// while the ask is in flight -- the SAME spinner/elapsed visual
+    /// language an ordinary turn's `turn_started_at` already uses (see
+    /// `view/status.rs::activity_ladder`), not a second progress language.
+    /// Cleared whenever `ask_in_flight` is cleared.
+    pub ask_started_at: Option<Instant>,
+    /// Set by `App::abandon_ask` (board item `01M0RWFH6V709B7WTAFRZGFKG3`)
+    /// the moment the operator abandons an in-flight ask from the keyboard,
+    /// BEFORE the spawned task's eventual `AskUpdate::Done` arrives (that
+    /// task is still running -- cancelling it does not make it vanish
+    /// instantly, it makes the child's turn wind down). When `Done` does
+    /// arrive with this set, `App::run`'s own arm purges the (by then
+    /// actually-finished) child and records an "ask abandoned" notice
+    /// instead of opening the answer modal over a question nobody is
+    /// waiting on any more. Cleared alongside `ask_in_flight`/`ask_child`.
+    pub ask_abandoned: bool,
     /// The shared modal body-scroll offset (V1; originated as the
     /// permission-overlay-only `permission_scroll`, bug fix
     ///: "no way to see the entire command" for a
@@ -835,6 +863,9 @@ impl AppState {
             session_head_seq: None,
             pending_ask_modal: None,
             ask_in_flight: false,
+            ask_child: None,
+            ask_started_at: None,
+            ask_abandoned: false,
             modal_scroll: 0,
             pending_intent_confirm: None,
             pending_trust_preview: None,

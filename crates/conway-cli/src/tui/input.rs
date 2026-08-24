@@ -154,6 +154,28 @@ pub enum Action {
 /// guard here simply never fires for them, and `handle_key` falls through
 /// to the ordinary `mode` match exactly as it did before this item.
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
+    // Board item `01M0RWFH6V709B7WTAFRZGFKG3`: while an `/ask` is in
+    // flight, `Ctrl-C` reaches `Action::CtrlC` (-> `App::handle_ctrl_c` ->
+    // `App::abandon_ask`) no matter which surface is currently showing --
+    // in particular `Mode::AwaitingPermission`, whose own key handler below
+    // (`handle_permission_key`) swallows every chorded key including this
+    // one (`if !key.modifiers.is_empty() { return Action::None; }`), which
+    // is exactly the surface an ask waiting on a tool permission decision
+    // is showing. Without this, an ask stuck on a prompt the operator does
+    // not want to answer had no reachable abandon key at all: `Esc` there
+    // is already `DenyWithFeedback` (a real, different action -- denies
+    // JUST that call and lets the ask continue), not an abandon.
+    // Checked before every other guard/dispatch in this function, mirroring
+    // how the quit keys are documented to "pass through" every other
+    // modal-bearing surface (`Mode`'s own doc) -- this is the same rule,
+    // widened to the one in-flight case that predates any `Mode` variant
+    // existing for it at all.
+    if state.ask_in_flight
+        && key.modifiers == KeyModifiers::CONTROL
+        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+    {
+        return Action::CtrlC;
+    }
     // V4: the `/settings` menu is checked the same way `/help` is just
     // below -- informational, gated on `Mode::Normal`, never a `Mode`
     // variant (see `AppState::settings_open`'s own doc) -- and mutually

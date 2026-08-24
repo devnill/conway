@@ -414,6 +414,38 @@ impl AppState {
         self.promote_next_surface();
     }
 
+    /// Discards any pending permission prompt belonging to `agent` -- the
+    /// currently-showing one (if `mode` is `AwaitingPermission` for THIS
+    /// agent) and any behind it in `queued_prompts` (board item
+    /// `01M0RWFH6V709B7WTAFRZGFKG3`). Dropping a [`PendingPrompt`] drops its
+    /// `oneshot::Sender` half, which is exactly `TuiGate::check`'s own
+    /// documented fail-closed fallback (`Deny { reason: "cancelled" }` on a
+    /// dropped reply channel) -- **this is what actually frees an agent
+    /// parked awaiting the gate's reply.** `SessionHandle::cancel`'s
+    /// `CancellationToken` is checked cooperatively at specific points in
+    /// the agent loop, and the call site that blocks on a permission
+    /// decision (`conway-runtime/src/tools/runner.rs`'s `broker.decide(..)
+    /// .await`, BEFORE the `tokio::select!` that later races the tool's own
+    /// `invoke` against cancellation) is never one of them -- cancelling an
+    /// agent stuck there alone does nothing until its pending prompt is
+    /// separately discarded, which is what this method is for. Called from
+    /// `App::abandon_ask` before `SessionHandle::cancel`, so an ask child
+    /// parked on the gate is not left running.
+    ///
+    /// A no-op (for the live half) if the currently-showing prompt belongs
+    /// to a DIFFERENT agent -- an unrelated permission decision in front of
+    /// an abandoned ask is left exactly as it was, still awaiting its own
+    /// answer.
+    pub fn discard_prompts_for_agent(&mut self, agent: AgentId) {
+        if let Mode::AwaitingPermission(prompt) = &self.mode {
+            if prompt.request.agent_id == agent {
+                self.mode = Mode::Normal;
+                self.promote_next_surface();
+            }
+        }
+        self.queued_prompts.retain(|p| p.request.agent_id != agent);
+    }
+
     /// Opens the `/help` keybinding overlay (T7). See [`Self::help_open`]'s
     /// own doc for why this is a plain flag flip rather than a `mode`
     /// transition/park -- `commands.rs`'s `SlashCommand::Help` arm can only

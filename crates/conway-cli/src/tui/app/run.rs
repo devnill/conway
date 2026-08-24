@@ -18,6 +18,7 @@ use ratatui::backend::Backend;
 use ratatui::crossterm::event::{Event as CEvent, EventStream as CrosstermEventStream};
 use ratatui::Terminal;
 
+use super::ask::AskUpdate;
 use super::App;
 use super::SubmitOutcome;
 use crate::exit::ExitCode;
@@ -100,48 +101,162 @@ impl App {
                 // `dirty` stays false (no redraw). The palette length comes
                 // from the resolved `Theme` so a config-driven palette of a
                 // different size still wraps correctly.
+                // Board item `01M0RWFH6V709B7WTAFRZGFKG3`: the `||
+                // self.state.ask_in_flight` half is what makes an in-flight
+                // `/ask` visible at all -- `activity` is scoped to the
+                // FOCUSED agent's own stream (this arm's own doc, `state/
+                // status.rs`), and the ask's ephemeral child is never
+                // focused, so before this the spinner simply never ticked
+                // for it (the animation tick still ran every 125ms, but
+                // `should_animate` gated the whole arm and nothing marked
+                // the frame dirty). `view/status.rs::activity_ladder`
+                // reads `ask_in_flight`/`ask_started_at` directly to render
+                // the `⠋ asking… Ns` phrase this makes worth animating.
                 _ = anim_ticker.tick() => {
-                    if should_animate(&self.state.activity) {
+                    if should_animate(&self.state.activity) || self.state.ask_in_flight {
                         self.state.tick_animation();
                         dirty = true;
                     }
                 }
                 maybe_ask = modal_ask_rx.recv() => {
-                    if let Some(outcome) = maybe_ask {
-                        self.state.ask_in_flight = false;
-                        match outcome.child {
-                            // The child's single turn is done -- open the
-                            // modal over its answer and force the fate
-                            // choice. A turn-level error still opens the
-                            // modal (with the error text as the answer): the
-                            // child exists and the user must still choose
-                            // its fate (esc purges it, as ever).
-                            Some(child) => {
-                                let answer = outcome
-                                    .reply
-                                    .unwrap_or_else(|e| format!("error: {e}"));
-                                self.state.offer_ask_modal(AskModal {
-                                    question: outcome.question,
-                                    child,
-                                    answer,
-                                    error: None,
-                                });
+                    if let Some(update) = maybe_ask {
+                        match update {
+                            // Board item `01M0RWFH6V709B7WTAFRZGFKG3`: the
+                            // fork succeeded -- record the child so a
+                            // keyboard abandon (`Action::CtrlC` ->
+                            // `Self::handle_ctrl_c` -> `Self::abandon_ask`)
+                            // has a target. If the operator already
+                            // abandoned before this arrived (`ask_abandoned`
+                            // was set with no child known yet -- `Self::
+                            // abandon_ask`'s own doc), finish that job now:
+                            // discard any pending prompt and cancel, the
+                            // exact sequence `abandon_ask` itself runs when
+                            // the child was already known.
+                            AskUpdate::Started { child } => {
+                                self.state.ask_child = Some(child);
+                                if self.state.ask_abandoned {
+                                    self.cancel_ask_child(child).await;
+                                }
+                                dirty = true;
                             }
-                            // `SessionHandle::ask` itself failed: no child
-                            // was ever attached, so there is nothing to
-                            // fate -- a plain notice, no modal.
-                            None => {
-                                let err = outcome
-                                    .reply
-                                    .err()
-                                    .map(|e| e.to_string())
-                                    .unwrap_or_else(|| "unknown error".to_string());
-                                self.state.transcript.push(Entry::Notice {
-                                    text: format!("ask failed: {err}"),
-                                });
+                            AskUpdate::Done(outcome) => {
+                                self.state.ask_in_flight = false;
+                                self.state.ask_child = None;
+                                self.state.ask_started_at = None;
+                                let abandoned = std::mem::take(&mut self.state.ask_abandoned);
+                                match (abandoned, outcome.child) {
+                                    // Abandoned, and a child existed:
+                                    // `Self::abandon_ask`/`Self::
+                                    // cancel_ask_child` already cancelled it
+                                    // and discarded any pending prompt --
+                                    // but `AskUpdate::Done` arriving does
+                                    // NOT by itself prove the agent tree
+                                    // considers `child` terminal yet
+                                    // (`TurnHandle::text`'s own drain-to-
+                                    // event heuristic can resolve before the
+                                    // tree's status flips -- measured
+                                    // directly by this item's own tests, the
+                                    // reason `await_agent` -- not a bare
+                                    // `purge` attempt -- is what actually
+                                    // confirms it below). A bare `purge`
+                                    // here would risk reproducing the exact
+                                    // `RuntimeError::Store(StoreError::
+                                    // NotRemovable)` error this item was
+                                    // filed over.
+                                    (true, Some(child)) => {
+                                        match tokio::time::timeout(
+                                            Duration::from_secs(5),
+                                            self.handle.await_agent(child),
+                                        )
+                                        .await
+                                        {
+                                            Ok(Ok(_)) => {
+                                                if let Err(e) = self.conway.purge(child).await {
+                                                    self.state.transcript.push(Entry::Notice {
+                                                        text: format!(
+                                                            "could not discard the abandoned \
+                                                             /ask child: {e}"
+                                                        ),
+                                                    });
+                                                } else {
+                                                    self.state.transcript.push(Entry::Notice {
+                                                        text: "ask abandoned".to_string(),
+                                                    });
+                                                }
+                                            }
+                                            // A genuinely bounded wait, not
+                                            // an indefinite one -- the same
+                                            // "never block the exit" spirit
+                                            // `shutdown.rs::purge_open_ask_
+                                            // modal`'s own doc states for a
+                                            // purge failure: leftover
+                                            // residue is reaped by the next
+                                            // startup's own crash sweep
+                                            // (`Conway::
+                                            // sweep_stale_modal_asks`)
+                                            // either way, so this never
+                                            // blocks the app loop on
+                                            // something that failed to wind
+                                            // down promptly.
+                                            Ok(Err(e)) => {
+                                                self.state.transcript.push(Entry::Notice {
+                                                    text: format!(
+                                                        "ask abandoned, but its child's outcome \
+                                                         could not be confirmed ({e}) -- it \
+                                                         will be cleaned up on the next startup"
+                                                    ),
+                                                });
+                                            }
+                                            Err(_) => {
+                                                self.state.transcript.push(Entry::Notice {
+                                                    text: "ask abandoned, but its child is \
+                                                           taking a while to stop -- it will be \
+                                                           cleaned up on the next startup"
+                                                        .to_string(),
+                                                });
+                                            }
+                                        }
+                                    }
+                                    // Abandoned before the fork even
+                                    // reported success (or it never did) --
+                                    // nothing to purge.
+                                    (true, None) => {}
+                                    // The child's single turn is done -- open
+                                    // the modal over its answer and force
+                                    // the fate choice. A turn-level error
+                                    // still opens the modal (with the error
+                                    // text as the answer): the child exists
+                                    // and the user must still choose its
+                                    // fate (esc purges it, as ever).
+                                    (false, Some(child)) => {
+                                        let answer = outcome
+                                            .reply
+                                            .unwrap_or_else(|e| format!("error: {e}"));
+                                        self.state.offer_ask_modal(AskModal {
+                                            question: outcome.question,
+                                            child,
+                                            answer,
+                                            error: None,
+                                        });
+                                    }
+                                    // `SessionHandle::ask` itself failed: no
+                                    // child was ever attached, so there is
+                                    // nothing to fate -- a plain notice, no
+                                    // modal.
+                                    (false, None) => {
+                                        let err = outcome
+                                            .reply
+                                            .err()
+                                            .map(|e| e.to_string())
+                                            .unwrap_or_else(|| "unknown error".to_string());
+                                        self.state.transcript.push(Entry::Notice {
+                                            text: format!("ask failed: {err}"),
+                                        });
+                                    }
+                                }
+                                dirty = true;
                             }
                         }
-                        dirty = true;
                     }
                 }
                 // the reply side of

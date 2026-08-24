@@ -3,6 +3,19 @@
 //! parked child before the process actually exits). Extracted out of
 //! `app.rs` verbatim (this item, board); [`super::run`]'s own
 //! `Action::CtrlC`/`Action::Quit` arms are the production callers.
+//!
+//! **Board item `01M0RWFH6V709B7WTAFRZGFKG3` widened both paths to cover
+//! an ask that is IN FLIGHT (no modal open yet -- the question was asked
+//! but no answer has arrived), which the pre-existing "no fourth way out"
+//! machinery above never reached at all** (it only ever looked at
+//! `Mode::AskModal`/`pending_ask_modal`, both of which are empty during
+//! flight -- `AppState::mode`'s own doc). [`App::handle_ctrl_c`]'s first
+//! press now also abandons an in-flight ask (`App::abandon_ask`);
+//! [`App::purge_open_ask_modal`] now also cancels one and discards any
+//! pending prompt on quit -- but deliberately does NOT attempt to `purge`
+//! it (see that method's own doc for why attempting to would reproduce the
+//! exact `RuntimeError::Store(StoreError::NotRemovable)`/"agent is still
+//! running" error this item was filed over).
 
 use std::time::{Duration, Instant};
 
@@ -16,8 +29,13 @@ use crate::tui::state::{Entry, Mode};
 const DOUBLE_CTRL_C_WINDOW: Duration = Duration::from_secs(2);
 
 impl App {
-    /// First `Ctrl-C`: cancel the running turn, arm the double-press
-    /// window. Second `Ctrl-C` within [`DOUBLE_CTRL_C_WINDOW`]: exit 130.
+    /// First `Ctrl-C`: cancel the running turn (and, board item
+    /// `01M0RWFH6V709B7WTAFRZGFKG3`, abandon an in-flight `/ask` if one is
+    /// running -- see [`App::abandon_ask`]'s own doc; the two are
+    /// independent and both best-effort, so an ask with nothing else
+    /// running still gets abandoned, and an ordinary turn with no ask in
+    /// flight is unaffected), arm the double-press window. Second `Ctrl-C`
+    /// within [`DOUBLE_CTRL_C_WINDOW`]: exit 130.
     pub(super) async fn handle_ctrl_c(
         &mut self,
         last_ctrl_c: &mut Option<Instant>,
@@ -32,6 +50,12 @@ impl App {
             }
         }
         *last_ctrl_c = Some(now);
+        // Board item `01M0RWFH6V709B7WTAFRZGFKG3`: a no-op when no ask is
+        // in flight (`abandon_ask`'s own guard) -- checked before the
+        // root-turn cancel below so an ask abandoned this press still gets
+        // its own "ask abandoned -- cleaning up" notice ahead of whatever
+        // the root cancel below reports.
+        self.abandon_ask().await;
         // Best-effort: a cancel failure (e.g. nothing running) is not fatal
         // to the session -- surfaced as a notice, not a crash.
         if let Err(e) = self.handle.cancel(self.handle.root(), "user cancel").await {
@@ -53,6 +77,26 @@ impl App {
     /// a purge failure only leaves residue the NEXT startup's crash sweep
     /// (`Conway::sweep_stale_modal_asks`, wired in `tui::mod.rs`) reaps --
     /// it never blocks the exit.
+    ///
+    /// **Board item `01M0RWFH6V709B7WTAFRZGFKG3`: a FOURTH case, an ask
+    /// still genuinely in flight** (no modal open, none parked -- the
+    /// question was asked but no answer has arrived yet). This is
+    /// deliberately handled differently from the other three: `purge`
+    /// requires a TERMINAL agent (`RuntimeError::Store(StoreError::
+    /// NotRemovable)`, "agent is still running", otherwise -- the exact
+    /// error this item was filed over), and a running turn does not become
+    /// terminal the instant this method cancels it (this item's own
+    /// reproduction test measured the gap). Attempting `purge` here
+    /// synchronously would reproduce that same error on quit, so this does
+    /// NOT attempt it. What it does instead, deliberately: best-effort
+    /// cancel the child and discard any pending permission prompt for it
+    /// (`Self::cancel_ask_child`, same sequence a keyboard abandon runs),
+    /// clear the in-flight bookkeeping, and record a notice naming what
+    /// happens to the residue -- the next startup's own crash sweep
+    /// (`Conway::sweep_stale_modal_asks`), the SAME mechanism every other
+    /// branch of this method already leans on for a purge failure. The
+    /// process is exiting either way; there is nothing left in THIS run to
+    /// wait for the cancellation to land.
     pub(super) async fn purge_open_ask_modal(&mut self) {
         // The modal is either live (`Mode::AskModal`) or parked in
         // `pending_ask_modal` while a permission prompt is showing; take
@@ -75,6 +119,21 @@ impl App {
                     text: format!("could not discard the /ask child on exit: {e}"),
                 });
             }
+        }
+        // The fourth case -- see this method's own doc above.
+        if self.state.ask_in_flight {
+            if let Some(child) = self.state.ask_child {
+                self.cancel_ask_child(child).await;
+            }
+            self.state.ask_in_flight = false;
+            self.state.ask_child = None;
+            self.state.ask_started_at = None;
+            self.state.ask_abandoned = false;
+            self.state.transcript.push(Entry::Notice {
+                text: "ask abandoned on exit -- its child will be cleaned up automatically \
+                       on the next startup"
+                    .to_string(),
+            });
         }
         // C2: drain a parked intent confirmation card on exit too. Unlike
         // the /ask modal there is no live child to purge (the card opens

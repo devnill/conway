@@ -1471,6 +1471,13 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 Effect::None
             } else {
                 state.ask_in_flight = true;
+                // Board item `01M0RWFH6V709B7WTAFRZGFKG3`: stamped at
+                // submit time, not once `AskUpdate::Started` reports the
+                // forked child (a small delay later) -- the status line's
+                // elapsed figure should read from the moment the operator
+                // actually asked, and this is the earliest point `AppState`
+                // is touched at all for this ask.
+                state.ask_started_at = Some(std::time::Instant::now());
                 Effect::RunModalAsk { question }
             }
         }

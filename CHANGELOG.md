@@ -36,6 +36,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/ask` now shows that it's working, can be abandoned from the
+  keyboard, and no longer hangs unrecoverably when its child needs a tool
+  permission decision** — three symptoms reported from use: no indicator
+  while a question was in flight, quitting failing with "agent is still
+  running" (`purge` refuses a non-terminal agent), and asking anything
+  that needed a tool appearing to hang forever with no way out. The status
+  line's `activity` field now shows `⠋ asking… Ns` for the duration (the
+  same spinner/elapsed language an ordinary turn already uses, not a
+  second one); `Ctrl-C` abandons an in-flight ask, and quitting with one
+  in flight abandons it too instead of erroring. **The apparent hang was
+  not a mode-stacking deadlock** — the permission prompt does reach the
+  gate and an operator can answer it exactly as they would any other
+  prompt — but `SessionHandle::cancel` alone could never unblock a child
+  parked awaiting a permission decision: the agent loop only checks its
+  cancellation token at specific cooperative points, and the call site
+  that blocks on `broker.decide(..).await` is not one of them. Abandoning
+  an ask now discards its pending prompt first (`TuiGate::check`'s own
+  fail-closed `Deny` fallback on a dropped reply channel is what actually
+  frees it), then cancels the child — the ask child's tools are
+  unchanged and still reachable, since denying them would also silently
+  break any question that genuinely needed one. See
+  [`docs/interactive.md`](docs/interactive.md#slash-commands) and its
+  "Ending a session" section.
 - **One-shot's `--allowed-tools` now narrows what the model is TOLD it has,
   not just what it's permitted to call** — a dogfooding session found
   `conway -p '…' --allowed-tools 'read,grep'` opening with the model

@@ -55,7 +55,7 @@ mod viewport;
 #[cfg(test)]
 pub(super) mod fixtures;
 
-use ask::ModalAskOutcome;
+use ask::AskUpdate;
 use plugin_cmd::PluginCommandDone;
 
 pub struct App {
@@ -81,8 +81,8 @@ pub struct App {
     /// exactly one fate (`f`/`p`/`Esc`). `modal_ask_tx` is cloned into
     /// each spawned task; `modal_ask_rx` is taken out of `self` once, in
     /// `run`, and polled there as an extra `tokio::select!` arm.
-    modal_ask_tx: mpsc::UnboundedSender<ModalAskOutcome>,
-    modal_ask_rx: Option<mpsc::UnboundedReceiver<ModalAskOutcome>>,
+    modal_ask_tx: mpsc::UnboundedSender<AskUpdate>,
+    modal_ask_rx: Option<mpsc::UnboundedReceiver<AskUpdate>>,
     /// The installed plugin commands,
     /// built once at [`Self::new`] from the plugin list the caller (`tui::run`,
     /// ultimately `main.rs`) was handed -- the SAME list installed into the
@@ -426,6 +426,7 @@ mod tests {
     use conway_core::ids::{BackendId, ModelId};
     use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
+    use super::ask;
     use super::fixtures::{
         base_config, build_conway_with_echo_backend, build_conway_with_echo_backend_and_store,
         build_conway_with_echo_backend_over, minimal_cli,
@@ -1094,6 +1095,12 @@ mod tests {
     /// arm does (`run.rs`) -- so each fate test below starts from the SAME
     /// state a real interactive `/ask` would. Returns the ephemeral
     /// child's `AgentId`.
+    ///
+    /// Board item `01M0RWFH6V709B7WTAFRZGFKG3` widened `modal_ask_rx`'s own
+    /// message type from the bare final outcome to `ask::AskUpdate`
+    /// (`Started` then `Done`) -- this helper drains the (now guaranteed)
+    /// leading `Started` message first, exactly as `App::run`'s own arm
+    /// does, before waiting on `Done`; nothing below this point changed.
     async fn drive_ask_to_modal(app: &mut App, question: &str) -> conway::AgentId {
         let outcome = app
             .submit(format!("/ask {question}"))
@@ -1106,7 +1113,25 @@ mod tests {
              before Effect::RunModalAsk ever reaches Self::spawn_modal_ask"
         );
 
-        let ask_outcome = tokio::time::timeout(
+        let started = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            app.modal_ask_rx
+                .as_mut()
+                .expect("modal_ask_rx is set by App::new")
+                .recv(),
+        )
+        .await
+        .expect("the spawned /ask task must report AskUpdate::Started promptly")
+        .expect("modal_ask_tx's sender half is alive for the duration of this call");
+        let started_child = match started {
+            ask::AskUpdate::Started { child } => child,
+            ask::AskUpdate::Done(_) => {
+                panic!("AskUpdate::Started must always precede AskUpdate::Done")
+            }
+        };
+        app.state.ask_child = Some(started_child);
+
+        let done = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             app.modal_ask_rx
                 .as_mut()
@@ -1116,12 +1141,24 @@ mod tests {
         .await
         .expect("the spawned /ask task must reply promptly")
         .expect("modal_ask_tx's sender half is alive for the duration of this call");
+        let ask_outcome = match done {
+            ask::AskUpdate::Done(outcome) => outcome,
+            ask::AskUpdate::Started { .. } => {
+                panic!("exactly one Started must precede exactly one Done")
+            }
+        };
 
         // Mirrors `App::run`'s own `modal_ask_rx.recv()` arm exactly.
         app.state.ask_in_flight = false;
+        app.state.ask_child = None;
+        app.state.ask_started_at = None;
         let child = ask_outcome
             .child
             .expect("SessionHandle::ask must succeed against the in-memory echo backend");
+        assert_eq!(
+            child, started_child,
+            "the child id reported by Started must match the one Done reports"
+        );
         app.state.offer_ask_modal(AskModal {
             question: ask_outcome.question,
             child,
