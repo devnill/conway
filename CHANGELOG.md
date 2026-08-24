@@ -974,6 +974,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`/tree`'s own doc comment claimed its rendering "always matches what `/agents` shows"; it no longer does, since `01M0RWKJD04JBR5NCVKBQXYHV4` gave the `/agents` panel a screen-relative short id** — board item `01M0TNCAP1HH4YNC5K9753YG26`. Decided in favor of keeping `/tree` on full ids: a transcript line outlives the row set that made a short prefix unique, so it needs a durable reference, not a screen affordance. `commands.rs`, `docs/agents.md`, and `docs/interactive.md` now say so explicitly instead of claiming parity that doesn't hold.
 
+### Added
+
+- **Agents can be given names, and every agent-targeted command accepts one** — board item `01M0TV5BSE98S16SFYECG9G9WP`, decision `01M0TV3ZZBDKSSV7MD0FW3FSY7`. A new first-party plugin, `conway.names`, contributes `/conway.names.rename`, `/conway.names.unname`, and `/conway.names.list`; a named agent shows its name in the `/agents` panel and answers to it from `/steer`, `/context`, and `/fork @<agent>`, because all of them already route through one resolver. Names persist across restarts in `agent-names.json` beside your `settings.json`, and a name sits **alongside** an agent's id — never instead of it. Documented in `docs/plugins/names.md`.
+- **Naming ships with ZERO change to `conway-core`, which is the second half of the deliverable** — the `AgentNames` trait AND its filesystem implementation both live in `crates/conway-plugin-names`; `conway-cli` threads one `Arc` exactly the way it already threads `conway.memory`'s store. A core `AnnotationStore` port and a plugin-owned file the CLI reads were both weighed and rejected (the second is a shape this project already abandoned once — see `conway_core::ports::memory_store`'s own module doc). Opt-in like every other member of the first-party bundle: uninstalled, the `/agents` panel and the agent resolver behave exactly as they did before, and no file is created.
+
 ## [0.9.0] — 2026-08-13
 
 ### Added

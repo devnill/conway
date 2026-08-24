@@ -52,10 +52,16 @@ use crate::tui::commands::CommandRegistry;
 /// through to [`first_party_plugins::installed_plugins`] below, never
 /// re-resolved here, so this call site cannot open a second `FsMemoryStore`
 /// over the same root.
+///
+/// `agent_names` is the identical arrangement for `conway.names`'s own
+/// store (board item `01M0TV5BSE98S16SFYECG9G9WP`): forwarded, never
+/// re-resolved, so `conway conway.names.rename ...` run as a one-shot
+/// subcommand writes into the SAME file the TUI reads names out of.
 pub async fn run(
     args: &[String],
     conway: &Conway,
     memory_store: Arc<dyn MemoryStore>,
+    agent_names: Arc<dyn conway_plugin_names::AgentNames>,
 ) -> conway::Result<ExitCode> {
     let Some(full_name) = args.first() else {
         // Unreachable through clap's own `external_subcommand`, which never
@@ -68,7 +74,7 @@ pub async fn run(
     };
     let rest = args[1..].join(" ");
 
-    let plugins = first_party_plugins::installed_plugins(conway, memory_store);
+    let plugins = first_party_plugins::installed_plugins(conway, memory_store, agent_names);
     let registry = match CommandRegistry::build(&plugins) {
         Ok(registry) => registry,
         Err(e) => {

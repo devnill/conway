@@ -58,14 +58,37 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
             // whitespace-delimited token, copyable off the screen on its
             // own straight into `/context`/`/steer`/`/fork @<agent>`.
             let short_id = panel_agent_id(state, node.agent_id);
+            // Board item `01M0TV5BSE98S16SFYECG9G9WP`: the operator's own
+            // name for this agent, when `conway.names` is installed and
+            // they gave it one. `agent_name` returns `None` for every row
+            // when the plugin is absent, so an uninstalled build draws the
+            // identical row it drew before this item.
+            //
+            // Placed BETWEEN the short id and the `agent_def` label, and
+            // the label is dimmed to annotation when a name is present:
+            // with a name on the row the name is the handle -- it is what
+            // `/steer`/`/context` accept -- and the def label becomes
+            // context about what the agent IS, the same tier as the recipe
+            // parts beside it. The id column is untouched either way: a
+            // name never REPLACES an id (decision
+            // `01M0TV3ZZBDKSSV7MD0FW3FSY7`: alongside, never instead of),
+            // and an operator who renames nothing loses nothing.
+            let name = agent_name(state, node.agent_id);
             let mut spans = vec![
                 Span::raw(indent),
                 Span::styled(marker, status_style(node.status, theme)),
                 Span::raw(" "),
                 Span::styled(short_id, theme.dim),
                 Span::raw(" "),
-                Span::raw(label),
             ];
+            match &name {
+                Some(name) => {
+                    spans.push(Span::raw(name.clone()));
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(label, theme.dim));
+                }
+                None => spans.push(Span::raw(label)),
+            }
             // Item A2: the recipe label (what context recipe this agent was
             // spawned with), dimmed so it reads as annotation next to the
             // row's own label.
@@ -186,6 +209,24 @@ pub(crate) fn short_agent_id(id: conway::AgentId) -> String {
 /// How many characters [`short_agent_id`] keeps, and the floor
 /// [`panel_agent_id`] never goes below.
 pub(crate) const SHORT_AGENT_ID_LEN: usize = 8;
+
+/// The operator-chosen name for `id`, if `conway.names` is installed and a
+/// name was set (board item `01M0TV5BSE98S16SFYECG9G9WP`).
+///
+/// `None` covers BOTH "the plugin is not installed" (`AppState::
+/// agent_names` is `None`) and "installed, but this agent has no name" --
+/// deliberately one case for the panel, because the row is identical
+/// either way. That is what makes "uninstalled behaves exactly as today"
+/// a property of the code rather than a claim about it.
+///
+/// A pure function of `AppState`, like `panel_agent_id` and
+/// `recipe_parts` beside it, so a name's effect on a row is unit-testable
+/// with no terminal. Reads through the in-memory map the store keeps -- see
+/// `conway_plugin_names::FsAgentNames`'s own doc for why a per-row,
+/// per-frame `get` is not filesystem traffic.
+pub(crate) fn agent_name(state: &AppState, id: conway::AgentId) -> Option<String> {
+    state.agent_names.as_ref().and_then(|names| names.get(&id))
+}
 
 /// The shortest prefix of `id` that no OTHER agent currently in the tree
 /// shares -- never shorter than [`SHORT_AGENT_ID_LEN`].
@@ -1012,5 +1053,93 @@ mod tests {
         assert_eq!(hop_label(&n), short_agent_id(id));
         assert!(!hop_label(&n).contains("fork"));
         assert!(!hop_label(&n).contains('@'));
+    }
+
+    /// Board item `01M0TV5BSE98S16SFYECG9G9WP`: with `conway.names`
+    /// installed and a name set, the row carries the name -- and still
+    /// carries the short id, because a name is ALONGSIDE an id, never
+    /// instead of it (decision `01M0TV3ZZBDKSSV7MD0FW3FSY7`).
+    ///
+    /// Non-vacuous: both fixture rows have `agent_def: None`, so both read
+    /// the literal "agent", and only one of them is named -- a panel that
+    /// dropped the name, or showed it on every row, fails here.
+    #[test]
+    fn a_named_agents_row_shows_the_name_beside_its_id_not_instead_of_it() {
+        let root: AgentId = "01HF7YAT000000000000000001".parse().unwrap();
+        let child: AgentId = "01J000000000000000000000A2".parse().unwrap();
+        let mut state = AppState::new(root);
+        state.tree.nodes.push(node(
+            child,
+            Some(root),
+            None,
+            NodeStatus::Running,
+            None,
+            None,
+            false,
+        ));
+        let store: std::sync::Arc<dyn conway_plugin_names::AgentNames> =
+            std::sync::Arc::new(conway_plugin_names::InMemoryAgentNames::new());
+        store.set(&child, "scout").expect("set");
+        state.agent_names = Some(store);
+
+        let text = rendered(&state, 80, 10);
+        assert!(text.contains("scout"), "the name must be drawn: {text:?}");
+        assert!(
+            text.contains(&panel_agent_id(&state, child)),
+            "the id must still be drawn beside it: {text:?}"
+        );
+        assert_eq!(
+            text.matches("scout").count(),
+            1,
+            "only the named row may carry the name: {text:?}"
+        );
+    }
+
+    /// The uninstalled case, which is half of this item's deliverable: with
+    /// no store on `AppState` (what every `AppState::new` produces), the
+    /// panel draws exactly what it drew before the name existed.
+    #[test]
+    fn with_no_names_store_the_panel_row_is_byte_for_byte_what_it_was() {
+        let root: AgentId = "01HF7YAT000000000000000001".parse().unwrap();
+        let child: AgentId = "01J000000000000000000000A2".parse().unwrap();
+        let mut state = AppState::new(root);
+        state.tree.nodes.push(node(
+            child,
+            Some(root),
+            Some("planner"),
+            NodeStatus::Running,
+            None,
+            None,
+            false,
+        ));
+        let without = rendered(&state, 80, 10);
+
+        // An INSTALLED store that simply holds no name for either agent
+        // must render identically too -- `agent_name` deliberately collapses
+        // "not installed" and "no name for this agent" into one case.
+        state.agent_names = Some(std::sync::Arc::new(
+            conway_plugin_names::InMemoryAgentNames::new(),
+        ));
+        let with_empty_store = rendered(&state, 80, 10);
+        assert_eq!(
+            without, with_empty_store,
+            "an installed-but-empty store must not change a single character of the panel"
+        );
+        assert!(
+            without.contains("planner"),
+            "precondition: the unnamed row still shows its agent_def label: {without:?}"
+        );
+    }
+
+    /// `agent_name` is `None` for both reasons the panel treats alike.
+    #[test]
+    fn agent_name_is_none_without_a_store_and_without_an_entry() {
+        let id = AgentId::new();
+        let mut state = AppState::new(id);
+        assert_eq!(agent_name(&state, id), None, "no store installed");
+        state.agent_names = Some(std::sync::Arc::new(
+            conway_plugin_names::InMemoryAgentNames::new(),
+        ));
+        assert_eq!(agent_name(&state, id), None, "installed, but no entry");
     }
 }

@@ -79,11 +79,24 @@ fn sweep_live_threshold() -> chrono::Duration {
 /// (no such accessor exists on `Conway`/`Runtime` today). `main.rs`'s
 /// `dispatch` is this parameter's one caller, resolving it via
 /// `first_party_plugins::installed_plugins`.
+///
+/// `agent_names`: the SAME `conway_plugin_names::AgentNames` store that
+/// same caller handed the `conway.names` plugin inside `plugins` (board
+/// item `01M0TV5BSE98S16SFYECG9G9WP`), parked on `AppState::agent_names`
+/// immediately after [`App::new`] so `commands::resolve_agent` can accept
+/// a name and `view::agents` can draw one. Set here, on the ONE production
+/// call site, rather than threaded through `App::new`'s signature:
+/// `App::new` has ~40 call sites in this crate's own tests, every one of
+/// which would otherwise have to name a store it does not use, and none of
+/// which exercises naming. When `conway.names` is not installed this is
+/// the non-durable `InMemoryAgentNames` fallback -- always empty, so every
+/// surface behaves exactly as it did before this item existed.
 pub async fn run(
     cli: &Cli,
     conway: Conway,
     gate_rx: GateReceiver,
     plugins: &[std::sync::Arc<dyn conway::plugin::Plugin>],
+    agent_names: std::sync::Arc<dyn conway_plugin_names::AgentNames>,
 ) -> conway::Result<ExitCode> {
     install_panic_hook(restore_terminal);
 
@@ -129,8 +142,13 @@ pub async fn run(
         }
     };
 
+    // `with_agent_names` is the one place this process's `AgentNames` store
+    // reaches the TUI (this function's own doc for why it is a setter
+    // rather than an `App::new` parameter). Chained onto the `Ok` arm, so
+    // no `App` ever exists in a constructed-but-unwired state and no frame
+    // is drawn without it.
     let app = match App::new(cli, &conway, plugins).await {
-        Ok(app) => app,
+        Ok(app) => app.with_agent_names(agent_names),
         Err(e) => {
             restore_terminal();
             return Err(e);

@@ -811,6 +811,31 @@ pub struct AppState {
     /// arm's own comment). `Arc` so cloning it (every `AppState::new` call,
     /// the `Resume` carry-across) is a refcount bump, not a `Vec` copy.
     pub plugin_commands: std::sync::Arc<Vec<PluginCommandEntry>>,
+    /// The operator-chosen agent names `conway.names` stores, when that
+    /// plugin is installed (board item `01M0TV5BSE98S16SFYECG9G9WP`,
+    /// decision `01M0TV3ZZBDKSSV7MD0FW3FSY7`).
+    ///
+    /// **`None` is the whole of the uninstalled behaviour.** Every reader
+    /// -- `commands::resolve_agent`, `view::agents::draw` -- treats `None`
+    /// and "installed but this agent has no name" identically, so a build
+    /// without `conway.names` in `[plugins].install` behaves exactly as
+    /// this crate did before the field existed. `AppState::new` seeds it
+    /// `None`; `tui::run` sets it once, immediately after `App::new`, from
+    /// the ONE store `main.rs` resolved for this process (see that
+    /// function's own doc for why it is not an `App::new` parameter).
+    ///
+    /// **NOT reset by `/resume`**, for the same reason
+    /// [`Self::plugin_commands`] is not: this is process-lifetime
+    /// configuration (which plugins this binary installed at startup), not
+    /// session-scoped state. `commands::execute`'s `Resume` arm carries it
+    /// across the `AppState::new` reset by hand, alongside
+    /// `plugin_commands`.
+    ///
+    /// The trait is `conway_plugin_names`'s own, not `conway-core`'s --
+    /// naming ships entirely in the plugin tier and core never learns the
+    /// word "name". This crate may name it because it already links that
+    /// crate in order to install it; see `conway_plugin_names`'s module doc.
+    pub agent_names: Option<std::sync::Arc<dyn conway_plugin_names::AgentNames>>,
 }
 
 impl AppState {
@@ -844,6 +869,10 @@ impl AppState {
             structured_prompt_rules: Vec::new(),
             hook_rules: Vec::new(),
             plugin_browser: Vec::new(),
+            // See the field's own doc: `None` is exactly the behaviour of
+            // a build with `conway.names` uninstalled, which is what every
+            // `AppState::new` caller other than `tui::run` wants.
+            agent_names: None,
             permission_grant_scope: conway::PermissionScope::Session,
             scroll: 0,
             follow_tail: true,
