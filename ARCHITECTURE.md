@@ -212,6 +212,11 @@ Members today:
   tool call/result round-trips older than a configurable turn window: the
   smallest honest curator over the path/curation machinery above, which had
   no production consumer before it.
+- **`crates/conway-plugin-names`** (`conway.names`) — operator-chosen,
+  renameable names for agents: three commands
+  (`/conway.names.rename`/`.unname`/`.list`) over a small `AgentNames`
+  store shared with the TUI's own name reads, so a rename is visible to
+  `/agents` and to `/steer` immediately, with no reload.
 - **`crates/conway-plugin-subprocess`** — the out-of-process plugin host: an
   external program named in `[plugins].subprocess[]` is spawned and speaks
   conway's own wire protocol (`tool/1`, `permission.policy/1`, `observe/1`,

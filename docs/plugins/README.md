@@ -24,6 +24,7 @@ a summary pointing somewhere else.
 | [`path.md`](path.md) — `conway.path` | What does the `compose_context_path` tool let a model do to a session's future context, what does it report afterward, and how does it avoid silently undoing an earlier exclusion? | You want an operator's stated intent ("forget that dead end", "bring in what we found in that other session") to actually change what a later turn sees, or you're evaluating what this new capability can and cannot read/write. |
 | [`discover.md`](discover.md) — `conway.discover` | What does the `search_sessions` tool let a model find that it did not already hold a reference to, what does a search cost, and how wide can it reach? | You want an operator's stated intent ("what did we work out yesterday") to name a session the model never started or spawned, or you're evaluating what this reaches and what it costs before it runs. |
 | [`skills.md`](skills.md) — `conway.skills` | What does progressive skill disclosure narrow, and what does `read_skill` cost? | You have full-body skills in context and want to try narrowing them to a one-line index. |
+| [`names.md`](names.md) — `conway.names` | What does naming an agent actually change, and how does a name interact with the id and short-id it sits alongside? | You are steering more than a couple of agents by id and want a handle you remember instead. |
 | [`mcp.md`](mcp.md) — the MCP client | How do I bring an existing MCP server's tools into conway, and what is conway's own MCP client (not server) posture? | You have an MCP server already and want its tools available to the model, or you're evaluating what naming one in `[plugins].mcp` actually trusts. |
 | [`scripts.md`](scripts.md) — the script convention | How would a hook fire a script in any language, and what does that cost per invocation? | You want a hook in something other than Rust. **Describes a designed convention; no script-dispatching plugin exists yet.** |
 | [`inference-hooks.md`](inference-hooks.md) — hooks judged by a model | When should a hook call an LLM rather than express a static rule, and do I fork or spawn? | You're weighing an inference-evaluated hook. Read its "when NOT to use one" section first. |
@@ -58,9 +59,23 @@ full design describes (a persistent connection, `permission.policy/1`,
 `context.hook/1`, `observe/1`, a `plugin` trust subject) is not, and that
 page's own "What's left" section names each gap.
 
-## Six shipped first-party plugins
+## Nine shipped first-party plugins
 
-Six capabilities beyond the mechanism itself now ship, each installable
+**The membership rule for this section:** every id
+[`first_party_plugins::bundle()`](../../crates/conway-cli/src/first_party_plugins.rs)
+resolves to a `Plugin` candidate gets a bullet below — that function, not
+this page, is the source of truth for what the shipped binary can install
+through `[plugins].install`; re-derive the list yourself with
+`grep 'Arc::new(conway_plugin_' crates/conway-cli/src/first_party_plugins.rs`
+whenever this section is in doubt. A bullet links a dedicated page when one
+exists; where none does yet, the bullet says so rather than silently
+omitting the id. `conway.routing` installs the same way but is resolved by
+`bundle`'s sibling `router_bundle()` (it implements `RouterFactory`, not
+`Plugin`), and the two backend ids come from another sibling,
+`backend_bundle()` — both outside `bundle()` itself, so both are outside
+this section's rule; see [`docs/routing.md`](../routing.md) for the former.
+
+Nine capabilities beyond the mechanism itself now ship, each installable
 with a one-line `settings.json` edit and no rebuild:
 
 - [`memory.md`](memory.md) — `conway.memory`, a mutable store the model can
@@ -72,9 +87,6 @@ with a one-line `settings.json` edit and no rebuild:
 - [`skills.md`](skills.md) — `conway.skills`, progressive skill disclosure:
   narrows full-body skill context to a one-line index plus a `read_skill`
   tool.
-- [`mcp.md`](mcp.md) — the MCP-over-stdio **client**: brings an existing MCP
-  server's tools into conway. Not an MCP server — conway does not expose
-  itself over MCP.
 - [`path.md`](path.md) — `conway.path`, a tool (`compose_context_path`) a
   model calls to compose what a session sends as context on its NEXT turn —
   bring specific records in from another session, leave specific records of
@@ -89,11 +101,41 @@ with a one-line `settings.json` edit and no rebuild:
   into a bounded content scan. Reports what it searched and what that cost.
   Install alongside `conway.path`: this tool finds, `compose_context_path`
   composes.
+- [`names.md`](names.md) — `conway.names`, operator-chosen, renameable
+  names for agents: `/conway.names.rename`/`.unname`/`.list` over a store
+  shared with the TUI's own `/agents` panel, so a rename is visible
+  immediately, with no reload.
 - `conway.trim` — a `Curator` that omits tool call/result round-trips older
   than a configurable turn window, keeping context small as a session grows
-  long. Fully wired into the shipped binary, same footing as the five
-  above — no dedicated page in this set yet; see `conway-plugin-trim`'s own
-  crate-level doc for the full design.
+  long. Fully wired into the shipped binary, same footing as the four
+  above with dedicated pages — no dedicated page in this set yet; see
+  `conway-plugin-trim`'s own crate-level doc for the full design.
+- `conway.history` — `/conway.history.rewind <seq>`/`.mask`/`.checkout`:
+  forks the calling session at a sequence number, masks a record out of
+  future context, or checks out a prior session as the active one. No
+  dedicated page in this set yet; see `conway-plugin-history`'s own
+  crate-level doc.
+- `conway.stepguard` — repeated-tool-call detection, moved out of the agent
+  loop and into the plugin tier so declining it (`PHILOSOPHY.md` §6) is
+  something an operator can actually do. No dedicated page in this set yet;
+  see `conway-plugin-stepguard`'s own crate-level doc.
+- `conway.plugin_skeleton` — **not operator-facing.** A worked example
+  proving the install mechanism end to end (one `skeleton_ping` tool, one
+  custom event); it performs no real work of its own, and exists so a
+  third-party plugin author has a real, shipped, first-party-tier plugin to
+  point at instead of a description of one. Listed here for completeness
+  against `bundle()`, not as a capability to install. See
+  `conway-plugin-skeleton`'s own crate-level doc.
+
+## The MCP client — first-party, but not a `[plugins].install` id
+
+[`mcp.md`](mcp.md) — the MCP-over-stdio **client**: brings an existing MCP
+server's tools into conway. Not an MCP server — conway does not expose
+itself over MCP. Deliberately excluded from the count above: MCP attaches
+through `[plugins].mcp[]` (naming a command to spawn), a config surface
+separate from `[plugins].install`, and `first_party_plugins::bundle()` never
+resolves it — `crates/conway-cli/src/mcp_plugins.rs` is its own choke
+point.
 
 ## Everything not in this set
 
