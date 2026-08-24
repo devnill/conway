@@ -189,6 +189,36 @@ asking "what did I ask you to echo earlier?" gets the right answer back,
 proving the persisted transcript round-trips through resume correctly, not
 just that the flag is accepted.
 
+**Where "that exact session id" comes from, in real one-shot output** — the
+same captured run shown in [`scripting.md`](scripting.md#json)'s
+`--output-format json` example:
+
+```json
+{
+  "agent_id": "01KYWYFT24JSQPR1EYQXHMNQX2",
+  "status": { "status": "completed" },
+  "summary": "pong",
+  "facts": [],
+  "artifacts": [],
+  "structured": null,
+  "transcript_ref": "01KYWYFT24KYFWXSBS95GHCQMN",
+  "usage": {
+    "input_tokens": 15856,
+    "output_tokens": 4454,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "reasoning_tokens": 0
+  },
+  "steps_taken": 4
+}
+```
+
+`--resume` takes `transcript_ref`, not `agent_id` — `conway --resume
+01KYWYFT24KYFWXSBS95GHCQMN …` reattaches to this session.
+`01KYWYFT24JSQPR1EYQXHMNQX2`, the same object's `agent_id`, names the agent
+rather than the session; passing it to `--resume` instead fails with
+`session … not found`.
+
 `agent_def`/`role`/`cwd` are **not** overridable on resume — they come back
 exactly as the persisted header recorded them; there's no flag or spec
 field to change them on the way back in.

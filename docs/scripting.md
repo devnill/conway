@@ -150,6 +150,22 @@ $ conway -p "reply with exactly the word pong and nothing else" --output-format 
 }
 ```
 
+**Two fields here are id-shaped, and only one of them is a session handle.**
+`transcript_ref` is what `--session`, `--resume`, and `--fork-from` (see
+[`sessions.md`](sessions.md#resuming)) accept — it names the *session*, the
+append-only log those flags reattach to, create, or branch from
+(`AgentResult::transcript_ref: SessionId`). `agent_id` names the *agent node
+in the tree* instead (`AgentResult::agent_id: AgentId`, the same struct) —
+useful for correlating this result with the `agent`/`agent_spawned`/
+`agent_finished` lines for the same run in a concurrent `jsonl` stream (see
+below), but not a session id. It is also the more visually prominent of the
+two — first in the object, and the field most output formats lead with — so
+it is the one a script is likeliest to reach for first. Passing it to
+`--resume` fails: `conway --resume 01KYWYFT24JSQPR1EYQXHMNQX2 …` (this run's
+`agent_id`, not its `transcript_ref`) errors with `session … not found`
+instead of reattaching. Pass `transcript_ref` — `01KYWYFT24KYFWXSBS95GHCQMN`
+above — instead.
+
 ### `jsonl`
 
 One JSON line per envelope, uniformly and unconditionally — no event-kind
