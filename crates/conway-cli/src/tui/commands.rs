@@ -95,8 +95,15 @@ pub enum SlashCommand {
         text: String,
     },
     Tree,
+    /// `agent` is `None` for a bare `/context` (board item
+    /// `01M0RWKJD04JBR5NCVKBQXYHV4`: the only way to learn an id from the
+    /// TUI was a wrong-on-purpose prefix guess) -- `execute` then resolves
+    /// it to `AppState::focused_agent`, mirroring [`SlashCommand::Fork`]'s
+    /// own bare-defaults-to-focused convention. `agent` is `Some` for the
+    /// explicit `/context <agent>` form, resolved through `resolve_agent`
+    /// exactly as before.
     Context {
-        agent: String,
+        agent: Option<String>,
     },
     Why,
     /// `agent` is `None` for a BARE `/fork`/`/fork <directive>` (WI "bare
@@ -276,8 +283,8 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
         },
         SlashCommand::Context { .. } => CommandSpec {
             name: "/context",
-            usage: "/context <agent>",
-            description: "show an agent's assembled context",
+            usage: "/context [<agent>]",
+            description: "show an agent's assembled context (defaults to the focused agent)",
         },
         SlashCommand::Tree => CommandSpec {
             name: "/tree",
@@ -374,9 +381,7 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
             target: String::new(),
             text: String::new(),
         },
-        SlashCommand::Context {
-            agent: String::new(),
-        },
+        SlashCommand::Context { agent: None },
         SlashCommand::Tree,
         SlashCommand::Why,
         SlashCommand::Fork {
@@ -467,7 +472,19 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             Ok(SlashCommand::Tree)
         }
         "/context" => {
-            let agent = parse_one_arg(rest, "/context <agent>")?;
+            // Board item `01M0RWKJD04JBR5NCVKBQXYHV4`: the argument is now
+            // OPTIONAL -- a bare `/context` is not a usage error, it
+            // defers to `execute`'s focused-agent default (mirrors
+            // `parse_fork`'s own bare form). An explicit argument is still
+            // free-form (no `@` sigil needed, unlike `/fork`/`/spawn`:
+            // `/context` never takes a second, free-text argument that a
+            // leading agent token would need distinguishing from).
+            let value = rest.trim();
+            let agent = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
             Ok(SlashCommand::Context { agent })
         }
         "/why" => {
@@ -1418,7 +1435,16 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             Effect::None
         }
         SlashCommand::Context { agent } => {
-            match resolve_agent(state, &agent) {
+            // A bare `/context` defaults to the FOCUSED agent -- the same
+            // concept `/agents` already tags `(focused)` and `/fork`'s own
+            // bare form already resolves against. No `resolve_agent` call
+            // needed for the default case: `state.focused_agent` is
+            // already a live `AgentId`, not a token to parse.
+            let resolved = match &agent {
+                Some(token) => resolve_agent(state, token),
+                None => Ok(state.focused_agent),
+            };
+            match resolved {
                 Ok(agent_id) => match host.context_report(agent_id).await {
                     Ok(report) => {
                         render_instruction_preamble(&report, state);
@@ -2217,15 +2243,23 @@ mod tests {
         assert_eq!(
             parse("/context a7"),
             Ok(SlashCommand::Context {
-                agent: "a7".to_string(),
+                agent: Some("a7".to_string()),
             })
         );
     }
 
+    // Board item `01M0RWKJD04JBR5NCVKBQXYHV4`, acceptance 1: a bare
+    // `/context` is no longer a usage error -- REPLACES
+    // `context_missing_agent_is_a_parse_error_naming_the_form`, which used
+    // to pin exactly the opposite of this. Deliberate, not a quiet
+    // deletion: the operator's own report was that requiring an argument
+    // nobody could discover was the defect, and `execute` now resolves the
+    // bare form against `AppState::focused_agent` (see the execute-level
+    // test below), mirroring `/fork`'s pre-existing bare-defaults-to-
+    // focused convention.
     #[test]
-    fn context_missing_agent_is_a_parse_error_naming_the_form() {
-        let err = parse("/context").unwrap_err();
-        assert!(err.to_string().contains("/context <agent>"));
+    fn context_with_no_argument_parses_to_no_agent_not_an_error() {
+        assert_eq!(parse("/context"), Ok(SlashCommand::Context { agent: None }));
     }
 
     #[test]
@@ -2723,6 +2757,12 @@ mod tests {
         /// never the focused/root agent) into `CommandCtx::session_id`.
         session: SessionId,
         context: Option<ContextReport>,
+        /// The most recent `agent` `execute` actually passed to
+        /// `context_report` -- lets a `/context` test assert a BARE
+        /// command resolved against `AppState::focused_agent`, not just
+        /// that "some" context_report call happened (board item
+        /// `01M0RWKJD04JBR5NCVKBQXYHV4`).
+        last_context_agent: Mutex<Option<AgentId>>,
         /// When `Some`, `fork`/`spawn` succeed with this child id instead of
         /// the default `fake_error()` -- lets a test exercise the
         /// `Effect::FocusNewSession` success path.
@@ -2777,6 +2817,7 @@ mod tests {
                 root,
                 session: SessionId::new(),
                 context: None,
+                last_context_agent: Mutex::new(None),
                 fork_child: None,
                 spawn_child: None,
                 last_fork_spec: Mutex::new(None),
@@ -2791,6 +2832,10 @@ mod tests {
 
         fn calls(&self) -> Vec<&'static str> {
             self.calls.lock().unwrap().clone()
+        }
+
+        fn last_context_agent(&self) -> Option<AgentId> {
+            *self.last_context_agent.lock().unwrap()
         }
 
         /// Registers `command` under `full_name`, for a test exercising
@@ -2832,8 +2877,9 @@ mod tests {
             self.session
         }
 
-        async fn context_report(&self, _agent: AgentId) -> conway::Result<ContextReport> {
+        async fn context_report(&self, agent: AgentId) -> conway::Result<ContextReport> {
             self.calls.lock().unwrap().push("context_report");
+            *self.last_context_agent.lock().unwrap() = Some(agent);
             self.context.clone().ok_or_else(fake_error)
         }
 
@@ -4360,7 +4406,7 @@ mod tests {
 
         execute(
             SlashCommand::Context {
-                agent: root.to_string(),
+                agent: Some(root.to_string()),
             },
             &mut state,
             &host,
@@ -4368,6 +4414,41 @@ mod tests {
         .await;
 
         assert_eq!(host.calls(), vec!["context_report"]);
+    }
+
+    /// Acceptance 1 (`01M0RWKJD04JBR5NCVKBQXYHV4`): a bare `/context`
+    /// resolves against `AppState::focused_agent`, not `root` and not a
+    /// usage error -- `focused_agent` is deliberately switched away from
+    /// `root` first so a bug that silently defaulted to root/the session
+    /// origin instead of the FOCUSED agent would fail this.
+    #[tokio::test]
+    async fn context_with_no_agent_uses_the_focused_agent() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        state.focus_agent(child);
+        assert_ne!(
+            state.focused_agent, root,
+            "precondition: focus moved off root"
+        );
+        let host = FakeHost::new(root);
+
+        let effect = execute(SlashCommand::Context { agent: None }, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(host.calls(), vec!["context_report"]);
+        assert_eq!(
+            host.last_context_agent(),
+            Some(child),
+            "a bare /context must resolve to the FOCUSED agent, not root"
+        );
+        assert!(
+            !state.transcript.iter().any(
+                |e| matches!(e, Entry::Notice { text } if text.to_lowercase().contains("usage"))
+            ),
+            "a bare /context must not surface a usage error: {:?}",
+            state.transcript
+        );
     }
 
     #[tokio::test]
@@ -4951,7 +5032,7 @@ mod tests {
 
         execute(
             SlashCommand::Context {
-                agent: root.to_string(),
+                agent: Some(root.to_string()),
             },
             &mut state,
             &host,
@@ -5012,7 +5093,7 @@ mod tests {
 
         execute(
             SlashCommand::Context {
-                agent: root.to_string(),
+                agent: Some(root.to_string()),
             },
             &mut state,
             &host,
@@ -5067,7 +5148,7 @@ mod tests {
 
         execute(
             SlashCommand::Context {
-                agent: root.to_string(),
+                agent: Some(root.to_string()),
             },
             &mut state,
             &host,
@@ -5107,7 +5188,7 @@ mod tests {
 
         execute(
             SlashCommand::Context {
-                agent: root.to_string(),
+                agent: Some(root.to_string()),
             },
             &mut state,
             &host,
@@ -5184,6 +5265,165 @@ mod tests {
             state.transcript.last(),
             Some(Entry::Notice { text }) if text.contains("ambiguous")
         ));
+    }
+
+    /// Board item `01M0RWKJD04JBR5NCVKBQXYHV4`, VERIFICATION ANCHOR
+    /// (acceptance 3) + acceptance 4. The identifier fed to `resolve_agent`
+    /// is DERIVED from the real render pass's own output (`view::agents`'s
+    /// row, through the exact `view::draw` a running TUI calls), not
+    /// reconstructed independently via `short_agent_id` -- a bug that
+    /// rendered one id but accepted only a different one would fail this,
+    /// which a test computing both sides from the same call cannot show.
+    ///
+    /// The fixture is deliberately NOT vacuous for acceptance 4: `root` and
+    /// `child` share the exact SAME `agent_def` (`None`), so both rows
+    /// render the literal label `"agent"` -- identical text, the case the
+    /// item's own spec calls out as visually indistinguishable today. If
+    /// the short id were missing, or identical for both rows, the
+    /// `assert_ne!` below fails rather than passing by construction.
+    #[test]
+    fn agents_panel_short_id_is_what_resolve_agent_accepts_copied_off_the_row() {
+        // Deliberately NOT `AgentId::new()` for both: two ids generated
+        // back-to-back in the same test very often land in the same
+        // 1024ms ULID timestamp bucket and so SHARE their first 8
+        // characters (see `short_id_prefix_collision_...` below and
+        // `short_agent_id`'s own doc) -- this test hit exactly that
+        // collision, non-deterministically, when it first used
+        // `AgentId::new()` for both. Fixed, non-colliding literal ULIDs
+        // make this test's own pass/fail about the loop this item exists
+        // to close, not about ULID clock timing.
+        let root: AgentId = "01HF7YAT000000000000000001"
+            .parse()
+            .expect("valid ULID string");
+        let mut state = AppState::new(root);
+        let child: AgentId = "01J000000000000000000000A2"
+            .parse()
+            .expect("valid ULID string");
+        state.tree.nodes.push(TreeNode {
+            agent_id: child,
+            parent: Some(root),
+            agent_def: None, // same as root's -- both rows read "agent"
+            status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
+        });
+        state.focus_agent(child);
+        state.agent_view_open = true;
+
+        let rows = crate::tui::test_support::render(&state, RENDER_WIDTH, 24);
+        let header_idx = rows
+            .iter()
+            .position(|r| r.contains("agents ("))
+            .expect("the /agents panel header must render");
+        // A bordered `List`'s content starts the row right after its own
+        // top-border/title row; `root` was inserted first (`AppState::new`)
+        // and `visible_agent_nodes` does not reorder, so it is the first
+        // content row, `child` the second.
+        let root_row = &rows[header_idx + 1];
+        let child_row = &rows[header_idx + 2];
+
+        assert!(
+            root_row.contains("agent") && child_row.contains("agent"),
+            "precondition: both rows render the same label: {root_row:?} / {child_row:?}"
+        );
+
+        // The row shape (`view/agents.rs::draw`) is `<indent><marker>
+        // <short_id> <label>...`, drawn onto the `List` widget's own left
+        // border ('\u{2502}') with no space of its own -- at zero indent
+        // (root) the marker sits flush against the border, fusing into one
+        // `split_whitespace` token; at any deeper indent (child) the
+        // indent's spaces separate them again. Stripping the border
+        // character (and the leading indent, itself just whitespace)
+        // BEFORE tokenizing makes every row line up the same way,
+        // regardless of depth -- exactly what a person selecting the
+        // visible short id off the screen does without even noticing the
+        // border is there.
+        fn short_id_token(row: &str) -> &str {
+            row.trim_start_matches(|c: char| c == '\u{2502}' || c.is_whitespace())
+                .split_whitespace()
+                .nth(1)
+                .expect("row must carry a short id token after the marker")
+        }
+        let root_token = short_id_token(root_row);
+        let child_token = short_id_token(child_row);
+
+        assert_ne!(
+            root_token, child_token,
+            "two same-def agents must be distinguishable once the short id is shown: \
+             {root_row:?} / {child_row:?}"
+        );
+
+        let resolved_root = resolve_agent(&state, root_token)
+            .unwrap_or_else(|e| panic!("root's own rendered short id must resolve: {e}"));
+        let resolved_child = resolve_agent(&state, child_token)
+            .unwrap_or_else(|e| panic!("child's own rendered short id must resolve: {e}"));
+
+        assert_eq!(
+            resolved_root, root,
+            "copying root's row must resolve to root"
+        );
+        assert_eq!(
+            resolved_child, child,
+            "copying child's row must resolve to child"
+        );
+    }
+
+    /// "Determine before building" question 2: an 8-char short id is NOT
+    /// guaranteed unique -- verified, not assumed. A ULID's first 8
+    /// Crockford-base32 characters (5 bits each) encode only the top 40 of
+    /// its 48-bit millisecond timestamp, so two agents created with the
+    /// same timestamp (a common case: e.g. a parent and a child it spawns
+    /// in the same tick) can share one no matter how their remaining 18
+    /// characters -- pure randomness -- differ. `a`/`b` below share their
+    /// timestamp (`01HF7YAT`, an arbitrary real ULID timestamp field) and
+    /// differ everywhere else, reproducing exactly that case -- not the
+    /// pre-existing `ambiguous_agent_prefix...` test's "swap only the last
+    /// character" construction, which would also collide on a MUCH longer
+    /// shared prefix and so would not isolate the 8-char case specifically.
+    ///
+    /// The fix is not a new resolver rule: `resolve_agent`'s existing
+    /// prefix-ambiguity handling already covers this correctly -- an error
+    /// naming every candidate, never a silent wrong pick. This test is the
+    /// verification that claim actually holds for an 8-char token
+    /// specifically, not just for the longer prefixes the existing test
+    /// exercises.
+    #[test]
+    fn short_id_prefix_collision_is_reported_as_ambiguous_not_resolved_to_the_wrong_agent() {
+        let a: AgentId = "01HF7YAT0123456789ABCDEFGH"
+            .parse()
+            .expect("valid ULID string");
+        let b: AgentId = "01HF7YATZZZZZZZZZZZZZZZZZZ"
+            .parse()
+            .expect("valid ULID string");
+        let shared_short_id = &a.to_string()[..8];
+        assert_eq!(
+            shared_short_id,
+            &b.to_string()[..8],
+            "precondition: a and b share their 8-char short id"
+        );
+        assert_ne!(a, b, "precondition: a and b are distinct full ids");
+
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        for id in [a, b] {
+            state.tree.nodes.push(TreeNode {
+                agent_id: id,
+                parent: Some(root),
+                agent_def: None,
+                status: NodeStatus::Running,
+                kind: None,
+                inherited_upto: None,
+                ephemeral: false,
+            });
+        }
+
+        let err = resolve_agent(&state, shared_short_id)
+            .expect_err("a colliding short id must not silently resolve to either agent");
+        assert!(
+            err.contains("ambiguous") && err.contains(&a.to_string()) && err.contains(&b.to_string()),
+            "the ambiguity error must name both real candidates, not just the shared prefix: {err:?}"
+        );
     }
 
     // ---------------------------------------------------------------

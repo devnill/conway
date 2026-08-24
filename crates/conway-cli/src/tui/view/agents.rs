@@ -43,9 +43,26 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
             } else {
                 ""
             };
+            // Board item `01M0RWKJD04JBR5NCVKBQXYHV4`: the row's own short
+            // id -- the ONLY thing `commands.rs::resolve_agent` can accept
+            // that a person can actually see (it takes a full id or an id
+            // PREFIX, never a name; `label` above is `agent_def`, which
+            // `resolve_agent` does not match at all, and is not even
+            // unique -- two agents can share one, and an agent with no def
+            // renders as the literal "agent" for every such row). Reuses
+            // [`panel_agent_id`]: `short_agent_id`'s eight characters,
+            // extended only as far as needed to stay unique among the rows
+            // actually on screen (git's short-hash rule), because agents
+            // spawned in one burst share those eight every time.
+            // Set off by its own surrounding spaces so it is one
+            // whitespace-delimited token, copyable off the screen on its
+            // own straight into `/context`/`/steer`/`/fork @<agent>`.
+            let short_id = panel_agent_id(state, node.agent_id);
             let mut spans = vec![
                 Span::raw(indent),
                 Span::styled(marker, status_style(node.status, theme)),
+                Span::raw(" "),
+                Span::styled(short_id, theme.dim),
                 Span::raw(" "),
                 Span::raw(label),
             ];
@@ -140,9 +157,87 @@ pub(crate) fn hop_label(node: &TreeNode) -> String {
 /// already showed `agent <id>` this way pre-V5, on T6's original sticky
 /// header) use this SAME truncation rule for both the plain `agent <id>`
 /// field and the lineage breadcrumb, rather than keeping two copies of an
-/// identical one-liner.
+/// identical one-liner -- and, since board item `01M0RWKJD04JBR5NCVKBQXYHV4`,
+/// `draw`'s own panel row uses it too, for the same reason.
+///
+/// A truncated id is NOT guaranteed unique, and the window is wider than
+/// it first looks. A ULID is `(time_ms << 80) | rand`, Crockford base32,
+/// 5 bits per character -- so the first 8 characters carry the top 40 bits
+/// of the 128-bit VALUE, which is timestamp bits 10..=47: **38 real
+/// timestamp bits, discarding the low 10**. Two agents therefore share
+/// their first 8 characters whenever their creation times fall in the same
+/// 1024 ms bucket, no matter how their remaining 18 characters differ.
+///
+/// Measured against this crate's own `ulid` dependency rather than
+/// reasoned about: the first non-colliding delta is 1024 ms exactly
+/// (`01HF7YAT` -> `01HF7YAV`), and 1023 ms still collides. **Up to about a
+/// second**, then -- an ordinary gap between two hand-typed `/spawn`
+/// commands, not merely a programmatic burst. Agents spawned together in
+/// one burst land in the same millisecond and collide every time.
+///
+/// This is why the PANEL does not render this function's output directly.
+/// [`panel_agent_id`] extends the prefix until it is unique among the
+/// agents on screen; see its doc for why the panel needs that and the
+/// status line does not.
 pub(crate) fn short_agent_id(id: conway::AgentId) -> String {
-    id.to_string().chars().take(8).collect()
+    id.to_string().chars().take(SHORT_AGENT_ID_LEN).collect()
+}
+
+/// How many characters [`short_agent_id`] keeps, and the floor
+/// [`panel_agent_id`] never goes below.
+pub(crate) const SHORT_AGENT_ID_LEN: usize = 8;
+
+/// The shortest prefix of `id` that no OTHER agent currently in the tree
+/// shares -- never shorter than [`SHORT_AGENT_ID_LEN`].
+///
+/// Board item `01M0RWKJD04JBR5NCVKBQXYHV4`'s acceptance is that **copying
+/// what is on screen must work**. A bare eight characters does not satisfy
+/// that: agents spawned in one burst land in the same millisecond and
+/// always share those eight (see [`short_agent_id`]'s own doc for the
+/// measured window), so two rows would print the SAME token -- defeating
+/// the whole point, since the id exists precisely to tell apart rows whose
+/// `agent_def` labels are identical -- and copying either one would yield
+/// an ambiguity error rather than the agent the operator pointed at. It
+/// degrades safely, but it does not work.
+///
+/// So the panel does what `git` does with short hashes: keep extending
+/// until the prefix is unambiguous, and no further. Borrowing an existing
+/// convention rather than inventing one is deliberate -- novelty in the
+/// internals is the product; novelty in the furniture is a tax on the
+/// reader.
+///
+/// Uniqueness is computed against the agents in `state.tree`, because that
+/// is the set the operator is choosing BETWEEN and the set "copying what is
+/// on screen" ranges over. The status line and hop labels keep using plain
+/// [`short_agent_id`]: they name ONE agent rather than offering a choice
+/// among several, so a fixed narrow width is right there.
+///
+/// The result is always a prefix of the full id, so
+/// `commands.rs::resolve_agent` accepts it unchanged -- this adds no
+/// resolver behaviour, it only picks a longer prefix to display.
+pub(crate) fn panel_agent_id(state: &AppState, id: conway::AgentId) -> String {
+    let full = id.to_string();
+    let others: Vec<String> = state
+        .tree
+        .nodes
+        .iter()
+        .map(|n| n.agent_id)
+        .filter(|other| *other != id)
+        .map(|other| other.to_string())
+        .collect();
+
+    let total = full.chars().count();
+    for len in SHORT_AGENT_ID_LEN..total {
+        let candidate: String = full.chars().take(len).collect();
+        if !others.iter().any(|other| other.starts_with(&candidate)) {
+            return candidate;
+        }
+    }
+    // Two DISTINCT ULIDs cannot share all 26 characters, so this is the
+    // full id rather than a loop that never terminates -- stated because
+    // an unbounded "extend until unique" is exactly the shape that hangs
+    // when its premise is wrong.
+    full
 }
 
 /// V5: a defensive bound on the ancestry walk (untrusted structure -- a cycle
@@ -398,6 +493,135 @@ mod tests {
             text.contains("focused"),
             "expected the focused agent's row to be tagged, got: {text:?}"
         );
+    }
+
+    /// Board item `01M0RWKJD04JBR5NCVKBQXYHV4`, acceptance 2 + 4: the row's
+    /// short id is what actually appears on screen, and it distinguishes
+    /// two agents that render an otherwise IDENTICAL label. Both `root` and
+    /// `child` have `agent_def: None` here -- the exact case the item's own
+    /// spec names as visually indistinguishable today ("every row reads
+    /// `agent`") -- so this fixture is non-vacuous for acceptance 4: a
+    /// panel that dropped the id (or rendered the same one for both rows)
+    /// fails the `assert_ne!` below rather than passing by construction.
+    ///
+    /// Fixed literal ids, not two `AgentId::new()` calls: two ids minted
+    /// back-to-back in the same test frequently share their first 8 ULID
+    /// characters (see [`short_agent_id`]'s own doc) -- which would make
+    /// this very test's fixture accidentally vacuous on some runs and not
+    /// others.
+    #[test]
+    fn draw_shows_a_short_id_that_distinguishes_agents_with_no_agent_def() {
+        let root: AgentId = "01HF7YAT000000000000000001".parse().unwrap();
+        let mut state = AppState::new(root);
+        let child: AgentId = "01J000000000000000000000A2".parse().unwrap();
+        state.tree.nodes.push(node(
+            child,
+            Some(root),
+            None, // same as root's own agent_def -- both rows read "agent"
+            NodeStatus::Running,
+            None,
+            None,
+            false,
+        ));
+
+        let text = rendered(&state, 80, 10);
+
+        let root_short = short_agent_id(root);
+        let child_short = short_agent_id(child);
+        assert_ne!(
+            root_short, child_short,
+            "precondition: the two fixture ids must not collide on their short id"
+        );
+        assert!(
+            text.contains(&root_short),
+            "root's short id must be on screen: {text:?}"
+        );
+        assert!(
+            text.contains(&child_short),
+            "child's short id must be on screen: {text:?}"
+        );
+    }
+
+    /// Board item `01M0RWKJD04JBR5NCVKBQXYHV4`, acceptance 3: **copying what
+    /// is on screen must work** -- for agents spawned in the SAME
+    /// millisecond, which is the case a fixed eight characters cannot serve.
+    ///
+    /// The fixture is deliberately the worst case rather than the average
+    /// one: both ids share the literal first 8 characters `01HF7YAT`, which
+    /// is what two agents created in one burst actually look like. Both also
+    /// have `agent_def: None`, so both rows read the literal "agent" and the
+    /// id is the ONLY thing distinguishing them -- exactly the situation the
+    /// id was added for.
+    ///
+    /// Non-vacuous by construction: `short_agent_id` returns the SAME string
+    /// for both (asserted below), so a panel that rendered it directly would
+    /// print one token twice and fail the `assert_ne!`.
+    #[test]
+    fn panel_lengthens_a_colliding_short_id_until_each_row_is_unique() {
+        let root: AgentId = "01HF7YAT0000000000000000A1".parse().unwrap();
+        let child: AgentId = "01HF7YAT0000000000000000B2".parse().unwrap();
+        let mut state = AppState::new(root);
+        state.tree.nodes.push(node(
+            child,
+            Some(root),
+            None, // both rows read "agent"; only the id tells them apart
+            NodeStatus::Running,
+            None,
+            None,
+            false,
+        ));
+
+        assert_eq!(
+            short_agent_id(root),
+            short_agent_id(child),
+            "precondition: this fixture is only meaningful if the plain \
+             eight-character form genuinely collides"
+        );
+
+        let root_shown = panel_agent_id(&state, root);
+        let child_shown = panel_agent_id(&state, child);
+
+        assert_ne!(
+            root_shown, child_shown,
+            "two rows must not print the same identifier -- the id exists to \
+             tell apart rows whose labels are identical"
+        );
+        assert!(
+            root.to_string().starts_with(&root_shown)
+                && child.to_string().starts_with(&child_shown),
+            "each shown id must still be a PREFIX of its own agent's id, or \
+             resolve_agent cannot accept it"
+        );
+
+        let text = rendered(&state, 100, 10);
+        assert!(
+            text.contains(&root_shown) && text.contains(&child_shown),
+            "both lengthened ids must actually reach the screen: {text:?}"
+        );
+    }
+
+    /// The common case is unchanged: with no collision, a row shows exactly
+    /// the eight characters it always did. Guards against "fix the collision
+    /// by making every id longer", which would be a silent width regression
+    /// on every ordinary session.
+    #[test]
+    fn panel_leaves_a_non_colliding_id_at_its_usual_eight_characters() {
+        let root: AgentId = "01HF7YAT000000000000000001".parse().unwrap();
+        let child: AgentId = "01J000000000000000000000A2".parse().unwrap();
+        let mut state = AppState::new(root);
+        state.tree.nodes.push(node(
+            child,
+            Some(root),
+            None,
+            NodeStatus::Running,
+            None,
+            None,
+            false,
+        ));
+
+        assert_eq!(panel_agent_id(&state, root), short_agent_id(root));
+        assert_eq!(panel_agent_id(&state, child), short_agent_id(child));
+        assert_eq!(panel_agent_id(&state, root).chars().count(), 8);
     }
 
     // ---- Item A2: recipe labels (pure `recipe_parts` formatting) ----
