@@ -304,27 +304,20 @@ fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Res
     // own to receive them -- see `SessionConfig`'s own doc for the full
     // disclosure of what a config that bypasses `load` entirely
     // (`ConwayBuilder::from_parts`) falls back to instead.
+    //
+    // **No warning when an old, unmigrated `<cwd>/.conway/sessions`
+    // exists** -- removed by decision `01M0RW05G3Y81AZW96NVKTY1RV`, which
+    // reversed board item `01M0QK9GRM8HSNWRAR414TCX42`'s own "leave and
+    // point" choice: a ~90-word notice repeating on every single run to
+    // describe a one-time, already-CHANGELOG'd fact was a permanent tax on
+    // a pre-1.0 tree with no users who didn't choose to be early. Nothing
+    // about the resolution itself changed -- an old directory is still
+    // never read, moved, or deleted here, only never pointed at again; see
+    // `docs/sessions.md`'s "If you already have a project-local
+    // `.conway/sessions`" section for where the explanation now lives
+    // instead of in-product.
     if config.session.root.is_none() {
-        let resolved = discovery::session_root(&options.cwd, None, &options.env);
-        let legacy = discovery::legacy_project_sessions_dir(&options.cwd);
-        if legacy != resolved && directory_has_entries(&legacy) {
-            warnings.push(ConfigWarning {
-                code: WarningCode::LegacyProjectSessionsNotMigrated,
-                message: format!(
-                    "existing sessions found at {} -- they are NOT used by default anymore; \
-                     new sessions now live at {}. `sessions list`/`--resume` from here on only \
-                     see the new location. To keep using the old one, set \
-                     {{\"session\": {{\"root\": \"{}\"}}}} in settings.json; to switch over, \
-                     move its contents into the new directory yourself (conway does not do this \
-                     automatically). This warning repeats on every run until you do one or the \
-                     other.",
-                    legacy.display(),
-                    resolved.display(),
-                    legacy.display(),
-                ),
-            });
-        }
-        config.session.root = Some(resolved);
+        config.session.root = Some(discovery::session_root(&options.cwd, None, &options.env));
     }
 
     Ok(LoadOutcome { config, warnings })
@@ -479,18 +472,6 @@ fn read_json_layer(path: &std::path::Path) -> Result<Option<Value>> {
             message: format!("failed to read {}: {e}", path.display()),
         }),
     }
-}
-
-/// Whether `dir` exists and contains at least one entry -- the "is there
-/// anything to strand" half of the `[session].root` legacy-directory check
-/// above. A missing directory (the common case: no old `.conway/sessions`
-/// ever existed) and an existing-but-empty one (someone `mkdir -p`'d it
-/// without ever writing a session) both return `false` -- neither is
-/// something an operator needs to be told about.
-fn directory_has_entries(dir: &std::path::Path) -> bool {
-    std::fs::read_dir(dir)
-        .map(|mut entries| entries.next().is_some())
-        .unwrap_or(false)
 }
 
 /// The top-level `ConwayConfig` field names a `CONWAY_*` env var's first

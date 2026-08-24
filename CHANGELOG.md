@@ -25,14 +25,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   meaning unchanged (it names the sessions directory itself, resolved
   against `cwd` if relative) — this only changes what an *unset* `root`
   means. **An existing project-local `.conway/sessions` is never read,
-  moved, or deleted automatically** — conway detects it and warns, naming
-  both the old and new locations and how to keep using the old one
-  (`[session].root` set explicitly) or switch over (move the contents
-  yourself); the warning repeats on every run until you do one or the
-  other. See [`docs/sessions.md`](docs/sessions.md#where-session-data-lives-on-disk)
+  moved, or deleted automatically** — conway resolves around it silently
+  (an earlier draft of this change printed a recurring warning about it on
+  every run instead; removed before release, see the entry below). See
+  [`docs/sessions.md`](docs/sessions.md#where-session-data-lives-on-disk)
   for the full behavior, including the two-directories-two-stores property
   (subdirectory invocations still key separately) this preserves unchanged
-  from before.
+  from before, and its [own subsection](docs/sessions.md#if-you-already-have-a-project-local-conwaysessions)
+  on what to do with an old directory.
+- **The session-relocation warning above never shipped as described: it
+  is removed before release, not merely trimmed.** Operator ruling
+  (decision `01M0RW05G3Y81AZW96NVKTY1RV`): a ~90-word notice repeating on
+  every single run to describe a one-time, already-documented fact is a
+  permanent tax pre-1.0, where "a breaking change is not a crisis" and the
+  honest cost of a migration is a paragraph read once, not ceremony that
+  trains an operator to read past warnings — exactly the attention the
+  next real one needs. Nothing about the underlying resolution changed:
+  an old `.conway/sessions` is still never read, moved, or deleted, which
+  is precisely what made the warning safe to drop rather than merely
+  soften. `WarningCode::LegacyProjectSessionsNotMigrated` is deleted
+  outright, not just its emit site — nothing outside this crate's own
+  `config::merge` module and its tests ever matched on it.
 
 ### Fixed
 

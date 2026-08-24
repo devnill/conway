@@ -155,11 +155,14 @@ An operator upgrading from before this default changed may already have
 sessions sitting in a project's own `.conway/sessions/`. conway does not
 read, move, or delete that directory automatically — a migration mutates
 data you might still need, and a half-completed one would be a worse
-failure than doing nothing. Instead, **conway tells you**: if an
-unconfigured `[session].root` would resolve to the new central default and
-a non-empty `.conway/sessions` still exists in your project, every run
-prints a warning naming both locations, until you resolve it one of two
-ways:
+failure than doing nothing. It is not touched, and conway does not print a
+warning about it either — an unconfigured `[session].root` simply resolves
+to the new central default from here on, silently, the same as it does for
+a project with no old directory at all. (An earlier version of conway did
+print a repeating warning about this on every run; it was removed —
+decision `01M0RW05G3Y81AZW96NVKTY1RV` — as ongoing ceremony for a one-time
+fact, in a pre-1.0 tree where this paragraph is the correction's permanent
+record.) If this is you, resolve it one of two ways:
 
 - **Keep using the old location** — set `[session].root` to it explicitly
   (the example just above), which restores the exact pre-upgrade behavior.
@@ -167,8 +170,8 @@ ways:
   location yourself; conway does not do this for you.
 
 Either way, nothing is stranded silently: the old sessions are exactly
-where they always were, and the warning tells you where the new default
-now points.
+where they always were, findable at `<project>/.conway/sessions` whenever
+you go looking, even though nothing in conway will mention it for you.
 
 Your input history is separate from session data and always lives at
 `~/.conway/history` (or `$CONWAY_CONFIG_DIR/history`) — see

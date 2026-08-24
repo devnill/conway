@@ -1,17 +1,34 @@
-//! `[session].root`'s central-default resolution and the legacy-directory
-//! notice (board item `01M0QK9GRM8HSNWRAR414TCX42`, decision
-//! `01M0QK8J757ZH6R06WYJ0PQGEM`): an unconfigured root resolves to a
-//! central, project-keyed location under `CONWAY_CONFIG_DIR`/`~/.conway`
-//! rather than the old `<cwd>/.conway/sessions`; an explicitly-configured
-//! one keeps its old, direct meaning unchanged; and an operator with an
-//! existing project-local `.conway/sessions` is told, not stranded.
+//! `[session].root`'s central-default resolution (board item
+//! `01M0QK9GRM8HSNWRAR414TCX42`, decision `01M0QK8J757ZH6R06WYJ0PQGEM`): an
+//! unconfigured root resolves to a central, project-keyed location under
+//! `CONWAY_CONFIG_DIR`/`~/.conway` rather than the old
+//! `<cwd>/.conway/sessions`; an explicitly-configured one keeps its old,
+//! direct meaning unchanged.
+//!
+//! **No `LegacyProjectSessionsNotMigrated` warning any more** (decision
+//! `01M0RW05G3Y81AZW96NVKTY1RV`, board item `01M0RW17KQNTQNQ4M939V0BTES`):
+//! the "leave and point" resolution above still never reads, moves, or
+//! deletes an old project-local `.conway/sessions` directory, but conway no
+//! longer repeats a ~90-word notice about it on every run to describe a
+//! one-time fact -- pre-1.0, that cost outweighed what it bought. The
+//! `WarningCode` variant itself is gone (nothing outside this crate's own
+//! emit site and these tests ever matched on it), so the differential
+//! "warns here, not there" tests this file used to carry
+//! (`empty_legacy_directory_does_not_warn`,
+//! `absent_legacy_directory_does_not_warn`,
+//! `explicit_root_never_warns_about_an_untouched_legacy_directory`) no
+//! longer have anything to differentiate and are removed rather than left
+//! pinning behavior that no longer exists; the one still-load-bearing
+//! property -- an old directory survives untouched -- is proven below by
+//! `legacy_nonempty_project_sessions_directory_is_left_untouched_and_produces_no_warning`,
+//! now against a fixture whose content could actually detect a regression.
 
 #[path = "support/mod.rs"]
 mod support;
 
 use std::collections::HashMap;
 
-use conway::config::{load, CliOverrides, LoadOptions, WarningCode};
+use conway::config::{load, CliOverrides, LoadOptions};
 
 fn env_with_config_dir(config_dir: &std::path::Path) -> HashMap<String, String> {
     let mut env = HashMap::new();
@@ -149,8 +166,16 @@ fn explicit_absolute_root_is_used_verbatim() {
     assert_eq!(outcome.config.session.root.unwrap(), elsewhere);
 }
 
+/// The one property that made removing the warning safe (decision
+/// `01M0RW05G3Y81AZW96NVKTY1RV`): a pre-existing, non-empty, project-local
+/// `.conway/sessions` is resolved AROUND, never read, moved, or deleted --
+/// AND, per acceptance, produces no warning at all any more, not even once.
+/// The fixture carries real, distinguishable session content (not an empty
+/// directory) so a regression that started reading or mutating it, or that
+/// resurrected the old warning, would actually be caught here rather than
+/// this test vacuously passing against a fixture with nothing to disturb.
 #[test]
-fn legacy_nonempty_project_sessions_directory_triggers_a_warning_and_is_left_untouched() {
+fn legacy_nonempty_project_sessions_directory_is_left_untouched_and_produces_no_warning() {
     let config_dir = support::unique_temp_dir("session-default-legacy-config-dir");
     let project_dir = support::unique_temp_dir("session-default-legacy-project");
     let legacy_dir = project_dir.join(".conway").join("sessions");
@@ -162,18 +187,17 @@ fn legacy_nonempty_project_sessions_directory_triggers_a_warning_and_is_left_unt
     let outcome = load(opts(project_dir.clone(), env_with_config_dir(&config_dir))).unwrap();
 
     assert!(
-        outcome
-            .warnings
-            .iter()
-            .any(|w| w.code == WarningCode::LegacyProjectSessionsNotMigrated),
-        "an operator with an existing project-local .conway/sessions must be told, \
-         got warnings: {:?}",
+        outcome.warnings.is_empty(),
+        "a legacy project-local .conway/sessions directory must produce no warning \
+         at all any more, got: {:?}",
         outcome.warnings
     );
-    // "Leave and point": the new central default is what's actually used --
+    // "Leave and point" (unchanged by removing the warning): the new
+    // central default is what's actually used --
     let root = outcome.config.session.root.unwrap();
     assert_ne!(root, legacy_dir);
-    // -- and the old directory is read, never mutated.
+    // -- and conway left it alone: the test reads the file back here only
+    // to prove conway neither mutated nor deleted it.
     let bytes_after = std::fs::read(&legacy_session).unwrap();
     assert_eq!(
         bytes_before, bytes_after,
@@ -182,57 +206,5 @@ fn legacy_nonempty_project_sessions_directory_triggers_a_warning_and_is_left_unt
     assert!(
         legacy_dir.exists(),
         "the legacy directory must not be deleted"
-    );
-}
-
-#[test]
-fn empty_legacy_directory_does_not_warn() {
-    let config_dir = support::unique_temp_dir("session-default-empty-legacy-config-dir");
-    let project_dir = support::unique_temp_dir("session-default-empty-legacy-project");
-    std::fs::create_dir_all(project_dir.join(".conway").join("sessions")).unwrap();
-
-    let outcome = load(opts(project_dir, env_with_config_dir(&config_dir))).unwrap();
-
-    assert!(!outcome
-        .warnings
-        .iter()
-        .any(|w| w.code == WarningCode::LegacyProjectSessionsNotMigrated));
-}
-
-#[test]
-fn absent_legacy_directory_does_not_warn() {
-    let config_dir = support::unique_temp_dir("session-default-absent-legacy-config-dir");
-    let project_dir = support::unique_temp_dir("session-default-absent-legacy-project");
-
-    let outcome = load(opts(project_dir, env_with_config_dir(&config_dir))).unwrap();
-
-    assert!(!outcome
-        .warnings
-        .iter()
-        .any(|w| w.code == WarningCode::LegacyProjectSessionsNotMigrated));
-}
-
-#[test]
-fn explicit_root_never_warns_about_an_untouched_legacy_directory() {
-    let config_dir = support::unique_temp_dir("session-default-explicit-no-warn-config-dir");
-    let project_dir = support::unique_temp_dir("session-default-explicit-no-warn-project");
-    let legacy_dir = project_dir.join(".conway").join("sessions");
-    std::fs::create_dir_all(&legacy_dir).unwrap();
-    std::fs::write(legacy_dir.join("01ABCDEFGH.jsonl"), "{}\n").unwrap();
-    std::fs::write(
-        project_dir.join(".conway").join("settings.json"),
-        r#"{"session": {"root": "elsewhere"}}"#,
-    )
-    .unwrap();
-
-    let outcome = load(opts(project_dir, env_with_config_dir(&config_dir))).unwrap();
-
-    assert!(
-        !outcome
-            .warnings
-            .iter()
-            .any(|w| w.code == WarningCode::LegacyProjectSessionsNotMigrated),
-        "an operator who already pointed session.root elsewhere made a conscious \
-         choice and does not need to be warned about an unrelated directory"
     );
 }

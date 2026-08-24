@@ -214,19 +214,6 @@ pub fn session_root(
     }
 }
 
-/// The legacy, project-local `.conway/sessions` directory
-/// [`session_root`]'s central-default branch stops defaulting to. Exists so
-/// `config::merge::load_impl` can check whether one is already there
-/// (non-empty) and warn -- see [`crate::config::WarningCode::
-/// LegacyProjectSessionsNotMigrated`]'s own doc for the "leave and point"
-/// route this exists to support: this function only ever names the path,
-/// never reads, moves, or deletes it.
-pub fn legacy_project_sessions_dir(project_dir: &Path) -> PathBuf {
-    normalize_lexically(project_dir)
-        .join(".conway")
-        .join("sessions")
-}
-
 /// Declarative provider profiles: the user-supplied `.conway/profiles.toml`
 /// file path(s), resolved project-first then global — the identical
 /// layering [`permission_file_paths`] already establishes, reused here
@@ -447,15 +434,6 @@ mod tests {
         let b = session_root(Path::new("/Users/dan/project-b"), None, &env);
         assert_ne!(a, b);
         assert_eq!(a.parent(), b.parent(), "both still share the central root");
-    }
-
-    #[test]
-    fn legacy_project_sessions_dir_names_the_old_default_location() {
-        let legacy = legacy_project_sessions_dir(Path::new("/Users/dan/my-project"));
-        assert_eq!(
-            legacy,
-            PathBuf::from("/Users/dan/my-project/.conway/sessions")
-        );
     }
 
     fn tempfile_dir() -> PathBuf {

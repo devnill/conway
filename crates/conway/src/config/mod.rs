@@ -60,19 +60,6 @@ pub enum WarningCode {
     /// for the escape hatch `conway-cli` uses to still read and act on
     /// `[tui]` itself.
     PresentationConfigIgnored,
-    /// `[session].root` is unset (resolving to the central, project-keyed
-    /// default -- board item `01M0QK9GRM8HSNWRAR414TCX42`), AND a
-    /// project-local `<cwd>/.conway/sessions` directory already exists and
-    /// is non-empty. The "leave and point" route that item argued for:
-    /// existing sessions are never read, moved, or migrated by this
-    /// resolution, only detected -- this warning is how an operator learns
-    /// what happened from conway itself, since `sessions list`/`--resume`
-    /// silently seeing nothing there would otherwise be the only signal.
-    /// Repeats on every `load` until the operator either sets
-    /// `[session].root` explicitly (to the old path, to keep using it, or
-    /// anywhere else) or moves the old directory's contents into the new
-    /// default themselves.
-    LegacyProjectSessionsNotMigrated,
 }
 
 #[cfg(test)]
