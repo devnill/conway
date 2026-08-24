@@ -99,7 +99,7 @@ pub enum SlashCommand {
     /// one typed command -- the model already has `conway_cancel`; the
     /// operator had no counterpart, only `/quit`, which loses the parent's
     /// in-flight work too). `target` resolves through the SAME
-    /// [`resolve_agent`] every other agent-targeted command uses (full id,
+    /// `resolve_agent` every other agent-targeted command uses (full id,
     /// exact name, unique prefix) -- see that function's own doc; `/cancel`
     /// invents no new grammar. `reason` is optional free text; `execute`
     /// supplies a default ("cancelled by operator") when it is `None`,
