@@ -31,7 +31,7 @@ use conway_runtime::runtime::Runtime;
 use futures_core::Stream;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::error::{ConwayError, Result};
+use crate::error::{FacadeError, Result};
 use crate::event_stream::EventStream;
 use crate::subagent_spec::{ForkSpec, SpawnSpec};
 
@@ -334,7 +334,7 @@ impl SessionHandle {
         // root/operator-exemption doc below.
         let child = SubagentHost::start(self.rt.as_ref(), self.root, self.root, spec)
             .await
-            .map_err(ConwayError::Runtime)?;
+            .map_err(FacadeError::Runtime)?;
         // The child is already attached (start -> launch_agent -> attach),
         // so its session is listable here; `resolve_agent_session`'s
         // ephemeral-inclusive lookup is exactly the "resolve an agent id the
@@ -670,7 +670,7 @@ impl SessionHandle {
             .into_iter()
             .find(|meta| meta.agent_id == agent)
             .map(|meta| meta.id)
-            .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound { agent }))
+            .ok_or(FacadeError::Runtime(RuntimeError::AgentNotFound { agent }))
     }
 
     async fn effective_transcript(&self, session: SessionId) -> Result<Vec<LogRecord>> {
@@ -698,7 +698,7 @@ impl SessionHandle {
                 None => break,
             }
             if chain.len() > MAX_ANCESTRY_DEPTH {
-                return Err(ConwayError::Runtime(RuntimeError::Store(
+                return Err(FacadeError::Runtime(RuntimeError::Store(
                     StoreError::Corrupt {
                         session,
                         line: 0,
@@ -769,7 +769,7 @@ impl SessionHandle {
     /// ContextTooLarge` surfacing through the child's `AgentResult`, not an
     /// `Err` this method itself returns.
     ///
-    /// Rejects `from` with `Err(ConwayError::Runtime)` when it does not
+    /// Rejects `from` with `Err(FacadeError::Runtime)` when it does not
     /// belong to this session's agent tree -- see
     /// `SessionHandle::ensure_agent_in_session`'s doc for exactly what error
     /// that produces (`RuntimeError::AgentNotFound` vs. `AgentNotInSession`).
@@ -785,14 +785,14 @@ impl SessionHandle {
         self.rt
             .start(self.root, from, spec.into())
             .await
-            .map_err(ConwayError::Runtime)
+            .map_err(FacadeError::Runtime)
     }
 
     /// Spawns a fresh agent: the clean-slate mode. Delegates to
     /// `Runtime::start` (`impl SubagentHost`) with `spec.into()` unmodified
     /// beyond the `SpawnSpec` -> `SubagentSpec` conversion itself.
     ///
-    /// Rejects `from` with `Err(ConwayError::Runtime)` when it does not
+    /// Rejects `from` with `Err(FacadeError::Runtime)` when it does not
     /// belong to this session's agent tree -- see
     /// `SessionHandle::ensure_agent_in_session`'s doc.
     ///
@@ -815,14 +815,14 @@ impl SessionHandle {
         self.rt
             .start(self.root, from, spec.into())
             .await
-            .map_err(ConwayError::Runtime)
+            .map_err(FacadeError::Runtime)
     }
 
     /// Delivers `text` to `target` as a steer message, landing at `target`'s
     /// next turn boundary. Delegates to `Runtime::steer` (`impl
     /// SubagentHost`) with `text` converted and otherwise unmodified.
     ///
-    /// Rejects `target` with `Err(ConwayError::Runtime)` when it does not
+    /// Rejects `target` with `Err(FacadeError::Runtime)` when it does not
     /// belong to this session's agent tree -- `Arc<Runtime>` (and its
     /// runtime-wide, unscoped `tree()`) is shared across every
     /// `SessionHandle` a `Conway` produces, so without this check any handle
@@ -844,7 +844,7 @@ impl SessionHandle {
         self.rt
             .steer(self.root, target, text.into())
             .await
-            .map_err(ConwayError::Runtime)
+            .map_err(FacadeError::Runtime)
     }
 
     /// Awaits `target`'s terminal result. Always resolves `Ok` -- including
@@ -853,7 +853,7 @@ impl SessionHandle {
     /// the agent ends; only an unknown `target` produces `Err`. Delegates to
     /// `Runtime::await_result` (`impl SubagentHost`) unmodified.
     ///
-    /// Rejects `target` with `Err(ConwayError::Runtime)` when it does not
+    /// Rejects `target` with `Err(FacadeError::Runtime)` when it does not
     /// belong to this session's agent tree -- `AgentResult` is another
     /// session's data, and reading it across the session boundary is an
     /// isolation violation just as steering/cancelling it would be. See
@@ -866,7 +866,7 @@ impl SessionHandle {
         self.rt
             .await_result(self.root, target)
             .await
-            .map_err(ConwayError::Runtime)
+            .map_err(FacadeError::Runtime)
     }
 
     /// Cancels `target` with `reason`, immediately -- delegates to [`Self::cancel_with`]
@@ -893,7 +893,7 @@ impl SessionHandle {
     /// notify, never the mailbox a graceful cancel is delivered through; use
     /// `CancelMode::Immediate` for that case.
     ///
-    /// Rejects `target` with `Err(ConwayError::Runtime)` when it does not
+    /// Rejects `target` with `Err(FacadeError::Runtime)` when it does not
     /// belong to this session's agent tree -- without this check any handle
     /// could cancel another session's agent, since `cancel`/`cancel_with`
     /// is a mutating control-plane op reached through the same runtime-wide
@@ -927,7 +927,7 @@ impl SessionHandle {
             mode,
         )
         .await
-        .map_err(ConwayError::Runtime)
+        .map_err(FacadeError::Runtime)
     }
 
     /// Verifies `agent` is reachable from `self.root` by walking
@@ -969,7 +969,7 @@ impl SessionHandle {
             parent_of.insert(node.agent_id, node.parent);
         }
         if !present {
-            return Err(ConwayError::Runtime(RuntimeError::AgentNotFound { agent }));
+            return Err(FacadeError::Runtime(RuntimeError::AgentNotFound { agent }));
         }
         let mut cursor = agent;
         loop {
@@ -979,7 +979,7 @@ impl SessionHandle {
                 _ => break,
             }
         }
-        Err(ConwayError::Runtime(RuntimeError::AgentNotInSession {
+        Err(FacadeError::Runtime(RuntimeError::AgentNotInSession {
             agent,
             session: self.session,
         }))
@@ -1322,7 +1322,7 @@ impl TurnHandle {
                     }
                 }
                 None => {
-                    return Err(ConwayError::Runtime(RuntimeError::AgentNotFound {
+                    return Err(FacadeError::Runtime(RuntimeError::AgentNotFound {
                         agent: self.agent,
                     }));
                 }

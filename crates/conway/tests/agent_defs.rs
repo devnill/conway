@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use conway::agents::load_agent_defs;
-use conway::{AgentDef, ConwayError};
+use conway::{AgentDef, FacadeError};
 use conway_core::agent::ToolSelector;
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 
@@ -356,18 +356,18 @@ fn dir_with_fixtures(label: &str, names: &[&str]) -> PathBuf {
     dir
 }
 
-fn load_single(label: &str, name: &str) -> Result<HashMap<String, AgentDef>, ConwayError> {
+fn load_single(label: &str, name: &str) -> Result<HashMap<String, AgentDef>, FacadeError> {
     let dir = dir_with_fixtures(label, &[name]);
     load_agent_defs(&dir)
 }
 
 fn expect_agent_def_error(
-    result: Result<HashMap<String, AgentDef>, ConwayError>,
+    result: Result<HashMap<String, AgentDef>, FacadeError>,
     file_name: &str,
 ) -> String {
     match result {
         Ok(defs) => panic!("expected an error, got Ok({defs:?})"),
-        Err(ConwayError::AgentDef { path, message }) => {
+        Err(FacadeError::AgentDef { path, message }) => {
             assert_eq!(
                 path.file_name().and_then(|n| n.to_str()),
                 Some(file_name),
@@ -375,7 +375,7 @@ fn expect_agent_def_error(
             );
             message
         }
-        Err(other) => panic!("expected ConwayError::AgentDef, got {other:?}"),
+        Err(other) => panic!("expected FacadeError::AgentDef, got {other:?}"),
     }
 }
 

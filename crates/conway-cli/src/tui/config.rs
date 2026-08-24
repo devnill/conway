@@ -36,7 +36,7 @@
 //! crate's own schema. A typo inside `[tui.theme]` still fails loudly for
 //! the CLI; the facade just does not know to look for one.
 
-use conway::ConwayError;
+use conway::FacadeError;
 
 use crate::cli::Cli;
 
@@ -218,7 +218,7 @@ fn load_from_options(options: conway::config::LoadOptions) -> conway::Result<Tui
     let mut merged = conway::config::merged_document(&options)?;
     let tui_value = merged.as_object_mut().and_then(|obj| obj.remove("tui"));
     match tui_value {
-        Some(value) => serde_json::from_value(value).map_err(|e| ConwayError::Config {
+        Some(value) => serde_json::from_value(value).map_err(|e| FacadeError::Config {
             path: None,
             message: format!("failed to parse [tui]: {e}"),
         }),

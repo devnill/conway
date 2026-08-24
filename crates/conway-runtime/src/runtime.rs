@@ -164,13 +164,16 @@ pub struct RuntimeDeps {
     /// `resolve_default_path` (`context/path.rs`, D1-3d-wire) reads it every
     /// turn to find a session's `ContextPathSet` head, and once one exists,
     /// to expand its prefix chain. A production writer exists as of board
-    /// item 01M0K5SWEHEMRYVZ49TAFCFXPK (`context::path::write_head`), but
-    /// nothing in this runtime calls it at any turn boundary -- the
-    /// sanctioned production caller is the model-invoked tool a plugin will
-    /// provide to compose a curated selection (decision
-    /// 01M0K4QT6MBXPD6PXMBBBD2P7B), a separate, not-yet-built item. So a
-    /// head is still absent in an ordinary session today, but the mechanism
-    /// is complete and callable -- only nothing yet calls it. A real build
+    /// item 01M0K5SWEHEMRYVZ49TAFCFXPK (`context::path::write_head`), and
+    /// nothing in this runtime calls it at a turn boundary -- the sanctioned
+    /// production caller is the model-invoked tool a plugin provides to
+    /// compose a curated selection (decision 01M0K4QT6MBXPD6PXMBBBD2P7B),
+    /// and that tool now exists: `conway.path`'s `compose_context_path`
+    /// (`crates/conway-plugin-path`) reaches `write_head` through
+    /// `ContextPathHost::set_head` (board item 01M0PEFMG96SVBBD5D2E06H34A).
+    /// So a head is still absent in an ordinary session unless an operator
+    /// invokes that tool -- the mechanism is complete, callable, and now
+    /// called, not missing. A real build
     /// sources this from `conway_session::FsPathStore`, rooted at the
     /// `paths/` directory ALONGSIDE `config.session.root` rather than inside
     /// it -- the session directory is an operator-visible artifact with its

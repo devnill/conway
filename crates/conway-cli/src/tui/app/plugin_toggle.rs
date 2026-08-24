@@ -47,7 +47,7 @@ impl App {
         let path = conway::config::discovery::user_config_path(env);
         let outcome = match &path {
             Some(path) => conway::config::set_plugin_installed(path, &plugin_id, installed),
-            None => Err(conway::ConwayError::Config {
+            None => Err(conway::FacadeError::Config {
                 path: None,
                 message: "could not resolve a home directory to write settings.json into"
                     .to_string(),

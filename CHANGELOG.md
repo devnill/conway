@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The `conway` facade's own umbrella error type is now `FacadeError`, not
+  `ConwayError`** — board item CON-3: `conway-core` already has its own,
+  unrelated `ConwayError` (`conway_core::error::ConwayError`, re-exported
+  from `conway`'s root as `CoreConwayError`), and the two shared the bare
+  name at different crate depths, so every "ConwayError" reference had to
+  specify which one. Mechanical rename only — no variant added, removed,
+  or restructured; `conway::FacadeError` has exactly the shape
+  `conway::ConwayError` had. `conway` is not yet published (`publish =
+  false`), so no deprecated alias was kept.
 - **`/context` defaults to the focused agent, and the `/agents` panel now
   shows each agent's id** — board item `01M0RWKJD04JBR5NCVKBQXYHV4`, from
   an operator's own use of the TUI: typing `/context` required an agent
@@ -956,6 +965,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `conway-testkit`, above. `crates/conway-core/tests/fakes_conformance.rs`
   moved to `crates/conway-testkit/tests/fakes_conformance.rs` unchanged in
   substance.
+
+### Added
+
+- **`conway.trim` is wired into the shipped `conway` binary** — board item `01M0TV447NAJ1R06S455DZPP54`: `conway-cli` now depends on `conway-plugin-trim`, so naming `"conway.trim"` in `[plugins].install` resolves through the same first-party mechanism as every other id and its `Curator` actually runs, closing the gap where it was compiled, tested, and unreachable from the binary.
+
+### Fixed
+
+- **`/tree`'s own doc comment claimed its rendering "always matches what `/agents` shows"; it no longer does, since `01M0RWKJD04JBR5NCVKBQXYHV4` gave the `/agents` panel a screen-relative short id** — board item `01M0TNCAP1HH4YNC5K9753YG26`. Decided in favor of keeping `/tree` on full ids: a transcript line outlives the row set that made a short prefix unique, so it needs a durable reference, not a screen affordance. `commands.rs`, `docs/agents.md`, and `docs/interactive.md` now say so explicitly instead of claiming parity that doesn't hold.
 
 ## [0.9.0] — 2026-08-13
 

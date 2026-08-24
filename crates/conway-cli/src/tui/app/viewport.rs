@@ -38,7 +38,7 @@ impl App {
     {
         let size = terminal
             .size()
-            .map_err(|e| conway::ConwayError::Io(e.into()))?;
+            .map_err(|e| conway::FacadeError::Io(e.into()))?;
         let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
         let max = view::max_scroll(&self.state, area);
         if up {
@@ -61,7 +61,7 @@ impl App {
     {
         let size = terminal
             .size()
-            .map_err(|e| conway::ConwayError::Io(e.into()))?;
+            .map_err(|e| conway::FacadeError::Io(e.into()))?;
         let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
         let transcript_area = view::transcript_area(&self.state, area);
         let max = view::max_scroll(&self.state, area);
@@ -92,7 +92,7 @@ impl App {
     {
         let size = terminal
             .size()
-            .map_err(|e| conway::ConwayError::Io(e.into()))?;
+            .map_err(|e| conway::FacadeError::Io(e.into()))?;
         let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
         let max = view::max_scroll(&self.state, area);
         self.state.jump_to_top(max);

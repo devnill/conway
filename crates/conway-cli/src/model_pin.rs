@@ -11,16 +11,16 @@
 
 use std::str::FromStr;
 
-use conway::{ConwayError, ModelRef};
+use conway::{FacadeError, ModelRef};
 
 use crate::cli::Cli;
 
-/// Wraps `message` as a `ConwayError::Config` with no path -- every "the
+/// Wraps `message` as a `FacadeError::Config` with no path -- every "the
 /// user typed something this CLI cannot act on" failure in this crate uses
 /// this, so `exit::ExitCode::from_error` classifies it as `ExitCode::Usage`
 /// (2) regardless of which flag or mode produced it.
-pub(crate) fn usage_error(message: impl Into<String>) -> ConwayError {
-    ConwayError::Config {
+pub(crate) fn usage_error(message: impl Into<String>) -> FacadeError {
+    FacadeError::Config {
         path: None,
         message: message.into(),
     }

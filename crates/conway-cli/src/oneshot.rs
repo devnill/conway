@@ -349,7 +349,7 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
 ///
 /// Every error this function returns is deliberately built with
 /// [`usage_error`] (`ExitCode::Usage`, 2) rather than left to propagate as
-/// whatever `ConwayError` variant the facade call itself produced (which
+/// whatever `FacadeError` variant the facade call itself produced (which
 /// would classify as `ExitCode::AgentFailed`, 1, via `exit::classify_runtime_or_routing`'s
 /// default arm) -- matching this item's own binding notes: "every failure
 /// mode here is a usage error, not an agent failure ... the agent never

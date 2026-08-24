@@ -32,7 +32,7 @@
 //!   never called. Since `permissions.mode` defaults to `"prompt"`
 //!   (`config::merge::default_document`), an embedder using an unmodified
 //!   default config and neither `with_prompt_handler` nor
-//!   `with_permission_gate` still gets a named `ConwayError::Config` from
+//!   `with_permission_gate` still gets a named `FacadeError::Config` from
 //!   `build()` — unchanged, and deliberately so (see that method's own doc):
 //!   the fix is a direct path to the one closure a host almost always
 //!   already has, not a silent default gate choice.
@@ -145,7 +145,7 @@ use crate::config::schema::{BackendEntry, ConwayConfig};
 use crate::config::{self, CliOverrides, ConfigWarning, LoadOptions};
 use crate::conway::Conway;
 use crate::discovery_host;
-use crate::error::{ConwayError, Result};
+use crate::error::{FacadeError, Result};
 use crate::gates;
 use crate::host_caps::HostCaps;
 #[cfg(feature = "builtin-tools")]
@@ -230,7 +230,7 @@ pub struct ConwayBuilder {
     /// field existed: an unmodified default config (`permissions.mode`
     /// defaults to `"prompt"` -- `config::merge::default_document`) with
     /// neither this nor `with_permission_gate` set still fails `build()`
-    /// with a named `ConwayError::Config` naming exactly that, rather than
+    /// with a named `FacadeError::Config` naming exactly that, rather than
     /// silently choosing `AllowAlways`/`DenyAll` on a caller's behalf -- see
     /// [`Self::with_prompt_handler`]'s own doc for what setting this closes.
     prompt_handler: Option<gates::PromptHandler>,
@@ -485,7 +485,7 @@ impl ConwayBuilder {
     /// side effects to have run while the whole call still fails.
     ///
     /// **A factory whose `build` returns `Err` fails the whole `build()`
-    /// call as [`crate::ConwayError::Build`], naming this factory's own
+    /// call as [`crate::FacadeError::Build`], naming this factory's own
     /// [`BackendFactory::id`] and the underlying message** -- never silently
     /// swallowed, never a fallback that drops the kind and proceeds with
     /// whatever other backends exist (a registered factory that
@@ -621,7 +621,7 @@ impl ConwayBuilder {
     /// **Not called at all (the default, unchanged from before this method
     /// existed):** `permissions.mode = "prompt"` with no
     /// `with_permission_gate` override still fails `build()` with a named
-    /// [`ConwayError::Config`] stating exactly that ("permissions.mode =
+    /// [`FacadeError::Config`] stating exactly that ("permissions.mode =
     /// \"prompt\" requires a prompt handler to be supplied") -- never a
     /// silent `AllowAlways`/`DenyAll` substitute. A host that wants the
     /// friendliest default (ask, rather than deny or blanket-allow) to
@@ -800,7 +800,7 @@ impl ConwayBuilder {
     /// resolver (: `conway` no longer
     /// links a capability-/health-filtering router engine at all; that is
     /// exactly what this method installs). A factory whose `build` returns
-    /// `Err` fails the whole `build()` call as `ConwayError::Build`, naming
+    /// `Err` fails the whole `build()` call as `FacadeError::Build`, naming
     /// this factory's own `RouterFactory::id()` and the underlying message
     /// -- never silently swallowed, never a fallback to `MinimalRouter`.
     ///
@@ -891,7 +891,7 @@ impl ConwayBuilder {
     /// unresolved `kind` later (**declined** vs **unknown**).
     ///
     /// **An id resolving to nothing in any of the three bundles is a hard
-    /// [`ConwayError::Config`], never a silent no-op** -- an id in the
+    /// [`FacadeError::Config`], never a silent no-op** -- an id in the
     /// config that resolves to nothing is user-facing configuration that
     /// lies (nothing may claim to be reached that isn't). The error names
     /// the offending id and lists every id the three supplied bundles
@@ -952,7 +952,7 @@ impl ConwayBuilder {
             }
             if let Some(factory) = router_factories.iter().find(|f| f.id() == id.as_str()) {
                 if let Some(already) = &router_factory_installed {
-                    return Err(ConwayError::Config {
+                    return Err(FacadeError::Config {
                         path: None,
                         message: format!(
                             "plugins.install names more than one router factory ('{already}' \
@@ -978,7 +978,7 @@ impl ConwayBuilder {
                 .iter()
                 .map(|f| f.id().to_string())
                 .collect();
-            return Err(ConwayError::Config {
+            return Err(FacadeError::Config {
                 path: None,
                 message: format!(
                     "plugins.install names unknown id '{id}'; linked plugins: [{}]; linked \
@@ -1134,7 +1134,7 @@ impl ConwayBuilder {
         let mut seen_factory_kinds: HashSet<&str> = HashSet::new();
         for factory in &backend_factories {
             if !seen_factory_kinds.insert(factory.id()) {
-                return Err(ConwayError::Build {
+                return Err(FacadeError::Build {
                     message: format!(
                         "duplicate backend factory kind '{}': two factories registered via \
                          ConwayBuilder::with_backend_factory report the same BackendFactory::id()",
@@ -1156,7 +1156,7 @@ impl ConwayBuilder {
             if config.models.probe_on_startup {
                 probe_targets.push((id.clone(), factory.clone(), ctx.clone()));
             }
-            let backend = factory.build(ctx).map_err(|e| ConwayError::Build {
+            let backend = factory.build(ctx).map_err(|e| FacadeError::Build {
                 message: format!(
                     "backend '{id}': factory for kind '{}' failed to build: {e}",
                     entry.kind
@@ -1168,7 +1168,7 @@ impl ConwayBuilder {
             backend_map.insert(backend.id(), backend);
         }
         if backend_map.is_empty() {
-            return Err(ConwayError::Build {
+            return Err(FacadeError::Build {
                 message: "no backends configured: add a [backends.<id>] entry to config or call \
                           ConwayBuilder::with_backend"
                     .to_string(),
@@ -1232,7 +1232,7 @@ impl ConwayBuilder {
         //    the honestly degenerate `AlwaysClosedHealthRegistry`: no
         //    breaker ever opens, `record` is a no-op. A factory's own
         //    `RouterBundle::health` REPLACES this below when one is taken.
-        let routing_config = config.routing().map_err(|message| ConwayError::Config {
+        let routing_config = config.routing().map_err(|message| FacadeError::Config {
             path: None,
             message,
         })?;
@@ -1279,7 +1279,7 @@ impl ConwayBuilder {
                 backends: &all_backends,
                 capability_index,
             };
-            factory.build(ctx).map_err(|e| ConwayError::Build {
+            factory.build(ctx).map_err(|e| FacadeError::Build {
                 message: format!("router factory '{}' failed to build: {e}", factory.id()),
             })?
         } else {
@@ -1392,7 +1392,7 @@ impl ConwayBuilder {
         for plugin in plugins {
             let id = plugin.manifest().id.clone();
             if !seen_plugin_ids.insert(id.clone()) {
-                return Err(ConwayError::Build {
+                return Err(FacadeError::Build {
                     message: format!("duplicate plugin id: '{id}'"),
                 });
             }
@@ -1407,7 +1407,7 @@ impl ConwayBuilder {
         //      validation seam. A cap the host does NOT offer is a
         //      `PluginError::MissingHostCapability` naming both the plugin
         //      and the cap, surfaced as a build error (mirroring the
-        //      duplicate-id error's `ConwayError::Build` shape one step above).
+        //      duplicate-id error's `FacadeError::Build` shape one step above).
         //      Empty `required_host_caps` (the common case -- "needs nothing
         //      the host might lack") is always satisfied. The check lives in
         //      the builder, NOT in `PluginRegistry::from_plugins`, so
@@ -1417,7 +1417,7 @@ impl ConwayBuilder {
             let manifest = plugin.manifest();
             host_caps
                 .check_manifest(&manifest)
-                .map_err(|err| ConwayError::Build {
+                .map_err(|err| FacadeError::Build {
                     message: err.to_string(),
                 })?;
         }
@@ -1438,7 +1438,7 @@ impl ConwayBuilder {
         //      nothing" starts with the declaration itself being
         //      well-formed.
         let plugin_events = declared_plugin_events(&resolved_plugins)
-            .map_err(|message| ConwayError::Build { message })?;
+            .map_err(|message| FacadeError::Build { message })?;
 
         // 11. Agent defs.
         let agents_dir = resolve_path(&cwd, &config.agents.dir);
@@ -1526,7 +1526,7 @@ impl ConwayBuilder {
             let plugin_id = plugin.manifest().id;
             for fragment in plugin.instructions() {
                 if let Some(first_plugin_id) = seen_instruction_names.get(&fragment.name).cloned() {
-                    return Err(ConwayError::Build {
+                    return Err(FacadeError::Build {
                         message: format!(
                             "duplicate instruction fragment name '{}': plugins '{first_plugin_id}' \
                              and '{plugin_id}' both declare a Plugin::instructions() fragment with \
@@ -1727,7 +1727,7 @@ impl ConwayBuilder {
             // plugin set is known.
             if let (Some(_matcher), Some(decl)) = (&rule.match_tool, plugin_decl) {
                 if !decl.carries_tool_name {
-                    return Err(ConwayError::Build {
+                    return Err(FacadeError::Build {
                         message: format!(
                             "hooks.rules[]: rule '{}' sets \"match\" on event \"{}\", whose \
                              declaration says its payload carries no tool name -- \"match\" \
@@ -2586,7 +2586,7 @@ mod compose_curators_tests {
 
 /// Resolves a backend's effective API key: the literal `api_key` if set,
 /// else the value named by `api_key_env` read from the live process
-/// environment (a named-but-unset var is a `ConwayError::Config`), else an
+/// environment (a named-but-unset var is a `FacadeError::Config`), else an
 /// empty string (no key configured). `merge::validate` already established
 /// the two are mutually exclusive.
 ///
@@ -2599,7 +2599,7 @@ fn resolve_api_key(id: &str, entry: &BackendEntry) -> Result<String> {
         return Ok(entry.api_key.clone());
     }
     if !entry.api_key_env.is_empty() {
-        let resolved = std::env::var(&entry.api_key_env).map_err(|_| ConwayError::Config {
+        let resolved = std::env::var(&entry.api_key_env).map_err(|_| FacadeError::Config {
             path: None,
             message: format!(
                 "backend '{id}': api_key_env '{}' is not set in the environment",
@@ -2626,7 +2626,7 @@ fn resolve_api_key(id: &str, entry: &BackendEntry) -> Result<String> {
 /// an operator has to write by hand.
 ///
 /// A `kind` no registered factory claims is a hard, named
-/// [`ConwayError::Config`] listing every kind this build actually
+/// [`FacadeError::Config`] listing every kind this build actually
 /// recognises -- the same disclosure shape
 /// `crates/conway-cli/src/first_party_plugins.rs`'s unknown-id error already
 /// produces for plugin ids (a silently ignored `kind` is exactly the
@@ -2639,7 +2639,7 @@ fn resolve_api_key(id: &str, entry: &BackendEntry) -> Result<String> {
 /// - absent -> the pre-existing **unknown-kind** error, unchanged: this
 ///   build has never heard of the kind at all.
 ///
-/// Both are the identical hard `build()`-time [`ConwayError::Config`] this
+/// Both are the identical hard `build()`-time [`FacadeError::Config`] this
 /// function always raised -- neither timing nor severity changes, only the
 /// message an operator reads, so declining a shipped dialect and forgetting
 /// a `[backends.<id>]` entry that still names it fails the whole `build()`
@@ -2657,7 +2657,7 @@ fn resolve_backend_factory<'a>(
         known.sort();
         known.dedup();
         if declined.contains(entry.kind.as_str()) {
-            ConwayError::Config {
+            FacadeError::Config {
                 path: None,
                 message: format!(
                     "backend '{id}': kind '{}' was declined, not installed for this build. This \
@@ -2674,7 +2674,7 @@ fn resolve_backend_factory<'a>(
                 ),
             }
         } else {
-            ConwayError::Config {
+            FacadeError::Config {
                 path: None,
                 message: format!(
                     "backend '{id}': unknown kind '{}'; recognised kinds: [{}]. A third-party \
@@ -2791,7 +2791,7 @@ fn build_default_store(cwd: &Path, root: &Path) -> Result<Arc<dyn SessionStore>>
 /// default store to fall back to.
 #[cfg(not(feature = "jsonl-store"))]
 fn build_default_store(_cwd: &Path, _root: &Path) -> Result<Arc<dyn SessionStore>> {
-    Err(ConwayError::Build {
+    Err(FacadeError::Build {
         message: "no session store configured: enable the 'jsonl-store' feature or call \
                   ConwayBuilder::with_session_store"
             .to_string(),
@@ -2876,7 +2876,7 @@ fn build_default_path_store(cwd: &Path, root: &Path) -> Result<Arc<dyn PathStore
 /// reachable only by a caller that also depends on `conway-core` directly.
 #[cfg(not(feature = "jsonl-store"))]
 fn build_default_path_store(_cwd: &Path, _root: &Path) -> Result<Arc<dyn PathStore>> {
-    Err(ConwayError::Build {
+    Err(FacadeError::Build {
         message: "no path store configured: this configuration (jsonl-store disabled) has \
                   no default path store and no way for a facade-only caller to supply one -- \
                   `PathStore` is engine-internal and not re-exported through the `conway` \

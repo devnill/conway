@@ -48,8 +48,9 @@
 //! traits stay flat at the root. `CoreConwayError` (also root) is
 //! `BackendFactory::build`'s `Err` type — the same
 //! `conway_core::error::ConwayError` `RouterFactory::build` already
-//! commits to, re-exported under a different name than this crate's own
-//! `conway::ConwayError` so the two do not collide at the same path.
+//! commits to, re-exported under this name because this crate's own
+//! umbrella error is `conway::FacadeError`, not `ConwayError` (board item
+//! CON-3 renamed it so the two no longer share a bare name).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::pin::Pin;

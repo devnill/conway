@@ -7,7 +7,7 @@
 use conway::{
     AgentDef, AgentId, AgentResult, AgentTreeSnapshot, AttemptFailure, Backend, BreakerKind,
     BreakerSnapshot, BreakerState, Budget, CapabilitySummary, ContextHook, ContextReport,
-    ConwayError, EntryOutcome, Envelope, Event, ExplainEntry, ExplainReport, HealthRegistry,
+    EntryOutcome, Envelope, Event, ExplainEntry, ExplainReport, FacadeError, HealthRegistry,
     LogRecord, LogSeq, ModelRef, PermissionDecision, PermissionDecisionKind, PermissionGate,
     PermissionRequest, PermissionScope, Plugin, Provenance, Result, ResultStatus, RoleAlias,
     Router, RoutingReason, SessionFilter, SessionId, SessionMeta, SessionStore, SubagentMode, Tool,
@@ -35,7 +35,7 @@ fn assert_types_nameable(
     _: Option<ContextReport>,
     _: Option<AgentTreeSnapshot>,
     _: Option<Provenance>,
-    _: Option<ConwayError>,
+    _: Option<FacadeError>,
     _: Option<PermissionDecision>,
     _: Option<PermissionDecisionKind>,
     _: Option<PermissionRequest>,
@@ -70,7 +70,7 @@ fn assert_traits_object_safe(
 ) {
 }
 
-/// `conway::Result<T>` must alias `std::result::Result<T, ConwayError>`.
+/// `conway::Result<T>` must alias `std::result::Result<T, FacadeError>`.
 #[allow(dead_code)]
 fn assert_result_alias() -> Result<()> {
     Ok(())

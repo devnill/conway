@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use conway::config::schema::{PermissionMode, PermissionsConfig};
 use conway::gates::{self, AllowListGate, DenyAllGate, PromptingGate};
-use conway::ConwayError;
+use conway::FacadeError;
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::ToolCategory;
 use conway_core::ids::{AgentId, ToolName};
@@ -349,13 +349,13 @@ fn from_config_prompt_mode_without_handler_errors() {
         Err(e) => e,
     };
     match err {
-        ConwayError::Config { message, .. } => {
+        FacadeError::Config { message, .. } => {
             assert!(
                 message.to_lowercase().contains("prompt handler"),
                 "message: {message}"
             );
         }
-        other => panic!("expected ConwayError::Config, got {other:?}"),
+        other => panic!("expected FacadeError::Config, got {other:?}"),
     }
 }
 

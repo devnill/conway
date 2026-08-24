@@ -228,10 +228,14 @@ async fn compose_context_path_tool_is_absent_from_the_announced_set_without_plug
 /// against the REAL compiled binary makes `compose_context_path` reachable
 /// -- this is what proves `write_head`/`ValidatedPath::derive_with` are no
 /// longer unreachable in a running build, the exact defect this item exists
-/// to close. `conway-plugin-trim` (`"conway.trim"`) has no equivalent
-/// passing test anywhere in this tree, which is precisely how its own
-/// unreachability went unnoticed -- this test is the regression guard that
-/// keeps `conway.path` from quietly regressing to that same state.
+/// to close. History: at the time this test was written,
+/// `conway-plugin-trim` (`"conway.trim"`) had no equivalent passing test
+/// anywhere in this tree, which is precisely how its own unreachability
+/// went unnoticed -- board item `01M0TV447NAJ1R06S455DZPP54` closed that
+/// gap (`conway_trim_curator_omits_old_tool_round_trips_once_installed`,
+/// below), but the cautionary shape stays true in general: this test is
+/// still the regression guard that keeps `conway.path` from quietly
+/// regressing to that same unreachable state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compose_context_path_tool_is_present_in_the_announced_set_once_installed() {
     let mock = MockBackend::start(Script(vec![vec![
@@ -301,8 +305,11 @@ async fn search_sessions_tool_is_absent_from_the_announced_set_without_plugins_i
 /// `[plugins].install` against the REAL compiled binary makes
 /// `search_sessions` reachable -- one line in `settings.json`, the same
 /// day this item lands, proving `SessionDiscoveryHost` is not another
-/// `conway-plugin-trim` (a workspace member `conway-cli` never depended
-/// on, so no `[plugins].install` entry could ever have reached it).
+/// `conway-plugin-trim` in its ORIGINAL sense: a workspace member
+/// `conway-cli` never depended on, so no `[plugins].install` entry could
+/// ever have reached it (board item `01M0TV447NAJ1R06S455DZPP54` closed
+/// that specific gap for `conway-plugin-trim` itself by adding the
+/// dependency and its own reachability test, below).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_sessions_tool_is_present_in_the_announced_set_once_installed() {
     let mock = MockBackend::start(Script(vec![vec![
@@ -375,6 +382,102 @@ async fn skeleton_tool_is_callable_from_one_shot_once_installed() {
         Some("skeleton pong: hi"),
         "the real plugin's own Tool::invoke must have produced this exact reply, dispatched \
          through the real compiled binary -- got jsonl: {lines:?}"
+    );
+}
+
+/// Scripts `rounds` successive tool-call turns (`bash`, each echoing a
+/// round-numbered marker so a later request's `messages` array can be
+/// grepped for exactly which round survived), followed by one final
+/// plain-text turn that ends the run -- the shape both `conway.trim`
+/// reachability tests below share, differing only in `[plugins].install`.
+fn trim_probe_script(rounds: u32) -> Script {
+    let mut turns: Vec<Vec<Chunk>> = (0..rounds)
+        .map(|i| {
+            vec![
+                Chunk::ToolCall {
+                    name: "bash",
+                    args: serde_json::json!({ "command": format!("echo round-marker-{i}") }),
+                },
+                Chunk::Finish("tool_calls"),
+            ]
+        })
+        .collect();
+    turns.push(vec![Chunk::Text("done"), Chunk::Finish("stop")]);
+    Script(turns)
+}
+
+/// `conway_plugin_trim::DEFAULT_KEEP_TURNS` (8) is the window `bundle`
+/// installs `conway.trim` with -- 10 tool-call rounds before the final,
+/// curator-observing request puts `CurateCtx::turn` at 10 for that
+/// request, well past the 8-turn window, so round 0's call/result
+/// round-trip is the oldest thing a curator that is actually wired in
+/// would omit.
+const TRIM_PROBE_ROUNDS: u32 = 10;
+
+/// Control half: with NO `[plugins].install` entry (so `conway.trim` is not
+/// attached, exactly like every other opt-in first-party plugin), round 0's
+/// tool round-trip is still present in the LAST request's `messages` array
+/// -- nothing in this binary curates it away. This is the baseline the
+/// paired test below contrasts against: if this one ever started failing,
+/// the marker text or round count would need adjusting, not the claim
+/// `conway.trim` exists to prove.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn old_tool_round_trips_persist_across_many_turns_without_plugins_install() {
+    let mock = MockBackend::start(trim_probe_script(TRIM_PROBE_ROUNDS)).await;
+    let fixture = write_fixture(&mock, 20);
+    // Deliberately no `add_plugins_install` call.
+
+    let out = run_conway(&["-p", "hi", "--allowed-tools", "bash"], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let requests = mock.requests();
+    assert_eq!(
+        requests.len(),
+        (TRIM_PROBE_ROUNDS + 1) as usize,
+        "one request per scripted round plus the final text-ending turn"
+    );
+    let last = requests.last().expect("mock must have received a request");
+    let last_wire = serde_json::to_string(last).expect("serialize the last request");
+    assert!(
+        last_wire.contains("round-marker-0"),
+        "with no [plugins].install, the oldest tool round-trip must still reach the wire on \
+         the final request -- got: {last_wire}"
+    );
+}
+
+/// THE reachability test this board item exists to add: naming
+/// `"conway.trim"` in `[plugins].install` against the REAL compiled binary
+/// makes its `Curator` actually run and actually omit the same old
+/// round-trip the control test above shows survives when it is not
+/// installed -- direct evidence that `conway-cli` links `conway-plugin-trim`
+/// and resolves `"conway.trim"` through this same `[plugins].install`
+/// mechanism as every other first-party id, closing the gap this file's own
+/// former note described ("`conway-plugin-trim` ... has no equivalent
+/// passing test anywhere in this tree").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conway_trim_curator_omits_old_tool_round_trips_once_installed() {
+    let mock = MockBackend::start(trim_probe_script(TRIM_PROBE_ROUNDS)).await;
+    let fixture = write_fixture(&mock, 20);
+    add_plugins_install(&fixture, &["conway.trim"]);
+
+    let out = run_conway(&["-p", "hi", "--allowed-tools", "bash"], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let requests = mock.requests();
+    let last = requests.last().expect("mock must have received a request");
+    let last_wire = serde_json::to_string(last).expect("serialize the last request");
+    assert!(
+        !last_wire.contains("round-marker-0"),
+        "with [plugins].install = [\"conway.trim\"], the oldest tool round-trip must have been \
+         curated away by the final request -- got: {last_wire}"
     );
 }
 

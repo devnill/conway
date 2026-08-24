@@ -100,7 +100,7 @@
 //! across both builder paths. Disclosed residual: with an injected router
 //! that DISAGREES with the config (config has `intent`, the injected router
 //! does not), the intent turn itself fails and surfaces as
-//! [`ConwayError::IntentClassification`] rather than a passthrough — an
+//! [`FacadeError::IntentClassification`] rather than a passthrough — an
 //! injected-router/config mismatch is a build-time integration error, not
 //! an "unconfigured role". Every OTHER error (store I/O, def loading,
 //! backend/routing failure inside the turn) propagates unchanged.
@@ -152,7 +152,7 @@ use conway_core::ids::{AgentId, RoleAlias};
 use conway_runtime::runtime::Runtime;
 
 use crate::config::ConwayConfig;
-use crate::error::{ConwayError, Result};
+use crate::error::{FacadeError, Result};
 
 /// The declarative role alias the classifier routes under — see the module
 /// doc for the `settings.json` snippet and the unconfigured-role fallback.
@@ -314,7 +314,7 @@ pub(crate) async fn classify(
     let outcome = rt
         .run_ephemeral_turn(parent, parent, spec)
         .await
-        .map_err(ConwayError::Runtime)?;
+        .map_err(FacadeError::Runtime)?;
 
     match outcome.result.status {
         ResultStatus::Completed => {}
@@ -322,12 +322,12 @@ pub(crate) async fn classify(
         // `Failed` by the agent loop, budget, cancellation) is an "other
         // error" — it propagates, it does NOT degrade to a passthrough.
         ResultStatus::Failed { error } => {
-            return Err(ConwayError::IntentClassification {
+            return Err(FacadeError::IntentClassification {
                 message: format!("the intent agent failed: {error}"),
             });
         }
         other => {
-            return Err(ConwayError::IntentClassification {
+            return Err(FacadeError::IntentClassification {
                 message: format!("the intent agent finished with an unexpected status: {other:?}"),
             });
         }

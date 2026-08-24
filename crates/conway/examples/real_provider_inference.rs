@@ -47,7 +47,7 @@
 use std::sync::Arc;
 
 use conway::backend::{BackendId, ModelId};
-use conway::{ConwayBuilder, ConwayError, ModelRef, PermissionDecision, SessionSpec};
+use conway::{ConwayBuilder, FacadeError, ModelRef, PermissionDecision, SessionSpec};
 use conway_plugin_backends::config::{Dialect, OpenAiCompatConfig, SecretString};
 use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
 use conway_testkit::{FakeGate, FakeRouter, FakeStore};
@@ -93,7 +93,7 @@ async fn main() -> conway::Result<()> {
         return Ok(());
     };
     isolate_ambient_config_for_this_example();
-    let model_name = std::env::var("CONWAY_EXAMPLE_MODEL").map_err(|_| ConwayError::Config {
+    let model_name = std::env::var("CONWAY_EXAMPLE_MODEL").map_err(|_| FacadeError::Config {
         path: None,
         message: "CONWAY_EXAMPLE_MODEL must also be set alongside CONWAY_EXAMPLE_BASE_URL"
             .to_string(),
@@ -105,7 +105,7 @@ async fn main() -> conway::Result<()> {
     let backend_id = BackendId::new("real");
     let cfg = OpenAiCompatConfig {
         id: backend_id.clone(),
-        base_url: base_url.parse().map_err(|e| ConwayError::Config {
+        base_url: base_url.parse().map_err(|e| FacadeError::Config {
             path: None,
             message: format!("CONWAY_EXAMPLE_BASE_URL is not a valid URL: {e}"),
         })?,
@@ -116,7 +116,7 @@ async fn main() -> conway::Result<()> {
         models: Default::default(),
     };
     let backend = Arc::new(
-        OpenAiCompatBackend::new(cfg).map_err(|e| ConwayError::Build {
+        OpenAiCompatBackend::new(cfg).map_err(|e| FacadeError::Build {
             message: format!("failed to construct the real backend: {e}"),
         })?,
     );

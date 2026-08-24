@@ -11,7 +11,7 @@
 //! status -- a unit test of `exit.rs`'s mapping functions is NOT evidence
 //! a code is reachable: the exit-4 classifier's unit tests passed
 //! for its entire unreachable lifetime, because they constructed a
-//! `ConwayError::Routing` by hand and never drove the path
+//! `FacadeError::Routing` by hand and never drove the path
 //! (`AgentLoop::finish_error` folding the routing failure into
 //! `ResultStatus::Failed`) that a live turn actually takes. The exit-4
 //! tests below (`exit_4_no_backend`, `exit_4_unregistered_model`,

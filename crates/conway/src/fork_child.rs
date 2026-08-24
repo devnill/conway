@@ -37,7 +37,7 @@ use conway_core::log::SessionMeta;
 use conway_core::ports::SessionStore;
 use conway_runtime::runtime::{ResumeSpec, Runtime};
 
-use crate::error::{ConwayError, Result};
+use crate::error::{FacadeError, Result};
 use crate::session_handle::SessionHandle;
 
 /// Overrides onto the parent's own `agent_def`/`role` (`None` inherits the
@@ -125,8 +125,8 @@ pub(crate) async fn fork_child(
             parent_meta.root.as_deref(),
         )
         .map_err(|err| match err {
-            RuntimeError::Store(inner) => ConwayError::Store(inner),
-            other => ConwayError::Runtime(other),
+            RuntimeError::Store(inner) => FacadeError::Store(inner),
+            other => FacadeError::Runtime(other),
         })?;
     let child_meta = SessionMeta {
         id: SessionId::new(),
@@ -181,8 +181,8 @@ pub(crate) async fn fork_child(
         })
         .await
         .map_err(|err| match err {
-            RuntimeError::Store(inner) => ConwayError::Store(inner),
-            other => ConwayError::Runtime(other),
+            RuntimeError::Store(inner) => FacadeError::Store(inner),
+            other => FacadeError::Runtime(other),
         })?;
     debug_assert_eq!(
         agent, child_agent,

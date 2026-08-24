@@ -36,7 +36,7 @@ use serde_json::{Map, Value};
 use crate::config::model_metadata::ModelMetadata;
 use crate::config::schema::ConwayConfig;
 use crate::config::{discovery, model_metadata, ConfigWarning, LoadOutcome, WarningCode};
-use crate::error::{ConwayError, Result};
+use crate::error::{FacadeError, Result};
 
 /// The five-source `load` input. `env` stands in for the process
 /// environment: `load` with a default `LoadOptions` reads `std::env::vars()`
@@ -271,7 +271,7 @@ fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Res
         .is_some_and(|obj| obj.remove("tui").is_some());
 
     let mut config: ConwayConfig =
-        serde_json::from_value(merged).map_err(|e| ConwayError::Config {
+        serde_json::from_value(merged).map_err(|e| FacadeError::Config {
             path: None,
             message: format!("failed to parse merged configuration: {e}"),
         })?;
@@ -333,12 +333,12 @@ fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Res
 /// still runs unconditionally: this is a targeted exception for one check,
 /// not a general relaxation.
 pub fn apply_cli(config: &ConwayConfig, cli: &CliOverrides) -> Result<ConwayConfig> {
-    let mut value = serde_json::to_value(config).map_err(|e| ConwayError::Config {
+    let mut value = serde_json::to_value(config).map_err(|e| FacadeError::Config {
         path: None,
         message: format!("failed to serialize config for CLI override merge: {e}"),
     })?;
     merge_values(&mut value, cli_overrides_to_value(cli));
-    let merged: ConwayConfig = serde_json::from_value(value).map_err(|e| ConwayError::Config {
+    let merged: ConwayConfig = serde_json::from_value(value).map_err(|e| FacadeError::Config {
         path: None,
         message: format!("failed to parse config after CLI override merge: {e}"),
     })?;
@@ -460,14 +460,14 @@ fn merge_values(base: &mut Value, overlay: Value) {
 fn read_json_layer(path: &std::path::Path) -> Result<Option<Value>> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
-            let value: Value = serde_json::from_str(&text).map_err(|e| ConwayError::Config {
+            let value: Value = serde_json::from_str(&text).map_err(|e| FacadeError::Config {
                 path: Some(path.to_path_buf()),
                 message: format!("failed to parse JSON at {}: {e}", path.display()),
             })?;
             Ok(Some(value))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(ConwayError::Config {
+        Err(e) => Err(FacadeError::Config {
             path: Some(path.to_path_buf()),
             message: format!("failed to read {}: {e}", path.display()),
         }),
@@ -694,7 +694,7 @@ fn validate_impl(
     if !config.roles.contains_key(config.default_role.as_str()) {
         let mut known: Vec<&str> = config.roles.keys().map(String::as_str).collect();
         known.sort_unstable();
-        return Err(ConwayError::Config {
+        return Err(FacadeError::Config {
             path: None,
             message: format!(
                 "default_role '{}' is not defined in [roles]; defined roles: [{}]",
@@ -708,14 +708,14 @@ fn validate_impl(
     //    and <backend_id> exists in [backends].
     for (name, entry) in &config.roles {
         for raw in &entry.chain {
-            let model_ref: ModelRef = raw.parse().map_err(|_| ConwayError::Config {
+            let model_ref: ModelRef = raw.parse().map_err(|_| FacadeError::Config {
                 path: None,
                 message: format!(
                     "role '{name}': chain entry '{raw}' is not a valid 'backend/model' reference"
                 ),
             })?;
             if !config.backends.contains_key(model_ref.backend.as_str()) {
-                return Err(ConwayError::Config {
+                return Err(FacadeError::Config {
                     path: None,
                     message: format!(
                         "role '{name}': chain entry '{raw}' names unknown backend '{}'",
@@ -765,7 +765,7 @@ fn validate_impl(
         )
         && config.permissions.allowed_tools.is_empty()
     {
-        return Err(ConwayError::Config {
+        return Err(FacadeError::Config {
             path: None,
             message: "permissions.mode = \"allowlist\" requires a non-empty allowed_tools list"
                 .to_string(),
@@ -778,7 +778,7 @@ fn validate_impl(
         crate::config::schema::FsyncMode::Interval
     ) && config.session.fsync_interval_ms == 0
     {
-        return Err(ConwayError::Config {
+        return Err(FacadeError::Config {
             path: None,
             message: "session.fsync = \"interval\" requires fsync_interval_ms > 0".to_string(),
         });
@@ -788,7 +788,7 @@ fn validate_impl(
     //    backend.
     for (id, backend) in &config.backends {
         if !backend.api_key.is_empty() && !backend.api_key_env.is_empty() {
-            return Err(ConwayError::Config {
+            return Err(FacadeError::Config {
                 path: None,
                 message: format!(
                     "backend '{id}': api_key and api_key_env are mutually exclusive but both are set"
@@ -800,7 +800,7 @@ fn validate_impl(
     // 6. Hard error: headroom values must be > 0 (global and every present
     //    per-role override).
     if config.routing.default_headroom_tokens == 0 {
-        return Err(ConwayError::Config {
+        return Err(FacadeError::Config {
             path: None,
             message: "routing.default_headroom_tokens must be greater than 0".to_string(),
         });
@@ -809,7 +809,7 @@ fn validate_impl(
     role_names.sort_unstable();
     for name in &role_names {
         if config.roles[*name].headroom_tokens == Some(0) {
-            return Err(ConwayError::Config {
+            return Err(FacadeError::Config {
                 path: None,
                 message: format!("roles.{name}.headroom_tokens must be greater than 0"),
             });
@@ -893,7 +893,7 @@ fn validate_impl(
             unknown.dedup();
             let mut known_sorted = known.clone();
             known_sorted.sort();
-            return Err(ConwayError::Config {
+            return Err(FacadeError::Config {
                 path: None,
                 message: format!(
                     "tools.builtin_plugins names unknown built-in plugin(s): [{}]; known \
@@ -926,13 +926,13 @@ fn validate_impl(
         let mut seen_ids: BTreeSet<&str> = BTreeSet::new();
         for rule in &config.hooks.rules {
             if rule.id.is_empty() {
-                return Err(ConwayError::Config {
+                return Err(FacadeError::Config {
                     path: None,
                     message: "hooks.rules[]: every rule must have a non-empty \"id\"".to_string(),
                 });
             }
             if !seen_ids.insert(rule.id.as_str()) {
-                return Err(ConwayError::Config {
+                return Err(FacadeError::Config {
                     path: None,
                     message: format!(
                         "hooks.rules[]: duplicate id '{}' -- every rule's id must be unique",
@@ -972,7 +972,7 @@ fn validate_impl(
                 continue;
             }
             if EVENTS_WITHOUT_TOOL_NAME.contains(&rule.event.as_str()) {
-                return Err(ConwayError::Config {
+                return Err(FacadeError::Config {
                     path: None,
                     message: format!(
                         "hooks.rules[]: rule '{}' sets \"match\" on event \"{}\", which carries \
@@ -1003,7 +1003,7 @@ fn validate_impl(
     {
         for rule in &config.hooks.rules {
             if let Err(reason) = validate_event_name(&rule.event, None) {
-                return Err(ConwayError::Config {
+                return Err(FacadeError::Config {
                     path: None,
                     message: format!("hooks.rules[]: rule '{}': {reason}", rule.id),
                 });

@@ -31,7 +31,7 @@ use conway_core::config::AgentDef;
 use conway_core::ids::{ModelRef, RoleAlias};
 use serde::Deserialize;
 
-use crate::error::ConwayError;
+use crate::error::FacadeError;
 use crate::Result;
 
 /// The frontmatter's wire shape. `#[serde(deny_unknown_fields)]` so a typo'd
@@ -65,12 +65,12 @@ pub fn load_agent_defs(dir: &Path) -> Result<HashMap<String, AgentDef>> {
     let read_dir = match fs::read_dir(dir) {
         Ok(read_dir) => read_dir,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(err) => return Err(ConwayError::Io(err)),
+        Err(err) => return Err(FacadeError::Io(err)),
     };
 
     let mut paths: Vec<PathBuf> = Vec::new();
     for entry in read_dir {
-        let entry = entry.map_err(ConwayError::Io)?;
+        let entry = entry.map_err(FacadeError::Io)?;
         let path = entry.path();
         if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
             paths.push(path);
@@ -95,7 +95,7 @@ pub fn load_agent_defs(dir: &Path) -> Result<HashMap<String, AgentDef>> {
 /// coverage that does not depend on filesystem case sensitivity.
 fn insert_unique(defs: &mut HashMap<String, AgentDef>, def: AgentDef, path: &Path) -> Result<()> {
     if defs.contains_key(&def.name) {
-        return Err(ConwayError::AgentDef {
+        return Err(FacadeError::AgentDef {
             path: path.to_path_buf(),
             message: format!("duplicate agent definition: `{}`", def.name),
         });
@@ -105,7 +105,7 @@ fn insert_unique(defs: &mut HashMap<String, AgentDef>, def: AgentDef, path: &Pat
 }
 
 fn load_one(path: &Path) -> Result<AgentDef> {
-    let content = fs::read_to_string(path).map_err(|err| ConwayError::AgentDef {
+    let content = fs::read_to_string(path).map_err(|err| FacadeError::AgentDef {
         path: path.to_path_buf(),
         message: format!("failed to read file: {err}"),
     })?;
@@ -120,18 +120,18 @@ fn parse_agent_def(content: &str, stem: &str, path: &Path) -> Result<AgentDef> {
     let (yaml_src, body) = split_frontmatter(content, path)?;
 
     let raw: RawFrontmatter =
-        serde_yaml::from_str(yaml_src).map_err(|err| ConwayError::AgentDef {
+        serde_yaml::from_str(yaml_src).map_err(|err| FacadeError::AgentDef {
             path: path.to_path_buf(),
             message: format!("invalid YAML frontmatter: {err}"),
         })?;
 
-    let name = raw.name.ok_or_else(|| ConwayError::AgentDef {
+    let name = raw.name.ok_or_else(|| FacadeError::AgentDef {
         path: path.to_path_buf(),
         message: "missing required field 'name'".to_string(),
     })?;
 
     if name != stem {
-        return Err(ConwayError::AgentDef {
+        return Err(FacadeError::AgentDef {
             path: path.to_path_buf(),
             message: format!("agent name `{name}` does not match file stem `{stem}`"),
         });
@@ -139,7 +139,7 @@ fn parse_agent_def(content: &str, stem: &str, path: &Path) -> Result<AgentDef> {
 
     let system_prompt = normalize_body(body);
     if system_prompt.is_empty() {
-        return Err(ConwayError::AgentDef {
+        return Err(FacadeError::AgentDef {
             path: path.to_path_buf(),
             message: "empty system prompt".to_string(),
         });
@@ -148,7 +148,7 @@ fn parse_agent_def(content: &str, stem: &str, path: &Path) -> Result<AgentDef> {
     let model = raw
         .model
         .map(|s| {
-            s.parse::<ModelRef>().map_err(|err| ConwayError::AgentDef {
+            s.parse::<ModelRef>().map_err(|err| FacadeError::AgentDef {
                 path: path.to_path_buf(),
                 message: format!("invalid model reference `{s}`: {err}"),
             })
@@ -189,11 +189,11 @@ fn compile_result_contract(
     value: serde_json::Value,
     path: &Path,
 ) -> Result<schemars::schema::RootSchema> {
-    jsonschema::validator_for(&value).map_err(|err| ConwayError::AgentDef {
+    jsonschema::validator_for(&value).map_err(|err| FacadeError::AgentDef {
         path: path.to_path_buf(),
         message: format!("invalid result_contract: {err}"),
     })?;
-    serde_json::from_value(value).map_err(|err| ConwayError::AgentDef {
+    serde_json::from_value(value).map_err(|err| FacadeError::AgentDef {
         path: path.to_path_buf(),
         message: format!("invalid result_contract: {err}"),
     })
@@ -222,7 +222,7 @@ fn split_frontmatter<'a>(content: &'a str, path: &Path) -> Result<(&'a str, &'a 
     let after_open = after_blank
         .strip_prefix("---\r\n")
         .or_else(|| after_blank.strip_prefix("---\n"))
-        .ok_or_else(|| ConwayError::AgentDef {
+        .ok_or_else(|| FacadeError::AgentDef {
             path: path.to_path_buf(),
             message: "missing YAML frontmatter: file must begin with a `---` delimiter line"
                 .to_string(),
@@ -231,7 +231,7 @@ fn split_frontmatter<'a>(content: &'a str, path: &Path) -> Result<(&'a str, &'a 
     let mut pos = 0usize;
     let close_start = loop {
         if pos >= after_open.len() {
-            return Err(ConwayError::AgentDef {
+            return Err(FacadeError::AgentDef {
                 path: path.to_path_buf(),
                 message: "unterminated frontmatter: no closing `---` delimiter found".to_string(),
             });
@@ -293,7 +293,7 @@ mod tests {
         insert_unique(&mut defs, agent_def("reviewer"), Path::new("a.md")).unwrap();
         let err = insert_unique(&mut defs, agent_def("reviewer"), Path::new("b.md")).unwrap_err();
         match err {
-            ConwayError::AgentDef { message, .. } => {
+            FacadeError::AgentDef { message, .. } => {
                 assert!(message.contains("duplicate agent definition"), "{message}");
             }
             other => panic!("expected AgentDef error, got {other:?}"),
@@ -312,7 +312,7 @@ mod tests {
     fn split_frontmatter_missing_delimiter_errors() {
         let err = split_frontmatter("no frontmatter here\n", Path::new("x.md")).unwrap_err();
         match err {
-            ConwayError::AgentDef { message, .. } => {
+            FacadeError::AgentDef { message, .. } => {
                 assert!(message.contains("missing YAML frontmatter"), "{message}");
             }
             other => panic!("expected AgentDef error, got {other:?}"),
@@ -323,7 +323,7 @@ mod tests {
     fn split_frontmatter_unterminated_errors() {
         let err = split_frontmatter("---\nname: x\n", Path::new("x.md")).unwrap_err();
         match err {
-            ConwayError::AgentDef { message, .. } => {
+            FacadeError::AgentDef { message, .. } => {
                 assert!(message.contains("unterminated frontmatter"), "{message}");
             }
             other => panic!("expected AgentDef error, got {other:?}"),

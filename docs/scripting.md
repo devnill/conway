@@ -77,8 +77,8 @@ entry point.
 | Code | Name | When it's produced |
 | --- | --- | --- |
 | 0 | Completed | The root agent's turn finished with `ResultStatus::Completed`. |
-| 1 | AgentFailed | The catch-all: a `Failed` terminal status whose cause is not a routing rejection, a `Rejected` or `Cancelled`-without-SIGINT status, or a `ConwayError::Io`/`Backend`/`Store` (or any other unclassified) error. |
-| 2 | Usage | A malformed or conflicting flag, an empty/unreadable prompt, an unknown `--session`/`--resume` id, a malformed `--model`/`--fork-from` reference, or any `ConwayError::Config`/`AgentDef`/`Build`/`UnsupportedFeature`. |
+| 1 | AgentFailed | The catch-all: a `Failed` terminal status whose cause is not a routing rejection, a `Rejected` or `Cancelled`-without-SIGINT status, or a `FacadeError::Io`/`Backend`/`Store` (or any other unclassified) error. |
+| 2 | Usage | A malformed or conflicting flag, an empty/unreadable prompt, an unknown `--session`/`--resume` id, a malformed `--model`/`--fork-from` reference, or any `FacadeError::Config`/`AgentDef`/`Build`/`UnsupportedFeature`. |
 | 4 | NoHealthyBackend | Routing could not supply any model for the turn: the role is unknown (e.g. `--role-override` naming a role the config does not define), no candidate in the role's chain was admissible (an unregistered `backend/model` pair, a health-open breaker, every fallback entry exhausted against a live backend), or the assembled context exceeds every candidate's window (`RoutingError::ContextTooLarge` — no truncation or escalation is performed). |
 | 5 | BudgetExceeded | The root agent's turn finished with `ResultStatus::BudgetExceeded` (e.g. `limits.max_steps` reached). |
 | 130 | Interrupted | A SIGINT was observed (once, or twice for an immediate hard exit) and the run's terminal status is `Cancelled`. |
@@ -149,6 +149,21 @@ $ conway -p "reply with exactly the word pong and nothing else" --output-format 
   "steps_taken": 4
 }
 ```
+
+**Two fields here are id-shaped, and only one of them is a session handle.**
+`transcript_ref` is what `--session`, `--resume`, and `--fork-from` (see
+[`sessions.md`](sessions.md#resuming)) accept — it names the *session*, the
+append-only log those flags reattach to, create, or branch from
+(`AgentResult::transcript_ref: SessionId`). `agent_id` names the *agent node
+in the tree* instead (`AgentResult::agent_id: AgentId`, the same struct) —
+useful for correlating this result with the `agent`/`agent_spawned`/
+`agent_finished` lines for the same run in a concurrent `jsonl` stream (see
+below), but not a session id. It is also the more visually prominent of the
+two — first in the object, and the field most output formats lead with — so
+it is the one a script is likeliest to reach for first. Passing it to
+`--resume` fails: `conway --resume <agent_id> …` errors with
+`session … not found` instead of reattaching. Pass the `transcript_ref`
+value from the same object instead.
 
 ### `jsonl`
 

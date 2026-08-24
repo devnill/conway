@@ -47,7 +47,7 @@
 use std::sync::Arc;
 
 use conway::config::schema::SubprocessTransport as ConfigTransport;
-use conway::{ConwayBuilder, ConwayError};
+use conway::{ConwayBuilder, FacadeError};
 use conway_plugin_subprocess::{
     SubprocessPlugin, SubprocessPluginSpec, SubprocessTransport as PluginTransport,
 };
@@ -56,7 +56,7 @@ use conway_plugin_subprocess::{
 /// `builder`'s own config, in list order. A discovery failure (spawn,
 /// timeout, nonzero exit, or an invalid/unparseable manifest -- every
 /// [`conway_plugin_subprocess::SubprocessPluginError`] variant) fails the
-/// WHOLE call as [`ConwayError::Build`], naming the offending entry's own
+/// WHOLE call as [`FacadeError::Build`], naming the offending entry's own
 /// `id` -- never silently skipped, matching this crate's own
 /// `first_party_plugins::install`'s "an unresolvable entry fails the whole
 /// build" posture for the SAME reason: an operator who named a plugin in
@@ -78,7 +78,7 @@ pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
         };
         let plugin = SubprocessPlugin::discover(spec)
             .await
-            .map_err(|err| ConwayError::Build {
+            .map_err(|err| FacadeError::Build {
                 message: format!("[plugins].subprocess entry '{}': {err}", entry.id),
             })?;
         builder = builder.with_plugin(Arc::new(plugin));

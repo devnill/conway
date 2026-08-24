@@ -50,10 +50,10 @@ impl App {
     where
         // ratatui 0.30 widened `Backend::Error` from the fixed `io::Error` it
         // was in 0.29 to `B::Error: core::error::Error` (any backend, e.g.
-        // `TestBackend`'s `Infallible`), so `conway::ConwayError::Io`
+        // `TestBackend`'s `Infallible`), so `conway::FacadeError::Io`
         // (`std::io::Error`-typed, not this crate's to widen) needs an
         // explicit `.into()` at each call site below instead of the old
-        // direct `map_err(ConwayError::Io)`. `CrosstermBackend::Error` is
+        // direct `map_err(FacadeError::Io)`. `CrosstermBackend::Error` is
         // still `io::Error`, so this bound is satisfied trivially for the
         // only `B` this crate ever instantiates `run`/the scroll helpers
         // with.
@@ -89,7 +89,7 @@ impl App {
                 _ = ticker.tick() => {
                     if dirty {
                         terminal.draw(|f| view::draw(&self.state, f, &self.theme))
-                            .map_err(|e| conway::ConwayError::Io(e.into()))?;
+                            .map_err(|e| conway::FacadeError::Io(e.into()))?;
                         dirty = false;
                     }
                 }

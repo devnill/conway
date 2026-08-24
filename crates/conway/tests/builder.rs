@@ -11,7 +11,7 @@ use conway::config::schema::{
     PermissionMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
     ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, ConwayError, SessionSpec};
+use conway::{Conway, ConwayBuilder, FacadeError, SessionSpec};
 // Only named by the `builtin-tools`-gated tests below.
 #[cfg(feature = "builtin-tools")]
 use conway::PluginSelection;
@@ -31,7 +31,7 @@ use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 /// `Conway` deliberately does not derive `Debug` (it wraps `Arc<Runtime>`,
 /// which does not either), so `Result::expect_err`/`unwrap_err` (which both
 /// require `T: Debug`) cannot be used on a `Result<Conway, _>` here.
-fn expect_build_err(result: Result<Conway, ConwayError>, msg: &str) -> ConwayError {
+fn expect_build_err(result: Result<Conway, FacadeError>, msg: &str) -> FacadeError {
     match result {
         Err(err) => err,
         Ok(_) => panic!("{msg}"),
@@ -257,7 +257,7 @@ fn build_fails_with_no_backends_configured() {
     let err = expect_build_err(result, "no backend injected and none configured must fail");
 
     match err {
-        ConwayError::Build { message } => {
+        FacadeError::Build { message } => {
             assert!(message.contains("no backends"), "{message}");
         }
         other => panic!("expected Build error, got {other:?}"),
@@ -282,7 +282,7 @@ fn build_fails_with_no_session_store_when_jsonl_store_disabled() {
     );
 
     match err {
-        ConwayError::Build { message } => {
+        FacadeError::Build { message } => {
             assert!(message.contains("no session store"), "{message}");
         }
         other => panic!("expected Build error, got {other:?}"),
@@ -319,7 +319,7 @@ fn build_fails_with_no_path_store_when_jsonl_store_disabled_even_with_custom_ses
     );
 
     match err {
-        ConwayError::Build { message } => {
+        FacadeError::Build { message } => {
             assert!(message.contains("no path store"), "{message}");
             assert!(
                 !message.contains("call ConwayBuilder::with_path_store\""),
@@ -560,7 +560,7 @@ fn injected_permission_gate_overrides_config_derived_selection() {
         result,
         "prompt mode with no injected gate and no handler must fail",
     );
-    assert!(matches!(err, ConwayError::Config { .. }));
+    assert!(matches!(err, FacadeError::Config { .. }));
 
     // With an override: build succeeds, proving the injected gate was used.
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
@@ -665,7 +665,7 @@ fn duplicate_injected_plugin_id_is_rejected() {
     );
 
     match err {
-        ConwayError::Build { message } => {
+        FacadeError::Build { message } => {
             assert!(message.contains("duplicate plugin id"), "{message}");
             assert!(message.contains("conway.fs"), "{message}");
         }
@@ -764,7 +764,7 @@ fn plugin_requiring_a_cap_the_host_lacks_is_refused_naming_both() {
     );
 
     match err {
-        ConwayError::Build { message } => {
+        FacadeError::Build { message } => {
             // The message is the `PluginError::MissingHostCapability`'s
             // Display ("plugin {plugin} requires missing host capability
             // {capability}") -- it names BOTH the plugin id and the cap's
@@ -1499,7 +1499,7 @@ fn duplicate_instruction_fragment_name_is_rejected() {
     );
 
     match err {
-        ConwayError::Build { message } => {
+        FacadeError::Build { message } => {
             assert!(
                 message.contains("duplicate instruction fragment name"),
                 "{message}"

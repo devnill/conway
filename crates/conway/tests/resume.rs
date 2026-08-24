@@ -24,7 +24,7 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, ConwayError, ForkSpec, SessionSpec};
+use conway::{Conway, ConwayBuilder, FacadeError, ForkSpec, SessionSpec};
 use conway_core::agent::{PermissionDecision, ResultStatus};
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
@@ -149,9 +149,9 @@ fn base_config() -> ConwayConfig {
 /// `Result::expect_err`/`unwrap_err` (which both require `T: Debug`) cannot
 /// be used directly on a `Result<SessionHandle, _>` here.
 fn expect_session_err(
-    result: Result<conway::SessionHandle, ConwayError>,
+    result: Result<conway::SessionHandle, FacadeError>,
     msg: &str,
-) -> ConwayError {
+) -> FacadeError {
     match result {
         Err(err) => err,
         Ok(_) => panic!("{msg}"),
@@ -229,14 +229,14 @@ async fn resume_on_nonexistent_session_returns_store_error_naming_the_id() {
         "resuming an unknown session id must fail",
     );
     match err {
-        ConwayError::Store(inner) => {
+        FacadeError::Store(inner) => {
             let message = inner.to_string();
             assert!(
                 message.contains(&missing.to_string()),
                 "error must name the missing session id: {message}"
             );
         }
-        other => panic!("expected ConwayError::Store, got {other:?}"),
+        other => panic!("expected FacadeError::Store, got {other:?}"),
     }
 }
 
@@ -707,7 +707,7 @@ async fn new_session_with_an_already_existing_id_returns_a_typed_error() {
         "new_session with an already-existing id must fail",
     );
     match err {
-        ConwayError::Runtime(RuntimeError::Store(StoreError::AlreadyExists { session })) => {
+        FacadeError::Runtime(RuntimeError::Store(StoreError::AlreadyExists { session })) => {
             assert_eq!(
                 session,
                 existing.id(),
@@ -715,7 +715,7 @@ async fn new_session_with_an_already_existing_id_returns_a_typed_error() {
             );
         }
         other => panic!(
-            "expected ConwayError::Runtime(RuntimeError::Store(StoreError::AlreadyExists)), \
+            "expected FacadeError::Runtime(RuntimeError::Store(StoreError::AlreadyExists)), \
              got a distinct, non-generic failure: {other:?}"
         ),
     }
@@ -774,8 +774,8 @@ async fn context_report_at_errors_typed_for_an_out_of_range_turn() {
         .await
         .expect_err("turn 99 was never persisted");
     match err {
-        ConwayError::Runtime(_) => {}
-        other => panic!("expected ConwayError::Runtime, got {other:?}"),
+        FacadeError::Runtime(_) => {}
+        other => panic!("expected FacadeError::Runtime, got {other:?}"),
     }
 }
 
@@ -899,7 +899,7 @@ async fn fork_from_rejects_at_beyond_parent_head_naming_both_values() {
         "at beyond the parent's head must be rejected",
     );
     match err {
-        ConwayError::Store(inner) => {
+        FacadeError::Store(inner) => {
             let message = inner.to_string();
             assert!(
                 message.contains(&beyond.0.to_string()),
@@ -910,7 +910,7 @@ async fn fork_from_rejects_at_beyond_parent_head_naming_both_values() {
                 "error must name the parent's head: {message}"
             );
         }
-        other => panic!("expected ConwayError::Store, got {other:?}"),
+        other => panic!("expected FacadeError::Store, got {other:?}"),
     }
 }
 

@@ -18,7 +18,7 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, ConwayError, Provenance, SessionHandle, SessionSpec};
+use conway::{Conway, ConwayBuilder, FacadeError, Provenance, SessionHandle, SessionSpec};
 use conway_core::agent::PermissionDecision;
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
@@ -460,7 +460,7 @@ async fn pull_in_refuses_when_the_parent_is_not_live() {
         .await
         .expect_err("pull_in with a finished parent must be refused");
     assert!(
-        matches!(err, ConwayError::Runtime(RuntimeError::AgentNotLive { agent }) if agent == handle.root()),
+        matches!(err, FacadeError::Runtime(RuntimeError::AgentNotLive { agent }) if agent == handle.root()),
         "expected AgentNotLive naming the parent, got: {err:?}"
     );
 
@@ -524,7 +524,7 @@ async fn pull_in_refuses_when_the_child_has_children() {
         .await
         .expect_err("pull_in of a child that has children must be refused");
     assert!(
-        matches!(err, ConwayError::Store(StoreError::NotRemovable { session, .. }) if session == child_session),
+        matches!(err, FacadeError::Store(StoreError::NotRemovable { session, .. }) if session == child_session),
         "expected NotRemovable naming the child session, got: {err:?}"
     );
 
@@ -570,7 +570,7 @@ async fn pull_in_refuses_a_non_ephemeral_child() {
         .await
         .expect_err("pull_in of a non-ephemeral child must be refused");
     assert!(
-        matches!(err, ConwayError::Store(StoreError::NotRemovable { session, .. }) if session == child_session),
+        matches!(err, FacadeError::Store(StoreError::NotRemovable { session, .. }) if session == child_session),
         "expected NotRemovable naming the child session, got: {err:?}"
     );
 
@@ -612,7 +612,7 @@ async fn pull_in_an_unknown_child_is_refused() {
         .await
         .expect_err("an unknown child must fail");
     assert!(
-        matches!(err, ConwayError::Runtime(RuntimeError::AgentNotFound { agent }) if agent == unknown),
+        matches!(err, FacadeError::Runtime(RuntimeError::AgentNotFound { agent }) if agent == unknown),
         "unknown child must be AgentNotFound, got: {err:?}"
     );
 }
@@ -676,7 +676,7 @@ async fn pull_in_refuses_a_still_running_child() {
         .await
         .expect_err("pull_in of a still-running child must be refused");
     assert!(
-        matches!(err, ConwayError::Store(StoreError::NotRemovable { .. })),
+        matches!(err, FacadeError::Store(StoreError::NotRemovable { .. })),
         "expected NotRemovable for a still-running child, got: {err:?}"
     );
 

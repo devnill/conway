@@ -18,7 +18,7 @@
 //! naming every kind it does recognise.
 //!
 //! This item establishes the crate skeleton: dependency wiring,
-//! the cargo feature flags below, the crate-level [`ConwayError`]/[`Result`],
+//! the cargo feature flags below, the crate-level [`FacadeError`]/[`Result`],
 //! and the curated re-export list from `conway-core`. Every other module
 //! named in the facade module's implementation notes (`config`, `agents`,
 //! `gates`, `presets`, `builder`, `conway`, `session_handle`,
@@ -51,7 +51,7 @@ mod subagent_spec;
 pub use builder::{ConwayBuilder, PluginSelection};
 pub use config::trust::TrustStatus;
 pub use conway::{Conway, HookRuleView};
-pub use error::{ConwayError, Result};
+pub use error::{FacadeError, Result};
 pub use event_stream::EventStream;
 pub use host_caps::HostCaps;
 pub use intent::AgentIntent;
@@ -96,22 +96,13 @@ pub use conway_core::ports::{
     Tool,
 };
 
-/// The shared error type
-/// [`RouterFactory::build`] and [`BackendFactory::build`] both return.
-/// Re-exported under this name, not `ConwayError` (already this crate's own
-/// root error type, [`crate::error::ConwayError`], returned by every OTHER
-/// fallible public API here) -- the two are deliberately distinct types with
-/// the same short name at different crate depths (`conway_core::error::
-/// ConwayError` vs. `conway::error::ConwayError`), so re-exporting the
-/// former under the latter's own name at this SAME root would shadow one
-/// with the other. `CoreConwayError` names which one a factory
-/// implementation must actually return -- `RouterFactory::build`'s own
-/// signature already committed to this type (`crates/conway-core/src/ports/
-/// routing.rs`) before this item existed; this re-export is what finally
-/// makes that signature spellable from a crate depending only on `conway`,
-/// closing a latent gap `RouterFactory` alone never had a compile-guarded
-/// test to catch (`crates/conway/tests/backend_parity.rs`'s extension,
-/// this item's own, is the first such test either factory port has had).
+/// The shared error type [`RouterFactory::build`] and [`BackendFactory::
+/// build`] both return -- `conway_core::error::ConwayError`, distinct from
+/// this crate's own umbrella [`error::FacadeError`] (board item CON-3
+/// renamed the latter so the two no longer share a bare name). Re-exported
+/// under `CoreConwayError` so a factory implementation can spell
+/// `RouterFactory`/`BackendFactory`'s own signature type from a crate
+/// depending only on `conway`, without a direct `conway-core` dependency.
 pub use conway_core::error::ConwayError as CoreConwayError;
 
 /// The extension surface -- there is exactly one extension mechanism, and
@@ -402,6 +393,44 @@ pub mod plugin {
     /// exactly as it would if built-in tools had never existed.
     #[cfg(all(unix, feature = "builtin-tools"))]
     pub use conway_tools::process::unix::{kill_group, TERM_GRACE};
+
+    /// Applied when a plugin-host spec (`conway_plugin_mcp::McpPluginSpec`,
+    /// `conway_plugin_subprocess::SubprocessPluginSpec`) does not name its
+    /// own `timeout_ms`: long enough for a typical local plugin process
+    /// (MCP server or subprocess tool) to answer, short enough that a hung
+    /// child cannot silently stall an agent turn indefinitely -- the same
+    /// reasoning `crates/conway/src/config/schema.rs`'s
+    /// `HookEntry::timeout_ms` default states for the identical value.
+    ///
+    /// **One authority, not two (board item `01M0TV6E2K6QF9VXP6C7TFH06X`).**
+    /// `conway-plugin-mcp` and `conway-plugin-subprocess` each used to
+    /// declare their own `pub const` naming the same 5000ms value and
+    /// carry a "must match" doc comment as the only enforcement -- nothing
+    /// actually checked the two literals agreed. This constant is now
+    /// defined ONCE, here; both crates re-export it (`pub use
+    /// conway::plugin::DEFAULT_TIMEOUT_MS`) rather than restating it, so
+    /// their old public paths still resolve but there is exactly one place
+    /// the value can be edited.
+    ///
+    /// **Why here, not sourced from `conway-tools` like [`kill_group`]
+    /// immediately above.** `kill_group` needs `conway-tools`' `nix`-backed
+    /// process-group signalling, which is genuinely unix-only and only
+    /// exists when the optional, default-on `builtin-tools` feature pulls
+    /// `conway-tools` in -- so its re-export is gated
+    /// `cfg(all(unix, feature = "builtin-tools"))`, matching where the
+    /// dependency is actually only sometimes present. This constant has no
+    /// such dependency: it is plain data, needed unconditionally by
+    /// `McpPluginSpec::new`/`SubprocessPluginSpec::new`, which compile and
+    /// run on every platform regardless of `builtin-tools` (that feature
+    /// governs conway's OWN built-in `Tool` implementations, not whether a
+    /// plugin host may construct a spec with a default timeout). Gating
+    /// this constant the same way `kill_group` is gated would break both
+    /// constructors on a non-unix target or with default features off --
+    /// the facade would have to learn a constraint (unix-only,
+    /// builtin-tools-only) this value has no reason to carry. So it is
+    /// declared directly here, ungated, rather than routed through
+    /// `conway-tools`.
+    pub const DEFAULT_TIMEOUT_MS: u64 = 5000;
 }
 
 /// The `Backend` authoring surface:

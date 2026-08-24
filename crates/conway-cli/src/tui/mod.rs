@@ -25,7 +25,7 @@ pub mod state;
 pub(crate) mod test_support;
 pub mod view;
 
-use conway::{Conway, ConwayError};
+use conway::{Conway, FacadeError};
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use ratatui::crossterm::execute;
@@ -107,7 +107,7 @@ pub async fn run(
     // marker to go stale.
     let _ = conway.sweep_stale_modal_asks(sweep_live_threshold()).await;
 
-    enable_raw_mode().map_err(ConwayError::Io)?;
+    enable_raw_mode().map_err(FacadeError::Io)?;
     // T8: bracketed paste alongside the alternate screen -- one `execute!`
     // call so a mid-sequence failure still leaves `restore_terminal` (which
     // undoes both, best-effort) as the single cleanup path below.
@@ -117,7 +117,7 @@ pub async fn run(
         EnableBracketedPaste
     ) {
         restore_terminal();
-        return Err(ConwayError::Io(e));
+        return Err(FacadeError::Io(e));
     }
 
     let backend = CrosstermBackend::new(std::io::stdout());
@@ -125,7 +125,7 @@ pub async fn run(
         Ok(terminal) => terminal,
         Err(e) => {
             restore_terminal();
-            return Err(ConwayError::Io(e));
+            return Err(FacadeError::Io(e));
         }
     };
 

@@ -14,24 +14,31 @@
 //! links.
 //!
 //! **This bundle is a worked example, not a commitment to any of its
-//! members individually.** Today it contains five plugin entries --
+//! members individually.** Today it contains eight plugin entries --
 //! `conway-plugin-skeleton`, a skeleton proving nothing beyond the install
 //! mechanism (see that crate's own module doc); `conway-plugin-history`,
 //! `/conway.history.rewind`/`/conway.history.mask`/`/conway.history.checkout`
 //! -- so `/checkout` and a reachable `ContextMask` are built too, not only
 //! `/rewind` (see that crate's own module doc); `conway-plugin-stepguard`,
 //! repeated-tool-call detection moved out of the agent loop; `conway-plugin-
-//! skills`, progressive skill disclosure; and `conway-plugin-memory`, a
-//! mutable `MemoryStore`-backed context hook. Dynamic routing is built too
-//! (`conway-plugin-routing`, resolved through `router_bundle` below, not
-//! this list), and so is MCP client support -- through a separate mechanism
-//! entirely, `[plugins].mcp` wired by this crate's own `mcp_plugins` module,
-//! never through `bundle` here (see that module's own doc). Context
-//! compaction is the one first-party-plugin-tier capability still unbuilt
-//! (`scripts/board-claims.md`'s `absent: conway\.compaction` predicate pins
-//! this so the claim goes stale loudly, not silently, the moment that
-//! changes) -- it adds its own entry here when it lands, through
-//! `ConwayBuilder::with_plugin`, `with_backend_factory`, or
+//! skills`, progressive skill disclosure; `conway-plugin-memory`, a mutable
+//! `MemoryStore`-backed context hook; `conway-plugin-path`, the
+//! `compose_context_path` tool; `conway-plugin-discover`, the
+//! `search_sessions` tool that feeds it; and `conway-plugin-trim`, a
+//! `Curator` that omits tool call/result round-trips older than a
+//! configurable turn window (board item `01M0TV447NAJ1R06S455DZPP54` --
+//! this crate did not depend on it at all before that item, so naming
+//! `"conway.trim"` in `[plugins].install` used to reach nothing; see that
+//! crate's own module doc for the rest of the history). Dynamic routing is
+//! built too (`conway-plugin-routing`, resolved through `router_bundle`
+//! below, not this list), and so is MCP client support -- through a
+//! separate mechanism entirely, `[plugins].mcp` wired by this crate's own
+//! `mcp_plugins` module, never through `bundle` here (see that module's own
+//! doc). Context compaction is the one first-party-plugin-tier capability
+//! still unbuilt (`scripts/board-claims.md`'s `absent: conway\.compaction`
+//! predicate pins this so the claim goes stale loudly, not silently, the
+//! moment that changes) -- it adds its own entry here when it lands,
+//! through `ConwayBuilder::with_plugin`, `with_backend_factory`, or
 //! `with_router_factory`, whichever channel fits it, since nothing about
 //! `[plugins].install` itself is tool-specific -- `router_bundle` and
 //! `backend_bundle` below are exactly the other two of those three
@@ -94,7 +101,7 @@
 use std::sync::Arc;
 
 use conway::plugin::{MemoryStore, Plugin};
-use conway::{BackendFactory, ConwayBuilder, ConwayError, RouterFactory};
+use conway::{BackendFactory, ConwayBuilder, FacadeError, RouterFactory};
 
 /// Every first-party plugin this binary links, in no particular order.
 /// `Vec<Arc<dyn Plugin>>` rather than a `HashMap` keyed by id: the bundle
@@ -192,10 +199,10 @@ fn bundle(cwd: &std::path::Path, memory_store: Arc<dyn MemoryStore>) -> Vec<Arc<
         // the runtime itself, regardless of which plugin owns the tool
         // reading it. Opt-in like every other member of this bundle: this
         // entry is what makes `[plugins].install = ["conway.path"]` reach
-        // real code at all -- `conway-plugin-trim`'s own defect (a
-        // workspace member `conway-cli` never depended on, so no
-        // `[plugins].install` entry could ever have reached it) is exactly
-        // what this entry closes for `conway.path`.
+        // real code at all -- this is exactly the shape a missing
+        // dependency line here breaks (see `conway.trim`'s own entry below
+        // for the board item that closed that exact defect for THAT
+        // plugin).
         Arc::new(conway_plugin_path::PathPlugin),
         // `conway.discover` -- the tool a model calls to find a session or
         // record it does not already hold a reference to (board item
@@ -209,6 +216,30 @@ fn bundle(cwd: &std::path::Path, memory_store: Arc<dyn MemoryStore>) -> Vec<Arc<
         // dispatched tool's `ToolCtx::session_discovery` is already
         // populated by the runtime itself.
         Arc::new(conway_plugin_discover::DiscoverPlugin),
+        // `conway.trim` -- a `Curator` that omits tool call/result
+        // round-trips older than a configurable turn window (board item
+        // `01M0TV447NAJ1R06S455DZPP54`; `conway-plugin-trim`'s own module
+        // doc for the full "smallest honest curator" reasoning). Installs
+        // through `Plugin::curators` -- a DIFFERENT `Plugin` surface than
+        // every other candidate in this bundle, none of which contributes
+        // one -- composed with any embedder `with_curator` injection and
+        // every other plugin's own curators by `ConwayBuilder::build`
+        // (`compose_curators`), so `[plugins].install = ["conway.trim"]`
+        // is still the whole of the wiring, exactly like the tool-
+        // contributing entries above. History: this crate did not depend
+        // on `conway-plugin-trim` at all before the board item above --
+        // naming `"conway.trim"` in `[plugins].install` resolved to an
+        // unknown-id error no matter what, the exact defect this entry
+        // closes (`tests/first_party_plugins.rs`'s
+        // `conway_trim_curator_omits_old_tool_round_trips_once_installed`
+        // is the reachability proof). Needs no constructor argument --
+        // `TrimPlugin::new()` is `TrimOldToolResults::default()`
+        // (`DEFAULT_KEEP_TURNS`), the same default an embedder gets from
+        // `TrimPlugin::default()`; `TrimPlugin::with_keep_turns` exists for
+        // a caller that wants a different window, but this bundle has no
+        // config surface to thread a per-operator value through yet, so it
+        // is not reached from here.
+        Arc::new(conway_plugin_trim::TrimPlugin::new()),
     ]
 }
 
@@ -334,7 +365,7 @@ fn backend_bundle() -> Vec<Arc<dyn BackendFactory>> {
 async fn resolve_memory_store(
     cwd: &std::path::Path,
     install_ids: &[String],
-) -> Result<Arc<dyn MemoryStore>, ConwayError> {
+) -> Result<Arc<dyn MemoryStore>, FacadeError> {
     if !install_ids
         .iter()
         .any(|id| id == conway_plugin_memory::PLUGIN_ID)
@@ -347,7 +378,7 @@ async fn resolve_memory_store(
         conway::memory::FsMemoryStore::open(root.clone())
             .await
             .map(|store| Arc::new(store) as Arc<dyn MemoryStore>)
-            .map_err(|e| ConwayError::Build {
+            .map_err(|e| FacadeError::Build {
                 message: format!(
                     "conway.memory: cannot open the durable memory store at {} ({e}) -- fix the \
                      directory's permissions/filesystem, or remove \"conway.memory\" from \
@@ -359,7 +390,7 @@ async fn resolve_memory_store(
     #[cfg(not(feature = "jsonl-store"))]
     {
         let _ = cwd;
-        Err(ConwayError::Build {
+        Err(FacadeError::Build {
             message: "conway.memory is named in [plugins].install but this binary was built \
                       without the 'jsonl-store' feature, so no durable memory store is \
                       available"
@@ -395,7 +426,7 @@ async fn resolve_memory_store(
 /// parameter.
 pub async fn install(
     builder: ConwayBuilder,
-) -> Result<(ConwayBuilder, Arc<dyn MemoryStore>), ConwayError> {
+) -> Result<(ConwayBuilder, Arc<dyn MemoryStore>), FacadeError> {
     let cwd = builder.config().cwd.clone();
     let memory_store = resolve_memory_store(&cwd, &builder.config().plugins.install).await?;
     let plugins = bundle(&cwd, memory_store.clone());
@@ -548,12 +579,33 @@ mod tests {
             conway_plugin_memory::PLUGIN_ID,
             conway_plugin_path::PLUGIN_ID,
             conway_plugin_discover::PLUGIN_ID,
+            conway_plugin_trim::PLUGIN_ID,
         ] {
             assert!(
                 ids.contains(&expected.to_string()),
                 "missing {expected} in {ids:?}"
             );
         }
+    }
+
+    /// Same wiring-only check, for `conway_plugin_trim`: without its
+    /// published id present in `bundle`, `[plugins].install =
+    /// ["conway.trim"]` resolves to an unknown-id error -- the exact defect
+    /// board item `01M0TV447NAJ1R06S455DZPP54` closed (this crate did not
+    /// even depend on `conway-plugin-trim` before it).
+    #[test]
+    fn bundle_carries_the_trim_plugin_under_its_published_id() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let found = bundle(&cwd, memory_store)
+            .iter()
+            .any(|p| p.manifest().id == conway_plugin_trim::PLUGIN_ID);
+        assert!(
+            found,
+            "the linked bundle must contain the trim plugin under its published id, otherwise \
+             `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
+            conway_plugin_trim::PLUGIN_ID
+        );
     }
 
     /// Same wiring-only check, for `backend_bundle`: both published kind

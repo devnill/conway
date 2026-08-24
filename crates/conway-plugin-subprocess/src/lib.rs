@@ -122,12 +122,18 @@ pub use session::PersistentSession;
 pub use wire::{WireManifest, WireTool, WireToolError, WireToolErrorKind, WireToolResult};
 
 /// Applied when a [`SubprocessPluginSpec`] does not name its own
-/// `timeout_ms` -- the SAME 5000ms default `crates/conway/src/config/
-/// schema.rs`'s `HookEntry::timeout_ms` uses, for the identical reason
-/// (`docs/plugins/hooks.md`'s own note on that field): long enough for a
-/// typical local script to finish, short enough that a hung plugin process
-/// cannot silently stall an agent turn indefinitely.
-pub const DEFAULT_TIMEOUT_MS: u64 = 5000;
+/// `timeout_ms`.
+///
+/// **Re-exported, not restated (board item `01M0TV6E2K6QF9VXP6C7TFH06X`).**
+/// This used to be its own `pub const` declaring the same 5000ms value,
+/// kept "the same" as `conway-plugin-mcp`'s identical constant by a doc
+/// comment alone -- nothing enforced the two literals actually agreeing.
+/// The value now lives once, at `conway::plugin::DEFAULT_TIMEOUT_MS` (see that item's
+/// own doc for why it is declared directly on the facade rather than routed
+/// through `conway-tools` the way [`kill_group`] is); this is that same
+/// constant, re-exported so the old
+/// `conway_plugin_subprocess::DEFAULT_TIMEOUT_MS` path still resolves.
+pub use conway::plugin::DEFAULT_TIMEOUT_MS;
 
 /// The transport a [`SubprocessPluginSpec`] uses for `tool/1` calls --
 /// one-shot exec (the original slice, every call spawns fresh) or a

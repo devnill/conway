@@ -15,7 +15,7 @@ use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime};
 
 use crate::config::model_metadata::ModelMetadata;
 use crate::config::{ConfigWarning, ConwayConfig};
-use crate::error::{ConwayError, Result};
+use crate::error::{FacadeError, Result};
 use crate::intent::AgentIntent;
 use crate::permissions::{
     PermissionLoadReport, RevokeOutcome, TrustPermissionReport, TrustPreview,
@@ -906,7 +906,7 @@ impl Conway {
     /// layer; this is the facade-side wiring to reach it. An id already
     /// present in the store surfaces as `start_root`'s own
     /// `SessionStore::create` failure --
-    /// `Err(ConwayError::Runtime(RuntimeError::Store(StoreError::AlreadyExists
+    /// `Err(FacadeError::Runtime(RuntimeError::Store(StoreError::AlreadyExists
     /// { .. })))`, propagated unchanged through the `?` below -- typed and
     /// distinct from every other failure this method can produce, not a
     /// generic error.
@@ -1084,15 +1084,15 @@ impl Conway {
     /// for an unknown/missing session is `RuntimeError::Store` (its internal
     /// `store.meta` lookup, converted via that type's own `#[from]
     /// StoreError`) -- a plain `?` here would surface it as
-    /// `ConwayError::Runtime(RuntimeError::Store(_))`, one layer deeper than
-    /// this method returned earlier (`ConwayError::Store(_)` directly, from
+    /// `FacadeError::Runtime(RuntimeError::Store(_))`, one layer deeper than
+    /// this method returned earlier (`FacadeError::Store(_)` directly, from
     /// this method's own former `store.meta` call). `resume`'s existing test
     /// suite asserts the flat shape, and nothing about resuming a session
     /// makes "the store doesn't have it" a *runtime* concern rather than a
     /// *store* one -- so this unwraps `RuntimeError::Store` back to
-    /// `ConwayError::Store` explicitly, keeping every other `RuntimeError`
+    /// `FacadeError::Store` explicitly, keeping every other `RuntimeError`
     /// variant (e.g. a future `resume_root` failure mode) under
-    /// `ConwayError::Runtime` unchanged.
+    /// `FacadeError::Runtime` unchanged.
     pub async fn resume(&self, sid: SessionId) -> Result<SessionHandle> {
         self.resume_with(sid, None, None).await
     }
@@ -1162,8 +1162,8 @@ impl Conway {
             })
             .await
             .map_err(|err| match err {
-                RuntimeError::Store(inner) => ConwayError::Store(inner),
-                other => ConwayError::Runtime(other),
+                RuntimeError::Store(inner) => FacadeError::Store(inner),
+                other => FacadeError::Runtime(other),
             })?;
         Ok(SessionHandle::new(
             self.rt.clone(),
@@ -1382,7 +1382,7 @@ impl Conway {
         let parent_meta = self.store.meta(&sid).await?;
         let head = self.store.head(&sid).await?;
         if at.0 > head.0 {
-            return Err(ConwayError::Store(StoreError::SeqOutOfRange {
+            return Err(FacadeError::Store(StoreError::SeqOutOfRange {
                 requested: at,
                 head,
             }));
@@ -1422,15 +1422,15 @@ impl Conway {
     /// [`conway_runtime::runtime::Runtime::promote`], beside `AgentTree`;
     /// see that method's own doc for the complete reasoning. This method
     /// is a thin, unchanged-behavior delegation that flattens
-    /// `RuntimeError::Store` back to this facade's own `ConwayError::
+    /// `RuntimeError::Store` back to this facade's own `FacadeError::
     /// Store` at the boundary (see `Self::resume`'s doc for why that
     /// unwrap is not a shortcut but a preserved contract).
     ///
     /// Promote is a lifecycle operation on an existing agent, NOT a new
     /// subagent primitive — no fork, no spawn, no new session.
     ///
-    /// Errors: `ConwayError::Runtime(RuntimeError::AgentNotFound)` when
-    /// `agent` is not in the live tree; `ConwayError::Store(
+    /// Errors: `FacadeError::Runtime(RuntimeError::AgentNotFound)` when
+    /// `agent` is not in the live tree; `FacadeError::Store(
     /// StoreError::NotPromotable)` when the agent's session is not
     /// ephemeral (a double promote, or a non-`/ask` session); other
     /// `StoreError`s propagated unchanged.
@@ -1444,13 +1444,13 @@ impl Conway {
         // event) now lives on `Runtime::promote`, beside `AgentTree` -- see
         // that method's own doc. The unwrap below mirrors `Self::resume`'s
         // own "error-shape preservation" precedent: `RuntimeError::Store`
-        // flattens back to this facade's own `ConwayError::Store` rather
+        // flattens back to this facade's own `FacadeError::Store` rather
         // than nesting one layer deeper, matching what this method
         // returned before the relocation and what
         // `crates/conway/tests/promote.rs` already asserts.
         self.rt.promote(agent).await.map_err(|err| match err {
-            RuntimeError::Store(inner) => ConwayError::Store(inner),
-            other => ConwayError::Runtime(other),
+            RuntimeError::Store(inner) => FacadeError::Store(inner),
+            other => FacadeError::Runtime(other),
         })
     }
 
@@ -1466,7 +1466,7 @@ impl Conway {
     /// now lives on [`conway_runtime::runtime::Runtime::pull_in`], beside
     /// `AgentTree`; see that method's own doc for the complete reasoning.
     /// This method is a thin, unchanged-behavior delegation with the same
-    /// `RuntimeError::Store` -> `ConwayError::Store` flattening
+    /// `RuntimeError::Store` -> `FacadeError::Store` flattening
     /// [`Self::promote`]'s own doc explains.
     ///
     /// Pull-in is a lifecycle operation on two existing agents' logs, NOT
@@ -1474,8 +1474,8 @@ impl Conway {
     /// created here.
     pub async fn pull_in(&self, child: AgentId) -> Result<()> {
         self.rt.pull_in(child).await.map_err(|err| match err {
-            RuntimeError::Store(inner) => ConwayError::Store(inner),
-            other => ConwayError::Runtime(other),
+            RuntimeError::Store(inner) => FacadeError::Store(inner),
+            other => FacadeError::Runtime(other),
         })
     }
 
@@ -1492,15 +1492,15 @@ impl Conway {
     /// [`conway_runtime::runtime::Runtime::purge`], beside `AgentTree`;
     /// see that method's own doc for the complete reasoning. This method
     /// is a thin, unchanged-behavior delegation with the same
-    /// `RuntimeError::Store` -> `ConwayError::Store` flattening
+    /// `RuntimeError::Store` -> `FacadeError::Store` flattening
     /// [`Self::promote`]'s own doc explains.
     ///
     /// Purge is a lifecycle operation on an existing agent's session,
     /// NOT a new subagent primitive.
     pub async fn purge(&self, agent: AgentId) -> Result<()> {
         self.rt.purge(agent).await.map_err(|err| match err {
-            RuntimeError::Store(inner) => ConwayError::Store(inner),
-            other => ConwayError::Runtime(other),
+            RuntimeError::Store(inner) => FacadeError::Store(inner),
+            other => FacadeError::Runtime(other),
         })
     }
 

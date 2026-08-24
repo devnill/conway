@@ -855,7 +855,7 @@ pub trait Host {
     /// verbatim passthrough `AgentIntent` carrying that recipe, the raw
     /// text, and no agent def (so a classifier failure can never break the
     /// command), while a real backend failure propagates as
-    /// `ConwayError::IntentClassification` -- see `conway::intent`'s
+    /// `FacadeError::IntentClassification` -- see `conway::intent`'s
     /// module doc for the full untrusted-output validation policy.
     async fn classify_agent_intent(
         &self,
@@ -870,7 +870,7 @@ pub trait Host {
     /// `SlashCommand::Trust` arm is unit-testable against a fake. Returns
     /// `std::io::Result`, NOT `conway::Result` -- deliberately: `Conway::
     /// trust_permission_file`'s own signature already returns `std::io::
-    /// Result`, and converting through `conway::ConwayError::Io` would
+    /// Result`, and converting through `conway::FacadeError::Io` would
     /// prepend that variant's `"io error: "` `Display` prefix onto every
     /// message the old `app.rs::submit` interception used to show verbatim
     /// (e.g. the unrecognized-top-level-key case's own message), which
@@ -1014,7 +1014,7 @@ impl Host for LiveHost<'_> {
 /// plugin command rather than silently dropping or overwriting it --
 /// "a surfaced, named error at install time, not a silent win or a silent
 /// loss" (this item's own acceptance). `App::new` propagates this as a
-/// startup failure (`ConwayError::Config`), so a defect here stops the TUI
+/// startup failure (`FacadeError::Config`), so a defect here stops the TUI
 /// from starting with a clear message, the same severity every OTHER
 /// startup misconfiguration (a malformed permissions file, an unknown
 /// `[plugins].install` id) already gets.
@@ -1429,8 +1429,11 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
         }
         SlashCommand::Tree => {
             // Item A3: no facade call -- the alias renders from
-            // `state.tree` (the panel's own view), so its text always
-            // matches what `/agents` shows, recipe labels included.
+            // `state.tree` (the panel's own view), so its labels, recipe
+            // parts, indent and status match what `/agents` shows. The
+            // agent id does NOT: board item `01M0TNCAP1HH4YNC5K9753YG26`
+            // decided the two deliberately differ there. See
+            // `render_tree_snapshot`'s own doc for why.
             render_tree_snapshot(state);
             Effect::None
         }
@@ -1488,7 +1491,7 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             // `agent: Some(..)` for a leading `@`), the facade classifier
             // runs and a confirmation card opens on `Ok` (including the
             // verbatim passthrough -- the user confirms the raw text as
-            // the prompt). A propagated `ConwayError::IntentClassification`
+            // the prompt). A propagated `FacadeError::IntentClassification`
             // (a real backend failure, NOT the passthrough) falls back to
             // today's manual flow with a notice; the card must not appear
             // for a hard error. Bare `/fork` (no text) is unchanged: no
@@ -1930,8 +1933,21 @@ fn resolve_agent(state: &AppState, token: &str) -> Result<AgentId, String> {
 /// from the runtime's `AgentTreeSnapshot`, so `execute` makes no facade
 /// call for it at all. `TreeNode` carries no `steps`/`budget`/`role`, so a
 /// line is exactly what the panel row shows (indent, label, recipe parts,
-/// status) plus the full agent id -- kept so a transcript line can be
-/// copied straight into `/steer`/`/context`.
+/// status).
+///
+/// **The agent id is deliberately NOT what the panel shows** (board item
+/// `01M0TNCAP1HH4YNC5K9753YG26`, which found the two had drifted and this
+/// doc comment was claiming a parity that no longer held). The panel row
+/// prints [`super::view::agents::panel_agent_id`]'s screen-relative short
+/// id -- an affordance sized to what is on screen right now. This line
+/// prints `node.agent_id`'s full 26-character ULID via `Display`, because a
+/// `/tree` line is transcript text: it can be scrolled back to, pasted into
+/// a script, a commit message, or a bug report, arbitrarily far from the
+/// moment it was printed and the row set that made a short prefix unique
+/// then. A durable reference needs no "unique among what was on screen"
+/// caveat; the full id is that reference, and `resolve_agent` accepts it
+/// unchanged. Both forms resolve to the same agent either way -- this is a
+/// choice between two valid identifiers, not a bug in either one.
 ///
 /// Unlike the panel, the snapshot deliberately does NOT honor the
 /// `AgentVisibility` filter: it shows ALL nodes, terminal ones included.
@@ -2188,7 +2204,7 @@ mod tests {
     use std::sync::Mutex;
 
     use conway::plugin::{CommandOutcome, CommandSpec};
-    use conway::{AgentId, ConwayError, SessionId, SubagentMode};
+    use conway::{AgentId, FacadeError, SessionId, SubagentMode};
     // Test-only: `ContextReportEntry`/`SegmentId` are not part of this
     // crate's curated `conway` re-export list -- constructing
     // `ContextReport` fixtures reaches into `conway-core` directly, exactly
@@ -2780,7 +2796,7 @@ mod tests {
         /// and the keep-open-with-error paths of `apply_ask_fate`.
         fate_ok: bool,
         /// C2: when `Some`, `classify_agent_intent` succeeds with this
-        /// intent; otherwise it fails with `ConwayError::IntentClassification`
+        /// intent; otherwise it fails with `FacadeError::IntentClassification`
         /// -- lets a free-text `/fork`/`/spawn` test exercise both the
         /// card-opens path (Ok, including a scripted passthrough) and the
         /// manual-fallback path (Err). The default (`None` -> Err) keeps
@@ -2860,8 +2876,8 @@ mod tests {
         }
     }
 
-    fn fake_error() -> ConwayError {
-        ConwayError::Config {
+    fn fake_error() -> FacadeError {
+        FacadeError::Config {
             path: None,
             message: "fake error".to_string(),
         }
@@ -2960,7 +2976,7 @@ mod tests {
             self.calls.lock().unwrap().push("classify_agent_intent");
             match &self.classify_intent {
                 Some(intent) => Ok(intent.clone()),
-                None => Err(conway::ConwayError::IntentClassification {
+                None => Err(conway::FacadeError::IntentClassification {
                     message: "fake: intent role unconfigured".to_string(),
                 }),
             }
@@ -3885,6 +3901,16 @@ mod tests {
     /// "renders `state.tree` even when the runtime host tree would differ"
     /// holds by construction; the empty `host.calls()` assertion is what a
     /// regression back to a facade lookup would trip.)
+    ///
+    /// This is ALSO the pinning test for board item
+    /// `01M0TNCAP1HH4YNC5K9753YG26`'s id-format decision: `child.to_string()`
+    /// is the FULL 26-character ULID (`AgentId`'s `Display`, not
+    /// `view::agents::panel_agent_id`'s screen-relative short form), and the
+    /// assertion below is deliberately looking for that exact full string,
+    /// not a prefix of it. `/tree` keeps printing full ids on purpose (see
+    /// `render_tree_snapshot`'s doc for why); if a future change makes
+    /// `/tree` print short ids instead, this assertion must be rewritten to
+    /// say so, not silently relaxed to `starts_with`.
     #[tokio::test]
     async fn tree_makes_no_facade_call_and_renders_state_tree_not_the_host_snapshot() {
         let root = AgentId::new();

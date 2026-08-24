@@ -49,7 +49,7 @@ use std::path::{Path, PathBuf};
 use conway_core::config::SkillDef;
 use serde::Deserialize;
 
-use crate::error::ConwayError;
+use crate::error::FacadeError;
 use crate::Result;
 
 /// The frontmatter's wire shape. `#[serde(deny_unknown_fields)]` so a typo'd
@@ -74,12 +74,12 @@ pub fn load_skill_defs(dir: &Path) -> Result<HashMap<String, SkillDef>> {
     let read_dir = match fs::read_dir(dir) {
         Ok(read_dir) => read_dir,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(err) => return Err(ConwayError::Io(err)),
+        Err(err) => return Err(FacadeError::Io(err)),
     };
 
     let mut candidates: Vec<PathBuf> = Vec::new();
     for entry in read_dir {
-        let entry = entry.map_err(ConwayError::Io)?;
+        let entry = entry.map_err(FacadeError::Io)?;
         let path = entry.path();
         if path.is_dir() {
             candidates.push(path);
@@ -113,7 +113,7 @@ pub fn load_skill_defs(dir: &Path) -> Result<HashMap<String, SkillDef>> {
 /// same "checked defensively" rationale applies here unchanged.
 fn insert_unique(defs: &mut HashMap<String, SkillDef>, def: SkillDef, path: &Path) -> Result<()> {
     if defs.contains_key(&def.name) {
-        return Err(ConwayError::SkillDef {
+        return Err(FacadeError::SkillDef {
             path: path.to_path_buf(),
             message: format!("duplicate skill definition: `{}`", def.name),
         });
@@ -123,7 +123,7 @@ fn insert_unique(defs: &mut HashMap<String, SkillDef>, def: SkillDef, path: &Pat
 }
 
 fn load_one(path: &Path, stem: &str) -> Result<SkillDef> {
-    let content = fs::read_to_string(path).map_err(|err| ConwayError::SkillDef {
+    let content = fs::read_to_string(path).map_err(|err| FacadeError::SkillDef {
         path: path.to_path_buf(),
         message: format!("failed to read file: {err}"),
     })?;
@@ -134,18 +134,18 @@ fn parse_skill_def(content: &str, stem: &str, path: &Path) -> Result<SkillDef> {
     let (yaml_src, body) = split_frontmatter(content, path)?;
 
     let raw: RawFrontmatter =
-        serde_yaml::from_str(yaml_src).map_err(|err| ConwayError::SkillDef {
+        serde_yaml::from_str(yaml_src).map_err(|err| FacadeError::SkillDef {
             path: path.to_path_buf(),
             message: format!("invalid YAML frontmatter: {err}"),
         })?;
 
-    let name = raw.name.ok_or_else(|| ConwayError::SkillDef {
+    let name = raw.name.ok_or_else(|| FacadeError::SkillDef {
         path: path.to_path_buf(),
         message: "missing required field 'name'".to_string(),
     })?;
 
     if name != stem {
-        return Err(ConwayError::SkillDef {
+        return Err(FacadeError::SkillDef {
             path: path.to_path_buf(),
             message: format!("skill name `{name}` does not match directory name `{stem}`"),
         });
@@ -153,7 +153,7 @@ fn parse_skill_def(content: &str, stem: &str, path: &Path) -> Result<SkillDef> {
 
     let body = normalize_body(body);
     if body.is_empty() {
-        return Err(ConwayError::SkillDef {
+        return Err(FacadeError::SkillDef {
             path: path.to_path_buf(),
             message: "empty skill body".to_string(),
         });
@@ -188,7 +188,7 @@ fn split_frontmatter<'a>(content: &'a str, path: &Path) -> Result<(&'a str, &'a 
     let after_open = after_blank
         .strip_prefix("---\r\n")
         .or_else(|| after_blank.strip_prefix("---\n"))
-        .ok_or_else(|| ConwayError::SkillDef {
+        .ok_or_else(|| FacadeError::SkillDef {
             path: path.to_path_buf(),
             message: "missing YAML frontmatter: file must begin with a `---` delimiter line"
                 .to_string(),
@@ -197,7 +197,7 @@ fn split_frontmatter<'a>(content: &'a str, path: &Path) -> Result<(&'a str, &'a 
     let mut pos = 0usize;
     let close_start = loop {
         if pos >= after_open.len() {
-            return Err(ConwayError::SkillDef {
+            return Err(FacadeError::SkillDef {
                 path: path.to_path_buf(),
                 message: "unterminated frontmatter: no closing `---` delimiter found".to_string(),
             });
@@ -295,7 +295,7 @@ mod tests {
         write_skill(tmp.path(), "broken", "no frontmatter here\n");
         let err = load_skill_defs(tmp.path()).unwrap_err();
         match err {
-            ConwayError::SkillDef { message, .. } => {
+            FacadeError::SkillDef { message, .. } => {
                 assert!(message.contains("missing YAML frontmatter"), "{message}");
             }
             other => panic!("expected SkillDef error, got {other:?}"),
@@ -308,7 +308,7 @@ mod tests {
         write_skill(tmp.path(), "example", "---\nname: other\n---\nBody.\n");
         let err = load_skill_defs(tmp.path()).unwrap_err();
         match err {
-            ConwayError::SkillDef { message, .. } => {
+            FacadeError::SkillDef { message, .. } => {
                 assert!(
                     message.contains("does not match directory name"),
                     "{message}"
@@ -328,7 +328,7 @@ mod tests {
         );
         let err = load_skill_defs(tmp.path()).unwrap_err();
         match err {
-            ConwayError::SkillDef { message, .. } => {
+            FacadeError::SkillDef { message, .. } => {
                 assert!(message.contains("invalid YAML frontmatter"), "{message}");
             }
             other => panic!("expected SkillDef error, got {other:?}"),
@@ -341,7 +341,7 @@ mod tests {
         write_skill(tmp.path(), "example", "---\nname: example\n---\n");
         let err = load_skill_defs(tmp.path()).unwrap_err();
         match err {
-            ConwayError::SkillDef { message, .. } => {
+            FacadeError::SkillDef { message, .. } => {
                 assert!(message.contains("empty skill body"), "{message}");
             }
             other => panic!("expected SkillDef error, got {other:?}"),
@@ -365,7 +365,7 @@ mod tests {
         insert_unique(&mut defs, skill.clone(), Path::new("a/SKILL.md")).unwrap();
         let err = insert_unique(&mut defs, skill, Path::new("b/SKILL.md")).unwrap_err();
         match err {
-            ConwayError::SkillDef { message, .. } => {
+            FacadeError::SkillDef { message, .. } => {
                 assert!(message.contains("duplicate skill definition"), "{message}");
             }
             other => panic!("expected SkillDef error, got {other:?}"),
