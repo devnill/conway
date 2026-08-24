@@ -58,8 +58,8 @@
 use std::sync::Arc;
 
 use conway::plugin::{
-    async_trait, PathArgs, Plugin, PluginManifest, RenderKind, Tool, ToolCall, ToolCtx, ToolError,
-    ToolName, ToolOutput, ToolSpec, TruncationPolicy,
+    async_trait, ChildSessionError, PathArgs, Plugin, PluginManifest, RenderKind, Tool, ToolCall,
+    ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
 
 mod session;
@@ -177,6 +177,44 @@ pub enum McpPluginError {
     /// not at first use.
     #[error("MCP plugin '{config_id}' handshake failed: {detail}")]
     HandshakeFailed { config_id: String, detail: String },
+}
+
+/// The one-line-per-variant mapping this crate's own error enum needs to
+/// consume the shared process-lifecycle layer (board item
+/// `01M0TV7ZDS8X4F4TEJPRZB9P6T`): `conway::plugin::ChildSession` constructs
+/// its four shared failure causes generically, through this trait, rather
+/// than each session type hand-rolling the identical `match`/`kill_all`
+/// bookkeeping. `McpPluginError`'s own variants and `Display` text are
+/// UNCHANGED by this -- this impl only tells `ChildSession` which variant of
+/// THIS enum each cause becomes.
+impl ChildSessionError for McpPluginError {
+    fn spawn(config_id: &str, detail: String) -> Self {
+        McpPluginError::Spawn {
+            config_id: config_id.to_string(),
+            detail,
+        }
+    }
+
+    fn timed_out(config_id: &str, after_ms: u64) -> Self {
+        McpPluginError::TimedOut {
+            config_id: config_id.to_string(),
+            after_ms,
+        }
+    }
+
+    fn session_died(config_id: &str, detail: String) -> Self {
+        McpPluginError::SessionDied {
+            config_id: config_id.to_string(),
+            detail,
+        }
+    }
+
+    fn malformed_frame(config_id: &str, detail: String) -> Self {
+        McpPluginError::MalformedFrame {
+            config_id: config_id.to_string(),
+            detail,
+        }
+    }
 }
 
 impl McpPluginError {

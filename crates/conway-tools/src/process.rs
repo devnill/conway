@@ -48,6 +48,19 @@
 //! does (to report the timed-out command's own exit code). The
 //! consolidated function below is this signature, unchanged.
 
+// Board item `01M0TV7ZDS8X4F4TEJPRZB9P6T` adds a second, generic
+// consolidation alongside `unix::kill_group` above: the shared
+// child-process SESSION lifecycle (spawn + id-correlated NDJSON round trip
+// + per-call timeout + fail-closed teardown) `conway-plugin-mcp` and
+// `conway-plugin-subprocess` each hand-rolled independently. `unix` (above)
+// stays untouched -- this is a sibling module, not a change to the
+// five-way-diff module this doc block itself documents. See
+// `child_session`'s own module doc for the full argument and its
+// `cfg(unix)` gate (matching `unix`'s own: the generic session calls
+// `unix::kill_group` directly).
+#[cfg(unix)]
+pub mod child_session;
+
 #[cfg(unix)]
 pub mod unix {
     use std::process::ExitStatus;

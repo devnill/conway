@@ -974,6 +974,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`/tree`'s own doc comment claimed its rendering "always matches what `/agents` shows"; it no longer does, since `01M0RWKJD04JBR5NCVKBQXYHV4` gave the `/agents` panel a screen-relative short id** — board item `01M0TNCAP1HH4YNC5K9753YG26`. Decided in favor of keeping `/tree` on full ids: a transcript line outlives the row set that made a short prefix unique, so it needs a durable reference, not a screen affordance. `commands.rs`, `docs/agents.md`, and `docs/interactive.md` now say so explicitly instead of claiming parity that doesn't hold.
 
+### Changed
+
+- **`conway-plugin-mcp` and `conway-plugin-subprocess` no longer hand-roll the same child-process session lifecycle twice** — board item `01M0TV7ZDS8X4F4TEJPRZB9P6T`. Spawn, the id-correlated NDJSON round trip, the per-call timeout, and fail-closed teardown (dead session / malformed frame / `Drop`-time SIGKILL) are now one implementation, `conway::plugin::ChildSession` (new, in `conway-tools::process::child_session`, reached through the facade the same way `kill_group`/`DEFAULT_TIMEOUT_MS` already are — board items `01M0EKVR1BEXXS75NV2JC4HZZ9` / `01M0TV6E2K6QF9VXP6C7TFH06X`). Each crate's own public error enum (`McpPluginError` / `SubprocessPluginError`) is unchanged — same variants, same `Display` text — via a new `conway::plugin::ChildSessionError` trait each implements as a one-line-per-variant mapping. Each wire dialect's own request shapes, version negotiation, and participant-vs-observer refuse/degrade rules stay local to their owning crate, untouched.
+
 ## [0.9.0] — 2026-08-13
 
 ### Added
