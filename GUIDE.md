@@ -175,18 +175,21 @@ keep clean.
 
 ### Seeing the tree
 
-`/agents` opens the panel. Every row shows *how* the agent was made —
-`fork @seq N`, `@<agent_def>`, `(inherit)`, `(ephemeral)`. `v` cycles a
-draw-time visibility filter (active / all / finished) that never mutates
-anything. `Esc` closes the panel keeping the focused agent; press again to
-return to the root conversation.
+`/agents` opens the panel. Every row shows a status marker, the agent's
+short id (copy this straight into `/context`/`/steer`/`/fork @<agent>` —
+it's the one thing on the row those commands actually accept), and *how*
+the agent was made — `fork @seq N`, `@<agent_def>`, `(inherit)`,
+`(ephemeral)`. `v` cycles a draw-time visibility filter (active / all /
+finished) that never mutates anything. `Esc` closes the panel keeping the
+focused agent; press again to return to the root conversation.
 
 `/steer <agent> <message>` sends a message to a running child. It is applied at
 a turn boundary, never mid-generation.
 
-`/context <agent>` shows what an agent's context actually contains. When a child
-does something inexplicable, the answer is usually that it was handed something
-other than what you assumed — and this is where you find that out.
+`/context [<agent>]` shows what an agent's context actually contains — bare
+`/context` shows the focused agent's. When a child does something
+inexplicable, the answer is usually that it was handed something other
+than what you assumed — and this is where you find that out.
 
 `/why` shows the last routing decision: which model served the turn and why.
 

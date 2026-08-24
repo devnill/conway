@@ -74,8 +74,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/context",
-        usage: "/context <agent>",
-        description: "show an agent's assembled context",
+        usage: "/context [<agent>]",
+        description: "show an agent's assembled context (defaults to the focused agent)",
     },
     CommandSpec {
         name: "/why",

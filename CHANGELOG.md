@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`/context` defaults to the focused agent, and the `/agents` panel now
+  shows each agent's id** — board item `01M0RWKJD04JBR5NCVKBQXYHV4`, from
+  an operator's own use of the TUI: typing `/context` required an agent
+  id, but the only place agents were listed (`/agents`) showed labels, not
+  ids, and an agent with no `agent_def` rendered the same literal `agent`
+  as every other such agent — so there was no way to discover a valid
+  argument short of provoking the ambiguity error. `/context` with no
+  argument now shows the FOCUSED agent's context (the same agent `/agents`
+  already tags `(focused)`) instead of a usage error, and every row in the
+  `/agents` panel now carries its own short id (the same 8-character
+  truncation the status line already used for `session`/`lineage`) —
+  reused, not a new display rule, and it is exactly what `resolve_agent`
+  (`/context`/`/steer`/`/fork @<agent>`'s shared resolver) accepts, proven
+  by a test that copies the id off a rendered row rather than constructing
+  it independently. A short id is not guaranteed unique (two agents
+  created near-simultaneously can share one); the existing ambiguous-prefix
+  handling already reports that as an error naming every candidate rather
+  than silently resolving to the wrong agent. See
+  [`docs/interactive.md`](docs/interactive.md#the-agent-panel-agents).
 - **The `/settings` plugins section now separates the switch from the
   explanation** — board item `01M0RW3CPE8SG3PZ2J8RTK9Y9N`, from an
   operator's own use of the TUI: the section's toggle row and its

@@ -400,15 +400,20 @@ agent sits.
 ## Inspecting the tree
 
 `/agents` (TUI) opens a panel listing every agent in the session's tree —
-status, how it was created (`fork @seq N`, `@agent_def`, `(inherit)`,
-`(ephemeral)`), and its place in the hierarchy. `/tree` is an undocumented,
-hidden alias that prints that same panel's rows as plain transcript text
-instead of opening the panel — typing it works even though it isn't in the
-`/` palette.
+status, a short id (see below), how it was created (`fork @seq N`,
+`@agent_def`, `(inherit)`, `(ephemeral)`), and its place in the hierarchy.
+`/tree` is an undocumented, hidden alias that prints that same panel's
+rows as plain transcript text instead of opening the panel — typing it
+works even though it isn't in the `/` palette.
 
-`/context <agent>` shows one agent's assembled context as a list of
+`/context [<agent>]` shows one agent's assembled context as a list of
 segments, each with an estimated token count and its **provenance** —
-where that piece of context came from. Running it against a real session
+where that piece of context came from. With no argument, it shows the
+FOCUSED agent's context — that agent's short id is what the `/agents`
+panel shows next to its `(focused)` tag; see
+[`interactive.md`](interactive.md#the-agent-panel-agents) for the full
+panel layout and how `resolve_agent` accepts a short id specifically.
+Running it against a real session
 shows entries like these (the same shape `conway sessions show`'s
 `context_report` records expose, JSON-side):
 
