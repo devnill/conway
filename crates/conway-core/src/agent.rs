@@ -45,6 +45,10 @@ pub struct AskOutcome {
     pub text: String,
     pub usage: Usage,
     pub status: ResultStatus,
+    /// The ephemeral child's session id -- the same noun, spelled the same
+    /// way and for the same reason, as [`AgentResult::transcript_ref`],
+    /// whose doc records why neither field is called `session_id`. The two
+    /// move together or not at all.
     pub transcript_ref: SessionId,
 }
 
@@ -62,6 +66,67 @@ pub struct AgentResult {
     pub facts: Vec<Fact>,
     pub artifacts: Vec<Artifact>,
     pub structured: Option<serde_json::Value>,
+    /// The finished agent's session id: an OPAQUE POINTER to the
+    /// append-only log, never any of the log's content. It is also the
+    /// value `--session`, `--resume`, and `--fork-from` accept, whereas
+    /// `agent_id` (above) names a node in the agent tree and is rejected by
+    /// all three -- see `docs/scripting.md`'s `json` section and
+    /// `docs/sessions.md` on resuming, which document that trap for
+    /// scripts.
+    ///
+    /// # Why this is not called `session_id`
+    ///
+    /// Board item `01M0TX4TBJTPKN4ED50EEH2SY3` weighed renaming it to
+    /// exactly that, on the ground that a field whose name said what it was
+    /// would need no adjacent paragraph explaining which id `--resume`
+    /// takes. The decision was to KEEP `transcript_ref`, recorded here so
+    /// the next reader who finds the trap finds the argument at the field
+    /// rather than re-opening it. Four reasons, roughly in order of weight:
+    ///
+    /// 1. **The name is load-bearing about containment, not about
+    ///    resuming.** `AgentResult` is the entire surface a finished child
+    ///    presents across the trust boundary, and the MAST mitigation this
+    ///    module's own doc lists is that what crosses it is a *reference to
+    ///    a transcript*, not a transcript. `conway-runtime`'s
+    ///    `result_contract` suite pins that as an executable claim
+    ///    (`agent_result_serializes_only_the_bounded_field_set_no_raw_transcript`).
+    ///    `session_id` names the resume handle and drops the containment
+    ///    signal entirely.
+    /// 2. **The same noun is used identically elsewhere, on purpose.**
+    ///    [`AskOutcome::transcript_ref`] is a parent holding a reference to
+    ///    an ephemeral child's transcript; so is the `AgentResult` embedded
+    ///    in `crate::log::LogRecord`'s `ChildResult`. Renaming here alone
+    ///    splits one noun in two at the exact seam where the reader most
+    ///    needs it to be one; renaming everywhere spends the whole plugin
+    ///    and subagent surface to buy a scripting affordance that a
+    ///    sentence of prose already buys.
+    /// 3. **This serde name is persisted, not merely printed.** The same
+    ///    struct is a field of `crate::log::LogRecord`'s
+    ///    `AgentResultRecord` and `ChildResult`, so the string
+    ///    `transcript_ref` is in every `<session-id>.jsonl` already on
+    ///    disk. A bare rename makes those unreadable -- the field is not
+    ///    `Option` and has no `serde` default, so deserialization fails on
+    ///    the missing field -- and `#[serde(alias)]` repairs only that
+    ///    direction. It cannot help the population a rename actually
+    ///    breaks: a script doing `jq -r .transcript_ref` gets `null`, not
+    ///    an error, and passes it on. Board item CON-3 skipped a deprecated
+    ///    alias when it renamed the facade's `ConwayError` to `FacadeError`
+    ///    because `publish = false` left that type no compatibility surface
+    ///    but a compile-time one; the same premise is simply false for a
+    ///    wire field the operator's own log files were written with.
+    /// 4. **The resume handle is no longer an id anyway.** Since session
+    ///    names landed, `--session`/`--resume`/`--fork-from` take
+    ///    `<session-id-or-name>[@<seq>]`, resolved by `conway-cli`'s
+    ///    `session_names::resolve`. This field carries neither a name nor a
+    ///    `@<seq>` suffix, so
+    ///    `session_id` would be a less exact answer to "what do I pass to
+    ///    `--resume`" than the rename assumed, and `session_ref` would be
+    ///    wrong outright.
+    ///
+    /// The trap the item names is real. The instrument for it is the prose
+    /// in `docs/scripting.md` and `docs/sessions.md`, which is where a
+    /// reader who has the JSON in front of them and does not have this
+    /// source open will actually look.
     pub transcript_ref: SessionId,
     pub usage: Usage,
     pub steps_taken: u32,
