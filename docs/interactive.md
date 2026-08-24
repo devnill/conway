@@ -345,30 +345,36 @@ toggle persists too (below), the one section of this menu with a real
 writer behind it. Permission-mode and grant details are covered in
 [`permissions.md`](permissions.md).
 
-### The plugins section: a browser, not just a toggle
+### The plugins section: a switch you can see, and the info kept apart
 
 The **plugins** group lists every first-party plugin `conway` links in —
 the header row states how many are currently on (`installed`) and how
-many are compiled in but off (`available`). Each plugin is its own
-subsection, headed by a toggle row naming its id, version, on/off state,
-and a one-line summary; below that, three rows in the operator's own
-framing:
+many are compiled in but off (`available`). Each plugin is exactly ONE
+row: a checkbox-style `[x]`/`[ ]` box (the same bracket marker a group's
+own `[-]`/`[+]` expand state already uses, not a symbol invented for this
+section alone), its id, version, and a one-line summary — nothing else in
+the list, so scanning it tells you at a glance which rows are switches
+(every one of them) without needing to press anything.
+
+Selecting a plugin's row opens a detail panel below the list, showing that
+plugin's own status line plus three rows in the operator's own framing:
 
 - **you get** — what turning it ON adds (tools, commands, an instruction).
 - **you lose** — what is different with it OFF.
 - **costs** — its ongoing cost, if any, while it's on.
 
-Selecting the toggle row and pressing `Enter` flips it — this is the one
-`/settings` action with a real writer behind it: it edits
-`~/.conway/settings.json`'s `plugins.install` array directly (or
-`$CONWAY_CONFIG_DIR/settings.json` when that's set), adding or removing
-exactly the one id, leaving every other key, its ordering, and its
-formatting untouched, whether or not you've hand-edited the file. **The
-change applies on your next restart, not immediately** — plugins install
-once, at startup; nothing about the running session's tools or commands
-changes until you start `conway` again. The footer says so on every
-render. Project-scoped plugin selection isn't reachable from this menu —
-edit a project's own `.conway/settings.json` by hand for that.
+The panel follows the cursor — move to a different plugin's row and the
+panel switches to describe that one instead. Pressing `Enter` on the
+selected row flips it — this is the one `/settings` action with a real
+writer behind it: it edits `~/.conway/settings.json`'s `plugins.install`
+array directly (or `$CONWAY_CONFIG_DIR/settings.json` when that's set),
+adding or removing exactly the one id, leaving every other key, its
+ordering, and its formatting untouched, whether or not you've hand-edited
+the file. **The change applies on your next restart, not immediately** —
+plugins install once, at startup; nothing about the running session's
+tools or commands changes until you start `conway` again. The footer says
+so on every render. Project-scoped plugin selection isn't reachable from
+this menu — edit a project's own `.conway/settings.json` by hand for that.
 
 The **hooks** section lists every configured `hooks.rules[]` entry whose
 event can currently deny something — `pre_tool_use` (narrows a tool call)

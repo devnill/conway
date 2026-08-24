@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The `/settings` plugins section now separates the switch from the
+  explanation** — board item `01M0RW3CPE8SG3PZ2J8RTK9Y9N`, from an
+  operator's own use of the TUI: the section's toggle row and its
+  read-only "you get"/"you lose"/"costs" text used to sit as flat
+  siblings in the same list, so nothing signalled which of the four rows
+  actually responded to `Enter`. Each plugin is now exactly one row in
+  the list — a `[x]`/`[ ]` checkbox (the same bracket marker a group's own
+  `[-]`/`[+]` expand state already used, reused rather than a second
+  visual language invented for this section alone; the two "display"
+  booleans get the same box for consistency) plus its id, version, and
+  summary — and its "you get"/"you lose"/"costs" text, the operator's own
+  framing kept literally, moved into a detail panel below the list that
+  tracks whichever plugin's row is currently selected. What a toggle
+  DOES is unchanged: `Enter` still writes `~/.conway/settings.json`'s
+  `plugins.install` array, and the footer still states the toggle applies
+  on next restart, not immediately. See
+  [`docs/interactive.md`](docs/interactive.md#the-plugins-section-a-switch-you-can-see-and-the-info-kept-apart).
 - **BREAKING: sessions now default to a central, project-keyed location
   under `~/.conway/sessions/<project-key>/` (or
   `$CONWAY_CONFIG_DIR/sessions/<project-key>/`) instead of
