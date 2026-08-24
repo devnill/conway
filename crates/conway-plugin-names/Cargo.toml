@@ -1,0 +1,40 @@
+[package]
+name = "conway-plugin-names"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin (board item 01M0TV5BSE98S16SFYECG9G9WP): conway.names, operator-chosen names for agents -- the AgentNames trait, its filesystem implementation, and the /conway.names.* commands, all in this crate so conway-core learns nothing"
+
+# Versioned WITH the workspace (`version.workspace = true`), exactly like
+# every other crate here -- see `conway-plugin-memory`'s own Cargo.toml doc
+# comment for the full reasoning, which applies unchanged: this crate carries
+# none of `conway-core`'s strict-semver discipline, because that discipline
+# exists for crates third-party plugins depend on, and this plugin is just
+# another consumer of the public `conway`/`conway::plugin` surface.
+
+[dependencies]
+# The ONLY workspace crate this plugin depends on -- the public facade, the
+# exact surface a third-party plugin author gets (GP-03/P-6). Decision
+# `01M0TV3ZZBDKSSV7MD0FW3FSY7` requires ZERO core change, and this single
+# dependency line is what makes that checkable: nothing here can reach
+# `conway-core` except through what the facade already re-exports.
+#
+# `conway::config::discovery::user_config_path` is reached through this same
+# line -- that is how this crate resolves its own store path without a
+# `directories` dependency of its own, the identical route
+# `conway-cli`'s `tui::history` already takes for `~/.conway/history`.
+conway = { path = "../conway" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Test-only: every test in this crate writes a REAL store file, so every one
+# of them needs its own throwaway directory. Never the operator's own
+# `~/.conway` -- see this crate's `tests/names_end_to_end.rs` for the
+# isolation rule and `crates/conway/tests/config_isolation_guard.rs` for the
+# ambient-read bug that rule exists to prevent.
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

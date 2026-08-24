@@ -342,6 +342,26 @@ impl App {
             history_path,
         })
     }
+
+    /// Parks this process's `conway.names` store on the app's own state
+    /// (board item `01M0TV5BSE98S16SFYECG9G9WP`) -- see
+    /// `crate::tui::state::AppState::agent_names` for what reads it, and
+    /// `crate::tui::run` (this method's ONE caller) for why the store
+    /// arrives here as a post-construction setter rather than as another
+    /// [`App::new`] parameter: `new` has ~40 call sites in this crate's own
+    /// tests, none of which exercises naming, and every one of them would
+    /// otherwise have to name a store it never touches.
+    ///
+    /// Consuming `self` rather than taking `&mut self` so the one caller
+    /// can chain it onto `App::new`'s own `Ok` arm and never hold an `App`
+    /// that has been constructed but not yet wired.
+    pub fn with_agent_names(
+        mut self,
+        agent_names: std::sync::Arc<dyn conway_plugin_names::AgentNames>,
+    ) -> Self {
+        self.state.agent_names = Some(agent_names);
+        self
+    }
 }
 
 /// T3: best-effort one-shot `git rev-parse --abbrev-ref HEAD` at startup,
