@@ -402,9 +402,10 @@ agent sits.
 `/agents` (TUI) opens a panel listing every agent in the session's tree —
 status, a short id (see below), how it was created (`fork @seq N`,
 `@agent_def`, `(inherit)`, `(ephemeral)`), and its place in the hierarchy.
-`/tree` is an undocumented, hidden alias that prints that same panel's
-rows as plain transcript text instead of opening the panel — typing it
-works even though it isn't in the `/` palette.
+`/tree` prints that same panel's rows as plain transcript text instead of
+opening the panel. It used to be an undocumented alias absent from the `/`
+palette; it is listed there now, along with every other command you can
+type.
 
 `/context [<agent>]` shows one agent's assembled context as a list of
 segments, each with an estimated token count and its **provenance** —

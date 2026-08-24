@@ -121,7 +121,10 @@ GATE_FUNCS=(
 )
 
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+  # Anchored on the content, not a line range: an earlier version printed
+  # lines 2-30, and the header grew past that, so `--help` showed only the
+  # rationale and never the invocation syntax it exists to show.
+  sed -n '/^# Usage:/,/^# Exit:/p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # --- Argument handling -------------------------------------------------------
@@ -136,8 +139,16 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --gate)
+      # `shift 2` with only one positional left does NOT shift and returns
+      # non-zero; with `set -u` but no `set -e` that failure is silent, `$1`
+      # stays `--gate`, and this case arm re-enters forever. Guard the
+      # precondition explicitly rather than relying on the shift.
+      if [[ $# -lt 2 ]]; then
+        echo "check-fast-gates: --gate requires a name (see --list)" >&2
+        exit 2
+      fi
       MODE="single"
-      WANT_GATE="${2:-}"
+      WANT_GATE="$2"
       shift 2
       ;;
     -h|--help)

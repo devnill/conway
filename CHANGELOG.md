@@ -38,15 +38,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   argument short of provoking the ambiguity error. `/context` with no
   argument now shows the FOCUSED agent's context (the same agent `/agents`
   already tags `(focused)`) instead of a usage error, and every row in the
-  `/agents` panel now carries its own short id (the same 8-character
-  truncation the status line already used for `session`/`lineage`) —
-  reused, not a new display rule, and it is exactly what `resolve_agent`
-  (`/context`/`/steer`/`/fork @<agent>`'s shared resolver) accepts, proven
-  by a test that copies the id off a rendered row rather than constructing
-  it independently. A short id is not guaranteed unique (two agents
-  created near-simultaneously can share one); the existing ambiguous-prefix
-  handling already reports that as an error naming every candidate rather
-  than silently resolving to the wrong agent. See
+  `/agents` panel now carries its own id, which is exactly what
+  `resolve_agent` (`/context`/`/steer`/`/fork @<agent>`'s shared resolver)
+  accepts — proven by a test that copies the id off a rendered row rather
+  than constructing it independently. That id is the SHORTEST PREFIX that is
+  unique among the agents on screen, with the familiar eight characters as
+  its floor, extended only when it has to be. A flat eight would not have
+  worked: a ULID's first eight characters carry timestamp bits 10..=47, so
+  agents created within the same ~1024ms — anything spawned in one burst —
+  share them every time, and two rows would print the same token, which is
+  the opposite of what an identifier is for. `git`'s short-hash rule,
+  applied to agents. The status line and lineage breadcrumb keep the plain
+  eight characters, since they name one agent rather than offering a choice
+  among several. See
   [`docs/interactive.md`](docs/interactive.md#the-agent-panel-agents).
 - **The `/settings` plugins section now separates the switch from the
   explanation** — board item `01M0RW3CPE8SG3PZ2J8RTK9Y9N`, from an
