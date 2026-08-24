@@ -879,6 +879,17 @@ Same posture, same reason, as `ToolObserver` (`ARCHITECTURE.md` §3.9).
   > makes the earlier record read as though it had already anticipated the
   > retirement, erasing the fact that the project changed its mind. Corrections
   > are appended, never absorbed upward.
+  >
+  > **AMENDED AGAIN 2026-08-24 — the tool now exists.** Commit `c1a69de`
+  > (board item `01M0PEFMG96SVBBD5D2E06H34A`) built it: `conway.path`'s
+  > `compose_context_path` tool (`crates/conway-plugin-path`) is the
+  > sanctioned production caller this paragraph said was missing. It
+  > constructs `Selector::Operator` via `derive_with` and reaches
+  > `write_head` through `ContextPathHost::set_head`
+  > (`conway_runtime::context::RuntimeContextPathHost`). The 2026-08-21
+  > paragraph above is preserved verbatim for the same reason the 2026-08-18
+  > block is: a dated historical record of the state before this item, not a
+  > live claim — corrections are appended, never absorbed upward.
 - ~~A human, through the built-in `path` verbs of `conway` (D1-7) — the same
   operations, no plugin installed.~~ **Retired**; see the amendment above.
   `Selector::Operator` (`crates/conway-core/src/path.rs`) keeps its name and now means

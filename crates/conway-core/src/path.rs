@@ -116,11 +116,21 @@ pub enum Selector {
     /// behaviour (DESIGN §5).
     DefaultRule,
     /// A curation plugin with id `id` ran operation `op`.
+    /// Not yet implemented in core (DESIGN §5, §11): curator plugins construct
+    /// this selector when they run, but no curator exists yet (D1-8/
+    /// conway.memory shipped as a `ContextHook` over a `MemoryStore` port
+    /// instead, per DESIGN §11.7's amendment); conway-core/session/runtime
+    /// never construct it.
     Plugin { id: String, op: OpLabel },
     /// The operator's stated intent put this node here — composed by a model
     /// through a tool a plugin provides, not by a built-in verb (decision
-    /// `01M0K4QT6MBXPD6PXMBBBD2P7B`; DESIGN §4.5, §10, §11.7). No such tool
-    /// exists in the tree yet, so this variant currently has no producer.
+    /// `01M0K4QT6MBXPD6PXMBBBD2P7B`; DESIGN §4.5, §10, §11.7). `conway.path`'s
+    /// `compose_context_path` tool (`crates/conway-plugin-path`) is the real
+    /// producer: it tags the derived nodes with this variant via
+    /// `derive_with`, then persists them through `ContextPathHost::set_head`,
+    /// whose production implementation (`conway_runtime::context::
+    /// RuntimeContextPathHost`) reaches `write_head` (board item
+    /// `01M0PEFMG96SVBBD5D2E06H34A`).
     Operator,
 }
 

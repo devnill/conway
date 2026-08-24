@@ -359,13 +359,15 @@ pub enum LogRecord {
     /// that function's own doc states the invariant and where it is enforced)
     /// and appends this record. The `resolve_default_path` orchestrator in the
     /// same module (`conway-runtime/src/context/path.rs`) READS this variant to
-    /// find the HEAD. Nothing in a running `conway` build calls `write_head` at
-    /// any turn boundary yet — the sanctioned production caller is the
-    /// model-invoked tool a plugin will provide to compose a curated selection
-    /// (decision 01M0K4QT6MBXPD6PXMBBBD2P7B), and that tool is a separate,
-    /// not-yet-built item. So a head is still absent in an ordinary session
-    /// today, but for a different reason than before this item: the mechanism
-    /// is complete and callable, not missing.
+    /// find the HEAD. Nothing calls `write_head` at an ordinary turn
+    /// boundary — the sanctioned production caller is the model-invoked tool
+    /// a plugin provides to compose a curated selection (decision
+    /// 01M0K4QT6MBXPD6PXMBBBD2P7B), and that tool now exists: `conway.path`'s
+    /// `compose_context_path` (`crates/conway-plugin-path`) reaches
+    /// `write_head` through `ContextPathHost::set_head` (board item
+    /// 01M0PEFMG96SVBBD5D2E06H34A). So a head is still absent in an ordinary
+    /// session unless an operator invokes that tool — the mechanism is
+    /// complete, callable, and now called, not missing.
     ContextPathSet {
         seq: LogSeq,
         ts: DateTime<Utc>,

@@ -225,6 +225,14 @@ const WATCHED_ENUMS: &[WatchedEnum] = &[
               suggestions, so only Restamp stays inert (allowlisted) until a \
               curator constructs it",
     },
+    WatchedEnum {
+        name: "Selector",
+        decl_file: "crates/conway-core/src/path.rs",
+        why: "each variant names a distinct provenance route by which a node \
+              reached a path -- a reader relies on the doc to know whether a \
+              given route has a real caller at all, which is exactly the \
+              claim REC-1 found stale for Operator",
+    },
 ];
 
 /// A watched enum's variant that is deliberately allowlisted: nothing in
@@ -341,6 +349,30 @@ const ALLOWLIST: &[Allowlisted] = &[
                  variant (see its own doc comment). The call site that \
                  appends a name→selection binding lands with the \
                  path-naming surface, a later, separate item.",
+    },
+    // -- Selector (REC-1): watching this enum newly is the mechanical
+    // guard REC-1 added, because nothing caught `Operator`'s stale
+    // "no producer" doc claim before a reviewer found it by hand.
+    // `DefaultRule` and `Operator` are both constructed in production
+    // (`path.rs`'s `derive`/`apply_with` default, and `conway-plugin-path`'s
+    // `compose_context_path` via `derive_with`, respectively), so only
+    // `Plugin` needs an entry here: no curator plugin exists yet (D1-8;
+    // `conway.memory` shipped as a `ContextHook`/`MemoryStore` instead of a
+    // curator, DESIGN section 11.7's amendment), so nothing in
+    // conway-core/session/runtime constructs `Selector::Plugin` outside this
+    // guard's own test corpus. Same shape as `PathOp::Restamp` above, and
+    // the same TEMPORARY allowance: the sub-unit that first builds a curator
+    // and constructs a `Selector::Plugin` in production must remove this
+    // entry AND the "not yet implemented" marker on the variant's own doc
+    // comment.
+    Allowlisted {
+        enum_name: "Selector",
+        variant: "Plugin",
+        reason: "Constructed only by curator plugins (DESIGN sections 5, 11); \
+                 no curator exists yet (D1-8/conway.memory shipped as a \
+                 ContextHook over a MemoryStore port instead, per DESIGN \
+                 section 11.7's amendment). conway-core/session/runtime \
+                 never construct it.",
     },
 ];
 
