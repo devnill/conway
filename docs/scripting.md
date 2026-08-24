@@ -165,6 +165,12 @@ it is the one a script is likeliest to reach for first. Passing it to
 `session … not found` instead of reattaching. Pass the `transcript_ref`
 value from the same object instead.
 
+The name is deliberate, not incidental: what a finished agent hands back is
+a *reference* to its transcript, never the transcript itself. Renaming the
+field to something like `session_id` — which would say what `--resume`
+wants but lose that — was weighed and declined; the argument is recorded on
+the field itself, in `conway-core`'s `agent.rs`.
+
 ### `jsonl`
 
 One JSON line per envelope, uniformly and unconditionally — no event-kind
