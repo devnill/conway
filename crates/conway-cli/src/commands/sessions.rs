@@ -143,6 +143,14 @@ fn mode_str(mode: SubagentMode) -> &'static str {
     }
 }
 
+/// `fmt::id_short` stays here deliberately (board item
+/// `01M0V03FQGJ8C375QJDD75YH41`): this cell names ONE already-known parent
+/// as annotation, not a token the operator is meant to distinguish among
+/// several visible rows or paste elsewhere -- the same "one thing, not a
+/// choice" case the TUI panel's `short_agent_id` carves out for its status
+/// line and hop labels (`crates/conway-cli/src/tui/view/agents.rs`). If
+/// that parent needs to be addressed directly, its own row's `ID` cell
+/// prints it in full.
 fn origin_cell(meta: &SessionMeta) -> String {
     match &meta.origin {
         Some(origin) => format!(
@@ -169,9 +177,24 @@ fn origin_json(meta: &SessionMeta) -> serde_json::Value {
 /// The `NAME` cell is blank for an unnamed session (`names.name_of` returns
 /// `None`) -- never a synthesized placeholder like `-` or `<unnamed>`, per
 /// this item's acceptance criteria.
+///
+/// The `ID` cell is the **full** id, not `fmt::id_short`'s 8-character
+/// truncation (board item `01M0V03FQGJ8C375QJDD75YH41`). Two sessions
+/// created within about a second of each other share their first 8
+/// characters, and this column is the row's own identity -- the token an
+/// operator reads off the listing to paste into `--session`/`--resume`/
+/// `--fork-from`. A truncated, colliding `ID` cell would make the listing
+/// actively misleading rather than merely terse: two distinct rows would
+/// display the identical value. Consistent with `session_json`, which
+/// already emits `meta.id.to_string()` in full -- text and JSON now agree.
+/// A `NAME` column exists for the human-friendly short handle; this column
+/// is the durable reference (TREE-ID `01M0TNCAP1HH4YNC5K9753YG26`'s
+/// ruling), and full ids trivially satisfy uniqueness with no prefix-
+/// extension algorithm and no dependency on which page of the store is
+/// being viewed.
 fn session_row(meta: &SessionMeta, names: &NamesStore) -> Vec<String> {
     vec![
-        fmt::id_short(meta.id),
+        meta.id.to_string(),
         names.name_of(meta.id).unwrap_or_default().to_string(),
         fmt::ts(meta.created),
         meta.role
@@ -294,10 +317,16 @@ async fn tree(conway: &Conway, id: &str) -> conway::Result<ExitCode> {
             .cloned()
             .collect()
     };
+    // Full id, not `fmt::id_short` (board item `01M0V03FQGJ8C375QJDD75YH41`):
+    // a tree prints several sibling rows together, the same "operator is
+    // choosing between visible rows" shape `session_row`'s own doc gives
+    // for `sessions list`'s `ID` column, so the same fix applies -- and for
+    // the identical reason, truncating here would let two children forked
+    // moments apart render the same label.
     let label = |m: &SessionMeta| {
         format!(
             "{}  role={}",
-            fmt::id_short(m.id),
+            m.id,
             m.role
                 .as_ref()
                 .map(|r| r.to_string())
@@ -394,5 +423,67 @@ async fn unname(conway: &Conway, id: &str) -> conway::Result<ExitCode> {
             diag::error(e.to_string());
             Ok(ExitCode::Usage)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use conway::AgentId;
+
+    /// Two real ULIDs sharing their first 8 characters -- the exact shape
+    /// two sessions created within about a second of each other produce
+    /// (a ULID's leading characters encode the high bits of its
+    /// millisecond timestamp). Built by hand rather than by racing
+    /// `SessionId::new()` against the clock so the test is deterministic,
+    /// not merely likely to hit the collision window.
+    const SHARED_PREFIX_ID_A: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    const SHARED_PREFIX_ID_B: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+
+    fn meta_with_id(id: &str) -> SessionMeta {
+        SessionMeta {
+            id: id.parse().expect("valid ULID literal"),
+            agent_id: AgentId::new(),
+            origin: None,
+            agent_def: None,
+            role: None,
+            created: chrono::Utc::now(),
+            cwd: PathBuf::from("/tmp"),
+            labels: vec![],
+            ephemeral: false,
+            ask_origin: None,
+            root: None,
+            plugin_config: conway::plugin::PluginConfig::default(),
+        }
+    }
+
+    /// Board item `01M0V03FQGJ8C375QJDD75YH41`, acceptance 4: two sessions
+    /// created in rapid succession must be distinguishable in `sessions
+    /// list`'s output. This is the assertion that fails against the
+    /// pre-fix implementation -- `session_row` used to build the `ID` cell
+    /// with `fmt::id_short(meta.id)` (a fixed first-8-characters
+    /// truncation), which collapses `SHARED_PREFIX_ID_A`/`_B` to the
+    /// identical string `"01ARZ3ND"`, making `row_a[0] == row_b[0]` and
+    /// this assertion fail. Reverting `session_row`'s `ID` cell from
+    /// `meta.id.to_string()` back to `fmt::id_short(meta.id)` (and nothing
+    /// else in this diff) reproduces that failure -- the smallest check
+    /// available to whoever reviews this without running `cargo test`.
+    #[test]
+    fn two_sessions_sharing_a_ulid_prefix_get_distinguishable_id_cells() {
+        let names = NamesStore::default();
+        let row_a = session_row(&meta_with_id(SHARED_PREFIX_ID_A), &names);
+        let row_b = session_row(&meta_with_id(SHARED_PREFIX_ID_B), &names);
+
+        // Precondition: these two ids really do collide under the old
+        // 8-char truncation, or the assertion below would prove nothing.
+        assert_eq!(
+            fmt::id_short(SHARED_PREFIX_ID_A),
+            fmt::id_short(SHARED_PREFIX_ID_B)
+        );
+
+        assert_ne!(
+            row_a[0], row_b[0],
+            "two sessions from the same second must render distinct ID cells: {row_a:?} vs {row_b:?}"
+        );
     }
 }

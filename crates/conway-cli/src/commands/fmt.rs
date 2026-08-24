@@ -106,9 +106,29 @@ pub fn ts(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-/// The first 8 characters of an id's `Display` form (a ULID's leading
-/// characters are already sortable/time-ordered, so this stays a stable,
-/// human-pasteable short form).
+/// The first 8 characters of an id's `Display` form -- a fixed-width
+/// truncation, **not** a unique short form. A ULID's leading characters
+/// encode the high bits of its 48-bit millisecond timestamp, so two ids
+/// minted within roughly the same second (two sessions created back to
+/// back, for instance) share these 8 characters exactly. This function
+/// performs no uniqueness computation against any set of other ids -- a
+/// caller that needs "the shortest prefix that still tells this row apart
+/// from its neighbours" wants something else (the TUI agent panel's
+/// `panel_agent_id`, `crates/conway-cli/src/tui/view/agents.rs`, is that
+/// something else, extending the prefix until it is unique among the rows
+/// on screen; see TREE-ID `01M0TNCAP1HH4YNC5K9753YG26`'s ruling that a
+/// short id is a UI affordance and a full id is a durable reference).
+///
+/// Board item `01M0V03FQGJ8C375QJDD75YH41`: this used to be `sessions
+/// list`'s ID column too, which made two sessions created close together
+/// render identical, indistinguishable rows. `sessions list`/`sessions
+/// tree` now print the full id in every position an operator might need to
+/// address a specific row (the ID column, and `tree`'s per-node label);
+/// this helper survives only for `sessions list`'s ORIGIN cell, which
+/// names a single already-known parent as annotation -- the same "one
+/// thing, not a choice among several" case `panel_agent_id`'s own doc
+/// carves out for `short_agent_id`'s hop labels and status line. Do not
+/// reach for this where a reader might need to tell two rows apart.
 pub fn id_short(id: impl std::fmt::Display) -> String {
     id.to_string().chars().take(8).collect()
 }
@@ -172,8 +192,30 @@ mod tests {
         );
     }
 
+    // Rewritten for board item `01M0V03FQGJ8C375QJDD75YH41`: the assertion
+    // is unchanged (the function still takes a fixed first 8 characters --
+    // that mechanical behaviour was never the defect), but the doc comment
+    // above `id_short` changed from implying a stable, human-pasteable
+    // *unique* short form to stating plainly that no uniqueness is
+    // computed. Kept rather than deleted so the "first 8 characters,
+    // nothing more" contract stays pinned by a test, and paired with
+    // `id_short_does_not_distinguish_two_ids_from_the_same_second` below so
+    // the doc's warning is demonstrated, not just asserted in prose.
     #[test]
     fn id_short_takes_first_eight_chars() {
         assert_eq!(id_short("01J9ZZZZZZZZZZZZZZZZZZZZZZ"), "01J9ZZZZ");
+    }
+
+    #[test]
+    fn id_short_does_not_distinguish_two_ids_from_the_same_second() {
+        // Two distinct ULIDs sharing a timestamp prefix -- exactly the
+        // shape two sessions created back to back produce. `id_short`
+        // collapses them to the same 8 characters; this is the failure
+        // mode its doc now warns callers away from, not a bug in this
+        // function itself (it never claimed uniqueness -- the defect was
+        // callers assuming it anyway).
+        let a = "01J9ZZZZAAAAAAAAAAAAAAAAAA";
+        let b = "01J9ZZZZBBBBBBBBBBBBBBBBBB";
+        assert_eq!(id_short(a), id_short(b));
     }
 }
