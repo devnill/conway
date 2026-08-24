@@ -1176,13 +1176,9 @@ fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)>
 /// specifically, the same narrowing `tool_result_preview` below already
 /// applies for the analogous tool-result case.
 fn assistant_text(content: &[ContentBlock]) -> String {
-    content
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect()
+    // One implementation, shared with `conway-runtime`'s live pull-in path
+    // so a replayed transcript and a live one cannot diverge.
+    conway_core::content::assistant_text(content)
 }
 
 /// The first text block's text, truncated to 200 chars -- mirrors

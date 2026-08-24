@@ -86,6 +86,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pulling in an `/ask` now shows the merged question and answer in the
+  transcript, live** — board item `01M0RWT9V7GNYRR53MTTQ2Y07K`: the merge
+  itself was never the bug (`Runtime::pull_in` genuinely re-stamps the
+  question `Provenance::MergedAsk` and appends both records to the
+  parent's own log), but the operation emitted no event announcing it, so
+  the transcript — which is entirely event-driven — silently gained
+  content nobody saw on screen. Meanwhile the context builder already
+  understood `MergedAsk`, so the model's next reply WAS informed by the
+  merged exchange the whole time: the model could see what the operator
+  could not. `pull_in` now emits the SAME `Event::UserTurn`/
+  `Event::TextDelta` shapes `--resume`'s own replay already produces for
+  these record kinds, on the parent's own stream, right after each record
+  is durably appended — so a live subscriber (the TUI or any other
+  `EventStream` consumer) sees the exchange land without a restart, ahead
+  of a one-line `Event::AgentProgress` marker naming the ask it came from
+  (`Provenance::MergedAsk`'s own contract: the merge origin stays
+  "explicit and inspectable," not rendered indistinguishable from a
+  prompt you typed yourself). Nothing about what's persisted changed —
+  same content, same provenance, same position in the log; only a display
+  gap closed. `Conway::promote`'s sibling "keep" fate was checked and
+  already correct: it flips a flag on an already-independent, already
+  fully visible session rather than merging into another one, so it had
+  no analogous gap to begin with. See
+  [`docs/interactive.md`](docs/interactive.md#slash-commands).
 - **`/ask` now shows that it's working, can be abandoned from the
   keyboard, and no longer hangs unrecoverably when its child needs a tool
   permission decision** — three symptoms reported from use: no indicator
