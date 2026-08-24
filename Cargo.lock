@@ -557,6 +557,7 @@ dependencies = [
  "conway-plugin-skills",
  "conway-plugin-stepguard",
  "conway-plugin-subprocess",
+ "conway-plugin-trim",
  "conway-testkit",
  "crossterm",
  "futures",

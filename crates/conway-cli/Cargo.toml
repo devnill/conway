@@ -99,10 +99,12 @@ conway-plugin-memory = { path = "../conway-plugin-memory" }
 # 01M0K4QT6MBXPD6PXMBBBD2P7B). Resolved through the SAME `[plugins].install`
 # mechanism and the same `src/first_party_plugins.rs` choke point as the
 # lines above; NOT installed by default -- an operator opts in the same way
-# they would for `conway-plugin-memory`/`conway-plugin-skills`. This is the
-# dependency `conway-plugin-trim` itself never had, which is why naming
-# `"conway.trim"` in `[plugins].install` reaches nothing today -- see this
-# crate's own `first_party_plugins::bundle` doc.
+# they would for `conway-plugin-memory`/`conway-plugin-skills`. History:
+# this is the SHAPE of dependency `conway-plugin-trim` itself lacked for a
+# time (see that line's own comment below, and board item
+# 01M0TV447NAJ1R06S455DZPP54) -- naming `"conway.trim"` in
+# `[plugins].install` reached nothing until this crate started depending on
+# it too.
 conway-plugin-path = { path = "../conway-plugin-path" }
 # Board item 01M0PS8J3AK7Z7253Z3E3RD3GY: `conway.discover` -- the tool a
 # model calls to find a session/record it does not already hold a
@@ -112,6 +114,19 @@ conway-plugin-path = { path = "../conway-plugin-path" }
 # installed by default -- an operator opts in the same way they would for
 # `conway-plugin-path`/`conway-plugin-memory`.
 conway-plugin-discover = { path = "../conway-plugin-discover" }
+# Board item 01M0TV447NAJ1R06S455DZPP54: `conway.trim`, the `Curator` that
+# omits tool call/result round-trips older than a configurable turn window
+# (`crates/conway-plugin-trim`'s own module doc). Resolved through the
+# SAME `[plugins].install` mechanism and the same
+# `src/first_party_plugins.rs` choke point as every other line in this
+# list; NOT installed by default, an operator opts in the same way they
+# would for `conway.path`/`conway.discover` immediately above. History:
+# this line is exactly what `conway-plugin-trim` lacked before this item
+# -- a real dependency line, plus the reachability test
+# (`conway_trim_curator_omits_old_tool_round_trips_once_installed`) that
+# proves `"conway.trim"` in `[plugins].install` reaches this plugin's own
+# `Curator` against the real compiled binary, not merely that it compiles.
+conway-plugin-trim = { path = "../conway-plugin-trim" }
 clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }
