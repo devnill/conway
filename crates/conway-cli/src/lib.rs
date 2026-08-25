@@ -17,6 +17,7 @@
 //! resolve exactly as they did when `main.rs` was this crate's only root
 //! (`mod cli; mod commands; ...`) -- only the root file moved.
 
+pub mod claude_compat_plugins;
 pub mod cli;
 pub mod commands;
 pub mod diag;

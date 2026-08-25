@@ -105,6 +105,7 @@ fn base_config() -> ConwayConfig {
             default_backends: vec![],
             subprocess: vec![],
             mcp: vec![],
+            claude_compat: vec![],
         },
         hooks: HooksConfig::default(),
     }

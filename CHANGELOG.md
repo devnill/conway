@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **conway can now read a Claude Code plugin directory already on disk and
+  bring its MCP server declarations in as real, working plugins** — board
+  item `01M0VR89FB1F3Q4FQ8852K2A5E`, a new `crates/conway-plugin-claude`
+  crate plus a fourth `[plugins].claude_compat[]` config tier resolved by
+  `crates/conway-cli/src/claude_compat_plugins.rs`. No downloading: the
+  operator names a directory they already have, and it is read fresh
+  (never written to config) every time conway starts. Only `.mcp.json`
+  server declarations are wired to actually run, translated into the
+  identical `conway_plugin_mcp::McpPluginSpec` path an operator-authored
+  `[plugins].mcp[]` entry already uses. Equally prominent: everything a
+  Claude Code plugin directory can contain that this item does NOT import —
+  every `commands/*.md`, every `skills/<name>`, every `agents/*.md`, and
+  every hook event with no conway counterpart (`Stop`/`SubagentStop`/
+  `Notification`/`PreCompact`/`SessionEnd`) — is named individually, never
+  silently dropped, both in the library's own `ClaudeCompatReport` and on
+  the directory's own `/plugin` row (`view/plugins.rs`'s fourth
+  `PluginOrigin`, `claude-compat`). Full argument, and what a directory's
+  entries would need to become truly wired, in `docs/plugins/
+  claude-compat.md`.
+
 - **An operator can now add their own standing instructions to every
   session, via a file — `conway.idiom` reads `instructions.md`** — board
   item `01M0VR4GMGSZ2682T908JCGVFG`. Before this, the only lever for

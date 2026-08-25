@@ -87,6 +87,17 @@ conway-plugin-subprocess = { path = "../conway-plugin-subprocess" }
 # full wiring and the trust disclosure this dependency carries (identical
 # footing to `conway-plugin-subprocess` above).
 conway-plugin-mcp = { path = "../conway-plugin-mcp" }
+# Board item 01M0VR89FB1F3Q4FQ8852K2A5E: the Claude Code plugin
+# compatibility layer -- reads a Claude Code plugin directory the operator
+# already has on disk and translates its `.mcp.json` server declarations
+# into real `conway_plugin_mcp::McpPluginSpec` values. A sibling host
+# mechanism to `conway-plugin-mcp`/`conway-plugin-subprocess` above: this
+# crate's own tools are NOT compiled in; it is a TRANSLATION layer,
+# resolved through `src/claude_compat_plugins.rs`, a fourth, separate
+# choke point from `first_party_plugins.rs`/`subprocess_plugins.rs`/
+# `mcp_plugins.rs`. See that module's own doc for the full wiring and the
+# trust disclosure this dependency carries.
+conway-plugin-claude = { path = "../conway-plugin-claude" }
 # Board item 01M090JY3KYHQQMKCZZM1Y6EDZ: `conway.memory` -- the cross-tree
 # curator that recalls records from explicitly labelled past sessions
 # (DESIGN-context-path §11.7). Resolved through the SAME `[plugins].install`
@@ -184,6 +195,17 @@ serde = { workspace = true }
 # already scattered through conway-runtime/-backends/-session/conway
 # become visible instead of going nowhere.
 tracing-subscriber = { workspace = true }
+# Board item 01M0VR89FB1F3Q4FQ8852K2A5E: `tui/app/startup.rs`'s
+# `claude_compat_plugins` state population logs a `tracing::warn!` when a
+# re-read of an already-installed `[plugins].claude_compat[]` directory
+# fails at DISPLAY time (a filesystem race between `claude_compat_plugins::
+# install` and this later, cosmetic re-parse) -- degrading that one `/plugin`
+# row rather than panicking. Already a pinned workspace dependency
+# (`tracing-subscriber` above depends on it transitively; every
+# `conway`/`conway-runtime`/etc. crate this binary links already emits
+# through it), just not previously named directly by production code in
+# this crate (C-04, not a new one).
+tracing = { workspace = true }
 # WI-116: `commands::fmt`'s `ts`/`id_short` helpers and `commands::routes`'
 # breaker-state rendering need to name `chrono::DateTime<Utc>` -- `conway`
 # re-exports several `chrono`-typed fields (e.g. `SessionMeta::created`) but
@@ -206,17 +228,15 @@ schemars = { workspace = true }
 # name it.
 conway = { path = "../conway", features = ["test-support"] }
 # Board item 01KZFC43J1J06BM4CCWKCKHSNV: `main.rs`'s own `tracing_target_
-# tests` module emits real `tracing::{info,trace}!` events (targeting
-# `conway_plugin_routing` by name) against a scoped `EnvFilter`-driven
-# subscriber, to verify the `-v`/`-vv` target-list string by observing
-# actual filtered output rather than reading the source line. Already a
-# pinned workspace dependency (`tracing-subscriber`, above, depends on it
-# transitively; every implementation crate this binary pulls in emits
-# through it directly), not a new one (C-04); test-only here since
-# production code only ever calls the `tracing::{info,warn,...}!` macros
-# already re-exported through `tracing-subscriber`'s own dependency, never
-# constructs a `Subscriber`/emits an event by hand outside this test module.
-tracing = { workspace = true }
+# tests` module additionally constructs a scoped subscriber
+# (`tracing::subscriber::with_default`, test-only -- production code never
+# constructs one by hand outside this module) to verify the `-v`/`-vv`
+# target-list string by observing actual filtered output rather than
+# reading the source line. `tracing` itself moved to `[dependencies]`
+# (board item 01M0VR89FB1F3Q4FQ8852K2A5E, `tui/app/startup.rs`'s own
+# `tracing::warn!`) -- this dev-only USE (the scoped-subscriber
+# construction) is what remains test-only, not the crate dependency edge
+# itself any more.
 # Test-only: used exclusively to construct `conway_core::{error,agent,event}`
 # fixture values for `exit.rs`/`oneshot.rs`/`render/*.rs`'s unit tests (see
 # `exit.rs`'s doc comment for why this cannot be a production dependency).

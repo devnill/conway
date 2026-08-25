@@ -209,6 +209,40 @@ pub struct ConfiguredPluginEntry {
     pub command: Vec<String>,
 }
 
+/// One `[plugins].claude_compat[]` entry, translated (board item
+/// `01M0VR89FB1F3Q4FQ8852K2A5E`, `view/plugins.rs`'s own `/plugin`
+/// listing): the SAME "config mirror, no candidate set, no toggle" shape
+/// [`ConfiguredPluginEntry`] establishes, but carrying a translation
+/// REPORT's summary rather than a bare command -- a claude-compat row must
+/// be honest about what got translated and what did not (acceptance 5),
+/// which a bare `(id, command)` pair cannot express. Populated once at
+/// `App::new` from `conway_plugin_claude::discover(&entry.dir)`, re-run
+/// against the SAME directory `claude_compat_plugins::install` already
+/// validated during startup -- cheap, local-disk-only re-parse, never a
+/// second MCP handshake (this struct carries no live plugin object).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaudeCompatPluginEntry {
+    pub id: String,
+    pub source_dir: std::path::PathBuf,
+    /// How many `.mcp.json` server declarations this directory translated
+    /// -- the only kind acceptance 2 requires to actually run; each one is
+    /// installed as a real plugin by `claude_compat_plugins::install`.
+    pub mcp_server_count: usize,
+    /// How many `hooks/hooks.json` rules had a same-named conway event --
+    /// informational only (`conway_plugin_claude::hooks`'s own doc: not a
+    /// claim that the rule is wired to run).
+    pub mapped_hook_count: usize,
+    /// Every unmapped hook's own Claude Code event name.
+    pub unmapped_hook_names: Vec<String>,
+    /// Every other unusable thing this directory named, by its own
+    /// `conway_plugin_claude::UnsupportedItem::name` (a `commands/*.md`
+    /// path, a `skills/<name>` path, an `agents/*.md` path, or a
+    /// malformed `.mcp.json` server key) -- acceptance 5, the full list an
+    /// operator needs to tell "this plugin works" from "this plugin half
+    /// works".
+    pub unsupported_names: Vec<String>,
+}
+
 /// One row of the plugin browser (board item `01M0KARX71A64NTSYTDBVANVPF`,
 /// `view/plugins.rs`'s own `/plugin` listing, formerly `view/settings.rs`'s
 /// "plugins" section before board item `01M0VR5RCCB8NDGG2JEQW8X7XR` moved
@@ -350,6 +384,14 @@ pub struct AppState {
     /// [`Self::subprocess_plugins`] -- same "config mirror, no candidate
     /// set, no toggle" shape.
     pub mcp_plugins: Vec<ConfiguredPluginEntry>,
+    /// Every configured `[plugins].claude_compat[]` entry, translated
+    /// (board item `01M0VR89FB1F3Q4FQ8852K2A5E`) -- the fourth `/plugin`
+    /// source, populated once at `App::new` by re-running
+    /// `conway_plugin_claude::discover` against the SAME directory
+    /// `claude_compat_plugins::install` already validated. See
+    /// [`ClaudeCompatPluginEntry`]'s own doc for why this carries a
+    /// translation summary rather than a bare command.
+    pub claude_compat_plugins: Vec<ClaudeCompatPluginEntry>,
     /// Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: whether the `/plugin`
     /// listing (`view/plugins.rs`) is showing. Follows [`Self::help_open`]/
     /// [`Self::settings_open`]'s own pattern exactly -- informational, not
@@ -914,6 +956,7 @@ impl AppState {
             plugin_browser: Vec::new(),
             subprocess_plugins: Vec::new(),
             mcp_plugins: Vec::new(),
+            claude_compat_plugins: Vec::new(),
             plugins_open: false,
             plugins_selected: 0,
             // See the field's own doc: `None` is exactly the behaviour of
