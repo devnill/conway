@@ -163,8 +163,10 @@ fn ordinary_turn_records_decode_with_provenance_intact() {
 fn agent_result_and_child_result_carry_transcript_ref() {
     let records = parse_fixture();
 
-    // `ChildResultRecord` (line 7 -- seq 7).
-    match &records[6] {
+    // `ChildResultRecord` (fixture line 8 -- seq 7). The index is line-1
+    // because line 1 is the `header`, which carries no `seq` of its own:
+    // `seq` 1 lands on line 2, so seq N is at fixture line N+1 and index N.
+    match &records[7] {
         LogRecord::ChildResultRecord { seq, result, .. } => {
             assert_eq!(seq.0, 7);
             assert_eq!(result.status, ResultStatus::Completed);
@@ -173,11 +175,11 @@ fn agent_result_and_child_result_carry_transcript_ref() {
                 "01M0J07RX738Z7R95BFKQBRPB1"
             );
         }
-        other => panic!("line 7: expected ChildResultRecord, got {other:?}"),
+        other => panic!("fixture line 8: expected ChildResultRecord, got {other:?}"),
     }
 
-    // The session's own terminal `AgentResultRecord` (line 8 -- seq 8).
-    match &records[7] {
+    // The session's own terminal `AgentResultRecord` (fixture line 9 -- seq 8).
+    match &records[8] {
         LogRecord::AgentResultRecord { seq, result, .. } => {
             assert_eq!(seq.0, 8);
             assert_eq!(result.steps_taken, 9);
@@ -190,7 +192,7 @@ fn agent_result_and_child_result_carry_transcript_ref() {
                 "01M0J07RX60F7A5NR9TW51JG18"
             );
         }
-        other => panic!("line 8: expected AgentResultRecord, got {other:?}"),
+        other => panic!("fixture line 9: expected AgentResultRecord, got {other:?}"),
     }
 }
 
