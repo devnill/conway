@@ -20,8 +20,9 @@ Conway idioms -- specific to this harness, not general agent advice.
 - **Steering.** A parent may steer or cancel a child mid-flight -- an
   in-flight instruction or task can change or end without you asking.
 
-Root only: a forked or spawned child gets no instruction fragments at all
-(`SubagentHost::start` passes `instructions: Vec::new()` unconditionally)
--- the ending/tools/permissions/steering points above describe how a
-*child* should behave, but conway does not deliver this text to one. If
-you fork or spawn, restate what the child needs.
+This reaches every agent, not the root alone: a forked or spawned child
+gets this same text too, filtered per turn by which tools that child's own
+tool set actually includes. The ending/permissions/steering points above
+are written for exactly the agent most likely to need them -- a non-root
+agent that must call `report`, reason about a denial, or expect to be
+steered mid-task.

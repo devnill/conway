@@ -19,7 +19,7 @@ use conway::config::schema::{
 };
 use conway::plugin::ContentBlock;
 use conway::test_support::test_builder;
-use conway::{Conway, RoleAlias, SessionSpec};
+use conway::{Conway, ForkSpec, RoleAlias, SessionSpec, SpawnSpec};
 use conway_plugin_idiom::{IdiomPlugin, FRAGMENT_TEXT, INSTRUCTION_NAME, PLUGIN_ID};
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
@@ -121,8 +121,69 @@ async fn fragment_reaches_a_bare_sessions_wire_request() {
         "the idiom fragment must be part of the wire request's context: {text}"
     );
     assert!(
-        text.contains("Root only"),
+        text.contains("This reaches every agent"),
         "the fragment's own subagent-reach disclosure must ship with it: {text}"
+    );
+}
+
+/// Board item `01M0VSKA76NSEHDSH25XJGJ2J5`: the fragment reaches a forked
+/// AND a spawned child too, not the root alone -- driven through the real
+/// facade (`SessionHandle::fork`/`::spawn`), asserting on each child's own
+/// ACTUAL wire request, exactly like [`fragment_reaches_a_bare_sessions_wire_request`]
+/// does for root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fragment_reaches_a_forked_and_a_spawned_childs_wire_request() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = Arc::new(FakeStore::new());
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(text_response("root turn")),
+            ScriptedTurn::Respond(text_response("fork child turn")),
+            ScriptedTurn::Respond(text_response("spawn child turn")),
+        ])
+        .with_id(conway::backend::BackendId::new("fake")),
+    );
+    let conway = idiom_conway(tmp.path().to_path_buf(), backend.clone(), store);
+
+    let session = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = session.prompt("hi").await.expect("prompt");
+    turn.result().await.expect("root turn completes");
+    let root = session.root();
+
+    let forked = session
+        .fork(root, ForkSpec::new("investigate further"))
+        .await
+        .expect("fork should succeed");
+    session
+        .await_agent(forked)
+        .await
+        .expect("forked child should complete");
+
+    let fork_calls = backend.calls();
+    let fork_text = all_text(fork_calls.last().expect("fork child made a call"));
+    assert!(
+        fork_text.contains("Fork vs spawn"),
+        "the idiom fragment must reach a forked child's wire request: {fork_text}"
+    );
+
+    let spawned = session
+        .spawn(root, SpawnSpec::new("do the review"))
+        .await
+        .expect("spawn should succeed");
+    session
+        .await_agent(spawned)
+        .await
+        .expect("spawned child should complete");
+
+    let spawn_calls = backend.calls();
+    let spawn_text = all_text(spawn_calls.last().expect("spawn child made a call"));
+    assert!(
+        spawn_text.contains("Fork vs spawn"),
+        "the idiom fragment must reach a spawned child's wire request too, not the root/fork \
+         only: {spawn_text}"
     );
 }
 

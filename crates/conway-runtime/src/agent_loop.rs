@@ -174,11 +174,14 @@ pub struct AgentSpec {
     /// Plugin-declared instruction fragments (board item
     /// `01M0K5MD59YZRSHE31JKZKFRMY`), rendered before `skills` -- see
     /// `ContextInput::instructions`'s own doc for the precedence argument.
-    /// Resolved for a ROOT agent by `runtime::root::resolve_instructions`;
-    /// a spawned/forked child gets `Vec::new()` today, matching `skills`'
-    /// own pre-existing "a subagent gets no directory-sourced skills
-    /// either" gap (`subagent.rs`'s `SubagentHost::start` -- unaddressed by
-    /// this item, out of its scope; see that call site's own comment).
+    /// Resolved by `runtime::root::resolve_instructions` for EVERY agent --
+    /// root, resumed, forked, or spawned (board item
+    /// `01M0VSKA76NSEHDSH25XJGJ2J5`'s ruling: an instruction fragment is
+    /// harness configuration keyed to tool reachability, not transcript
+    /// context, so fork/spawn's inheritance split does not govern it --
+    /// full argument at that function's own doc). `subagent.rs`'s
+    /// `SubagentHost::start` calls the SAME function a root agent's
+    /// construction does, with no per-mode branch.
     pub instructions: Vec<PluginInstruction>,
     pub skills: Vec<SkillFragment>,
     /// `None` behaves as [`ToolSelector::All`] (see

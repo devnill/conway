@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consequence — no system-prompt segment at all in that case. Installing
   `["conway.idiom"]` contributes one `Plugin::instructions()` fragment
   (fork vs. spawn, how an agent ends, configuration-dependent tools,
-  context scarcity, permissions, budgets, steering) — 27 lines, 250 words,
+  context scarcity, permissions, budgets, steering) — 28 lines, 275 words,
   well inside the 40-line/400-word budget measured against Pi's own
   system-prompt template (`docs/vision/INTENT.md`'s citation of Pi as
   conway's extension-surface reference). Lands in `ContextBuilder::build`'s
@@ -30,14 +30,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to be announced for the rest of the text to hold, and an interactive
   root specifically never has `report` — naming it would silently drop
   the whole fragment from the one session type this plugin targets.
-  **Reaches root agents only** — a forked or spawned child gets no
-  instruction fragments at all, because `SubagentHost::start` passes
-  `instructions: Vec::new()` unconditionally and `resolve_instructions`,
-  the sibling that forwards them unchanged, is root-only and is never
-  called for a child. Disclosed in the fragment's own doc comment, in
-  `PluginDescription::you_lose`, and in
-  [`docs/plugins/idiom.md`](docs/plugins/idiom.md). Opt-in, like every
+  **Reaches every forked or spawned child too, not the root alone** (board
+  item `01M0VSKA76NSEHDSH25XJGJ2J5`'s ruling, below) — corrected from this
+  bullet's own original text, which said the opposite. Opt-in, like every
   other first-party plugin.
+
+- **A plugin instruction fragment reaches a forked or spawned child, not
+  the root alone** — board item `01M0VSKA76NSEHDSH25XJGJ2J5`. Before this,
+  `SubagentHost::start` passed `AgentSpec.instructions: Vec::new()`
+  unconditionally to every fork/spawn child, and `resolve_instructions`
+  (the function that forwards every installed plugin's `Plugin::
+  instructions()` fragments unchanged) was called only for a root or
+  resumed agent — disclosed as a caveat in four places (`docs/plugins/
+  hooks.md` point 17, `conway-plugin-idiom`'s own shipped fragment text,
+  module doc, and `PluginDescription::you_lose`) but never *decided*.
+  Ruled: an instruction fragment is harness configuration keyed to tool
+  reachability (the pre-existing `tool_ids` gate, unchanged), not
+  transcript context, so fork/spawn's "whole transcript vs. empty
+  transcript" split does not govern it — the same way it already does not
+  govern `plugin_config`, which narrows-and-inherits from the parent for
+  spawn exactly as for fork, predating this ruling. `SubagentHost::start`
+  now calls the SAME `resolve_instructions`/`resolve_skills`
+  `start_root`/`resume_root` already use, for both fork and spawn, with no
+  per-mode branch — `resolve_skills` resolves the CHILD's own
+  already-resolved `agent_def`, not the parent's, so a fork/spawn with no
+  def still gets no skills, exactly as before. The `tool_ids` reachability
+  check (`ContextBuilder::build`) composes unmodified: a narrowly-scoped
+  child already receives fewer fragments than root, with no new mechanism.
+  Full argument at `resolve_instructions`'s own doc
+  (`crates/conway-runtime/src/runtime/root.rs`). The four idiom-plugin
+  disclosure sites, `docs/plugins/hooks.md`, `docs/plugins/README.md`, and
+  this file's own bullet above are corrected to state the ruling rather
+  than the prior (now false) description.
 
 ### Fixed
 

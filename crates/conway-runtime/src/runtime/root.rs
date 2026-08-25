@@ -26,6 +26,14 @@
 //! contain is `RuntimeError::InvalidSpec`, via the same `subagent::
 //! invalid_spec` helper this file's own root/cwd containment checks already
 //! use -- never a silent drop.
+//!
+//! **[`resolve_skills`]/[`resolve_instructions`] are `pub(crate)` (board
+//! item `01M0VSKA76NSEHDSH25XJGJ2J5`):** `subagent.rs`'s `SubagentHost::
+//! start` now calls both of these SAME functions for a fork/spawn child --
+//! see [`resolve_instructions`]'s own doc for the ruling and its argument.
+//! This file still owns the one rule each function encodes; `subagent.rs`
+//! supplies a different `agent_def`/`instructions` per call, never a
+//! different rule.
 
 use super::*;
 
@@ -42,7 +50,14 @@ use super::*;
 /// to real body text, mirroring `crate::skills`' (`crates/conway/src/
 /// skills.rs`, facade-side) own loud-failure discipline for a malformed
 /// `SKILL.md`.
-fn resolve_skills(
+///
+/// **Reached by fork/spawn too (board item `01M0VSKA76NSEHDSH25XJGJ2J5`,
+/// ruling recorded below `resolve_instructions`'s own doc).** `pub(crate)`
+/// so `subagent.rs`'s `SubagentHost::start` can call this SAME function
+/// with the child's own resolved `agent_def` -- there is exactly one
+/// skill-resolution rule in this crate, root/resume/fork/spawn alike, not
+/// a copy per call site.
+pub(crate) fn resolve_skills(
     agent_def: Option<&AgentDef>,
     skills: &HashMap<String, conway_core::config::SkillDef>,
 ) -> Result<Vec<crate::context::SkillFragment>, RuntimeError> {
@@ -78,21 +93,71 @@ fn resolve_skills(
 /// list to resolve against: a plugin's instruction fragments have no
 /// per-agent-def selection mechanism (that is the composing tool's future
 /// territory, not this item's -- see the board item's own "explicitly out
-/// of scope" section), so every root agent gets every installed plugin's
-/// fragments unconditionally, exactly as it gets every installed plugin's
-/// TOOLS unconditionally today. This function exists (rather than inlining
-/// the clone at each call site) so both call sites read the same "yes,
-/// unconditional, on purpose" comment once, and so a future per-agent
-/// selection mechanism has one function to change instead of two.
+/// of scope" section), so every agent that calls this gets every installed
+/// plugin's fragments unconditionally, exactly as it gets every installed
+/// plugin's TOOLS unconditionally today. This function exists (rather than
+/// inlining the clone at each call site) so every call site reads the same
+/// "yes, unconditional, on purpose" comment once, and so a future per-agent
+/// selection mechanism has one function to change instead of several.
 ///
-/// **Root only.** A forked/spawned child does not call this --
-/// `subagent.rs`'s `SubagentHost::start` passes `instructions: Vec::new()`
-/// for `AgentSpec`, matching `skills: Vec::new()` immediately beside it
-/// there: subagents inherit no directory-sourced skills either, a
-/// pre-existing gap this item does not fix (out of scope; flagged in this
-/// item's own completion report as a follow-up, not fixed as a silent
-/// bycatch).
-fn resolve_instructions(
+/// **RULING (board item `01M0VSKA76NSEHDSH25XJGJ2J5`): reached by fork and
+/// spawn too, not root only.** `pub(crate)` so `subagent.rs`'s
+/// `SubagentHost::start` can call this SAME function for a fork/spawn
+/// child, exactly as `start_root`/`resume_root` do below. Before this
+/// item, `SubagentHost::start` passed `AgentSpec.instructions: Vec::new()`
+/// unconditionally, and this function was never called for a child at all
+/// -- disclosed (`docs/plugins/hooks.md` point 17, `docs/plugins/idiom.md`,
+/// this crate's own doc, `conway-plugin-idiom`'s shipped fragment text) but
+/// never *decided*: nobody had argued why a child should NOT get what a
+/// root gets automatically.
+///
+/// **The argument, decided in favor of reaching:** the two-primitive rule
+/// (fork = whole parent TRANSCRIPT + directive, spawn = empty transcript
+/// under a required `agent_def` -- this module's own doc, and `subagent.
+/// rs`'s module doc, both use "context" to mean exactly that transcript;
+/// `SubagentSpec::context`, the "chosen context" mechanism, is *named* for
+/// operating over LOG NODES, never over instructions/skills/tools/
+/// `plugin_config`) governs the CONVERSATION a child starts with, not every
+/// configuration channel `AgentSpec` carries. A plugin instruction fragment
+/// is not transcript: it is never appended to the log, is resolved fresh
+/// into `ContextInput` on every single turn from `AgentSpec.instructions`
+/// (`agent_loop.rs`), and is gated per-turn purely by whether THIS turn's
+/// announced tool set contains the ids the fragment names
+/// (`ContextBuilder::build`'s `tool_ids` reachability check) -- the same
+/// shape `system_prompt` (from `agent_def`), `tools` (`ToolSelector`), and
+/// `plugin_config` already have. `plugin_config` is the load-bearing
+/// precedent: `SubagentHost::start` narrows the PARENT's own live
+/// `plugin_config` for a CHILD UNCONDITIONALLY, for spawn exactly as for
+/// fork (`subagent.rs`, the `child_plugin_config` computation, no
+/// `spec.mode` gate anywhere in it) -- so "spawn = clean slate" already
+/// does not mean "clean slate of every harness-configuration channel" in
+/// this codebase; it means clean slate of the TRANSCRIPT specifically.
+/// Giving a spawned child the same instruction fragments a root gets is
+/// therefore not a third, blurred, "partially inherited" primitive: fork
+/// and spawn remain byte-identical in what they do to the log (unchanged by
+/// this item), and this function is now called identically for both modes
+/// -- one rule, not a per-mode branch. It is unifying a channel that was
+/// the ONE configuration field hardcoded to empty while every sibling
+/// channel already resolved per-agent, not adding a new kind of
+/// inheritance. Economy (GP-01) is not abandoned either: the `tool_ids`
+/// gate already scales what a child receives down to its own tool surface,
+/// so a narrowly-scoped agent def already sees fewer fragments than root
+/// does, with no new mechanism -- see `context/builder.rs`'s reachability
+/// check, which this item leaves untouched and which composes for a child
+/// exactly as it does for root, by construction (it keys on `ContextInput.
+/// tools`, never on how the agent was created).
+///
+/// Skills (`resolve_skills` above) reach this same conclusion by a
+/// DIFFERENT mechanism, not this one: an instruction fragment is
+/// install-time, plugin-scoped, and has no per-agent-def selector at all
+/// (every fragment reaches every eligible agent, filtered only by
+/// `tool_ids`); a skill is name-scoped through `AgentDef.skills`, so a
+/// child's own skills are whatever ITS OWN resolved `agent_def` names --
+/// already exactly what `resolve_skills` computes, given that def. Both
+/// were zeroed by the same `Vec::new()` line in `subagent.rs`; both are now
+/// resolved through their own pre-existing function, called with the
+/// child's own already-resolved `agent_def`.
+pub(crate) fn resolve_instructions(
     instructions: &[crate::context::PluginInstruction],
 ) -> Vec<crate::context::PluginInstruction> {
     instructions.to_vec()

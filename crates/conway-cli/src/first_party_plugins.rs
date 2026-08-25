@@ -250,9 +250,10 @@ fn bundle(
         // otherwise-empty `[0] SystemPrompt` step carry ANY harness
         // orientation at all (`App::session_spec` sets no `agent_def`/
         // `system_prompt_override` -- see `conway-plugin-idiom`'s own
-        // module doc for the re-verified premise). Reaches root agents
-        // only -- see that crate's own doc and `PluginDescription::
-        // you_lose` for the disclosed subagent gap.
+        // module doc for the re-verified premise). Reaches every forked or
+        // spawned child too, not the root alone (board item
+        // `01M0VSKA76NSEHDSH25XJGJ2J5`'s ruling) -- see that crate's own
+        // doc and `PluginDescription::you_get` for the argument.
         Arc::new(conway_plugin_idiom::IdiomPlugin),
         // `conway.trim` -- a `Curator` that omits tool call/result
         // round-trips older than a configurable turn window (board item

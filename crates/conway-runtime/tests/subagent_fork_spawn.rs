@@ -3946,3 +3946,239 @@ async fn fork_with_chosen_context_still_forks_at_the_store_level_but_the_selecti
          that the SELECTION (not the parent's transcript) is what a later turn actually reads"
     );
 }
+
+// ---------------------------------------------------------------------
+// Plugin instruction fragments reach fork AND spawn children too
+// (board item 01M0VSKA76NSEHDSH25XJGJ2J5), gated per child exactly like
+// root: P-15 -- these assert on `ContextBuilder::build`'s real output
+// (`Runtime::context_report`), never on `AgentSpec.instructions` itself.
+// ---------------------------------------------------------------------
+
+/// A general instruction fragment with NO `tool_ids` -- reachable
+/// regardless of which tools a turn announces, mirroring the shipped
+/// `conway.idiom` fragment's own `tool_ids: vec![]`.
+fn general_instruction_fragment() -> conway_runtime::context::PluginInstruction {
+    conway_runtime::context::PluginInstruction {
+        plugin_id: "test.instructions".to_string(),
+        name: "general-orientation".to_string(),
+        text: "General harness orientation text.".to_string(),
+        tool_ids: vec![],
+    }
+}
+
+/// An instruction fragment naming the `secret` tool (`secret_tool_spec`,
+/// this file's own two-tool fixture) -- reachable only for a turn whose
+/// announced tools include `secret`, i.e. NOT for a child running under
+/// `restricted_def` (`ToolSelector::Only(["marker"])`).
+fn secret_tool_instruction_fragment() -> conway_runtime::context::PluginInstruction {
+    conway_runtime::context::PluginInstruction {
+        plugin_id: "test.instructions".to_string(),
+        name: "secret-tool-note".to_string(),
+        text: "How to use the secret tool.".to_string(),
+        tool_ids: vec![secret_tool_spec().name],
+    }
+}
+
+/// Mirrors `build_runtime_with_two_tools_and_defs`, plus caller-supplied
+/// `instructions` -- lets a test install real `Plugin::instructions()`-style
+/// fragments (not merely an empty `Vec::new()`, which would prove nothing
+/// per P-15's "a fixture that leaves the field under test at its default
+/// proves nothing").
+fn build_runtime_with_two_tools_defs_and_instructions(
+    turns: usize,
+    agent_defs: HashMap<String, AgentDef>,
+    instructions: Vec<conway_runtime::context::PluginInstruction>,
+) -> (Arc<Runtime>, Arc<ScriptedBackend>) {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+
+    let backend = Arc::new(
+        ScriptedBackend::new(
+            (0..turns)
+                .map(|_| ScriptedTurn::Respond(text_response("ok")))
+                .collect(),
+        )
+        .with_id(BackendId::new("b")),
+    );
+    let model = ModelRef {
+        backend: backend.id(),
+        model: ModelId::new("m"),
+    };
+    let router: Arc<dyn Router> = Arc::new(FakeRouter::single(model));
+    let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+    backends.insert(backend.id(), backend.clone());
+
+    let runtime = Runtime::new(RuntimeDeps {
+        store,
+        path_store: std::sync::Arc::new(conway_testkit::FakePathStore::new()),
+        router,
+        health: Arc::new(FakeHealth::new()),
+        backends,
+        plugins: vec![Arc::new(TwoToolPlugin)],
+        gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+        agent_defs,
+        instructions,
+        skills: Default::default(),
+        event_bus: EventBus::with_default_capacity(),
+        headroom: Arc::new(HeadroomPolicy::default()),
+
+        session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+    });
+    (runtime, backend)
+}
+
+/// A forked child with the full (unrestricted) two-tool set inherits BOTH
+/// installed instruction fragments -- the general one (no `tool_ids`) and
+/// the `secret`-tool one, since the fork's own announced tools include
+/// `secret`. Asserted on the child's own `ContextReport` (`Runtime::
+/// context_report`, built by `ContextBuilder::build` from a real turn),
+/// never on `AgentSpec.instructions` -- P-15.
+///
+/// **Break-the-guard expectation** (reverting `subagent.rs`'s `instructions
+/// = resolve_instructions(...)` back to `instructions: Vec::new()`): both
+/// `report.segments` assertions below fail, because the child's assembled
+/// context carries no `Provenance::Skill` segment for either fragment name
+/// at all -- confirmed by hand before this test was written to rely on it.
+#[tokio::test]
+async fn fork_child_inherits_plugin_instruction_fragments() {
+    let (runtime, _backend) = build_runtime_with_two_tools_defs_and_instructions(
+        2,
+        HashMap::new(),
+        vec![
+            general_instruction_fragment(),
+            secret_tool_instruction_fragment(),
+        ],
+    );
+
+    let mut stream = runtime.subscribe();
+    let root = runtime.start_root(root_spec("investigate")).await.unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    // A bare fork: no `agent_def`, no `tools` override -- inherits the
+    // parent's (unrestricted, two-tool) tool set via the ordinary
+    // no-selector "everything" fallback.
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, fork_spec("look closer"))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let report = runtime.context_report(child).unwrap();
+    assert!(
+        report.segments.iter().any(
+            |e| matches!(&e.provenance, Provenance::Skill { name } if name == "general-orientation")
+        ),
+        "a forked child must carry the general instruction fragment in its own assembled \
+         context, got: {:?}",
+        report.segments
+    );
+    assert!(
+        report.segments.iter().any(
+            |e| matches!(&e.provenance, Provenance::Skill { name } if name == "secret-tool-note")
+        ),
+        "a forked child that holds the `secret` tool must also carry the fragment naming it, \
+         got: {:?}",
+        report.segments
+    );
+    assert_eq!(
+        report.instruction_fragments.len(),
+        2,
+        "both installed fragments must be recorded, reachable, in the child's own report"
+    );
+    assert!(
+        report
+            .instruction_fragments
+            .iter()
+            .all(|f| f.unreachable_tool_ids.is_empty()),
+        "both fragments are reachable for a fork holding both tools: {:?}",
+        report.instruction_fragments
+    );
+}
+
+/// A spawned child under `restricted_def` (`ToolSelector::Only(["marker"])`)
+/// inherits the general fragment (no `tool_ids`, always reachable) but the
+/// `tool_ids` reachability check (`ContextBuilder::build`, unmodified by
+/// this item) still withholds the `secret`-tool fragment -- proving the
+/// existing withholding mechanism COMPOSES for a spawn child rather than
+/// needing a second, per-agent reimplementation (acceptance 5 / Question 3).
+#[tokio::test]
+async fn spawn_child_inherits_plugin_instruction_fragments_still_gated_by_tool_ids() {
+    let mut defs = HashMap::new();
+    defs.insert("restricted".to_string(), restricted_def());
+    let (runtime, _backend) = build_runtime_with_two_tools_defs_and_instructions(
+        2,
+        defs,
+        vec![
+            general_instruction_fragment(),
+            secret_tool_instruction_fragment(),
+        ],
+    );
+
+    let mut stream = runtime.subscribe();
+    let root = runtime.start_root(root_spec("investigate")).await.unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    let child_spec = SubagentSpec {
+        mode: SubagentMode::Spawn,
+        prompt: "do it".into(),
+        agent_def: Some(AgentDefRef("restricted".to_string())),
+        role: None,
+        pin: None,
+        tools: None,
+        budget: Budget::default(),
+        result_contract: None,
+        keep_alive: false,
+        ephemeral: false,
+        ask_origin: None,
+        cwd: None,
+        root: None,
+        tag: None,
+        plugin_config: None,
+        context: None,
+    };
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, child_spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let report = runtime.context_report(child).unwrap();
+    assert!(
+        report.segments.iter().any(
+            |e| matches!(&e.provenance, Provenance::Skill { name } if name == "general-orientation")
+        ),
+        "a spawned child must still carry the general (tool_ids-empty) instruction fragment, \
+         got: {:?}",
+        report.segments
+    );
+    assert!(
+        !report.segments.iter().any(
+            |e| matches!(&e.provenance, Provenance::Skill { name } if name == "secret-tool-note")
+        ),
+        "a spawned child restricted to the `marker` tool must NOT have the `secret`-tool \
+         fragment's text injected -- the pre-existing tool_ids withholding must still apply, \
+         got: {:?}",
+        report.segments
+    );
+
+    // The withheld fragment is still RECORDED (never silently lost), with
+    // its cause named -- the same "record even when withheld" contract
+    // `ContextBuilder::build`'s own unit tests already pin for a root.
+    assert_eq!(report.instruction_fragments.len(), 2);
+    let secret_entry = report
+        .instruction_fragments
+        .iter()
+        .find(|f| f.name == "secret-tool-note")
+        .expect("the withheld fragment must still be recorded");
+    assert_eq!(
+        secret_entry.unreachable_tool_ids,
+        vec![secret_tool_spec().name],
+        "the withheld fragment must name exactly the missing tool id"
+    );
+    let general_entry = report
+        .instruction_fragments
+        .iter()
+        .find(|f| f.name == "general-orientation")
+        .expect("the reachable fragment must also be recorded");
+    assert!(general_entry.unreachable_tool_ids.is_empty());
+}
