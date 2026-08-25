@@ -78,6 +78,20 @@ pub enum WarningCode {
     /// `tracing::warn!` naming the same two ids, for a host with no reason
     /// to read `Conway::warnings()` at all (e.g. a one-shot `-p` run).
     OptionalPluginDependencyMissing,
+    /// A plugin's `PluginManifest::optional_host_caps` names a host
+    /// capability this host does not offer -- `message` names both the
+    /// plugin and the missing capability. The host-capability analogue of
+    /// [`Self::OptionalPluginDependencyMissing`] one edge over (Edge A,
+    /// plugin -> host, rather than Edge B, plugin -> plugin --
+    /// `docs/vision/DESIGN-plugin-dependencies.md` §2/§4a): the SAME
+    /// "announced, never silent" posture, raised by the SAME
+    /// `ConwayBuilder::build` pass (right where the mandatory
+    /// `PluginManifest::required_host_caps` gate already runs, via
+    /// `conway::host_caps::HostCaps::missing_optional`), on the SAME
+    /// `ConfigWarning`/`Conway::warnings()` surface, plus the identical
+    /// `tracing::warn!` companion for a host with no reason to read
+    /// `Conway::warnings()` at all.
+    OptionalHostCapabilityMissing,
 }
 
 #[cfg(test)]

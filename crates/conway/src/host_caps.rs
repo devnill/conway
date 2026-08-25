@@ -8,11 +8,17 @@
 //! the plugin is refused -- the NARROWING direction (a plugin declares what
 //! it needs; the host refuses to load it if the host can't provide it).
 //!
-//! **Not a free-form registry.** The cap set is the closed
-//! `#[non_exhaustive]` [`HostCapability`] enum in `conway-core`; this type
-//! holds a `HashSet<HostCapability>` derived from the config, so a cap the
-//! host "offers" is always one the vocabulary knows, not a string the host
-//! never validates.
+//! **Not a free-form registry, but no longer a closed one either.** The cap
+//! type is [`HostCapability`] in `conway-core` -- opened from a closed
+//! two-variant enum to a namespaced vocabulary
+//! (`docs/vision/DESIGN-plugin-dependencies.md` §2 Edge A); this type holds
+//! a `HashSet<HostCapability>` derived from the config, so a cap the host
+//! "offers" is always a well-formed [`HostCapability`] value (shape-checked
+//! by that type's own `Deserialize`/`named`), never an unvalidated string.
+//! A REQUIRED cap this host does not offer still hard-refuses registration
+//! ([`HostCaps::check_manifest`]); an OPTIONAL one
+//! ([`HostCaps::missing_optional`]) degrades the plugin instead -- see that
+//! method's own doc.
 
 use std::collections::HashSet;
 
@@ -113,7 +119,7 @@ impl HostCaps {
     /// calls this with a fixture manifest, no full build required).
     pub fn check_manifest(&self, manifest: &PluginManifest) -> Result<(), PluginError> {
         for cap in &manifest.required_host_caps {
-            if !self.offers(*cap) {
+            if !self.offers(cap.clone()) {
                 return Err(PluginError::MissingHostCapability {
                     plugin: manifest.id.clone(),
                     capability: cap.to_string(),
@@ -121,6 +127,25 @@ impl HostCaps {
             }
         }
         Ok(())
+    }
+
+    /// Every cap in `manifest.optional_host_caps` this host does NOT offer,
+    /// in declaration order -- the host-capability analogue of
+    /// `crate::builder::missing_optional_dependencies`, scoped to ONE
+    /// manifest against what THIS host offers (a host-offered-set lookup,
+    /// unlike that free function's plugin-id graph walk over the whole
+    /// installed set). Never fails: an optional cap's absence degrades the
+    /// declaring plugin, it never refuses it -- see
+    /// [`conway_core::ports::PluginManifest::optional_host_caps`]'s own doc
+    /// for the two-channel (`tracing::warn!` + `ConfigWarning`) announcement
+    /// `crate::ConwayBuilder::build` performs for each cap this returns.
+    pub fn missing_optional(&self, manifest: &PluginManifest) -> Vec<HostCapability> {
+        manifest
+            .optional_host_caps
+            .iter()
+            .filter(|cap| !self.offers((*cap).clone()))
+            .cloned()
+            .collect()
     }
 }
 
@@ -139,6 +164,7 @@ mod tests {
             version: "0.0.0".to_string(),
             tools: Vec::<ToolName>::new(),
             required_host_caps: caps.to_vec(),
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }
@@ -176,7 +202,11 @@ mod tests {
             HostCapability::Subagent,
             HostCapability::PersistentTransport,
         ] {
-            let wire = serde_json::to_value(cap)
+            // `.clone()`: `HostCapability` lost `Copy` when it opened from a
+            // closed two-variant enum to a `Named(String)`-carrying one
+            // (`docs/vision/DESIGN-plugin-dependencies.md` §2 Edge A); `cap`
+            // is used again below.
+            let wire = serde_json::to_value(cap.clone())
                 .expect("HostCapability serializes")
                 .as_str()
                 .expect("serde emitted a string tag")
@@ -273,5 +303,85 @@ mod tests {
         assert!(!host.offers(HostCapability::Subagent));
         host.offer(HostCapability::Subagent);
         assert!(host.offers(HostCapability::Subagent));
+    }
+
+    // -----------------------------------------------------------------
+    // Acceptance 5: `subagent`/`persistent_transport` resolve with no
+    // `settings.json`/config change -- constructing them through the open
+    // vocabulary's `named` constructor still normalizes to the SAME unit
+    // variants `HostCaps::from_config` offers.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn named_subagent_resolves_against_the_unconditionally_offered_cap() {
+        let host = HostCaps::with_capabilities([HostCapability::Subagent]);
+        let m = manifest(
+            "test.named-subagent",
+            &[HostCapability::named("subagent").unwrap()],
+        );
+        assert_eq!(host.check_manifest(&m), Ok(()));
+    }
+
+    // -----------------------------------------------------------------
+    // Acceptance 4: a missing OPTIONAL cap never refuses the plugin --
+    // `missing_optional` reports it for the caller (`ConwayBuilder::build`)
+    // to announce, `check_manifest` stays silent about it.
+    // -----------------------------------------------------------------
+
+    /// A manifest fixture carrying `optional_host_caps` -- `manifest()`
+    /// above always sets it empty, so this item's own tests build one
+    /// directly rather than widening that shared helper's signature.
+    fn manifest_with_optional(id: &str, optional: &[HostCapability]) -> PluginManifest {
+        PluginManifest {
+            id: id.to_string(),
+            version: "0.0.0".to_string(),
+            tools: Vec::<ToolName>::new(),
+            required_host_caps: vec![],
+            optional_host_caps: optional.to_vec(),
+            requires: vec![],
+            optional: vec![],
+        }
+    }
+
+    #[test]
+    fn missing_optional_host_cap_never_fails_check_manifest() {
+        let host = HostCaps::empty();
+        let m = manifest_with_optional(
+            "test.optional-persistent",
+            &[HostCapability::PersistentTransport],
+        );
+        // The hard gate never sees `optional_host_caps` at all -- it stays
+        // `Ok`, unlike a missing REQUIRED cap.
+        assert_eq!(host.check_manifest(&m), Ok(()));
+    }
+
+    #[test]
+    fn missing_optional_lists_every_cap_the_host_lacks() {
+        let host = HostCaps::with_capabilities([HostCapability::Subagent]);
+        let m = manifest_with_optional(
+            "test.optional-two",
+            &[
+                HostCapability::Subagent,            // offered -- not missing
+                HostCapability::PersistentTransport, // not offered -- missing
+            ],
+        );
+        assert_eq!(
+            host.missing_optional(&m),
+            vec![HostCapability::PersistentTransport]
+        );
+    }
+
+    #[test]
+    fn missing_optional_is_empty_when_every_optional_cap_is_offered() {
+        let host = HostCaps::with_capabilities([HostCapability::Subagent]);
+        let m = manifest_with_optional("test.optional-satisfied", &[HostCapability::Subagent]);
+        assert!(host.missing_optional(&m).is_empty());
+    }
+
+    #[test]
+    fn missing_optional_is_empty_for_empty_optional_host_caps() {
+        let host = HostCaps::empty();
+        let m = manifest_with_optional("test.optional-none", &[]);
+        assert!(host.missing_optional(&m).is_empty());
     }
 }

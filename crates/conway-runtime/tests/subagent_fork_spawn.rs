@@ -934,6 +934,7 @@ impl conway_core::ports::Plugin for SlowPlugin {
             version: "0.0.0".to_string(),
             tools: vec![slow_tool_spec().name],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }
@@ -1536,6 +1537,7 @@ impl conway_core::ports::Plugin for ForkingPlugin {
             version: "0.0.0".to_string(),
             tools: vec![forking_tool_spec().name],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }
@@ -1686,6 +1688,7 @@ impl conway_core::ports::Plugin for CwdProbePlugin {
             version: "0.0.0".to_string(),
             tools: vec![cwd_probe_tool_spec().name],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }
@@ -2646,6 +2649,7 @@ impl conway_core::ports::Plugin for TwoToolPlugin {
             version: "0.0.0".to_string(),
             tools: vec![marker_tool_spec().name, secret_tool_spec().name],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }

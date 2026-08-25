@@ -1632,6 +1632,7 @@ impl Plugin for SlowToolPlugin {
             version: "0.0.0".to_string(),
             tools: vec![conway_core::ids::ToolName::new("slow_tool")],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }
@@ -2007,6 +2008,7 @@ impl Plugin for TwoSlowToolsPlugin {
             version: "0.0.0".to_string(),
             tools: vec![self.0.name.clone(), self.1.name.clone()],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }

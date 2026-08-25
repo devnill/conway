@@ -380,6 +380,7 @@ impl McpPlugin {
             // wire plugin, offered iff a `[plugins].subprocess[]` entry is
             // configured persistent).
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         };

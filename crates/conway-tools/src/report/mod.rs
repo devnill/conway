@@ -33,6 +33,7 @@ impl Plugin for ReportPlugin {
             version: env!("CARGO_PKG_VERSION").into(),
             tools: self.tools.iter().map(|t| t.spec().name).collect(),
             required_host_caps: Vec::new(),
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }
