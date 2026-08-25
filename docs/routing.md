@@ -54,6 +54,19 @@ qualify). Every entry in the chain needs a backend configured (see
 [`providers.md`](providers.md)) and a matching `.conway/models.json`
 entry, or it's skipped before conway ever contacts that provider.
 
+**The backend id `local` above is just a name the operator chose — it
+carries no meaning to any code, same as `coder` or `anthropic`.** Whether a
+candidate's inference actually stays on this machine is a separate,
+*typed* property, `backends.<id>.local` (a bool, default `false`), declared
+on the backend entry itself — see [providers.md's "Locality"
+section](providers.md#locality) for the field, its exact predicate, and the
+case (an SSH tunnel) it cannot see through either way. Nothing on this page
+changes because of that field: routing still walks the chain in the order
+written, with no preference for, or skipping of, a non-local candidate —
+whether a role's *entire* chain is local is a question a caller asks
+explicitly (`conway::config::role_is_local`), not something the router
+enforces on its own.
+
 Two flags override chain resolution for a single run:
 
 | Flag | Effect |
@@ -584,7 +597,8 @@ already covers:
     "local": {
       "kind": "openai-compat",
       "dialect": "ollama",
-      "base_url": "http://localhost:11434/v1"
+      "base_url": "http://localhost:11434/v1",
+      "local": true
     }
   },
   "routing": {
@@ -598,6 +612,20 @@ already covers:
   }
 }
 ```
+
+The backend id `"local"` and the field `"local": true` are two unrelated
+things that happen to share a spelling — the id is a name this example
+chose, the field is what makes `backends.local` actually checkable as
+local (see [providers.md's "Locality" section](providers.md#locality)).
+Nothing about this config's routing behaviour changes because that field
+is set: `coder`'s chain still tries Anthropic first, same as before. What
+the field enables is a question this exact config *cannot* answer yet on
+its own — `conway::config::role_is_local(&config, &RoleAlias::new("coder"))`
+would return `false` for this `coder` role specifically, because
+`anthropic/claude-sonnet-4-6` (correctly) has no `local` key at all: a role
+falling through from a real local server to a cloud one is exactly the
+mixed chain the query is designed to catch, not something this page's
+example is claiming is "local" as a whole.
 
 ```json
 // .conway/models.json

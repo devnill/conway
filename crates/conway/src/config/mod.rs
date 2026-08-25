@@ -8,6 +8,7 @@
 //! `conway_core` types disclosed there.
 
 pub mod discovery;
+pub mod locality;
 pub mod merge;
 pub mod model_metadata;
 pub mod schema;
@@ -15,6 +16,7 @@ pub mod trust;
 pub mod writer;
 
 pub use discovery::discover;
+pub use locality::role_is_local;
 pub use merge::{
     apply_cli, load, load_ignoring_user_config, merged_document, validate, CliOverrides,
     LoadOptions,

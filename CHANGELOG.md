@@ -28,6 +28,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-core/src/permission_pattern.rs` before this item, checked
   field-for-field against both (and by writing/reading the files back
   against a scratch `CONWAY_CONFIG_DIR` — not merely asserted).
+- **Backends can now declare locality** — board item
+  `01M0WX4MB7JETFBRZE3AEQNSV3`, closing the gap
+  `docs/vision/DESIGN-permission-modes.md` §2e names: nothing used to
+  distinguish `http://localhost:11434/v1` from `api.openai.com` except the
+  string, and a `local: true` key on a `backends.<id>` entry parsed today
+  straight into the untyped `extra` catch-all, meaning nothing —
+  accepted-and-ignored, worse than rejected. `BackendEntry` gains a typed
+  `local: bool` field (default `false`), and `conway::config::role_is_local`
+  answers whether every candidate in a role's configured chain is declared
+  local. **Declared, not inferred**: no code reads `base_url` to guess at
+  this — every URL-shaped heuristic (`localhost`, `127.0.0.1`, a `.local`
+  name) is defeated by an SSH tunnel presenting a remote server identically
+  to a local one, so the field is the operator's own claim, trusted as
+  given, not audited against the backend's address. This is defence in
+  depth, not a correctness guarantee, and changes no routing behaviour: a
+  chain falling through from a local candidate to a non-local one still
+  does so — refusing that fallthrough is a consumer's policy (e.g. a
+  future permission guard), not something this field or the router
+  enforces on its own. See `docs/providers.md`'s new "Locality" section
+  and `docs/routing.md`'s worked example for the full picture, including
+  the tunnel case named again.
 
 - **conway can now install a plugin from a Claude Code marketplace** —
   board item `01M0VR96Y87FF2BVNTBSC6GEYR`, the network-reaching half of the
