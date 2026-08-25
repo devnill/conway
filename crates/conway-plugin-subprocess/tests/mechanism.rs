@@ -238,6 +238,65 @@ async fn discover_loads_a_manifest_omitting_required_host_caps_as_empty() {
 }
 
 // ---------------------------------------------------------------------
+// Discovery -- `requires`/`optional` on the wire (board item
+// `01M0XCD3P8S3VR0T1H0KNG5TMD`)
+// ---------------------------------------------------------------------
+
+/// A `tool.spec/1` manifest declaring both `requires` (`["conway.ui"]`) and
+/// `optional` (`["conway.notifications"]`) loads, and both are mapped
+/// verbatim into `PluginManifest::requires`/`optional` -- the SAME fields an
+/// in-process `Plugin`'s manifest populates, resolved and checked by the
+/// SAME `ConwayBuilder::build` dependency-resolution code (proven in
+/// `crates/conway/tests/builder.rs`; this proves only that the wire carries
+/// the fields and `discover` maps them, not a parallel resolution path).
+#[tokio::test]
+async fn discover_maps_declared_requires_and_optional_into_the_manifest() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec = common::spec_for_warmed(dir.path(), "deps.py", common::DEPENDENCY_PLUGIN).await;
+
+    let plugin = SubprocessPlugin::discover(spec)
+        .await
+        .expect("a manifest declaring known requires/optional plugin ids must load");
+    let manifest = plugin.manifest();
+    assert_eq!(manifest.id, "acme.needs-ui");
+    assert_eq!(
+        manifest.requires,
+        vec!["conway.ui".to_string()],
+        "the declared requires id maps verbatim into PluginManifest::requires"
+    );
+    assert_eq!(
+        manifest.optional,
+        vec!["conway.notifications".to_string()],
+        "the declared optional id maps verbatim into PluginManifest::optional"
+    );
+}
+
+/// A `tool.spec/1` manifest that OMITS `requires`/`optional` entirely still
+/// loads (`#[serde(default)]` parses both as empty), so an older plugin
+/// built before this item shipped is unaffected -- `docs/plugins/
+/// compatibility.md`'s versioning table calls a new optional field a
+/// `minor`-compatible addition for exactly this reason. The built-in
+/// `GREET_PLUGIN` fixture predates both fields and omits them.
+#[tokio::test]
+async fn discover_loads_a_manifest_omitting_requires_and_optional_as_empty() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec = common::spec_for_warmed(dir.path(), "greet.py", common::GREET_PLUGIN).await;
+
+    let plugin = SubprocessPlugin::discover(spec)
+        .await
+        .expect("a manifest omitting requires/optional must load unchanged (#[serde(default)])");
+    let manifest = plugin.manifest();
+    assert!(
+        manifest.requires.is_empty(),
+        "an omitted requires field deserializes to empty"
+    );
+    assert!(
+        manifest.optional.is_empty(),
+        "an omitted optional field deserializes to empty"
+    );
+}
+
+// ---------------------------------------------------------------------
 // Invocation -- `tool/1`
 // ---------------------------------------------------------------------
 
