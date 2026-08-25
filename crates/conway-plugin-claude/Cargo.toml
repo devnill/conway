@@ -23,11 +23,36 @@ description = "Reads a Claude Code plugin directory already on disk (board item 
 # becomes a REAL, working `conway::plugin::Plugin` through the identical
 # path an operator-authored `[plugins].mcp[]` entry already uses -- no
 # second MCP client implementation. This crate does NOT depend on `conway`
-# directly: it never constructs a `Plugin`/`Tool` itself, only the spec type
-# a caller hands to one.
+# (the facade) directly: it never constructs a `Plugin` itself, only the
+# spec/port types a caller hands to one -- see `conway-core` immediately
+# below for the one place that stopped being true.
 conway-plugin-mcp = { path = "../conway-plugin-mcp" }
+# Board item `01M0X1G29EZSFEWB1YAG40SE69`: `commands/*.md` translation
+# produces real `conway_core::ports::Command` implementations
+# (`commands::ClaudeCommand`) returning `CommandOutcome::SubmitPrompt` --
+# this crate's lib-level doc used to say "does not depend on conway-core at
+# all"; that statement was true only for the earlier hooks/MCP-only scope
+# and is corrected here. Still NOT `conway` (the facade): `Command`/
+# `CommandOutcome` live in `conway-core`, one layer below the facade, the
+# same foundational tier `conway-plugin-mcp` itself sits on -- no cycle risk
+# (`conway-core` depends on nothing in this workspace's upper layers).
+conway-core = { path = "../conway-core" }
+# `commands::ClaudeCommand`'s own `impl conway_core::ports::Command` --
+# every `conway_core::ports` trait is `#[async_trait]`, the identical reason
+# `hooks_dispatch.rs`'s own inline `PermissionGate` double already needed
+# this (previously dev-only; now a real production dependency for this
+# crate's own trait impl, not just its tests).
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# `commands/*.md` frontmatter is Claude Code's own YAML convention (the
+# SAME `---`-delimited block `conway`'s own `skills.rs`/`agents.rs` parse
+# for conway's OWN frontmatter) -- `serde_yaml` is already a workspace
+# dependency (`conway/Cargo.toml`'s own use for that identical shape);
+# `commands.rs` reads it PERMISSIVELY (this crate's own top doc, question 2:
+# `serde_yaml::Value`/a flattened catch-all map, never `deny_unknown_fields`
+# -- an unrecognized Claude Code key is named, not a hard parse failure).
+serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
@@ -40,18 +65,6 @@ thiserror = { workspace = true }
 # `conway::test_support::test_builder` and friends in reach, the same
 # feature `conway`'s own test suite dev-depends on itself for.
 conway = { path = "../conway", features = ["test-support"] }
-# `hooks_dispatch.rs`'s own tests build `conway_core::agent`/`content`/
-# `ids`/`log`/`ports` values directly (a scripted `Backend` response, a
-# `PermissionGate` double, a `LogRecord` read back) -- the identical
-# direct dependency `crates/conway/tests/hook_revoke_seam.rs` already has
-# for the same reason, made explicit here since this crate (unlike
-# `conway` itself) does not get `conway_core` for free.
-conway-core = { path = "../conway-core" }
 conway-testkit = { path = "../conway-testkit" }
-# `hooks_dispatch.rs`'s own `pre_tool_use` test implements `PermissionGate`
-# (an `async_trait` port, like every `conway_core::ports` trait) inline,
-# the identical pattern `crates/conway/tests/hook_revoke_seam.rs` already
-# uses for its own `RecordingAllowGate`.
-async-trait = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

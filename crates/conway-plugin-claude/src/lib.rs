@@ -54,21 +54,36 @@
 //! `skills/<name>/SKILL.md` and `agents/*.md` found is still NAMED, in
 //! [`ClaudeCompatReport::unsupported`] -- never silently skipped.
 //!
-//! `commands/*.md` is ALSO out of scope, for a different, narrower reason:
-//! `conway_core::ports::CommandOutcome::SubmitPrompt` now exists (a
-//! *later* item than the one this crate's own spec was filed against), but
-//! wiring a Claude Code command file to it was explicitly deferred to a
-//! separate follow-up belonging to neither item alone. So every
-//! `commands/*.md` file is still named in `unsupported`, with that
-//! corrected reason.
+//! **`commands/*.md` was ALSO out of scope, for a different, narrower
+//! reason -- corrected here, by board item `01M0X1G29EZSFEWB1YAG40SE69`.**
+//! `conway_core::ports::CommandOutcome::SubmitPrompt` existed (a *later*
+//! item than the one this crate's own spec was originally filed against)
+//! but wiring a Claude Code command file to it was explicitly deferred to a
+//! separate follow-up belonging to neither item alone. **That follow-up is
+//! this one:** [`commands::read_commands`] translates most `commands/*.md`
+//! files into real, invokable [`conway_core::ports::Command`]s
+//! ([`commands::ClaudeCommand`]) -- see that module's own doc for the full
+//! "best effort, two things survive the relaxation" appetite (unsupported
+//! frontmatter keys named, `allowed-tools` above all; a raw `$ARGUMENTS`
+//! placeholder refused, never submitted verbatim). A `commands/*.md` file
+//! is now named in `unsupported` only when it did NOT translate --
+//! [`UnsupportedKind::CommandFrontmatterKey`] separately names an ignored
+//! frontmatter key even on a file that otherwise translated successfully.
 //!
 //! ## What this crate does NOT do
 //!
 //! - No network access of any kind (C-04/acceptance 7) -- every read in
 //!   this crate is local disk I/O (`fsutil::read_bounded`).
-//! - No new `conway_core::ports::plugin` surface, and no new
-//!   `CommandOutcome` variant (acceptance 6) -- this crate does not depend
-//!   on `conway-core` at all.
+//! - **No new `conway_core::ports::plugin` surface, and no new
+//!   `CommandOutcome` variant.** This crate now DOES depend on
+//!   `conway-core` in production code -- [`commands::ClaudeCommand`]
+//!   implements `conway_core::ports::Command`, returning the ALREADY
+//!   EXISTING `CommandOutcome::SubmitPrompt` -- correcting an earlier
+//!   version of this bullet's "this crate does not depend on `conway-core`
+//!   at all" (true only under the earlier hooks/MCP-only scope). Still
+//!   never `conway`, the facade: `Command`/`CommandOutcome` live one layer
+//!   below it, the same foundational tier `conway-plugin-mcp` itself sits
+//!   on (no cycle risk).
 //! - **No `HooksConfig` mutation BY THIS CRATE, ever** -- this crate never
 //!   holds, reads, or writes a `conway::config::schema::HooksConfig` of any
 //!   kind (it does not depend on `conway` in production code at all, the
@@ -86,6 +101,7 @@
 //!   See [`hooks`]'s own module doc for the full "dispatches, but is not
 //!   the same claim as behaves identically to Claude Code" disclosure.
 
+pub mod commands;
 pub mod error;
 mod fsutil;
 pub mod hooks;
@@ -94,7 +110,9 @@ pub mod mcp;
 pub mod unsupported;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+pub use commands::{ClaudeCommand, CommandMapOutcome, CommandTranslation};
 pub use error::ClaudeCompatError;
 pub use hooks::{HookMapOutcome, HookRegistration, HookTranslation};
 pub use manifest::ClaudePluginManifest;
@@ -120,9 +138,15 @@ pub struct ClaudeCompatReport {
     /// [`hooks`]'s own module doc for why a `Mapped` outcome here is not a
     /// claim that the rule runs.
     pub hooks: Vec<HookTranslation>,
-    /// Everything found and not used: every `commands/*.md`, every
-    /// unimported skill/agent, every unmapped hook event, every malformed
-    /// `.mcp.json` entry -- named, with a reason, never silently dropped.
+    /// Every `commands/*.md` file, translated or refused -- see
+    /// [`commands`]'s own module doc. [`Self::command_registrations`] is
+    /// the ready-to-append real-`Command` form of the `Ready` subset.
+    pub commands: Vec<CommandTranslation>,
+    /// Everything found and not used: every unimported skill/agent, every
+    /// unmapped hook event, every malformed `.mcp.json` entry, every
+    /// `commands/*.md` file that did not translate, and every ignored
+    /// `commands/*.md` frontmatter key (even on a file that DID translate)
+    /// -- named, with a reason, never silently dropped.
     pub unsupported: Vec<UnsupportedItem>,
 }
 
@@ -175,6 +199,20 @@ impl ClaudeCompatReport {
             })
             .collect()
     }
+
+    /// Every `Ready` `commands/*.md` translation, as a real, invokable
+    /// `conway_core::ports::Command` -- ready to fold into a
+    /// `conway_core::ports::Plugin::commands()` implementation, mirroring
+    /// [`Self::hook_registrations`]'s own "the ready-to-append shape"
+    /// precedent for the command surface instead of the hook one. A
+    /// `Refused` translation contributes nothing here -- it already named
+    /// itself in [`Self::unsupported`].
+    pub fn command_registrations(&self) -> Vec<Arc<dyn conway_core::ports::Command>> {
+        self.commands
+            .iter()
+            .filter_map(CommandTranslation::command)
+            .collect()
+    }
 }
 
 /// Reads `dir` as a Claude Code plugin directory, translating what conway
@@ -205,7 +243,7 @@ pub fn discover(dir: &Path) -> Result<ClaudeCompatReport, ClaudeCompatError> {
 
     let (mcp_servers, mut unsupported) = mcp::read_mcp_servers(dir)?;
     let hooks = hooks::read_hooks(dir, &mut unsupported)?;
-    unsupported::scan_commands(dir, &mut unsupported);
+    let commands = commands::read_commands(dir, &mut unsupported);
     unsupported::scan_skills(dir, &mut unsupported);
     unsupported::scan_agents(dir, &mut unsupported);
 
@@ -215,6 +253,7 @@ pub fn discover(dir: &Path) -> Result<ClaudeCompatReport, ClaudeCompatError> {
         manifest,
         mcp_servers,
         hooks,
+        commands,
         unsupported,
     })
 }
@@ -250,6 +289,8 @@ mod tests {
         let report = discover(dir.path()).unwrap();
         assert!(report.mcp_servers.is_empty());
         assert!(report.hooks.is_empty());
+        assert!(report.commands.is_empty());
+        assert!(report.command_registrations().is_empty());
         assert!(report.unsupported.is_empty());
         // No manifest -- identity falls back to the directory's own name.
         assert!(report.manifest.is_none());
@@ -289,6 +330,9 @@ mod tests {
         .unwrap();
 
         std::fs::create_dir_all(root.join("commands")).unwrap();
+        // Empty body -- refuses to translate (still named, in
+        // `unsupported`, exactly as the pre-wiring version of this test
+        // already asserted).
         std::fs::write(root.join("commands").join("review.md"), "").unwrap();
 
         std::fs::create_dir_all(root.join("skills").join("triage")).unwrap();
@@ -304,6 +348,11 @@ mod tests {
         assert_eq!(report.hooks.len(), 2);
         assert_eq!(report.mapped_hook_count(), 1);
         assert_eq!(report.unmapped_hook_count(), 1);
+        assert_eq!(report.commands.len(), 1);
+        assert!(
+            report.command_registrations().is_empty(),
+            "an empty command body must refuse to translate, not register a no-op command"
+        );
 
         let unsupported_names: Vec<_> =
             report.unsupported.iter().map(|u| u.name.as_str()).collect();
@@ -365,6 +414,61 @@ mod tests {
                 "claude_compat:acme-tools:PreToolUse:1",
             ],
             "each rule's own id must be unique and stable-ordered: {ids:?}"
+        );
+    }
+
+    /// `command_registrations` produces exactly one real `Command` per
+    /// `Ready` translation, skips a `Refused` sibling entirely, and every
+    /// produced `Command`'s own `spec().name` is bare (see
+    /// `commands`'s own module doc, "Namespacing").
+    #[tokio::test]
+    async fn command_registrations_are_the_ready_subset_with_bare_names() {
+        // `Command`'s own trait methods (`spec`/`invoke`) are only callable
+        // on the `Arc<dyn Command>` this test drives once the trait itself
+        // is in scope -- `super::*` does not bring it in (lib.rs never
+        // imports `Command` by name, only fully-qualifies it once in
+        // `command_registrations`'s own signature).
+        use conway_core::ports::Command as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            root.join(".claude-plugin").join("plugin.json"),
+            r#"{"name":"acme-tools"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("commands")).unwrap();
+        std::fs::write(
+            root.join("commands").join("greet.md"),
+            "---\ndescription: Greets the operator\n---\n\nSay a friendly hello.\n",
+        )
+        .unwrap();
+        // Refused (empty body) -- must contribute nothing to
+        // `command_registrations`.
+        std::fs::write(root.join("commands").join("blank.md"), "").unwrap();
+
+        let report = discover(root).unwrap();
+        assert_eq!(report.commands.len(), 2);
+        let registrations = report.command_registrations();
+        assert_eq!(registrations.len(), 1);
+
+        let spec = registrations[0].spec();
+        assert_eq!(spec.name, "greet");
+        assert_eq!(spec.summary, "Greets the operator");
+
+        let ctx = conway_core::ports::CommandCtx {
+            focused_agent: conway_core::ids::AgentId::new(),
+            root_agent: conway_core::ids::AgentId::new(),
+            session_id: conway_core::ids::SessionId::new(),
+            args: String::new(),
+        };
+        let outcome = registrations[0].invoke(ctx).await;
+        assert_eq!(
+            outcome,
+            conway_core::ports::CommandOutcome::SubmitPrompt {
+                text: "Say a friendly hello.".to_string()
+            }
         );
     }
 }

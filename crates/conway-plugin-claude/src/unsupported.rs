@@ -11,11 +11,25 @@ use std::path::Path;
 /// can group or count by kind without parsing prose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsupportedKind {
-    /// A `commands/*.md` file -- out of scope for this item; see
-    /// `UnsupportedItem::command`'s own doc for the corrected reason
-    /// (spec update 2: `CommandOutcome::SubmitPrompt` now exists, but
-    /// wiring Claude Code commands to it is a separate, deferred item).
+    /// A `commands/*.md` file that did NOT become a real, invokable
+    /// `conway_core::ports::Command` -- board item `01M0X1G29EZSFEWB1YAG40SE69`
+    /// wires most `commands/*.md` files up (see `crate::commands`'s own
+    /// module doc); this kind now names ONLY the ones that failed to
+    /// translate: an unreadable file, unterminated/malformed frontmatter,
+    /// an empty body, a raw `$ARGUMENTS` placeholder this crate refuses to
+    /// submit verbatim, or a file-stem-derived bare name that could never
+    /// be typed. See `crate::commands::CommandMapOutcome::Refused`'s own
+    /// doc for the full, closed list of reasons.
     Command,
+    /// A frontmatter key on a `commands/*.md` file this crate does not
+    /// honor -- named EVEN ON a file that otherwise translates
+    /// successfully (unlike [`Self::Command`], this is not "this file
+    /// failed", it is "this file worked, but this one declared key did
+    /// nothing"). `description` is the only key `crate::commands` reads;
+    /// every other key present is named this way, `allowed-tools` above
+    /// all (a PERMISSION surprise, not a fidelity gap -- the operator
+    /// ruling `crate::commands`'s own module doc quotes).
+    CommandFrontmatterKey,
     /// A `skills/<name>/SKILL.md` directory -- out of scope (question 3:
     /// skills are single-rooted in conway today).
     Skill,
@@ -45,16 +59,35 @@ pub struct UnsupportedItem {
 }
 
 impl UnsupportedItem {
-    pub(crate) fn command(relative_path: impl Into<String>) -> Self {
+    /// `reason` is supplied by the caller now (board item
+    /// `01M0X1G29EZSFEWB1YAG40SE69`): unlike the earlier "every
+    /// `commands/*.md` file is out of scope, unconditionally" posture this
+    /// constructor used to encode with a single hard-coded reason, a
+    /// `commands/*.md` file's own fate now varies file by file -- see
+    /// `crate::commands::CommandMapOutcome::Refused`'s own doc for the
+    /// closed set of reasons a caller passes here.
+    pub(crate) fn command(relative_path: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
             kind: UnsupportedKind::Command,
             name: relative_path.into(),
-            reason: "commands/*.md submits a prompt, which conway can now DO \
-                     (CommandOutcome::SubmitPrompt / SessionHandle::prompt_command exist) -- \
-                     wiring a Claude Code command file to that capability is a separate, \
-                     deferred follow-up, not something this item's absence of the capability \
-                     ever blocked. Out of scope here regardless."
-                .to_string(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Names one frontmatter key, on one `commands/*.md` file, that
+    /// `crate::commands` does not honor -- `name` is
+    /// `"<relative_path>#<key>"` so an operator reading the flat
+    /// `unsupported` list can tell exactly which file's which key this is
+    /// about, distinct from a whole-file [`Self::command`] finding.
+    pub(crate) fn command_frontmatter_key(
+        relative_path: &str,
+        key: &str,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: UnsupportedKind::CommandFrontmatterKey,
+            name: format!("{relative_path}#{key}"),
+            reason: reason.into(),
         }
     }
 
@@ -96,13 +129,15 @@ impl UnsupportedItem {
     }
 }
 
-/// Appends one [`UnsupportedItem::command`] per `commands/*.md` file found
-/// directly under `dir/commands/` (no recursion -- Claude Code's own
-/// convention is a flat directory of command files).
-pub(crate) fn scan_commands(dir: &Path, out: &mut Vec<UnsupportedItem>) {
-    scan_flat_markdown(dir, "commands", out, UnsupportedItem::command);
-}
-
+/// `commands/*.md` no longer scans through this generic helper -- board
+/// item `01M0X1G29EZSFEWB1YAG40SE69` moved it to `crate::commands::
+/// read_commands`, which reads each file's own content (frontmatter, body)
+/// rather than merely naming the file, and needs a per-file REASON this
+/// helper's single-arg `build: impl Fn(String) -> UnsupportedItem` shape
+/// cannot carry. `scan_flat_markdown` remains exactly as it was for
+/// `agents/*.md`, which is still purely name-only (question 3: out of
+/// scope, unconditionally, with one fixed reason).
+///
 /// Appends one [`UnsupportedItem::agent`] per `agents/*.md` file.
 pub(crate) fn scan_agents(dir: &Path, out: &mut Vec<UnsupportedItem>) {
     scan_flat_markdown(dir, "agents", out, UnsupportedItem::agent);
@@ -159,20 +194,31 @@ pub(crate) fn scan_skills(dir: &Path, out: &mut Vec<UnsupportedItem>) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn scan_commands_names_every_command_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(dir.path().join("commands")).unwrap();
-        std::fs::write(dir.path().join("commands").join("review.md"), "").unwrap();
-        std::fs::write(dir.path().join("commands").join("deploy.md"), "").unwrap();
-        // Not a command file -- must not appear.
-        std::fs::write(dir.path().join("commands").join("README.txt"), "").unwrap();
+    // `commands/*.md` scanning itself is covered by `crate::commands`'s own
+    // test suite now (`read_commands` -- it reads each file's content, not
+    // merely its name, so it no longer fits this module's generic
+    // name-only `scan_flat_markdown` helper). `UnsupportedItem::command`/
+    // `UnsupportedItem::command_frontmatter_key`'s own shape is still
+    // exercised directly, here, since both constructors live in this file.
 
-        let mut out = Vec::new();
-        scan_commands(dir.path(), &mut out);
-        let names: Vec<_> = out.iter().map(|i| i.name.clone()).collect();
-        assert_eq!(names, vec!["commands/deploy.md", "commands/review.md"]);
-        assert!(out.iter().all(|i| i.kind == UnsupportedKind::Command));
+    #[test]
+    fn command_names_the_relative_path_with_the_supplied_reason() {
+        let item = UnsupportedItem::command("commands/broken.md", "empty body");
+        assert_eq!(item.kind, UnsupportedKind::Command);
+        assert_eq!(item.name, "commands/broken.md");
+        assert_eq!(item.reason, "empty body");
+    }
+
+    #[test]
+    fn command_frontmatter_key_names_the_file_and_key_together() {
+        let item = UnsupportedItem::command_frontmatter_key(
+            "commands/config.md",
+            "allowed-tools",
+            "ignored",
+        );
+        assert_eq!(item.kind, UnsupportedKind::CommandFrontmatterKey);
+        assert_eq!(item.name, "commands/config.md#allowed-tools");
+        assert_eq!(item.reason, "ignored");
     }
 
     #[test]
@@ -214,7 +260,6 @@ mod tests {
     fn an_absent_subdirectory_reports_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut out = Vec::new();
-        scan_commands(dir.path(), &mut out);
         scan_skills(dir.path(), &mut out);
         scan_agents(dir.path(), &mut out);
         assert!(out.is_empty());
