@@ -129,6 +129,20 @@ blesses a survey as an acceptable first deliverable; even the survey does not
 exist. Three surfaces are claimed; two and a half exist for Rust speakers, two
 for everyone else.
 
+**CORRECTED 2026-08-25.** The claim that no discussion of those three tools
+existed, and the claim that the survey did not exist, are both false as
+written. They are kept verbatim above as the record of what this run asserted,
+because that record is the evidence for the process amendment they produced
+(`REVIEW-PROMPT.md` §5, 2026-08-25). `docs/vision/BINDINGS.md` — a 397-line
+survey of Diplomat, UniFFI and cbindgen against conway's async streaming API,
+ending in a recommendation — was added by commit `084736f` on 2026-08-14, ten
+days before this review and present at its own base commit. It was linked from
+no page in the tree, which is why a search that follows the documentation graph
+did not reach it. The survey has since been re-verified against the current API
+and restated at [`DESIGN-bindings.md`](DESIGN-bindings.md); `BINDINGS.md` is now
+a pointer at it. The rest of the paragraph stands: there is still no binding
+crate and no `extern "C"` anywhere in the tree.
+
 One port also has no swap point at all: the core unconditionally provides the
 subagent host — the thing that forks and spawns child agents — and there is no
 builder method to supply your own
