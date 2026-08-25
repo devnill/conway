@@ -14,7 +14,7 @@
 //! links.
 //!
 //! **This bundle is a worked example, not a commitment to any of its
-//! members individually.** Today it contains nine plugin entries --
+//! members individually.** Today it contains ten plugin entries --
 //! `conway-plugin-skeleton`, a skeleton proving nothing beyond the install
 //! mechanism (see that crate's own module doc); `conway-plugin-history`,
 //! `/conway.history.rewind`/`/conway.history.mask`/`/conway.history.checkout`
@@ -24,7 +24,10 @@
 //! skills`, progressive skill disclosure; `conway-plugin-memory`, a mutable
 //! `MemoryStore`-backed context hook; `conway-plugin-path`, the
 //! `compose_context_path` tool; `conway-plugin-discover`, the
-//! `search_sessions` tool that feeds it; and `conway-plugin-trim`, a
+//! `search_sessions` tool that feeds it; `conway-plugin-idiom`, which
+//! prepends a short conway-idioms instruction fragment to a session (board
+//! item `01M0VR3BKW5N3V3WS28H7FV8ZK`) -- the one entry in this list
+//! contributing no tool at all; `conway-plugin-trim`, a
 //! `Curator` that omits tool call/result round-trips older than a
 //! configurable turn window (board item `01M0TV447NAJ1R06S455DZPP54` --
 //! this crate did not depend on it at all before that item, so naming
@@ -233,6 +236,24 @@ fn bundle(
         // dispatched tool's `ToolCtx::session_discovery` is already
         // populated by the runtime itself.
         Arc::new(conway_plugin_discover::DiscoverPlugin),
+        // `conway.idiom` -- a plugin that prepends a short conway-idioms
+        // instruction fragment to a session (board item
+        // `01M0VR3BKW5N3V3WS28H7FV8ZK`): fork vs. spawn, how an agent ends,
+        // configuration-dependent tools, context scarcity, permissions,
+        // budgets, steering. Contributes no tool -- unlike `conway.path`/
+        // `conway.discover` immediately above, this candidate needs no
+        // constructor argument and no host capability at all; the fragment
+        // is `include_str!`-loaded at compile time
+        // (`conway-plugin-idiom`'s own `fragments/idiom.md`). Opt-in like
+        // every other member of this bundle: naming `"conway.idiom"` in
+        // `[plugins].install` is what makes the interactive TUI's
+        // otherwise-empty `[0] SystemPrompt` step carry ANY harness
+        // orientation at all (`App::session_spec` sets no `agent_def`/
+        // `system_prompt_override` -- see `conway-plugin-idiom`'s own
+        // module doc for the re-verified premise). Reaches root agents
+        // only -- see that crate's own doc and `PluginDescription::
+        // you_lose` for the disclosed subagent gap.
+        Arc::new(conway_plugin_idiom::IdiomPlugin),
         // `conway.trim` -- a `Curator` that omits tool call/result
         // round-trips older than a configurable turn window (board item
         // `01M0TV447NAJ1R06S455DZPP54`; `conway-plugin-trim`'s own module
@@ -724,6 +745,7 @@ mod tests {
             conway_plugin_memory::PLUGIN_ID,
             conway_plugin_path::PLUGIN_ID,
             conway_plugin_discover::PLUGIN_ID,
+            conway_plugin_idiom::PLUGIN_ID,
             conway_plugin_trim::PLUGIN_ID,
             conway_plugin_names::PLUGIN_ID,
         ] {
@@ -751,6 +773,26 @@ mod tests {
             "the linked bundle must contain the trim plugin under its published id, otherwise \
              `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
             conway_plugin_trim::PLUGIN_ID
+        );
+    }
+
+    /// Same wiring-only check, for `conway_plugin_idiom`: without its
+    /// published id present in `bundle`, `[plugins].install =
+    /// ["conway.idiom"]` resolves to an unknown-id error -- the exact
+    /// defect board item `01M0TV447NAJ1R06S455DZPP54` closed for
+    /// `conway.trim`.
+    #[test]
+    fn bundle_carries_the_idiom_plugin_under_its_published_id() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let found = bundle(&cwd, memory_store, test_agent_names())
+            .iter()
+            .any(|p| p.manifest().id == conway_plugin_idiom::PLUGIN_ID);
+        assert!(
+            found,
+            "the linked bundle must contain the idiom plugin under its published id, \
+             otherwise `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
+            conway_plugin_idiom::PLUGIN_ID
         );
     }
 

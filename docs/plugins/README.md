@@ -23,6 +23,7 @@ a summary pointing somewhere else.
 | [`memory.md`](memory.md) — `conway.memory` | What does the model-writable memory store do, where does it live on disk, and what happens if that directory can't be opened? | You want the model to remember things across turns and across separate `conway` invocations, or you're deciding whether its fail-closed startup behavior blocks you. |
 | [`path.md`](path.md) — `conway.path` | What does the `compose_context_path` tool let a model do to a session's future context, what does it report afterward, and how does it avoid silently undoing an earlier exclusion? | You want an operator's stated intent ("forget that dead end", "bring in what we found in that other session") to actually change what a later turn sees, or you're evaluating what this new capability can and cannot read/write. |
 | [`discover.md`](discover.md) — `conway.discover` | What does the `search_sessions` tool let a model find that it did not already hold a reference to, what does a search cost, and how wide can it reach? | You want an operator's stated intent ("what did we work out yesterday") to name a session the model never started or spawned, or you're evaluating what this reaches and what it costs before it runs. |
+| [`idiom.md`](idiom.md) — `conway.idiom` | What does the prepended conway-idioms instruction fragment actually say, where does it land relative to an agent def's own system prompt, and why does a subagent never see it? | You want a bare interactive session to carry any harness orientation at all, or you're evaluating what this fragment assumes about which tools are announced. |
 | [`skills.md`](skills.md) — `conway.skills` | What does progressive skill disclosure narrow, and what does `read_skill` cost? | You have full-body skills in context and want to try narrowing them to a one-line index. |
 | [`names.md`](names.md) — `conway.names` | What does naming an agent actually change, and how does a name interact with the id and short-id it sits alongside? | You are steering more than a couple of agents by id and want a handle you remember instead. |
 | [`mcp.md`](mcp.md) — the MCP client | How do I bring an existing MCP server's tools into conway, and what is conway's own MCP client (not server) posture? | You have an MCP server already and want its tools available to the model, or you're evaluating what naming one in `[plugins].mcp` actually trusts. |
@@ -59,7 +60,7 @@ full design describes (a persistent connection, `permission.policy/1`,
 `context.hook/1`, `observe/1`, a `plugin` trust subject) is not, and that
 page's own "What's left" section names each gap.
 
-## Nine shipped first-party plugins
+## Ten shipped first-party plugins
 
 **The membership rule for this section:** every id
 [`first_party_plugins::bundle()`](../../crates/conway-cli/src/first_party_plugins.rs)
@@ -93,7 +94,7 @@ example, not a commitment to any of its members individually" — the list
 below decides which plugins ship, not what an operator may tune about any
 one of them from outside code.
 
-Nine capabilities beyond the mechanism itself now ship, each installable
+Ten capabilities beyond the mechanism itself now ship, each installable
 with a one-line `settings.json` edit and no rebuild:
 
 - [`memory.md`](memory.md) — `conway.memory`, a mutable store the model can
@@ -119,6 +120,13 @@ with a one-line `settings.json` edit and no rebuild:
   into a bounded content scan. Reports what it searched and what that cost.
   Install alongside `conway.path`: this tool finds, `compose_context_path`
   composes.
+- [`idiom.md`](idiom.md) — `conway.idiom`, prepends a short conway-idioms
+  instruction fragment (fork vs. spawn, how an agent ends,
+  configuration-dependent tools, context, permissions, budgets, steering)
+  near the front of a session's assembled context — what makes a bare
+  interactive session, which otherwise sends no system-prompt segment at
+  all, carry any harness orientation. Reaches root agents only; a forked or
+  spawned child never sees it.
 - [`names.md`](names.md) — `conway.names`, operator-chosen, renameable
   names for agents: `/conway.names.rename`/`.unname`/`.list` over a store
   shared with the TUI's own `/agents` panel, so a rename is visible
