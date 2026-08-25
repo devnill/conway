@@ -327,6 +327,37 @@ impl App {
             }
         })
         .collect();
+        // Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: the `/plugin` listing's
+        // OTHER two sources -- read straight from config, never spawned
+        // (`view/plugins.rs`'s own doc: "no candidate set to browse, so
+        // nothing more than identity is available without a live
+        // handshake this listing deliberately never performs"). Both
+        // config Vecs already carry every field this listing needs (`id`,
+        // `command`), so this is a field-by-field copy, not a lookup
+        // against anything already resolved -- the ACTUAL subprocess/MCP
+        // plugin objects `subprocess_plugins::install`/`mcp_plugins::
+        // install` attached to `conway` earlier in this same startup path
+        // are never consulted here.
+        state.subprocess_plugins = conway
+            .config()
+            .plugins
+            .subprocess
+            .iter()
+            .map(|entry| crate::tui::state::ConfiguredPluginEntry {
+                id: entry.id.clone(),
+                command: entry.command.clone(),
+            })
+            .collect();
+        state.mcp_plugins = conway
+            .config()
+            .plugins
+            .mcp
+            .iter()
+            .map(|entry| crate::tui::state::ConfiguredPluginEntry {
+                id: entry.id.clone(),
+                command: entry.command.clone(),
+            })
+            .collect();
         let (modal_ask_tx, modal_ask_rx) = mpsc::unbounded_channel();
         let (plugin_cmd_tx, plugin_cmd_rx) = mpsc::unbounded_channel();
         Ok(Self {

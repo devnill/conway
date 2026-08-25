@@ -186,6 +186,7 @@ shrinking the candidate list).
 | `/ask` | `/ask <text>` | Ask an ephemeral fork a side question — it doesn't affect the live session. While it's in flight, the `activity` status field shows `⠋ asking… Ns`, same as an ordinary turn; `Ctrl-C` abandons it (cancels the child and, if it's stuck waiting on a tool permission decision, discards that prompt too — nothing is left running). Once it answers, the reply opens in its own modal; choose to fork it into a real session, pull the Q&A into your transcript, or discard it. Pulling it in appends the question and answer to your transcript immediately, live — no restart or `/resume` needed — with a marker line naming the ask it came from, so a merged exchange is never mistaken for one you typed yourself. |
 | `/agents` | `/agents` | Toggle the below-chat agent-tree panel. |
 | `/settings` | `/settings` | Open the settings menu (display preferences, permission mode, and grant management). |
+| `/plugin` | `/plugin` | List every plugin conway can run today — compiled-in, subprocess, and MCP — each row naming where it came from and what it contributes. |
 | `/steer` | `/steer <agent> <text>` | Send a steering message to a running agent. |
 | `/cancel` | `/cancel <agent> [<reason>]` | Cancel a running agent immediately — stops it and its whole subtree, but never the session itself: cancelling any OTHER agent leaves the parent session working, and cancelling the session's own root agent is refused (use `/quit` to end the session instead). The cancelled agent's row in `/agents`/`/tree` flips to `Cancelled`. |
 | `/context` | `/context [<agent>]` | Show an agent's assembled context, including its preamble (see below). With no argument, shows the focused agent's context; see [the agent panel](#the-agent-panel-agents) for where to find another agent's id. |
@@ -352,47 +353,66 @@ permission mode; review or revoke individual grants under **allow** —
 flat and structured alike; read-only **deny** and **prompt** sections
 listing every rule — flat or structured — that any permissions file,
 trusted or not, has put in force, each with the file it came from; and
-**hooks**, a fourth, revocable review list), and **plugins** (below).
-`Up`/`Down` navigate, `Enter` toggles a boolean, expands/collapses a
-group, revokes a selected grant/hook row, or turns a plugin on/off,
-`Left`/`Right` step the numeric tool-preview setting, `Esc` closes. The
-two display toggles, the permission-mode cycle, and every revoke action
-apply to this session only; the tool-preview line count persists to
-`[tui.tool_preview_lines]` in `settings.json` when you step it; a plugin
-toggle persists too (below), the one section of this menu with a real
-writer behind it. Permission-mode and grant details are covered in
+**hooks**, a fourth, revocable review list), and **plugins** — a single
+shortcut row that opens `/plugin` (below); this menu itself no longer
+lists plugins directly. `Up`/`Down` navigate, `Enter` toggles a boolean,
+expands/collapses a group, revokes a selected grant/hook row, or opens
+`/plugin`, `Left`/`Right` step the numeric tool-preview setting, `Esc`
+closes. The two display toggles, the permission-mode cycle, and every
+revoke action apply to this session only; the tool-preview line count
+persists to `[tui.tool_preview_lines]` in `settings.json` when you step
+it. Permission-mode and grant details are covered in
 [`permissions.md`](permissions.md).
 
-### The plugins section: a switch you can see, and the info kept apart
+## The `/plugin` command
 
-The **plugins** group lists every first-party plugin `conway` links in —
-the header row states how many are currently on (`installed`) and how
-many are compiled in but off (`available`). Each plugin is exactly ONE
-row: a checkbox-style `[x]`/`[ ]` box (the same bracket marker a group's
-own `[-]`/`[+]` expand state already uses, not a symbol invented for this
-section alone), its id, version, and a one-line summary — nothing else in
-the list, so scanning it tells you at a glance which rows are switches
-(every one of them) without needing to press anything.
+`/plugin` lists **every kind of plugin conway can run today**, in one
+place, each row naming where it came from (its **origin**) and what it
+honestly contributes. This is the one place to check whether an
+operator-configured MCP server or subprocess plugin is actually running —
+before this command existed, `/settings`' own plugins section showed only
+compiled-in plugins, so a configured MCP server had no listing anywhere in
+the interface.
 
-Selecting a plugin's row opens a detail panel below the list, showing that
-plugin's own status line plus three rows in the operator's own framing:
+Three origins exist today, grouped under their own header row (row count
+included):
 
-- **you get** — what turning it ON adds (tools, commands, an instruction).
-- **you lose** — what is different with it OFF.
-- **costs** — its ongoing cost, if any, while it's on.
+- **compiled-in** — a first-party plugin built into this binary, selected
+  via `[plugins].install`. The only origin with a real ON/OFF switch:
+  each row is a checkbox-style `[x]`/`[ ]` box, its id, and a one-line
+  summary; pressing `Enter` flips it. Selecting the row opens a detail
+  panel below the list with that plugin's own status plus three rows in
+  the operator's own framing — **you get** (what turning it ON adds),
+  **you lose** (what's different with it OFF), and **costs** (its
+  ongoing cost, if any). A flip writes `~/.conway/settings.json`'s
+  `plugins.install` array directly (or `$CONWAY_CONFIG_DIR/settings.json`
+  when that's set) — the SAME writer, and the SAME restart-to-apply
+  contract, `/settings`' own plugins section used before this command
+  existed: the change applies on your NEXT restart, not immediately, and
+  the footer says so.
+- **subprocess** — a `[plugins].subprocess[]` entry: an operator-named
+  command speaking conway's own wire protocol. Every configured entry is
+  spawned unconditionally — there is no candidate set to toggle, so the
+  row is read-only and says so directly on the row (`(read-only: ...)`),
+  naming exactly what to edit (`settings.json`) instead. Its contribution
+  is stated as the closed set of wire points a subprocess plugin may
+  bridge: tools, permission policy, observation, and status.
+- **mcp** — a `[plugins].mcp[]` entry: an operator-named command speaking
+  MCP (JSON-RPC 2.0) as a client. Also installed unconditionally, also
+  read-only here for the same reason. Its contribution is stated plainly
+  as **tools only** — an MCP server can never contribute a command, a
+  permission policy, or anything else its transport doesn't carry.
 
-The panel follows the cursor — move to a different plugin's row and the
-panel switches to describe that one instead. Pressing `Enter` on the
-selected row flips it — this is the one `/settings` action with a real
-writer behind it: it edits `~/.conway/settings.json`'s `plugins.install`
-array directly (or `$CONWAY_CONFIG_DIR/settings.json` when that's set),
-adding or removing exactly the one id, leaving every other key, its
-ordering, and its formatting untouched, whether or not you've hand-edited
-the file. **The change applies on your next restart, not immediately** —
-plugins install once, at startup; nothing about the running session's
-tools or commands changes until you start `conway` again. The footer says
-so on every render. Project-scoped plugin selection isn't reachable from
-this menu — edit a project's own `.conway/settings.json` by hand for that.
+Neither the subprocess nor the MCP row is padded to look like a
+compiled-in one: nothing is spawned just to ask it for more, and each
+row's own contribution line names exactly what its own transport can
+carry, no more.
+
+This is a listing surface, not a config editor: `Up`/`Down` move,
+`Enter` toggles a compiled-in row (the only kind that responds to it),
+`Esc` closes. There is deliberately no way to add, remove, or reconfigure
+a subprocess/MCP entry from here — edit `settings.json` by hand for
+that.
 
 The **hooks** section lists every configured `hooks.rules[]` entry whose
 event can currently deny something — `pre_tool_use` (narrows a tool call)

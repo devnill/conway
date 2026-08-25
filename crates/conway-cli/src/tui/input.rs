@@ -185,6 +185,13 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
     if state.settings_open && matches!(state.mode, Mode::Normal) {
         return handle_settings_key(state, key);
     }
+    // Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: the `/plugin` listing joins
+    // `/settings`/`/help`'s own gating exactly, checked in the same
+    // relative position -- see `AppState::plugins_open`'s own doc for the
+    // three-way mutual exclusion.
+    if state.plugins_open && matches!(state.mode, Mode::Normal) {
+        return handle_plugins_key(state, key);
+    }
     if state.help_open && matches!(state.mode, Mode::Normal) {
         return handle_help_key(state, key);
     }
@@ -376,24 +383,16 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                 if let Some(rule) = state.hook_rules.get(idx) {
                     return Some(Action::RevokeHookRule(rule.event.clone(), rule.id.clone()));
                 }
-            } else if let Some(plugin_id) =
-                id.strip_prefix(super::view::settings::LEAF_TOGGLE_PLUGIN_PREFIX)
-            {
-                // resolved against
-                // `state.plugin_browser` in the SAME call that just built
-                // the tree this row came from -- the desired state is the
-                // OPPOSITE of whatever this entry's mirror currently says,
-                // never re-derived downstream from a possibly-stale read.
-                if let Some(entry) = state
-                    .plugin_browser
-                    .iter()
-                    .find(|entry| entry.id == plugin_id)
-                {
-                    return Some(Action::TogglePlugin(
-                        plugin_id.to_string(),
-                        !entry.installed,
-                    ));
-                }
+            } else if id == super::view::settings::LEAF_OPEN_PLUGINS {
+                // Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: the plugins
+                // section is a shortcut now, not a second listing (see
+                // `view/settings.rs`'s own doc, "Plugins: one home, not
+                // two") -- `Enter` here opens `/plugin`
+                // (`view/plugins.rs`) directly, exactly as typing `/plugin`
+                // would (`commands::execute`'s own `Plugins` arm). A pure
+                // `AppState` flip, so `None` (no `Action` to carry) is
+                // correct here, mirroring the group-toggle arm above.
+                state.open_plugins();
             }
             // `LEAF_TOOL_PREVIEW_LINES`: Enter has nothing to activate on
             // the numeric leaf -- it is adjusted with Left/Right instead
@@ -415,6 +414,65 @@ fn step_settings_numeric(state: &mut AppState, delta: i32) {
     if is_numeric_leaf {
         state.adjust_tool_preview_lines(delta);
     }
+}
+
+/// The `/plugin` listing's key handling (board item
+/// `01M0VR5RCCB8NDGG2JEQW8X7XR`): mirrors [`handle_settings_key`]'s shape
+/// exactly (informational, gated on `Mode::Normal` -- see `AppState::
+/// plugins_open`'s own doc), minus the numeric stepper this tree has no
+/// use for. `Up`/`Down` move the cursor, `Enter` toggles a compiled-in
+/// row (the ONLY toggleable kind -- `view/plugins.rs`'s own doc), `Esc`
+/// closes.
+fn handle_plugins_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    match key.code {
+        KeyCode::Esc => state.close_plugins(),
+        KeyCode::Up => plugins_move_selection(state, -1),
+        KeyCode::Down => plugins_move_selection(state, 1),
+        KeyCode::Enter => {
+            if let Some(action) = activate_plugins_selection(state) {
+                return action;
+            }
+        }
+        _ => {}
+    }
+    Action::None
+}
+
+/// `Up`/`Down` on the `/plugin` listing -- mirrors
+/// [`settings_move_selection`]'s own "rebuild fresh, move, write the
+/// clamped index back" shape.
+fn plugins_move_selection(state: &mut AppState, delta: isize) {
+    let mut menu = super::view::plugins::build_tree(state);
+    menu.move_selection(delta);
+    state.plugins_selected = menu.selected_index();
+}
+
+/// `Enter` on the `/plugin` listing: toggles a compiled-in row (the only
+/// [`super::view::menu::MenuRowKind::Leaf`] this tree ever produces -- every
+/// subprocess/mcp row is a `Static` row, `MenuState::selected_index`'s own
+/// doc, so the cursor can never even land on one). Resolved against
+/// `state.plugin_browser` in the SAME call that built this tree, mirroring
+/// `activate_settings_selection`'s own toggle-plugin arm before it moved
+/// here.
+fn activate_plugins_selection(state: &mut AppState) -> Option<Action> {
+    let menu = super::view::plugins::build_tree(state);
+    let id = menu.selected_leaf_id()?;
+    let plugin_id = id.strip_prefix(super::view::plugins::LEAF_TOGGLE_PLUGIN_PREFIX)?;
+    let entry = state
+        .plugin_browser
+        .iter()
+        .find(|entry| entry.id == plugin_id)?;
+    Some(Action::TogglePlugin(
+        plugin_id.to_string(),
+        !entry.installed,
+    ))
 }
 
 /// The `/ask` modal's key handling (B5): exactly three ways out, each
@@ -3424,20 +3482,17 @@ mod tests {
         );
     }
 
-    /// Board item `01M0KARX71A64NTSYTDBVANVPF`: `Enter` on an ON plugin's
-    /// own toggle row resolves to `Action::TogglePlugin(id, false)` -- the
-    /// OPPOSITE of its current mirrored state, carrying the id, never an
-    /// index.
+    /// Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: `Enter` on the plugins
+    /// section's own shortcut row opens `/plugin` -- a pure `AppState`
+    /// flip (`open_plugins`), so `activate_settings_selection` returns
+    /// `None` (nothing for the app loop to carry), and the settings menu
+    /// itself closes in favour of the plugins listing (the same
+    /// three-way mutual exclusion `AppState::open_plugins`'s own doc
+    /// establishes).
     #[test]
-    fn enter_on_an_installed_plugins_toggle_row_yields_toggle_plugin_false() {
+    fn enter_on_the_plugins_shortcut_row_opens_the_plugin_listing() {
         let mut state = AppState::new(AgentId::new());
         state.open_settings();
-        state.plugin_browser = vec![crate::tui::state::PluginBrowserEntry {
-            id: "conway.memory".to_string(),
-            version: "0.9.0".to_string(),
-            installed: true,
-            description: conway::plugin::PluginDescription::default(),
-        }];
 
         let rows = crate::tui::view::settings::build_tree(&state).rows();
         let idx = rows
@@ -3446,51 +3501,18 @@ mod tests {
                 matches!(
                     &r.kind,
                     crate::tui::view::menu::MenuRowKind::Leaf { id }
-                        if id.starts_with(crate::tui::view::settings::LEAF_TOGGLE_PLUGIN_PREFIX)
+                        if id == crate::tui::view::settings::LEAF_OPEN_PLUGINS
                 )
             })
-            .expect("the toggle row must render");
+            .expect("the shortcut row must render");
         state.settings_selected = idx;
 
         let action = activate_settings_selection(&mut state);
-        assert_eq!(
-            action,
-            Some(Action::TogglePlugin("conway.memory".to_string(), false)),
-            "an installed plugin's toggle must resolve to turning it OFF"
-        );
-    }
-
-    /// The OFF-plugin counterpart: resolves to `Action::TogglePlugin(id,
-    /// true)`.
-    #[test]
-    fn enter_on_an_uninstalled_plugins_toggle_row_yields_toggle_plugin_true() {
-        let mut state = AppState::new(AgentId::new());
-        state.open_settings();
-        state.plugin_browser = vec![crate::tui::state::PluginBrowserEntry {
-            id: "conway.trim".to_string(),
-            version: "0.9.0".to_string(),
-            installed: false,
-            description: conway::plugin::PluginDescription::default(),
-        }];
-
-        let rows = crate::tui::view::settings::build_tree(&state).rows();
-        let idx = rows
-            .iter()
-            .position(|r| {
-                matches!(
-                    &r.kind,
-                    crate::tui::view::menu::MenuRowKind::Leaf { id }
-                        if id.starts_with(crate::tui::view::settings::LEAF_TOGGLE_PLUGIN_PREFIX)
-                )
-            })
-            .expect("the toggle row must render");
-        state.settings_selected = idx;
-
-        let action = activate_settings_selection(&mut state);
-        assert_eq!(
-            action,
-            Some(Action::TogglePlugin("conway.trim".to_string(), true)),
-            "an uninstalled plugin's toggle must resolve to turning it ON"
+        assert_eq!(action, None, "a pure state flip carries no Action");
+        assert!(state.plugins_open, "/plugin must now be open");
+        assert!(
+            !state.settings_open,
+            "opening /plugin from within settings must close settings"
         );
     }
 

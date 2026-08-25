@@ -1,33 +1,32 @@
-//! The `/settings` menu (V4, extended by board item
-//! `01M0KARX71A64NTSYTDBVANVPF`'s plugins section): a mostly
-//! session-only display-preferences tree drawn on V1's shared
-//! [`super::modal`] + [`super::menu`] primitives -- the first real caller
-//! of [`super::menu`], which existed only as an exercised-by-its-own-tests
-//! primitive before this item (see that module's own doc).
+//! The `/settings` menu (V4; its plugins section, added by board item
+//! `01M0KARX71A64NTSYTDBVANVPF` and restructured by
+//! `01M0RW3CPE8SG3PZ2J8RTK9Y9N`, was REPLACED by a single shortcut row by
+//! board item `01M0VR5RCCB8NDGG2JEQW8X7XR` -- see "Plugins: one home, not
+//! two" below): a mostly session-only display-preferences tree drawn on
+//! V1's shared [`super::modal`] + [`super::menu`] primitives -- the first
+//! real caller of [`super::menu`], which existed only as an
+//! exercised-by-its-own-tests primitive before V4 (see that module's own
+//! doc).
 //!
-//! ## Session-only, not `settings.json` -- EXCEPT the plugins section
+//! ## Session-only, not `settings.json`
 //!
 //! Conway's config load (`conway::config::merge::load`) is a five-source
-//! layered read; when this doc was first written it had no writer anywhere
-//! outside test fixtures, so persisting a runtime toggle meant inventing
-//! one, and answering "which LAYER gets written" (default/user/project/
-//! env/CLI) had no good default answer. **That question is now answered**
-//! (decision `01M0K8BAXJ6THVJAPK0JZ17VV6`: the user layer,
-//! `~/.conway/settings.json`, unconditionally, `CONWAY_CONFIG_DIR`-
-//! overridable), and `conway::config::writer::set_plugin_installed` is the
-//! resulting writer -- see that module's own doc for why it is a targeted
-//! text splice rather than a parse-mutate-reserialize round trip. The
-//! **plugins** section (below) is therefore the one part of this menu with
-//! real persistence behind it; display/tool-output/permissions stay
-//! session-only exactly as before, changing `AppState` at runtime only,
-//! the way the two slash commands display toggling replaced
+//! layered read; every setting this menu shows directly (display/tool-
+//! output/permissions) stays session-only, changing `AppState` at runtime
+//! only, the way the two slash commands display toggling replaced
 //! (`/thinking`, `/timestamps` -- both REMOVED, not aliased, see
-//! `commands.rs`'s parser) already did. [`SESSION_NOTE`]/
-//! [`PLUGIN_TOGGLE_NOTE`] say so, on separate footer lines, on every
-//! render; the one leaf with a real backing config key outside plugins
+//! `commands.rs`'s parser) already did. [`SESSION_NOTE`] says so, on the
+//! footer, on every render; the one leaf with a real backing config key
 //! (`tool_preview_lines`) names it inline (see [`build_tree`]'s own doc) --
 //! the other two display toggles have no config-key equivalent to point to
 //! at all today, so they carry no such annotation.
+//!
+//! **The plugins shortcut row is the one exception, by proxy.** This menu
+//! itself writes nothing -- `/plugin` (`view/plugins.rs`) owns the real
+//! persistence story (`conway::config::writer::set_plugin_installed`, the
+//! user layer, `CONWAY_CONFIG_DIR`-overridable, decision
+//! `01M0K8BAXJ6THVJAPK0JZ17VV6`) -- so nothing here needs its own
+//! disclosure footer line for it beyond pointing at the surface that does.
 //!
 //! ## Content: a survey, not "every bool on `AppState`"
 //!
@@ -49,77 +48,36 @@
 //! plus allow/deny/prompt/hooks rule review as FOUR SUB-groups -- see
 //! [`build_tree`]'s own doc for why they are separate sections, why
 //! deny/prompt rows are read-only [`MenuNode::Static`] rows, and why hooks
-//! get a fourth section rather than
-//! folding into allow), and "plugins" (board item
-//! `01M0KARX71A64NTSYTDBVANVPF`, restructured by `01M0RW3CPE8SG3PZ2J8RTK9Y9N`
-//! -- see "Plugins: a switch you can see, not a row you have to guess"
-//! below) -- rather than one flat group or several separate ones: this is
-//! genuinely the shape a further settings category (say, session history)
-//! would extend later, not artificial nesting invented only to exercise the
-//! primitive.
+//! get a fourth section rather than folding into allow), and "plugins" (see
+//! "Plugins: one home, not two" below) -- rather than one flat group or
+//! several separate ones: this is genuinely the shape a further settings
+//! category (say, session history) would extend later, not artificial
+//! nesting invented only to exercise the primitive.
 //!
-//! ## Plugins: a switch you can see, not a row you have to guess
+//! ## Plugins: one home, not two
 //!
-//! Board item `01M0RW3CPE8SG3PZ2J8RTK9Y9N`, replacing the shape
-//! `01M0KARX71A64NTSYTDBVANVPF` originally shipped (a per-plugin subgroup
-//! whose children were the toggle leaf and three READ-ONLY "you get"/"you
-//! lose"/"costs" rows, sitting as flat siblings -- nothing in that list told
-//! a first-time reader which ONE of the four rows actually did anything).
-//! The operator's own complaint named two separate defects, and this fixes
-//! both, in two independent moves:
-//!
-//! - **The switch now LOOKS like a switch.** [`plugin_toggle_leaf`] prefixes
-//!   every plugin's toggle label with `[x]`/`[ ]` -- the SAME bracket
-//!   visual language [`draw`] (below, in `view/menu.rs`) already uses for a
-//!   group's own `[-]`/`[+]` expand marker, extended rather than replaced
-//!   with a second symbol invented for this section alone (the module doc
-//!   already records why a second toggle KEY was rejected for the same
-//!   "don't invent a second idiom" reason -- see [`PLUGIN_TOGGLE_NOTE`]'s
-//!   own doc; the same logic applies to a second visual language). The two
-//!   boolean leaves in "display" ([`LEAF_SHOW_REASONING`]/
-//!   [`LEAF_SHOW_TIMESTAMPS`], via [`bool_label`]) get the SAME prefix, for
-//!   the same reason: a checkbox invented only for plugins would BE the
-//!   second idiom this is meant to avoid. [`LEAF_PERMISSION_MODE`] (three
-//!   values, not two) and every revoke leaf (an action, not a persistent
-//!   on/off state) deliberately do NOT get one -- a checkbox on either would
-//!   misrepresent what the row means.
-//!
-//!   ONE ASYMMETRY BETWEEN THE TWO CALL SITES, stated rather than glossed:
-//!   [`bool_label`] keeps its trailing `-- on`/`-- off` word beside the box,
-//!   so its state is never carried by the glyph alone. The plugin leaf
-//!   DROPPED its status word, so its state is carried by the glyph plus the
-//!   `(turn off, Enter)` / `(turn on, Enter)` action hint, which names the
-//!   state by implying its opposite. Both remain readable without colour --
-//!   which is the property that matters -- but they are not the same
-//!   construction, and a future change that removes the action hint would
-//!   leave the plugin row's state on the glyph alone.
-//! - **The info moved out of the list, not deleted.** A plugin's own
-//!   subgroup and its three static rows are gone; [`build_tree`] now emits
-//!   exactly ONE row per plugin (the toggle leaf), so a person scanning the
-//!   plugins list sees only things that respond to `Enter`. The "you get" /
-//!   "you lose" / "costs" text -- the operator's own framing, kept literally
-//!   (unchanged from the original item) -- reappears in a DETAIL PANEL
-//!   [`draw`] renders below the list whenever the cursor sits on a plugin's
-//!   own toggle row ([`selected_plugin_detail`]/[`draw_plugin_detail`]),
-//!   picked from the three structural options the item's own spec named
-//!   (info collapsed behind a child row; a detail/side pane for the
-//!   selected item; or the rows kept but visibly demoted) because it is the
-//!   one the ORIGINAL item's own mockup already showed (a horizontal rule
-//!   then a per-plugin detail block under a flat list) -- reusing an
-//!   already-considered shape rather than inventing a fourth. Collapsing
-//!   the info behind a child row was rejected because it still leaves a
-//!   selectable-but-not-a-switch row in the SAME list the fix exists to
-//!   clear of exactly that; demoting the rows in place was rejected because
-//!   dim styling alone does not fix "nothing signals which line responds to
-//!   `Enter`" -- a demoted row is still a row, still competing with the
-//!   switch for the reader's attention as something that MIGHT be
-//!   selectable until they try it.
-//!
-//! This also retires the one collapse-state hazard the original item's own
-//! doc used to warn about here: with no more per-plugin [`MenuNode::Group`],
-//! there is no more per-plugin entry in `AppState::settings_collapsed_groups`
-//! to key correctly in the first place -- the concern is moot, not merely
-//! avoided.
+//! Board item `01M0VR5RCCB8NDGG2JEQW8X7XR` gave conway a `/plugin` command
+//! (`view/plugins.rs`) that lists EVERY kind of plugin conway can run
+//! (compiled-in, subprocess, MCP) -- a strict superset of what this
+//! section could ever show on its own (`AppState::plugin_browser` alone;
+//! an operator with a configured MCP server had no listing anywhere). Two
+//! surfaces reading the identical `plugins.install` array, with the
+//! identical restart-to-apply semantics and the identical silent-
+//! higher-layer-override hazard (`app/plugin_toggle.rs:66-95`), is real
+//! drift risk for no benefit -- so this section is no longer a second,
+//! independent plugin browser. It is now a single [`MenuNode::Leaf`] shortcut
+//! row (`LEAF_OPEN_PLUGINS`) naming the live counts across ALL THREE kinds
+//! and opening `/plugin` (`AppState::open_plugins`) on `Enter`. Everything
+//! this section used to own directly -- the per-plugin toggle leaf, the
+//! `[x]`/`[ ]` checkbox idiom, the "you get"/"you lose"/"costs" detail
+//! panel -- MOVED to `view/plugins.rs` unchanged (see that module's own
+//! doc for the full "one home, not two" argument and exactly what carried
+//! over verbatim vs. what widened to cover subprocess/MCP). This also
+//! retires the one collapse-state hazard the section used to warn about
+//! here: with no more per-plugin [`MenuNode::Group`] EVER having existed in
+//! this file (the toggle leaves were always flat siblings, not
+//! subgroups), there is no per-plugin entry in `AppState::
+//! settings_collapsed_groups` to key correctly in the first place.
 //!
 //! ## Interaction
 //!
@@ -151,9 +109,9 @@
 //! set_selected` (V4 addition to `menu.rs`) restores the cursor onto the
 //! freshly built tree.
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::menu::{self, MenuNode, MenuState};
@@ -197,15 +155,11 @@ pub(crate) const LEAF_REVOKE_STRUCTURED_ALLOW_PREFIX: &str = "revoke_structured_
 /// mirror the same way `input::activate_settings_selection` already resolves
 /// the other two.
 pub(crate) const LEAF_REVOKE_HOOK_PREFIX: &str = "revoke_hook:";
-/// Board item `01M0KARX71A64NTSYTDBVANVPF`: prefix for one plugin's own
-/// toggle leaf id, `"{LEAF_TOGGLE_PLUGIN_PREFIX}{plugin_id}"` -- keyed by
-/// the plugin's own manifest id (stable, never an index into a Vec that
-/// could reorder) since `state.plugin_browser` is sorted by id fresh on
-/// every `build_tree` call, unlike the index-addressed grant/hook prefixes
-/// above, which key by POSITION in a list whose order does not change
-/// between builds. `input::activate_settings_selection` strips this
-/// prefix and looks the plugin id up directly.
-pub(crate) const LEAF_TOGGLE_PLUGIN_PREFIX: &str = "toggle_plugin:";
+/// Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: the plugins section's own
+/// single shortcut leaf -- `Enter` opens `/plugin` (`AppState::
+/// open_plugins`, `view/plugins.rs`) rather than toggling anything
+/// in-place. See this module's own doc, "Plugins: one home, not two".
+pub(crate) const LEAF_OPEN_PLUGINS: &str = "open_plugins";
 
 /// The two top-level group labels (see this module's own doc, "Grouping").
 /// `pub(crate)` for the same reason the leaf ids are -- `input.rs` and this
@@ -233,41 +187,20 @@ const PROMPT_GROUP: &str = "prompt";
 /// which can also persist to a file. See [`build_tree`]'s own doc for why
 /// it appears here rather than being folded into an existing section.
 const HOOKS_GROUP: &str = "hooks";
-/// Board item `01M0KARX71A64NTSYTDBVANVPF`: the plugin browser's own
-/// top-level group. Deliberately just `"plugins"` -- never carries the
-/// live installed/available COUNTS the way the mockup's own header line
-/// does, because `group_node`/`AppState::settings_collapsed_groups` key a
-/// group's collapsed state by its exact label text; a label that changed
-/// text every time a toggle changed the count would silently forget
-/// whether the operator had this section collapsed (falls back to the
-/// expanded default) on the very next toggle. The counts render instead
-/// as the section's own first, non-selectable row -- see [`build_tree`]'s
-/// own doc.
+/// The plugins section's own top-level group label. Deliberately just
+/// `"plugins"` -- never carries the live counts the way the section's own
+/// header row does, because `group_node`/`AppState::
+/// settings_collapsed_groups` key a group's collapsed state by its exact
+/// label text; a label that changed text every time the counts changed
+/// would silently forget whether the operator had this section collapsed.
+/// The counts render instead as the section's own first, non-selectable
+/// row -- see [`build_tree`]'s own doc.
 const PLUGINS_GROUP: &str = "plugins";
 
 /// The footer's session-only disclosure for the display/tool-output/
-/// permissions sections: no writer exists for THEM (still true --
-/// `01M0K8BAXJ6THVJAPK0JZ17VV6` settled a writer only for `plugins.install`,
-/// not the fuller settings design this item deliberately stays a slice of).
-/// Shown on every render, regardless of which row is selected -- kept
-/// TRUE unconditionally by staying scoped to exactly what it always meant
-/// (display/tool-output/permissions), never widened to also describe
-/// plugin toggles, which is a DIFFERENT, now-real persistence story (see
-/// [`PLUGIN_TOGGLE_NOTE`]).
+/// permissions sections. Shown on every render, regardless of which row is
+/// selected.
 const SESSION_NOTE: &str = "display/permission changes apply to this session only";
-/// Board item `01M0KARX71A64NTSYTDBVANVPF`, acceptance criterion 4: the
-/// footer must state plainly that a plugin toggle applies on next start --
-/// paired on the SAME footer line as [`SESSION_NOTE`] so both persistence
-/// stories are visible together regardless of which row is selected
-/// (this whole menu's own "no row-conditional footer" precedent -- see
-/// `SESSION_NOTE`'s own doc history). Deliberately does NOT say "restart
-/// to take effect" is achieved via the mockup's literal "space toggles"
-/// wording -- this menu's OWN established key is `Enter`, consistent with
-/// every other toggleable row in it (booleans, permission mode, grant
-/// revocation); inventing a second toggle key for one section alone would
-/// be the inconsistency, not a virtue of matching an illustrative mockup
-/// literally.
-const PLUGIN_TOGGLE_NOTE: &str = "plugin toggles: Enter, written to disk, applied on next restart";
 
 /// Builds the settings tree from the CURRENT `state` (see this module's own
 /// doc, "Fresh tree every call") and restores the persisted cursor
@@ -466,140 +399,35 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
             ];
             rows
         }),
-        // Board item `01M0KARX71A64NTSYTDBVANVPF`, restructured by
-        // `01M0RW3CPE8SG3PZ2J8RTK9Y9N`: the plugin browser. First child is a
-        // non-selectable header row naming the live installed/available
-        // counts (see `PLUGINS_GROUP`'s own doc for why the counts live
-        // here rather than in the group's own label); every OTHER child is
-        // ONE compiled-in plugin's own toggle leaf -- no nested subgroup and
-        // no sibling info rows any more (see this module's own doc,
-        // "Plugins: a switch you can see, not a row you have to guess") --
-        // sorted by id for a deterministic, scan-stable order across
-        // renders regardless of `first_party_plugins::bundle`'s own
-        // construction-order.
+        // Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: the plugins section is
+        // now a single shortcut into `/plugin` (`view/plugins.rs`), not a
+        // second listing -- see this module's own doc, "Plugins: one home,
+        // not two". The header row names the live counts across ALL THREE
+        // kinds conway can run (compiled-in, subprocess, MCP), not only
+        // the compiled-in subset this section used to browse directly --
+        // an operator glancing at `/settings` alone should not be told
+        // "0 available" when a subprocess/MCP entry is in fact configured
+        // and running.
         group_node(PLUGINS_GROUP, state, {
             let installed_count = state.plugin_browser.iter().filter(|p| p.installed).count();
             let available_count = state.plugin_browser.len() - installed_count;
-            let mut rows = vec![MenuNode::static_row(format!(
-                "{installed_count} installed \u{b7} {available_count} available"
-            ))];
-            let mut entries: Vec<&crate::tui::state::PluginBrowserEntry> =
-                state.plugin_browser.iter().collect();
-            entries.sort_by(|a, b| a.id.cmp(&b.id));
-            for entry in entries {
-                rows.push(plugin_toggle_leaf(entry));
-            }
-            rows
+            vec![
+                MenuNode::static_row(format!(
+                    "{installed_count} compiled-in installed \u{b7} {available_count} \
+                     compiled-in available \u{b7} {} subprocess \u{b7} {} mcp",
+                    state.subprocess_plugins.len(),
+                    state.mcp_plugins.len(),
+                )),
+                MenuNode::leaf(
+                    "open the full plugin listing -- /plugin (Enter)".to_string(),
+                    LEAF_OPEN_PLUGINS,
+                ),
+            ]
         }),
     ];
     let mut menu = MenuState::new(roots);
     menu.set_selected(state.settings_selected);
     menu
-}
-
-/// One plugin's own row in the flattened list (board item
-/// `01M0KARX71A64NTSYTDBVANVPF`, restructured by
-/// `01M0RW3CPE8SG3PZ2J8RTK9Y9N`): a SINGLE selectable leaf, no nested
-/// subgroup and no sibling info rows -- the "you get"/"you lose"/"costs"
-/// text this used to sit beside now lives in the detail panel
-/// [`draw_plugin_detail`] renders for whichever plugin is currently
-/// selected (see this module's own doc, "Plugins: a switch you can see,
-/// not a row you have to guess"). The label leads with `[x]`/`[ ]` -- the
-/// same bracket marker [`view::menu::draw`] already uses for a group's own
-/// `[-]`/`[+]` expand state, reused here rather than a symbol invented for
-/// this section alone -- followed by the id, version, and one-line summary,
-/// and the same `(turn off/on, Enter)` action hint the original shape used.
-fn plugin_toggle_leaf(entry: &crate::tui::state::PluginBrowserEntry) -> MenuNode {
-    let box_glyph = if entry.installed { "x" } else { " " };
-    let action = if entry.installed {
-        "turn off"
-    } else {
-        "turn on"
-    };
-    let summary = non_empty_or(&entry.description.summary, "(no description)");
-    MenuNode::leaf(
-        format!(
-            "[{box_glyph}] {} \u{b7} v{} -- {summary} ({action}, Enter)",
-            entry.id, entry.version
-        ),
-        format!("{LEAF_TOGGLE_PLUGIN_PREFIX}{}", entry.id),
-    )
-}
-
-/// If the CURRENT selection is a plugin's own toggle leaf, the entry the
-/// detail panel should describe -- resolved by stripping
-/// [`LEAF_TOGGLE_PLUGIN_PREFIX`] off `tree`'s own [`MenuState::
-/// selected_leaf_id`] and looking it up in `state.plugin_browser` in the
-/// SAME call, mirroring `input::activate_settings_selection`'s own
-/// resolve-against-the-tree-that-built-this-id pattern (see that fn's own
-/// doc) -- the id can never point at a stale entry because both come from
-/// the same `state` the caller already has in hand. `None` on a group row,
-/// a non-plugin leaf, or an empty tree -- [`draw`] renders no detail panel
-/// at all in that case, exactly like browsing "display" or "permissions"
-/// today.
-fn selected_plugin_detail<'a>(
-    tree: &MenuState,
-    state: &'a AppState,
-) -> Option<&'a crate::tui::state::PluginBrowserEntry> {
-    let id = tree.selected_leaf_id()?;
-    let plugin_id = id.strip_prefix(LEAF_TOGGLE_PLUGIN_PREFIX)?;
-    state
-        .plugin_browser
-        .iter()
-        .find(|entry| entry.id == plugin_id)
-}
-
-/// The fixed row budget [`draw`] reserves below the list for
-/// [`draw_plugin_detail`]: one row for the top-border divider
-/// (`Borders::TOP`, the mockup's own horizontal rule, drawn via a real
-/// border rather than a manually repeated dash string so it always spans
-/// the modal's actual width), one for the `id \u{b7} vVERSION \u{b7}
-/// status` header line, and one each for "you get"/"you lose"/"costs" --
-/// mirroring [`FOOTER_ROWS`]'s own "fixed, reserved, may clip on a
-/// pathologically long value" posture rather than measuring a wrapped line
-/// count the way the list body does (a settings value is operator-authored
-/// short prose, not user content of unbounded length).
-const DETAIL_ROWS: u16 = 5;
-
-/// Renders the selected plugin's own "you get"/"you lose"/"costs" panel
-/// (the operator's own framing, kept literally, per this module's own doc)
-/// into `area` -- [`draw`]'s own reserved [`DETAIL_ROWS`]-tall region below
-/// the list, present only while the cursor sits on a plugin's toggle row.
-fn draw_plugin_detail(
-    frame: &mut Frame,
-    area: Rect,
-    entry: &crate::tui::state::PluginBrowserEntry,
-    theme: &Theme,
-) {
-    let block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(theme.dim);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let status = if entry.installed { "on" } else { "off" };
-    let you_get = non_empty_or(&entry.description.you_get, "(none given)");
-    let you_lose = non_empty_or(&entry.description.you_lose, "(none given)");
-    let costs = non_empty_or(&entry.description.costs, "none");
-    let lines = vec![
-        Line::from(Span::styled(
-            format!("{} \u{b7} v{} \u{b7} {status}", entry.id, entry.version),
-            theme.emphasized,
-        )),
-        Line::from(format!("you get   {you_get}")),
-        Line::from(format!("you lose  {you_lose}")),
-        Line::from(format!("costs     {costs}")),
-    ];
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
-    frame.render_widget(paragraph, inner);
-}
-
-fn non_empty_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
-    if value.is_empty() {
-        fallback
-    } else {
-        value
-    }
 }
 
 /// Builds one top-level group node via [`MenuNode::group`] (expanded by
@@ -619,11 +447,9 @@ fn group_node(label: &str, state: &AppState, children: Vec<MenuNode>) -> MenuNod
     node
 }
 
-/// `01M0RW3CPE8SG3PZ2J8RTK9Y9N`: leads with the same `[x]`/`[ ]` bracket
-/// marker [`plugin_toggle_leaf`] uses -- the SAME idiom applied to every
-/// boolean leaf in the menu, not one invented for the plugins section alone
-/// (this module's own doc, "Plugins: a switch you can see..."). The
-/// trailing `-- on`/`-- off` text is UNCHANGED from before this item, kept
+/// Leads with the SAME `[x]`/`[ ]` bracket marker `view/plugins.rs`'s own
+/// toggle rows use -- one idiom applied to every boolean leaf in this menu,
+/// not invented per-section. The trailing `-- on`/`-- off` text is kept
 /// alongside the box rather than replaced by it, so a value is never
 /// conveyed by the box glyph alone.
 fn bool_label(name: &str, value: bool) -> String {
@@ -634,16 +460,11 @@ fn bool_label(name: &str, value: bool) -> String {
     )
 }
 
-/// Rows the settings modal's footer ALWAYS reserves: the key hint, the
-/// session-only disclosure, and (board item `01M0KARX71A64NTSYTDBVANVPF`)
-/// the plugin-toggle persistence disclosure -- mirroring every other
-/// ported surface's "footer rows are fixed, never squeezed by body
-/// growth" invariant (`view/modal.rs`'s own doc). Two SEPARATE lines
-/// (`SESSION_NOTE`/`PLUGIN_TOGGLE_NOTE`), not one concatenated line: the
-/// combined text does not reliably fit one row at a realistic terminal
-/// width, and `Wrap { trim: true }`'s own wrap would otherwise silently
-/// clip the second half against a footer area sized for one row.
-const FOOTER_ROWS: u16 = 3;
+/// Rows the settings modal's footer ALWAYS reserves: the key hint and the
+/// session-only disclosure -- mirroring every other ported surface's
+/// "footer rows are fixed, never squeezed by body growth" invariant
+/// (`view/modal.rs`'s own doc).
+const FOOTER_ROWS: u16 = 2;
 
 /// The settings menu's own cap denominator -- `1`, the same generous cap
 /// `/help` uses (`view/help.rs::CAP_DENOMINATOR`'s own doc): this is an
@@ -664,27 +485,11 @@ pub fn draw(frame: &mut Frame, transcript_area: Rect, state: &AppState, theme: &
     let tree = build_tree(state);
     let content_rows = tree.rows().len().min(u16::MAX as usize) as u16;
 
-    // `01M0RW3CPE8SG3PZ2J8RTK9Y9N`: while the cursor sits on a plugin's own
-    // toggle row, reserve extra room below the list for its detail panel
-    // (see this module's own doc, "Plugins: a switch you can see..."). The
-    // reservation happens BEFORE `modal::draw_modal_frame` (folded into its
-    // own `footer_rows` parameter, alongside `FOOTER_ROWS`) so the modal's
-    // total height genuinely accounts for it -- the SAME "reserved before
-    // the body, never squeezed out" contract `FOOTER_ROWS` itself already
-    // has, extended here rather than the detail panel silently overlapping
-    // the body or getting clipped by a modal sized without it in mind.
-    let detail_entry = selected_plugin_detail(&tree, state);
-    let detail_rows = if detail_entry.is_some() {
-        DETAIL_ROWS
-    } else {
-        0
-    };
-
     let frame_areas = modal::draw_modal_frame(
         frame,
         transcript_area,
         content_rows,
-        FOOTER_ROWS + detail_rows,
+        FOOTER_ROWS,
         CAP_DENOMINATOR,
         " SETTINGS ",
         theme.help_border,
@@ -692,32 +497,12 @@ pub fn draw(frame: &mut Frame, transcript_area: Rect, state: &AppState, theme: &
 
     menu::draw(frame, frame_areas.body_area, &tree, theme);
 
-    // Splits the reserved tail into the detail panel (if any) and the
-    // always-present footer, in that order -- the footer is what you act on
-    // (this module's own `FOOTER_ROWS` doc), so it is the LAST thing
-    // squeezed if the reserved tail itself had to shrink on a tiny
-    // terminal, never the first.
-    let footer_area = if let Some(entry) = &detail_entry {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(0),
-                Constraint::Length(FOOTER_ROWS.min(frame_areas.footer_area.height)),
-            ])
-            .split(frame_areas.footer_area);
-        draw_plugin_detail(frame, rows[0], entry, theme);
-        rows[1]
-    } else {
-        frame_areas.footer_area
-    };
-
     let footer_lines = vec![
         Line::from("[Up/Down] move  [Enter] toggle/expand  [Left/Right] adjust  [Esc] close"),
         Line::from(Span::styled(SESSION_NOTE, theme.dim)),
-        Line::from(Span::styled(PLUGIN_TOGGLE_NOTE, theme.dim)),
     ];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
-    frame.render_widget(footer, footer_area);
+    frame.render_widget(footer, frame_areas.footer_area);
 }
 
 #[cfg(test)]
@@ -1373,393 +1158,77 @@ mod tests {
         );
     }
 
-    // ---- Plugin browser (board item 01M0KARX71A64NTSYTDBVANVPF) ----
+    // ---- Plugins section: a single shortcut into `/plugin` (board item
+    // `01M0VR5RCCB8NDGG2JEQW8X7XR`) ----
 
-    fn plugin_entry(
-        id: &str,
-        installed: bool,
-        summary: &str,
-        you_get: &str,
-        you_lose: &str,
-        costs: &str,
-    ) -> crate::tui::state::PluginBrowserEntry {
-        crate::tui::state::PluginBrowserEntry {
-            id: id.to_string(),
-            version: "0.9.0".to_string(),
-            installed,
-            description: conway::plugin::PluginDescription {
-                summary: summary.to_string(),
-                you_get: you_get.to_string(),
-                you_lose: you_lose.to_string(),
-                costs: costs.to_string(),
-            },
-        }
-    }
-
-    /// The header row states the live installed/available counts, and
-    /// each plugin's summary appears as part of its own toggle leaf.
+    /// The header row states counts across ALL THREE kinds -- not only the
+    /// compiled-in subset this section used to browse directly -- and the
+    /// only OTHER row is the shortcut leaf.
     #[test]
-    fn the_plugins_group_shows_counts_and_each_plugins_summary() {
+    fn the_plugins_group_shows_counts_across_every_kind_and_a_single_shortcut() {
         let mut state = AppState::new(AgentId::new());
         state.open_settings();
-        state.plugin_browser = vec![
-            plugin_entry(
-                "conway.memory",
-                true,
-                "notes that survive a restart",
-                "3 tools",
-                "nothing else",
-                "a small read every turn",
-            ),
-            plugin_entry(
-                "conway.trim",
-                false,
-                "drops old tool results to save room",
-                "smaller context",
-                "older tool results",
-                "none",
-            ),
-        ];
+        state.plugin_browser = vec![crate::tui::state::PluginBrowserEntry {
+            id: "conway.memory".to_string(),
+            version: "0.9.0".to_string(),
+            installed: true,
+            description: conway::plugin::PluginDescription::default(),
+        }];
+        state.subprocess_plugins = vec![crate::tui::state::ConfiguredPluginEntry {
+            id: "acme.review".to_string(),
+            command: vec!["acme-review".to_string()],
+        }];
+        state.mcp_plugins = vec![crate::tui::state::ConfiguredPluginEntry {
+            id: "acme.search".to_string(),
+            command: vec!["acme-search".to_string()],
+        }];
 
         let text = plain_rows(&state);
-        assert!(text.contains("plugins"), "{text}");
-        assert!(text.contains("1 installed"), "{text}");
-        assert!(text.contains("1 available"), "{text}");
-        assert!(text.contains("notes that survive a restart"), "{text}");
+        assert!(text.contains("1 compiled-in installed"), "{text}");
+        assert!(text.contains("0 compiled-in available"), "{text}");
+        assert!(text.contains("1 subprocess"), "{text}");
+        assert!(text.contains("1 mcp"), "{text}");
         assert!(
-            text.contains("drops old tool results to save room"),
+            text.contains("open the full plugin listing -- /plugin (Enter)"),
             "{text}"
         );
+        // Nothing per-plugin renders here any more -- neither the
+        // compiled-in id nor the subprocess/mcp ids appear as their own
+        // rows in THIS menu; that listing lives at `/plugin` now.
+        assert!(!text.contains("conway.memory"), "{text}");
+        assert!(!text.contains("acme.review"), "{text}");
+        assert!(!text.contains("acme.search"), "{text}");
     }
 
-    /// `01M0RW3CPE8SG3PZ2J8RTK9Y9N`, acceptance criterion 1: a plugin's own
-    /// "you get"/"you lose"/"costs" text no longer sits in the main list at
-    /// all -- it moved to the detail panel (covered below). A person
-    /// scanning the flattened row list sees only the header and one leaf
-    /// per plugin, nothing that could be mistaken for a second kind of
-    /// selectable-looking row.
+    /// The shortcut row is a selectable [`MenuNode::Leaf`], keyed by
+    /// [`LEAF_OPEN_PLUGINS`] -- `input::activate_settings_selection`
+    /// resolves it to opening `/plugin`.
     #[test]
-    fn the_plugins_list_no_longer_carries_you_get_you_lose_costs_as_rows() {
+    fn the_shortcut_row_is_a_selectable_leaf_keyed_by_leaf_open_plugins() {
         let mut state = AppState::new(AgentId::new());
         state.open_settings();
-        state.plugin_browser = vec![plugin_entry(
-            "conway.memory",
-            true,
-            "notes that survive a restart",
-            "3 tools \u{b7} /memory",
-            "nothing else -- recall falls back to context",
-            "a small read at the start of every turn",
-        )];
 
-        let text = plain_rows(&state);
-        assert!(
-            !text.contains("you get")
-                && !text.contains("you lose")
-                && !text.contains("costs")
-                && !text.contains("recall falls back to context"),
-            "the info text must not appear in the flattened row list any more \
-             -- it belongs in the detail panel, not the switch list: {text}"
-        );
-
-        // Exactly one row per plugin (the header aside): the toggle leaf,
-        // and nothing else -- no orphaned static children left behind.
         let rows = build_tree(&state).rows();
-        let plugin_rows: Vec<_> = rows
+        let shortcut = rows
             .iter()
-            .filter(|r| r.label.contains("conway.memory"))
-            .collect();
+            .find(|r| r.label.contains("open the full plugin listing"))
+            .expect("the shortcut row must render");
         assert_eq!(
-            plugin_rows.len(),
-            1,
-            "a plugin must contribute exactly one row to the list: {rows:?}"
-        );
-    }
-
-    /// `01M0RW3CPE8SG3PZ2J8RTK9Y9N`, acceptance criterion 2: the toggle
-    /// leaf's label leads with a visible `[x]`/`[ ]` box, not only the word
-    /// "on"/"off" -- the same bracket marker `view/menu.rs::draw` already
-    /// uses for a group's own `[-]`/`[+]` expand state.
-    #[test]
-    fn plugin_toggle_rows_show_a_checkbox_reflecting_installed_state() {
-        let mut state = AppState::new(AgentId::new());
-        state.open_settings();
-        state.plugin_browser = vec![
-            plugin_entry(
-                "conway.memory",
-                true,
-                "notes that survive a restart",
-                "3 tools",
-                "nothing else",
-                "a small read",
-            ),
-            plugin_entry(
-                "conway.trim",
-                false,
-                "drops old tool results",
-                "less context",
-                "older results",
-                "none",
-            ),
-        ];
-
-        let rows = build_tree(&state).rows();
-        let on_row = rows
-            .iter()
-            .find(|r| r.label.contains("conway.memory"))
-            .expect("the installed plugin's row must render");
-        assert!(
-            on_row.label.starts_with("[x] "),
-            "an installed plugin's row must open with a checked box: {}",
-            on_row.label
-        );
-        assert!(on_row.label.contains("turn off"), "{}", on_row.label);
-
-        let off_row = rows
-            .iter()
-            .find(|r| r.label.contains("conway.trim"))
-            .expect("the uninstalled plugin's row must render");
-        assert!(
-            off_row.label.starts_with("[ ] "),
-            "an uninstalled plugin's row must open with an UNchecked box: {}",
-            off_row.label
-        );
-        assert!(off_row.label.contains("turn on"), "{}", off_row.label);
-    }
-
-    /// The toggle leaf is the SELECTABLE row (never `Static`), keyed by
-    /// the plugin's own id via `LEAF_TOGGLE_PLUGIN_PREFIX` -- the row
-    /// `input::activate_settings_selection` resolves `Action::
-    /// TogglePlugin` against.
-    #[test]
-    fn the_toggle_row_is_selectable_and_keyed_by_the_plugin_id() {
-        let mut state = AppState::new(AgentId::new());
-        state.open_settings();
-        state.plugin_browser = vec![plugin_entry(
-            "conway.memory",
-            true,
-            "notes that survive a restart",
-            "3 tools",
-            "nothing else",
-            "a small read",
-        )];
-
-        let rows = build_tree(&state).rows();
-        let toggle_row = rows
-            .iter()
-            .find(|r| matches!(&r.kind, menu::MenuRowKind::Leaf { id } if id.starts_with(LEAF_TOGGLE_PLUGIN_PREFIX)))
-            .expect("the toggle row must render");
-        assert_eq!(
-            toggle_row.kind,
+            shortcut.kind,
             menu::MenuRowKind::Leaf {
-                id: format!("{LEAF_TOGGLE_PLUGIN_PREFIX}conway.memory")
+                id: LEAF_OPEN_PLUGINS.to_string()
             }
         );
-        assert!(
-            toggle_row.label.contains("turn off"),
-            "{}",
-            toggle_row.label
-        );
     }
 
-    /// An off plugin's own toggle row offers "turn on", not "turn off".
     #[test]
-    fn an_off_plugins_toggle_row_offers_turn_on() {
+    fn draw_never_panics_with_plugins_configured() {
         let mut state = AppState::new(AgentId::new());
         state.open_settings();
-        state.plugin_browser = vec![plugin_entry(
-            "conway.trim",
-            false,
-            "drops old tool results",
-            "less context",
-            "older results",
-            "none",
-        )];
-
-        let rows = build_tree(&state).rows();
-        let toggle_row = rows
-            .iter()
-            .find(|r| matches!(&r.kind, menu::MenuRowKind::Leaf { id } if id.starts_with(LEAF_TOGGLE_PLUGIN_PREFIX)))
-            .expect("the toggle row must render");
-        assert!(toggle_row.label.contains("turn on"), "{}", toggle_row.label);
-    }
-
-    /// Finds the flattened row INDEX of `plugin_id`'s own toggle leaf --
-    /// tests use this to point `state.settings_selected` directly at it
-    /// (mirroring `build_tree_restores_the_persisted_cursor`'s own "set the
-    /// raw index" precedent above) rather than driving `Up`/`Down` through
-    /// `input.rs`, which this module does not depend on.
-    fn plugin_toggle_row_index(state: &AppState, plugin_id: &str) -> usize {
-        build_tree(state)
-            .rows()
-            .iter()
-            .position(|r| {
-                matches!(&r.kind, menu::MenuRowKind::Leaf { id }
-                    if id == &format!("{LEAF_TOGGLE_PLUGIN_PREFIX}{plugin_id}"))
-            })
-            .unwrap_or_else(|| panic!("no toggle row for {plugin_id}"))
-    }
-
-    /// `01M0RW3CPE8SG3PZ2J8RTK9Y9N`, acceptance criterion 3: the "you get" /
-    /// "you lose" / "costs" text is still reachable -- moved into the
-    /// detail panel [`draw`] renders below the list while the cursor sits
-    /// on that plugin's own toggle row, the operator's own framing kept
-    /// literally (unchanged from the original item).
-    #[test]
-    fn the_detail_panel_shows_the_selected_plugins_own_info_literally() {
-        let mut state = AppState::new(AgentId::new());
-        state.open_settings();
-        state.plugin_browser = vec![plugin_entry(
-            "conway.memory",
-            true,
-            "notes that survive a restart",
-            "3 tools \u{b7} /memory",
-            "nothing else -- recall falls back to context",
-            "a small read at the start of every turn",
-        )];
-        state.settings_selected = plugin_toggle_row_index(&state, "conway.memory");
-
-        let text = render(&state, 120, 40);
-        assert!(text.contains("you get"), "{text}");
-        assert!(text.contains("3 tools"), "{text}");
-        assert!(text.contains("you lose"), "{text}");
-        assert!(
-            text.contains("nothing else -- recall falls back to context"),
-            "{text}"
-        );
-        assert!(text.contains("costs"), "{text}");
-        assert!(
-            text.contains("a small read at the start of every turn"),
-            "{text}"
-        );
-    }
-
-    /// The detail panel tracks the SELECTED plugin, not merely "some"
-    /// plugin -- selecting a different row shows different info, proving
-    /// the panel is a live lookup rather than the first entry rendered
-    /// unconditionally.
-    #[test]
-    fn the_detail_panel_changes_with_the_selected_plugin() {
-        let mut state = AppState::new(AgentId::new());
-        state.open_settings();
-        state.plugin_browser = vec![
-            plugin_entry(
-                "conway.memory",
-                true,
-                "notes that survive a restart",
-                "memory-only-you-get",
-                "memory-only-you-lose",
-                "memory-only-costs",
-            ),
-            plugin_entry(
-                "conway.trim",
-                false,
-                "drops old tool results",
-                "trim-only-you-get",
-                "trim-only-you-lose",
-                "trim-only-costs",
-            ),
-        ];
-
-        state.settings_selected = plugin_toggle_row_index(&state, "conway.memory");
-        let memory_text = render(&state, 120, 40);
-        assert!(memory_text.contains("memory-only-you-get"), "{memory_text}");
-        assert!(
-            !memory_text.contains("trim-only-you-get"),
-            "selecting one plugin must not show the OTHER plugin's info: {memory_text}"
-        );
-
-        state.settings_selected = plugin_toggle_row_index(&state, "conway.trim");
-        let trim_text = render(&state, 120, 40);
-        assert!(trim_text.contains("trim-only-you-get"), "{trim_text}");
-        assert!(
-            !trim_text.contains("memory-only-you-get"),
-            "selecting the other plugin must switch the panel, not append: {trim_text}"
-        );
-    }
-
-    /// No detail panel renders while browsing a NON-plugin section -- the
-    /// panel only appears once the cursor genuinely rests on a plugin's own
-    /// toggle row.
-    #[test]
-    fn no_detail_panel_renders_when_the_selection_is_not_a_plugin_row() {
-        let mut state = AppState::new(AgentId::new());
-        state.open_settings();
-        state.plugin_browser = vec![plugin_entry(
-            "conway.memory",
-            true,
-            "notes that survive a restart",
-            "a-distinctive-you-get-value",
-            "nothing else",
-            "a small read",
-        )];
-        // Cursor starts on the very first row ("display", a group) --
-        // nowhere near the plugins section.
-        assert_eq!(state.settings_selected, 0);
-
-        let text = render(&state, 120, 40);
-        assert!(
-            !text.contains("a-distinctive-you-get-value"),
-            "no plugin's info must leak into the panel area while a different \
-             section is selected: {text}"
-        );
-    }
-
-    /// A plugin with an empty description field renders an honest
-    /// fallback, never a blank line that looks like a rendering bug -- now
-    /// checked against the DETAIL PANEL, where these fields actually
-    /// render (the toggle leaf's own label only carries `summary`).
-    #[test]
-    fn an_empty_description_field_renders_an_honest_fallback_not_a_blank() {
-        let mut state = AppState::new(AgentId::new());
-        state.open_settings();
-        state.plugin_browser = vec![plugin_entry(
-            "conway.plugin_skeleton",
-            false,
-            "",
-            "",
-            "",
-            "",
-        )];
-        state.settings_selected = plugin_toggle_row_index(&state, "conway.plugin_skeleton");
-
-        let list_text = plain_rows(&state);
-        assert!(list_text.contains("(no description)"), "{list_text}");
-
-        let rendered = render(&state, 120, 40);
-        assert!(rendered.contains("(none given)"), "{rendered}");
-        assert!(rendered.contains("none"), "{rendered}");
-    }
-
-    /// The footer states plainly that a plugin toggle applies on next
-    /// restart -- acceptance criterion 5 (renumbered from the original
-    /// item's criterion 4).
-    #[test]
-    fn the_footer_states_plugin_toggles_apply_on_next_restart() {
-        let state = AppState::new(AgentId::new());
-        let text = render(&state, 120, 40);
-        assert!(text.contains("restart"), "{text}");
-        assert!(text.contains(SESSION_NOTE), "{text}");
-    }
-
-    /// A tiny terminal with a plugin selected (so the detail panel's own
-    /// row reservation is genuinely exercised) still never panics -- the
-    /// same property `draw_never_panics_on_a_tiny_terminal` already proves
-    /// for the base tree, re-checked here with the detail panel's own
-    /// `Layout::split` in the path.
-    #[test]
-    fn draw_with_a_selected_plugin_never_panics_on_a_tiny_terminal() {
-        let mut state = AppState::new(AgentId::new());
-        state.open_settings();
-        state.plugin_browser = vec![plugin_entry(
-            "conway.memory",
-            true,
-            "notes that survive a restart",
-            "3 tools",
-            "nothing else",
-            "a small read",
-        )];
-        state.settings_selected = plugin_toggle_row_index(&state, "conway.memory");
-
+        state.subprocess_plugins = vec![crate::tui::state::ConfiguredPluginEntry {
+            id: "acme.review".to_string(),
+            command: vec!["acme-review".to_string()],
+        }];
         for (w, h) in [(80u16, 1u16), (80, 2), (1, 24), (0, 0)] {
             let backend = TestBackend::new(w.max(1), h.max(1));
             let mut terminal = Terminal::new(backend).expect("terminal");

@@ -190,8 +190,29 @@ impl EditingPatternState {
     }
 }
 
+/// One `[plugins].subprocess[]` or `[plugins].mcp[]` entry, exactly as
+/// configured on disk (board item `01M0VR5RCCB8NDGG2JEQW8X7XR`,
+/// `view/plugins.rs`'s own `/plugin` listing). Both tiers share this same
+/// `(id, command)` shape because a listing can only ever show what is
+/// CONFIGURED for them -- unlike [`PluginBrowserEntry`], there is no
+/// candidate set to browse (`[plugins].subprocess`/`[plugins].mcp`: "every
+/// configured entry is spawned unconditionally") and no `PluginDescription`
+/// to read, so nothing more than identity is available without actually
+/// spawning the command, which this listing deliberately never does (see
+/// `view/plugins.rs`'s own doc for why: out of scope, and the descriptive
+/// text this crate CAN show honestly is the wire vocabulary each transport
+/// bridges, a compile-time constant, not something worth a live handshake
+/// to confirm).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfiguredPluginEntry {
+    pub id: String,
+    pub command: Vec<String>,
+}
+
 /// One row of the plugin browser (board item `01M0KARX71A64NTSYTDBVANVPF`,
-/// `view/settings.rs`'s own "plugins" section): one compiled-in first-party
+/// `view/plugins.rs`'s own `/plugin` listing, formerly `view/settings.rs`'s
+/// "plugins" section before board item `01M0VR5RCCB8NDGG2JEQW8X7XR` moved
+/// it): one compiled-in first-party
 /// plugin candidate (`crate::first_party_plugins::all_bundle_plugins` --
 /// EVERY candidate this binary links, whether or not `[plugins].install`
 /// currently names it), its manifest identity, whether it is currently
@@ -318,6 +339,28 @@ pub struct AppState {
     /// [`PluginBrowserEntry::installed`]'s own doc for why this is a
     /// display mirror, never the live installed set).
     pub plugin_browser: Vec<PluginBrowserEntry>,
+    /// Every configured `[plugins].subprocess[]` entry (board item
+    /// `01M0VR5RCCB8NDGG2JEQW8X7XR`) -- populated once at `App::new` from
+    /// `conway.config().plugins.subprocess`, never mutated afterward (no
+    /// candidate set, no toggle: `view/plugins.rs`'s own doc). Read by the
+    /// `/plugin` listing alongside [`Self::plugin_browser`] and
+    /// [`Self::mcp_plugins`].
+    pub subprocess_plugins: Vec<ConfiguredPluginEntry>,
+    /// Every configured `[plugins].mcp[]` entry, the MCP-tier counterpart of
+    /// [`Self::subprocess_plugins`] -- same "config mirror, no candidate
+    /// set, no toggle" shape.
+    pub mcp_plugins: Vec<ConfiguredPluginEntry>,
+    /// Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: whether the `/plugin`
+    /// listing (`view/plugins.rs`) is showing. Follows [`Self::help_open`]/
+    /// [`Self::settings_open`]'s own pattern exactly -- informational, not
+    /// decision-owed, so a plain flag rather than a `Mode` variant --
+    /// mutually exclusive with BOTH of them (`Self::open_plugins`/
+    /// `Self::open_settings`/`Self::open_help` each clear the other two).
+    pub plugins_open: bool,
+    /// The `/plugin` listing's own arrow-navigated cursor -- the RAW row
+    /// index, mirroring [`Self::settings_selected`]'s own "persisted
+    /// unclamped, re-clamped on read by `MenuState::selected_index`" shape.
+    pub plugins_selected: usize,
     /// The scope the permission prompt's remembered-grant keys (`a` and
     /// `p`) grant at: `Session` (the default, and the only scope the prompt
     /// offered before this item), `Agent` (only the agent whose call is
@@ -869,6 +912,10 @@ impl AppState {
             structured_prompt_rules: Vec::new(),
             hook_rules: Vec::new(),
             plugin_browser: Vec::new(),
+            subprocess_plugins: Vec::new(),
+            mcp_plugins: Vec::new(),
+            plugins_open: false,
+            plugins_selected: 0,
             // See the field's own doc: `None` is exactly the behaviour of
             // a build with `conway.names` uninstalled, which is what every
             // `AppState::new` caller other than `tui::run` wants.

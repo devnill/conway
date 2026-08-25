@@ -221,6 +221,20 @@ pub enum SlashCommand {
         full_name: String,
         args: String,
     },
+    /// `/plugin` (board item `01M0VR5RCCB8NDGG2JEQW8X7XR`): opens the
+    /// `/plugin` listing (`view/plugins.rs`) -- every kind of plugin
+    /// conway can run today, from every source. **Named `Plugins`, not
+    /// `Plugin`** -- `Plugin` above already names a plugin-DECLARED
+    /// command's dispatch shape, and `t10_every_slash_command_variant_
+    /// reaches_the_palette` (`crates/conway/tests/
+    /// architecture_invariants.rs`) filters that exact string out of its
+    /// scan, so reusing it here would make this variant invisibly exempt
+    /// from the guard rather than covered by it. Takes no arguments --
+    /// `parse` rejects anything else with `usage: /plugin (no arguments)`.
+    /// A pure `AppState` flip, no facade call, mirroring
+    /// [`SlashCommand::Settings`]'s own shape exactly (see `execute`'s own
+    /// `Plugins` arm).
+    Plugins,
 }
 
 /// One palette entry: a command's name (leading `/` included, matching
@@ -293,6 +307,11 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
             name: "/settings",
             usage: "/settings",
             description: "open the settings menu (display preferences -- session only)",
+        },
+        SlashCommand::Plugins => CommandSpec {
+            name: "/plugin",
+            usage: "/plugin",
+            description: "list every plugin conway can run today (compiled-in, subprocess, MCP)",
         },
         SlashCommand::Trust => CommandSpec {
             name: "/trust",
@@ -404,6 +423,7 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
         },
         SlashCommand::Agents,
         SlashCommand::Settings,
+        SlashCommand::Plugins,
         SlashCommand::Trust,
         SlashCommand::Steer {
             target: String::new(),
@@ -554,6 +574,10 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
         "/settings" => {
             parse_no_arg(rest, "/settings")?;
             Ok(SlashCommand::Settings)
+        }
+        "/plugin" => {
+            parse_no_arg(rest, "/plugin")?;
+            Ok(SlashCommand::Plugins)
         }
         "/trust" => {
             // Accepts the bare form or the one literal argument
@@ -1778,6 +1802,13 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             state.open_settings();
             Effect::None
         }
+        // Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: `/plugin` opens the
+        // plugin listing -- a pure `AppState::open_plugins` flag flip,
+        // mirroring `Settings` immediately above exactly.
+        SlashCommand::Plugins => {
+            state.open_plugins();
+            Effect::None
+        }
         // Formerly intercepted in `app.rs::submit` (board item
         // `01KZVZ5XV162XCQR96AQKCCCF7`) -- see this module's own doc for
         // why. `parse` already rejected any argument other than the bare
@@ -2679,6 +2710,18 @@ mod tests {
     fn settings_with_trailing_argument_is_a_parse_error_naming_the_form() {
         let err = parse("/settings all").unwrap_err();
         assert!(err.to_string().contains("/settings"));
+    }
+
+    /// Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`.
+    #[test]
+    fn plugin_parses() {
+        assert_eq!(parse("/plugin"), Ok(SlashCommand::Plugins));
+    }
+
+    #[test]
+    fn plugin_with_trailing_argument_is_a_parse_error_naming_the_form() {
+        let err = parse("/plugin all").unwrap_err();
+        assert!(err.to_string().contains("/plugin"));
     }
 
     // ---------------------------------------------------------------
@@ -4534,6 +4577,26 @@ mod tests {
         let effect = execute(SlashCommand::Settings, &mut state, &host).await;
 
         assert!(state.settings_open, "/settings must open the menu");
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            host.calls().is_empty(),
+            "no facade call at all -- a pure state flip"
+        );
+    }
+
+    /// Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: `/plugin` opens the
+    /// listing -- a pure `AppState` flip, mirroring `/settings`'s own test
+    /// exactly.
+    #[tokio::test]
+    async fn plugin_opens_the_listing() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+        assert!(!state.plugins_open);
+
+        let effect = execute(SlashCommand::Plugins, &mut state, &host).await;
+
+        assert!(state.plugins_open, "/plugin must open the listing");
         assert!(matches!(effect, Effect::None));
         assert!(
             host.calls().is_empty(),

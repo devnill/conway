@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A `/plugin` command lists every kind of plugin conway can run today —
+  compiled-in, subprocess, and MCP — in one place** — board item
+  `01M0VR5RCCB8NDGG2JEQW8X7XR`. Before this, the only plugin listing in
+  the TUI was `/settings`' own plugins section, and it read only the
+  compiled-in first-party bundle: an operator with a `[plugins].mcp[]` or
+  `[plugins].subprocess[]` entry configured had no way to see it anywhere
+  in the interface. `/plugin` (`crates/conway-cli/src/tui/view/plugins.rs`,
+  a new `SlashCommand::Plugins` variant) reads all three sources and
+  renders one row per plugin, each naming its **origin** and honestly
+  stating what it contributes: a compiled-in plugin's real
+  `PluginDescription` ("you get"/"you lose"/"costs"); a subprocess entry's
+  closed wire vocabulary (tools, permission policy, observation, status —
+  the `initialize` points `conway_plugin_subprocess::wire` declares); an
+  MCP entry's single capability (tools only — the one non-manifest method
+  `conway_plugin_mcp::McpPlugin`'s `Plugin` impl has). Only compiled-in
+  rows toggle (`Enter`, written to `settings.json`, applies on next
+  restart — the SAME writer and restart-to-apply contract the old
+  settings section used); subprocess/MCP entries are installed
+  unconditionally with no candidate set, so their rows are read-only and
+  say so directly on the row rather than silently offering nothing.
+  `/settings`' own plugins section is now a single shortcut into `/plugin`
+  rather than a second, independent listing over the identical
+  `plugins.install` array. The origin model is an open set (a label
+  wrapper, not a closed enum) — a later compatibility-layer item that adds
+  Claude-format plugins registers a new source function and nothing else
+  in this surface changes.
+
 - **A tenth first-party plugin, `conway.idiom`, prepends a short
   conway-idioms instruction fragment to a session** — board item
   `01M0VR3BKW5N3V3WS28H7FV8ZK`. Before this, a bare interactive TUI
