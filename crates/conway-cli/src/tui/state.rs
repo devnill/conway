@@ -1269,16 +1269,36 @@ impl AppState {
             // one shared, per-session-ordered `EventBus` (`events.rs`:
             // `emit`/`emit_pruning` hold the per-session seq mutex ACROSS
             // the broadcast `send`, specifically so no later `seq` can ever
-            // be observed before an earlier one). So for every real turn,
-            // `TurnStarted` is guaranteed to reach `apply` -- and stamp
-            // `turn_started_at` -- strictly before that turn's own first
-            // `TextDelta` can. The two call sites that flip `activity` to
-            // `Thinking` optimistically at submit time, WITHOUT stamping
-            // `turn_started_at` (`app.rs`'s `submit`, `app/focus.rs`'s
-            // `deliver_first_message`), do not race this: they run before
-            // `Runtime::prompt`/`prompt_agent` even returns, i.e. before
-            // that call's own `TurnStarted` can have been emitted, so this
-            // guard cannot yet see a `TextDelta` for that turn either.
+            // be observed before an earlier one). So for a subscriber that
+            // was ALREADY ATTACHED when the turn began, `TurnStarted` is
+            // guaranteed to reach `apply` -- and stamp `turn_started_at` --
+            // strictly before that turn's own first `TextDelta` can. The two
+            // call sites that flip `activity` to `Thinking` optimistically
+            // (`app.rs`'s `submit`, `app/focus.rs`'s `deliver_first_message`)
+            // cannot spoof this guard either, for a simpler reason than
+            // scheduling: they never stamp `turn_started_at` at all, so their
+            // timing relative to `prompt_agent`'s return is irrelevant to it.
+            //
+            // KNOWN LIMIT OF THIS GUARD, stated rather than discovered later.
+            // The premise above holds only for a stream subscribed BEFORE the
+            // turn started. `Event::TurnStarted` is bus-only -- it is not a
+            // `LogRecord` variant and `record_to_event` has no arm for it --
+            // so it is never replayed to a subscriber that attaches later.
+            // `SessionHandle::agent_events` replays persisted records plus the
+            // live bus from `subscribed_at` onward, and `focus_agent` (this
+            // file) resets `turn_started_at` to `None`. So focusing away from
+            // a streaming agent and back mid-turn attaches a fresh stream that
+            // missed that turn's `TurnStarted`: the remaining real `TextDelta`
+            // chunks then leave `activity` at `Idle` and the transcript's
+            // streaming cursor off, until `TurnFinished` ends the turn. That
+            // is a narrower and self-healing failure than the permanent wedge
+            // this guard removes, and it is NOT fixed here: the obvious seed,
+            // `NodeStatus::Running`, cannot distinguish an idle keep-alive
+            // root from one mid-turn, and a keep-alive root is exactly the
+            // agent a pull-in merges into -- seeding from it would reinstate
+            // the wedge. Tracked on the board; the open question is what
+            // signal means "a turn is in flight" for an agent that stays
+            // alive between turns.
             //
             // Sibling closed for free, verified (`record_to_event`,
             // `conway/src/session_handle.rs`): a `--resume`/focus-switch
