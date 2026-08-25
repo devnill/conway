@@ -22,21 +22,15 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, PluginSelection, SessionHandle, SessionSpec, SpawnSpec};
+use conway::test_support::{build_conway_with_builtins, scripted_backend};
+use conway::{SessionHandle, SessionSpec, SpawnSpec};
 use conway_core::agent::PermissionDecision;
 use conway_core::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
-use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolName};
+use conway_core::ids::{AgentId, RoleAlias, ToolName};
 use conway_core::log::LogRecord;
-use conway_core::ports::{Backend, GenerateResponse, PermissionGate, PluginConfig};
-use conway_testkit::{text_response, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::ports::{GenerateResponse, PermissionGate, PluginConfig};
+use conway_testkit::{text_response, ScriptedTurn};
 use tempfile::TempDir;
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
 
 fn read_call(call_id: &str, path: &str) -> ToolCall {
     ToolCall {
@@ -105,19 +99,6 @@ impl PermissionGate for AllowGate {
     }
 }
 
-fn build_conway(script: Vec<ScriptedTurn>) -> Conway {
-    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
-    let store = Arc::new(FakeStore::new());
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend as Arc<dyn Backend>)
-        .with_session_store(store)
-        .with_permission_gate(Arc::new(AllowGate))
-        .with_router(fake_router())
-        .with_builtin_plugins(PluginSelection::All)
-        .build()
-        .expect("build should succeed with the real builtin fs tools registered")
-}
-
 /// `{"conway.fs.root": "<root>"}` -- the already-prefixed key
 /// `ToolCtx::config` carries `conway.fs`'s narrowable root under
 /// (`conway_tools::fs`'s own module doc).
@@ -178,25 +159,29 @@ async fn two_siblings_with_different_conway_fs_roots_each_read_inside_own_and_re
     std::fs::write(root_a.join("mine.txt"), b"a's own file").unwrap();
     std::fs::write(root_b.join("mine.txt"), b"b's own file").unwrap();
 
-    let conway = build_conway(vec![
-        // Sibling A's one turn: reads its own file (inside) and B's file
-        // (outside, by absolute path) at once.
-        ScriptedTurn::Respond(double_read_turn(
-            "in_a",
-            "mine.txt",
-            "out_a",
-            &root_b.join("mine.txt").display().to_string(),
-        )),
-        ScriptedTurn::Respond(text_response("a done")),
-        // Sibling B's one turn: the mirror image.
-        ScriptedTurn::Respond(double_read_turn(
-            "in_b",
-            "mine.txt",
-            "out_b",
-            &root_a.join("mine.txt").display().to_string(),
-        )),
-        ScriptedTurn::Respond(text_response("b done")),
-    ]);
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
+            // Sibling A's one turn: reads its own file (inside) and B's file
+            // (outside, by absolute path) at once.
+            ScriptedTurn::Respond(double_read_turn(
+                "in_a",
+                "mine.txt",
+                "out_a",
+                &root_b.join("mine.txt").display().to_string(),
+            )),
+            ScriptedTurn::Respond(text_response("a done")),
+            // Sibling B's one turn: the mirror image.
+            ScriptedTurn::Respond(double_read_turn(
+                "in_b",
+                "mine.txt",
+                "out_b",
+                &root_a.join("mine.txt").display().to_string(),
+            )),
+            ScriptedTurn::Respond(text_response("b done")),
+        ]),
+        Arc::new(AllowGate),
+    );
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -271,7 +256,8 @@ async fn a_childs_attempt_to_widen_its_parents_conway_fs_root_is_rejected() {
     std::fs::create_dir(&narrow_root).unwrap();
     std::fs::create_dir(&sideways_root).unwrap();
 
-    let conway = build_conway(vec![]);
+    let conway =
+        build_conway_with_builtins(base_config(), scripted_backend(vec![]), Arc::new(AllowGate));
     let handle = conway
         .new_session(SessionSpec::default())
         .await
@@ -318,7 +304,8 @@ async fn a_childs_attempt_to_widen_its_parents_conway_fs_root_is_rejected() {
 async fn a_childs_attempt_to_introduce_an_undeclared_plugin_config_key_is_rejected() {
     let tmp = TempDir::new().unwrap();
 
-    let conway = build_conway(vec![]);
+    let conway =
+        build_conway_with_builtins(base_config(), scripted_backend(vec![]), Arc::new(AllowGate));
     let handle = conway
         .new_session(SessionSpec::default())
         .await

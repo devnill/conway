@@ -22,6 +22,8 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
+use conway::test_support::echo_model;
+use conway::test_support::{build_conway, build_conway_with_echo_backend, test_builder};
 use conway::{
     CancelMode, Conway, ConwayBuilder, FacadeError, ForkSpec, Plugin, SessionHandle, SessionId,
     SessionSpec, SpawnSpec, Tool,
@@ -44,13 +46,6 @@ use futures_core::Stream as _;
 // ---------------------------------------------------------------------
 // Fixtures (mirrors tests/session_handle.rs's own helpers)
 // ---------------------------------------------------------------------
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(conway_core::ids::ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
 
 fn base_config() -> ConwayConfig {
     let mut roles = BTreeMap::new();
@@ -78,21 +73,6 @@ fn base_config() -> ConwayConfig {
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
     }
-}
-
-fn build_conway(backend: Arc<dyn Backend>, store: Arc<FakeStore>) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .build()
-        .expect("build should succeed with every port injected")
-}
-
-fn build_conway_with_echo_backend(store: Arc<FakeStore>) -> Conway {
-    build_conway(Arc::new(FakeBackend::echo(BackendId::new("fake"))), store)
 }
 
 async fn new_handle(conway: &Conway) -> SessionHandle {
@@ -243,7 +223,7 @@ async fn fork_without_a_role_inherits_the_parents_role_not_the_literal_default()
         .with_backend(Arc::new(FakeBackend::echo(BackendId::new("fake"))))
         .with_session_store(store.clone())
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-        .with_router(fake_router())
+        .with_router(Arc::new(FakeRouter::single(echo_model())))
         .build()
         .expect("build should succeed");
     // The root's role defaults to config.default_role ("coder").
@@ -274,7 +254,7 @@ async fn fork_without_a_role_inherits_the_parents_role_not_the_literal_default()
 #[tokio::test]
 async fn fork_produces_a_child_with_mapped_fields_and_an_inherited_prefix() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
     let handle = new_handle(&conway).await;
 
     // A prompt-less root starts idle with no record of its own -- append
@@ -344,7 +324,7 @@ async fn fork_produces_a_child_with_mapped_fields_and_an_inherited_prefix() {
 #[tokio::test]
 async fn spawn_produces_a_child_with_mapped_fields_and_no_inherited_prefix() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
     let handle = new_handle(&conway).await;
 
     // A prompt-less root starts idle with no record of its own -- append
@@ -437,7 +417,7 @@ async fn spawn_produces_a_child_with_mapped_fields_and_no_inherited_prefix() {
 #[tokio::test]
 async fn fork_rejects_a_from_agent_that_belongs_to_a_different_session() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle_a = new_handle(&conway).await;
     let handle_b = new_handle(&conway).await;
 
@@ -466,6 +446,7 @@ async fn fork_rejects_a_from_agent_that_belongs_to_a_different_session() {
 async fn steer_await_and_cancel_reject_a_target_belonging_to_another_session() {
     let store = Arc::new(FakeStore::new());
     let conway = build_conway(
+        base_config(),
         Arc::new(DelayedEchoBackend::new(Duration::from_secs(2))),
         store,
     );
@@ -545,7 +526,7 @@ async fn steer_await_and_cancel_reject_a_target_belonging_to_another_session() {
 #[tokio::test]
 async fn spawn_rejects_an_unknown_from_agent() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let unknown = AgentId::new();
@@ -563,7 +544,7 @@ async fn spawn_rejects_an_unknown_from_agent() {
 #[tokio::test]
 async fn steer_on_unknown_target_returns_runtime_error() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let unknown = AgentId::new();
@@ -583,6 +564,7 @@ async fn steer_on_unknown_target_returns_runtime_error() {
 async fn steer_on_a_live_agent_succeeds() {
     let store = Arc::new(FakeStore::new());
     let conway = build_conway(
+        base_config(),
         Arc::new(DelayedEchoBackend::new(Duration::from_secs(2))),
         store,
     );
@@ -609,7 +591,7 @@ async fn steer_on_a_live_agent_succeeds() {
 #[tokio::test]
 async fn await_agent_on_unknown_agent_returns_runtime_error_naming_the_id() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let unknown = AgentId::new();
@@ -628,7 +610,7 @@ async fn await_agent_on_unknown_agent_returns_runtime_error_naming_the_id() {
 #[tokio::test]
 async fn await_agent_on_a_budget_exhausted_child_returns_ok_budget_exceeded() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let spec = ForkSpec::new("go").budget(Budget {
@@ -657,6 +639,7 @@ async fn await_agent_on_a_budget_exhausted_child_returns_ok_budget_exceeded() {
 async fn await_agent_on_a_hard_cancelled_child_returns_ok_cancelled() {
     let store = Arc::new(FakeStore::new());
     let conway = build_conway(
+        base_config(),
         Arc::new(DelayedEchoBackend::new(Duration::from_secs(2))),
         store,
     );
@@ -699,6 +682,7 @@ async fn await_agent_on_a_hard_cancelled_child_returns_ok_cancelled() {
 async fn cancel_resolves_the_root_turn_handles_result_as_cancelled() {
     let store = Arc::new(FakeStore::new());
     let conway = build_conway(
+        base_config(),
         Arc::new(DelayedEchoBackend::new(Duration::from_secs(2))),
         store,
     );
@@ -744,7 +728,7 @@ async fn cancel_resolves_the_root_turn_handles_result_as_cancelled() {
 #[tokio::test]
 async fn root_event_stream_observes_a_spawned_childs_agent_spawned_and_finished() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let mut events = handle.events();
@@ -811,7 +795,7 @@ async fn root_event_stream_observes_a_spawned_childs_agent_spawned_and_finished(
 #[tokio::test]
 async fn agent_events_replays_a_spawned_childs_own_transcript() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     // A prior turn on the ROOT, before the spawn -- if `agent_events`
@@ -868,7 +852,7 @@ async fn agent_events_replay_excludes_the_inherited_prefix_transcript_still_incl
     // inherited_prefix`'s own contrast, but for `agent_events`'s replay
     // batch versus `transcript`'s effective view.
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     // A distinctive turn on the root BEFORE the spawn -- this is the
@@ -966,7 +950,7 @@ async fn agent_events_replay_excludes_the_inherited_prefix_for_a_forked_child_to
     // `fork_produces_a_child_with_mapped_fields_and_an_inherited_prefix`
     // does.
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     // A distinctive turn on the root BEFORE the fork -- this is the
@@ -1058,7 +1042,7 @@ async fn agent_events_replay_surfaces_a_finished_childs_assistant_reply_text() {
     // to_event now maps `Assistant -> TextDelta{joined text}`), not silently
     // dropped -- so focusing a finished subagent shows its actual answer.
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let child = handle
@@ -1106,7 +1090,7 @@ async fn agent_events_replay_surfaces_a_finished_childs_assistant_reply_text() {
 #[tokio::test]
 async fn agent_events_on_an_unknown_agent_returns_an_error() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let unknown = AgentId::new();
@@ -1121,7 +1105,7 @@ async fn agent_events_on_an_unknown_agent_returns_an_error() {
 #[tokio::test]
 async fn agent_events_on_the_root_observes_live_progress_after_replay() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let mut events = handle
@@ -1183,7 +1167,7 @@ fn assistant_record(usage: Usage) -> LogRecord {
 #[tokio::test]
 async fn session_usage_is_zero_for_a_fresh_agent() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     // A freshly created session's root has no `Assistant` record at all
@@ -1198,7 +1182,7 @@ async fn session_usage_is_zero_for_a_fresh_agent() {
 #[tokio::test]
 async fn session_usage_sums_the_agents_own_assistant_turns_and_excludes_the_inherited_prefix() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
     let handle = new_handle(&conway).await;
 
     // Two `Assistant` records appended directly to the ROOT's own log --
@@ -1354,7 +1338,7 @@ async fn spawn_without_an_agent_def_inherits_the_parents_role_not_the_literal_de
         .with_backend(Arc::new(FakeBackend::echo(BackendId::new("fake"))))
         .with_session_store(store.clone())
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-        .with_router(fake_router())
+        .with_router(Arc::new(FakeRouter::single(echo_model())))
         .build()
         .expect("build should succeed");
     // The root's role defaults to config.default_role ("coder").
@@ -1410,7 +1394,7 @@ async fn child_session(store: &FakeStore, agent: AgentId) -> SessionId {
 #[tokio::test]
 async fn keep_alive_spawn_starts_idle_with_no_own_records_then_runs_and_is_repromptable() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
     let handle = new_handle(&conway).await;
 
     // Bare `/spawn`'s own shape: empty prompt, `keep_alive: true`.
@@ -1458,7 +1442,7 @@ async fn keep_alive_spawn_starts_idle_with_no_own_records_then_runs_and_is_repro
 #[tokio::test]
 async fn keep_alive_fork_starts_idle_inherits_context_then_runs_and_is_repromptable() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
     let handle = new_handle(&conway).await;
 
     // Give the root a real turn first, so the fork below has something to
@@ -1520,7 +1504,7 @@ async fn keep_alive_fork_starts_idle_inherits_context_then_runs_and_is_reprompta
 #[tokio::test]
 async fn prompt_agent_drives_a_named_non_root_agents_turn_not_the_root() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let child = handle
@@ -1560,7 +1544,7 @@ async fn autonomous_spawn_and_fork_default_keep_alive_false_and_finish_after_one
     // (`await_agent` resolves), rather than idling for a second prompt that
     // will never come.
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let spawned = handle
@@ -1671,24 +1655,6 @@ fn tool_call_response(tool: &str, arguments: serde_json::Value) -> GenerateRespo
     }
 }
 
-/// Like [`build_conway`], but also registers `plugin` -- for the two tests
-/// below, which need a real, in-flight tool call to cancel against.
-fn build_conway_with_plugin(
-    backend: Arc<dyn Backend>,
-    store: Arc<FakeStore>,
-    plugin: Arc<dyn Plugin>,
-) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .with_plugin(plugin)
-        .build()
-        .expect("build should succeed with every port injected")
-}
-
 #[tokio::test]
 async fn graceful_cancel_through_the_facade_lets_the_in_flight_tool_finish_then_stops() {
     let started = Arc::new(tokio::sync::Notify::new());
@@ -1710,7 +1676,12 @@ async fn graceful_cancel_through_the_facade_lets_the_in_flight_tool_finish_then_
         .with_id(BackendId::new("fake")),
     );
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_plugin(backend.clone(), store, Arc::new(SlowToolPlugin(tool)));
+    let conway = test_builder(base_config())
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_plugin(Arc::new(SlowToolPlugin(tool)))
+        .build()
+        .expect("build should succeed with every port injected");
     let handle = new_handle(&conway).await;
 
     let child = handle
@@ -1781,7 +1752,12 @@ async fn default_cancel_through_the_facade_stops_immediately_without_waiting_for
         .with_id(BackendId::new("fake")),
     );
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_plugin(backend.clone(), store, Arc::new(SlowToolPlugin(tool)));
+    let conway = test_builder(base_config())
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_plugin(Arc::new(SlowToolPlugin(tool)))
+        .build()
+        .expect("build should succeed with every port injected");
     let handle = new_handle(&conway).await;
 
     let child = handle
@@ -1883,7 +1859,7 @@ async fn cancel_reason_reaches_the_result_when_observed_mid_request() {
     let backend =
         Arc::new(ScriptedBackend::new(vec![ScriptedTurn::Pending]).with_id(BackendId::new("fake")));
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway(backend.clone(), store);
+    let conway = build_conway(base_config(), backend.clone(), store);
     let handle = new_handle(&conway).await;
 
     let child = handle
@@ -2088,11 +2064,12 @@ async fn graceful_cancel_on_a_parent_does_not_touch_a_live_childs_terminal_resul
         .with_id(BackendId::new("fake")),
     );
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_plugin(
-        backend.clone(),
-        store,
-        Arc::new(TwoSlowToolsPlugin(parent_tool, child_tool)),
-    );
+    let conway = test_builder(base_config())
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_plugin(Arc::new(TwoSlowToolsPlugin(parent_tool, child_tool)))
+        .build()
+        .expect("build should succeed with every port injected");
     let handle = new_handle(&conway).await;
 
     let parent = handle
@@ -2235,11 +2212,12 @@ async fn default_cancel_through_the_facade_propagates_to_a_grandchild() {
         .with_id(BackendId::new("fake")),
     );
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_plugin(
-        backend.clone(),
-        store,
-        Arc::new(TwoSlowToolsPlugin(child_tool, grandchild_tool)),
-    );
+    let conway = test_builder(base_config())
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_plugin(Arc::new(TwoSlowToolsPlugin(child_tool, grandchild_tool)))
+        .build()
+        .expect("build should succeed with every port injected");
     let handle = new_handle(&conway).await;
 
     let child = handle

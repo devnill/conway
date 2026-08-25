@@ -8,14 +8,15 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, ForkSpec, SessionSpec, SpawnSpec};
-use conway_core::agent::{Budget, PermissionDecision, ResultStatus};
+use conway::test_support::build_conway_with_echo_backend;
+use conway::{Conway, ForkSpec, SessionSpec, SpawnSpec};
+use conway_core::agent::{Budget, ResultStatus};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, LogSeq, SessionId};
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::SessionStore;
 use conway_core::provenance::Provenance;
-use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
+use conway_testkit::FakeStore;
 use futures_core::Stream as _;
 
 fn assert_clone_send_sync<T: Clone + Send + Sync>() {}
@@ -23,13 +24,6 @@ fn assert_clone_send_sync<T: Clone + Send + Sync>() {}
 #[test]
 fn session_handle_is_clone_send_sync() {
     assert_clone_send_sync::<conway::SessionHandle>();
-}
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(conway_core::ids::ModelRef {
-        backend: BackendId::new("fake"),
-        model: conway_core::ids::ModelId::new("echo-model"),
-    }))
 }
 
 fn base_config() -> ConwayConfig {
@@ -60,23 +54,6 @@ fn base_config() -> ConwayConfig {
     }
 }
 
-/// An echoing `FakeBackend`: its `generate`/`stream` response is the
-/// concatenated text of the last user-role segment, so `TurnHandle::text()`
-/// can be asserted against the exact prompt text without hand-building a
-/// `GenerateResponse`.
-fn build_conway_with_echo_backend(store: Arc<FakeStore>) -> Conway {
-    let backend: Arc<dyn conway_core::ports::Backend> =
-        Arc::new(FakeBackend::echo(BackendId::new("fake")));
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .build()
-        .expect("build should succeed with every port injected")
-}
-
 async fn new_handle(conway: &Conway) -> conway::SessionHandle {
     conway
         .new_session(SessionSpec::default())
@@ -91,7 +68,7 @@ async fn new_handle(conway: &Conway) -> conway::SessionHandle {
 #[tokio::test]
 async fn prompt_delegates_text_byte_for_byte_and_turn_handle_streams_it_back() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let text_in = "  hello, conway  \n";
@@ -113,7 +90,7 @@ async fn prompt_delegates_text_byte_for_byte_and_turn_handle_streams_it_back() {
 #[tokio::test]
 async fn turn_handle_text_then_result_does_not_deadlock() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let turn = handle.prompt("hi").await.expect("prompt should succeed");
@@ -132,7 +109,7 @@ async fn turn_handle_text_then_result_does_not_deadlock() {
 #[tokio::test]
 async fn turn_handle_result_resolves_on_budget_exceeded() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let spec = SessionSpec {
         budget: Some(Budget {
             max_steps: 0,
@@ -177,7 +154,7 @@ async fn turn_handle_result_resolves_on_budget_exceeded() {
 #[tokio::test]
 async fn events_are_filtered_to_this_session_only() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle_a = new_handle(&conway).await;
     let handle_b = new_handle(&conway).await;
     assert_ne!(handle_a.id(), handle_b.id());
@@ -231,7 +208,7 @@ async fn events_are_filtered_to_this_session_only() {
 #[tokio::test]
 async fn events_from_replays_persisted_records_then_continues_live() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
     let handle = new_handle(&conway).await;
 
     // `Conway::new_session` -> `Runtime::start_root` already appends one
@@ -306,7 +283,7 @@ async fn events_from_replays_persisted_records_then_continues_live() {
 #[tokio::test]
 async fn tree_includes_the_started_root() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let tree = handle.tree();
@@ -319,7 +296,7 @@ async fn tree_includes_the_started_root() {
 #[tokio::test]
 async fn context_report_segments_are_ordered_with_provenance() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let turn = handle.prompt("hi").await.expect("prompt should succeed");
@@ -368,7 +345,7 @@ async fn context_report_segments_are_ordered_with_provenance() {
 #[tokio::test]
 async fn context_report_current_matches_the_live_report_for_an_agent_this_process_ran() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let turn = handle.prompt("hi").await.expect("prompt should succeed");
@@ -396,7 +373,7 @@ async fn context_report_current_matches_the_live_report_for_an_agent_this_proces
 #[tokio::test]
 async fn last_model_is_none_before_any_turn_and_the_served_model_after() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     assert_eq!(
@@ -430,7 +407,7 @@ async fn last_model_is_none_before_any_turn_and_the_served_model_after() {
 #[tokio::test]
 async fn transcript_unknown_agent_returns_runtime_error_naming_the_agent() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
     let unknown = AgentId::new();
@@ -453,7 +430,7 @@ async fn transcript_unknown_agent_returns_runtime_error_naming_the_agent() {
 #[tokio::test]
 async fn transcript_resolves_the_effective_ancestry_of_a_forked_fixture() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
     let handle = new_handle(&conway).await;
 
     // `Conway::new_session` -> `Runtime::start_root` starts a prompt-less
@@ -546,7 +523,7 @@ async fn transcript_resolves_the_effective_ancestry_of_a_forked_fixture() {
 #[tokio::test]
 async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
     let handle = new_handle(&conway).await;
 
     // `Conway::new_session` -> `Runtime::start_root` starts a prompt-less
@@ -690,7 +667,7 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
 #[tokio::test]
 async fn facade_set_labels_reach_the_created_sessions_meta_and_are_found_by_list() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
 
     let handle = conway
         .new_session(SessionSpec {
@@ -726,7 +703,7 @@ async fn facade_set_labels_reach_the_created_sessions_meta_and_are_found_by_list
 #[tokio::test]
 async fn facade_default_labels_stay_empty() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
 
     let handle = new_handle(&conway).await;
 
@@ -756,7 +733,7 @@ async fn facade_default_labels_stay_empty() {
 #[tokio::test]
 async fn fork_and_spawn_children_of_a_labelled_parent_have_empty_labels() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
 
     let handle = conway
         .new_session(SessionSpec {

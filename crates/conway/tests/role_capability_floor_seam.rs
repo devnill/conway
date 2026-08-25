@@ -76,14 +76,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use conway::config::schema::ConwayConfig;
-use conway::{Conway, ConwayBuilder, SessionSpec};
-use conway_core::agent::{PermissionDecision, ResultStatus};
+use conway::test_support::test_builder_without_router;
+use conway::SessionSpec;
+use conway_core::agent::ResultStatus;
 use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::ids::BackendId;
-use conway_core::ports::{Backend, SessionStore};
-use conway_testkit::{text_response, FakeGate, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::ports::SessionStore;
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
 /// The one model this fixture's role chain names.
 const MODEL: &str = "fake/tiny-model";
@@ -146,34 +147,6 @@ fn config_naming(metadata_path: PathBuf) -> ConwayConfig {
     serde_json::from_str(&json).expect("fixture JSON must parse as ConwayConfig")
 }
 
-/// `conway` no longer compiles a
-/// capability-filtering `DeclarativeRouter` in by default -- the role's
-/// configured `min_reliability` floor this file exists to prove is enforced
-/// by that engine specifically, so it must be installed via
-/// `with_router_factory` for these assertions to mean anything (absent it,
-/// `conway_core::routing::MinimalRouter` performs no capability filtering at
-/// all, and the backend would be called regardless of `reliability_tier`).
-fn build_conway(
-    config: ConwayConfig,
-    backend: Arc<dyn Backend>,
-    store: Arc<dyn SessionStore>,
-) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(config)
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router_factory(Arc::new(conway_plugin_routing::RoutingRouterFactory))
-        // `conway` no longer
-        // compiles the `kind = "openai-compat"` fixture entry above in.
-        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
-        .build()
-        .expect(
-            "build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine wiring \
-             from valid config",
-        )
-}
-
 #[tokio::test]
 async fn undercapable_model_is_never_called_and_turn_fails() {
     let dir = support::unique_temp_dir("role-capability-floor-seam-reject");
@@ -190,7 +163,18 @@ async fn undercapable_model_is_never_called_and_turn_fails() {
         .with_capabilities(caps(ReliabilityTier::Community)),
     );
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(config, backend.clone(), store);
+    let conway = test_builder_without_router(config)
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_router_factory(Arc::new(conway_plugin_routing::RoutingRouterFactory))
+        // `conway` no longer
+        // compiles the `kind = "openai-compat"` fixture entry above in.
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
+        .build()
+        .expect(
+            "build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine wiring \
+             from valid config",
+        );
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -240,7 +224,18 @@ async fn meeting_the_floor_admits_the_identical_request_and_calls_the_backend() 
             .with_capabilities(caps(ReliabilityTier::Verified)),
     );
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(config, backend.clone(), store);
+    let conway = test_builder_without_router(config)
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_router_factory(Arc::new(conway_plugin_routing::RoutingRouterFactory))
+        // `conway` no longer
+        // compiles the `kind = "openai-compat"` fixture entry above in.
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
+        .build()
+        .expect(
+            "build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine wiring \
+             from valid config",
+        );
 
     let handle = conway
         .new_session(SessionSpec::default())

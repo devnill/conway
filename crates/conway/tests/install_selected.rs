@@ -50,7 +50,14 @@ fn caps() -> Capabilities {
     }
 }
 
-fn fake_router() -> Arc<dyn Router> {
+/// DIVERGENT, deliberately: `FakeRouter::new(vec![])` is an EMPTY chain,
+/// not the one-route `FakeRouter::single(conway::test_support::
+/// echo_model())` every other suite injects. These tests only care that a
+/// `Router` is present so `build()` proceeds; they never resolve a route.
+/// Named `empty_router` rather than `fake_router` so that one name does
+/// not mean two routers (`tests/builder.rs` has the same double, under the
+/// same name and for the same reason).
+fn empty_router() -> Arc<dyn Router> {
     Arc::new(FakeRouter::new(vec![]))
 }
 
@@ -151,7 +158,7 @@ impl RouterFactory for CountingRouterFactory {
     fn build(&self, _ctx: RouterBuildContext<'_>) -> Result<RouterBundle, CoreConwayError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(RouterBundle {
-            router: fake_router(),
+            router: empty_router(),
             health: Arc::new(FakeHealth::new()) as Arc<dyn HealthRegistry>,
             explain: None,
         })
@@ -209,7 +216,7 @@ fn plugin_id_resolves_and_attaches_via_with_plugin() {
         .with_backend(fake_backend("fake"))
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_plugin(Arc::new(FakePlugin("test.echo")))
         .build();
 
@@ -324,7 +331,7 @@ fn backend_factory_id_resolves_from_default_backends_with_no_install_entry() {
         .expect("a default_backends id must resolve with no [plugins].install entry")
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-        .with_router(fake_router())
+        .with_router(empty_router())
         .build()
         .expect("build must succeed: the backend factory resolved and constructed a backend");
 
@@ -397,7 +404,7 @@ fn empty_resolved_id_set_is_not_an_error_and_consults_no_bundle() {
         .with_backend(fake_backend("fake"))
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_plugin(Arc::new(FakePlugin("unused.plugin")))
         .build();
     assert!(
@@ -439,7 +446,7 @@ fn a_supplied_backend_factory_not_selected_is_diagnosed_as_declined_not_unknown(
         .expect("an empty resolved id set is not itself an error")
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-        .with_router(fake_router())
+        .with_router(empty_router())
         .build();
 
     let err = expect_build_err(

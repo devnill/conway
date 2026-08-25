@@ -31,20 +31,16 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::backend::{BackendId, ModelId};
+use conway::backend::BackendId;
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
 use conway::plugin::{ContentBlock, Memory, MemoryProvenance, MemoryStore};
-use conway::{
-    Conway, ConwayBuilder, MemoryId, ModelRef, PermissionDecision, RoleAlias, SessionId,
-    SessionSpec,
-};
-use conway_testkit::{
-    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
+use conway::{Conway, MemoryId, RoleAlias, SessionId, SessionSpec};
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
+use conway::test_support::test_builder;
 use conway_plugin_memory::{InMemoryMemoryStore, MemoryConfig, MemoryPlugin};
 
 fn base_config() -> ConwayConfig {
@@ -73,32 +69,6 @@ fn base_config() -> ConwayConfig {
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
     }
-}
-
-/// A real, fully-faked `Conway` (no network, no live provider) with
-/// [`MemoryPlugin`] attached exactly the way a library embedder would.
-fn build_conway(
-    backend: Arc<ScriptedBackend>,
-    store: Arc<FakeStore>,
-    memory_store: Arc<dyn MemoryStore>,
-) -> Conway {
-    let gate: Arc<dyn conway::PermissionGate> =
-        Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(router)
-        .with_plugin(Arc::new(MemoryPlugin::new(
-            memory_store,
-            MemoryConfig::default(),
-        )))
-        .build()
-        .expect("build should succeed with every port injected")
 }
 
 async fn run_one_turn(conway: &Conway, prompt: &str, reply: &str, backend: &ScriptedBackend) {
@@ -153,7 +123,15 @@ async fn a_memory_with_no_provenance_reaches_a_real_turns_assembled_context() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("done"))])
             .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(backend.clone(), store, memory_store);
+    let conway = test_builder(base_config())
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_plugin(Arc::new(MemoryPlugin::new(
+            memory_store,
+            MemoryConfig::default(),
+        )))
+        .build()
+        .expect("build should succeed with every port injected");
 
     run_one_turn(
         &conway,
@@ -200,7 +178,15 @@ async fn a_memory_with_provenance_has_that_provenance_retrievable() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("done"))])
             .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(backend.clone(), store, memory_store.clone());
+    let conway = test_builder(base_config())
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_plugin(Arc::new(MemoryPlugin::new(
+            memory_store.clone(),
+            MemoryConfig::default(),
+        )))
+        .build()
+        .expect("build should succeed with every port injected");
     run_one_turn(&conway, "hello", "done", &backend).await;
 
     let fetched = memory_store.get(&id).await.expect("get");
@@ -247,7 +233,15 @@ async fn a_removed_memory_stops_appearing() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(backend.clone(), store, memory_store.clone());
+    let conway = test_builder(base_config())
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_plugin(Arc::new(MemoryPlugin::new(
+            memory_store.clone(),
+            MemoryConfig::default(),
+        )))
+        .build()
+        .expect("build should succeed with every port injected");
 
     // First turn: both memories present.
     run_one_turn(&conway, "first prompt", "first", &backend).await;
@@ -296,7 +290,15 @@ async fn a_memory_with_a_dangling_source_session_is_still_recalled() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("done"))])
             .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(backend.clone(), store, memory_store);
+    let conway = test_builder(base_config())
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_plugin(Arc::new(MemoryPlugin::new(
+            memory_store,
+            MemoryConfig::default(),
+        )))
+        .build()
+        .expect("build should succeed with every port injected");
     run_one_turn(&conway, "hello", "done", &backend).await;
 
     let text = all_text(backend.calls().last().unwrap());

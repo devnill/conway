@@ -47,19 +47,13 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, PatternRule, PluginSelection, SessionSpec};
+use conway::test_support::{build_conway_with_builtins, scripted_backend};
+use conway::{Conway, PatternRule, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{StopReason, ToolCall, Usage};
-use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolName};
-use conway_core::ports::{Backend, GenerateResponse, PermissionGate, RenderKind};
-use conway_testkit::{text_response, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
+use conway_core::ids::{AgentId, RoleAlias, ToolName};
+use conway_core::ports::{GenerateResponse, PermissionGate, RenderKind};
+use conway_testkit::{text_response, ScriptedTurn};
 
 /// One scripted tool call (`bash` or `read`), followed by a final text
 /// response once the tool step completes. Each `call_id` must be unique
@@ -136,25 +130,6 @@ impl PermissionGate for RecordingGate {
     }
 }
 
-/// Builds a `Conway` whose scripted backend serves `script` in order --
-/// every prompt a test makes consumes exactly the turns that prompt needs,
-/// so the script's length IS the test's expected turn count.
-fn build_conway(script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionGate>) -> Conway {
-    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
-    let store = Arc::new(FakeStore::new());
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend as Arc<dyn Backend>)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        // (bash ships on by default and cannot be declined):
-        // this file drives the REAL `bash` tool end to end, so it must now
-        // opt in explicitly -- the facade's own default excludes it.
-        .with_builtin_plugins(PluginSelection::All)
-        .build()
-        .expect("build should succeed with the real builtin tools registered")
-}
-
 /// The two turns one `read` prompt consumes -- the `RenderKind::Structured`
 /// stand-in for the old `bash git status --short` script (see this file's
 /// own module doc for why `read` is what the scope tests use now).
@@ -223,7 +198,11 @@ async fn an_agent_scoped_pattern_grant_does_not_authorize_a_different_agent() {
     let mut script = read_cargo_toml_script("a1");
     script.extend(read_cargo_toml_script("a2"));
     script.extend(read_cargo_toml_script("b1"));
-    let conway = build_conway(script, gate.clone() as Arc<dyn PermissionGate>);
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(script),
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
 
     // Session A's first call: no grant yet, so it reaches the gate --
     // which is also how the test learns the REAL requesting agent's id
@@ -280,7 +259,11 @@ async fn a_subtree_scoped_pattern_grant_does_not_authorize_an_agent_outside_the_
     let gate = RecordingGate::new();
     let mut script = read_cargo_toml_script("c1");
     script.extend(read_cargo_toml_script("c2"));
-    let conway = build_conway(script, gate.clone() as Arc<dyn PermissionGate>);
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(script),
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
 
     // A subtree rooted at an agent that does not exist: no real
     // `agent_path` can contain it, so this grant covers NO ONE.
@@ -341,7 +324,11 @@ async fn the_gate_request_carries_the_proposing_tools_own_render_kind() {
         )),
         ScriptedTurn::Respond(text_response("done")),
     ];
-    let conway = build_conway(script, gate.clone() as Arc<dyn PermissionGate>);
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(script),
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
 
     let session = live_session(&conway).await;
     prompt_once(&session).await;

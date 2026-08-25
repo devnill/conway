@@ -133,7 +133,7 @@ impl App {
 mod tests {
     use std::collections::HashMap;
 
-    use super::super::fixtures::{build_conway_with_echo_backend, minimal_cli};
+    use super::super::fixtures::{echo_conway, minimal_cli};
     use super::App;
     use crate::tui::state::{Entry, PluginBrowserEntry};
 
@@ -164,7 +164,7 @@ mod tests {
     /// disk beyond the isolated temp settings.json).
     #[tokio::test]
     async fn turning_a_plugin_on_writes_settings_json_and_flips_the_mirror() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
         app.state.plugin_browser = vec![PluginBrowserEntry {
@@ -229,7 +229,7 @@ mod tests {
     /// the mirror the other way.
     #[tokio::test]
     async fn turning_a_plugin_off_removes_it_from_settings_json() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
         app.state.plugin_browser = vec![PluginBrowserEntry {
@@ -278,7 +278,7 @@ mod tests {
     /// method layer so the wiring between the two is not merely assumed.
     #[tokio::test]
     async fn a_toggle_preserves_unrelated_keys_in_an_existing_settings_json() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
         app.state.plugin_browser = vec![PluginBrowserEntry {
@@ -318,7 +318,7 @@ mod tests {
     /// silent no-op, and never a claim the write does not back.
     #[tokio::test]
     async fn a_failed_write_surfaces_as_a_transcript_error_and_leaves_the_mirror_unchanged() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
         app.state.plugin_browser = vec![PluginBrowserEntry {
@@ -381,7 +381,7 @@ mod tests {
     /// codebase has been bitten by before.
     #[tokio::test]
     async fn a_project_layer_override_is_reported_not_claimed_as_success() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
         app.state.plugin_browser = vec![PluginBrowserEntry {

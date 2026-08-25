@@ -22,24 +22,15 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, FacadeError, SessionSpec};
-use conway_core::agent::PermissionDecision;
+use conway::test_support::build_conway;
+use conway::{Conway, FacadeError, SessionSpec};
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::event::Event;
-use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId};
+use conway_core::ids::{AgentId, BackendId, RoleAlias, SessionId};
 use conway_core::log::SessionFilter;
-use conway_core::ports::{Backend, SessionStore};
-use conway_testkit::{
-    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
+use conway_core::ports::SessionStore;
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 use futures_core::Stream as _;
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
 
 fn base_config() -> ConwayConfig {
     let mut roles = BTreeMap::new();
@@ -67,17 +58,6 @@ fn base_config() -> ConwayConfig {
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
     }
-}
-
-fn build_conway_with_backend(store: Arc<dyn SessionStore>, backend: Arc<dyn Backend>) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .build()
-        .expect("build should succeed with every port injected")
 }
 
 /// Drives a session with one parent turn plus one completed `/ask`,
@@ -128,7 +108,7 @@ async fn promote_flips_header_tree_and_listing_and_emits_agent_promoted() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -267,7 +247,7 @@ async fn promote_a_non_ephemeral_agent_is_refused() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("parent ack"))])
             .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -321,7 +301,7 @@ async fn promote_an_unknown_agent_is_refused() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("parent ack"))])
             .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let (handle, _child_agent, _child_session) = session_with_completed_ask(&conway).await;
     let _ = handle;

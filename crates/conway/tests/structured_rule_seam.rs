@@ -51,20 +51,14 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, PluginSelection, RuleRegistrationReason, SessionSpec};
+use conway::test_support::{build_conway_with_builtins, scripted_backend};
+use conway::{RuleRegistrationReason, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{StopReason, ToolCall, Usage};
-use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolName};
-use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
-use conway_testkit::{text_response, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::ids::{AgentId, RoleAlias, ToolName};
+use conway_core::ports::{GenerateResponse, PermissionGate};
+use conway_testkit::{text_response, ScriptedTurn};
 use tempfile::TempDir;
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
 
 fn tool_call_response(tool: &str, arguments: serde_json::Value) -> GenerateResponse {
     GenerateResponse {
@@ -157,22 +151,6 @@ impl PermissionGate for RecordingGate {
     }
 }
 
-fn build_conway(cwd: &Path, script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionGate>) -> Conway {
-    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
-    let store = Arc::new(FakeStore::new());
-    ConwayBuilder::from_parts(base_config(cwd))
-        .with_backend(backend as Arc<dyn Backend>)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        // (bash ships on by default and cannot be declined):
-        // this file drives the REAL `bash` tool end to end, so it must now
-        // opt in explicitly -- the facade's own default excludes it.
-        .with_builtin_plugins(PluginSelection::All)
-        .build()
-        .expect("build should succeed with the real builtin fs/bash tools registered")
-}
-
 /// An isolated, empty global config directory: `CONWAY_CONFIG_DIR` pointed
 /// here means `TrustStore::load` finds no `trust.json` (project files start
 /// untrusted) and the global `permissions.json` candidate lives at
@@ -242,12 +220,12 @@ async fn a_paths_under_allow_rule_authorizes_an_in_root_read_without_the_gate() 
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "must not be consulted -- paths_under must grant this".into(),
     });
-    let conway = build_conway(
-        root_dir.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(root_dir.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response("file.txt")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -309,12 +287,12 @@ async fn a_paths_under_allow_rule_lets_an_out_of_root_read_reach_the_gate() {
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
-    let conway = build_conway(
-        root_dir.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(root_dir.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(&secret_canon.display().to_string())),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     conway.load_permission_files(
@@ -383,12 +361,12 @@ async fn a_paths_under_rule_reads_arguments_not_rendered_so_a_traversal_path_rea
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
-    let conway = build_conway(
-        root_dir.as_path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(root_dir.as_path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(&traversal)),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     conway.load_permission_files(
@@ -470,9 +448,9 @@ async fn a_relative_paths_under_prefix_resolves_against_the_project_not_the_proc
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             // Turn 1: authorized by the relative-prefix rule (gate bypassed).
             ScriptedTurn::Respond(read_call_response("src/file.txt")),
             ScriptedTurn::Respond(text_response("done")),
@@ -486,7 +464,7 @@ async fn a_relative_paths_under_prefix_resolves_against_the_project_not_the_proc
                     .to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -606,9 +584,9 @@ async fn a_relative_paths_under_deny_confines_to_the_project_not_the_process_cwd
     // The gate ALLOWS everything it is asked: a read that reaches it is
     // allowed, so only a deny-rule match can stop the in-project read.
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             // Turn 1: the deny rule fires on the in-project read -- decided
             // before the gate (zero requests).
             ScriptedTurn::Respond(read_call_response("src/secret.txt")),
@@ -624,7 +602,7 @@ async fn a_relative_paths_under_deny_confines_to_the_project_not_the_process_cwd
                     .to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -716,9 +694,9 @@ async fn a_relative_paths_under_prefix_in_an_ancestor_file_resolves_against_the_
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
-    let conway = build_conway(
-        &subdir,
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(&subdir),
+        scripted_backend(vec![
             // Turn 1: ancestor/src -- under the rule's boundary (gate bypassed).
             ScriptedTurn::Respond(read_call_response(
                 &ancestor
@@ -734,7 +712,7 @@ async fn a_relative_paths_under_prefix_in_an_ancestor_file_resolves_against_the_
                 &subdir.join("src").join("file.txt").display().to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -822,12 +800,12 @@ async fn an_unconfinable_tool_never_satisfies_paths_under_so_bash_reaches_the_ga
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
-    let conway = build_conway(
-        root_dir.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(root_dir.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("echo hi")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -886,9 +864,9 @@ async fn command_prefix_on_a_structured_tool_is_a_registration_error() {
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "unused".into(),
     });
-    let conway = build_conway(
-        project.path(),
-        vec![ScriptedTurn::Respond(text_response("no call needed"))],
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![ScriptedTurn::Respond(text_response("no call needed"))]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -962,12 +940,12 @@ async fn a_paths_under_deny_rule_on_an_unconfinable_tool_is_a_registration_error
     );
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("echo hi")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -1053,12 +1031,12 @@ async fn a_paths_under_deny_rule_on_a_category_with_an_unconfinable_tool_refuses
     // AllowOnce so that IF the deny failed to fire the call would be allowed
     // (gate consulted, one request) -- the break-the-guard observable.
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("echo hi")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -1130,14 +1108,14 @@ async fn a_paths_under_allow_rule_with_a_prefix_that_cannot_canonicalize_surface
     );
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(
                 &project.path().join("file.txt").display().to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -1238,14 +1216,14 @@ async fn a_paths_under_allow_rule_with_a_nul_byte_in_its_prefix_surfaces_a_regis
     );
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(
                 &project.path().join("file.txt").display().to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -1319,14 +1297,14 @@ async fn paths_under_deny_and_prompt_rules_with_a_bad_prefix_each_surface_a_regi
     );
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(
                 &project.path().join("file.txt").display().to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -1436,14 +1414,14 @@ async fn trusting_a_project_file_with_a_bad_prefix_does_not_count_the_dropped_ru
     );
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(
                 &project.path().join("file.txt").display().to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -1594,12 +1572,12 @@ async fn run_bash_and_count_gate(
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
-    let conway = build_conway(
-        cwd.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(cwd.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response(command)),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     conway.load_permission_files(cwd.path(), env, PermissionScope::Session, AgentId::new());
@@ -1633,12 +1611,12 @@ async fn a_structured_deny_rule_from_an_untrusted_project_file_refuses_before_th
     );
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("curl https://example.com")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -1699,12 +1677,12 @@ async fn a_structured_prompt_rule_from_an_untrusted_project_file_forces_the_gate
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("rm -rf /tmp/something")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     conway.load_permission_files(
@@ -1764,14 +1742,14 @@ async fn an_untrusted_project_structured_allow_rule_does_not_take_effect() {
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(
                 &project.path().join("file.txt").display().to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -1862,12 +1840,12 @@ async fn a_command_prefix_rule_on_a_mixed_kind_multi_tool_select_installs_with_a
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("echo hi")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -1963,12 +1941,12 @@ async fn a_command_prefix_allow_rule_naming_only_bash_installs_with_a_notice() {
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("git status")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -2040,12 +2018,12 @@ async fn an_always_allow_rule_naming_only_bash_installs_with_a_notice() {
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("ls -la")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -2111,12 +2089,12 @@ async fn a_deny_command_prefix_rule_naming_bash_installs_with_no_notice() {
     );
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("curl https://example.com")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -2174,9 +2152,9 @@ async fn a_command_prefix_rule_on_an_all_structured_multi_tool_select_is_a_regis
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "unused".into(),
     });
-    let conway = build_conway(
-        project.path(),
-        vec![ScriptedTurn::Respond(text_response("no call needed"))],
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![ScriptedTurn::Respond(text_response("no call needed"))]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -2221,9 +2199,9 @@ async fn a_command_prefix_rule_on_a_wildcard_selecting_only_structured_tools_is_
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "unused".into(),
     });
-    let conway = build_conway(
-        project.path(),
-        vec![ScriptedTurn::Respond(text_response("no call needed"))],
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![ScriptedTurn::Respond(text_response("no call needed"))]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -2266,9 +2244,9 @@ async fn a_command_prefix_rule_on_a_category_of_only_structured_tools_is_a_regis
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "unused".into(),
     });
-    let conway = build_conway(
-        project.path(),
-        vec![ScriptedTurn::Respond(text_response("no call needed"))],
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![ScriptedTurn::Respond(text_response("no call needed"))]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -2319,9 +2297,9 @@ async fn broadening_command_prefix_check_does_not_regress_paths_under_arms() {
     );
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        project.path(),
-        vec![ScriptedTurn::Respond(text_response("no call needed"))],
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![ScriptedTurn::Respond(text_response("no call needed"))]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -2387,9 +2365,9 @@ async fn revoking_a_structured_allow_rule_removes_only_it_and_the_call_asks_agai
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "operator said no".into(),
     });
-    let conway = build_conway(
-        root_dir.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(root_dir.path()),
+        scripted_backend(vec![
             // Turn 1: the structured rule authorizes this read (gate bypassed).
             ScriptedTurn::Respond(read_call_response("file.txt")),
             ScriptedTurn::Respond(text_response("done")),
@@ -2399,7 +2377,7 @@ async fn revoking_a_structured_allow_rule_removes_only_it_and_the_call_asks_agai
             // Turn 3: the sibling flat grant must still auto-allow.
             ScriptedTurn::Respond(write_call_response(&write_target)),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let report = conway.load_permission_files(
@@ -2561,12 +2539,12 @@ async fn revoking_a_structured_allow_rule_that_does_not_exist_returns_not_found(
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "must not be consulted -- the surviving rule must still grant".into(),
     });
-    let conway = build_conway(
-        root_dir.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(root_dir.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response("file.txt")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     conway.load_permission_files(

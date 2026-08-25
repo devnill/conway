@@ -19,19 +19,16 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::backend::{BackendId, GenerateRequest, GenerateResponse, ModelId, StopReason, Usage};
+use conway::backend::{BackendId, GenerateRequest, GenerateResponse, StopReason, Usage};
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
 use conway::plugin::{ContentBlock, Event, ToolCall, ToolName};
-use conway::{
-    Conway, ConwayBuilder, EventStream, ModelRef, PermissionDecision, RoleAlias, SessionSpec,
-};
-use conway_testkit::{
-    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
+use conway::{EventStream, RoleAlias, SessionSpec};
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
+use conway::test_support::test_builder;
 use conway_plugin_discover::{DiscoverPlugin, SEARCH_TOOL_NAME};
 use conway_plugin_path::{PathPlugin, COMPOSE_TOOL_NAME};
 
@@ -74,32 +71,6 @@ fn tool_call_response(call_id: &str, tool: &str, args: serde_json::Value) -> Gen
         stop: StopReason::ToolUse,
         usage: Usage::default(),
     }
-}
-
-/// A real, fully-faked `Conway` with BOTH first-party plugins attached the
-/// way a library embedder would (`ConwayBuilder::with_plugin`) -- the same
-/// call `crates/conway-cli/src/first_party_plugins.rs` makes internally
-/// once both are named in `[plugins].install`.
-fn build_conway(
-    cwd: std::path::PathBuf,
-    backend: Arc<ScriptedBackend>,
-    store: Arc<FakeStore>,
-) -> Conway {
-    let gate: Arc<dyn conway::PermissionGate> =
-        Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }));
-    ConwayBuilder::from_parts(base_config(cwd))
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(router)
-        .with_plugin(Arc::new(DiscoverPlugin))
-        .with_plugin(Arc::new(PathPlugin))
-        .build()
-        .expect("build should succeed with every port injected")
 }
 
 fn multi_turn_spec() -> SessionSpec {
@@ -199,7 +170,13 @@ async fn search_finds_a_record_and_composing_it_survives_the_next_turn() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("b replies"))])
             .with_id(BackendId::new("fake")),
     );
-    let mint_conway = build_conway(tmp.path().to_path_buf(), mint_backend, store.clone());
+    let mint_conway = test_builder(base_config(tmp.path().to_path_buf()))
+        .with_backend(mint_backend)
+        .with_session_store(store.clone())
+        .with_plugin(Arc::new(DiscoverPlugin))
+        .with_plugin(Arc::new(PathPlugin))
+        .build()
+        .expect("build should succeed with every port injected");
     let session_b = mint_conway
         .new_session(SessionSpec::default())
         .await
@@ -239,7 +216,13 @@ async fn search_finds_a_record_and_composing_it_survives_the_next_turn() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(tmp.path().to_path_buf(), backend.clone(), store.clone());
+    let conway = test_builder(base_config(tmp.path().to_path_buf()))
+        .with_backend(backend.clone())
+        .with_session_store(store.clone())
+        .with_plugin(Arc::new(DiscoverPlugin))
+        .with_plugin(Arc::new(PathPlugin))
+        .build()
+        .expect("build should succeed with every port injected");
 
     let session_a = conway
         .new_session(multi_turn_spec())

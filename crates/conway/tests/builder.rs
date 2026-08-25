@@ -13,6 +13,7 @@ use conway::config::schema::{
 };
 use conway::{Conway, ConwayBuilder, FacadeError, SessionSpec};
 // Only named by the `builtin-tools`-gated tests below.
+use conway::test_support::test_builder_without_router;
 #[cfg(feature = "builtin-tools")]
 use conway::PluginSelection;
 use conway_core::agent::PermissionDecision;
@@ -59,11 +60,17 @@ fn caps() -> Capabilities {
 /// `conway-plugin-routing::DeclarativeRouter::new`, whose own, stricter
 /// `config::validate` rejects an empty chain -- a check
 /// `crate::config::merge::validate`, the facade's own already-run
-/// validation, does not perform). `fake_router()` therefore no longer
-/// exists to dodge a validation failure these tests would otherwise hit;
-/// it stays because these tests need a deterministic, content-free `Router`
-/// double, not `MinimalRouter`'s own chain-order behavior.
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
+/// validation, does not perform). This router therefore no longer exists
+/// to dodge a validation failure these tests would otherwise hit; it stays
+/// because these tests need a deterministic, content-free `Router` double,
+/// not `MinimalRouter`'s own chain-order behavior.
+///
+/// It is `FakeRouter::new(vec![])` -- an EMPTY chain -- and so is
+/// deliberately not the `FakeRouter::single(test_support::echo_model())`
+/// every other suite injects. The old name for it here was `fake_router`,
+/// the same name 30-odd other files used for the one-route version; it is
+/// `empty_router` now so that one name does not mean two routers.
+fn empty_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::new(vec![]))
 }
 
@@ -180,7 +187,7 @@ async fn end_to_end_from_parts_with_fakes_succeeds_with_no_network_or_fs() {
         .with_backend(backend)
         .with_session_store(store.clone())
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .build()
         .expect("build should succeed with every port injected");
 
@@ -226,7 +233,7 @@ async fn new_session_with_default_spec_resolves_role_and_cwd_from_config() {
         .with_backend(backend)
         .with_session_store(store.clone())
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .build()
         .expect("build should succeed with every port injected");
 
@@ -274,7 +281,7 @@ fn build_fails_with_no_session_store_when_jsonl_store_disabled() {
     let result = ConwayBuilder::from_parts(cfg)
         .with_backend(backend)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .build();
     let err = expect_build_err(
         result,
@@ -309,7 +316,7 @@ fn build_fails_with_no_path_store_when_jsonl_store_disabled_even_with_custom_ses
     let result = ConwayBuilder::from_parts(cfg)
         .with_backend(backend)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_session_store(Arc::new(FakeStore::new()))
         .build();
     let err = expect_build_err(
@@ -350,7 +357,7 @@ async fn build_constructs_default_jsonl_store_when_none_injected() {
     let conway = ConwayBuilder::from_parts(cfg)
         .with_backend(backend)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .build()
         .expect("build should synthesize a real JsonlSessionStore");
 
@@ -398,7 +405,7 @@ async fn build_falls_back_to_the_old_fixed_default_when_from_parts_leaves_root_u
     let conway = ConwayBuilder::from_parts(cfg)
         .with_backend(backend)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .build()
         .expect("build should synthesize a real JsonlSessionStore at the old fixed default");
 
@@ -445,7 +452,7 @@ async fn two_projects_sharing_a_central_sessions_parent_get_different_path_store
         let conway = ConwayBuilder::from_parts(cfg)
             .with_backend(backend)
             .with_permission_gate(gate)
-            .with_router(fake_router())
+            .with_router(empty_router())
             .build()
             .expect("build should synthesize real stores for a central-shaped session root");
         conway
@@ -501,7 +508,7 @@ fn build_accepts_an_anthropic_backend_under_any_json_key() {
     ConwayBuilder::from_parts(cfg)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
         .build()
         .expect("an anthropic-kind backend under the key 'kimi' must build");
@@ -526,7 +533,7 @@ fn build_succeeds_for_a_conventionally_named_anthropic_backend() {
     ConwayBuilder::from_parts(cfg)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
         .build()
         .expect("a matching 'anthropic' JSON key must build successfully");
@@ -554,7 +561,7 @@ fn injected_permission_gate_overrides_config_derived_selection() {
     let result = ConwayBuilder::from_parts(cfg.clone())
         .with_backend(backend.clone())
         .with_session_store(store.clone())
-        .with_router(fake_router())
+        .with_router(empty_router())
         .build();
     let err = expect_build_err(
         result,
@@ -568,7 +575,7 @@ fn injected_permission_gate_overrides_config_derived_selection() {
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .build()
         .expect("an injected gate must bypass config-derived prompt-mode selection");
 }
@@ -599,7 +606,7 @@ fn with_prompt_handler_satisfies_prompt_mode_with_no_injected_gate() {
     ConwayBuilder::from_parts(cfg)
         .with_backend(fake_backend("fake"))
         .with_session_store(Arc::new(FakeStore::new()))
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_prompt_handler(handler)
         .build()
         .expect("with_prompt_handler must satisfy prompt-mode gate selection");
@@ -633,7 +640,7 @@ fn with_permission_gate_wins_over_with_prompt_handler() {
     ConwayBuilder::from_parts(cfg)
         .with_backend(fake_backend("fake"))
         .with_session_store(Arc::new(FakeStore::new()))
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_prompt_handler(denying_handler)
         .with_permission_gate(allowing_gate)
         .build()
@@ -656,7 +663,7 @@ fn duplicate_injected_plugin_id_is_rejected() {
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_plugin(Arc::new(DummyPlugin("conway.fs")))
         .build();
     let err = expect_build_err(
@@ -726,7 +733,7 @@ fn plugin_requiring_a_cap_the_host_offers_builds() {
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_plugin(Arc::new(CapPlugin {
             id: "test.needs-subagent",
             required_caps: vec![HostCapability::Subagent],
@@ -752,7 +759,7 @@ fn plugin_requiring_a_cap_the_host_lacks_is_refused_naming_both() {
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_plugin(Arc::new(CapPlugin {
             id: "test.needs-persistent",
             required_caps: vec![HostCapability::PersistentTransport],
@@ -799,16 +806,16 @@ fn plugin_requiring_a_cap_the_host_lacks_is_refused_naming_both() {
 // -----------------------------------------------------------------------
 
 #[cfg(feature = "builtin-tools")]
-fn build_conway_with_selection(selection: Option<PluginSelection>) -> Conway {
-    let cfg = base_config();
-    let backend = fake_backend("fake");
-    let store = Arc::new(FakeStore::new());
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let builder = ConwayBuilder::from_parts(cfg)
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router());
+/// A `Conway` over `base_config()` with an optional builtin-plugin
+/// selection -- the only thing these tests vary.
+///
+/// Delegates the port wiring to `conway::test_support`, but supplies its
+/// own `empty_router` (see that function's doc: this file's router is
+/// deliberately not the shared one).
+fn conway_with_selection(selection: Option<PluginSelection>) -> Conway {
+    let builder = test_builder_without_router(base_config())
+        .with_backend(fake_backend("fake"))
+        .with_router(empty_router());
     let builder = match selection {
         Some(selection) => builder.with_builtin_plugins(selection),
         None => builder,
@@ -831,7 +838,7 @@ fn build_conway_with_selection(selection: Option<PluginSelection>) -> Conway {
 #[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
 #[test]
 fn default_build_registers_every_builtin_except_bash() {
-    let conway = build_conway_with_selection(None);
+    let conway = conway_with_selection(None);
 
     assert!(
         conway.tool_render_kind(&ToolName::new("bash")).is_none(),
@@ -852,7 +859,7 @@ fn default_build_registers_every_builtin_except_bash() {
 #[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
 #[test]
 fn explicit_opt_in_via_builder_registers_the_bash_tool() {
-    let conway = build_conway_with_selection(Some(PluginSelection::All));
+    let conway = conway_with_selection(Some(PluginSelection::All));
 
     assert_eq!(
         conway.tool_render_kind(&ToolName::new("bash")),
@@ -871,7 +878,7 @@ fn explicit_opt_in_via_builder_registers_the_bash_tool() {
 #[test]
 fn explicit_opt_in_via_only_naming_shell_registers_the_bash_tool() {
     let conway =
-        build_conway_with_selection(Some(PluginSelection::Only(
+        conway_with_selection(Some(PluginSelection::Only(
             vec!["conway.shell".to_string()],
         )));
 
@@ -911,7 +918,7 @@ fn a_misspelled_builtin_plugin_id_is_rejected_rather_than_silently_ignored() {
         .with_backend(fake_backend("fake"))
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-        .with_router(fake_router())
+        .with_router(empty_router())
         .build()
     {
         Ok(_) => panic!("a misspelled built-in plugin id must fail the build, but it succeeded"),
@@ -936,7 +943,7 @@ fn a_misspelled_builtin_plugin_id_is_rejected_rather_than_silently_ignored() {
 #[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
 #[test]
 fn all_except_shell_and_none_select_what_their_names_say() {
-    let all_except_shell = build_conway_with_selection(Some(PluginSelection::AllExcept(vec![
+    let all_except_shell = conway_with_selection(Some(PluginSelection::AllExcept(vec![
         "conway.shell".to_string(),
     ])));
     assert!(
@@ -952,7 +959,7 @@ fn all_except_shell_and_none_select_what_their_names_say() {
         "AllExcept([\"conway.shell\"]) must still register everything it did not name"
     );
 
-    let nothing = build_conway_with_selection(Some(PluginSelection::None));
+    let nothing = conway_with_selection(Some(PluginSelection::None));
     assert!(
         nothing.tool_render_kind(&ToolName::new("bash")).is_none(),
         "None must register no bash"
@@ -980,7 +987,7 @@ fn config_tools_builtin_plugins_naming_shell_registers_the_bash_tool() {
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .build()
         .expect("build should succeed with every port injected");
 
@@ -1052,7 +1059,7 @@ fn injected_plugin_is_unaffected_by_the_default_builtin_selection() {
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_plugin(Arc::new(EchoPlugin))
         .build()
         .expect("build should succeed with every port injected");
@@ -1092,7 +1099,7 @@ fn injected_backend_replaces_config_derived_backend_with_same_id() {
         .with_backend(injected)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect("build should succeed");
@@ -1154,7 +1161,7 @@ fn probe_on_startup_false_makes_no_network_call_true_does() {
     ConwayBuilder::from_parts(cfg)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect("build should succeed: construction never contacts the backend");
@@ -1187,7 +1194,7 @@ fn probe_on_startup_false_makes_no_network_call_true_does() {
     ConwayBuilder::from_parts(cfg)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect("build should still succeed: a probe failure is a warning, not an error");
@@ -1282,7 +1289,7 @@ fn unset_api_key_env_fails_naming_the_variable() {
     let result = ConwayBuilder::from_parts(cfg)
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
         .build();
 
@@ -1325,7 +1332,7 @@ fn unknown_backend_kind_fails_build_naming_the_value_and_recognised_kinds() {
     let result = ConwayBuilder::from_parts(cfg)
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
         .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build();
@@ -1382,7 +1389,7 @@ fn registered_factory_kind_appears_in_the_recognised_kinds_list() {
     let result = ConwayBuilder::from_parts(cfg)
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_backend_factory(Arc::new(StubFactory))
         .build();
 
@@ -1428,7 +1435,7 @@ fn declined_backend_kind_error_is_distinct_from_unknown_backend_kind_error() {
     let unknown_err = ConwayBuilder::from_parts(cfg_naming_openai_compat())
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-        .with_router(fake_router())
+        .with_router(empty_router())
         .build()
         .err()
         .expect("an unresolved kind must fail the build")
@@ -1439,7 +1446,7 @@ fn declined_backend_kind_error_is_distinct_from_unknown_backend_kind_error() {
     let declined_err = ConwayBuilder::from_parts(cfg_naming_openai_compat())
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_declined_backend_kinds(vec!["openai-compat".to_string()])
         .build()
         .err()
@@ -1489,7 +1496,7 @@ fn duplicate_instruction_fragment_name_is_rejected() {
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_plugin(Arc::new(InstructingPlugin("test.one", "when-to-do-x")))
         .with_plugin(Arc::new(InstructingPlugin("test.two", "when-to-do-x")))
         .build();
@@ -1539,7 +1546,7 @@ fn distinctly_named_instruction_fragments_from_two_plugins_build_cleanly() {
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_plugin(Arc::new(InstructingPlugin("test.one", "when-to-do-x")))
         .with_plugin(Arc::new(InstructingPlugin("test.two", "when-to-do-y")))
         .build()
@@ -1567,7 +1574,7 @@ async fn a_reachable_plugin_instruction_reaches_a_real_agents_context() {
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(empty_router())
         .with_plugin(Arc::new(InstructingPlugin("test.trim", "when-to-compose")))
         .build()
         .expect("build should succeed with a reachable instruction fragment");

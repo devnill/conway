@@ -24,23 +24,15 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, FacadeError, ForkSpec, SessionSpec};
+use conway::test_support::{build_conway, build_conway_with_echo_backend};
+use conway::{ConwayBuilder, FacadeError, ForkSpec, SessionSpec};
 use conway_core::agent::{PermissionDecision, ResultStatus};
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{ForkOrigin, SessionFilter, SubagentMode};
 use conway_core::ports::{Backend, SessionStore};
-use conway_testkit::{
-    text_response, FakeBackend, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
+use conway_testkit::{text_response, FakeGate, FakeStore, ScriptedBackend, ScriptedTurn};
 
 /// The "default" role's plain chain under [`pin_aware_router`] -- what a
 /// `RouteRequest` with `pin: None` resolves to.
@@ -149,28 +141,6 @@ fn expect_session_err(
     }
 }
 
-fn build_conway(store: Arc<dyn SessionStore>) -> Conway {
-    let backend: Arc<dyn conway_core::ports::Backend> =
-        Arc::new(FakeBackend::echo(BackendId::new("fake")));
-    build_conway_with_backend(store, backend)
-}
-
-/// Like [`build_conway`], but with an injected backend -- for the
-/// `ScriptedBackend`-driven drivability tests below, which need to script
-/// and inspect the exact requests a resumed/forked agent sends. `fake_router`
-/// pins every role to `BackendId::new("fake")`, so `backend.id()` must be
-/// that same id (`ScriptedBackend::with_id(BackendId::new("fake"))`).
-fn build_conway_with_backend(store: Arc<dyn SessionStore>, backend: Arc<dyn Backend>) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .build()
-        .expect("build should succeed with every port injected")
-}
-
 // ---------------------------------------------------------------------
 // resume()
 // ---------------------------------------------------------------------
@@ -187,7 +157,7 @@ async fn resume_returns_handle_whose_id_and_root_match_the_session_header() {
     // restart against the same persisted store.
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
     let (sid, root) = {
-        let conway = build_conway(store.clone());
+        let conway = build_conway_with_echo_backend(base_config(), store.clone());
         let handle = conway
             .new_session(SessionSpec::default())
             .await
@@ -195,7 +165,7 @@ async fn resume_returns_handle_whose_id_and_root_match_the_session_header() {
         (handle.id(), handle.root())
     };
 
-    let conway2 = build_conway(store);
+    let conway2 = build_conway_with_echo_backend(base_config(), store);
     let resumed = conway2
         .resume(sid)
         .await
@@ -212,7 +182,7 @@ async fn resume_returns_handle_whose_id_and_root_match_the_session_header() {
 #[tokio::test]
 async fn resume_on_nonexistent_session_returns_store_error_naming_the_id() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let missing = SessionId::new();
 
     let err = expect_session_err(
@@ -421,7 +391,7 @@ async fn resumed_handle_transcript_matches_records_from_before_a_simulated_resta
         // the session" -- only `store` (not this `Conway`/its `Runtime`)
         // survives past the block, simulating a restart against the same
         // persisted store.
-        let conway = build_conway(store.clone());
+        let conway = build_conway_with_echo_backend(base_config(), store.clone());
         let handle = conway
             .new_session(SessionSpec::default())
             .await
@@ -448,7 +418,7 @@ async fn resumed_handle_transcript_matches_records_from_before_a_simulated_resta
         );
     }
 
-    let conway2 = build_conway(store);
+    let conway2 = build_conway_with_echo_backend(base_config(), store);
     let resumed = conway2
         .resume(sid)
         .await
@@ -491,7 +461,7 @@ async fn resumed_handle_prompt_succeeds_and_continues_the_transcript() {
             ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("ack"))])
                 .with_id(BackendId::new("fake")),
         );
-        let conway = build_conway_with_backend(store.clone(), backend1);
+        let conway = build_conway(base_config(), backend1, store.clone());
         let handle = conway
             .new_session(SessionSpec::default())
             .await
@@ -513,7 +483,7 @@ async fn resumed_handle_prompt_succeeds_and_continues_the_transcript() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("continued"))])
             .with_id(BackendId::new("fake")),
     );
-    let conway2 = build_conway_with_backend(store, backend2.clone());
+    let conway2 = build_conway(base_config(), backend2.clone(), store);
     let resumed = conway2
         .resume(sid)
         .await
@@ -634,7 +604,7 @@ async fn resume_succeeds_on_a_session_with_a_truncated_trailing_line() {
             .await
             .expect("re-open should succeed"),
     );
-    let conway = build_conway(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
 
     let resumed = conway
         .resume(sid)
@@ -660,7 +630,7 @@ async fn resume_succeeds_on_a_session_with_a_truncated_trailing_line() {
 #[tokio::test]
 async fn new_session_with_a_fresh_caller_chosen_id_creates_exactly_that_id() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
     let chosen = SessionId::new();
 
     let handle = conway
@@ -682,7 +652,7 @@ async fn new_session_with_a_fresh_caller_chosen_id_creates_exactly_that_id() {
 #[tokio::test]
 async fn new_session_with_an_already_existing_id_returns_a_typed_error() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let existing = conway
         .new_session(SessionSpec::default())
         .await
@@ -719,7 +689,7 @@ async fn new_session_with_an_already_existing_id_returns_a_typed_error() {
 #[tokio::test]
 async fn context_report_at_forwards_to_the_runtime_and_matches_the_live_report() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = conway
         .new_session(SessionSpec::default())
         .await
@@ -749,7 +719,7 @@ async fn context_report_at_forwards_to_the_runtime_and_matches_the_live_report()
 #[tokio::test]
 async fn context_report_at_errors_typed_for_an_out_of_range_turn() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(store);
+    let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = conway
         .new_session(SessionSpec::default())
         .await
@@ -804,7 +774,7 @@ fn session_meta_with_labels(labels: Vec<String>) -> conway_core::log::SessionMet
 #[tokio::test]
 async fn sessions_delegates_to_store_list_and_returns_the_filtered_subset() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
 
     let a = session_meta_with_labels(vec!["keep".to_string()]);
     let b = session_meta_with_labels(vec![]);
@@ -846,7 +816,7 @@ async fn sessions_delegates_to_store_list_and_returns_the_filtered_subset() {
 #[tokio::test]
 async fn fork_from_creates_child_with_expected_origin() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
     let handle = conway
         .new_session(SessionSpec::default())
         .await
@@ -875,7 +845,7 @@ async fn fork_from_creates_child_with_expected_origin() {
 #[tokio::test]
 async fn fork_from_rejects_at_beyond_parent_head_naming_both_values() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
     let handle = conway
         .new_session(SessionSpec::default())
         .await
@@ -908,7 +878,7 @@ async fn fork_from_rejects_at_beyond_parent_head_naming_both_values() {
 #[tokio::test]
 async fn fork_from_copies_zero_records() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
     let handle = conway
         .new_session(SessionSpec::default())
         .await
@@ -934,7 +904,7 @@ async fn fork_from_copies_zero_records() {
 #[tokio::test]
 async fn fork_from_at_zero_is_valid_with_an_empty_inherited_prefix() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(store.clone());
+    let conway = build_conway_with_echo_backend(base_config(), store.clone());
     let handle = conway
         .new_session(SessionSpec::default())
         .await
@@ -995,7 +965,7 @@ async fn fork_from_returns_a_drivable_child_whose_prompt_succeeds() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend.clone());
+    let conway = build_conway(base_config(), backend.clone(), store.clone());
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -1099,7 +1069,7 @@ async fn fork_from_child_with_a_result_contract_it_cannot_satisfy_is_rejected_na
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend.clone());
+    let conway = build_conway(base_config(), backend.clone(), store.clone());
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -1193,7 +1163,7 @@ async fn fork_from_at_depth_two_inherits_the_whole_ancestor_chain() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend.clone());
+    let conway = build_conway(base_config(), backend.clone(), store.clone());
 
     let root = conway
         .new_session(SessionSpec::default())
@@ -1290,7 +1260,7 @@ async fn resumed_fork_child_with_its_own_history_inherits_the_parent_prefix_with
             ])
             .with_id(BackendId::new("fake")),
         );
-        let conway = build_conway_with_backend(store.clone(), backend);
+        let conway = build_conway(base_config(), backend, store.clone());
         let parent = conway
             .new_session(SessionSpec::default())
             .await
@@ -1327,7 +1297,7 @@ async fn resumed_fork_child_with_its_own_history_inherits_the_parent_prefix_with
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("child ack 2"))])
             .with_id(BackendId::new("fake")),
     );
-    let conway2 = build_conway_with_backend(store, backend2.clone());
+    let conway2 = build_conway(base_config(), backend2.clone(), store);
     let resumed_child = conway2
         .resume(child_sid)
         .await

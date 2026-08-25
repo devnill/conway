@@ -24,21 +24,15 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, PluginSelection, SessionHandle, SessionSpec, SpawnSpec};
+use conway::test_support::{scripted_backend, test_builder};
+use conway::{Conway, PluginSelection, SessionHandle, SessionSpec, SpawnSpec};
 use conway_core::agent::PermissionDecision;
 use conway_core::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
-use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
+use conway_core::ids::{AgentId, RoleAlias, SessionId, ToolName};
 use conway_core::log::LogRecord;
-use conway_core::ports::{Backend, GenerateResponse, PermissionGate, PluginConfig};
-use conway_testkit::{text_response, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::ports::{GenerateResponse, PermissionGate, PluginConfig};
+use conway_testkit::{text_response, FakeStore, ScriptedTurn};
 use tempfile::TempDir;
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
 
 fn read_call(call_id: &str, path: &str) -> ToolCall {
     ToolCall {
@@ -104,27 +98,20 @@ impl PermissionGate for AllowGate {
 /// Like `per_agent_plugin_config.rs`'s own `build_conway`, but with a
 /// caller-chosen `plugins` selection -- the "not-installed" test below needs
 /// a SECOND `Conway` built WITHOUT `conway.fs` at all.
-fn build_conway_with_plugins(
+/// A `Conway` over `base_config()` with an explicit builtin-plugin
+/// selection -- the one axis these tests vary.
+fn conway_with_plugin_selection(
     store: Arc<dyn conway_core::ports::SessionStore>,
     script: Vec<ScriptedTurn>,
     plugins: PluginSelection,
 ) -> Conway {
-    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend as Arc<dyn Backend>)
+    test_builder(base_config())
+        .with_backend(scripted_backend(script))
         .with_session_store(store)
         .with_permission_gate(Arc::new(AllowGate))
-        .with_router(fake_router())
         .with_builtin_plugins(plugins)
         .build()
         .expect("build should succeed with the requested plugin selection")
-}
-
-fn build_conway(
-    store: Arc<dyn conway_core::ports::SessionStore>,
-    script: Vec<ScriptedTurn>,
-) -> Conway {
-    build_conway_with_plugins(store, script, PluginSelection::All)
 }
 
 /// `{"conway.fs.root": "<root>"}` -- see `per_agent_plugin_config.rs`'s own
@@ -219,12 +206,13 @@ async fn two_narrowed_siblings_resumed_together_stay_independently_confined() {
         // First "process": spawn both narrowed siblings, each completing an
         // uneventful first turn -- nothing about their eventual confinement
         // is exercised yet, only that they exist, narrowed, in the store.
-        let conway1 = build_conway(
+        let conway1 = conway_with_plugin_selection(
             store.clone(),
             vec![
                 ScriptedTurn::Respond(text_response("a spawned")),
                 ScriptedTurn::Respond(text_response("b spawned")),
             ],
+            PluginSelection::All,
         );
         let handle1 = conway1
             .new_session(SessionSpec::default())
@@ -258,7 +246,7 @@ async fn two_narrowed_siblings_resumed_together_stay_independently_confined() {
     // are resumed into it and each is driven through one more turn that
     // probes both an in-root and an out-of-root (the OTHER sibling's own
     // root) read at once.
-    let conway2 = build_conway(
+    let conway2 = conway_with_plugin_selection(
         store.clone(),
         vec![
             ScriptedTurn::Respond(double_read_turn(
@@ -276,6 +264,7 @@ async fn two_narrowed_siblings_resumed_together_stay_independently_confined() {
             )),
             ScriptedTurn::Respond(text_response("b done")),
         ],
+        PluginSelection::All,
     );
 
     let resumed_a = conway2
@@ -362,9 +351,10 @@ async fn resuming_a_session_whose_narrowed_plugin_is_no_longer_installed_refuses
 
     let store: Arc<dyn conway_core::ports::SessionStore> = Arc::new(FakeStore::new());
     let session = {
-        let conway1 = build_conway(
+        let conway1 = conway_with_plugin_selection(
             store.clone(),
             vec![ScriptedTurn::Respond(text_response("spawned"))],
+            PluginSelection::All,
         );
         let handle1 = conway1
             .new_session(SessionSpec::default())
@@ -385,7 +375,7 @@ async fn resuming_a_session_whose_narrowed_plugin_is_no_longer_installed_refuses
     // (`PluginSelection::AllExcept` names its manifest id) -- the exact
     // "the plugin that declared this key narrowable was uninstalled since
     // this session was created" scenario.
-    let conway2 = build_conway_with_plugins(
+    let conway2 = conway_with_plugin_selection(
         store,
         vec![],
         PluginSelection::AllExcept(vec!["conway.fs".to_string()]),

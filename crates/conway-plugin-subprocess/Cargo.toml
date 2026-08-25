@@ -53,6 +53,12 @@ tokio = { workspace = true, features = ["process", "io-util", "time", "rt", "syn
 nix = { workspace = true, features = ["signal", "process"] }
 
 [dev-dependencies]
+# Board item 01M0TV8MSFRHHQ5BNZV3NHZCEW: this crate's tests reach
+# `conway::test_support` (the shared `build_conway`/`test_builder` wiring
+# that used to be hand-rolled per test file), which is behind the facade's
+# off-by-default `test-support` feature. Dev-only: nothing in `src/` may
+# name it.
+conway = { path = "../conway", features = ["test-support"] }
 # Test-only: builds a real, in-memory `Conway` (fake backend/store/gate/
 # router) to drive a real subprocess plugin's tool through a real turn end
 # to end -- the exact precedent `conway-plugin-skeleton`'s own

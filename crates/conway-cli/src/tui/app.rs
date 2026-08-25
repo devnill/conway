@@ -428,8 +428,7 @@ mod tests {
 
     use super::ask;
     use super::fixtures::{
-        base_config, build_conway_with_echo_backend, build_conway_with_echo_backend_and_store,
-        build_conway_with_echo_backend_over, minimal_cli,
+        base_config, echo_conway, echo_conway_and_store, echo_conway_over, minimal_cli,
     };
     use super::{App, SubmitOutcome};
     use crate::tui::commands;
@@ -453,14 +452,14 @@ mod tests {
     /// for `app`'s own `Conway::resume` to re-attach.
     #[tokio::test]
     async fn resuming_a_session_refreshes_its_own_head_seq() {
-        let (conway, store) = build_conway_with_echo_backend_and_store();
+        let (conway, store) = echo_conway_and_store();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await
             .expect("App::new should succeed");
 
         let other_sid = {
-            let other_conway = build_conway_with_echo_backend_over(store.clone());
+            let other_conway = echo_conway_over(store.clone());
             let other = other_conway
                 .new_session(conway::SessionSpec::default())
                 .await
@@ -506,7 +505,7 @@ mod tests {
     /// removal of `submit`'s local `Entry::User` push risks).
     #[tokio::test]
     async fn submit_renders_the_prompt_exactly_once_not_zero_not_twice() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await
@@ -563,7 +562,7 @@ mod tests {
     /// proves that test is not vacuous.
     #[tokio::test]
     async fn plugin_command_is_unknown_when_the_plugin_is_not_installed() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]) // no plugins installed
             .await
@@ -599,7 +598,7 @@ mod tests {
     /// `ForkSession` outcome (nothing was ever invoked to produce one).
     #[tokio::test]
     async fn conway_history_rewind_is_an_unknown_command_when_the_plugin_is_not_installed() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         // Deliberately `&[]`: no plugin installed at all, not even an
         // unrelated one -- the empty case this whole item's acceptance
@@ -673,7 +672,7 @@ mod tests {
         )
         .expect("write permissions.json");
 
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let mut cli = minimal_cli();
         cli.cwd = Some(project.path().to_path_buf());
         let mut app = App::new(&cli, &conway, &[])
@@ -870,7 +869,7 @@ mod tests {
 
     #[tokio::test]
     async fn settings_malformed_input_is_rejected_by_the_parser_before_any_refresh_or_open() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await
@@ -899,7 +898,7 @@ mod tests {
 
     #[tokio::test]
     async fn agents_reaches_its_handler_through_the_parser_and_toggles_the_tree_view() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await
@@ -919,7 +918,7 @@ mod tests {
 
     #[tokio::test]
     async fn agents_malformed_input_is_rejected_by_the_parser_and_never_toggles() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await
@@ -974,7 +973,7 @@ mod tests {
     #[tokio::test]
     async fn trust_reaches_its_handler_through_the_parser_against_a_real_conway() {
         let project = tempfile::TempDir::new().expect("tempdir");
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let mut cli = minimal_cli();
         cli.cwd = Some(project.path().to_path_buf());
         let mut app = App::new(&cli, &conway, &[])
@@ -1009,7 +1008,7 @@ mod tests {
 
     #[tokio::test]
     async fn trust_malformed_input_is_rejected_by_the_parser_before_any_facade_call() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await
@@ -1041,7 +1040,7 @@ mod tests {
 
     #[tokio::test]
     async fn ask_malformed_input_is_rejected_by_the_parser_and_never_sets_ask_in_flight() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await
@@ -1170,7 +1169,7 @@ mod tests {
 
     #[tokio::test]
     async fn ask_fate_fork_promotes_the_child_into_a_persistent_session() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await
@@ -1214,7 +1213,7 @@ mod tests {
 
     #[tokio::test]
     async fn ask_fate_pull_in_merges_the_answer_and_purges_the_child() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await
@@ -1261,7 +1260,7 @@ mod tests {
 
     #[tokio::test]
     async fn ask_fate_discard_purges_the_child_with_no_merge() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await

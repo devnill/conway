@@ -26,20 +26,14 @@ use conway::config::schema::{
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
 use conway::permission_pattern::{PatternOrigin, PatternRule};
-use conway::{Conway, ConwayBuilder, PluginSelection, RevokeOutcome, SessionSpec};
+use conway::test_support::{build_conway_with_builtins, scripted_backend};
+use conway::{Conway, RevokeOutcome, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{StopReason, ToolCall, Usage};
-use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolName};
-use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
-use conway_testkit::{text_response, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::ids::{AgentId, RoleAlias, ToolName};
+use conway_core::ports::{GenerateResponse, PermissionGate};
+use conway_testkit::{text_response, ScriptedTurn};
 use tempfile::TempDir;
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
 
 fn bash_call_response(command: &str) -> GenerateResponse {
     GenerateResponse {
@@ -145,22 +139,6 @@ impl PermissionGate for RecordingGate {
     }
 }
 
-fn build_conway(cwd: &Path, script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionGate>) -> Conway {
-    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
-    let store = Arc::new(FakeStore::new());
-    ConwayBuilder::from_parts(base_config(cwd))
-        .with_backend(backend as Arc<dyn Backend>)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        // (bash ships on by default and cannot be declined):
-        // this file drives the REAL `bash` tool end to end, so it must now
-        // opt in explicitly -- the facade's own default excludes it.
-        .with_builtin_plugins(PluginSelection::All)
-        .build()
-        .expect("build should succeed with the real builtin `bash` tool registered")
-}
-
 /// Runs one scripted tool call end to end -- named for its original `bash`
 /// fixture, but the SCRIPTED backend determines which tool is actually
 /// called, so this drives `read`/`write` calls too (see `read_call_response`'s
@@ -224,14 +202,14 @@ async fn revoking_one_pattern_leaves_the_other_in_force() {
     let write_path = cwd.path().join("write_me.txt").display().to_string();
     let (_config_dir, env) = isolated_env();
     let gate = RecordingGate::new();
-    let conway = build_conway(
-        cwd.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(cwd.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(&read_path)),
             ScriptedTurn::Respond(text_response("done")),
             ScriptedTurn::Respond(write_call_response(&write_path)),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     let agent = AgentId::new();
@@ -297,9 +275,9 @@ async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
     let agent = AgentId::new();
 
     let gate = RecordingGate::new();
-    let conway = build_conway(
-        project.path(),
-        vec![],
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     conway
@@ -328,14 +306,14 @@ async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
     // Simulate a restart: a brand-new `Conway`, loading permission files
     // fresh from disk.
     let gate2 = RecordingGate::new();
-    let restarted = build_conway(
-        project.path(),
-        vec![
+    let restarted = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(&read_path)),
             ScriptedTurn::Respond(text_response("done")),
             ScriptedTurn::Respond(write_call_response(&write_path)),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate2.clone() as Arc<dyn PermissionGate>,
     );
     let report =
@@ -379,7 +357,11 @@ async fn revoking_a_global_rule_persists_with_no_retrust_ceremony() {
         .expect("write global permissions.json");
 
     let gate = RecordingGate::new();
-    let conway = build_conway(cwd.path(), vec![], gate.clone() as Arc<dyn PermissionGate>);
+    let conway = build_conway_with_builtins(
+        base_config(cwd.path()),
+        scripted_backend(vec![]),
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
     let agent = AgentId::new();
     let report = conway.load_permission_files(cwd.path(), &env, PermissionScope::Session, agent);
     // Board item 01M03222QS0WQWPEHHNP9FKVXJ: a `bash:...` allow rule is
@@ -428,7 +410,11 @@ async fn revoking_an_interactive_rule_creates_no_file() {
     let cwd = TempDir::new().expect("tempdir");
     let (_config_dir, env) = isolated_env();
     let gate = RecordingGate::new();
-    let conway = build_conway(cwd.path(), vec![], gate as Arc<dyn PermissionGate>);
+    let conway = build_conway_with_builtins(
+        base_config(cwd.path()),
+        scripted_backend(vec![]),
+        gate as Arc<dyn PermissionGate>,
+    );
     let agent = AgentId::new();
 
     // No permissions file exists anywhere -- confirm the candidate paths
@@ -469,12 +455,12 @@ async fn a_persist_failure_still_revokes_for_the_session_and_reports_the_failure
     let agent = AgentId::new();
 
     let gate = RecordingGate::new();
-    let conway = build_conway(
-        project.path(),
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(project.path()),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("git status")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     conway
@@ -521,7 +507,11 @@ async fn revoking_a_grant_that_is_not_installed_reports_not_found() {
     let cwd = TempDir::new().expect("tempdir");
     let (_config_dir, env) = isolated_env();
     let gate = RecordingGate::new();
-    let conway = build_conway(cwd.path(), vec![], gate as Arc<dyn PermissionGate>);
+    let conway = build_conway_with_builtins(
+        base_config(cwd.path()),
+        scripted_backend(vec![]),
+        gate as Arc<dyn PermissionGate>,
+    );
 
     let outcome = conway.revoke_permission_pattern(
         &env,
@@ -541,7 +531,11 @@ async fn revoke_all_still_clears_every_grant() {
     let (_config_dir, env) = isolated_env();
     let _ = &env; // unused in this test beyond satisfying the helper shape
     let gate = RecordingGate::new();
-    let conway = build_conway(cwd.path(), vec![], gate as Arc<dyn PermissionGate>);
+    let conway = build_conway_with_builtins(
+        base_config(cwd.path()),
+        scripted_backend(vec![]),
+        gate as Arc<dyn PermissionGate>,
+    );
     let agent = AgentId::new();
 
     conway.grant_permission_pattern(

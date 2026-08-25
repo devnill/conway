@@ -41,6 +41,15 @@ metadata-refresh = []
 # is the fix for the inversion the item's spec named: conway's own tests
 # reached ready-made doubles a third party could not reach at all.
 testkit = ["dep:conway-testkit"]
+# Board item 01M0TV8MSFRHHQ5BNZV3NHZCEW: `src/test_support.rs` -- the one
+# place a `Conway` is assembled for a test, which was hand-rolled as a
+# local `build_conway` helper in 46 test files before it landed. It cannot
+# live in `conway-testkit` (that crate depends on `conway-core` only, by
+# T1, so it cannot see `ConwayBuilder`), and it must not be in the default
+# surface, so it gets the same treatment `testkit` already gets: an
+# off-by-default feature. Implies `testkit` because the wiring is built
+# out of those doubles.
+test-support = ["testkit"]
 
 [dependencies]
 conway-core = { path = "../conway-core" }
@@ -85,6 +94,15 @@ toml = { workspace = true }
 # that one; the two exist for different audiences (this workspace's own
 # tests vs. an external consumer).
 conway-testkit = { path = "../conway-testkit" }
+# A dev-dependency on THIS crate, which is how a package turns one of its
+# own features on for its own test targets: `src/test_support.rs` is
+# `#[cfg(feature = "test-support")]`, and an integration test in `tests/`
+# is a separate crate linking `conway` as built for the dev/test unit --
+# without this line that module would exist for every other crate in the
+# workspace and not for `conway`'s own 30-odd test files, which are its
+# largest consumer. Not a dependency cycle: cargo resolves dev-dependency
+# edges separately from normal ones.
+conway = { path = ".", features = ["test-support"] }
 # Board item 01KZFC43J1J06BM4CCWKCKHSNV: `conway` itself no longer depends on
 # the routing engine ([dependencies], above, has no such edge -- that's the
 # whole point of this crate becoming a first-party plugin). This

@@ -73,7 +73,8 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{AgentId, Conway, ConwayBuilder, Plugin, SessionHandle, SessionSpec, SpawnSpec, Tool};
+use conway::test_support::test_builder;
+use conway::{AgentId, Plugin, SessionHandle, SessionSpec, SpawnSpec, Tool};
 use conway_core::agent::{Budget, PermissionDecision, SubagentMode, SubagentSpec};
 use conway_core::capabilities::{
     CacheMode, Capabilities, ProbeReport, ReliabilityTier, StructuredOutput, ToolCallSupport,
@@ -83,21 +84,14 @@ use conway_core::content::{
     TruncationPolicy, Usage,
 };
 use conway_core::error::{BackendError, ToolError};
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, ToolName};
+use conway_core::ids::{BackendId, ModelId, RoleAlias, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
     Backend, BoxStream, GenerateRequest, GenerateResponse, PermissionGate, PluginManifest,
     StreamChunk, ToolCtx, ToolOutput,
 };
-use conway_testkit::{text_response, FakeGate, FakeRouter, FakeStore};
+use conway_testkit::{text_response, FakeGate};
 use futures_core::Stream;
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
 
 fn tool_call_response(tool: &str, arguments: serde_json::Value) -> GenerateResponse {
     GenerateResponse {
@@ -424,22 +418,6 @@ impl Plugin for ExfiltratePlugin {
     }
 }
 
-fn build_conway(
-    steps: Vec<Box<dyn Fn() -> GenerateResponse + Send + Sync>>,
-    gate: Arc<dyn PermissionGate>,
-) -> Conway {
-    let backend = Arc::new(LazyBackend::new(steps));
-    let store = Arc::new(FakeStore::new());
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend as Arc<dyn Backend>)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .with_plugin(Arc::new(ExfiltratePlugin))
-        .build()
-        .expect("build should succeed with the test-only exfiltration tools registered")
-}
-
 /// Spawns a child (a direct child of `handle`'s root) per `spec` and waits
 /// for it to finish, returning its id and full transcript.
 async fn spawn_and_await(handle: &SessionHandle, spec: SpawnSpec) -> (AgentId, Vec<LogRecord>) {
@@ -502,8 +480,8 @@ async fn a_hostile_ask_tool_can_only_ever_ask_its_own_caller_never_a_named_targe
     let target_for_step = target.clone();
     const SELF_FORK_REPLY: &str = "A_SELF_FORK_REPLY_5c2e9b";
 
-    let conway = build_conway(
-        vec![
+    let conway = test_builder(base_config())
+        .with_backend(Arc::new(LazyBackend::new(vec![
             // B's own single turn -- carries the secret marker.
             Box::new(|| text_response(VICTIM_SECRET)),
             // A's first turn: calls the hostile tool naming B as
@@ -528,9 +506,13 @@ async fn a_hostile_ask_tool_can_only_ever_ask_its_own_caller_never_a_named_targe
             Box::new(|| text_response(SELF_FORK_REPLY)),
             // A's follow-up turn, after seeing the tool's (successful) result.
             Box::new(|| text_response("noted")),
-        ],
-        Arc::new(FakeGate::new(PermissionDecision::AllowOnce)) as Arc<dyn PermissionGate>,
-    );
+        ])))
+        .with_permission_gate(
+            Arc::new(FakeGate::new(PermissionDecision::AllowOnce)) as Arc<dyn PermissionGate>
+        )
+        .with_plugin(Arc::new(ExfiltratePlugin))
+        .build()
+        .expect("build should succeed with the test-only exfiltration tools registered");
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -597,8 +579,8 @@ async fn a_hostile_start_tool_can_only_ever_attach_under_its_own_caller() {
     let target: Arc<Mutex<Option<AgentId>>> = Arc::new(Mutex::new(None));
     let target_for_step = target.clone();
 
-    let conway = build_conway(
-        vec![
+    let conway = test_builder(base_config())
+        .with_backend(Arc::new(LazyBackend::new(vec![
             Box::new(|| text_response("B is quietly working")),
             Box::new(move || {
                 let b = target_for_step.lock().unwrap().expect("B must exist");
@@ -617,9 +599,13 @@ async fn a_hostile_start_tool_can_only_ever_attach_under_its_own_caller() {
             // depends on which agent consumes which of these two.
             Box::new(|| text_response("ok")),
             Box::new(|| text_response("ok")),
-        ],
-        Arc::new(FakeGate::new(PermissionDecision::AllowOnce)) as Arc<dyn PermissionGate>,
-    );
+        ])))
+        .with_permission_gate(
+            Arc::new(FakeGate::new(PermissionDecision::AllowOnce)) as Arc<dyn PermissionGate>
+        )
+        .with_plugin(Arc::new(ExfiltratePlugin))
+        .build()
+        .expect("build should succeed with the test-only exfiltration tools registered");
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -666,14 +652,18 @@ async fn a_hostile_start_tool_can_only_ever_attach_under_its_own_caller() {
 // ---------------------------------------------------------------------
 #[tokio::test]
 async fn tree_reachable_from_any_tool_never_reveals_a_foreign_sibling() {
-    let conway = build_conway(
-        vec![
+    let conway = test_builder(base_config())
+        .with_backend(Arc::new(LazyBackend::new(vec![
             Box::new(|| text_response("B is quietly working")),
             Box::new(|| tool_call_response("tree_recon", serde_json::json!({}))),
             Box::new(|| text_response("recon complete")),
-        ],
-        Arc::new(FakeGate::new(PermissionDecision::AllowOnce)) as Arc<dyn PermissionGate>,
-    );
+        ])))
+        .with_permission_gate(
+            Arc::new(FakeGate::new(PermissionDecision::AllowOnce)) as Arc<dyn PermissionGate>
+        )
+        .with_plugin(Arc::new(ExfiltratePlugin))
+        .build()
+        .expect("build should succeed with the test-only exfiltration tools registered");
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -708,10 +698,16 @@ async fn tree_reachable_from_any_tool_never_reveals_a_foreign_sibling() {
 // ---------------------------------------------------------------------
 #[tokio::test]
 async fn the_root_can_still_fork_its_own_child_through_the_real_facade() {
-    let conway = build_conway(
-        vec![Box::new(|| text_response("child's only turn"))],
-        Arc::new(FakeGate::new(PermissionDecision::AllowOnce)) as Arc<dyn PermissionGate>,
-    );
+    let conway = test_builder(base_config())
+        .with_backend(Arc::new(LazyBackend::new(vec![Box::new(|| {
+            text_response("child's only turn")
+        })])))
+        .with_permission_gate(
+            Arc::new(FakeGate::new(PermissionDecision::AllowOnce)) as Arc<dyn PermissionGate>
+        )
+        .with_plugin(Arc::new(ExfiltratePlugin))
+        .build()
+        .expect("build should succeed with the test-only exfiltration tools registered");
     let handle = conway
         .new_session(SessionSpec::default())
         .await

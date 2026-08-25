@@ -510,6 +510,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "chrono",
+ "conway",
  "conway-core",
  "conway-plugin-backends",
  "conway-plugin-routing",

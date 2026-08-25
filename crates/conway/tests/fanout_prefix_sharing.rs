@@ -68,15 +68,21 @@ use serde_json::{json, Value};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// The backend id [`fake_router`] always resolves to, and the id the real
-/// [`AnthropicBackend`] built below is constructed under -- the two must
-/// agree for `AttemptEngine` to find a candidate `Backend` for the router's
-/// chosen route.
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
+/// The route this file's `FakeRouter::single` calls resolve to.
+///
+/// The backend id must agree with the id the real [`AnthropicBackend`]
+/// built below is constructed under, or `AttemptEngine` finds no candidate
+/// `Backend` for the router's chosen route.
+///
+/// DIVERGENT, deliberately: this is NOT
+/// `conway::test_support::echo_model()`. The model id is a real Anthropic
+/// model name because this file drives the real `AnthropicBackend` against
+/// a `wiremock` server that matches on it; `"echo-model"` would not do.
+fn sonnet_model() -> ModelRef {
+    ModelRef {
         backend: BackendId::new("fake"),
         model: ModelId::new("claude-sonnet-4-6"),
-    }))
+    }
 }
 
 /// Distinct directive text for each sibling's `conway_fork` call -- an
@@ -416,7 +422,7 @@ async fn siblings_forked_across_separate_turns_do_not_share_the_breakpoint_same_
         .with_backend(backend as Arc<dyn Backend>)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(Arc::new(FakeRouter::single(sonnet_model())))
         .build()
         .expect("build should succeed with the real builtin conway_fork tool registered");
 
@@ -706,7 +712,7 @@ async fn n_siblings_forked_from_one_point_share_a_byte_identical_leading_run_on_
         .with_backend(backend as Arc<dyn Backend>)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(Arc::new(FakeRouter::single(sonnet_model())))
         .build()
         .expect("build should succeed with the real builtin conway_fork tool registered");
 

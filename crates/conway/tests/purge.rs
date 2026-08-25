@@ -17,22 +17,13 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{AskOrigin, Conway, ConwayBuilder, FacadeError, SessionHandle, SessionSpec};
-use conway_core::agent::PermissionDecision;
+use conway::test_support::build_conway;
+use conway::{AskOrigin, Conway, FacadeError, SessionHandle, SessionSpec};
 use conway_core::error::{RuntimeError, StoreError};
-use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId};
+use conway_core::ids::{AgentId, BackendId, RoleAlias, SessionId};
 use conway_core::log::{SessionFilter, SessionMeta};
-use conway_core::ports::{Backend, LiveOwner, SessionStore};
-use conway_testkit::{
-    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
+use conway_core::ports::{LiveOwner, SessionStore};
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
 fn base_config() -> ConwayConfig {
     let mut roles = BTreeMap::new();
@@ -60,17 +51,6 @@ fn base_config() -> ConwayConfig {
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
     }
-}
-
-fn build_conway_with_backend(store: Arc<dyn SessionStore>, backend: Arc<dyn Backend>) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .build()
-        .expect("build should succeed with every port injected")
 }
 
 /// A keep-alive session through one completed `/ask`, returning the handle
@@ -127,7 +107,7 @@ async fn purge_discards_a_completed_ask_child_without_touching_the_parent() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
     let parent_head_before = store.head(&handle.id()).await.expect("head");
@@ -181,7 +161,7 @@ async fn purge_an_unknown_agent_is_refused() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("parent ack"))])
             .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let unknown = AgentId::new();
     let err = conway
@@ -207,7 +187,7 @@ async fn purge_a_promoted_child_is_refused() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let (_handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
     conway
@@ -240,7 +220,7 @@ async fn purge_a_still_running_child_is_refused() {
     // deterministically mid-turn (non-terminal) when purge is called.
     let backend =
         Arc::new(ScriptedBackend::new(vec![ScriptedTurn::Pending]).with_id(BackendId::new("fake")));
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let handle = conway
         .new_session(SessionSpec {
@@ -305,7 +285,7 @@ async fn sweep_reaps_modal_ask_residue_but_never_tool_ask_or_untagged_sessions()
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     // A completed modal-ask child (SessionHandle::ask stamps
     // AskOrigin::ModalAsk -- the precondition assertion below pins that
@@ -371,9 +351,10 @@ async fn sweep_reaps_modal_ask_residue_but_never_tool_ask_or_untagged_sessions()
     // is empty -- nothing the crashed process had live is live here, so
     // every leftover is residue. (A fresh ScriptedBackend: the sweep makes
     // no backend calls.)
-    let restarted = build_conway_with_backend(
-        store.clone(),
+    let restarted = build_conway(
+        base_config(),
         Arc::new(ScriptedBackend::new(vec![]).with_id(BackendId::new("fake"))),
+        store.clone(),
     );
 
     let purged = restarted
@@ -414,7 +395,7 @@ async fn sweep_skips_a_modal_ask_child_that_is_still_live_in_the_tree() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let (_handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
     assert!(
@@ -463,11 +444,12 @@ async fn restarted_with_modal_ask_residue(store: Arc<dyn SessionStore>) -> (Conw
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway_a = build_conway_with_backend(store.clone(), backend);
+    let conway_a = build_conway(base_config(), backend, store.clone());
     let (_handle, _child_agent, child_session) = live_session_with_completed_ask(&conway_a).await;
-    let restarted = build_conway_with_backend(
-        store.clone(),
+    let restarted = build_conway(
+        base_config(),
         Arc::new(ScriptedBackend::new(vec![]).with_id(BackendId::new("fake"))),
+        store.clone(),
     );
     (restarted, child_session)
 }

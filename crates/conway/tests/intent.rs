@@ -19,24 +19,16 @@ use conway::config::schema::{
     ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
     ToolsConfig,
 };
-use conway::{AgentIntent, Conway, ConwayBuilder, FacadeError, SessionHandle, SessionSpec};
-use conway_core::agent::{PermissionDecision, SubagentMode};
+use conway::test_support::test_builder;
+use conway::{AgentIntent, Conway, FacadeError, SessionHandle, SessionSpec};
+use conway_core::agent::SubagentMode;
 use conway_core::error::BackendError;
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
+use conway_core::ids::{BackendId, RoleAlias};
 use conway_core::log::SessionFilter;
 use conway_core::ports::{Backend, SessionStore};
-use conway_testkit::{
-    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
 const CLASSIFY_TIMEOUT: Duration = Duration::from_secs(5);
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
 
 /// `with_intent_role` toggles the `[roles.intent]` entry -- the switch the
 /// unconfigured-role passthrough test flips.
@@ -100,17 +92,17 @@ fn base_config(with_intent_role: bool) -> ConwayConfig {
     }
 }
 
-fn build_conway(
+/// A `Conway` over an intent-role fixture config, which always carries a
+/// `kind = "openai-compat"` `[backends.fake]` entry and so needs that
+/// factory registered even though the injected backend overwrites it.
+fn conway_with_intent_config(
     config: ConwayConfig,
     store: Arc<dyn SessionStore>,
     backend: Arc<dyn Backend>,
 ) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(config)
+    test_builder(config)
         .with_backend(backend)
         .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
         // `conway` no longer
         // compiles either dialect in -- `with_intent_role`'s `fake`
         // `[backends.<id>]` entry (kind "openai-compat") needs a
@@ -155,7 +147,7 @@ async fn classify_parses_a_well_formed_reply_and_purges_the_intent_session() {
         ))])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(base_config(true), store.clone(), backend.clone());
+    let conway = conway_with_intent_config(base_config(true), store.clone(), backend.clone());
     let parent = idle_parent(&conway).await;
 
     let intent = tokio::time::timeout(
@@ -210,7 +202,7 @@ async fn classify_strips_a_single_json_code_fence() {
         ))])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(base_config(true), store.clone(), backend);
+    let conway = conway_with_intent_config(base_config(true), store.clone(), backend);
     let parent = idle_parent(&conway).await;
 
     let intent = tokio::time::timeout(
@@ -249,7 +241,7 @@ async fn classify_malformed_json_passes_through_verbatim_and_still_purges() {
         ))])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(base_config(true), store.clone(), backend);
+    let conway = conway_with_intent_config(base_config(true), store.clone(), backend);
     let parent = idle_parent(&conway).await;
 
     let raw = "fork this conversation to summarize it";
@@ -286,7 +278,7 @@ async fn classify_without_an_intent_role_passes_through_without_a_session_or_bac
     // An EMPTY script: any backend call would fail with "scripted backend
     // exhausted" -- the `calls()` assertion below pins that none happened.
     let backend = Arc::new(ScriptedBackend::new(vec![]).with_id(BackendId::new("fake")));
-    let conway = build_conway(base_config(false), store.clone(), backend.clone());
+    let conway = conway_with_intent_config(base_config(false), store.clone(), backend.clone());
     let parent = idle_parent(&conway).await;
 
     let raw = "spawn a reviewer for this diff";
@@ -331,7 +323,7 @@ async fn classify_strips_a_hallucinated_agent_def_but_keeps_recipe_and_prompt() 
     // `AgentsConfig::default().dir` (".conway/agents") does not exist under
     // the test process's cwd, so the configured def set is empty and EVERY
     // name is a hallucination.
-    let conway = build_conway(base_config(true), store.clone(), backend);
+    let conway = conway_with_intent_config(base_config(true), store.clone(), backend);
     let parent = idle_parent(&conway).await;
 
     let intent = tokio::time::timeout(
@@ -378,7 +370,7 @@ async fn classify_keeps_a_configured_agent_def() {
     );
     let mut config = base_config(true);
     config.agents.dir = agents_dir;
-    let conway = build_conway(config, store.clone(), backend);
+    let conway = conway_with_intent_config(config, store.clone(), backend);
     let parent = idle_parent(&conway).await;
 
     let intent = tokio::time::timeout(
@@ -414,7 +406,7 @@ async fn classify_an_invalid_recipe_value_passes_through_with_the_callers_defaul
         ))])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(base_config(true), store.clone(), backend);
+    let conway = conway_with_intent_config(base_config(true), store.clone(), backend);
     let parent = idle_parent(&conway).await;
 
     let raw = "do something with this";
@@ -451,7 +443,7 @@ async fn classify_propagates_a_failed_intent_turn_and_still_purges() {
         })])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(base_config(true), store.clone(), backend);
+    let conway = conway_with_intent_config(base_config(true), store.clone(), backend);
     let parent = idle_parent(&conway).await;
 
     let err = tokio::time::timeout(

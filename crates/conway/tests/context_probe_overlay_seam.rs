@@ -154,6 +154,7 @@ use conway::config::schema::{
     ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
     ToolsConfig,
 };
+use conway::test_support::test_builder_without_router;
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::{PermissionDecision, ResultStatus};
 use conway_core::capabilities::{
@@ -293,12 +294,12 @@ fn config_naming(base_url: String, metadata_path: PathBuf) -> ConwayConfig {
 /// nothing without a registered factory) -- the exact same factory
 /// `conway-cli`'s own default-on backend arm links for real (`first_party_
 /// plugins::backend_bundle`).
-fn build_conway(config: ConwayConfig) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    ConwayBuilder::from_parts(config)
-        .with_session_store(store)
-        .with_permission_gate(gate)
+/// A `Conway` whose router AND backend both come out of `config` through
+/// registered factories -- so no `Router` may be injected here (an
+/// injected one wins unconditionally over a `RouterFactory`, which is why
+/// this uses `test_builder_without_router`).
+fn conway_with_probe_factories(config: ConwayConfig) -> Conway {
+    test_builder_without_router(config)
         .with_router_factory(Arc::new(conway_plugin_routing::RoutingRouterFactory))
         .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
@@ -328,7 +329,7 @@ async fn listed_model_explain_reports_the_configured_window_not_the_wider_probed
     let dir = support::unique_temp_dir("context-probe-overlay-explain-agree");
     let metadata_path = write_model_metadata(&dir, TINY_LIVE_WINDOW);
     let config = config_naming(server.uri(), metadata_path);
-    let conway = build_conway(config);
+    let conway = conway_with_probe_factories(config);
 
     let report = conway.explain_routing(&RoleAlias::new("coder"));
     let entry = report
@@ -374,7 +375,7 @@ async fn probe_narrower_than_the_operator_configured_window_still_admits_and_cal
     let dir = support::unique_temp_dir("context-probe-overlay-narrower-admit");
     let metadata_path = write_model_metadata(&dir, LARGE_LIVE_WINDOW);
     let config = config_naming(server.uri(), metadata_path);
-    let conway = build_conway(config);
+    let conway = conway_with_probe_factories(config);
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -425,7 +426,7 @@ async fn explain_reported_window_matches_backend_capabilities_for_the_same_pair(
     let dir = support::unique_temp_dir("context-probe-overlay-index-equals-live");
     let metadata_path = write_model_metadata(&dir, TINY_LIVE_WINDOW);
     let config = config_naming(server.uri(), metadata_path);
-    let conway = build_conway(config);
+    let conway = conway_with_probe_factories(config);
 
     let report = conway.explain_routing(&RoleAlias::new("coder"));
     let entry = report
@@ -496,7 +497,7 @@ async fn widening_the_live_override_to_match_the_probe_admits_and_calls_the_back
     let dir = support::unique_temp_dir("context-probe-overlay-admit");
     let metadata_path = write_model_metadata(&dir, HUGE_PROBED_WINDOW);
     let config = config_naming(server.uri(), metadata_path);
-    let conway = build_conway(config);
+    let conway = conway_with_probe_factories(config);
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -566,7 +567,7 @@ async fn probe_observed_model_absent_from_models_json_is_not_admitted() {
     let metadata_path = write_model_metadata(&dir, HUGE_PROBED_WINDOW);
     let mut config = config_naming(server.uri(), metadata_path);
     config.roles.get_mut("coder").expect("coder role").chain = vec![UNDECLARED_MODEL.to_string()];
-    let conway = build_conway(config);
+    let conway = conway_with_probe_factories(config);
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -626,7 +627,7 @@ async fn probe_control_listed_model_still_admits_when_probe_reports_a_different_
     let dir = support::unique_temp_dir("context-probe-overlay-unlisted-control");
     let metadata_path = write_model_metadata(&dir, HUGE_PROBED_WINDOW);
     let config = config_naming(server.uri(), metadata_path);
-    let conway = build_conway(config);
+    let conway = conway_with_probe_factories(config);
 
     let handle = conway
         .new_session(SessionSpec::default())

@@ -17,19 +17,16 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::backend::{BackendId, GenerateRequest, GenerateResponse, ModelId, StopReason, Usage};
+use conway::backend::{BackendId, GenerateRequest, GenerateResponse, StopReason, Usage};
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
 use conway::plugin::{ContentBlock, Event, ToolCall, ToolName};
-use conway::{
-    Conway, ConwayBuilder, EventStream, ModelRef, PermissionDecision, RoleAlias, SessionSpec,
-};
-use conway_testkit::{
-    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
+use conway::{Conway, EventStream, RoleAlias, SessionSpec};
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
+use conway::test_support::test_builder;
 use conway_plugin_path::{PathPlugin, COMPOSE_TOOL_NAME};
 
 fn base_config(cwd: std::path::PathBuf) -> ConwayConfig {
@@ -80,31 +77,26 @@ fn tool_call_response(call_id: &str, tool: &str, args: serde_json::Value) -> Gen
 /// so the real `FsPathStore`/`JsonlSessionStore` (session store faked, path
 /// store not) `ConwayBuilder::build` constructs by default never touches
 /// the repository tree.
-fn build_conway(
+/// The `PathPlugin`-only case, which is most of this file.
+fn path_conway(
     cwd: std::path::PathBuf,
     backend: Arc<ScriptedBackend>,
     store: Arc<FakeStore>,
 ) -> Conway {
-    build_conway_with_plugins(cwd, backend, store, vec![Arc::new(PathPlugin)])
+    conway_with_plugins(cwd, backend, store, vec![Arc::new(PathPlugin)])
 }
 
-fn build_conway_with_plugins(
+/// `conway::test_support::test_builder`'s wiring plus an arbitrary plugin
+/// list -- the one axis this file varies.
+fn conway_with_plugins(
     cwd: std::path::PathBuf,
     backend: Arc<ScriptedBackend>,
     store: Arc<FakeStore>,
     plugins: Vec<Arc<dyn conway::plugin::Plugin>>,
 ) -> Conway {
-    let gate: Arc<dyn conway::PermissionGate> =
-        Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }));
-    let mut builder = ConwayBuilder::from_parts(base_config(cwd))
+    let mut builder = test_builder(base_config(cwd))
         .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(router);
+        .with_session_store(store);
     for plugin in plugins {
         builder = builder.with_plugin(plugin);
     }
@@ -209,7 +201,7 @@ async fn included_foreign_record_and_own_tail_both_survive_the_next_turn() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("b replies"))])
             .with_id(BackendId::new("fake")),
     );
-    let mint_conway = build_conway(tmp.path().to_path_buf(), mint_backend, store.clone());
+    let mint_conway = path_conway(tmp.path().to_path_buf(), mint_backend, store.clone());
     let session_b = mint_conway
         .new_session(SessionSpec::default())
         .await
@@ -233,7 +225,7 @@ async fn included_foreign_record_and_own_tail_both_survive_the_next_turn() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(tmp.path().to_path_buf(), backend.clone(), store.clone());
+    let conway = path_conway(tmp.path().to_path_buf(), backend.clone(), store.clone());
 
     let session_a = conway
         .new_session(multi_turn_spec())
@@ -276,7 +268,7 @@ async fn drop_own_tail_is_a_deliberate_reset_not_an_accident() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("b replies"))])
             .with_id(BackendId::new("fake")),
     );
-    let mint_conway = build_conway(tmp.path().to_path_buf(), mint_backend, store.clone());
+    let mint_conway = path_conway(tmp.path().to_path_buf(), mint_backend, store.clone());
     let session_b = mint_conway
         .new_session(SessionSpec::default())
         .await
@@ -303,7 +295,7 @@ async fn drop_own_tail_is_a_deliberate_reset_not_an_accident() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(tmp.path().to_path_buf(), backend.clone(), store.clone());
+    let conway = path_conway(tmp.path().to_path_buf(), backend.clone(), store.clone());
     let session_a = conway
         .new_session(multi_turn_spec())
         .await
@@ -370,7 +362,7 @@ async fn a_would_orphan_composition_is_refused_and_persists_nothing() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_plugins(
+    let conway = conway_with_plugins(
         tmp.path().to_path_buf(),
         backend.clone(),
         store.clone(),
@@ -521,7 +513,7 @@ async fn an_exclude_naming_the_anchor_cannot_resurrect_the_dropped_tail() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("b replies"))])
             .with_id(BackendId::new("fake")),
     );
-    let mint_conway = build_conway(tmp.path().to_path_buf(), mint_backend, store.clone());
+    let mint_conway = path_conway(tmp.path().to_path_buf(), mint_backend, store.clone());
     let session_b = mint_conway
         .new_session(SessionSpec::default())
         .await
@@ -552,7 +544,7 @@ async fn an_exclude_naming_the_anchor_cannot_resurrect_the_dropped_tail() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(tmp.path().to_path_buf(), backend.clone(), store.clone());
+    let conway = path_conway(tmp.path().to_path_buf(), backend.clone(), store.clone());
     let session_a = conway
         .new_session(multi_turn_spec())
         .await

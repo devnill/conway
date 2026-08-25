@@ -37,15 +37,14 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, Plugin, SessionSpec, Tool};
-use conway_core::agent::{Budget, PermissionDecision, ResultStatus};
+use conway::test_support::{build_conway, test_builder};
+use conway::{Plugin, SessionSpec, Tool};
+use conway_core::agent::{Budget, ResultStatus};
 use conway_core::content::ContentBlock;
 use conway_core::event::Event;
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
-use conway_core::ports::{Backend, GenerateResponse, SessionStore};
-use conway_testkit::{
-    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
+use conway_core::ids::{BackendId, RoleAlias};
+use conway_core::ports::{GenerateResponse, SessionStore};
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
 /// How long a test sleeps after `new_session` to give an idle keep_alive
 /// session's agent loop a moment to actually reach its idle-await gate
@@ -53,13 +52,6 @@ use conway_testkit::{
 /// doc) -- not to wait out any turn, since a prompt-less session never runs
 /// one.
 const SETTLE: Duration = Duration::from_millis(100);
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
 
 /// Mirrors `resume.rs`/`ask.rs`'s own identical helper -- this crate has no
 /// shared fixture module for it (each integration test binary is its own
@@ -166,35 +158,6 @@ fn base_config() -> ConwayConfig {
     }
 }
 
-fn build_conway_with_backend(store: Arc<dyn SessionStore>, backend: Arc<dyn Backend>) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .build()
-        .expect("build should succeed with every port injected")
-}
-
-/// Like [`build_conway_with_backend`], but also registers
-/// [`FixtureToolsPlugin`] (`probe`/`report`) -- for the tests below that need
-/// a keep-alive turn to take a genuine tool-call step, or to call `report`.
-fn build_conway_with_backend_and_tools(
-    store: Arc<dyn SessionStore>,
-    backend: Arc<dyn Backend>,
-) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .with_plugin(Arc::new(FixtureToolsPlugin))
-        .build()
-        .expect("build should succeed with every port injected")
-}
-
 /// Drains `stream` until it yields `Event::AgentFinished`, returning its
 /// `AgentResult` -- for the cancel/budget tests below, which (unlike the
 /// keep-alive-turn tests) DO expect a real terminal event, since a genuine
@@ -269,7 +232,7 @@ async fn keep_alive_true_session_runs_a_genuine_second_turn_in_the_same_process(
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store, backend.clone());
+    let conway = build_conway(base_config(), backend.clone(), store);
 
     let spec = SessionSpec {
         keep_alive: true,
@@ -350,7 +313,7 @@ async fn keep_alive_false_default_session_still_terminates_after_one_turn() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("done"))])
             .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store, backend);
+    let conway = build_conway(base_config(), backend, store);
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -392,7 +355,7 @@ async fn ask_child_is_not_keep_alive_and_its_result_resolves() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store, backend);
+    let conway = build_conway(base_config(), backend, store);
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -430,7 +393,7 @@ async fn cancel_ends_an_idle_keep_alive_session() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store, backend);
+    let conway = build_conway(base_config(), backend, store);
 
     let spec = SessionSpec {
         keep_alive: true,
@@ -484,7 +447,7 @@ async fn deadline_ends_an_idle_keep_alive_session() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store, backend);
+    let conway = build_conway(base_config(), backend, store);
 
     let spec = SessionSpec {
         keep_alive: true,
@@ -574,7 +537,12 @@ async fn keep_alive_session_survives_many_turns_whose_total_steps_exceed_max_ste
         ))));
     }
     let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
-    let conway = build_conway_with_backend_and_tools(store, backend.clone());
+    let conway = test_builder(base_config())
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_plugin(Arc::new(FixtureToolsPlugin))
+        .build()
+        .expect("build should succeed with every port injected");
 
     let spec = SessionSpec {
         keep_alive: true,
@@ -661,7 +629,12 @@ async fn keep_alive_single_turn_runaway_tool_loop_still_hits_max_steps() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend_and_tools(store, backend.clone());
+    let conway = test_builder(base_config())
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_plugin(Arc::new(FixtureToolsPlugin))
+        .build()
+        .expect("build should succeed with every port injected");
 
     let spec = SessionSpec {
         keep_alive: true,
@@ -735,7 +708,12 @@ async fn keep_alive_terminal_result_does_not_leak_a_stale_early_report() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend_and_tools(store, backend);
+    let conway = test_builder(base_config())
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_plugin(Arc::new(FixtureToolsPlugin))
+        .build()
+        .expect("build should succeed with every port injected");
 
     let spec = SessionSpec {
         keep_alive: true,

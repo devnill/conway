@@ -31,21 +31,15 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HookEntry, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, HookRuleView, PluginSelection};
+use conway::test_support::{scripted_backend, test_builder};
+use conway::{Conway, HookRuleView, PluginSelection};
 use conway_core::agent::{PermissionDecision, PermissionRequest};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, ToolName};
+use conway_core::ids::{RoleAlias, ToolName};
 use conway_core::log::LogRecord;
-use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
-use conway_testkit::{text_response, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::ports::{GenerateResponse, PermissionGate};
+use conway_testkit::{text_response, ScriptedTurn};
 use tempfile::TempDir;
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
 
 fn bash_call_response(command: &str) -> GenerateResponse {
     GenerateResponse {
@@ -137,19 +131,17 @@ impl PermissionGate for RecordingAllowGate {
     }
 }
 
-fn build_conway(
+/// A `Conway` with `hooks` in its config and the REAL `ProcessHookRunner`
+/// wired, over the real builtin tool set.
+fn conway_with_hook_rules(
     cwd: &Path,
     hooks: HooksConfig,
     script: Vec<ScriptedTurn>,
     gate: Arc<dyn PermissionGate>,
 ) -> Conway {
-    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
-    let store = Arc::new(FakeStore::new());
-    ConwayBuilder::from_parts(base_config(cwd, hooks))
-        .with_backend(backend as Arc<dyn Backend>)
-        .with_session_store(store)
+    test_builder(base_config(cwd, hooks))
+        .with_backend(scripted_backend(script))
         .with_permission_gate(gate)
-        .with_router(fake_router())
         // This file drives the REAL `bash` tool end to end (bash ships off
         // by default), and needs the REAL `ProcessHookRunner` a hook
         // config actually dispatches through.
@@ -204,7 +196,7 @@ async fn revoking_a_pre_tool_use_hook_lets_the_next_matching_call_reach_the_gate
     let hooks = HooksConfig {
         rules: vec![denying_pre_tool_use_rule("deny-bash")],
     };
-    let conway = build_conway(
+    let conway = conway_with_hook_rules(
         cwd.path(),
         hooks,
         vec![
@@ -268,7 +260,7 @@ async fn revoking_a_pre_tool_use_hook_lets_the_next_matching_call_reach_the_gate
 async fn revoking_an_absent_hook_rule_reports_false() {
     let cwd = TempDir::new().expect("tempdir");
     let gate = RecordingAllowGate::new();
-    let conway = build_conway(
+    let conway = conway_with_hook_rules(
         cwd.path(),
         HooksConfig::default(),
         vec![],
@@ -286,7 +278,7 @@ async fn revoking_with_an_unrecognized_event_name_reports_false() {
     let hooks = HooksConfig {
         rules: vec![denying_pre_tool_use_rule("deny-bash")],
     };
-    let conway = build_conway(cwd.path(), hooks, vec![], gate as Arc<dyn PermissionGate>);
+    let conway = conway_with_hook_rules(cwd.path(), hooks, vec![], gate as Arc<dyn PermissionGate>);
     assert!(!conway.revoke_hook_rule("post_tool_use", "deny-bash"));
     assert_eq!(
         conway.active_deny_capable_hook_rules().len(),
@@ -317,7 +309,7 @@ async fn revoking_a_prompt_submitted_hook_lets_the_next_prompt_through() {
             ..Default::default()
         }],
     };
-    let conway = build_conway(
+    let conway = conway_with_hook_rules(
         cwd.path(),
         hooks,
         vec![
@@ -380,7 +372,7 @@ async fn revoking_one_event_leaves_the_other_untouched() {
             },
         ],
     };
-    let conway = build_conway(cwd.path(), hooks, vec![], gate as Arc<dyn PermissionGate>);
+    let conway = conway_with_hook_rules(cwd.path(), hooks, vec![], gate as Arc<dyn PermissionGate>);
     assert_eq!(conway.active_deny_capable_hook_rules().len(), 2);
 
     assert!(conway.revoke_hook_rule("pre_tool_use", "deny-bash"));

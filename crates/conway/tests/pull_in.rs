@@ -26,26 +26,15 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, FacadeError, Provenance, SessionHandle, SessionSpec};
-use conway_core::agent::PermissionDecision;
+use conway::test_support::build_conway;
+use conway::{Conway, FacadeError, Provenance, SessionHandle, SessionSpec};
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::event::Event;
-use conway_core::ids::{
-    AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SeqRange, SessionId,
-};
+use conway_core::ids::{AgentId, BackendId, LogSeq, RoleAlias, SeqRange, SessionId};
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{Backend, SessionStore};
-use conway_testkit::{
-    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
-};
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 use futures_core::Stream as _;
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
 
 fn base_config() -> ConwayConfig {
     let mut roles = BTreeMap::new();
@@ -73,17 +62,6 @@ fn base_config() -> ConwayConfig {
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
     }
-}
-
-fn build_conway_with_backend(store: Arc<dyn SessionStore>, backend: Arc<dyn Backend>) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .build()
-        .expect("build should succeed with every port injected")
 }
 
 /// Drives a KEEP-ALIVE session (so the parent stays live — non-terminal
@@ -147,7 +125,7 @@ async fn pull_in_merges_the_ask_child_verbatim_then_purges_it() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
 
@@ -315,7 +293,7 @@ async fn pull_in_emits_the_merged_question_and_answer_on_the_parents_live_stream
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
 
@@ -411,18 +389,6 @@ async fn pull_in_emits_the_merged_question_and_answer_on_the_parents_live_stream
 // using `FakeStore`'s injected-append-failure seam.
 // ---------------------------------------------------------------------
 
-/// Builds the same `Conway` the helper above does, but keeps the CONCRETE
-/// `FakeStore` handle so a test can reach its injected-failure knobs (the
-/// `Arc<dyn SessionStore>` the builder takes cannot).
-fn build_conway_with_fake_store(
-    store: Arc<FakeStore>,
-    backend: Arc<dyn Backend>,
-) -> (Conway, Arc<dyn SessionStore>) {
-    let dyn_store: Arc<dyn SessionStore> = store.clone();
-    let conway = build_conway_with_backend(dyn_store.clone(), backend);
-    (conway, dyn_store)
-}
-
 fn two_turn_backend() -> Arc<dyn Backend> {
     Arc::new(
         ScriptedBackend::new(vec![
@@ -448,7 +414,8 @@ fn two_turn_backend() -> Arc<dyn Backend> {
 #[tokio::test]
 async fn pull_in_whose_second_append_fails_annotates_the_truncation_and_reports_how_far_it_got() {
     let fake = Arc::new(FakeStore::new());
-    let (conway, store) = build_conway_with_fake_store(fake.clone(), two_turn_backend());
+    let store: Arc<dyn SessionStore> = fake.clone();
+    let conway = build_conway(base_config(), two_turn_backend(), store.clone());
 
     let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
 
@@ -637,7 +604,8 @@ async fn pull_in_whose_second_append_fails_annotates_the_truncation_and_reports_
 #[tokio::test]
 async fn pull_in_whose_first_append_fails_is_a_clean_no_op() {
     let fake = Arc::new(FakeStore::new());
-    let (conway, store) = build_conway_with_fake_store(fake.clone(), two_turn_backend());
+    let store: Arc<dyn SessionStore> = fake.clone();
+    let conway = build_conway(base_config(), two_turn_backend(), store.clone());
 
     let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
     let parent_head_before = store.head(&handle.id()).await.expect("head");
@@ -683,7 +651,8 @@ async fn pull_in_whose_first_append_fails_is_a_clean_no_op() {
 #[tokio::test]
 async fn pull_in_reports_when_even_the_truncation_note_cannot_be_written() {
     let fake = Arc::new(FakeStore::new());
-    let (conway, store) = build_conway_with_fake_store(fake.clone(), two_turn_backend());
+    let store: Arc<dyn SessionStore> = fake.clone();
+    let conway = build_conway(base_config(), two_turn_backend(), store.clone());
 
     let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
     let parent_head_before = store.head(&handle.id()).await.expect("head");
@@ -737,7 +706,8 @@ async fn pull_in_reports_when_even_the_truncation_note_cannot_be_written() {
 #[tokio::test]
 async fn pull_in_whose_purge_fails_reports_a_complete_but_unpurged_merge() {
     let fake = Arc::new(FakeStore::new());
-    let (conway, store) = build_conway_with_fake_store(fake.clone(), two_turn_backend());
+    let store: Arc<dyn SessionStore> = fake.clone();
+    let conway = build_conway(base_config(), two_turn_backend(), store.clone());
 
     let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
     let parent_head_before = store.head(&handle.id()).await.expect("head");
@@ -805,7 +775,7 @@ async fn pull_in_refuses_when_the_parent_is_not_live() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     // NOT keep_alive: the root agent task terminates on its first
     // Completed turn, leaving the tree node `Finished`.
@@ -873,7 +843,7 @@ async fn pull_in_refuses_when_the_child_has_children() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
 
@@ -935,7 +905,7 @@ async fn pull_in_refuses_a_non_ephemeral_child() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let (handle, child_agent, child_session) = live_session_with_completed_ask(&conway).await;
 
@@ -977,7 +947,7 @@ async fn pull_in_an_unknown_child_is_refused() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("parent ack"))])
             .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -1012,7 +982,7 @@ async fn pull_in_refuses_a_still_running_child() {
     // deterministically mid-turn (non-terminal) when pull_in is called.
     let backend =
         Arc::new(ScriptedBackend::new(vec![ScriptedTurn::Pending]).with_id(BackendId::new("fake")));
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     // keep_alive root, NO parent prompt: the parent is live (idle), and the
     // child turn is the only backend call.

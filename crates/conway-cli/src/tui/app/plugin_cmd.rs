@@ -261,8 +261,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::super::fixtures::{
-        build_conway_with_echo_backend, build_conway_with_echo_backend_and_store, drain_and_apply,
-        minimal_cli,
+        drain_and_apply, echo_conway, echo_conway_and_store, minimal_cli,
     };
     use super::App;
     use crate::tui::state::Entry;
@@ -344,7 +343,7 @@ mod tests {
     /// own method, called here exactly as its `select!` arm calls it).
     #[tokio::test]
     async fn plugin_command_end_to_end_reaches_the_transcript() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(GreetPluginFixture);
         let mut app = App::new(&cli, &conway, &[plugin])
@@ -397,7 +396,7 @@ mod tests {
     /// test rather than hanging the whole suite.
     #[tokio::test]
     async fn a_hanging_plugin_command_does_not_block_submit_or_leave_the_app_unusable() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(GreetPluginFixture);
         let mut app = App::new(&cli, &conway, &[plugin])
@@ -508,7 +507,7 @@ mod tests {
     /// fork_from`'s own contract).
     #[tokio::test]
     async fn fork_session_outcome_forks_the_calling_session_and_drives_the_child() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(RewindPluginFixture);
         let mut app = App::new(&cli, &conway, &[plugin])
@@ -630,7 +629,7 @@ mod tests {
     #[tokio::test]
     async fn a_fork_session_outcome_is_resolved_against_the_invoking_session_even_if_the_host_has_since_moved_on(
     ) {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(RewindPluginFixture);
         let mut app = App::new(&cli, &conway, &[plugin])
@@ -747,7 +746,7 @@ mod tests {
     #[tokio::test]
     async fn conway_history_rewind_forks_the_real_plugin_and_leaves_the_parent_log_byte_for_byte_unchanged(
     ) {
-        let (conway, store) = build_conway_with_echo_backend_and_store();
+        let (conway, store) = echo_conway_and_store();
         let cli = minimal_cli();
         let plugin: Arc<dyn conway::plugin::Plugin> =
             Arc::new(conway_plugin_history::HistoryPlugin);
@@ -873,7 +872,7 @@ mod tests {
     /// is surfaced as a transcript notice.
     #[tokio::test]
     async fn conway_history_mask_appends_a_real_record_through_the_real_plugin() {
-        let (conway, store) = build_conway_with_echo_backend_and_store();
+        let (conway, store) = echo_conway_and_store();
         let cli = minimal_cli();
         let plugin: Arc<dyn conway::plugin::Plugin> =
             Arc::new(conway_plugin_history::HistoryPlugin);
@@ -980,7 +979,7 @@ mod tests {
     #[tokio::test]
     async fn conway_history_checkout_forks_the_target_and_leaves_it_untouched_through_the_real_plugin(
     ) {
-        let (conway, store) = build_conway_with_echo_backend_and_store();
+        let (conway, store) = echo_conway_and_store();
         let cli = minimal_cli();
         let plugin: Arc<dyn conway::plugin::Plugin> =
             Arc::new(conway_plugin_history::HistoryPlugin);

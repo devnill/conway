@@ -73,24 +73,16 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{
-    Conway, ConwayBuilder, PatternRule, PluginSelection, SessionHandle, SessionSpec, SpawnSpec,
-};
+use conway::test_support::{build_conway_with_builtins, scripted_backend, test_builder};
+use conway::{Conway, PatternRule, PluginSelection, SessionHandle, SessionSpec, SpawnSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
-use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolName};
+use conway_core::ids::{AgentId, RoleAlias, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::permission_mode::PermissionMode;
-use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
-use conway_testkit::{text_response, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::ports::{GenerateResponse, PermissionGate};
+use conway_testkit::{text_response, ScriptedTurn};
 use tempfile::TempDir;
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
 
 fn tool_call_response(tool: &str, arguments: serde_json::Value) -> GenerateResponse {
     GenerateResponse {
@@ -191,38 +183,21 @@ impl PermissionGate for RecordingGate {
     }
 }
 
-fn build_conway(script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionGate>) -> Conway {
-    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
-    let store = Arc::new(FakeStore::new());
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend as Arc<dyn Backend>)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        // (bash ships on by default and cannot be declined):
-        // this file drives the REAL `bash` tool end to end, so it must now
-        // opt in explicitly -- the facade's own default excludes it.
-        .with_builtin_plugins(PluginSelection::All)
-        .build()
-        .expect("build should succeed with the real builtin fs/bash tools registered")
-}
-
 /// Identical to [`build_conway`], plus `ConwayBuilder::with_root(root)` --
 /// the root-confinement item's own operator surface. Every
 /// session this `Conway` starts (`conway.new_session`) is therefore a
 /// CONFINED root agent, not only a spawned child.
-fn build_conway_with_root(
+/// The rooted variant: `build_conway_with_builtins`'s wiring plus an
+/// explicit `with_root`, which no shared helper covers because this is the
+/// only suite that sets one.
+fn conway_rooted_at(
     script: Vec<ScriptedTurn>,
     gate: Arc<dyn PermissionGate>,
     root: &Path,
 ) -> Conway {
-    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
-    let store = Arc::new(FakeStore::new());
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend as Arc<dyn Backend>)
-        .with_session_store(store)
+    test_builder(base_config())
+        .with_backend(scripted_backend(script))
         .with_permission_gate(gate)
-        .with_router(fake_router())
         .with_root(root)
         // (bash ships on by default and cannot be declined):
         // this file drives the REAL `bash` tool end to end, so it must now
@@ -303,11 +278,12 @@ async fn read_inside_root_is_allowed() {
     std::fs::write(root_dir.path().join("file.txt"), b"hello from inside").unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call("file.txt")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -356,11 +332,12 @@ async fn read_outside_root_is_denied() {
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
     let secret_path = outside_dir.join("secret.txt");
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call(&secret_path.display().to_string())),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -409,15 +386,16 @@ async fn read_with_nul_byte_path_under_root_is_denied_not_bypassed() {
     std::fs::write(root_dir.path().join("file.txt"), b"hello from inside").unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             // A NUL byte embedded in an otherwise ordinary relative path --
             // untrusted, model-influenced input. `resolve_path` (inside
             // `ReadTool::invoke` itself, BEFORE `conway.fs`'s own root
             // check ever runs) must refuse to resolve it.
             ScriptedTurn::Respond(read_call("file.txt\0/etc/passwd")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -482,11 +460,12 @@ async fn cd_out_of_the_root_is_denied_by_the_generic_path_arg_check() {
     std::fs::create_dir(&outside_dir).unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             ScriptedTurn::Respond(cd_call(&outside_dir.display().to_string())),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -527,11 +506,12 @@ async fn cd_within_the_root_is_allowed() {
     std::fs::create_dir(&sub).unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             ScriptedTurn::Respond(cd_call(&sub.display().to_string())),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -561,11 +541,12 @@ async fn write_nonexistent_target_inside_root_is_allowed() {
     let root_dir = TempDir::new().unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             ScriptedTurn::Respond(write_call("new/dir/file.txt", "hi there")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -611,11 +592,12 @@ async fn symlink_escape_is_denied() {
     symlink(Path::new("../outside"), repo_dir.join("link")).unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call("link/secret.txt")),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -659,11 +641,12 @@ async fn a_pattern_grant_cannot_defeat_root() {
     let gate = RecordingGate::new(PermissionDecision::Deny {
         reason: "must not be consulted".into(),
     });
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call("echo hi", Some(&outside_dir))),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -712,8 +695,9 @@ async fn a_cached_allow_always_cannot_defeat_root() {
     let gate = RecordingGate::new(PermissionDecision::AllowAlways {
         scope: PermissionScope::Session,
     });
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             // The root's OWN call: unconfined, so it reaches the gate
             // normally and gets cached at Session scope.
             ScriptedTurn::Respond(bash_call("echo hi", Some(&outside_dir))),
@@ -723,7 +707,7 @@ async fn a_cached_allow_always_cannot_defeat_root() {
             // root that does not contain `outside_dir`.
             ScriptedTurn::Respond(bash_call("echo hi", Some(&outside_dir))),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -773,11 +757,12 @@ async fn auto_allow_mode_cannot_defeat_root() {
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
     let secret_path = outside_dir.join("secret.txt");
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call(&secret_path.display().to_string())),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     conway.set_permission_mode(PermissionMode::AutoAllow);
@@ -813,11 +798,12 @@ async fn unconfinable_bash_command_always_reaches_the_gate_under_a_root() {
     let root_dir = TempDir::new().unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call("echo hi", None)),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
     conway.set_permission_mode(PermissionMode::AutoAllow);
@@ -864,11 +850,12 @@ async fn bash_cwd_outside_root_is_denied() {
     std::fs::create_dir(&outside_dir).unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call("echo hi", Some(&outside_dir))),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -903,11 +890,12 @@ async fn bash_cwd_inside_root_is_allowed() {
     std::fs::create_dir(&sub).unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             ScriptedTurn::Respond(bash_call("echo hi", Some(&sub))),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -951,11 +939,12 @@ async fn no_root_leaves_behavior_unchanged() {
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
     let other_path = other_dir.join("other.txt");
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call(&other_path.display().to_string())),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -1009,7 +998,7 @@ async fn a_configured_root_confines_the_root_agent_itself() {
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
     let secret_path = outside_dir.join("secret.txt");
-    let conway = build_conway_with_root(
+    let conway = conway_rooted_at(
         vec![
             ScriptedTurn::Respond(read_call(&secret_path.display().to_string())),
             ScriptedTurn::Respond(text_response("done")),
@@ -1063,7 +1052,7 @@ async fn cd_out_of_a_confined_root_agents_own_root_is_denied() {
     std::fs::create_dir(&outside_dir).unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway_with_root(
+    let conway = conway_rooted_at(
         vec![
             ScriptedTurn::Respond(cd_call(&outside_dir.display().to_string())),
             ScriptedTurn::Respond(text_response("done")),
@@ -1115,7 +1104,7 @@ async fn cd_within_a_confined_root_agents_own_root_is_allowed() {
     std::fs::create_dir_all(&sub).unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway_with_root(
+    let conway = conway_rooted_at(
         vec![
             ScriptedTurn::Respond(cd_call(&sub.display().to_string())),
             ScriptedTurn::Respond(text_response("done")),
@@ -1158,7 +1147,7 @@ async fn unconfinable_bash_command_always_reaches_the_gate_for_a_confined_root_a
     let root_dir = TempDir::new().unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway_with_root(
+    let conway = conway_rooted_at(
         vec![
             ScriptedTurn::Respond(bash_call("echo hi", None)),
             ScriptedTurn::Respond(text_response("done")),
@@ -1218,11 +1207,12 @@ async fn no_configured_root_leaves_the_root_agent_unconfined() {
     let other_path = other_dir.join("other.txt");
     // Deliberately `build_conway`, not `build_conway_with_root`: no
     // `ConwayBuilder::with_root` call at all.
-    let conway = build_conway(
-        vec![
+    let conway = build_conway_with_builtins(
+        base_config(),
+        scripted_backend(vec![
             ScriptedTurn::Respond(read_call(&other_path.display().to_string())),
             ScriptedTurn::Respond(text_response("done")),
-        ],
+        ]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
@@ -1265,7 +1255,7 @@ async fn a_spawned_childs_root_cannot_widen_a_confined_root_agents_own_root() {
     std::fs::create_dir(&sideways_root).unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway_with_root(
+    let conway = conway_rooted_at(
         vec![],
         gate.clone() as Arc<dyn PermissionGate>,
         &parent_root,
@@ -1309,7 +1299,7 @@ async fn a_spawned_child_with_no_override_inherits_a_confined_root_agents_own_ro
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
     let secret_path = outside_dir.join("secret.txt");
-    let conway = build_conway_with_root(
+    let conway = conway_rooted_at(
         vec![
             ScriptedTurn::Respond(read_call(&secret_path.display().to_string())),
             ScriptedTurn::Respond(text_response("done")),

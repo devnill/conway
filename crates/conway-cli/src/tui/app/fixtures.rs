@@ -14,10 +14,9 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, PermissionGate};
-use conway_core::agent::PermissionDecision;
-use conway_core::ids::{BackendId, ModelId};
-use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
+use conway::test_support::build_conway_with_echo_backend;
+use conway::Conway;
+use conway_testkit::FakeStore;
 use futures::Stream as _;
 
 use crate::cli::{Cli, OutputFormat};
@@ -54,40 +53,16 @@ pub(super) fn base_config() -> ConwayConfig {
 /// An echoing, fully in-memory `Conway`: its backend replies with
 /// exactly the last user-role segment's text, so a submitted prompt's
 /// round trip is deterministic and needs no real network/model.
-pub(super) fn build_conway_with_echo_backend() -> Conway {
-    let backend: Arc<dyn conway::Backend> = Arc::new(FakeBackend::echo(BackendId::new("fake")));
-    let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(Arc::new(FakeStore::new()))
-        .with_permission_gate(gate)
-        .with_router(router)
-        .build()
-        .expect("build should succeed with every port injected")
+pub(super) fn echo_conway() -> Conway {
+    build_conway_with_echo_backend(base_config(), Arc::new(FakeStore::new()))
 }
 
-/// Mirrors [`build_conway_with_echo_backend`], accepting a caller-supplied
+/// Mirrors [`echo_conway`], accepting a caller-supplied
 /// `ConwayConfig` instead of always [`base_config`] -- for a test that
 /// needs to vary a config field (e.g. `plugins.install`) while keeping
 /// every other port the same fully in-memory shape.
-pub(super) fn build_conway_with_config(config: ConwayConfig) -> Conway {
-    let backend: Arc<dyn conway::Backend> = Arc::new(FakeBackend::echo(BackendId::new("fake")));
-    let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }));
-    ConwayBuilder::from_parts(config)
-        .with_backend(backend)
-        .with_session_store(Arc::new(FakeStore::new()))
-        .with_permission_gate(gate)
-        .with_router(router)
-        .build()
-        .expect("build should succeed with every port injected")
+pub(super) fn conway_over_config(config: ConwayConfig) -> Conway {
+    build_conway_with_echo_backend(config, Arc::new(FakeStore::new()))
 }
 
 pub(super) fn minimal_cli() -> Cli {
@@ -131,7 +106,7 @@ pub(super) fn drain_and_apply(events: &mut conway::EventStream, state: &mut AppS
     }
 }
 
-/// Mirrors [`build_conway_with_echo_backend`], additionally handing
+/// Mirrors [`echo_conway`], additionally handing
 /// back the [`FakeStore`] so a test can read the persisted log directly
 /// -- the same shape `conway-plugin-skeleton`'s own
 /// `tests/skeleton_end_to_end.rs::build_conway` uses, reached here as
@@ -139,9 +114,9 @@ pub(super) fn drain_and_apply(events: &mut conway::EventStream, state: &mut AppS
 /// `apply_plugin_command_done`/`plugin_cmd_rx` are only reachable from
 /// THIS crate's own test code, never from an external
 /// `crates/conway-cli/tests/*.rs` integration file.
-pub(super) fn build_conway_with_echo_backend_and_store() -> (Conway, Arc<FakeStore>) {
+pub(super) fn echo_conway_and_store() -> (Conway, Arc<FakeStore>) {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend_over(store.clone());
+    let conway = echo_conway_over(store.clone());
     (conway, store)
 }
 
@@ -150,18 +125,6 @@ pub(super) fn build_conway_with_echo_backend_and_store() -> (Conway, Arc<FakeSto
 /// `resuming_a_session_refreshes_its_own_head_seq` needs: two
 /// independent runtimes sharing one persisted log, mirroring
 /// `crates/conway/tests/resume.rs`'s own `build_conway`/`resume` tests.
-pub(super) fn build_conway_with_echo_backend_over(store: Arc<FakeStore>) -> Conway {
-    let backend: Arc<dyn conway::Backend> = Arc::new(FakeBackend::echo(BackendId::new("fake")));
-    let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(router)
-        .build()
-        .expect("build should succeed with every port injected")
+pub(super) fn echo_conway_over(store: Arc<FakeStore>) -> Conway {
+    build_conway_with_echo_backend(base_config(), store)
 }

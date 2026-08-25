@@ -35,21 +35,15 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, PatternRule, PluginSelection, SessionSpec};
+use conway::test_support::build_conway_with_builtins;
+use conway::{Conway, PatternRule, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest};
 use conway_core::content::{ContentBlock, ToolResult};
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
+use conway_core::ids::{BackendId, RoleAlias};
 use conway_core::log::LogRecord;
 use conway_core::permission_mode::PermissionMode;
-use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
-use conway_testkit::{text_response, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
+use conway_core::ports::{GenerateResponse, PermissionGate};
+use conway_testkit::{text_response, ScriptedBackend, ScriptedTurn};
 
 /// A single scripted `bash` call, followed immediately by a final text
 /// response once the tool step completes.
@@ -138,21 +132,6 @@ fn blocks_text(blocks: &[ContentBlock]) -> String {
         .join("\n")
 }
 
-fn build_conway(backend: Arc<dyn Backend>, gate: Arc<dyn PermissionGate>) -> Conway {
-    let store = Arc::new(FakeStore::new());
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        // (bash ships on by default and cannot be declined):
-        // this file drives the REAL `bash` tool end to end, so it must now
-        // opt in explicitly -- the facade's own default excludes it.
-        .with_builtin_plugins(PluginSelection::All)
-        .build()
-        .expect("build should succeed with the real builtin `bash` tool registered")
-}
-
 /// The LAST `ToolResultRecord` in `handle`'s own (root-agent) transcript --
 /// i.e. the outcome of the one `bash` call each test below dispatches.
 fn tool_result(records: &[LogRecord]) -> &ToolResult {
@@ -223,7 +202,11 @@ async fn a_leading_tab_still_denies_curl_under_prompt_mode_through_the_real_seam
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(backend, gate.clone() as Arc<dyn PermissionGate>);
+    let conway = build_conway_with_builtins(
+        base_config(),
+        backend,
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
     // Prompt is the broker's default mode -- not set explicitly, so this
     // test also pins that the default behaves correctly.
 
@@ -266,7 +249,11 @@ async fn a_leading_tab_still_denies_curl_under_auto_allow_through_the_real_seam(
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(backend, gate.clone() as Arc<dyn PermissionGate>);
+    let conway = build_conway_with_builtins(
+        base_config(),
+        backend,
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
     conway.set_permission_mode(PermissionMode::AutoAllow);
 
     let (requests, result) = run_laundered_curl_call(&conway, gate).await;

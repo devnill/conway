@@ -263,15 +263,16 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use conway::{Conway, ConwayBuilder, PermissionGate, Plugin, Tool};
+    use conway::test_support::test_builder;
+    use conway::{Conway, PermissionGate, Plugin, Tool};
     use conway_core::content::{
         ContentBlock, PermissionClass, StopReason, ToolCall, ToolCategory, ToolSpec,
         TruncationPolicy, Usage,
     };
     use conway_core::error::ToolError;
-    use conway_core::ids::{BackendId, ModelId, ToolName};
+    use conway_core::ids::{BackendId, ToolName};
     use conway_core::ports::{GenerateResponse, PluginManifest, ToolCtx, ToolOutput};
-    use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
+    use conway_testkit::{text_response, ScriptedBackend, ScriptedTurn};
 
     use super::super::fixtures::{base_config, minimal_cli};
     use super::{App, AskUpdate};
@@ -377,13 +378,6 @@ mod tests {
         }
     }
 
-    fn fake_router() -> Arc<dyn conway::Router> {
-        Arc::new(conway_testkit::FakeRouter::single(conway::ModelRef {
-            backend: BackendId::new("fake"),
-            model: ModelId::new("echo-model"),
-        }))
-    }
-
     /// A real `TuiGate` (not `FakeGate` -- production wiring, `main.rs`'s
     /// own shape) wired into a fresh `Conway` whose backend scripts the
     /// ask child's turn as ONE tool call (`marker`, which needs a
@@ -391,7 +385,7 @@ mod tests {
     /// final text reply -- so the child's turn cannot finish until
     /// something answers the gate. Returns the matching `GateReceiver`
     /// (the app loop's own half) so the test can play the operator.
-    fn build_conway_with_real_gate() -> (Conway, GateReceiver, Arc<ScriptedBackend>) {
+    fn conway_with_real_gate() -> (Conway, GateReceiver, Arc<ScriptedBackend>) {
         let (gate, gate_rx) = TuiGate::channel();
         let gate: Arc<dyn PermissionGate> = Arc::new(gate);
         let backend = Arc::new(
@@ -401,11 +395,9 @@ mod tests {
             ])
             .with_id(BackendId::new("fake")),
         );
-        let conway = ConwayBuilder::from_parts(base_config())
+        let conway = test_builder(base_config())
             .with_backend(backend.clone())
-            .with_session_store(Arc::new(FakeStore::new()))
             .with_permission_gate(gate)
-            .with_router(fake_router())
             .with_plugin(Arc::new(MarkerPlugin))
             .build()
             .expect("build should succeed with every port injected");
@@ -436,7 +428,7 @@ mod tests {
     /// it instead of answering it -- see the next test.
     #[tokio::test]
     async fn ask_child_tool_call_is_answerable_exactly_as_an_interactive_operator_would() {
-        let (conway, mut gate_rx, _backend) = build_conway_with_real_gate();
+        let (conway, mut gate_rx, _backend) = conway_with_real_gate();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await
@@ -529,7 +521,7 @@ mod tests {
     /// ingredient `cancel` alone was missing.
     #[tokio::test]
     async fn cancelling_an_in_flight_ask_does_not_unblock_a_child_stuck_on_the_gate_today() {
-        let (conway, mut gate_rx, _backend) = build_conway_with_real_gate();
+        let (conway, mut gate_rx, _backend) = conway_with_real_gate();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await
@@ -610,7 +602,7 @@ mod tests {
     /// session.
     #[tokio::test]
     async fn abandon_ask_leaves_no_running_agent_and_no_dangling_session() {
-        let (conway, mut gate_rx, _backend) = build_conway_with_real_gate();
+        let (conway, mut gate_rx, _backend) = conway_with_real_gate();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await
