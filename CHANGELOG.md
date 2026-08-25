@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An operator can now add their own standing instructions to every
+  session, via a file — `conway.idiom` reads `instructions.md`** — board
+  item `01M0VR4GMGSZ2682T908JCGVFG`. Before this, the only lever for
+  house conventions ("this repo does X", "prefer Y over Z") was
+  `--system-prompt`/`--append-system-prompt`, reachable only on the
+  one-shot CLI path and REPLACING the whole system-prompt segment rather
+  than adding to it — an interactive operator had nothing. Following Pi's
+  `AGENTS.md`/`SYSTEM.md` precedent (a file, not a new `[plugins]` config
+  key — `PluginsConfig` has no per-plugin operator configuration surface
+  today, and adding one would be a schema change for text with no reason
+  to be a TOML value), `conway.idiom` now reads
+  `<project>/.conway/instructions.md` and `<home>/.conway/instructions.md`
+  when either exists, contributing each as its own named, additive
+  `InstructionFragment` (`conway.idiom.operator.project`/`conway.idiom.
+  operator.global`) alongside the plugin's shipped idioms primer — neither
+  file's presence disables the other, and `/context` renders each one's
+  own token cost separately. Reaches a forked or spawned child on the
+  identical footing as the shipped fragment (board item
+  `01M0VSKA76NSEHDSH25XJGJ2J5`'s ruling applies uniformly). A missing or
+  empty file is silent and normal; a file that exists but cannot be read
+  cleanly (a permissions error, a directory where a file was expected,
+  invalid UTF-8) fails the build loudly instead, naming the path: a file
+  the operator wrote and conway silently ignored is exactly the failure
+  mode this project cares most about. Every fragment this plugin
+  contributes, operator-authored or shipped, is still stamped
+  `Provenance::Skill` on the wire — a known, disclosed limitation
+  (`crates/conway-plugin-idiom`'s own module doc), not fixed by this item;
+  a `Provenance::Operator` variant is a persisted wire-format change and a
+  separate decision. See `docs/plugins/idiom.md` for the full precedence
+  and provenance write-up.
+
 - **A command can now submit a prompt — `CommandOutcome::SubmitPrompt`,
   reachable from the TUI, the one-shot CLI, and the library API alike** —
   board item `01M0VSMF71S6VXX81YRAAF5S8Q`. Before this, a plugin command

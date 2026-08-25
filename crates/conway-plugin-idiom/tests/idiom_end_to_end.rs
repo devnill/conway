@@ -58,10 +58,24 @@ fn idiom_conway(
     backend: Arc<ScriptedBackend>,
     store: Arc<FakeStore>,
 ) -> Conway {
+    idiom_conway_with_plugin(cwd, backend, store, IdiomPlugin::new())
+}
+
+/// The same fully-faked `Conway`, with a caller-supplied `IdiomPlugin` --
+/// the seam [`fragment_reaches_a_bare_sessions_wire_request`] uses via
+/// [`idiom_conway`] above, and the operator-instructions tests below use
+/// directly, to attach a plugin built via `IdiomPlugin::from_operator_files`
+/// instead of the no-operator-fragments default.
+fn idiom_conway_with_plugin(
+    cwd: std::path::PathBuf,
+    backend: Arc<ScriptedBackend>,
+    store: Arc<FakeStore>,
+    plugin: IdiomPlugin,
+) -> Conway {
     test_builder(base_config(cwd))
         .with_backend(backend)
         .with_session_store(store)
-        .with_plugin(Arc::new(IdiomPlugin))
+        .with_plugin(Arc::new(plugin))
         .build()
         .expect("build should succeed with every port injected")
 }
@@ -82,7 +96,7 @@ fn all_text(req: &conway::backend::GenerateRequest) -> String {
 #[test]
 fn manifest_id_matches_the_published_constant() {
     use conway::plugin::Plugin as _;
-    assert_eq!(IdiomPlugin.manifest().id, PLUGIN_ID);
+    assert_eq!(IdiomPlugin::new().manifest().id, PLUGIN_ID);
 }
 
 /// Acceptance 2/9: installing `conway.idiom` on a bare session (no
@@ -187,6 +201,140 @@ async fn fragment_reaches_a_forked_and_a_spawned_childs_wire_request() {
     );
 }
 
+/// Acceptance 1: an operator's own `.conway/instructions.md` reaches a
+/// real turn's wire request, alongside the shipped [`FRAGMENT_TEXT`] --
+/// board item `01M0VR4GMGSZ2682T908JCGVFG`. Demonstrates the same thing
+/// `/context` would show an operator interactively: the operator's own
+/// text, named, present in the assembled context.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn operator_project_instructions_reach_a_bare_sessions_wire_request() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let instructions_dir = tmp.path().join(".conway");
+    std::fs::create_dir_all(&instructions_dir).expect("mkdir");
+    std::fs::write(
+        instructions_dir.join("instructions.md"),
+        "Always run `cargo fmt` before calling `report`.\n",
+    )
+    .expect("write operator instructions");
+
+    let store = Arc::new(FakeStore::new());
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response(
+            "hello from the model",
+        ))])
+        .with_id(conway::backend::BackendId::new("fake")),
+    );
+    let plugin =
+        IdiomPlugin::from_operator_files(Some(&instructions_dir.join("instructions.md")), None)
+            .expect("a present, readable operator file must not error");
+    let conway = idiom_conway_with_plugin(tmp.path().to_path_buf(), backend.clone(), store, plugin);
+
+    let session = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = session.prompt("hi").await.expect("prompt");
+    turn.result().await.expect("turn completes");
+
+    let calls = backend.calls();
+    let request = calls.last().expect("at least one call recorded");
+    let text = all_text(request);
+    assert!(
+        text.contains("Fork vs spawn"),
+        "the shipped idiom fragment must still be present: {text}"
+    );
+    assert!(
+        text.contains("Always run `cargo fmt` before calling `report`."),
+        "the operator's own instructions.md text must reach the wire request: {text}"
+    );
+
+    // Acceptance 1's exact claim: the operator's text is visible via
+    // `/context`, not merely on the wire. `SessionHandle::context_report_current`
+    // is the SAME data `/context`'s own preamble section renders
+    // (`crates/conway-cli/src/tui/commands.rs`'s `render_instruction_fragments_preamble`,
+    // sourced from `ContextReport::instruction_fragments`) -- printed here
+    // (run with `-- --nocapture` to see it) as this acceptance's pasted
+    // demonstration.
+    let report = session
+        .context_report_current(root_agent(&session))
+        .await
+        .expect("context_report_current");
+    println!("/context instruction_fragments for this turn:");
+    for fragment in &report.instruction_fragments {
+        println!(
+            "  {} (plugin: {}, ~{} tokens, unreachable_tool_ids: {:?})",
+            fragment.name, fragment.plugin_id, fragment.tokens_est, fragment.unreachable_tool_ids
+        );
+    }
+    assert!(
+        report.instruction_fragments.iter().any(|f| f.name
+            == conway_plugin_idiom::OPERATOR_PROJECT_INSTRUCTION_NAME
+            && f.plugin_id == PLUGIN_ID
+            && f.unreachable_tool_ids.is_empty()),
+        "the operator's project fragment must be named and reachable in the context report: {:?}",
+        report.instruction_fragments
+    );
+}
+
+/// The root agent id `/context` would be invoked against with no explicit
+/// argument -- `commands.rs`'s own "no agent focused -> the root" fallback,
+/// reproduced here just to fetch a report rather than to test that
+/// fallback itself.
+fn root_agent(session: &conway::SessionHandle) -> conway::AgentId {
+    session.root()
+}
+
+/// The operator-authored fragment reaches a forked child's wire request
+/// too, exactly like the shipped fragment does
+/// ([`fragment_reaches_a_forked_and_a_spawned_childs_wire_request`]) --
+/// board item `01M0VSKA76NSEHDSH25XJGJ2J5`'s ruling applies uniformly to
+/// every `Plugin::instructions()` fragment, not only the shipped one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn operator_instructions_reach_a_forked_childs_wire_request() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let instructions_dir = tmp.path().join(".conway");
+    std::fs::create_dir_all(&instructions_dir).expect("mkdir");
+    let instructions_path = instructions_dir.join("instructions.md");
+    std::fs::write(&instructions_path, "House rule: never force-push.\n").expect("write");
+
+    let store = Arc::new(FakeStore::new());
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(text_response("root turn")),
+            ScriptedTurn::Respond(text_response("fork child turn")),
+        ])
+        .with_id(conway::backend::BackendId::new("fake")),
+    );
+    let plugin = IdiomPlugin::from_operator_files(Some(&instructions_path), None)
+        .expect("a present, readable operator file must not error");
+    let conway = idiom_conway_with_plugin(tmp.path().to_path_buf(), backend.clone(), store, plugin);
+
+    let session = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = session.prompt("hi").await.expect("prompt");
+    turn.result().await.expect("root turn completes");
+    let root = session.root();
+
+    let forked = session
+        .fork(root, ForkSpec::new("investigate further"))
+        .await
+        .expect("fork should succeed");
+    session
+        .await_agent(forked)
+        .await
+        .expect("forked child should complete");
+
+    let fork_calls = backend.calls();
+    let fork_text = all_text(fork_calls.last().expect("fork child made a call"));
+    assert!(
+        fork_text.contains("House rule: never force-push."),
+        "the operator's own instructions.md text must reach a forked child's wire request too: \
+         {fork_text}"
+    );
+}
+
 /// The fragment's own line/word budget, checked against the exact constant
 /// the plugin ships (acceptance 3) -- redundant with the unit test in
 /// `src/lib.rs`, deliberately: that one guards the constant in isolation,
@@ -206,6 +354,6 @@ fn fragment_text_is_within_the_forty_line_four_hundred_word_budget() {
 #[test]
 fn instruction_name_is_the_published_constant() {
     use conway::plugin::Plugin as _;
-    let instructions = IdiomPlugin.instructions();
+    let instructions = IdiomPlugin::new().instructions();
     assert_eq!(instructions[0].name, INSTRUCTION_NAME);
 }

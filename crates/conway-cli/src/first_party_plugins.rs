@@ -149,10 +149,21 @@ use conway_plugin_names::AgentNames;
 /// one file. Unlike `memory_store`, this `Arc` is ALSO read directly by the
 /// TUI (`tui::state::AppState::agent_names`) -- see `install`'s own doc for
 /// why that makes it a compiled interface rather than a shared file format.
+///
+/// `idiom_plugin` is the already-constructed `conway.idiom` plugin (board
+/// item `01M0VR4GMGSZ2682T908JCGVFG`), resolved by the caller via
+/// [`resolve_idiom_plugin`] -- threaded in rather than constructed here for
+/// the same reason `memory_store`/`agent_names` are: [`install`] needs the
+/// STRICT resolution (an unreadable/malformed operator `instructions.md`
+/// fails the whole build, P-13), while [`all_bundle_plugins`]/
+/// [`installed_plugins`] are read-only re-derivations for display and fall
+/// back to a plugin with no operator fragments on the same error, mirroring
+/// `skills_plugin`'s own fallback immediately below.
 fn bundle(
     cwd: &std::path::Path,
     memory_store: Arc<dyn MemoryStore>,
     agent_names: Arc<dyn AgentNames>,
+    idiom_plugin: Arc<dyn Plugin>,
 ) -> Vec<Arc<dyn Plugin>> {
     let skills_plugin =
         conway_plugin_skills::SkillsPlugin::from_dir(&cwd.join(".conway").join("skills"))
@@ -253,8 +264,14 @@ fn bundle(
         // module doc for the re-verified premise). Reaches every forked or
         // spawned child too, not the root alone (board item
         // `01M0VSKA76NSEHDSH25XJGJ2J5`'s ruling) -- see that crate's own
-        // doc and `PluginDescription::you_get` for the argument.
-        Arc::new(conway_plugin_idiom::IdiomPlugin),
+        // doc and `PluginDescription::you_get` for the argument. Also
+        // reads an operator's own `.conway/instructions.md` (project) and
+        // `<home>/.conway/instructions.md` (global) when either exists
+        // (board item `01M0VR4GMGSZ2682T908JCGVFG`) -- resolved by the
+        // caller via `resolve_idiom_plugin`, not constructed bare here, so
+        // `install`'s strict and `all_bundle_plugins`/`installed_plugins`'s
+        // graceful resolutions can differ (see this function's own doc).
+        idiom_plugin,
         // `conway.trim` -- a `Curator` that omits tool call/result
         // round-trips older than a configurable turn window (board item
         // `01M0TV447NAJ1R06S455DZPP54`; `conway-plugin-trim`'s own module
@@ -334,7 +351,42 @@ pub fn all_bundle_plugins(
     // fallback for an unselected build ("unused, cheap, no I/O").
     let browse_names: Arc<dyn AgentNames> =
         Arc::new(conway_plugin_names::InMemoryAgentNames::new());
-    bundle(cwd, memory_store, browse_names)
+    let idiom_plugin = resolve_idiom_plugin(cwd)
+        .unwrap_or_else(|_| Arc::new(conway_plugin_idiom::IdiomPlugin::new()) as Arc<dyn Plugin>);
+    bundle(cwd, memory_store, browse_names, idiom_plugin)
+}
+
+/// Resolves this process's real `conway.idiom` plugin (board item
+/// `01M0VR4GMGSZ2682T908JCGVFG`), including any operator-authored
+/// `instructions.md` at project scope (`<cwd>/.conway/instructions.md`) and
+/// global scope (alongside conway's user-scoped `settings.json`) --
+/// [`conway_plugin_idiom::resolve_operator_paths`] decides the two
+/// locations, [`conway_plugin_idiom::IdiomPlugin::from_operator_files`]
+/// reads them.
+///
+/// **Fails when either file exists but cannot be read cleanly** (a
+/// permissions error, the path naming a directory, invalid UTF-8) -- P-13:
+/// a file the operator wrote and conway silently ignored is the failure
+/// mode this project cares most about, so this does not degrade quietly
+/// the way `resolve_memory_store`'s in-memory fallback does for an
+/// unselected `conway.memory`. Missing/empty files are not failures at
+/// all -- see `IdiomPlugin::from_operator_files`'s own doc.
+///
+/// [`install`] propagates this `Err` and fails the whole build, the same
+/// posture `resolve_memory_store`/`resolve_agent_names` already take for
+/// their own "selected but broken" cases. [`all_bundle_plugins`]/
+/// [`installed_plugins`] call this too, but fall back to a plugin with no
+/// operator fragments on error instead of propagating -- both are
+/// read-only re-derivations for display (the plugin browser, the command
+/// registry), not a second enforcement point; a genuinely broken
+/// `instructions.md` already failed the real build in `install` first,
+/// mirroring `skills_plugin`'s own fallback in `bundle` above for the
+/// identical reason.
+fn resolve_idiom_plugin(cwd: &std::path::Path) -> conway::Result<Arc<dyn Plugin>> {
+    let (project, global) = conway_plugin_idiom::resolve_operator_paths(cwd);
+    let plugin =
+        conway_plugin_idiom::IdiomPlugin::from_operator_files(Some(&project), global.as_deref())?;
+    Ok(Arc::new(plugin))
 }
 
 /// Every first-party `RouterFactory` this binary links, in no particular
@@ -578,7 +630,13 @@ pub async fn install(
     let cwd = builder.config().cwd.clone();
     let memory_store = resolve_memory_store(&cwd, &builder.config().plugins.install).await?;
     let agent_names = resolve_agent_names(&builder.config().plugins.install)?;
-    let plugins = bundle(&cwd, memory_store.clone(), agent_names.clone());
+    let idiom_plugin = resolve_idiom_plugin(&cwd)?;
+    let plugins = bundle(
+        &cwd,
+        memory_store.clone(),
+        agent_names.clone(),
+        idiom_plugin,
+    );
     let builder = builder.install_selected(plugins, router_bundle(), backend_bundle())?;
     Ok((builder, memory_store, agent_names))
 }
@@ -627,7 +685,9 @@ pub fn installed_plugins(
 ) -> Vec<Arc<dyn Plugin>> {
     let install = &conway.config().plugins.install;
     let cwd = conway.config().cwd.clone();
-    bundle(&cwd, memory_store, agent_names)
+    let idiom_plugin = resolve_idiom_plugin(&cwd)
+        .unwrap_or_else(|_| Arc::new(conway_plugin_idiom::IdiomPlugin::new()) as Arc<dyn Plugin>);
+    bundle(&cwd, memory_store, agent_names, idiom_plugin)
         .into_iter()
         .filter(|plugin| install.contains(&plugin.manifest().id))
         .collect()
@@ -685,6 +745,16 @@ mod tests {
         Arc::new(conway_plugin_names::InMemoryAgentNames::new())
     }
 
+    /// The `conway.idiom` plugin every wiring-only check here passes to
+    /// `bundle` -- no operator fragments, the same shape
+    /// `IdiomPlugin::new()` gives any other caller with no `instructions.md`
+    /// on disk. None of this module's own tests exercise operator-file
+    /// resolution itself (that is `conway-plugin-idiom`'s own coverage);
+    /// this helper just satisfies `bundle`'s signature.
+    fn test_idiom_plugin() -> Arc<dyn Plugin> {
+        Arc::new(conway_plugin_idiom::IdiomPlugin::new())
+    }
+
     /// The bundle is what `install_selected` resolves against, so an empty
     /// or mis-keyed bundle would turn every `[plugins].install` entry into
     /// an unknown-id error. This checks the wiring only; it makes no claim
@@ -697,7 +767,7 @@ mod tests {
         // this wiring-only check.
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names())
+        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin())
             .iter()
             .any(|p| p.manifest().id == conway_plugin_skeleton::PLUGIN_ID);
         assert!(
@@ -715,7 +785,7 @@ mod tests {
     fn bundle_carries_the_memory_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names())
+        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin())
             .iter()
             .any(|p| p.manifest().id == conway_plugin_memory::PLUGIN_ID);
         assert!(
@@ -766,7 +836,7 @@ mod tests {
     fn bundle_carries_the_trim_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names())
+        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin())
             .iter()
             .any(|p| p.manifest().id == conway_plugin_trim::PLUGIN_ID);
         assert!(
@@ -786,7 +856,7 @@ mod tests {
     fn bundle_carries_the_idiom_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names())
+        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin())
             .iter()
             .any(|p| p.manifest().id == conway_plugin_idiom::PLUGIN_ID);
         assert!(
@@ -949,7 +1019,7 @@ mod tests {
     fn bundle_carries_the_names_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names())
+        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin())
             .iter()
             .any(|p| p.manifest().id == conway_plugin_names::PLUGIN_ID);
         assert!(
@@ -992,7 +1062,7 @@ mod tests {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let agent_names = test_agent_names();
-        let plugins = bundle(&cwd, memory_store, agent_names.clone());
+        let plugins = bundle(&cwd, memory_store, agent_names.clone(), test_idiom_plugin());
         let names_plugin = plugins
             .iter()
             .find(|p| p.manifest().id == conway_plugin_names::PLUGIN_ID)

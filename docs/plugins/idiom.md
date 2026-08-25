@@ -112,9 +112,85 @@ but never *decided* — nobody had argued whether a child SHOULD receive it.
 The board item argued it in full; this page, and the other three sites
 just named, are the record of that decision, corrected to match.
 
+## An operator's own standing instructions (board item `01M0VR4GMGSZ2682T908JCGVFG`)
+
+Beyond the shipped fragment above, this plugin also reads an operator's own
+`instructions.md` — house conventions, what this repository is, how an
+operator wants the model to behave — the file-based lever Pi's `AGENTS.md`/
+`SYSTEM.md` establish as precedent, applied here rather than a new
+`[plugins]` config key: `PluginsConfig` is `#[serde(deny_unknown_fields)]`
+with exactly four fields and no per-plugin operator configuration surface
+exists anywhere in conway yet (`conway-plugin-trim`'s own bundle entry
+names the identical gap), so a config key would be a schema change
+contending with other work, for text that has no reason to be a TOML value
+in the first place.
+
+**Location, and why it is one file at each of two scopes, not a search
+path.** `<project>/.conway/instructions.md`, matching the direct-`cwd`-join
+convention `.conway/agents/`/`.conway/skills/` already use (never walked up
+an ancestor chain, unlike Pi's own multi-directory merge — conway's project
+file convention never walks upward for `.conway/*`, so a search path would
+be new shape for this file alone). And, additionally, `<home>/.conway/
+instructions.md` — the SAME directory `conway::config::discovery::
+home_settings_path` already resolves `settings.json` into, filename
+swapped, at zero cost in new dependencies or schema. That reuse is
+deliberately the raw, `CONWAY_CONFIG_DIR`-independent home directory, not
+threaded through the env-aware `user_config_path` an embedder's isolated
+`CONWAY_CONFIG_DIR` would otherwise expect — doing so would mean adding an
+`env` parameter to `first_party_plugins::bundle` and every caller between
+it and `main.rs`, well past this item's sizing for a file most operators
+write once, in their real home directory. Both files are read when
+present, and **both are additive — neither one's presence disables the
+other**, unlike `settings.json`'s project-overrides-user merge: an operator
+who has authored both a house-wide preference and a per-project convention
+gets both, as two separately named fragments (`conway.idiom.operator.
+project`, `conway.idiom.operator.global`) so `/context` shows each one's
+own token cost rather than one opaque combined number. (When a project
+genuinely lives at the operator's own home directory, the two paths name
+the same file; the global fragment collapses away rather than injecting
+the same text twice.)
+
+**Missing is silent; unreadable is not.** No file at either scope,
+or a file that is empty/whitespace-only, contributes nothing and is not an
+error — exactly conway's pre-existing behavior. A file that exists but
+cannot be read cleanly — a permissions error, the path naming a directory,
+invalid UTF-8 — fails the build loudly instead, naming the path, the same
+tier a malformed `.conway/skills/*/SKILL.md` already fails at. A file the
+operator wrote and conway silently ignored is exactly the failure mode this
+project cares most about.
+
+**Reaches a forked or spawned child too, on the identical footing as the
+shipped fragment above** — board item `01M0VSKA76NSEHDSH25XJGJ2J5`'s
+ruling applies uniformly to every `Plugin::instructions()` fragment this
+plugin declares, operator-authored or shipped alike; there is no separate
+rule for the operator's own text, and no flag to opt a child out of it.
+
+**Provenance, stated rather than fixed.** Every fragment this plugin
+contributes — including an operator's own project/global text — is
+stamped `Provenance::Skill { name }` once assembled
+(`crates/conway-runtime/src/context/builder.rs`), the SAME stamp an
+operator-authored `.conway/skills` body gets. Plugin attribution lives
+only in the parallel `ContextReport::instruction_fragments` list, a
+side-channel, not durable provenance — so an operator's own words, merely
+read by this plugin, are attributed in the durable log to "a skill" and in
+`/context`'s report to `conway.idiom`, wrong in both directions. Not fixed
+here: a `Provenance::Operator` variant is a persisted wire-format change
+(precedent: `Provenance::CommandPrompt`, added the same day for a
+different feature) and is its own decision.
+
+**Replacing, not adding, is still the flag's job.** `--system-prompt`/
+`--append-system-prompt` (`crates/conway-cli/src/cli.rs`) reach
+`SessionSpec::system_prompt_override`, which REPLACES the whole `[0]
+SystemPrompt` segment — the answer for an operator who wants to replace
+the system prompt outright, on the one-shot path. This plugin's file is
+additive, alongside every other declared fragment, and does not attempt to
+answer "replace" a second way.
+
 ## Seeing it in `/context`
 
 `/context`'s preamble section (`crates/conway-cli/src/tui/commands.rs`)
 renders every plugin-declared instruction fragment this turn's assembly
-considered, named `conway.idiom.base` — its source plugin, its estimated
-token cost, and (had it been withheld) which tool id made it unreachable.
+considered — `conway.idiom.base` always, plus `conway.idiom.operator.
+project`/`conway.idiom.operator.global` whenever the corresponding file
+exists — each with its source plugin, its estimated token cost, and (had
+it been withheld) which tool id made it unreachable.
