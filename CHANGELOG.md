@@ -216,6 +216,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this file's own bullet above are corrected to state the ruling rather
   than the prior (now false) description.
 
+- **Shift+Tab cycles the permission mode** — board item
+  `01M0WX62C2VGJTXSR7XJBGMM9J`. `Action::CyclePermissionMode` (prompt ->
+  plan -> auto-allow) already existed and the app loop already wrote both
+  the broker (the authority) and the display mirror together
+  (`tui/app/run.rs`) — the only thing missing was a way to reach it
+  without opening `/settings` and navigating to its `permission_mode` row.
+  `handle_normal_key` (`crates/conway-cli/src/tui/input.rs`) now binds
+  `Shift-Tab` to the same `Action::CyclePermissionMode`, matching both
+  encodings a terminal might send for the chord (`KeyCode::BackTab`, and
+  bare `KeyCode::Tab` carrying the `SHIFT` modifier). Bound in
+  `Mode::Normal` only, deliberately — cycling to auto-allow while a
+  permission prompt or another modal-bearing surface is up would change
+  the meaning of the decision the operator is mid-way through making, and
+  every one of those surfaces' own key handlers already swallows an
+  unrecognized chorded key rather than needing a carved-out exception. The
+  key handler returns the Action; it never writes the broker itself,
+  preserving the authority split the settings row's own comment
+  documents. `/help`'s keybinding overlay (`tui/view/help.rs`) now lists
+  the binding.
+
 ### Security
 
 - **`CONWAY_CONFIG_DIR` no longer isolates only half of conway's

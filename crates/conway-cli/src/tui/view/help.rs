@@ -152,10 +152,19 @@ const GROUPS: &[Group] = &[
     },
     Group {
         title: "tools & display",
-        bindings: &[Binding {
-            keys: "Ctrl-E",
-            action: "expand/collapse all tool output",
-        }],
+        bindings: &[
+            Binding {
+                keys: "Ctrl-E",
+                action: "expand/collapse all tool output",
+            },
+            Binding {
+                keys: "Shift-Tab",
+                action: "cycle the permission mode: prompt -> plan -> \
+                          auto-allow -- the same cycle as the /settings \
+                          mode row, only while typing (not while a \
+                          permission prompt or other modal is up)",
+            },
+        ],
     },
     Group {
         title: "settings menu (only while /settings is open)",

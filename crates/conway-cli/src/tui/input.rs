@@ -66,6 +66,12 @@ pub enum Action {
     GrantPermissionRule(conway::Rule, PermissionScope),
     /// V2b: cycle prompt -> plan -> AUTO-ALLOW. The app loop writes the
     /// broker (the authority) and refreshes the display mirror together.
+    /// Board item `01M0WX62C2VGJTXSR7XJBGMM9J`: reachable both from the
+    /// `/settings` menu's `permission_mode` row and, directly, via
+    /// Shift+Tab in `Mode::Normal` (`handle_normal_key`'s own doc on the
+    /// `BackTab`/`Tab`+`SHIFT` arm) -- both paths return this same variant,
+    /// never a separate one, so the app loop's single handling arm covers
+    /// either origin identically.
     CyclePermissionMode,
     /// V2b: drop every pattern grant and cached allow-always.
     RevokePermissionGrants,
@@ -1055,6 +1061,47 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         }
         KeyCode::PageUp => Action::ScrollUp,
         KeyCode::PageDown => Action::ScrollDown,
+        // Board item `01M0WX62C2VGJTXSR7XJBGMM9J`: Shift+Tab cycles the
+        // permission mode (Prompt -> Plan -> AutoAllow). Before this item
+        // `Action::CyclePermissionMode` (see its own doc) was reachable ONLY
+        // from a `/settings` menu row -- this is the keyboard shortcut for
+        // it.
+        //
+        // Bound HERE, in `handle_normal_key`, deliberately -- not as a
+        // global chord ahead of the `Mode` match in `handle_key`. Cycling to
+        // `AutoAllow` while `Mode::AwaitingPermission`/`AskModal`/
+        // `IntentConfirm`/`TrustPreview`/`EditingPattern` is showing would
+        // change the meaning of the decision the operator is mid-way through
+        // making, and every one of those modes' own key handlers already
+        // swallows chorded keys on purpose (each has its own "a modifier
+        // held ... is NOT a decision" guard, mirroring
+        // `handle_permission_key`'s) -- this binding does not carve an
+        // exception into any of them, it simply never reaches them: none of
+        // their `match key.code` arms name `BackTab`/`Tab`, so a Shift+Tab
+        // that lands there falls through to their own `_ => Action::None`.
+        // The `/settings`/`/plugin`/`/help` overlay guards ahead of the
+        // `Mode` match in `handle_key` gate this the same way -- they
+        // intercept the key before `handle_normal_key` is ever called, and
+        // none of THEIR handlers recognize the chord either.
+        //
+        // Matches BOTH encodings a terminal might send for the same physical
+        // chord: `KeyCode::BackTab` (what crossterm decodes it to on most
+        // terminals) and bare `KeyCode::Tab` carrying the `SHIFT` modifier
+        // (what some terminals send instead, never both at once in
+        // practice). Bare `Tab` -- no `SHIFT` -- is unaffected: this module
+        // has never bound it in `Mode::Normal` (it falls through to the
+        // catch-all `Action::None` below exactly as it did before this
+        // item), so there is nothing here for it to collide with.
+        //
+        // Returns the SAME `Action::CyclePermissionMode` the settings row
+        // already returns (`activate_settings_selection`'s own doc) -- the
+        // app loop (`app/run.rs`) is the only place that writes
+        // `Conway::set_permission_mode` (the broker, the authority) and
+        // `AppState::permission_mode` (the display mirror) together; this
+        // handler does neither, so the two can never be written from two
+        // different places and drift apart.
+        KeyCode::BackTab => Action::CyclePermissionMode,
+        KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => Action::CyclePermissionMode,
         // Item A2: `v` cycles the /agents panel's draw-time visibility
         // filter (ActiveOnly -> All -> FinishedOnly -> ActiveOnly). Bound
         // only while the panel is open AND the input line is empty -- with
@@ -1232,6 +1279,10 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn shift_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::SHIFT)
     }
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
@@ -3662,6 +3713,202 @@ mod tests {
             Action::PermissionDecision(PermissionDecision::AllowOnce),
             "the permission prompt's own `y` binding must still resolve, not be \
              swallowed by the (backgrounded) settings menu"
+        );
+    }
+
+    // ---- Board item `01M0WX62C2VGJTXSR7XJBGMM9J`: Shift+Tab cycles the
+    // permission mode ----
+
+    /// Acceptance 1: Shift+Tab in `Mode::Normal` returns
+    /// `Action::CyclePermissionMode` -- the same variant the `/settings`
+    /// menu row already returns (`activate_settings_selection`'s
+    /// `LEAF_PERMISSION_MODE` arm), so the app loop's single dispatch arm
+    /// (`app/run.rs`) covers either origin identically. Both encodings a
+    /// terminal might send for the physical chord are checked:
+    /// `KeyCode::BackTab` (crossterm's decode on most terminals) and bare
+    /// `KeyCode::Tab` carrying the `SHIFT` modifier (what some terminals
+    /// send instead).
+    #[test]
+    fn shift_tab_in_normal_mode_cycles_the_permission_mode() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::BackTab)),
+            Action::CyclePermissionMode,
+            "BackTab must cycle the permission mode"
+        );
+        assert_eq!(
+            handle_key(&mut state, shift_key(KeyCode::Tab)),
+            Action::CyclePermissionMode,
+            "Shift-modified Tab must cycle the permission mode too -- some \
+             terminals send this encoding instead of BackTab"
+        );
+    }
+
+    /// Acceptance 4 (regression): bare `Tab` -- no `SHIFT` -- must still do
+    /// exactly what it did before this item in `Mode::Normal`: nothing.
+    /// This is the plausible break the item's own spec calls out -- the
+    /// chord and the bare key share a `KeyCode` on some terminals.
+    #[test]
+    fn bare_tab_in_normal_mode_is_still_a_no_op() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Tab)),
+            Action::None,
+            "bare Tab (no SHIFT) must not cycle the permission mode"
+        );
+        assert!(state.input.is_empty(), "bare Tab must not be typed as text");
+    }
+
+    /// Regression, the other direction: bare `Tab` inside
+    /// `Mode::EditingPattern` (the field editor) must keep moving the
+    /// selected field exactly as it did before this item
+    /// (`handle_editing_pattern_key`'s own `Down | Tab` arm) -- this item's
+    /// new binding lives only in `handle_normal_key` and must not shadow
+    /// it.
+    #[test]
+    fn bare_tab_still_moves_the_field_editor_selection() {
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("report"),
+                category: conway::ToolCategory::Read,
+                arguments: serde_json::json!({ "path": "/a", "mode": "r" }),
+                rendered: r#"report({"path":"/a","mode":"r"})"#.to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::Structured,
+            });
+        state.mode = Mode::AwaitingPermission(prompt);
+        handle_permission_key(&mut state, key(KeyCode::Char('p')));
+        let Mode::EditingPattern(ed) = &state.mode else {
+            panic!("expected EditingPattern mode");
+        };
+        assert_eq!(ed.cursor, 0);
+
+        let action = handle_key(&mut state, key(KeyCode::Tab));
+        assert_eq!(
+            action,
+            Action::None,
+            "Tab in the field editor has no Action"
+        );
+        let Mode::EditingPattern(ed) = &state.mode else {
+            panic!("expected EditingPattern mode");
+        };
+        assert_eq!(ed.cursor, 1, "bare Tab must still move the selected field");
+    }
+
+    /// Acceptance 3: Shift+Tab must NOT fire while an
+    /// `AwaitingPermission` prompt is showing -- cycling to `AutoAllow`
+    /// mid-decision would change the meaning of the decision the operator
+    /// is being asked for right now (the item's own recommendation).
+    /// `handle_permission_key` never grows a `BackTab`/`Tab` arm, so the
+    /// key falls through to its own `_ => Action::None`.
+    #[test]
+    fn shift_tab_does_not_fire_while_awaiting_permission() {
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({}),
+                rendered: "bash: ls".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        assert_eq!(handle_key(&mut state, key(KeyCode::BackTab)), Action::None);
+        assert_eq!(
+            handle_key(&mut state, shift_key(KeyCode::Tab)),
+            Action::None
+        );
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "the prompt must still be showing, unresolved"
+        );
+    }
+
+    /// Acceptance 3: Shift+Tab must NOT fire while the `/ask` modal is
+    /// open -- the input line/every other surface stays inert there too
+    /// (`handle_ask_modal_key`'s own doc), and `BackTab`/`Tab` is not one
+    /// of its three fate keys.
+    #[test]
+    fn shift_tab_does_not_fire_in_ask_modal() {
+        let mut state = ask_modal_state();
+        assert_eq!(handle_key(&mut state, key(KeyCode::BackTab)), Action::None);
+        assert_eq!(
+            handle_key(&mut state, shift_key(KeyCode::Tab)),
+            Action::None
+        );
+        assert!(matches!(state.mode, Mode::AskModal(_)));
+    }
+
+    /// Acceptance 3: Shift+Tab must NOT fire while an overlay
+    /// (`/settings`, `/plugin`, `/help`) is open -- those guards in
+    /// `handle_key` intercept the key before `handle_normal_key` is ever
+    /// reached, and none of their own handlers recognize `BackTab`/`Tab`.
+    #[test]
+    fn shift_tab_does_not_fire_while_an_overlay_is_open() {
+        let mut settings_state = AppState::new(AgentId::new());
+        settings_state.open_settings();
+        assert_eq!(
+            handle_key(&mut settings_state, key(KeyCode::BackTab)),
+            Action::None,
+            "must not fire while /settings is open"
+        );
+
+        let mut plugins_state = AppState::new(AgentId::new());
+        plugins_state.open_plugins();
+        assert_eq!(
+            handle_key(&mut plugins_state, key(KeyCode::BackTab)),
+            Action::None,
+            "must not fire while /plugin is open"
+        );
+
+        let mut help_state = AppState::new(AgentId::new());
+        help_state.open_help();
+        assert_eq!(
+            handle_key(&mut help_state, key(KeyCode::BackTab)),
+            Action::None,
+            "must not fire while /help is open"
+        );
+    }
+
+    /// Ties Shift+Tab's returned action to the exact same value the
+    /// `/settings` menu's `permission_mode` row already returns -- proving
+    /// the new binding is a second DOOR onto the identical `Action`, not a
+    /// parallel path that could drift from it (the authority-split property
+    /// `Action::CyclePermissionMode`'s own doc and `input.rs:335`'s comment
+    /// both call out: only the app loop ever writes the broker).
+    #[test]
+    fn shift_tab_and_the_settings_row_return_the_identical_action() {
+        let mut via_shift_tab = AppState::new(AgentId::new());
+        let from_shift_tab = handle_key(&mut via_shift_tab, key(KeyCode::BackTab));
+
+        let mut via_settings = AppState::new(AgentId::new());
+        via_settings.open_settings();
+        let menu = crate::tui::view::settings::build_tree(&via_settings);
+        let row = menu
+            .rows()
+            .iter()
+            .position(|r| {
+                matches!(
+                    &r.kind,
+                    crate::tui::view::menu::MenuRowKind::Leaf { id }
+                        if id == crate::tui::view::settings::LEAF_PERMISSION_MODE
+                )
+            })
+            .expect("the permission_mode row must be present");
+        via_settings.settings_selected = row;
+        let from_settings_row = handle_key(&mut via_settings, key(KeyCode::Enter));
+
+        assert_eq!(from_shift_tab, Action::CyclePermissionMode);
+        assert_eq!(
+            from_shift_tab, from_settings_row,
+            "both doors onto the cycle must return the identical Action"
         );
     }
 }
