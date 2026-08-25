@@ -1440,9 +1440,28 @@ impl ConwayBuilder {
         let plugin_events = declared_plugin_events(&resolved_plugins)
             .map_err(|message| FacadeError::Build { message })?;
 
-        // 11. Agent defs.
+        // 11. Agent defs. `AgentsConfig::dir` is the operator's own root
+        // (strict: a malformed file here is a loud build error, unchanged
+        // from before multi-root support existed);
+        // `AgentsConfig::extra_dirs` (board item
+        // `01M0X1EH2GW5DKY9XD1EZ78S3F`, empty by default) is zero or more
+        // ADDITIONAL roots, each resolved against the same `cwd`, that
+        // shadow-lose to `dir` and to each other in list order on a name
+        // collision, and whose own malformed files are skipped rather than
+        // failing the build -- see `agents::load_agent_defs_from_roots`'s
+        // own doc for the exact contract. Nothing populates `extra_dirs`
+        // yet: wiring a Claude Code compat plugin's own directories into it
+        // is a sibling item's job, not this one's.
         let agents_dir = resolve_path(&cwd, &config.agents.dir);
-        let agent_defs = agents::load_agent_defs(&agents_dir)?;
+        let mut agent_roots = vec![agents_dir];
+        agent_roots.extend(
+            config
+                .agents
+                .extra_dirs
+                .iter()
+                .map(|dir| resolve_path(&cwd, dir)),
+        );
+        let agent_defs = agents::load_agent_defs_from_roots(&agent_roots)?;
 
         // 11b. Skill defs (board item `01M03GKZ3MGZK3ETP6R27E2M9Y`). No
         // `[skills]` config section exists (or is needed): unlike

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`conway::agents::load_agent_defs` and `conway::skills::load_skill_defs` are no longer single-root** — board item `01M0X1EH2GW5DKY9XD1EZ78S3F`. Both now have a `_from_roots(dirs: &[PathBuf])` counterpart that reads an ORDERED list of roots into one merged map: `dirs[0]` (the operator's own directory) keeps the exact original strict contract — a malformed file there is still a loud, propagated build error — and always wins a name collision against any later root; every root after it is treated as third-party (e.g. a plugin's own directory), so a malformed file, or a within-root name collision, there is logged via `tracing::warn!` and skipped rather than failing the whole load. The single-root functions are now thin one-element-slice wrappers over the new ones, so every existing caller (`ConwayBuilder::build`, `crate::intent`, `conway-cli`'s `--agent` resolution, `conway_plugin_skills::SkillsPlugin::from_dir`) keeps compiling and behaving byte-for-byte identically without a single call site changing. `AgentsConfig` gains `extra_dirs: Vec<PathBuf>` (empty by default, so every existing config keeps behaving identically) — additional agent-definition roots `ConwayBuilder::build` now resolves against `cwd` and folds in alongside `dir`; nothing populates it automatically yet, an operator can hand-set it today. Skills stay configless (no new `[skills]` section — unnecessary config surface this item's own scope doesn't call for, matching this crate's existing precedent for that section). `docs/plugins/claude-compat.md`'s `skills/`/`agents/` "not imported, at all" paragraphs are corrected: the loader capability exists and is tested now, but the Claude Code compat layer does not yet call it with a plugin's own directories — that wiring is a separate, deferred item.
+
 ### Added
 
 - **A migration guide for operators coming from Claude Code's

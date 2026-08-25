@@ -590,16 +590,31 @@ impl ToolCallSupportSpec {
 }
 
 /// `[agents]`.
+///
+/// `dir` is the operator's own agent-definition root — always first in
+/// precedence (`crate::agents::load_agent_defs_from_roots`'s own doc: "the
+/// first root's own definitions always win a name collision with any later
+/// root's"), and the only root a malformed file in fails the build over.
+/// `extra_dirs` (board item `01M0X1EH2GW5DKY9XD1EZ78S3F`, empty by default,
+/// so every existing config keeps behaving identically) is zero or more
+/// ADDITIONAL roots, in the order given, each resolved against `cwd` the
+/// same way `dir` is — meant for a plugin's own `agents/*.md` directory,
+/// whose malformed files are skipped rather than failing the build.
+/// Nothing populates this field automatically yet: an operator can hand-set
+/// it today, but wiring a Claude Code compat plugin's directories into it
+/// is a sibling item's job.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AgentsConfig {
     pub dir: PathBuf,
+    pub extra_dirs: Vec<PathBuf>,
 }
 
 impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
             dir: PathBuf::from(".conway/agents"),
+            extra_dirs: Vec::new(),
         }
     }
 }
