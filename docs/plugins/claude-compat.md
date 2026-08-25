@@ -70,24 +70,87 @@ may claim to be reached that isn't).
   can hand-set `extra_dirs` in their own config today, but this layer does
   not yet populate it from a plugin's own `agents/` directory. Named in the
   report, never read for content.
-- **`hooks/hooks.json` — event names are matched, nothing is wired to
-  dispatch.** `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, and
-  `SessionStart` each have a same-named conway event
-  (`pre_tool_use`/`post_tool_use`/`prompt_submitted`/`session_starting`);
-  `Stop`, `SubagentStop`, `Notification`, `PreCompact`, and `SessionEnd`
-  have none (`PreCompact` specifically because conway has no compaction
-  mechanism yet — the one first-party capability still unbuilt). **Even a
-  matched event name is reported, never auto-installed as a running
-  `[hooks].rules[]` entry**: the two sides' JSON *payload* shapes differ
-  even where the event name lines up (a Claude Code hook script reads
-  `tool_name`/`tool_input` on stdin; conway's dispatcher sends its own
-  `HookInvocation`/`HookEvent` shape), so a foreign script, handed conway's
-  payload unmodified, would not understand it — silently wiring such a rule
-  into a running session's dispatch table would be exactly the kind of
-  "looks installed, never meaningfully answers" failure this whole layer
-  exists to prevent. If you want a matched hook live, copy its `{event,
-  matcher}` pairing into your own `[hooks].rules[]` and adapt the script to
-  conway's payload shape yourself — recorded here, not automated.
+- **`hooks/hooks.json` — event names are matched, and (board item
+  `01M0X1FCQ80C9ET97HENXSAW2K`) a mapped rule now translates into a real,
+  dispatchable `[hooks].rules[]`-shaped registration.**
+  `ClaudeCompatReport::hook_registrations()` turns every `Mapped` rule into
+  a `conway_plugin_claude::HookRegistration` — the shell command wrapped
+  as `["/bin/sh", "-c", <command>]` (never a guessed word-split: the whole
+  string, unmodified, handed to a real shell) with `${CLAUDE_PLUGIN_ROOT}`
+  already resolved to the discovered directory's own absolute path (every
+  real `hooks.json` this layer has been checked against uses that token in
+  every command; leaving it unresolved would make a registration dispatch
+  reliably and fail "no such file" just as reliably). See the coverage
+  table below for exactly which Claude Code events that covers.
+  **What this still does NOT mean:** the two sides' JSON *payload* shapes
+  differ even where the event name lines up (a Claude Code hook script
+  reads `tool_name`/`tool_input` on stdin; conway's dispatcher sends its
+  own `HookInvocation`/`HookEvent` shape) — "dispatches" is not the same
+  claim as "behaves identically to running under real Claude Code." **And
+  this crate itself still never mutates a `HooksConfig`** — it hands back
+  registrations; a CALLER appends them into its own `[hooks].rules[]`
+  before `ConwayBuilder::build`. As shipped, `conway-cli`'s own
+  `[plugins].claude_compat[]` install path (`claude_compat_plugins.rs`)
+  does not perform that append yet — it still wires the MCP half only — so
+  naming a directory in `settings.json` today gets you its MCP servers
+  running and its hooks *reported*, not yet its hooks *dispatching*,
+  without also copying `{event, matcher}` into your own `[hooks].rules[]`
+  by hand (or building on the registrations this crate's own test proves
+  work end to end). Wiring that CLI append is a disclosed, separate
+  follow-up, not something this item silently left half-done.
+
+### Coverage table: which of a Claude Code plugin's own hooks actually run
+
+Every event `beepboop` 1.4.0 or `ideate` 3.2.2 declares (25 measured from
+`beepboop`'s own `hooks.json`, 7 from `ideate`'s, six shared) — status is one
+of **maps** (exact, dispatches), **approximate** (dispatches, one known
+semantic divergence), or **declined** (named in `unsupported`, never
+dispatches). Fail-open/fail-closed is the conway event's own posture,
+inherited by a translated rule that lands on it
+(`crates/conway/src/config/schema.rs`'s own `HooksConfig` doc has the
+authoritative per-event disclosure).
+
+| Claude Code event | Status | conway event | Fail posture |
+| --- | --- | --- | --- |
+| `SessionStart` | maps | `session_starting` | open |
+| `UserPromptSubmit` | maps | `prompt_submitted` | closed (may deny) |
+| `PreToolUse` | maps | `pre_tool_use` | closed (may deny) |
+| `PostToolUse` | maps | `post_tool_use` | open |
+| `SubagentStart` | **approximate** | `child_spawned` | open |
+| `SubagentStop` | **approximate** | `child_reported` | open — see below |
+| `PermissionRequest` | declined | — | — |
+| `Notification` | declined | — | — |
+| `Stop` | declined | — | — |
+| `StopFailure` | declined | — | — |
+| `PostToolUseFailure` | declined | — | — |
+| `PreCompact` | declined (no compaction mechanism yet) | — | — |
+| `PostCompact` | declined | — | — |
+| `SessionEnd` | **declined and settled** — operator ruling, `docs/vision/DESIGN-permission-modes.md` §9; not reopened by this item | — | — |
+| `TaskCreated` | declined | — | — |
+| `TaskCompleted` | declined | — | — |
+| `TeammateIdle` | declined (no teammate concept) | — | — |
+| `InstructionsLoaded` | declined | — | — |
+| `ConfigChange` | declined | — | — |
+| `WorktreeCreate` | declined (no worktree concept) | — | — |
+| `WorktreeRemove` | declined | — | — |
+| `CwdChanged` | declined | — | — |
+| `FileChanged` | declined | — | — |
+| `Elicitation` | declined | — | — |
+| `ElicitationResult` | declined | — | — |
+
+**The approximate pair's own known divergence:** conway's `child_reported`
+fires once per agent that has a parent, for both an ordinary completion
+*and* a supervisor-synthesized terminal result (a panic, or a task still
+unresponsive past its grace window) — whether Claude Code's own
+`SubagentStop` fires for that second, synthesized case the same way is
+unverified. Mapped, labelled, not chased further, per the operator ruling's
+own best-effort-and-disclosed appetite; a beepboop smoke test is what
+surfaces whether it actually bites in practice.
+
+Every `declined` row above is also named individually, with its own reason,
+in `ClaudeCompatReport::unsupported` (`UnsupportedKind::Hook`) — never
+folded into a single count.
+
 - **`.claude-plugin/plugin.json` — read for identity/description only.**
   There is no counterpart in conway to a plugin manifest as a *file
   format* — `PluginManifest` is a Rust struct a `Plugin` trait method
