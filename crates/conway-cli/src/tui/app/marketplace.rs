@@ -13,19 +13,39 @@
 //! operator action (`plugin_toggle.rs`'s own module doc: "driven through a
 //! real `App`... no real terminal/`select!` loop").
 //!
-//! **Deliberately NOT wired through `tui::commands`' slash-command/
-//! `Effect`/`Host` machinery.** That machinery's `Host` trait is a "thin
-//! abstraction over exactly `SessionHandle`/`Conway`'s own methods"
-//! (`commands.rs`'s own doc) -- a marketplace install needs neither: it
-//! needs `env`/`cwd` (to resolve `settings.json`'s path, exactly like
-//! `plugin_toggle` already does outside that machinery too) and a network
-//! call this crate's own dependency graph deliberately keeps out of
-//! `conway-cli` directly (`conway-plugin-marketplace`'s own crate doc). A
-//! typed, always-available slash-command/palette entry point (mirroring
-//! `/ask`'s `Effect::RunModalAsk` -> `App::spawn_modal_ask` pipeline) is a
-//! reasonable, real follow-up, deliberately deferred here rather than
-//! rushed -- see this item's own completion report for exactly what that
-//! follow-up would touch.
+//! **Now wired through `tui::commands`' slash-command/`Effect` machinery
+//! (board item `01M0WB5W5DX844HSJQG3JP23X0`), NOT through `Host`.** That
+//! trait is deliberately "a thin abstraction over exactly `SessionHandle`/
+//! `Conway`'s own methods" (`commands.rs`'s own doc) -- a marketplace
+//! install needs neither: it needs `env`/`cwd` (to resolve `settings.
+//! json`'s path, exactly like `plugin_toggle` already does outside that
+//! machinery too) and a network call this crate's own dependency graph
+//! deliberately keeps out of `conway-cli` directly
+//! (`conway-plugin-marketplace`'s own crate doc). Both are `App`'s own
+//! fields (see `App::env`/`App::cwd`'s own doc for why, and why they are
+//! not threaded through `Host`/a new `App::new` parameter), reached by
+//! `/plugin install <url> <id>`/`/plugin uninstall <id>`
+//! (`commands::PluginsAction`) via `commands::Effect::
+//! RunMarketplaceInstall`/`RunMarketplaceUninstall`, handled in `App::
+//! submit`'s existing `Effect` match by calling [`App::
+//! apply_marketplace_install`]/[`App::apply_marketplace_uninstall`]
+//! DIRECTLY -- the identical methods this module's own tests below already
+//! call, unchanged, not a second parallel path. **Deliberately NOT spawned
+//! off the render loop** the way `/ask`/plugin commands are (`plugin_cmd.
+//! rs`'s own `Effect::RunPluginCommand` -> `App::spawn_plugin_command`
+//! shape): doing so would require splitting this method into a "does the
+//! network I/O" half with no `&mut self` (so a spawned task could run it)
+//! and a "pushes the result" half `Self::run`'s own channel-drain arm would
+//! call -- two independently-shaped copies of one fetch-install-write
+//! sequence, exactly the drift risk GP-14 warns about, for a fetch already
+//! bounded by `conway_plugin_marketplace`'s own 20s client timeout (never
+//! the genuinely unbounded "arbitrary plugin code"/"drain a whole forked
+//! turn" duration `RunPluginCommand`/`RunModalAsk` exist to isolate).
+//! `submit` already awaits several `Host`-routed facade calls inline (every
+//! ordinary command); this is one more bounded await, not a new class of
+//! risk. Disclosed follow-up, not built here: spawning this off-loop too,
+//! if a slow/unresponsive marketplace turns out to freeze the TUI
+//! noticeably in practice.
 //!
 //! # Informed consent (determine-first Q2), in ONE action rather than a
 //! two-step preview-then-confirm modal
@@ -49,18 +69,15 @@
 //! not built here -- named explicitly rather than silently short of the
 //! spec's own bar.
 
-// Mirrors `conway-plugin-backends/src/http.rs`'s own precedent EXACTLY,
-// including its own reasoning stated verbatim: "`HttpClient` itself is not
-// yet constructed anywhere outside this module's own tests: the adapters
-// that build one ... are later work items. The `#[allow(dead_code)]` below
-// is scoped to this file for exactly that reason." `App::
-// apply_marketplace_install`/`apply_marketplace_uninstall` are real, tested,
-// end-to-end-correct methods with no interactive TUI trigger yet -- see this
-// module's own doc, "Deliberately NOT wired through `tui::commands`'", for
-// exactly why and exactly what the follow-up (a `SlashCommand` variant
-// mirroring `/ask`'s `Effect::RunModalAsk` -> `App::spawn_modal_ask`
-// pipeline) would touch.
-#![allow(dead_code)]
+// Board item `01M0WB5W5DX844HSJQG3JP23X0`: the `#[allow(dead_code)]` that
+// used to live here (mirroring `conway-plugin-backends/src/http.rs`'s own
+// precedent) is REMOVED, not merely left in place -- `App::
+// apply_marketplace_install`/`apply_marketplace_uninstall` are now reached
+// from real production call sites (`App::submit`'s `Effect::
+// RunMarketplaceInstall`/`RunMarketplaceUninstall` arms, `commands.rs`),
+// not only from this module's own tests. Acceptance 2's own words: nothing
+// may claim to be reached that isn't, and the inverse holds too -- nothing
+// reached may still claim to be unreached.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -733,6 +750,205 @@ mod tests {
         assert!(app.state.transcript.iter().any(|e| matches!(
             e,
             Entry::Error { text, .. } if text.contains("acme-tools") && text.contains("NOT take effect")
+        )));
+    }
+
+    // -----------------------------------------------------------------
+    // Board item `01M0WB5W5DX844HSJQG3JP23X0` -- the interactive trigger.
+    // Every test above drives `App::apply_marketplace_install`/
+    // `apply_marketplace_uninstall` directly (the pre-existing,
+    // already-correct shape this item's own spec preserves); the two
+    // tests below instead drive the REAL surface an operator types into
+    // (`App::submit`, `commands::parse`/`execute`, `Effect::
+    // RunMarketplaceInstall`/`RunMarketplaceUninstall`) -- the actual
+    // proof that the wiring this item adds does not bypass any of the
+    // failure handling the methods above already have (acceptance 7).
+    // -----------------------------------------------------------------
+
+    /// Acceptance 1, end to end through the pipeline an operator actually
+    /// types into: `/plugin install <url> <id>` parses
+    /// (`commands::parse`), dispatches through `App::submit`'s REAL
+    /// `commands::execute` -> `Effect::RunMarketplaceInstall` arm (no
+    /// test-only shortcut -- this is the identical code path `main.rs`'s
+    /// production `tui::run` drives), and reaches the SAME `App::
+    /// apply_marketplace_install` every test above already proves correct.
+    /// No real network (`wiremock`, this module's own established
+    /// pattern) and no ambient config (`app.env`/`app.cwd` overridden
+    /// directly after construction -- this item's own Q1 answer: `App::
+    /// new` itself resolved both from this TEST PROCESS's real ambient
+    /// values, which must never be what a config-writing test exercises;
+    /// private-field access from this crate's own test module, the same
+    /// pattern `app.state` already uses throughout).
+    ///
+    /// The second half proves the FULL claim, not just "settings.json got
+    /// written": a marketplace install's own transcript notice already
+    /// says "applies on next restart" (this module's own doc, "Informed
+    /// consent"), so this reloads config the same way a real restart would
+    /// (`conway::config::load` against the identical isolated `env`/`cwd`)
+    /// and feeds the result into a FRESH `App::new` -- proving the
+    /// installed plugin genuinely reaches `state.claude_compat_plugins`,
+    /// the exact field `view/plugins.rs::rows_from_claude_compat` renders
+    /// as the `/plugin` listing's claude-compat rows, rather than merely
+    /// asserting a JSON file's contents.
+    #[tokio::test]
+    async fn installing_through_the_real_slash_command_pipeline_makes_the_plugin_appear_in_the_plugin_listing(
+    ) {
+        let server = MockServer::start().await;
+        mount_marketplace(&server).await;
+        let marketplace_url = format!("{}/marketplace.json", server.uri());
+
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let no_project_layer = no_project_layer();
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.env = isolated_env(dir.path());
+        app.cwd = no_project_layer.path().to_path_buf();
+
+        let outcome = app
+            .submit(format!("/plugin install {marketplace_url} acme-tools"))
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, super::super::SubmitOutcome::Continue));
+
+        // `Effect::RunMarketplaceInstall` is awaited directly inside
+        // `submit` (this module's own doc: not spawned off the loop, no
+        // channel to drain) -- by the time `submit` returns, the write
+        // and the disclosure have both already happened.
+        let settings_path = dir.path().join("settings.json");
+        let text = std::fs::read_to_string(&settings_path).expect("settings.json must exist");
+        assert!(text.contains("acme-tools"));
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("acme-tools") && text.contains("installed")
+            )),
+            "the same informed-consent disclosure every direct-call test above asserts on: {:?}",
+            app.state.transcript
+        );
+
+        // Simulates the restart the install's own notice promises:
+        // reload config the way a real startup would, against the
+        // identical isolated env/cwd, then hand the result to a fresh
+        // `App::new`.
+        let reloaded = conway::config::load(conway::config::LoadOptions {
+            env: app.env.clone(),
+            cwd: app.cwd.clone(),
+            ..Default::default()
+        })
+        .expect("reloading config after a real install must succeed");
+        assert_eq!(
+            reloaded.config.plugins.claude_compat.len(),
+            1,
+            "the install must have written exactly one [plugins].claude_compat entry"
+        );
+        assert_eq!(reloaded.config.plugins.claude_compat[0].id, "acme-tools");
+
+        let restarted_conway = super::super::fixtures::conway_over_config(reloaded.config);
+        let restarted_cli = minimal_cli();
+        let restarted_app = App::new(&restarted_cli, &restarted_conway, &[])
+            .await
+            .expect("App::new should succeed against the just-installed config");
+        assert!(
+            restarted_app
+                .state
+                .claude_compat_plugins
+                .iter()
+                .any(|e| e.id == "acme-tools"),
+            "the installed plugin must appear in /plugin's own claude-compat listing data \
+             (state.claude_compat_plugins) after a restart -- acceptance 1: {:?}",
+            restarted_app.state.claude_compat_plugins
+        );
+    }
+
+    /// Acceptance 7 (offline half) through the SAME real pipeline: a
+    /// marketplace that cannot be reached at all must still report
+    /// clearly and write nothing, proving the slash-command wiring does
+    /// not bypass `apply_marketplace_install`'s own fail-closed behaviour
+    /// (P-13) -- mirrors `offline_reports_an_error_and_writes_nothing`
+    /// above exactly, just entered through `App::submit` instead of a
+    /// direct call.
+    #[tokio::test]
+    async fn plugin_install_through_the_pipeline_offline_reports_an_error_and_writes_nothing() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let no_project_layer = no_project_layer();
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.env = isolated_env(dir.path());
+        app.cwd = no_project_layer.path().to_path_buf();
+
+        app.submit("/plugin install http://127.0.0.1:1/marketplace.json acme-tools".to_string())
+            .await
+            .expect("submit should not error even when the fetch itself fails");
+
+        assert!(
+            !dir.path().join("settings.json").exists(),
+            "an unreachable marketplace reached through the real pipeline must still never \
+             produce a settings.json write"
+        );
+        assert!(app
+            .state
+            .transcript
+            .iter()
+            .any(|e| matches!(e, Entry::Error { fatal: false, .. })));
+    }
+
+    /// Acceptance 1/4 (uninstall trigger) through the real pipeline:
+    /// `/plugin uninstall <id>` reaches `App::apply_marketplace_uninstall`
+    /// via `Effect::RunMarketplaceUninstall`, removing both the config
+    /// entry and the artifact -- mirrors
+    /// `uninstalling_removes_both_the_config_entry_and_the_artifact`
+    /// above, entered through `App::submit` instead of a direct call.
+    #[tokio::test]
+    async fn uninstalling_through_the_real_slash_command_pipeline_removes_both_the_entry_and_the_artifact(
+    ) {
+        let server = MockServer::start().await;
+        mount_marketplace(&server).await;
+        let marketplace_url = format!("{}/marketplace.json", server.uri());
+
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let no_project_layer = no_project_layer();
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.env = isolated_env(dir.path());
+        app.cwd = no_project_layer.path().to_path_buf();
+
+        app.submit(format!("/plugin install {marketplace_url} acme-tools"))
+            .await
+            .expect("submit should not error");
+        let settings_path = dir.path().join("settings.json");
+        let installed_dir = {
+            let text = std::fs::read_to_string(&settings_path).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            value["plugins"]["claude_compat"][0]["dir"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(
+            std::path::Path::new(&installed_dir).is_dir(),
+            "precondition: installed"
+        );
+
+        app.submit("/plugin uninstall acme-tools".to_string())
+            .await
+            .expect("submit should not error");
+
+        let text = std::fs::read_to_string(&settings_path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["plugins"]["claude_compat"], serde_json::json!([]));
+        assert!(
+            !std::path::Path::new(&installed_dir).exists(),
+            "no stray artifact may remain after an uninstall reached through the real pipeline"
+        );
+        assert!(app.state.transcript.iter().any(|e| matches!(
+            e,
+            Entry::Notice { text } if text.contains("acme-tools") && text.contains("uninstalled")
         )));
     }
 }

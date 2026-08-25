@@ -264,6 +264,18 @@ impl App {
             .as_ref()
             .or(Some(&conway.config().cwd))
             .map(|p| p.display().to_string());
+        // Board item `01M0WB5W5DX844HSJQG3JP23X0` (Q1): the SAME
+        // `--cwd`-then-`conway.config().cwd` fallback just above, parked
+        // as an owned `App` field rather than only a display string --
+        // `App::apply_marketplace_install`/`apply_marketplace_uninstall`
+        // need a real `Path` for their own project-config-layer honesty
+        // check. See `App`'s own field doc for why this is resolved here,
+        // once, rather than as a new `App::new` parameter or an ambient
+        // read inside command dispatch.
+        let cwd = cli
+            .cwd
+            .clone()
+            .unwrap_or_else(|| conway.config().cwd.clone());
         // T3 follow-up: read the local model-metadata map
         // (`[models.metadata_path]`) from `Conway::model_metadata` --
         // `ConwayBuilder::build` already loaded and parsed this file once to
@@ -425,6 +437,8 @@ impl App {
             plugin_cmd_tx,
             plugin_cmd_rx: Some(plugin_cmd_rx),
             history_path,
+            env: env_vars,
+            cwd,
         })
     }
 

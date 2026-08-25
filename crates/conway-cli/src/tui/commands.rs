@@ -221,20 +221,57 @@ pub enum SlashCommand {
         full_name: String,
         args: String,
     },
-    /// `/plugin` (board item `01M0VR5RCCB8NDGG2JEQW8X7XR`): opens the
-    /// `/plugin` listing (`view/plugins.rs`) -- every kind of plugin
-    /// conway can run today, from every source. **Named `Plugins`, not
+    /// `/plugin` (board item `01M0VR5RCCB8NDGG2JEQW8X7XR`), now widened by
+    /// board item `01M0WB5W5DX844HSJQG3JP23X0` (Q2, determine-first): bare
+    /// `/plugin` (`action: None`) still opens the `/plugin` listing
+    /// (`view/plugins.rs`) exactly as before -- a pure `AppState` flip, no
+    /// facade call. `action: Some(..)` is the new install/uninstall
+    /// trigger the listing item scoped out; see [`PluginsAction`]'s own
+    /// doc for the two forms and why this extends the EXISTING variant
+    /// rather than adding a new one. **Still named `Plugins`, not
     /// `Plugin`** -- `Plugin` above already names a plugin-DECLARED
     /// command's dispatch shape, and `t10_every_slash_command_variant_
     /// reaches_the_palette` (`crates/conway/tests/
     /// architecture_invariants.rs`) filters that exact string out of its
     /// scan, so reusing it here would make this variant invisibly exempt
-    /// from the guard rather than covered by it. Takes no arguments --
-    /// `parse` rejects anything else with `usage: /plugin (no arguments)`.
-    /// A pure `AppState` flip, no facade call, mirroring
-    /// [`SlashCommand::Settings`]'s own shape exactly (see `execute`'s own
-    /// `Plugins` arm).
-    Plugins,
+    /// from the guard rather than covered by it.
+    Plugins {
+        action: Option<PluginsAction>,
+    },
+}
+
+/// `/plugin`'s optional action (board item `01M0WB5W5DX844HSJQG3JP23X0`,
+/// Q2/Q3 determine-first). **One surface still owns plugin listing** (the
+/// principle the listing item established): this extends
+/// [`SlashCommand::Plugins`] with an argument rather than adding a
+/// competing command or a second view, so `/plugin` stays the one place an
+/// operator types to see or change what conway can run.
+///
+/// **Q3, smallest honest v1: a URL argument, not a browsable catalogue.**
+/// `Install` takes the marketplace URL and the plugin id directly
+/// (`/plugin install <url> <id>`) -- an operator must already know both
+/// (from the marketplace's own listing page, a README, etc.); this cannot
+/// browse a marketplace's plugin list from inside conway, only fetch a
+/// named entry from it. A browsable catalogue (fetch the manifest first,
+/// render its plugin list, let the operator pick) is a real, larger
+/// follow-up, not built here.
+///
+/// **Q4: uninstall gets a trigger too.** An operator who can install from
+/// here but must hand-edit `settings.json` to remove it again is a poor
+/// trade (the spec's own words) -- `Uninstall` (`/plugin uninstall <id>`)
+/// is the direct counterpart, reaching `App::apply_marketplace_uninstall`
+/// the same way `Install` reaches `apply_marketplace_install` (see
+/// [`Effect::RunMarketplaceInstall`]/[`Effect::RunMarketplaceUninstall`]'s
+/// own doc for why neither can run inside `execute` itself).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginsAction {
+    Install {
+        marketplace_url: String,
+        plugin_id: String,
+    },
+    Uninstall {
+        plugin_id: String,
+    },
 }
 
 /// One palette entry: a command's name (leading `/` included, matching
@@ -308,10 +345,11 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
             usage: "/settings",
             description: "open the settings menu (display preferences -- session only)",
         },
-        SlashCommand::Plugins => CommandSpec {
+        SlashCommand::Plugins { .. } => CommandSpec {
             name: "/plugin",
-            usage: "/plugin",
-            description: "list every plugin conway can run today (compiled-in, subprocess, MCP)",
+            usage: "/plugin [install <marketplace-url> <plugin-id> | uninstall <plugin-id>]",
+            description: "list every plugin conway can run today, or install/uninstall a \
+                          Claude Code marketplace one",
         },
         SlashCommand::Trust => CommandSpec {
             name: "/trust",
@@ -423,7 +461,7 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
         },
         SlashCommand::Agents,
         SlashCommand::Settings,
-        SlashCommand::Plugins,
+        SlashCommand::Plugins { action: None },
         SlashCommand::Trust,
         SlashCommand::Steer {
             target: String::new(),
@@ -576,8 +614,11 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             Ok(SlashCommand::Settings)
         }
         "/plugin" => {
-            parse_no_arg(rest, "/plugin")?;
-            Ok(SlashCommand::Plugins)
+            let action = parse_plugins_action(
+                rest,
+                "/plugin [install <marketplace-url> <plugin-id> | uninstall <plugin-id>]",
+            )?;
+            Ok(SlashCommand::Plugins { action })
         }
         "/trust" => {
             // Accepts the bare form or the one literal argument
@@ -803,6 +844,40 @@ fn parse_fork(rest: &str, form: &str) -> Result<(Option<String>, Option<String>)
     }
 }
 
+/// Parses `/plugin`'s optional trailing action (board item
+/// `01M0WB5W5DX844HSJQG3JP23X0`): bare/empty is `None` (open the listing,
+/// unchanged); `install <marketplace-url> <plugin-id>` and `uninstall
+/// <plugin-id>` are the two forms [`PluginsAction`] carries. **P-10:**
+/// `marketplace_url` is only ever split as a whitespace-delimited token
+/// here, never parsed as a URL -- the third-party RESPONSE it names is
+/// untrusted, but the request text itself is not further validated at
+/// this layer (no new dependency for a `Url` type this crate does not
+/// otherwise need, C-04); a malformed URL is reported cleanly by
+/// `conway_plugin_marketplace::fetch_marketplace` itself once dispatch
+/// reaches it (already tested, that crate's own suite), never a panic
+/// here.
+fn parse_plugins_action(rest: &str, form: &str) -> Result<Option<PluginsAction>, ParseError> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let (word, action_rest) = split_command(trimmed);
+    match word {
+        "install" => {
+            let (marketplace_url, plugin_id) = parse_two_arg(action_rest, form)?;
+            Ok(Some(PluginsAction::Install {
+                marketplace_url,
+                plugin_id,
+            }))
+        }
+        "uninstall" => {
+            let plugin_id = parse_one_arg(action_rest, form)?;
+            Ok(Some(PluginsAction::Uninstall { plugin_id }))
+        }
+        _ => Err(ParseError(format!("usage: {form}"))),
+    }
+}
+
 /// The effect an executed command has on the caller's [`App`](super::app::App)
 /// loop, beyond the [`AppState`] mutation `execute` already performed
 /// directly.
@@ -872,6 +947,34 @@ pub enum Effect {
     /// doc names). The caller (`App::submit`, via `App::spawn_modal_ask`)
     /// does the actual `tokio::spawn`.
     RunModalAsk { question: String },
+    /// `/plugin install <url> <id>` validated -- **`execute` never fetches
+    /// anything itself.** `App::apply_marketplace_install` needs `env`
+    /// (to resolve `settings.json`'s path via `CONWAY_CONFIG_DIR`) and
+    /// `cwd` (the project config layer, for its own honesty check) --
+    /// neither of which `Host` carries (`Host`'s own doc: "a thin
+    /// abstraction over exactly `SessionHandle`/`Conway`'s own methods";
+    /// this needs neither) -- plus a real network fetch this crate's own
+    /// dependency graph deliberately keeps out of `execute`'s reach
+    /// (`conway-plugin-marketplace` is a dependency of `app::marketplace`
+    /// only). Board item `01M0WB5W5DX844HSJQG3JP23X0`'s determine-first
+    /// question 1 answer: the caller (`App::submit`) calls `App::
+    /// apply_marketplace_install` directly, awaited inline -- **not**
+    /// spawned off the loop the way `RunPluginCommand`/`RunModalAsk` are
+    /// (see `app/marketplace.rs`'s own module doc for why that shape was
+    /// considered and rejected here: it would have required splitting the
+    /// already-tested method into two independently-shaped halves for a
+    /// fetch already bounded by a 20s client timeout).
+    RunMarketplaceInstall {
+        marketplace_url: String,
+        plugin_id: String,
+    },
+    /// `/plugin uninstall <id>` validated. Unlike `Install`, `App::
+    /// apply_marketplace_uninstall` touches no network (its own doc:
+    /// "Synchronous (no network): both steps are local filesystem
+    /// operations") -- so there was never a spawn-vs-await question here,
+    /// only the same `env`/`cwd` `execute` cannot reach. The caller
+    /// (`App::submit`) calls it directly.
+    RunMarketplaceUninstall { plugin_id: String },
 }
 
 /// What [`Effect::RunPluginCommand`] carries: the resolved command object,
@@ -1802,13 +1905,35 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             state.open_settings();
             Effect::None
         }
-        // Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: `/plugin` opens the
+        // Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: bare `/plugin` opens the
         // plugin listing -- a pure `AppState::open_plugins` flag flip,
-        // mirroring `Settings` immediately above exactly.
-        SlashCommand::Plugins => {
-            state.open_plugins();
-            Effect::None
-        }
+        // mirroring `Settings` immediately above exactly. Board item
+        // `01M0WB5W5DX844HSJQG3JP23X0` adds the two `action` forms: neither
+        // can run here (see `Effect::RunMarketplaceInstall`/`Effect::
+        // RunMarketplaceUninstall`'s own doc for exactly why `execute`
+        // hands both off rather than doing the work itself), so this arm's
+        // only job for either is to translate a parsed `PluginsAction`
+        // into its matching `Effect` -- no validation to perform here that
+        // `parse` has not already done (both string fields are simply
+        // forwarded verbatim; the real validation -- does the marketplace
+        // have this id, is settings.json writable -- can only happen once
+        // the fetch/write actually runs).
+        SlashCommand::Plugins { action } => match action {
+            None => {
+                state.open_plugins();
+                Effect::None
+            }
+            Some(PluginsAction::Install {
+                marketplace_url,
+                plugin_id,
+            }) => Effect::RunMarketplaceInstall {
+                marketplace_url,
+                plugin_id,
+            },
+            Some(PluginsAction::Uninstall { plugin_id }) => {
+                Effect::RunMarketplaceUninstall { plugin_id }
+            }
+        },
         // Formerly intercepted in `app.rs::submit` (board item
         // `01KZVZ5XV162XCQR96AQKCCCF7`) -- see this module's own doc for
         // why. `parse` already rejected any argument other than the bare
@@ -2716,12 +2841,68 @@ mod tests {
     /// Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`.
     #[test]
     fn plugin_parses() {
-        assert_eq!(parse("/plugin"), Ok(SlashCommand::Plugins));
+        assert_eq!(parse("/plugin"), Ok(SlashCommand::Plugins { action: None }));
     }
 
     #[test]
     fn plugin_with_trailing_argument_is_a_parse_error_naming_the_form() {
         let err = parse("/plugin all").unwrap_err();
+        assert!(err.to_string().contains("/plugin"));
+    }
+
+    /// Board item `01M0WB5W5DX844HSJQG3JP23X0`: the install trigger this
+    /// item adds. Both fields are forwarded verbatim, no re-tokenization
+    /// (module notes' own rule) -- `plugin_id` here is deliberately the
+    /// remainder after the URL, unsplit further.
+    #[test]
+    fn plugin_install_parses() {
+        assert_eq!(
+            parse("/plugin install https://example.com/marketplace.json acme-tools"),
+            Ok(SlashCommand::Plugins {
+                action: Some(PluginsAction::Install {
+                    marketplace_url: "https://example.com/marketplace.json".to_string(),
+                    plugin_id: "acme-tools".to_string(),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn plugin_install_missing_plugin_id_is_a_parse_error_naming_the_form() {
+        let err = parse("/plugin install https://example.com/marketplace.json").unwrap_err();
+        assert!(err.to_string().contains("/plugin"));
+        assert!(err.to_string().contains("install"));
+    }
+
+    #[test]
+    fn plugin_uninstall_parses() {
+        assert_eq!(
+            parse("/plugin uninstall acme-tools"),
+            Ok(SlashCommand::Plugins {
+                action: Some(PluginsAction::Uninstall {
+                    plugin_id: "acme-tools".to_string(),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn plugin_uninstall_missing_plugin_id_is_a_parse_error_naming_the_form() {
+        let err = parse("/plugin uninstall").unwrap_err();
+        assert!(err.to_string().contains("/plugin"));
+        assert!(err.to_string().contains("uninstall"));
+    }
+
+    /// An unrecognized action word (neither `install` nor `uninstall`) is a
+    /// `ParseError`, not a silently-accepted third form -- shown to fail
+    /// first (P-15): before this item's `parse_plugins_action` existed,
+    /// `/plugin all` already failed this way via the old `parse_no_arg`
+    /// path, so this and `plugin_with_trailing_argument_is_a_parse_error_
+    /// naming_the_form` above both cover the identical case through the
+    /// NEW parser, proving it did not regress.
+    #[test]
+    fn plugin_unknown_action_is_a_parse_error_naming_the_form() {
+        let err = parse("/plugin browse").unwrap_err();
         assert!(err.to_string().contains("/plugin"));
     }
 
@@ -4595,7 +4776,7 @@ mod tests {
         let host = FakeHost::new(root);
         assert!(!state.plugins_open);
 
-        let effect = execute(SlashCommand::Plugins, &mut state, &host).await;
+        let effect = execute(SlashCommand::Plugins { action: None }, &mut state, &host).await;
 
         assert!(state.plugins_open, "/plugin must open the listing");
         assert!(matches!(effect, Effect::None));
@@ -4603,6 +4784,75 @@ mod tests {
             host.calls().is_empty(),
             "no facade call at all -- a pure state flip"
         );
+    }
+
+    /// Board item `01M0WB5W5DX844HSJQG3JP23X0`: `/plugin install` cannot
+    /// run inside `execute` (it needs `env`/`cwd`, neither of which `Host`
+    /// carries, and a network fetch `execute`'s own dependency graph keeps
+    /// out of reach) -- it must hand back `Effect::RunMarketplaceInstall`
+    /// with both fields forwarded verbatim, no facade call and no
+    /// `AppState` mutation of its own (unlike bare `/plugin` above).
+    #[tokio::test]
+    async fn plugin_install_hands_back_the_run_effect_untouched() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Plugins {
+                action: Some(PluginsAction::Install {
+                    marketplace_url: "https://example.com/marketplace.json".to_string(),
+                    plugin_id: "acme-tools".to_string(),
+                }),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        match effect {
+            Effect::RunMarketplaceInstall {
+                marketplace_url,
+                plugin_id,
+            } => {
+                assert_eq!(marketplace_url, "https://example.com/marketplace.json");
+                assert_eq!(plugin_id, "acme-tools");
+            }
+            _ => panic!("expected Effect::RunMarketplaceInstall"),
+        }
+        assert!(!state.plugins_open, "an install must not open the listing");
+        assert!(
+            host.calls().is_empty(),
+            "no facade call -- the actual fetch is the caller's job (Effect::RunMarketplaceInstall's own doc)"
+        );
+    }
+
+    /// Mirrors `plugin_install_hands_back_the_run_effect_untouched` for
+    /// `/plugin uninstall`.
+    #[tokio::test]
+    async fn plugin_uninstall_hands_back_the_run_effect_untouched() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Plugins {
+                action: Some(PluginsAction::Uninstall {
+                    plugin_id: "acme-tools".to_string(),
+                }),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        match effect {
+            Effect::RunMarketplaceUninstall { plugin_id } => {
+                assert_eq!(plugin_id, "acme-tools");
+            }
+            _ => panic!("expected Effect::RunMarketplaceUninstall"),
+        }
+        assert!(host.calls().is_empty(), "no facade call at all");
     }
 
     // ---------------------------------------------------------------

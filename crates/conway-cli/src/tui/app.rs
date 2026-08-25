@@ -111,6 +111,34 @@ pub struct App {
     /// `AppState::history`), it just never round-trips to disk. The history
     /// file is untrusted input: this is a degrade, never a startup failure.
     history_path: Option<std::path::PathBuf>,
+    /// Board item `01M0WB5W5DX844HSJQG3JP23X0`'s determine-first question 1
+    /// answer: `App::apply_marketplace_install`/`apply_marketplace_
+    /// uninstall` need `env` (to resolve `settings.json`'s path via
+    /// `CONWAY_CONFIG_DIR`) and `cwd` (the project config layer, for their
+    /// own honesty check) -- neither of which `commands::Host` carries
+    /// (that trait is deliberately "a thin abstraction over exactly
+    /// `SessionHandle`/`Conway`'s own methods", its own doc, and this needs
+    /// neither). Both are resolved ONCE here, at construction (`App::new`,
+    /// `startup.rs`), from the SAME ambient sources that method already
+    /// reads for `history_path` (`std::env::vars()`) and `state.cwd_display`
+    /// (`cli.cwd` falling back to `conway.config().cwd`) -- reused, not a
+    /// second independent read. Two alternatives considered and rejected:
+    /// a NEW `App::new` parameter (this file's own `startup.rs` doc on
+    /// `plugin_browser`/`agent_names`: ~40 existing call sites, nearly all
+    /// of this crate's own tests, would each have to name a value they
+    /// never touch), and an ambient `std::env::vars()` read done fresh
+    /// inside the command-dispatch path itself, which would defeat
+    /// `CONWAY_CONFIG_DIR`-based test isolation for this AND every future
+    /// command needing it -- exactly the hazard this item's own spec named.
+    /// Threaded to the two methods by cloning at the one call site that
+    /// needs them (`Effect::RunMarketplaceInstall`/`RunMarketplaceUninstall`'s
+    /// arms in `Self::submit`, both awaited/called directly -- neither is
+    /// spawned off this loop, see `app/marketplace.rs`'s own module doc for
+    /// why). Tests override both directly after construction for isolation
+    /// -- private-field access already used throughout this crate's own
+    /// test modules (e.g. `app.state`).
+    env: std::collections::HashMap<String, String>,
+    cwd: std::path::PathBuf,
 }
 
 /// What `App::submit` learned the app loop must additionally do, beyond the
@@ -312,6 +340,36 @@ impl App {
                         // `Self::spawn_modal_ask`'s.
                         Effect::RunModalAsk { question } => {
                             self.spawn_modal_ask(question);
+                        }
+                        // Board item `01M0WB5W5DX844HSJQG3JP23X0`: `execute`
+                        // cannot reach `App::apply_marketplace_install`
+                        // itself (see `Effect::RunMarketplaceInstall`'s own
+                        // doc for why -- it needs `env`/`cwd`, which live on
+                        // `App`, and a network dependency `execute`'s own
+                        // crate graph keeps out of reach), so THIS is where
+                        // it actually runs -- awaited directly, like every
+                        // other `Host`-routed facade call `execute` already
+                        // made above (see `app/marketplace.rs`'s own module
+                        // doc for why this is not spawned off the loop the
+                        // way `RunPluginCommand`/`RunModalAsk` are).
+                        Effect::RunMarketplaceInstall {
+                            marketplace_url,
+                            plugin_id,
+                        } => {
+                            let env = self.env.clone();
+                            let cwd = self.cwd.clone();
+                            self.apply_marketplace_install(marketplace_url, plugin_id, &env, &cwd)
+                                .await;
+                        }
+                        // Mirrors `RunMarketplaceInstall` immediately above;
+                        // `env`/`cwd` are cloned before the call for the
+                        // same reason `spawn_modal_ask`/`spawn_plugin_command`
+                        // clone `self.handle`/`self.modal_ask_tx` first: the
+                        // method needs `&mut self` too.
+                        Effect::RunMarketplaceUninstall { plugin_id } => {
+                            let env = self.env.clone();
+                            let cwd = self.cwd.clone();
+                            self.apply_marketplace_uninstall(plugin_id, &env, &cwd);
                         }
                     }
                 }
