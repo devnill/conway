@@ -135,6 +135,15 @@ Merge the returns. Three rules:
   hit it is evidence of weight, not two items.
 - **A finding you cannot cite is not a finding.** If a reviewer asserted
   something without `path:line`, verify it or drop it. Do not pass it through.
+- **A claim that something does NOT exist cites the command, not a line.** A
+  negative finding has no `path:line` to give, so the rule above does not reach
+  it, and "verified by search" is not evidence — nobody else can re-run it, so
+  nobody can falsify it. Give the search you actually ran and what it returned
+  (`grep -rn "Diplomat" . | wc -l` → `0`). Prefer a filesystem-wide search over
+  one that follows links: on 2026-08-24 this review reported that no discussion
+  of Diplomat, UniFFI or cbindgen existed anywhere in the tree while a 397-line
+  survey of exactly those three sat in `docs/vision/`, ten days old and linked
+  from nothing. A board item was filed to write it again.
 - **Collect every reviewer's `Not checked` section.** Its union is this review's
   coverage gap, and it goes in `STATE-OF-THE-UNION.md` explicitly. A review that
   silently bounds its own coverage reads as complete when it is not.
@@ -148,7 +157,9 @@ decisions. In priority order:
 - Legible to a layman. Decisions have to be makeable from **blocks in a block
   diagram**, not from interface signatures. If a reader needs to understand a
   trait to follow a paragraph, rewrite the paragraph.
-- Every claim verified in this run, with `path:line` for anything checkable.
+- Every claim verified in this run, with `path:line` for anything checkable —
+  and for a claim that something is ABSENT, the command that establishes it,
+  since absence has no line to cite.
 - Say what is **good** as plainly as what is broken. A review that only lists
   problems is not a state of the union.
 - Score against `INTENT.md`, not against general software-quality intuitions —
@@ -252,3 +263,4 @@ tree is slow to change for them too.
 | 2026-08-24 | **Restructured from a single 182-line prompt into a lead brief plus five lenses in [`review/`](review/).** Three changes, one motivation each. **(1) Progressive disclosure.** §2 is now an orchestrator brief; the detail lives in lens files loaded by the reviewer that needs them, so no agent carries the other four lenses' instructions. **(2) Parallel reviewers with named territories.** The review was one agent reading 224k lines in sequence; it is now 3–9 with non-overlapping scopes, a shared measurement done once by the lead, and a fixed return format. The single-agent version's cost was mostly re-derivation. **(3) A sustainability lens.** The operator's standing concern — code that works, is as designed, and is becoming expensive to change — had no reviewer. `lens-sustainability.md` adds DRY-in-the-knowledge-sense, orthogonality measured from commit history, ETC, and consolidation, with the guardrails that keep a duplication hunt from producing net-negative refactors. |
 | 2026-08-24 | **First run of the restructured review (6 reviewers, Normal round).** One lens amendment from it: `lens-operator.md` §3 now says what to do without a pty — exercise the headless surface, never report source-reading as driving, declare "TUI not driven" first in Not checked, and escalate to a process defect after two pty-less runs in a row. The round itself worked: the shared measurement was not re-derived by any reviewer, territories produced zero duplicate findings, and the one live-run reviewer produced the round's most valuable findings — evidence that lens's "spend the upper half running things" is the right instruction. One budget observation: the evidence reviewer spent ~75 tool calls against its stated 30–45 and returned findings the others could not have; the budget may be tight for a whole-tree hunt lens, or the instruction to stop needs more force. Left as an observation, not amended. |
 | 2026-08-24 | **`INTENT.md` gains §8.10 — the cost of changing something is part of whether it is good.** §8 had nine points on what "good" means and none was about duplication, consolidation, or cost of change; §8.6 came closest and is scoped to invariants at seams. The sustainability lens had no section to score against, which by §8.1 made it a defect in the spec rather than a gap in the code. §8.10 states the test (*when this decision changes, how many places must change with it, and would forgetting one be a bug?*) and carries the three guardrails that keep a duplication hunt from producing net-negative refactors — repetition that protects §8.2's agnostic core is correct, an abstraction with a hypothetical second consumer is indirection under §8.5, and a consolidation must name a change that becomes easy. The citation range in §8's header moved to §8.1–§8.10. |
+| 2026-08-25 | **A claim of absence must cite its command.** Step 5's evidence rule demanded `path:line`, which a claim that something does not exist structurally cannot supply — so "no mention of X anywhere in the tree (verified by search this run)" satisfied the rule while carrying nothing re-runnable. It was false: `docs/vision/BINDINGS.md`, a 397-line Diplomat/UniFFI/cbindgen survey, had been on `main` for ten days, linked from no page and therefore invisible to a reviewer navigating the documentation graph. The false claim spawned a board item that re-derived the survey at the cost of a full research cycle. Two fixes landed: absence claims now cite the command and its result, and `scripts/check-orphan-docs.py` (added 2026-08-24) makes an unindexed page fail CI, so the blind spot that produced it cannot recur silently. |
