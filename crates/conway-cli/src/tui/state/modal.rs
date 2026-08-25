@@ -459,8 +459,10 @@ impl AppState {
         // V4: mutually exclusive with the settings menu -- see
         // `Self::settings_open`'s own doc for why both flags clear each
         // other on open rather than relying on check-order to keep at most
-        // one of them showing.
+        // one of them showing. Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`
+        // extends the same rule to the `/plugin` listing.
         self.settings_open = false;
+        self.plugins_open = false;
     }
 
     /// Closes the `/help` keybinding overlay (T7's `Esc` binding, wired in
@@ -502,6 +504,7 @@ impl AppState {
     pub fn open_settings(&mut self) {
         self.settings_open = true;
         self.help_open = false;
+        self.plugins_open = false;
     }
 
     /// Closes the `/settings` menu (V4's `Esc` binding, wired in
@@ -509,6 +512,29 @@ impl AppState {
     /// state is left untouched (see [`Self::open_settings`]'s own doc).
     pub fn close_settings(&mut self) {
         self.settings_open = false;
+    }
+
+    /// Opens the `/plugin` listing (board item
+    /// `01M0VR5RCCB8NDGG2JEQW8X7XR`, `view/plugins.rs`) -- mirrors
+    /// [`Self::open_settings`] exactly, including the same three-way mutual
+    /// exclusion with `/help` and `/settings`. Reachable two ways: typing
+    /// `/plugin` (`commands::SlashCommand::Plugins`), or `Enter` on
+    /// `/settings`' own plugins-section shortcut row
+    /// (`view::settings::LEAF_OPEN_PLUGINS`) -- the settings menu no longer
+    /// implements its own plugin listing; it links into this one instead
+    /// (see `view/settings.rs`'s own doc, "Plugins: one home, not two").
+    pub fn open_plugins(&mut self) {
+        self.plugins_open = true;
+        self.help_open = false;
+        self.settings_open = false;
+    }
+
+    /// Closes the `/plugin` listing. A no-op when it is already closed.
+    /// Cursor state ([`Self::plugins_selected`]) is left untouched, mirroring
+    /// [`Self::close_settings`]'s own "re-opening restores where the cursor
+    /// was left" behaviour.
+    pub fn close_plugins(&mut self) {
+        self.plugins_open = false;
     }
 }
 
@@ -1020,5 +1046,39 @@ mod tests {
         assert!(!state.settings_open);
         state.close_settings();
         assert!(!state.settings_open);
+    }
+
+    /// Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: the `/plugin` listing joins
+    /// `/help`/`/settings`' own three-way mutual exclusion -- opening any
+    /// one of the three closes the other two, in every direction, not just
+    /// the two directions the pre-existing test above already covered.
+    #[test]
+    fn open_plugins_help_and_settings_are_mutually_exclusive_three_ways() {
+        let mut state = AppState::new(AgentId::new());
+
+        state.open_plugins();
+        assert!(state.plugins_open, "/plugin must open");
+
+        state.open_help();
+        assert!(state.help_open, "/help must open");
+        assert!(!state.plugins_open, "opening help must close /plugin");
+
+        state.open_settings();
+        assert!(state.settings_open, "/settings must open");
+        assert!(!state.help_open, "opening settings must close help");
+        assert!(!state.plugins_open, "opening settings must close /plugin");
+
+        state.open_plugins();
+        assert!(state.plugins_open, "/plugin must open");
+        assert!(!state.settings_open, "opening /plugin must close settings");
+        assert!(!state.help_open, "opening /plugin must close help");
+    }
+
+    #[test]
+    fn close_plugins_is_a_noop_when_already_closed() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(!state.plugins_open);
+        state.close_plugins();
+        assert!(!state.plugins_open);
     }
 }

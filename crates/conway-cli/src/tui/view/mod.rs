@@ -55,6 +55,10 @@ pub mod palette;
 // mirrors `palette` (`pub mod`) already being reachable from `input.rs` the
 // same way.
 pub(crate) mod settings;
+// Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: the `/plugin` listing, the second
+// real caller of `menu`/`modal` alongside `settings` -- see that module's
+// own doc for why plugin listing lives here now, not in `settings`.
+pub(crate) mod plugins;
 mod status;
 pub mod theme;
 mod transcript;
@@ -193,6 +197,14 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     // branch and the one above it never both fire.
     if state.settings_open && matches!(state.mode, Mode::Normal) {
         settings::draw(frame, areas.transcript, state, theme);
+    }
+
+    // Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: the `/plugin` listing joins
+    // `/help`/`/settings`' own gating exactly -- see `AppState::
+    // plugins_open`'s own doc for the three-way mutual exclusion that keeps
+    // at most one of these three branches ever firing.
+    if state.plugins_open && matches!(state.mode, Mode::Normal) {
+        plugins::draw(frame, areas.transcript, state, theme);
     }
 }
 
