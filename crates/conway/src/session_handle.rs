@@ -26,7 +26,7 @@ use conway_core::event::{Envelope, Event};
 use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::{LogRecord, SessionFilter};
 use conway_core::ports::{SessionStore, SubagentHost};
-use conway_core::provenance::ContextReport;
+use conway_core::provenance::{ContextReport, Provenance};
 use conway_runtime::runtime::Runtime;
 use futures_core::Stream;
 use tokio::sync::Mutex as AsyncMutex;
@@ -204,6 +204,47 @@ impl SessionHandle {
         let session = self.resolve_agent_session(agent).await?;
         let stream = EventStream::live(session, Some(agent), self.rt.subscribe());
         self.rt.prompt(agent, text.into()).await?;
+        Ok(TurnHandle::new(self.rt.clone(), session, agent, stream))
+    }
+
+    /// [`Self::prompt_agent`], stamped [`Provenance::CommandPrompt`] instead
+    /// of [`Provenance::UserPrompt`] -- the facade primitive
+    /// `conway_core::ports::CommandOutcome::SubmitPrompt`'s own doc names as
+    /// what the host actually does with it (board item
+    /// `01M0VSMF71S6VXX81YRAAF5S8Q`, "No command can submit a prompt").
+    ///
+    /// **Reachable here, on `SessionHandle` itself, not only from
+    /// `conway-cli`'s `App`** -- this is this item's own answer to its
+    /// "port variant, not a renderer `Effect`" determine-first question
+    /// (GP-05/C-03: no capability may exist in only one mode). Any caller
+    /// holding a `SessionHandle` and a `CommandOutcome::SubmitPrompt` a
+    /// `Command::invoke` returned -- the TUI's `App`, `conway-cli`'s
+    /// one-shot `<plugin-id>.<command>` dispatch, or a bare library
+    /// embedder with none of those -- fulfils it identically through this
+    /// one method, never a TUI-only code path.
+    ///
+    /// `command` is the full command name that produced `text` (`plugin_id.
+    /// bare_name`) -- attributed into the stamped `Provenance::
+    /// CommandPrompt { command }` so the durable log can tell a
+    /// command-submitted turn apart from an operator-typed one, and name
+    /// which command it was.
+    pub async fn prompt_command(
+        &self,
+        agent: AgentId,
+        text: impl Into<String>,
+        command: impl Into<String>,
+    ) -> Result<TurnHandle> {
+        let session = self.resolve_agent_session(agent).await?;
+        let stream = EventStream::live(session, Some(agent), self.rt.subscribe());
+        self.rt
+            .prompt_with_provenance(
+                agent,
+                text.into(),
+                Provenance::CommandPrompt {
+                    command: command.into(),
+                },
+            )
+            .await?;
         Ok(TurnHandle::new(self.rt.clone(), session, agent, stream))
     }
 

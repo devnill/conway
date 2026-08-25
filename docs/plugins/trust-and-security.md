@@ -395,6 +395,26 @@ merely lets a plugin offer operator-privileged, already-possible actions
 DIFFERENTLY-NAMED session one already knows the id of) as a named command
 instead of a manual multi-step workaround.
 
+**Newer (board item 01M0VSMF71S6VXX81YRAAF5S8Q): a command can submit a new
+turn, through `CommandOutcome::SubmitPrompt` alone.** `SubmitPrompt { text
+}` puts `text` into the conversation exactly as if the operator had typed
+it — see `hooks.md` point 15's "Submitting a prompt" subsection for the
+full mechanism. This widens WHAT a command can cause (a new agent turn,
+where before it could only act on already-persisted history), but not WHO
+can cause it or what they could not already do by hand: the operator who
+installed the plugin and typed the command word could have typed the exact
+same text into the prompt box themselves in the next keystroke. The
+distinguishing property from `ForkSession`/`MaskRecord`/`Checkout` above is
+provenance, not privilege — the resulting turn is attributed to the
+command that produced it (`Provenance::CommandPrompt`, `hooks.md`'s own
+"Submitting a prompt" subsection), never disguised as the operator's own
+typed text, so a reviewer of the durable log can always tell a
+command-submitted turn apart from one the operator actually typed. Bound to
+the invoking agent and session exactly like `ForkSession`/`MaskRecord`: the
+returned request carries no session or agent identifier of its own, so
+there is nothing for a command, malicious or buggy, to name a foreign
+target with.
+
 ## Composing a context path: a gated tool, cross-session read, same-session write only
 
 See [`hooks.md` point 18](hooks.md#18-context-path-composition--toolctxcontext_path-contextpathhost)

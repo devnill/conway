@@ -54,3 +54,9 @@ conway = { path = "../conway", features = ["test-support"] }
 conway-core = { path = "../conway-core" }
 conway-testkit = { path = "../conway-testkit" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+# Test-only: `tests/file_prompt_command.rs`'s own fixture markdown file, a
+# real file `FilePromptCommand::from_file` reads from disk -- already a
+# pinned `[workspace.dependencies]` entry used throughout this tree (e.g.
+# `conway-plugin-discover`, `conway-plugin-skills`), not a new dependency
+# to the workspace (C-04).
+tempfile = { workspace = true }

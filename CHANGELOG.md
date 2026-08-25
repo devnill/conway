@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A command can now submit a prompt — `CommandOutcome::SubmitPrompt`,
+  reachable from the TUI, the one-shot CLI, and the library API alike** —
+  board item `01M0VSMF71S6VXX81YRAAF5S8Q`. Before this, a plugin command
+  could print text, report an error, fork the session, mask a record, or
+  check out a different session — but nothing could put text into the
+  conversation as a new turn, which is the whole job of a prompt-template
+  command (`/review-this`, `/explain`, the shape most Claude Code plugins'
+  slash commands are built on). `CommandOutcome::SubmitPrompt { text }`
+  closes that gap: the host submits `text` as a new turn on the invoking
+  agent, exactly as if the operator had typed it, through
+  `conway::SessionHandle::prompt_command` — a facade primitive reachable by
+  the TUI's `App`, `conway`'s one-shot `<plugin-id>.<command>` dispatch,
+  and any bare library embedder, never a TUI-only code path (this
+  project's "no capability may exist in only one mode" rule). The
+  resulting turn is stamped with a new, dedicated `Provenance::
+  CommandPrompt { command }` — never `Provenance::UserPrompt` — so the
+  durable log, and `/context`'s own provenance rendering, can always tell
+  a command-submitted turn apart from one the operator actually typed.
+  This is a persisted wire-format addition to `Provenance`: every record
+  written before this variant existed still decodes unchanged. v1
+  performs no interpolation of any kind — the submitted text is always a
+  literal string a `Command::invoke` implementation builds itself, with no
+  template syntax this crate parses. Submitting while the same agent
+  already has a turn in flight is refused, not raced in silently — a new
+  guard in `App::apply_plugin_command_done`, tested and shown to fail
+  without it. `conway-plugin-skeleton`'s new `FilePromptCommand` is the
+  conway-native, file-backed demonstration: it reads a markdown file once
+  and submits its body verbatim every time the command is typed — proof
+  that a markdown file becomes a typeable command with no Rust beyond a
+  handful of lines. Wiring Claude Code's own `commands/*.md` to this
+  capability is a separate, unbuilt follow-up.
+
 - **A `/plugin` command lists every kind of plugin conway can run today —
   compiled-in, subprocess, and MCP — in one place** — board item
   `01M0VR5RCCB8NDGG2JEQW8X7XR`. Before this, the only plugin listing in

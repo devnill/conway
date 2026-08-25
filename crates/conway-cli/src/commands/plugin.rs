@@ -27,6 +27,11 @@
 //! TUI, there is no follow-on interactive loop to hand the child to -- this
 //! prints the child's session id instead, which `conway sessions show
 //! <id>`/`conway -p --resume <id> ...` can pick up from there.
+//! [`conway::plugin::CommandOutcome::SubmitPrompt`] (board item
+//! `01M0VSMF71S6VXX81YRAAF5S8Q`) is honored the same way: the prompt is
+//! genuinely submitted (a real `UserTurn` record, real `Provenance::
+//! CommandPrompt` attribution), but this function does not stay attached
+//! to drive the resulting turn -- see that arm's own comment for why.
 
 use std::sync::Arc;
 
@@ -193,6 +198,40 @@ pub async fn run(
                 }
                 Err(e) => {
                     diag::error(format!("{full_name}: checkout failed: {e}"));
+                    Ok(ExitCode::AgentFailed)
+                }
+            }
+        }
+        // `CommandOutcome::SubmitPrompt`'s own capability (board item
+        // `01M0VSMF71S6VXX81YRAAF5S8Q`) -- the FIRST arm in this function
+        // that actually reaches a model, unlike every arm above it (module
+        // doc: "never prompted, so this never consults the permission gate
+        // or reaches a model"). Mirrors `ForkSession`/`Checkout` above in
+        // NOT staying attached to drive the resulting turn interactively --
+        // that would need this function to grow the same event-loop/
+        // renderer machinery `oneshot::run` already owns, which is real,
+        // separate scope this smaller v1 does not take on. Submits for
+        // real (a genuine `LogRecord::UserTurn` stamped `Provenance::
+        // CommandPrompt`, appended against the fresh session `resolve_
+        // session`'s sibling above created) and prints a pointer, the same
+        // shape `ForkSession`'s own "`conway -p --resume <id> ...` to
+        // continue it" message already uses.
+        CommandOutcome::SubmitPrompt { text } => {
+            match handle
+                .prompt_command(handle.root(), text, full_name.clone())
+                .await
+            {
+                Ok(_turn) => {
+                    println!(
+                        "{full_name}: submitted a prompt to session {} -- `conway -p --resume {} \
+                         ...` to see the response",
+                        handle.id(),
+                        handle.id(),
+                    );
+                    Ok(ExitCode::Completed)
+                }
+                Err(e) => {
+                    diag::error(format!("{full_name}: could not submit prompt: {e}"));
                     Ok(ExitCode::AgentFailed)
                 }
             }

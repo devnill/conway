@@ -178,6 +178,79 @@ impl Command for SkeletonPingCommand {
     }
 }
 
+/// A command whose entire behavior is "read this file once, submit its
+/// body as a new turn" -- the smallest possible instance of the capability
+/// board item `01M0VSMF71S6VXX81YRAAF5S8Q` ships
+/// (`conway::plugin::CommandOutcome::SubmitPrompt`), and this tier's own
+/// proof that a markdown file becomes a typeable command with no Rust
+/// beyond the handful of lines below.
+///
+/// **Deliberately NOT wired into [`SkeletonPlugin::commands`].** This type
+/// is fallible to construct (the named file may not exist) and reads a
+/// caller-supplied path -- unlike `SkeletonPingCommand`, it cannot be a
+/// zero-argument, always-installed member of the skeleton plugin's fixed
+/// command list without inventing a fake path nobody asked for. A caller
+/// (this crate's own `tests/file_prompt_command.rs`, or a library embedder
+/// following the same shape) constructs one explicitly, via
+/// [`Self::from_file`], and installs it on whatever `Plugin` it likes --
+/// exactly the same "construct it yourself, install it yourself" contract
+/// every other `Command` in this workspace already has.
+///
+/// **v1, deliberately: no interpolation of any kind.** [`CommandCtx::args`]
+/// is read and ignored -- the submitted text is always the file's own
+/// verbatim body, read once at construction (never re-read per
+/// invocation, so a file edited after construction takes effect only on
+/// the next process start). This mirrors `Plugin::instructions`'s own
+/// `include_str!` convention's accepted tradeoff (see that method's own
+/// doc, "Convention, not enforcement"), chosen here for the identical
+/// reason: a v1 whose entire job is proving the capability end to end
+/// needs no live-reload story, and P-10 (range-check untrusted input at
+/// the boundary) prefers the smaller slice -- no template language exists
+/// anywhere in this type for a file's own content, or an operator's typed
+/// arguments, to be parsed through.
+pub struct FilePromptCommand {
+    name: String,
+    summary: String,
+    body: String,
+}
+
+impl FilePromptCommand {
+    /// Reads `path`'s content once, at construction -- fallible (the file
+    /// may not exist, or may not be valid UTF-8), surfacing the error to
+    /// the caller's own construction site rather than deferring it to a
+    /// later `invoke` no caller could react to sensibly (`Plugin`'s own
+    /// module doc: "an implementer needing setup does it in its own
+    /// constructor... where errors surface to the embedder directly").
+    /// `name` is this command's bare name (no leading `/`, no plugin-id
+    /// prefix -- the host prefixes it, exactly like every other
+    /// [`CommandSpec::name`]).
+    pub fn from_file(name: impl Into<String>, path: &std::path::Path) -> std::io::Result<Self> {
+        let body = std::fs::read_to_string(path)?;
+        let name = name.into();
+        Ok(Self {
+            summary: format!("submits {path:?}'s body as a new turn"),
+            name,
+            body,
+        })
+    }
+}
+
+#[async_trait]
+impl Command for FilePromptCommand {
+    fn spec(&self) -> CommandSpec {
+        CommandSpec {
+            name: self.name.clone(),
+            summary: self.summary.clone(),
+        }
+    }
+
+    async fn invoke(&self, _ctx: CommandCtx) -> CommandOutcome {
+        CommandOutcome::SubmitPrompt {
+            text: self.body.clone(),
+        }
+    }
+}
+
 /// The plugin itself. `Default` so a caller (this crate's own tests,
 /// `conway-cli`'s first-party bundle) constructs it with no arguments,
 /// matching every built-in's own zero-config construction.

@@ -2325,6 +2325,7 @@ fn provenance_label(p: &Provenance) -> String {
         Provenance::SystemNote { reason } => format!("system note: {reason}"),
         Provenance::MergedAsk { from } => format!("merged /ask from {from}"),
         Provenance::ChildResult { from } => format!("child result from {from}"),
+        Provenance::CommandPrompt { command } => format!("submitted by /{command}"),
         _ => "unknown provenance".to_string(),
     }
 }

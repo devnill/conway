@@ -1054,6 +1054,7 @@ fn provenance_discriminant(provenance: &Provenance) -> &'static str {
         Provenance::MergedAsk { .. } => "merged_ask",
         Provenance::ChildResult { .. } => "child_result",
         Provenance::Memory { .. } => "memory",
+        Provenance::CommandPrompt { .. } => "command_prompt",
         _ => "unknown",
     }
 }
