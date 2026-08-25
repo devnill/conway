@@ -423,13 +423,11 @@ mod tests {
     /// `commands`'s own module doc, "Namespacing").
     #[tokio::test]
     async fn command_registrations_are_the_ready_subset_with_bare_names() {
-        // `Command`'s own trait methods (`spec`/`invoke`) are only callable
-        // on the `Arc<dyn Command>` this test drives once the trait itself
-        // is in scope -- `super::*` does not bring it in (lib.rs never
-        // imports `Command` by name, only fully-qualifies it once in
-        // `command_registrations`'s own signature).
-        use conway_core::ports::Command as _;
-
+        // NOTE: this test carried a `use conway_core::ports::Command as _;`
+        // on the reasoning that the trait must be in scope to call `spec()`
+        // on an `Arc<dyn Command>`. It does not: the methods resolve through
+        // the trait object itself, so the import was unused and tripped
+        // `-D warnings`. Removed rather than `#[allow]`-ed.
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         std::fs::create_dir_all(root.join(".claude-plugin")).unwrap();
