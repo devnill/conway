@@ -192,7 +192,7 @@ pub struct PreToolUseHookSpec {
     /// case to defend against here.
     pub matcher: Option<String>,
     /// This registration's own `on_failure` policy -- what
-    /// [`PermissionBroker::pre_tool_use_hook_denial`] does when THIS hook's
+    /// `PermissionBroker::pre_tool_use_hook_denial` does when THIS hook's
     /// `HookRunner::run` call itself fails (a missing script, a timeout, or
     /// stdout that failed to parse), never consulted for a hook that ran to
     /// completion and returned an explicit

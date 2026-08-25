@@ -206,7 +206,6 @@ use ratatui::Frame;
 
 use super::agents;
 use super::theme::Theme;
-use conway::plugin::PluginStatusContribution;
 use conway::{AgentId, PermissionMode, ResultStatus};
 
 use crate::tui::config::StatusLineConfig;
@@ -760,10 +759,16 @@ const MAX_CONTRIBUTIONS_SHOWN: usize = 3;
 fn contribution_style(status: &ResultStatus, theme: &Theme) -> Style {
     match status {
         ResultStatus::Completed => Style::default(),
-        ResultStatus::Failed { .. }
-        | ResultStatus::Cancelled { .. }
-        | ResultStatus::BudgetExceeded { .. }
-        | ResultStatus::Rejected { .. } => theme.error,
+        // `ResultStatus` is `#[non_exhaustive]`, so this arm cannot be an
+        // exhaustive variant list. The wildcard defaults to the FAILURE
+        // style rather than the healthy one, matching
+        // `docs/plugins/compatibility.md`'s own unknown-tag table for this
+        // exact enum -- *"`ResultStatus` -> `failed`, never `completed`"*.
+        // A variant added later therefore renders as a problem the operator
+        // can see, instead of silently rendering as healthy: the same
+        // safe-default direction `PermissionMode::allows_category`'s
+        // match-the-allowed-set-and-deny-the-rest spelling already takes.
+        _ => theme.error,
     }
 }
 
@@ -1202,6 +1207,7 @@ fn compact_tokens(n: u64) -> String {
 mod tests {
     use std::time::{Duration, Instant};
 
+    use conway::plugin::PluginStatusContribution;
     use conway::AgentId;
 
     use super::*;
