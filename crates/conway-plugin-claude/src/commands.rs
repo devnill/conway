@@ -29,7 +29,7 @@
 //!    has a permission surprise, not a fidelity one -- the operator ruling's
 //!    own framing, quoted here rather than restated differently).
 //! 2. **A raw `$ARGUMENTS` placeholder is refused, never submitted
-//!    verbatim.** [`evaluate_body`] is the one place this is decided --
+//!    verbatim.** `evaluate_body` is the one place this is decided --
 //!    see its own doc for why refusing (rather than stripping or
 //!    substituting) is the chosen answer.
 //!
@@ -52,7 +52,7 @@
 //! failure here would fail the WHOLE plugin build rather than degrade one
 //! command: `CommandRegistry::build`'s own registration check rejects an
 //! empty or whitespace-containing `CommandSpec::name` outright (a
-//! `CommandRegistrationError`, not a per-command skip) -- [`evaluate_body`]
+//! `CommandRegistrationError`, not a per-command skip) -- `evaluate_body`
 //! refuses (named in [`crate::UnsupportedItem`], never registered) any
 //! command whose file-stem-derived bare name would trip that check, so a
 //! oddly-named foreign command file degrades to "not translated" rather
@@ -97,7 +97,7 @@ pub enum CommandMapOutcome {
     /// body, unreadable file, malformed/unterminated frontmatter, a raw
     /// `$ARGUMENTS` placeholder, or a bare name that could never be typed).
     /// Always ALSO named in [`crate::UnsupportedItem`] by
-    /// [`read_commands`] -- this variant is never silently dropped.
+    /// `read_commands` -- this variant is never silently dropped.
     Refused { reason: String },
 }
 
@@ -124,7 +124,7 @@ impl CommandTranslation {
 /// A translated `commands/*.md` file, as a real
 /// [`conway_core::ports::Command`]. `invoke` performs no I/O and cannot
 /// fail -- the prompt text was already read and validated at translation
-/// time ([`read_commands`]).
+/// time (`read_commands`, private).
 pub struct ClaudeCommand {
     name: String,
     summary: String,

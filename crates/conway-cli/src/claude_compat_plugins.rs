@@ -41,7 +41,7 @@
 //! explicitly by this module.** `conway_plugin_claude::HookRegistration`
 //! carries no `on_failure` field of its own (that policy is
 //! `conway::config::schema::HookEntry`-only, and this crate never depends
-//! on `conway` -- see that crate's own module doc), so [`to_hook_entry`]
+//! on `conway` -- see that crate's own module doc), so `to_hook_entry`
 //! constructs every appended `conway::config::schema::HookEntry` via
 //! `..Default::default()` for exactly that one field. This is the SAME
 //! posture every existing `[hooks].rules[]` entry with no explicit

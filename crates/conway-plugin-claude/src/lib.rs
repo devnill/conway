@@ -60,7 +60,7 @@
 //! item than the one this crate's own spec was originally filed against)
 //! but wiring a Claude Code command file to it was explicitly deferred to a
 //! separate follow-up belonging to neither item alone. **That follow-up is
-//! this one:** [`commands::read_commands`] translates most `commands/*.md`
+//! this one:** `commands::read_commands` translates most `commands/*.md`
 //! files into real, invokable [`conway_core::ports::Command`]s
 //! ([`commands::ClaudeCommand`]) -- see that module's own doc for the full
 //! "best effort, two things survive the relaxation" appetite (unsupported

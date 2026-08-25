@@ -1503,8 +1503,10 @@ impl Serialize for HostCapability {
 
 impl<'de> Deserialize<'de> for HostCapability {
     /// Parses the bare wire string and re-validates its shape with
-    /// [`crate::event_name::validate_event_name`] (via [`Self::normalize`],
-    /// the same normalization [`Self::named`] performs) -- a malformed tag
+    /// [`crate::event_name::validate_event_name`] (via `Self::normalize`,
+    /// which is private -- a plain code span, not an intra-doc link, since
+    /// the `-D warnings` doc gate rejects a public doc linking to a private
+    /// item; the same normalization [`Self::named`] performs) -- a malformed tag
     /// FAILS CLOSED here exactly as the old closed-enum derive did for an
     /// unrecognized tag; a well-formed but previously-unknown tag now
     /// succeeds as [`Self::Named`], which is the point of opening the
