@@ -640,6 +640,16 @@ impl SubprocessPlugin {
             version: manifest.version.clone(),
             tools: specs.iter().map(|s| s.name.clone()).collect(),
             required_host_caps: manifest.required_host_caps.clone(),
+            // `optional_host_caps` (board item `01M0WWKA8K1E7JPK87J6RRQMZF`)
+            // is EMPTY for a subprocess plugin, deliberately and for now:
+            // `WireManifest` has no field to carry it, so there is nothing
+            // to map. An out-of-process plugin can therefore declare a
+            // REQUIRED host capability but not an optional one -- the same
+            // in-process/out-of-process asymmetry `WireManifest::requires`/
+            // `optional` (the two lines below) was added to close, one
+            // field later. Filed rather than papered over; see this
+            // construction site's own board item trail.
+            optional_host_caps: Vec::new(),
             // `WireManifest::requires`/`optional` (board item
             // `01M0XCD3P8S3VR0T1H0KNG5TMD`) carried verbatim into the same
             // `PluginManifest` fields an in-process `Plugin` populates --

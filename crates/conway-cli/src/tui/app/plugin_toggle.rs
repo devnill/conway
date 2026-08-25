@@ -556,6 +556,7 @@ mod tests {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: requires.iter().map(|s| s.to_string()).collect(),
             optional: optional.iter().map(|s| s.to_string()).collect(),
         }
