@@ -298,11 +298,19 @@ call) there is no permission prompt: you typed it yourself. See
 author implements against, including what a command may and may not do —
 it can ask the host to fork the session it was invoked from at an explicit,
 already-known sequence number (`CommandOutcome::ForkSession`; this is how
-`conway.history`'s `/conway.history.rewind <seq>` works, see below), but it
-can never resume, steer, or otherwise drive a session by name, and it
-cannot read your transcript to resolve free text into a sequence itself —
-and the guarantee that a slow or hanging one degrades to "no reply yet,"
-never a frozen terminal.
+`conway.history`'s `/conway.history.rewind <seq>` works, see below), and it
+can ask the host to submit text as a new turn — as if you had typed it
+yourself (`CommandOutcome::SubmitPrompt`; this is how a file-backed
+"prompt-template" command works, e.g. `conway-plugin-skeleton`'s
+`FilePromptCommand`, which reads a markdown file once and submits its body
+verbatim every time you type the command) — but it can never resume,
+steer, or otherwise drive a session by name, and it cannot read your
+transcript to resolve free text into a sequence or a prompt itself — and
+the guarantee that a slow or hanging one degrades to "no reply yet," never
+a frozen terminal. A submitted prompt is never confused with something you
+typed: it is attributed in the durable log as coming from the command that
+produced it, and `/context`'s own provenance rendering shows the
+difference.
 
 `conway.history` (`crates/conway-plugin-history`, install it with
 `"conway.history"` in `plugins.install`) ships exactly one command,

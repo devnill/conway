@@ -118,6 +118,14 @@ impl From<&Provenance> for SegmentKind {
             // folded into the parent's log (B4) — same `[4]` slot as
             // `UserPrompt`/`ForkDirective`, not a model-turn artifact.
             Provenance::MergedAsk { .. } => SegmentKind::Directive,
+            // A command-submitted prompt (board item
+            // `01M0VSMF71S6VXX81YRAAF5S8Q`) occupies the SAME `[4]` slot as
+            // `UserPrompt`/`ForkDirective`/`MergedAsk` -- it is directive
+            // text the model reads as the start of a turn, not a model-turn
+            // artifact -- even though its `Provenance` variant is distinct
+            // (see that variant's own doc for why attribution still differs
+            // even though placement does not).
+            Provenance::CommandPrompt { .. } => SegmentKind::Directive,
             // A child's terminal result, recorded into this agent's own
             // `[5..]` volatile records by `mailbox::classify` -- same slot
             // as a steer or a tool result, not a model-turn artifact either.

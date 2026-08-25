@@ -35,12 +35,22 @@ use crate::ports::SessionStore;
 
 /// Why a segment of assembled context exists.
 ///
-/// Twelve variants: the original nine of architecture §5.3, plus
+/// Thirteen variants: the original nine of architecture §5.3, plus
 /// [`Provenance::MergedAsk`] (B4), plus
 /// [`Provenance::ChildResult`], plus [`Provenance::Memory`] (board item
-/// `01M09P2T8E5M292WMSMS64CVC4`).
+/// `01M09P2T8E5M292WMSMS64CVC4`), plus [`Provenance::CommandPrompt`]
+/// (board item `01M0VSMF71S6VXX81YRAAF5S8Q`).
 /// Adding another is a breaking wire-format change and must be treated as
-/// such.
+/// such -- this one is: an OLDER binary reading a NEWER log that contains a
+/// `command_prompt`-tagged record fails to deserialize that one record (the
+/// `#[serde(tag = "type", ...)]` internal tagging has no "unknown tag"
+/// fallback), exactly the same forward-compatibility cost every prior
+/// addition to this enum (`MergedAsk`, `ChildResult`, `Memory`) already
+/// paid. Every record written BEFORE this variant existed is unaffected:
+/// its own `type` tag is still one of the original twelve, so it decodes
+/// exactly as it always has -- this is a forward-compat gap for a NEWER
+/// record read by an OLDER binary, never a backward-compat break for an
+/// older record read by a newer one.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -95,6 +105,24 @@ pub enum Provenance {
     /// [`Provenance::AgentDef`]/[`Provenance::Skill`] attribute injected,
     /// non-record content.
     Memory { id: MemoryId },
+    /// Text a plugin [`crate::ports::Command`] asked the host to submit as a
+    /// new turn -- [`crate::ports::CommandOutcome::SubmitPrompt`]'s own
+    /// capability (board item `01M0VSMF71S6VXX81YRAAF5S8Q`, "No command can
+    /// submit a prompt"). `command` is the full command name that produced
+    /// it (`plugin_id.bare_name`, e.g. `"acme.review"` -- the same
+    /// dotted shape [`crate::ports::CommandSpec::name`] is reachable under
+    /// once the host prefixes it).
+    ///
+    /// **Not [`Provenance::UserPrompt`] -- deliberately.** This text was
+    /// authored by conway (a plugin's own template or logic), never typed
+    /// by the operator, even though the model reads it in the identical
+    /// `Role::User` position an operator's own turn would occupy. Stamping
+    /// it `UserPrompt` would be exactly the misattribution this crate's own
+    /// provenance discipline exists to catch -- the same reason
+    /// [`Provenance::MergedAsk`]/[`Provenance::ChildResult`] exist as their
+    /// own variants rather than silently reusing `UserPrompt`/`SystemNote`
+    /// for conway-originated content that merely LOOKS like one of those.
+    CommandPrompt { command: String },
 }
 
 /// Where a segment sits in the fixed §5.3 ordering: `Static` segments are
@@ -147,7 +175,8 @@ impl Provenance {
             | Provenance::ToolResult { .. }
             | Provenance::SystemNote { .. }
             | Provenance::MergedAsk { .. }
-            | Provenance::ChildResult { .. } => SegmentTier::Volatile,
+            | Provenance::ChildResult { .. }
+            | Provenance::CommandPrompt { .. } => SegmentTier::Volatile,
         }
     }
 }
@@ -406,6 +435,12 @@ mod tests {
                 },
                 "memory",
             ),
+            (
+                Provenance::CommandPrompt {
+                    command: "acme.review".into(),
+                },
+                "command_prompt",
+            ),
         ]
     }
 
@@ -417,8 +452,8 @@ mod tests {
             let back: Provenance = serde_json::from_value(value).unwrap();
             assert_eq!(back, prov);
         }
-        // Twelve variants, no more, no fewer.
-        assert_eq!(all_tagged().len(), 12);
+        // Thirteen variants, no more, no fewer.
+        assert_eq!(all_tagged().len(), 13);
     }
 
     #[test]
@@ -497,6 +532,18 @@ mod tests {
             SegmentTier::Inherited
         );
         assert_eq!(Provenance::UserPrompt.tier(), SegmentTier::Volatile);
+
+        assert!(!Provenance::CommandPrompt {
+            command: "acme.review".into(),
+        }
+        .is_static());
+        assert_eq!(
+            Provenance::CommandPrompt {
+                command: "acme.review".into(),
+            }
+            .tier(),
+            SegmentTier::Volatile
+        );
 
         assert!(SegmentTier::Static < SegmentTier::Inherited);
         assert!(SegmentTier::Inherited < SegmentTier::Volatile);

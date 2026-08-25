@@ -832,6 +832,18 @@ pub struct EventDecl {
 /// is "which session can be named," not "what can be done to it once
 /// named." A second addition, [`CommandOutcome::MaskRecord`], stays bound
 /// to the invoking session exactly like `ForkSession` -- see its own doc.
+///
+/// **A third widening in KIND, not in reach: [`CommandOutcome::
+/// SubmitPrompt`]** (board item `01M0VSMF71S6VXX81YRAAF5S8Q`). Every
+/// variant above lets a command act on session HISTORY (fork it, mask a
+/// record in it, check another one out); this one lets a command START A
+/// NEW TURN -- text a command supplies flows into the conversation exactly
+/// as if the operator had typed it. Bound to the invoking agent/session
+/// exactly like `ForkSession`/`MaskRecord` (see that variant's own doc for
+/// the full binding argument, which applies unchanged), and, like every
+/// widening above it, earned by a real consumer: this item's own
+/// file-backed command (see `conway_plugin_skeleton`'s `FilePromptCommand`)
+/// is that consumer, not a speculative grant ahead of one.
 #[async_trait]
 pub trait Command: Send + Sync + 'static {
     /// This command's bare name (no leading `/`, no plugin-id prefix -- the
@@ -1050,6 +1062,93 @@ pub enum CommandOutcome {
         /// here) -- an unknown or malformed id is a host-side error,
         /// surfaced the same way an out-of-range `ForkSession::at_seq` is.
         target: SessionId,
+    },
+    /// Asks the host to submit `text` as a new turn on the CALLING agent --
+    /// as if the operator had typed it -- closing the one gap board item
+    /// `01M0VSMF71S6VXX81YRAAF5S8Q` found: no existing variant could put
+    /// text into the conversation as a turn, which is what a
+    /// prompt-template command's entire job is (`/review-this`, `/explain`,
+    /// the shape Claude Code's own `commands/*.md` plugins are built almost
+    /// entirely on -- see that item's own spec for why this was filed
+    /// separately from the compatibility layer that first needed it).
+    ///
+    /// **Determine-first question 1 -- provenance, answered, not defaulted.**
+    /// This text was authored by conway (a plugin's own template or logic),
+    /// never typed by the operator, even though the model reads it in the
+    /// identical `Role::User` position an operator's own turn would occupy.
+    /// The host does NOT stamp the resulting `LogRecord::UserTurn` with
+    /// `Provenance::UserPrompt` -- doing so would be exactly the
+    /// misattribution this crate's provenance discipline exists to catch.
+    /// It stamps [`crate::provenance::Provenance::CommandPrompt`] instead,
+    /// naming the full command (`plugin_id.bare_name`) that produced it --
+    /// see that variant's own doc. This is a new, dedicated `Provenance`
+    /// variant (a persisted wire-format addition), not a repurposing of
+    /// `MergedAsk`/`ChildResult`/any existing one: none of those describe
+    /// "conway generated this turn's text from a plugin's own logic",
+    /// which is a genuinely distinct origin from a merged `/ask` question
+    /// or a child agent's terminal result.
+    ///
+    /// **Determine-first question 2 -- port variant, not a renderer
+    /// `Effect`, answered, not assumed.** `crate` (`conway-core`) cannot
+    /// depend on `conway-cli`, so a TUI-only `Effect` could never live
+    /// here regardless; the real question this item's spec raises is
+    /// whether the CAPABILITY should be TUI-only at all. This project's
+    /// own rule (GP-05/C-03: "no capability may exist in only one mode")
+    /// decides it: a library embedder holding a live `Conway`/
+    /// `SessionHandle` and a `Command` it invoked directly must be able to
+    /// fulfil this exactly like `conway-cli`'s `App` does, with no TUI in
+    /// the loop at all. `conway::SessionHandle::prompt_command` (disclosed
+    /// below) is that facade primitive, reachable by any consumer holding
+    /// a `SessionHandle` -- TUI, one-shot, or a bare library caller alike
+    /// -- not a method `conway-cli` alone can reach.
+    ///
+    /// **Determine-first question 3 -- v1 does NO interpolation, stated
+    /// rather than built.** `text` is a literal string this crate never
+    /// parses, templates, or substitutes into -- no `{{args}}`/
+    /// `$ARGUMENTS`/positional-placeholder syntax exists anywhere in this
+    /// port. A `Command::invoke` implementation that wants to fold
+    /// [`CommandCtx::args`] into the submitted text does so itself, with
+    /// ordinary Rust string building (exactly like [`Self::Output`]'s own
+    /// `GreetCommandFixture`-shaped examples already echo `ctx.args` back
+    /// today) -- there is no template language for this crate to parse
+    /// untrusted argument text through, which is the smaller, safer slice
+    /// P-10 (range-check untrusted input at the boundary) prefers over
+    /// building one ahead of a real consumer that needs it.
+    ///
+    /// **Bound to the invoking session AND the invoking agent,
+    /// structurally, the same shape [`Self::ForkSession`]/
+    /// [`Self::MaskRecord`] already establish.** No field here names a
+    /// session or agent other than the ones this command was invoked
+    /// from -- `conway_cli::tui::app::App` (the one production host)
+    /// resolves the submission against the SAME `CommandCtx::
+    /// focused_agent`/`CommandCtx::session_id` it captured when it spawned
+    /// this invocation's `Command::invoke` call, never against whatever
+    /// agent/session it happens to be driving by the time the reply
+    /// arrives. Targeting `focused_agent` (not `root_agent`) matches "as if
+    /// the operator had typed it" literally: an ordinary typed message
+    /// targets whichever agent the operator is currently looking at, and
+    /// this variant does too.
+    ///
+    /// **Determine-first question 4 -- the in-flight guard, disclosed
+    /// here since this crate performs none of it.** `App::
+    /// apply_plugin_command_done`'s own `SubmitPrompt` arm refuses (a
+    /// `Notice`, nothing appended) rather than silently racing a second
+    /// turn onto the SAME agent the TUI is currently watching mid-turn --
+    /// see that arm's own doc for the exact predicate and its disclosed
+    /// limit. Never swaps the driven session -- submitting a prompt never
+    /// changes which session is driven, exactly like `MaskRecord`.
+    ///
+    /// **What the host actually does with this, disclosed here since this
+    /// crate performs none of it:** `SessionHandle::prompt_command(ctx.
+    /// focused_agent, text, full_name)` -- the SAME `Runtime::prompt`
+    /// machinery an ordinary operator turn uses (persist-before-act, the
+    /// live `Event::UserTurn` twin, the `prompt_notify` wake), except
+    /// stamped with `Provenance::CommandPrompt` instead of `Provenance::
+    /// UserPrompt`.
+    SubmitPrompt {
+        /// The literal text to submit, verbatim -- see this variant's own
+        /// doc for why v1 performs no interpolation of any kind.
+        text: String,
     },
 }
 

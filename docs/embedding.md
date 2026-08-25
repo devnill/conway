@@ -518,7 +518,14 @@ is the worked example this item ships — a `SkeletonPlugin` registering one
 `skeleton_ping` tool and one
 `/conway.plugin_skeleton.ping` TUI slash command, both written entirely
 against `conway::plugin`, proving nothing beyond the mechanism below and
-[`docs/plugins/hooks.md`](plugins/hooks.md) point 15. `crates/conway-plugin-history`
+[`docs/plugins/hooks.md`](plugins/hooks.md) point 15. That same crate also
+ships `FilePromptCommand` (board item 01M0VSMF71S6VXX81YRAAF5S8Q) — a
+command that reads a markdown file once and submits its body as a new turn
+via `CommandOutcome::SubmitPrompt` — the smallest instance of a
+prompt-template command, constructed explicitly (`FilePromptCommand::
+from_file`) rather than installed by default, since it is fallible to
+build and unlike `SkeletonPingCommand` has no zero-argument shape.
+`crates/conway-plugin-history`
  is this tier's first REAL, non-worked
 member: `/conway.history.rewind <seq>`, forking the calling session at an
 explicit, persisted sequence number via `CommandOutcome::ForkSession` (see

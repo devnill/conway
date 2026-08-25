@@ -930,6 +930,37 @@ impl Runtime {
     /// conversation picks it up) is the mailbox wiring; this method only
     /// guarantees the durable append plus this live broadcast.
     pub async fn prompt(&self, agent: AgentId, text: String) -> Result<(), RuntimeError> {
+        self.prompt_with_provenance(agent, text, Provenance::UserPrompt)
+            .await
+    }
+
+    /// [`Self::prompt`], generalized over the stamped [`Provenance`] --
+    /// board item `01M0VSMF71S6VXX81YRAAF5S8Q` ("No command can submit a
+    /// prompt"): a plugin `Command`'s `CommandOutcome::SubmitPrompt` must
+    /// land as [`Provenance::
+    /// CommandPrompt`], never silently as [`Provenance::UserPrompt`] (GP-10
+    /// -- a turn conway generated from a plugin's own template is not a
+    /// turn the operator typed). `Self::prompt` is now a thin wrapper over
+    /// this method, stamping `Provenance::UserPrompt` -- so every existing
+    /// caller (an ordinary operator turn, `subagent.rs`'s spawn-with-first-
+    /// message path, ...) keeps its exact prior behavior, byte-for-byte,
+    /// with no field of `RuntimeError`/the appended record/the emitted
+    /// event changed for it.
+    ///
+    /// Everything else about `Self::prompt`'s own doc applies unchanged:
+    /// persist-before-act, the live `Event::UserTurn` twin, the
+    /// `prompt_notify` wake, and the `prompt_submitted` deny-only hook
+    /// (dispatched with the SAME payload shape regardless of which
+    /// `Provenance` this call stamps -- a hook has no way to see the
+    /// difference, and none needs to: `PROMPT_SUBMITTED`'s policy question
+    /// is "should this text reach the agent at all", not "who authored
+    /// it").
+    pub async fn prompt_with_provenance(
+        &self,
+        agent: AgentId,
+        text: String,
+        prov: Provenance,
+    ) -> Result<(), RuntimeError> {
         let (session, prompt_notify) = {
             let agents = self.agents.read().expect("agents lock poisoned");
             let handle = agents
@@ -973,18 +1004,12 @@ impl Runtime {
                     seq: LogSeq::ZERO,
                     ts: Utc::now(),
                     text: text.clone(),
-                    prov: Provenance::UserPrompt,
+                    prov: prov.clone(),
                 },
             )
             .await?;
-        self.bus.emit(
-            session,
-            agent,
-            Event::UserTurn {
-                text,
-                prov: Provenance::UserPrompt,
-            },
-        );
+        self.bus
+            .emit(session, agent, Event::UserTurn { text, prov });
         // Generalized by keep-alive: wakes a `resume_root` agent's
         // gated first iteration, OR a `keep_alive: true` agent's gated
         // end-of-turn idle wait -- both the same `ResumeGate` (see that

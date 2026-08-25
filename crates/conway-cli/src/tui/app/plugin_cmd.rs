@@ -7,7 +7,7 @@
 //! `plugin_cmd_rx.recv()` arm is the production caller of
 //! [`App::apply_plugin_command_done`].
 
-use conway::{ForkSpec, SessionId};
+use conway::{AgentId, ForkSpec, SessionId};
 
 use super::App;
 use crate::tui::commands;
@@ -35,6 +35,14 @@ pub(super) struct PluginCommandDone {
     /// resolved_against_the_invoking_session_even_if_the_host_has_since_
     /// resumed_elsewhere` for the adversarial proof.
     pub(super) session_id: SessionId,
+    /// The agent THIS invocation's `CommandCtx::focused_agent` was stamped
+    /// with -- captured alongside `session_id`, for the identical reason
+    /// (this struct's own doc): `CommandOutcome::SubmitPrompt`'s own arm in
+    /// [`App::apply_plugin_command_done`] resolves against THIS field, not
+    /// `self.state.focused_agent` at apply time, so "a command submits to
+    /// the agent it was invoked from, never one it names" holds under the
+    /// same race `session_id`'s own doc already covers.
+    pub(super) agent: AgentId,
     pub(super) outcome: conway::plugin::CommandOutcome,
 }
 
@@ -69,6 +77,7 @@ impl App {
         // later read of `self.handle.id()`) is what makes the binding
         // structural rather than merely usually-correct.
         let session_id = ctx.session_id;
+        let agent = ctx.focused_agent;
         let tx = self.plugin_cmd_tx.clone();
         let panic_name = full_name.clone();
         tokio::spawn(async move {
@@ -86,6 +95,7 @@ impl App {
             let _ = tx.send(PluginCommandDone {
                 full_name,
                 session_id,
+                agent,
                 outcome,
             });
         });
@@ -252,6 +262,74 @@ impl App {
                     }
                 }
             }
+            // `CommandOutcome::SubmitPrompt`'s own capability (board item
+            // `01M0VSMF71S6VXX81YRAAF5S8Q`, "No command can submit a
+            // prompt"). `done.agent` -- NOT `self.state.focused_agent` --
+            // is what this resolves against, for the identical "acts on
+            // the agent it was invoked from, never one it names" reason
+            // `PluginCommandDone::agent`'s own doc gives (mirroring
+            // `ForkSession`'s `done.session_id` binding exactly).
+            conway::plugin::CommandOutcome::SubmitPrompt { text } => {
+                // Determine-first question 4's guard (this item's own
+                // spec): refuse rather than silently racing a second turn
+                // onto the SAME agent the TUI is currently watching
+                // mid-turn. Composes with, rather than fights, `state.rs`'s
+                // own `turn_started_at.is_some()` guard (the fix for the
+                // adjacent wedged-status-bar defect, board
+                // `01M0VQ650R31MGTXD8E225RRFH`): `turn_started_at` is
+                // `Some` ONLY between a real `Event::TurnStarted` and
+                // `Event::TurnFinished` for `self.state.focused_agent` --
+                // exactly the "a turn is in flight" predicate that fix
+                // already established (`state.rs`'s own `TextDelta` arm
+                // doc). Scoped to the FOCUSED agent because that is the
+                // only agent `AppState` tracks turn-in-flight state for at
+                // all today -- `Runtime` itself keeps no "is this agent
+                // mid-turn" registry either (the same absence that arm's
+                // own "KNOWN LIMIT" paragraph already names as an open
+                // question tracked on the board, not something this item
+                // invents or silently papers over). A target agent the
+                // operator has since navigated away from therefore has no
+                // tracked state here to consult, so the submission
+                // proceeds in that case -- `Runtime::prompt`'s own
+                // concurrent-call contract (durable append either way,
+                // never lost, never corrupted -- `SessionHandle::prompt`'s
+                // own "concurrent-call footgun" doc) makes that the safe
+                // direction to fail open in, rather than refusing on a
+                // signal this layer cannot actually observe.
+                if done.agent == self.state.focused_agent && self.state.turn_started_at.is_some() {
+                    self.state.transcript.push(Entry::Notice {
+                        text: format!(
+                            "/{}: a turn is already running for the focused agent -- prompt \
+                             not submitted",
+                            done.full_name
+                        ),
+                    });
+                    return false;
+                }
+                // No `Entry::Notice`/`Entry::User` pushed here on success,
+                // deliberately: `state.rs`'s own `Event::UserTurn` arm is
+                // the SINGLE path that renders a prompt bubble (its own
+                // doc: "pushing locally would double it"). `prompt_command`
+                // emits that event live on this agent's stream, which this
+                // loop is already subscribed to whenever `done.agent`
+                // still matches what is focused -- the ordinary case --
+                // so the submitted text appears exactly as if the operator
+                // had typed it, with no separate confirmation notice
+                // competing with it.
+                match self
+                    .handle
+                    .prompt_command(done.agent, text, done.full_name.clone())
+                    .await
+                {
+                    Ok(_turn) => false,
+                    Err(e) => {
+                        self.state.transcript.push(Entry::Notice {
+                            text: format!("/{}: could not submit prompt: {e}", done.full_name),
+                        });
+                        false
+                    }
+                }
+            }
         }
     }
 }
@@ -263,7 +341,7 @@ mod tests {
     use super::super::fixtures::{
         drain_and_apply, echo_conway, echo_conway_and_store, minimal_cli,
     };
-    use super::App;
+    use super::{App, PluginCommandDone};
     use crate::tui::state::Entry;
 
     // -----------------------------------------------------------------
@@ -1099,6 +1177,239 @@ mod tests {
             )),
             "a successful checkout must be surfaced as a transcript notice: {:?}",
             app.state.transcript
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // `CommandOutcome::SubmitPrompt` (board item `01M0VSMF71S6VXX81YRAAF5S8Q`)
+    // -- the VERIFICATION ANCHOR: a fixture plugin command that submits a
+    // literal prompt; the resulting turn is a real `LogRecord::UserTurn`,
+    // readable back, stamped `Provenance::CommandPrompt` (determine-first
+    // question 1) rather than `Provenance::UserPrompt`, driven through the
+    // SAME `App::submit` -> spawn -> channel -> `apply_plugin_command_done`
+    // pipeline every other `CommandOutcome` variant is proven through
+    // above. Paired with determine-first question 4's in-flight guard test
+    // and its falsification (P-15).
+    // -----------------------------------------------------------------
+
+    /// Ignores `ctx.args` entirely -- this item's own determine-first
+    /// question 3 answer (v1 performs no interpolation of any kind): the
+    /// submitted text is always this literal string.
+    struct SubmitPromptCommandFixture;
+
+    #[async_trait::async_trait]
+    impl conway::plugin::Command for SubmitPromptCommandFixture {
+        fn spec(&self) -> conway::plugin::CommandSpec {
+            conway::plugin::CommandSpec {
+                name: "submit".to_string(),
+                summary: "submits a fixed prompt as a new turn".to_string(),
+            }
+        }
+
+        async fn invoke(&self, _ctx: conway::plugin::CommandCtx) -> conway::plugin::CommandOutcome {
+            conway::plugin::CommandOutcome::SubmitPrompt {
+                text: "hello from a command".to_string(),
+            }
+        }
+    }
+
+    struct SubmitPromptPluginFixture;
+
+    impl conway::plugin::Plugin for SubmitPromptPluginFixture {
+        fn manifest(&self) -> conway::plugin::PluginManifest {
+            conway::plugin::PluginManifest {
+                id: "acme".to_string(),
+                version: "0.1.0".to_string(),
+                tools: vec![],
+                required_host_caps: vec![],
+            }
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn conway::plugin::Tool>> {
+            vec![]
+        }
+
+        fn commands(&self) -> Vec<Arc<dyn conway::plugin::Command>> {
+            vec![Arc::new(SubmitPromptCommandFixture)]
+        }
+    }
+
+    /// The verification anchor's positive half: `/acme.submit` submits a
+    /// REAL turn on the calling agent -- a genuine `LogRecord::UserTurn`,
+    /// readable back from the store, stamped `Provenance::CommandPrompt {
+    /// command: "acme.submit" }` rather than `Provenance::UserPrompt`
+    /// (checked directly against the persisted record, not merely asserted
+    /// in a doc comment) -- and the turn actually runs to completion: the
+    /// echo backend's own reply lands in the transcript, proving this
+    /// reaches a real agent turn, not merely an appended record nobody
+    /// reads. Never swaps the driven session (mirrors `MaskRecord`).
+    #[tokio::test]
+    async fn submit_prompt_outcome_submits_a_real_turn_stamped_command_prompt_provenance() {
+        use futures::StreamExt;
+
+        let (conway, store) = echo_conway_and_store();
+        let cli = minimal_cli();
+        let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(SubmitPromptPluginFixture);
+        let mut app = App::new(&cli, &conway, &[plugin])
+            .await
+            .expect("App::new should succeed");
+        let sid = app.handle.id();
+        let root = app.state.focused_agent;
+        let mut events = app.handle.events();
+
+        let outcome = app
+            .submit("/acme.submit".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, super::super::SubmitOutcome::Continue));
+
+        let done = app
+            .plugin_cmd_rx
+            .as_mut()
+            .expect("plugin_cmd_rx is set by App::new")
+            .recv()
+            .await
+            .expect("the spawned command task must reply");
+        assert_eq!(done.full_name, "acme.submit");
+        assert_eq!(done.session_id, sid);
+        assert_eq!(
+            done.agent, root,
+            "CommandCtx::focused_agent (and therefore PluginCommandDone::agent) must be the \
+             agent the command was actually invoked against"
+        );
+
+        let resubscribe = app.apply_plugin_command_done(done).await;
+        assert!(
+            !resubscribe,
+            "submitting a prompt must never swap the driven session -- there is no new session \
+             to drive"
+        );
+        assert_eq!(
+            app.handle.id(),
+            sid,
+            "submitting a prompt must never change which session is driven"
+        );
+
+        // The submitted text landed as a genuine, readable-back record --
+        // and its provenance is `CommandPrompt`, never `UserPrompt`
+        // (determine-first question 1).
+        let records: Vec<conway_core::log::LogRecord> =
+            conway::SessionStore::read(store.as_ref(), &sid, conway_core::ids::SeqRange::full())
+                .await
+                .expect("read should succeed");
+        let submitted = records
+            .iter()
+            .find(
+                |r| matches!(r, conway_core::log::LogRecord::UserTurn { text, .. } if text == "hello from a command"),
+            )
+            .expect("the submitted prompt must be appended as a real UserTurn record");
+        match submitted {
+            conway_core::log::LogRecord::UserTurn { prov, .. } => match prov {
+                conway_core::provenance::Provenance::CommandPrompt { command } => {
+                    assert_eq!(command, "acme.submit")
+                }
+                other => panic!(
+                    "expected Provenance::CommandPrompt, got {other:?} -- a command-submitted \
+                     turn must never be stamped as if the operator typed it"
+                ),
+            },
+            _ => unreachable!(),
+        }
+
+        // The turn actually runs: drain events until the root's own
+        // `TurnFinished`, proving this is a genuine agent turn (the echo
+        // backend's own reply), not merely an appended record nobody ever
+        // reads.
+        let mut saw_finished = false;
+        for _ in 0..200 {
+            let Ok(Some(env)) =
+                tokio::time::timeout(std::time::Duration::from_millis(50), events.next()).await
+            else {
+                break;
+            };
+            app.state.apply(&env);
+            if matches!(&env.event, conway::Event::TurnFinished { .. }) && env.agent == root {
+                saw_finished = true;
+                break;
+            }
+        }
+        assert!(
+            saw_finished,
+            "the submitted prompt must run a real agent turn to completion"
+        );
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::User(text) if text == "hello from a command"
+            )),
+            "the submitted prompt must render exactly like an operator-typed one, through the \
+             SAME Event::UserTurn -> Entry::User path: {:?}",
+            app.state.transcript
+        );
+    }
+
+    /// Determine-first question 4's guard, TESTED (P-15): a `SubmitPrompt`
+    /// targeting the SAME agent the TUI is currently watching mid-turn is
+    /// refused -- no second `UserTurn` record appended -- rather than
+    /// raced in silently. Composes with `state.rs`'s own `turn_started_at`
+    /// field (the fix for the adjacent wedged-status-bar defect, board
+    /// `01M0VQ650R31MGTXD8E225RRFH`): set directly here to simulate "a real
+    /// turn is in flight" without needing to race a live one.
+    ///
+    /// **Falsified** (removing the guard's `if` block from `Self::
+    /// apply_plugin_command_done` makes this test fail -- verified by hand
+    /// during this item's own development, see the completion report): a
+    /// fixture that leaves `turn_started_at` at its default `None` would
+    /// prove nothing about the guard (P-15's own "a check is not
+    /// established until it has been shown to fail" -- this is why
+    /// `turn_started_at` is set explicitly, not left at whatever `AppState::
+    /// new` defaults to).
+    #[tokio::test]
+    async fn submit_prompt_outcome_is_refused_while_the_focused_agent_has_a_turn_in_flight() {
+        let (conway, store) = echo_conway_and_store();
+        let cli = minimal_cli();
+        let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(SubmitPromptPluginFixture);
+        let mut app = App::new(&cli, &conway, &[plugin])
+            .await
+            .expect("App::new should succeed");
+        let sid = app.handle.id();
+
+        // Simulate "a real turn is in flight for the focused agent" the
+        // SAME way `state.rs`'s own guard reads it -- `turn_started_at` is
+        // `Some` only between a real `TurnStarted` and `TurnFinished`.
+        app.state.turn_started_at = Some(std::time::Instant::now());
+
+        let done = PluginCommandDone {
+            full_name: "acme.submit".to_string(),
+            session_id: sid,
+            agent: app.state.focused_agent,
+            outcome: conway::plugin::CommandOutcome::SubmitPrompt {
+                text: "should never land".to_string(),
+            },
+        };
+
+        let resubscribe = app.apply_plugin_command_done(done).await;
+        assert!(!resubscribe);
+
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text }
+                    if text.contains("already running") && text.contains("not submitted")
+            )),
+            "a refused submission must be surfaced as a transcript notice: {:?}",
+            app.state.transcript
+        );
+
+        let records: Vec<conway_core::log::LogRecord> =
+            conway::SessionStore::read(store.as_ref(), &sid, conway_core::ids::SeqRange::full())
+                .await
+                .expect("read should succeed");
+        assert!(
+            !records.iter().any(
+                |r| matches!(r, conway_core::log::LogRecord::UserTurn { text, .. } if text == "should never land")
+            ),
+            "a refused submission must never durably append a record: {records:?}"
         );
     }
 }

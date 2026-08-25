@@ -375,13 +375,13 @@ simply inherit once built.
 |---|---|
 | Kind | Declarative (`Plugin::commands()`, consulted once, at TUI startup) + Participant (`Command::invoke`, an operator-triggered call the host runs and shows the result of) |
 | Receives | `Command::spec()` is consulted with nothing live, at registry construction, and returns a [`CommandSpec`] (`name`, `summary`). `Command::invoke` receives a [`CommandCtx`]: `focused_agent`, `root_agent`, `session_id` (the CALLING session's own id), and `args` (everything typed after the command word, verbatim — the same "consume the remainder verbatim" rule every other slash command's free-text argument follows) |
-| May return | A [`CommandOutcome`]: `Output(Vec<String>)` (lines appended to the transcript verbatim, each its own entry), `Error(String)` (shown as an ordinary `Notice`, the same severity a failing built-in command gets), `ForkSession { at_seq, directive }` (asks the HOST to fork the calling session at `at_seq` and drive the resulting child; see this point's own "Forking the calling session" subsection below), `MaskRecord { target_seq, excluded }` (board item 01KZY8QRAVVVKCRBZ6HAEGW3GG — asks the HOST to append a `LogRecord::ContextMask` against the CALLING session; see "Masking a record and checking out another session" below), or `Checkout { target }` (same item — asks the HOST to fork a NAMED, already-existing session at ITS OWN head and drive the child; the one variant that lets a command name a session other than the one that invoked it) |
-| On error | `invoke` returning `CommandOutcome::Error` is not a failure of the *host* — it is the command's own reported outcome, rendered as a `Notice` and nothing more. A **panic** inside `invoke` is isolated: the host runs it inside a `tokio::spawn`, and a panicking task cannot bring down the process or the TUI's render/input loop — its `JoinError` is converted into an ordinary `CommandOutcome::Error` naming the panic, delivered through the same reply channel a normal return uses. A `ForkSession`/`Checkout` whose target sequence/session is invalid (`Conway::fork_from`'s own bounds check) becomes the identical `Notice`-shaped failure, never a panic |
+| May return | A [`CommandOutcome`]: `Output(Vec<String>)` (lines appended to the transcript verbatim, each its own entry), `Error(String)` (shown as an ordinary `Notice`, the same severity a failing built-in command gets), `ForkSession { at_seq, directive }` (asks the HOST to fork the calling session at `at_seq` and drive the resulting child; see this point's own "Forking the calling session" subsection below), `MaskRecord { target_seq, excluded }` (board item 01KZY8QRAVVVKCRBZ6HAEGW3GG — asks the HOST to append a `LogRecord::ContextMask` against the CALLING session; see "Masking a record and checking out another session" below), `Checkout { target }` (same item — asks the HOST to fork a NAMED, already-existing session at ITS OWN head and drive the child; the one variant that lets a command name a session other than the one that invoked it), or `SubmitPrompt { text }` (board item 01M0VSMF71S6VXX81YRAAF5S8Q — asks the HOST to submit `text` as a new turn on the CALLING agent, as if the operator had typed it; see "Submitting a prompt" below) |
+| On error | `invoke` returning `CommandOutcome::Error` is not a failure of the *host* — it is the command's own reported outcome, rendered as a `Notice` and nothing more. A **panic** inside `invoke` is isolated: the host runs it inside a `tokio::spawn`, and a panicking task cannot bring down the process or the TUI's render/input loop — its `JoinError` is converted into an ordinary `CommandOutcome::Error` naming the panic, delivered through the same reply channel a normal return uses. A `ForkSession`/`Checkout`/`SubmitPrompt` whose target sequence/session/agent is invalid or already mid-turn becomes the identical `Notice`-shaped failure, never a panic |
 | On timeout | None imposed. A command that never completes leaves its reply channel silent forever, but never blocks anything else — see "When absent"/Ordering below for why this is structural, not a convention an implementation must remember |
 | On garbage | Not applicable to `invoke` (it receives typed Rust values, not wire input). At *registration*, a malformed `CommandSpec::name` (empty, containing whitespace, or failing `conway::plugin::validate_command_name` once namespaced) is a **named, install-time error** — the TUI refuses to start rather than installing a command that could never be typed or that malforms its own namespace |
 | When absent | No `Plugin::commands()` override means no commands (the trait's own default returns `Vec::new()`) — every existing `Plugin` implementor, built-in or third-party, keeps compiling and behaving identically. With the declaring plugin not installed at all, its command's full name is simply unknown — `commands::parse` recognizes the *shape* of a plugin-looking word (containing conway-core's event/command namespace separator, `.`) but resolution against the installed registry happens only in `execute`, so an uninstalled plugin's command produces the ordinary "unknown command" notice, never a stub or a special case |
 | Ordering | **The render/input loop never calls a plugin, and never blocks on one — the same hard-won property point 12 (`status.declare/1`/`status/1`) establishes for the status line, reused here for the same reason.** `commands::execute` resolves a command (a synchronous `HashMap` lookup) and returns an `Effect::RunPluginCommand` describing it, without ever calling `invoke`; `App` (`conway-cli`) spawns the actual call on its own task, off the `select!` loop that drives rendering and key handling, and receives the reply on a channel exactly like `/ask`'s own modal-answer plumbing (`ModalAskOutcome`/`run_modal_ask`). A hanging command therefore degrades to "the operator doesn't see a reply yet," never to a frozen terminal. Applying a `ForkSession` reply (`App::apply_plugin_command_done`) DOES run on that loop, same as `host.fork`/`host.resume` already do for the built-in commands that swap sessions — the property that must never block is `Command::invoke` itself, already complete by the time a reply exists |
-| Status | **Implemented.** `conway_core::ports::plugin::{Command, CommandCtx, CommandOutcome, CommandSpec}` and `Plugin::commands()`'s default (`crates/conway-core/src/ports/plugin.rs`); dispatch through `conway_cli::tui::commands::{SlashCommand::Plugin, CommandRegistry, Host::resolve_command}` and `conway_cli::tui::app::App::spawn_plugin_command`/`apply_plugin_command_done`. `conway-plugin-skeleton`'s `SkeletonPingCommand` (`/{plugin id}.ping`) is the worked example of `Output`. `ForkSession` and `conway-plugin-history`'s real `/conway.history.rewind <seq>` consumer each landed separately; `MaskRecord`/`Checkout` and their real consumers, `/conway.history.mask <seq> [unmask]`/`/conway.history.checkout <session-id>`, land with board item 01KZY8QRAVVVKCRBZ6HAEGW3GG |
+| Status | **Implemented.** `conway_core::ports::plugin::{Command, CommandCtx, CommandOutcome, CommandSpec}` and `Plugin::commands()`'s default (`crates/conway-core/src/ports/plugin.rs`); dispatch through `conway_cli::tui::commands::{SlashCommand::Plugin, CommandRegistry, Host::resolve_command}` and `conway_cli::tui::app::App::spawn_plugin_command`/`apply_plugin_command_done`. `conway-plugin-skeleton`'s `SkeletonPingCommand` (`/{plugin id}.ping`) is the worked example of `Output`. `ForkSession` and `conway-plugin-history`'s real `/conway.history.rewind <seq>` consumer each landed separately; `MaskRecord`/`Checkout` and their real consumers, `/conway.history.mask <seq> [unmask]`/`/conway.history.checkout <session-id>`, land with board item 01KZY8QRAVVVKCRBZ6HAEGW3GG. `SubmitPrompt` and its real consumer, `conway-plugin-skeleton`'s file-backed `FilePromptCommand`, land with board item 01M0VSMF71S6VXX81YRAAF5S8Q — see "Submitting a prompt" below |
 
 **Why this is narrower than a hook that can touch a live session, and
 deliberately so.** [`CommandCtx`] carries read-only identity and the raw
@@ -530,6 +530,111 @@ driving one session" concurrency story). The host resolves it with
 `Conway::session_head(target)` then the SAME `Conway::fork_from` call
 `ForkSession` uses, then swaps its driven `SessionHandle` for the child —
 `target` itself is never written to and stays listed exactly as before.
+
+### Submitting a prompt — `CommandOutcome::SubmitPrompt`
+
+Board item 01M0VSMF71S6VXX81YRAAF5S8Q ("No command can submit a prompt")
+closed the one gap every variant above left standing: a command could act
+on session HISTORY (fork it, mask a record in it, check another one out),
+but nothing could START A NEW TURN — put text into the conversation as if
+the operator had typed it. That is what a prompt-template command's entire
+job is (`/review-this`, `/explain`, the shape most of Claude Code's own
+`commands/*.md` plugins are built on — see
+[`compatibility.md`](compatibility.md) for the import-time gap this closes,
+though wiring `commands/*.md` itself to this remains a separate, unbuilt
+follow-up).
+
+**Provenance is the load-bearing question, and it is answered by a new,
+dedicated `Provenance` variant — never `UserPrompt`.** Text a command
+submits is authored by conway (a plugin's own template or logic), not
+typed by the operator, even though the model reads it in the identical
+`Role::User` position an operator's own turn would occupy. The host stamps
+the resulting `LogRecord::UserTurn` with `Provenance::CommandPrompt {
+command }` — this project's own "context provenance is mandatory and
+persisted, and a feature that obscures where context came from is
+rejected" rule applied literally: a turn conway generated is not a turn
+the operator typed, and the durable log — `/context`'s own provenance
+rendering included — can tell the two apart (`command` is the full
+`plugin_id.bare_name` that produced it). This is a persisted wire-format
+addition to `Provenance` (`#[serde(tag = "type", ...)]`): every record
+written before this variant existed still decodes exactly as it always
+has (its own tag is one of the original twelve); an OLDER binary reading a
+NEWER log containing a `command_prompt`-tagged record fails to decode
+that one record, the identical forward-compatibility cost every prior
+addition to that enum (`MergedAsk`, `ChildResult`, `Memory`) already paid.
+
+**A port variant, not a TUI-only renderer effect — decided by this
+project's own "no capability may exist in only one mode" rule, not by
+convenience.** `conway::SessionHandle::prompt_command(agent,
+text, command)` is the facade primitive that fulfils this outcome,
+reachable by ANY caller holding a `SessionHandle` — the TUI's `App`, a
+one-shot `conway <plugin-id>.<command>` invocation, or a bare library
+embedder with no TUI in the loop at all — never a method only `conway-cli`
+can reach. It stamps `Provenance::CommandPrompt` and otherwise runs the
+SAME `Runtime::prompt` machinery an ordinary operator turn uses
+(persist-before-act, the live `Event::UserTurn` twin, the `prompt_notify`
+wake).
+
+**v1 performs no interpolation of any kind.** `text` is a literal string
+this crate never parses, templates, or substitutes into — no
+`{{args}}`/`$ARGUMENTS`/positional-placeholder syntax exists anywhere in
+this port. A `Command::invoke` implementation that wants to fold
+`CommandCtx::args` into the submitted text does so itself, with ordinary
+Rust string building; there is no template language for this crate to
+parse untrusted argument text through -- this project's own discipline of
+range-checking untrusted input at the boundary favors the smaller slice
+over building a template language ahead of a real consumer that needs
+one.
+
+**Bound to the invoking agent AND session, structurally, exactly like
+`ForkSession`/`MaskRecord` above.** No field on `SubmitPrompt` names a
+session or agent other than the ones the command was invoked from —
+`conway_cli::tui::app::App` resolves the submission against the SAME
+`CommandCtx::focused_agent`/`CommandCtx::session_id` it captured when it
+spawned the invocation, never against whatever the host happens to be
+driving by the time the reply arrives. Targeting `focused_agent` (not
+`root_agent`) matches "as if the operator had typed it" literally: an
+ordinary typed message targets whichever agent the operator is currently
+looking at, and this variant does too. Never swaps the driven session —
+submitting a prompt never changes which session is driven, exactly like
+`MaskRecord`.
+
+**The in-flight guard.** `App::apply_plugin_command_done`'s own
+`SubmitPrompt` arm refuses (a `Notice`, nothing appended) rather than
+silently racing a second turn onto the SAME agent the TUI is currently
+watching mid-turn — composing with, not fighting, `state.rs`'s own
+`turn_started_at.is_some()` guard (the fix for the adjacent
+wedged-status-bar defect, board 01M0VQ650R31MGTXD8E225RRFH): `turn_started_at`
+is `Some` only between a real `TurnStarted` and `TurnFinished` for the
+focused agent, exactly the "a turn is in flight" predicate that fix
+already established. Scoped to the focused agent because that is the only
+agent `AppState` tracks turn-in-flight state for at all today — a target
+agent the operator has since navigated away from has no tracked state to
+consult (a disclosed, pre-existing limit, not a silent gap), so the
+submission proceeds in that case: `Runtime::prompt`'s own concurrent-call
+contract (durable append either way, never lost, never corrupted) makes
+that the safe direction to fail open in.
+
+**Trust posture: see `docs/plugins/trust-and-security.md`'s "TUI slash
+commands: no permission gate at all, by design" section**, which now
+covers `SubmitPrompt` alongside `ForkSession`/`MaskRecord`/`Checkout` —
+the short version is that this widens WHAT a command can cause (a new
+agent turn) but not WHO can cause it: the operator who typed the command
+word could have typed the identical text themselves in the next keystroke.
+
+**A real, file-backed consumer, not a speculative grant.**
+`conway-plugin-skeleton`'s `FilePromptCommand` reads a markdown file's
+content once, at construction, and returns `CommandOutcome::SubmitPrompt`
+carrying that file's own body verbatim — this crate's own proof that a
+markdown file becomes a typeable command with no Rust beyond a handful of
+lines, and the smallest honest instance of the capability this point
+ships. `crates/conway-plugin-skeleton/tests/file_prompt_command.rs` is the
+end-to-end proof, driven entirely through the library API (no TUI): the
+file's own body lands as a real, readable-back `LogRecord::UserTurn`
+stamped `Provenance::CommandPrompt`, and the turn runs to completion.
+`crates/conway-cli/src/tui/app/plugin_cmd.rs`'s own test module carries the
+TUI-path proof (submission, the in-flight guard, and its falsification)
+through a real `App`.
 
 **Verification.** `crates/conway/tests/context_mask_producer.rs` masks a
 real record, forks, and asserts on the forked child's ASSEMBLED SEGMENTS
