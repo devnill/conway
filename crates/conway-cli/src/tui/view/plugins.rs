@@ -312,8 +312,16 @@ fn plugin_row_node(row: &PluginRow) -> MenuNode {
                 format!("{LEAF_TOGGLE_PLUGIN_PREFIX}{}", row.id),
             )
         }
-        PluginToggle::ReadOnly { reason } => MenuNode::static_row(format!(
-            "[{}] {} -- {} (read-only: {reason})",
+        // `(read-only)` sits BEFORE `contributes`, and the full `reason` is
+        // deliberately NOT on the row. Both for the same reason: a row is one
+        // line in a bounded pane, and `contributes` is already ~96 characters
+        // for a subprocess entry. Appending the reason produced a ~250-char
+        // line, so at any ordinary terminal width the marker this row exists
+        // to show was truncated off-screen -- the row said "read-only" to
+        // nobody. The class-level explanation lives once in `TOGGLE_NOTE`,
+        // which the footer wraps, rather than once per row.
+        PluginToggle::ReadOnly { .. } => MenuNode::static_row(format!(
+            "[{}] {} (read-only) -- {}",
             row.origin.label(),
             row.id,
             row.contributes,
@@ -381,6 +389,16 @@ fn draw_plugin_detail(frame: &mut Frame, area: Rect, row: &PluginRow, theme: &Th
                 "toggle    Enter, written to disk, applied on next restart",
             ));
         }
+        // FORWARD DECLARATION, labelled rather than left to look live. This
+        // arm is UNREACHABLE today: the detail panel renders only for the
+        // selected row, and every `ReadOnly` row is a `MenuNode::Static` that
+        // the cursor can never land on (see `input::activate_plugins_selection`
+        // and `MenuState::selected_index`). It is kept, rather than deleted
+        // with the field, because `reason` is the only place each origin's
+        // read-only cause is written down in a machine-readable form, and it
+        // becomes reachable the moment these rows are made selectable. If that
+        // never happens, delete this arm and `PluginToggle::ReadOnly`'s
+        // `reason` field together -- do not leave one without the other.
         PluginToggle::ReadOnly { reason } => {
             lines.push(Line::from(format!("toggle    read-only -- {reason}")));
         }
@@ -593,6 +611,28 @@ mod tests {
         assert!(
             row.label.contains("read-only"),
             "the row must say it is read-only, on the row itself: {}",
+            row.label
+        );
+
+        // ...and it must still say so on a REAL terminal. Asserting only that
+        // the label String contains the marker is an intermediate signal: the
+        // first version of this row appended the full read-only reason after
+        // `contributes`, producing a ~250-character label whose marker sat far
+        // past any pane a person actually has. The label assertion above
+        // passed the whole time. This pins the observable outcome instead --
+        // the marker must fall inside a narrow pane, not merely exist in the
+        // string. 72 is deliberately tighter than an 80-column terminal, to
+        // leave room for the modal border and indent.
+        const NARROW_PANE: usize = 72;
+        let marker_at = row
+            .label
+            .find("(read-only)")
+            .expect("the marker must be present verbatim");
+        assert!(
+            marker_at + "(read-only)".len() <= NARROW_PANE,
+            "the read-only marker must be visible in a {NARROW_PANE}-column pane, but it ends at \
+             column {}: {}",
+            marker_at + "(read-only)".len(),
             row.label
         );
     }
