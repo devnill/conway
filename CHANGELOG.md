@@ -83,6 +83,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installs two instruction-declaring plugins with a `requires` edge that
   would reorder them under a naive topological-injection scheme, and
   asserts the assembled context still orders fragments by install order.
+- **The interactive `/plugin` browser now enforces `requires`/`optional`
+  at toggle time, not only at the next restart's `build()`** — board item
+  `01M0WWMQZN5WK1AADKW4WKTQQZ`
+  (`docs/vision/DESIGN-plugin-dependencies.md` §3/§4b). Before this item,
+  turning a plugin OFF while an enabled plugin still `requires` it wrote
+  straight to `settings.json` and printed a cheerful "turned off" notice
+  — the operator found out the dependent broke only at the next restart.
+  `App::apply_plugin_toggle` now refuses that write, before it happens,
+  naming the still-enabled dependent; toggling off a merely `optional`
+  dependency stays allowed, with a Notice naming what presentation/
+  convenience is lost (the dependent's core function is unaffected).
+  Toggling ON a plugin whose bundled `requires` is unmet no longer
+  silently writes either plugin — an offer notice names the missing,
+  bundled dependency and how to proceed (a dependency this binary does
+  not even link at all is refused outright, matching the marketplace
+  trigger's own refusal to auto-install a non-bundled dependency, a
+  distinct enablement point this item does not touch). A degraded plugin
+  (installed, with a missing `optional` dependency) now says so in the
+  browser itself: `PluginBrowserEntry::description.you_lose` carries a
+  `[DEGRADED: ...]` annotation, refreshed idempotently after every toggle
+  and rendered by `view/plugins.rs`'s existing detail panel with no
+  renderer change needed. The pre-existing "the mirror flips only on a
+  successful write" guarantee holds for a refusal too — checked against
+  `settings.json` itself, not merely that an error was shown. The
+  decision logic (`App::apply_plugin_toggle_against`) is split out from
+  bundle resolution specifically so it can be driven against a fabricated
+  manifest graph in tests: no real first-party plugin declares a
+  `requires`/`optional` edge yet, so a test that could only exercise the
+  real compiled-in bundle could never observe a refusal. The true
+  one-keystroke "accept the offer and enable both" interactive affordance
+  is left as a disclosed follow-up — it needs a new confirm surface on
+  the `/plugin` browser's own row (`view/plugins.rs`/`input.rs`), outside
+  this item's file scope.
 - **A `pre_tool_use` hook registration can now declare `on_failure:
   "deny" | "prompt"` (default `"deny"`), so a guard's own OUTAGE no longer
   has to look identical to its VERDICT** — board item
