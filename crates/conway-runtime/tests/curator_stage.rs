@@ -500,6 +500,8 @@ impl Plugin for MinimalPlugin {
             // No tools, no host capabilities required.
             tools: vec![],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
 

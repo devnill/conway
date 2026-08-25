@@ -37,6 +37,29 @@
 //!   to sidestep.
 //! - `mode` -- `ready`/`awaiting permission`/`ask`/`intent` (the TUI's
 //!   current top-level mode).
+//! - `plugins` -- **NEW** (this item, board `01M0X1B7Z41J57N6YP2JFZ2AZW`;
+//!   design `docs/vision/DESIGN-permission-modes.md` §3d/§6b). Renders
+//!   `AppState::plugin_status_contributions`'s
+//!   `PluginStatusContribution`s (`{ key, status, value }`) as
+//!   `key: value` (or bare `key` when `value` is empty), comma-joined --
+//!   `status: Failed`/`Cancelled`/`BudgetExceeded`/`Rejected` (anything but
+//!   `Completed`) renders in `theme.error` (plain red), distinct from both
+//!   the unstyled healthy case AND from `theme.fatal_error`, which stays
+//!   reserved for `AUTO-ALLOW` alone. Omitted (empty, identical to
+//!   "absent") whenever there are zero contributions -- the overwhelmingly
+//!   common case, and the reason this field costs nothing when unused.
+//!   **Not user-disableable when it carries information**: [`resolve_fields`]
+//!   forces `plugins` into the resolved list, immediately after `mode`,
+//!   whenever contributions are non-empty and the configured `fields`
+//!   omits it -- the same "appear only when it carries information"
+//!   precedent `mode`'s own force-in already established, so a stale
+//!   pinned config cannot silently hide a dead guard. **Bounded, never
+//!   silently truncated**: at most [`MAX_CONTRIBUTIONS_SHOWN`] are spelled
+//!   out; the rest fold into a visible `+N more` marker rather than being
+//!   dropped with no sign anything was cut. See [`contributions_ladder`]
+//!   for the width-degrade shape and `drop_priority`'s own doc for why this
+//!   field can NEVER displace `mode` -- the safety property this item
+//!   exists to protect.
 //! - `model` -- the focused agent's serving model display name from
 //!   `Event::ModelDecision` (e.g. `anthropic/claude-sonnet-4-6`); omitted
 //!   before the first turn routes.
@@ -118,12 +141,21 @@
 //!    columns.
 //! 5. `hint` -- discoverability. Degrades full -> `/help · /agents to
 //!    {view|hide}` -> bare `/help`, and is dropped entirely only as the
-//!    very last resort before touching `mode`. This is placed ABOVE
-//!    `session`/`lineage`/telemetry deliberately: those name facts about
-//!    the CURRENT state, but `hint` is the only field that tells a reader
-//!    how to get UNSTUCK (find more bindings, toggle the agent view) -- it
-//!    earns the second-to-last slot, not the first to go.
-//! 6. `mode` -- NEVER dropped. Its own ladder has exactly one degrade step
+//!    very last resort before touching `plugins`/`mode`. This is placed
+//!    ABOVE `session`/`lineage`/telemetry deliberately: those name facts
+//!    about the CURRENT state, but `hint` is the only field that tells a
+//!    reader how to get UNSTUCK (find more bindings, toggle the agent
+//!    view) -- it earns the second-to-last slot, not the first to go.
+//! 6. `plugins` -- **NEW** (this item). Plugin-authored, not conway's own
+//!    computed state, and (per `PluginStatusContribution`'s own doc) a
+//!    polled snapshot that can go stale -- useful, but strictly less
+//!    load-bearing than the safety signal `mode` carries. Placed directly
+//!    BELOW `mode` in this order so it is the SECOND-to-last field to give
+//!    up space: every contribution is degraded all the way down to its own
+//!    empty floor (see [`contributions_ladder`]) before `mode` is ever
+//!    touched, which is exactly what makes `mode` un-displaceable a
+//!    provable property of the give-up loop rather than a hope.
+//! 7. `mode` -- NEVER dropped. Its own ladder has exactly one degrade step
 //!    (drop the `ready`/`awaiting permission` UI word, keep the non-default
 //!    permission-mode label alone) and that step exists specifically so
 //!    `AUTO-ALLOW` -- a genuine safety signal per `PermissionMode::label`'s
@@ -167,13 +199,14 @@
 //! `.chars().count()`.
 
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::agents;
 use super::theme::Theme;
-use conway::{AgentId, PermissionMode};
+use conway::{AgentId, PermissionMode, ResultStatus};
 
 use crate::tui::config::StatusLineConfig;
 use crate::tui::state::{should_animate, Activity, AppState, Mode, SPINNER_FRAMES};
@@ -225,6 +258,10 @@ enum StatusLineField {
     /// breadcrumb -- see this module's own doc and [`agent_field`].
     Lineage,
     Mode,
+    /// **NEW** (this item, board `01M0X1B7Z41J57N6YP2JFZ2AZW`). Renders
+    /// `AppState::plugin_status_contributions` -- see this module's own
+    /// doc and [`contributions_ladder`].
+    Contributions,
     Model,
     Ctx,
     Tokens,
@@ -242,6 +279,7 @@ impl StatusLineField {
             "session" => Some(Self::Session),
             "lineage" => Some(Self::Lineage),
             "mode" => Some(Self::Mode),
+            "plugins" => Some(Self::Contributions),
             "model" => Some(Self::Model),
             "ctx" => Some(Self::Ctx),
             "tokens" => Some(Self::Tokens),
@@ -286,9 +324,24 @@ impl StatusLineField {
 /// path and the `CONWAY_TUI__STATUS_LINE__FIELDS` env-var path (both feed
 /// the same `StatusLineConfig`), so fixing it here covers both sources
 /// uniformly without needing a second enforcement point at config load.
+///
+/// **This item (board `01M0X1B7Z41J57N6YP2JFZ2AZW`) extends the same
+/// force-in precedent to `plugins`.** While `has_contributions` is true
+/// (`AppState::plugin_status_contributions` non-empty) and the resolved
+/// list does not already name `plugins`, it is inserted immediately AFTER
+/// `mode` -- design `DESIGN-permission-modes.md` §6b: "the guard badge
+/// belongs in the status line, beside the mode." Falls back to appending
+/// at the end only when `mode` itself is not in the resolved list (the
+/// default `Prompt` permission mode with a `fields` list that genuinely
+/// omits `mode` -- `plugins` still needs somewhere to go). Gated on
+/// non-empty for the identical reason `mode`'s own gate exists: the field
+/// appears exactly when it carries information, so a `fields` list that
+/// genuinely omits `plugins` keeps rendering exactly as configured while
+/// there is nothing to show.
 fn resolve_fields(
     config: &StatusLineConfig,
     permission_mode: PermissionMode,
+    has_contributions: bool,
 ) -> Vec<StatusLineField> {
     let mut parsed: Vec<StatusLineField> = config
         .fields
@@ -300,10 +353,20 @@ fn resolve_fields(
         // than rendering a blank line (bad input never produces a
         // broken UI -- it falls back to defaults). The Lean order already
         // includes `mode`, so the forced-in step below is a no-op here.
-        return resolve_fields(&StatusLineConfig::default(), permission_mode);
+        return resolve_fields(
+            &StatusLineConfig::default(),
+            permission_mode,
+            has_contributions,
+        );
     }
     if permission_mode != PermissionMode::Prompt && !parsed.contains(&StatusLineField::Mode) {
         parsed.push(StatusLineField::Mode);
+    }
+    if has_contributions && !parsed.contains(&StatusLineField::Contributions) {
+        match parsed.iter().position(|f| *f == StatusLineField::Mode) {
+            Some(i) => parsed.insert(i + 1, StatusLineField::Contributions),
+            None => parsed.push(StatusLineField::Contributions),
+        }
     }
     parsed
 }
@@ -326,7 +389,11 @@ fn resolve_fields(
 /// width fits `width` or nothing more can be shrunk -- so a field only ever
 /// gives up space once every field with a weaker claim on it already has.
 pub fn status_line_spans(state: &AppState, theme: &Theme, width: u16) -> Line<'static> {
-    let fields = resolve_fields(&state.status_line_config, state.permission_mode);
+    let fields = resolve_fields(
+        &state.status_line_config,
+        state.permission_mode,
+        !state.plugin_status_contributions.is_empty(),
+    );
     // This item: `hint`'s own `focused: <id>` note is suppressed whenever
     // `lineage` is part of the resolved field list, so the two never say the
     // same thing twice -- see `hint_ladder`'s own doc. Based on CONFIGURED
@@ -521,9 +588,16 @@ fn truncate_to_width(s: &str, target: usize) -> String {
 /// reasoning. Summary: ambient chrome and point-in-time telemetry go first
 /// (0-4); orientation (`session`/`lineage`) next (5-6); the liveness signal
 /// `activity` after that (7); `hint` -- discoverability -- second-to-last
-/// (8); `mode` last (9), and `mode`'s own ladder (`mode_ladder`) never
-/// drops to nothing, so `AUTO-ALLOW` is the one thing guaranteed to survive
-/// as long as anything at all does.
+/// but one (8); `plugins` -- plugin-authored, polled, and strictly less
+/// load-bearing than the safety signal below it (this item, board
+/// `01M0X1B7Z41J57N6YP2JFZ2AZW`) -- second-to-last (9); `mode` last (10),
+/// and `mode`'s own ladder (`mode_ladder`) never drops to nothing, so
+/// `AUTO-ALLOW` is the one thing guaranteed to survive as long as anything
+/// at all does. **`plugins` sitting strictly below `mode` here is what
+/// makes "a contribution can never displace `mode`" a property of the
+/// give-up loop's own ordering, not a hope**: every contribution is
+/// already shrunk to its own empty floor before `mode` is ever asked to
+/// give up anything at all.
 fn drop_priority(field: StatusLineField) -> u8 {
     match field {
         StatusLineField::Cwd => 0,
@@ -535,7 +609,8 @@ fn drop_priority(field: StatusLineField) -> u8 {
         StatusLineField::Lineage => 6,
         StatusLineField::Activity => 7,
         StatusLineField::Hint => 8,
-        StatusLineField::Mode => 9,
+        StatusLineField::Contributions => 9,
+        StatusLineField::Mode => 10,
     }
 }
 
@@ -573,6 +648,7 @@ fn field_ladder(
         ],
         StatusLineField::Lineage => lineage_ladder(state),
         StatusLineField::Mode => mode_ladder(state, theme),
+        StatusLineField::Contributions => contributions_ladder(state, theme),
         StatusLineField::Model => match state.focused_model.as_deref() {
             Some(name) => vec![vec![Span::raw(name.to_string())], vec![]],
             None => vec![vec![]],
@@ -659,6 +735,121 @@ fn mode_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
             vec![Span::styled(other.label().to_string(), theme.emphasized)],
         ],
     }
+}
+
+/// The most `plugins` will ever spell out individually on the status line
+/// (this item, board `01M0X1B7Z41J57N6YP2JFZ2AZW`). `PluginStatusContribution`
+/// is an unbounded `Vec` -- a status line is one line -- so this caps the
+/// SPELLED-OUT count independent of terminal width (the width-degrade
+/// ladder below handles width; this handles count). The rest fold into a
+/// visible `+N more` marker rather than being dropped with no sign
+/// anything was cut -- "many contributions in a narrow terminal degrade
+/// visibly, not silently" is the acceptance criterion this constant exists
+/// to satisfy.
+const MAX_CONTRIBUTIONS_SHOWN: usize = 3;
+
+/// The style a single contribution's text renders in: `theme.error` (plain
+/// red) for anything other than `ResultStatus::Completed`, unstyled for
+/// `Completed`. Deliberately NOT `theme.fatal_error` -- that accent is
+/// reserved for `AUTO-ALLOW` alone (see this module's own doc's V7 note and
+/// `theme.rs`'s "red is failure or active danger, never decoration" rule);
+/// a plugin's own failure is real information but must never visually
+/// compete with the one accent that means "you may have forgotten what
+/// mode you are in."
+fn contribution_style(status: &ResultStatus, theme: &Theme) -> Style {
+    match status {
+        ResultStatus::Completed => Style::default(),
+        // `ResultStatus` is `#[non_exhaustive]`, so this arm cannot be an
+        // exhaustive variant list. The wildcard defaults to the FAILURE
+        // style rather than the healthy one, matching
+        // `docs/plugins/compatibility.md`'s own unknown-tag table for this
+        // exact enum -- *"`ResultStatus` -> `failed`, never `completed`"*.
+        // A variant added later therefore renders as a problem the operator
+        // can see, instead of silently rendering as healthy: the same
+        // safe-default direction `PermissionMode::allows_category`'s
+        // match-the-allowed-set-and-deny-the-rest spelling already takes.
+        _ => theme.error,
+    }
+}
+
+/// The `plugins` field's ladder (this item, board `01M0X1B7Z41J57N6YP2JFZ2AZW`;
+/// design `DESIGN-permission-modes.md` §3d resolves the "a live guard and a
+/// dead guard look identical" hazard by pointing at exactly this type --
+/// `PluginStatusContribution::status` already expresses healthy-versus-failed,
+/// the only obstacle was that nothing rendered it).
+///
+/// Empty contributions -> a single empty rung (the omitted state, matching
+/// every other optional field's shape here) -- this is what makes "zero
+/// contributions renders byte-identically to before this item" true: an
+/// empty ladder contributes no spans and is skipped by the assembly loop
+/// exactly like `git` outside a repo or `model` before the first
+/// `ModelDecision`.
+///
+/// Non-empty: the full rung spells out up to [`MAX_CONTRIBUTIONS_SHOWN`]
+/// contributions as `key: value` (bare `key` when `value` is empty),
+/// comma-joined, each styled via [`contribution_style`] -- so a `Failed`
+/// contribution is visually distinct from a `Completed` one at a glance,
+/// not just in the underlying data. Any contributions past the cap fold
+/// into a dim `+N more` marker rather than vanishing silently. The compact
+/// rung is a single summary span (count, and a failed-count parenthetical
+/// when any contribution is not `Completed`) for when the full form does
+/// not fit; the floor is empty, same as every other degradable field --
+/// this field NEVER refuses to fully vacate its space, which is exactly
+/// what lets `mode` (ranked strictly above it in `drop_priority`) go
+/// untouched until `plugins` has nothing left to give.
+fn contributions_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
+    let contributions = &state.plugin_status_contributions;
+    if contributions.is_empty() {
+        return vec![vec![]];
+    }
+
+    let failed_count = contributions
+        .iter()
+        .filter(|c| !matches!(c.status, ResultStatus::Completed))
+        .count();
+
+    let mut full: Vec<Span<'static>> = Vec::new();
+    for (i, c) in contributions
+        .iter()
+        .take(MAX_CONTRIBUTIONS_SHOWN)
+        .enumerate()
+    {
+        if i > 0 {
+            full.push(Span::raw(", "));
+        }
+        let text = if c.value.is_empty() {
+            c.key.clone()
+        } else {
+            format!("{}: {}", c.key, c.value)
+        };
+        full.push(Span::styled(text, contribution_style(&c.status, theme)));
+    }
+    let overflow = contributions.len().saturating_sub(MAX_CONTRIBUTIONS_SHOWN);
+    if overflow > 0 {
+        full.push(Span::styled(format!(" +{overflow} more"), theme.status_dim));
+    }
+
+    let noun = if contributions.len() == 1 {
+        "plugin"
+    } else {
+        "plugins"
+    };
+    let compact_text = if failed_count > 0 {
+        format!("{} {noun} ({failed_count} failed)", contributions.len())
+    } else {
+        format!("{} {noun}", contributions.len())
+    };
+    let compact_style = if failed_count > 0 {
+        theme.error
+    } else {
+        Style::default()
+    };
+
+    vec![
+        full,
+        vec![Span::styled(compact_text, compact_style)],
+        vec![],
+    ]
 }
 
 /// The `ctx` field's text: `ctx 42%` when the focused model's max context
@@ -1016,6 +1207,7 @@ fn compact_tokens(n: u64) -> String {
 mod tests {
     use std::time::{Duration, Instant};
 
+    use conway::plugin::PluginStatusContribution;
     use conway::AgentId;
 
     use super::*;
@@ -2259,6 +2451,316 @@ mod tests {
             line.contains("AUTO-ALLOW"),
             "AUTO-ALLOW must survive even when the env-sourced `fields` \
              list omits `mode` entirely: {line}"
+        );
+    }
+
+    // ---- This item (board `01M0X1B7Z41J57N6YP2JFZ2AZW`): render
+    // `AppState::plugin_status_contributions` in the status line's `plugins`
+    // field (design `DESIGN-permission-modes.md` §3d/§6b). ----
+
+    /// Acceptance criterion 5, and the regression this item is most likely
+    /// to ship by accident: with zero contributions (the `AppState::new`
+    /// default -- and the overwhelmingly common case), the assembled line
+    /// must be EXACTLY what it was before this item existed, not merely
+    /// "doesn't visibly contain the word plugin". Pinned byte-for-byte so a
+    /// stray extra separator or an empty-but-present span would be caught,
+    /// not just a literal `"plugins"` substring.
+    #[test]
+    fn zero_contributions_renders_byte_identically_to_before_this_item() {
+        let root = AgentId::new();
+        let state = AppState::new(root);
+        assert!(state.plugin_status_contributions.is_empty());
+
+        let expected = format!(
+            " session {} | ready | ctx 0 | 0 tok | idle | Enter submit · \
+             Ctrl-E expand · /help · /agents to view ",
+            agents::short_agent_id(root)
+        );
+        assert_eq!(status_line(&state), expected);
+    }
+
+    /// Acceptance criterion 1: a plugin's contribution appears in the
+    /// status line.
+    #[test]
+    fn a_plugin_contribution_appears_in_the_status_line() {
+        let mut state = AppState::new(AgentId::new());
+        state.plugin_status_contributions = vec![PluginStatusContribution {
+            key: "guard".to_string(),
+            status: ResultStatus::Completed,
+            value: "qwen2.5-3b".to_string(),
+        }];
+        let line = status_line(&state);
+        assert!(line.contains("guard: qwen2.5-3b"), "{line}");
+    }
+
+    /// A contribution with an empty `value` renders the bare `key` -- never
+    /// a dangling `key: ` with nothing after the colon.
+    #[test]
+    fn contribution_with_empty_value_renders_bare_key() {
+        let mut state = AppState::new(AgentId::new());
+        state.plugin_status_contributions = vec![PluginStatusContribution {
+            key: "guard".to_string(),
+            status: ResultStatus::Completed,
+            value: String::new(),
+        }];
+        let line = status_line(&state);
+        assert!(line.contains("guard"), "{line}");
+        assert!(!line.contains("guard:"), "{line}");
+    }
+
+    /// Acceptance criterion 2: `status: Failed` renders visually distinct
+    /// from `Completed` -- and distinct from `AUTO-ALLOW`'s own accent too,
+    /// since a plugin failure must never visually compete with the one
+    /// color reserved for "you may have forgotten what mode you are in."
+    #[test]
+    fn failed_contribution_renders_visually_distinct_from_completed() {
+        let theme = Theme::default();
+        let mut state = AppState::new(AgentId::new());
+        state.plugin_status_contributions = vec![
+            PluginStatusContribution {
+                key: "guard".to_string(),
+                status: ResultStatus::Completed,
+                value: "qwen2.5-3b".to_string(),
+            },
+            PluginStatusContribution {
+                key: "build".to_string(),
+                status: ResultStatus::Failed {
+                    error: "timeout".to_string(),
+                },
+                value: "timeout".to_string(),
+            },
+        ];
+        let spans = status_line_spans(&state, &theme, WIDE).spans;
+        let completed_span = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "guard: qwen2.5-3b")
+            .expect("completed contribution span must render");
+        let failed_span = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "build: timeout")
+            .expect("failed contribution span must render");
+        assert_eq!(completed_span.style, Style::default());
+        assert_eq!(failed_span.style, theme.error);
+        assert_ne!(completed_span.style, failed_span.style);
+        assert_ne!(
+            failed_span.style, theme.fatal_error,
+            "a plugin failure must not share AUTO-ALLOW's reserved alert color"
+        );
+    }
+
+    /// Every non-`Completed` `ResultStatus` variant -- not just `Failed` --
+    /// gets the same distinct style; `Cancelled`/`BudgetExceeded`/`Rejected`
+    /// are all "not healthy" for this field's purposes.
+    #[test]
+    fn every_non_completed_status_gets_the_distinct_style() {
+        let theme = Theme::default();
+        for status in [
+            ResultStatus::Failed {
+                error: "e".to_string(),
+            },
+            ResultStatus::Cancelled {
+                reason: "r".to_string(),
+            },
+            ResultStatus::BudgetExceeded {
+                limit: "l".to_string(),
+            },
+            ResultStatus::Rejected {
+                missing: vec!["m".to_string()],
+            },
+        ] {
+            assert_eq!(contribution_style(&status, &theme), theme.error);
+        }
+        assert_eq!(
+            contribution_style(&ResultStatus::Completed, &theme),
+            Style::default()
+        );
+    }
+
+    /// Acceptance criterion 3, THE safety property: a plugin contribution
+    /// must never displace or crowd out the `mode` field, including the
+    /// FORCED-IN case -- `permission_mode` non-default with a `fields`
+    /// config that names neither `mode` nor `plugins` explicitly, and
+    /// enough plugin contributions (some failed) that the field would want
+    /// all the room it can get. `AUTO-ALLOW` must still win every last
+    /// column, exactly like the pre-existing `auto_allow_survives_at_every_
+    /// width_where_anything_survives` guarantee, now under contention from
+    /// a second forced-in field.
+    #[test]
+    fn plugin_contributions_never_displace_the_forced_in_mode_field() {
+        let mut state = AppState::new(AgentId::new());
+        // Omits BOTH `mode` and `plugins` -- both must be force-inserted by
+        // `resolve_fields`, and `mode` must still win under contention.
+        state.status_line_config = cfg(&["session", "hint"]);
+        state.permission_mode = PermissionMode::AutoAllow;
+        state.plugin_status_contributions = vec![
+            PluginStatusContribution {
+                key: "guard".to_string(),
+                status: ResultStatus::Completed,
+                value: "a-fairly-long-model-name-here".to_string(),
+            },
+            PluginStatusContribution {
+                key: "build".to_string(),
+                status: ResultStatus::Failed {
+                    error: "connection refused after 30s timeout".to_string(),
+                },
+                value: "connection refused after 30s timeout".to_string(),
+            },
+            PluginStatusContribution {
+                key: "lint".to_string(),
+                status: ResultStatus::Failed {
+                    error: "down".to_string(),
+                },
+                value: "down".to_string(),
+            },
+            PluginStatusContribution {
+                key: "deploy".to_string(),
+                status: ResultStatus::Cancelled {
+                    reason: "superseded".to_string(),
+                },
+                value: "superseded".to_string(),
+            },
+            PluginStatusContribution {
+                key: "release".to_string(),
+                status: ResultStatus::Completed,
+                value: "ok".to_string(),
+            },
+        ];
+
+        for width in [0u16, 1, 5, 10, 12, 15, 20, 40, 80, 200] {
+            let line = flatten(&status_line_spans(&state, &Theme::default(), width));
+            if line.trim().is_empty() {
+                continue;
+            }
+            let full = line.contains("AUTO-ALLOW");
+            let marked_truncation = line.ends_with('…');
+            assert!(
+                full || marked_truncation,
+                "width {width}: AUTO-ALLOW must survive whole, or be \
+                 explicitly `…`-truncated, even with 5 plugin \
+                 contributions (2 failed) competing for space and a \
+                 `fields` config that omits both `mode` and `plugins`: \
+                 {line:?}"
+            );
+        }
+
+        // At the exact floor width, AUTO-ALLOW is the ENTIRE line -- proof
+        // `plugins` (and everything else) already gave up ALL its space
+        // before `mode` lost anything at all.
+        let floor = flatten(&status_line_spans(&state, &Theme::default(), 12));
+        assert_eq!(floor.trim(), "AUTO-ALLOW", "{floor:?}");
+    }
+
+    /// Acceptance criterion 4: many contributions in a narrow terminal
+    /// degrade VISIBLY, not silently. `PluginStatusContribution` is an
+    /// unbounded `Vec`; a status line is one line.
+    #[test]
+    fn many_contributions_degrade_visibly_not_silently_in_a_narrow_terminal() {
+        let mut state = AppState::new(AgentId::new());
+        // Isolate this field's own width budget, the same technique
+        // `deep_ancestry_chain_degrades_to_the_compact_ellipsis_form` uses
+        // for `lineage`.
+        state.status_line_config = cfg(&["plugins"]);
+        state.plugin_status_contributions = (0..5)
+            .map(|i| PluginStatusContribution {
+                key: format!("plugin{i}"),
+                status: ResultStatus::Completed,
+                value: "ok".to_string(),
+            })
+            .collect();
+
+        // Generous width: only `MAX_CONTRIBUTIONS_SHOWN` are spelled out;
+        // the rest are named by an explicit `+N more` marker, never
+        // silently dropped.
+        let wide = flatten(&status_line_spans(&state, &Theme::default(), WIDE));
+        assert!(wide.contains("plugin0: ok"), "{wide}");
+        assert!(wide.contains("plugin1: ok"), "{wide}");
+        assert!(wide.contains("plugin2: ok"), "{wide}");
+        assert!(
+            !wide.contains("plugin3") && !wide.contains("plugin4"),
+            "only the first {MAX_CONTRIBUTIONS_SHOWN} are spelled out: {wide}"
+        );
+        assert!(
+            wide.contains("+2 more"),
+            "the two overflow contributions must be named, not silently \
+             dropped: {wide}"
+        );
+
+        // Narrower: degrades to the compact summary rung -- a COMPLETE,
+        // honest count, never a bare fragment of the full form.
+        let compact = flatten(&status_line_spans(&state, &Theme::default(), 12));
+        if !compact.trim().is_empty() {
+            assert!(
+                compact.contains("5 plugins") || compact.trim_end().ends_with('…'),
+                "must be the complete compact summary or an explicit `…` \
+                 truncation, never a silent fragment: {compact:?}"
+            );
+        }
+
+        // Narrower still: omitted entirely (the field's own floor) rather
+        // than ever being cut mid-word.
+        let narrow = flatten(&status_line_spans(&state, &Theme::default(), 1));
+        assert!(!narrow.contains("plugin0"), "{narrow}");
+    }
+
+    /// The `plugins` field name is genuinely parseable and orderable by an
+    /// operator, not merely force-inserted -- matching every other field's
+    /// own configurability.
+    #[test]
+    fn plugins_field_name_parses_and_can_be_explicitly_ordered() {
+        let mut state = AppState::new(AgentId::new());
+        state.status_line_config = cfg(&["plugins", "mode"]);
+        state.plugin_status_contributions = vec![PluginStatusContribution {
+            key: "guard".to_string(),
+            status: ResultStatus::Completed,
+            value: "ok".to_string(),
+        }];
+        let line = status_line(&state);
+        let plugin_pos = line.find("guard: ok").unwrap();
+        let mode_pos = line.find("ready").unwrap();
+        assert!(plugin_pos < mode_pos, "{line}");
+    }
+
+    /// Design `DESIGN-permission-modes.md` §6b: "the guard badge belongs
+    /// in the status line, beside the mode." When `plugins` is force
+    /// -inserted (the configured `fields` names `mode` but not `plugins`),
+    /// it lands immediately AFTER `mode`, not at the far end of the line.
+    #[test]
+    fn plugins_field_is_force_inserted_immediately_after_mode() {
+        let mut state = AppState::new(AgentId::new());
+        state.status_line_config = cfg(&["hint", "mode", "session"]);
+        state.plugin_status_contributions = vec![PluginStatusContribution {
+            key: "guard".to_string(),
+            status: ResultStatus::Completed,
+            value: "ok".to_string(),
+        }];
+        let line = status_line(&state);
+        let mode_pos = line.find("ready").unwrap();
+        let plugin_pos = line.find("guard: ok").unwrap();
+        let session_pos = line.find("session ").unwrap();
+        assert!(mode_pos < plugin_pos, "{line}");
+        assert!(plugin_pos < session_pos, "{line}");
+    }
+
+    /// When `mode` itself is not in the resolved list (default `Prompt`
+    /// mode with a `fields` config that genuinely omits `mode`, so `mode`'s
+    /// own force-in never fires), `plugins` still has to go somewhere:
+    /// falls back to appending at the end rather than being silently
+    /// dropped for lack of an anchor.
+    #[test]
+    fn plugins_field_appends_at_the_end_when_mode_is_not_in_the_resolved_list() {
+        let mut state = AppState::new(AgentId::new());
+        state.status_line_config = cfg(&["session", "hint"]);
+        state.plugin_status_contributions = vec![PluginStatusContribution {
+            key: "guard".to_string(),
+            status: ResultStatus::Completed,
+            value: "ok".to_string(),
+        }];
+        let line = status_line(&state);
+        assert!(line.contains("guard: ok"), "{line}");
+        assert!(
+            !line.contains("ready"),
+            "the default Prompt mode must stay out, unaffected by \
+             `plugins`' own force-in: {line}"
         );
     }
 }

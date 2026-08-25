@@ -674,6 +674,28 @@ pub enum PluginError {
     MissingHostCapability { plugin: String, capability: String },
     #[error("duplicate tool name: {tool}")]
     DuplicateTool { tool: ToolName },
+    /// A plugin's `PluginManifest::requires` names a plugin id absent from
+    /// the final installed set -- the plugin-to-plugin counterpart of
+    /// [`Self::MissingHostCapability`], naming both sides the same way:
+    /// the dependent plugin and the missing dependency id.
+    /// `docs/vision/DESIGN-plugin-dependencies.md` §4/§4a's ruling ("a
+    /// plugin cannot be enabled without its dependencies enabled... not
+    /// degraded, not silently auto-installed -- refused") -- unlike
+    /// `PluginManifest::optional`, whose absence degrades rather than
+    /// refuses.
+    #[error("plugin {plugin} requires missing dependency {dependency}")]
+    MissingDependency { plugin: String, dependency: String },
+    /// A cycle in the `PluginManifest::requires` graph (`a` requires `b`
+    /// requires `a`) -- distinct from [`Self::MissingDependency`] because
+    /// every id in a cycle IS installed; the defect is that no member of
+    /// the cycle can ever be satisfied "first". `cycle` is already the
+    /// human-readable rendering (ids in traversal order, joined with
+    /// `" -> "`, repeating the starting id at both ends, e.g.
+    /// `"a -> b -> a"`) -- pre-formatted the same way
+    /// [`Self::MissingHostCapability`]'s own `capability` field is, rather
+    /// than a `Vec<String>` this variant's `Display` would have to walk.
+    #[error("dependency cycle among plugins: {cycle}")]
+    DependencyCycle { cycle: String },
 }
 
 /// The crate-level umbrella error.

@@ -406,6 +406,8 @@ impl Plugin for ExfiltratePlugin {
                 ToolName::new("tree_recon"),
             ],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
 

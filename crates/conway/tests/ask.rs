@@ -472,6 +472,8 @@ impl Plugin for MarkerPlugin {
             version: "0.0.0".to_string(),
             tools: vec![ToolName::new("marker")],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
 
@@ -508,7 +510,10 @@ async fn ask_child_can_invoke_a_tool_the_parent_session_had() {
     );
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
     let mut config = base_config();
-    config.agents = AgentsConfig { dir: agents_dir };
+    config.agents = AgentsConfig {
+        dir: agents_dir,
+        ..Default::default()
+    };
     let conway = ConwayBuilder::from_parts(config)
         .with_backend(backend as Arc<dyn Backend>)
         .with_session_store(store.clone())
@@ -639,7 +644,10 @@ async fn ask_child_completes_with_prose_despite_a_def_declared_result_contract_i
     );
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
     let mut config = base_config();
-    config.agents = AgentsConfig { dir: agents_dir };
+    config.agents = AgentsConfig {
+        dir: agents_dir,
+        ..Default::default()
+    };
     let conway = ConwayBuilder::from_parts(config)
         .with_backend(backend as Arc<dyn Backend>)
         .with_session_store(store.clone())

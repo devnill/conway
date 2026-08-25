@@ -120,6 +120,52 @@ pub enum HookPermissionVerdict {
     Deny { reason: String },
 }
 
+/// A `pre_tool_use` hook registration's own policy for what happens when
+/// THIS hook's runner cannot be consulted at all -- a missing script, a
+/// timeout, or stdout that failed to parse as a [`HookAnswer`]
+/// (`crate::error::HookFailure`) -- as opposed to when the hook ran and
+/// returned an explicit [`HookPermissionVerdict::Deny`].
+///
+/// **Those are two structurally different facts -- "the guard is down"
+/// versus "the guard said no" -- and this type exists so a caller
+/// (`conway_runtime::permission::PermissionBroker::decide`) never has to
+/// collapse them into the same value again.** See
+/// `docs/vision/DESIGN-permission-modes.md` §3a/§3c for the full argument;
+/// the short version is that fail-closed is correct for an
+/// operator-authored policy script (its breakage is the operator's own) but
+/// wrong for a guard backed by infrastructure the operator does not
+/// directly control (e.g. a local model server) -- there, every outage
+/// should present as "the guard is unreachable," not as an unbroken stream
+/// of per-call denials that look identical to the guard doing its job.
+///
+/// **No `Allow` variant exists, anywhere in this type -- the identical
+/// guarantee [`HookPermissionVerdict`] makes for a hook's own verdict,
+/// extended to its outage.** `Prompt` is not a widening: it forces the
+/// operator's own gate, exactly the narrowing effect
+/// `crate::permission_pattern::Then::Prompt` and the extension design's
+/// `PluginPermissionVerdict::Prompt` already have -- and the operator's own
+/// `Deny` rules and plan-mode refusal still outrank it (see
+/// `PermissionBroker::decide`'s own ordering doc for exactly why the
+/// existing step order makes that hold by construction, not merely by
+/// convention).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookOnFailure {
+    /// The runner's failure is treated exactly as an explicit refusal --
+    /// today's only behavior, and still the default, so an existing
+    /// registration that never sets this field denies on outage byte-for-
+    /// byte unchanged: the operator wrote the hook, its breakage is theirs.
+    #[default]
+    Deny,
+    /// The runner's failure forces the operator's own gate instead of
+    /// denying outright. The safe resting state for a guard whose
+    /// availability the operator does not fully control: when it cannot be
+    /// consulted, the operator ends up exactly where they would be had they
+    /// never installed the guard at all -- asked, never silently blocked
+    /// and never silently widened.
+    Prompt,
+}
+
 /// An append-only edit to computed context: items to append, and
 /// identifiers to exclude. **There is no "replace" variant anywhere in this
 /// type** -- see [`HookAnswer`]'s own doc for why that omission is the
@@ -326,6 +372,38 @@ mod tests {
         // Anything else -- including a hypothetical `"allow"` -- is a
         // deserialize error, not a silently-accepted third variant.
         assert!(serde_json::from_str::<HookPermissionVerdict>("\"allow\"").is_err());
+    }
+
+    #[test]
+    fn default_hook_on_failure_is_deny() {
+        assert_eq!(HookOnFailure::default(), HookOnFailure::Deny);
+    }
+
+    #[test]
+    fn hook_on_failure_round_trips_both_variants() {
+        for variant in [HookOnFailure::Deny, HookOnFailure::Prompt] {
+            let json = serde_json::to_string(&variant).unwrap();
+            let back: HookOnFailure = serde_json::from_str(&json).unwrap();
+            assert_eq!(variant, back);
+        }
+    }
+
+    /// The structural proof behind "no `Allow` variant, full stop" for THIS
+    /// type too -- the identical proof shape
+    /// `no_json_shape_decodes_to_an_allow_because_no_allow_variant_exists`
+    /// already gives `HookPermissionVerdict`, extended to the outage-policy
+    /// type: only `"deny"` and `"prompt"` decode to anything, and a
+    /// hypothetical `"allow"` is a deserialize error, never a silently
+    /// accepted third variant.
+    #[test]
+    fn no_json_shape_decodes_to_an_allow_hook_on_failure_because_no_allow_variant_exists() {
+        let deny: HookOnFailure = serde_json::from_str("\"deny\"").unwrap();
+        assert_eq!(deny, HookOnFailure::Deny);
+
+        let prompt: HookOnFailure = serde_json::from_str("\"prompt\"").unwrap();
+        assert_eq!(prompt, HookOnFailure::Prompt);
+
+        assert!(serde_json::from_str::<HookOnFailure>("\"allow\"").is_err());
     }
 
     /// ACCEPTANCE: both of

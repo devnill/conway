@@ -212,6 +212,8 @@ impl Plugin for OneToolPlugin {
             version: "0.0.0".into(),
             tools: vec![self.tool.spec().name],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
     fn tools(&self) -> Vec<Arc<dyn Tool>> {

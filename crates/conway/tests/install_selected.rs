@@ -134,6 +134,35 @@ impl Plugin for FakePlugin {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![]
+    }
+}
+
+/// A `Plugin` fake carrying configurable `PluginManifest::requires`/
+/// `::optional` -- `FakePlugin` above stays a plain zero-dependency
+/// fixture; this is the dedicated one for the dependency-resolution tests
+/// below.
+struct DependentPlugin {
+    id: &'static str,
+    requires: Vec<String>,
+    optional: Vec<String>,
+}
+
+impl Plugin for DependentPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: self.id.to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![],
+            required_host_caps: vec![],
+            requires: self.requires.clone(),
+            optional: self.optional.clone(),
         }
     }
 
@@ -464,4 +493,192 @@ fn a_supplied_backend_factory_not_selected_is_diagnosed_as_declined_not_unknown(
         }
         other => panic!("expected FacadeError::Config, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// PluginManifest::requires / ::optional (board item
+// `01M0WWJMYK0KDC2X7B7MR46FRR`): topological dependency resolution.
+// ---------------------------------------------------------------------------
+
+/// `install_selected` performs a topological cycle check over what IT can
+/// see -- every plugin its own `plugins` bundle resolves via `wanted` --
+/// and refuses a cycle there before `build()` is ever reached: neither
+/// side of `a requires b requires a` can ever be satisfied "first",
+/// regardless of what `build()` later adds.
+#[test]
+fn install_selected_refuses_a_requires_cycle_among_what_it_can_see() {
+    let mut cfg = base_config();
+    cfg.plugins.install = vec!["cycle.a".to_string(), "cycle.b".to_string()];
+
+    let result = ConwayBuilder::from_parts(cfg).install_selected(
+        vec![
+            Arc::new(DependentPlugin {
+                id: "cycle.a",
+                requires: vec!["cycle.b".to_string()],
+                optional: vec![],
+            }) as Arc<dyn Plugin>,
+            Arc::new(DependentPlugin {
+                id: "cycle.b",
+                requires: vec!["cycle.a".to_string()],
+                optional: vec![],
+            }) as Arc<dyn Plugin>,
+        ],
+        vec![],
+        vec![],
+    );
+
+    let err = result
+        .err()
+        .expect("a requires cycle among the resolved bundle must be refused before build()")
+        .to_string();
+    assert!(err.contains("cycle"), "{err}");
+    assert!(err.contains("cycle.a"), "{err}");
+    assert!(err.contains("cycle.b"), "{err}");
+}
+
+/// The mirror of the cycle case: `install_selected` does NOT refuse a
+/// MISSING required dependency on its own, because it cannot see whether
+/// the missing id will turn out to be a built-in `build()` adds later (this
+/// file's own bundles never include built-ins -- only `build()`'s full
+/// `resolved_plugins` set does). The check is deferred, and it IS
+/// authoritative there: a required dependency absent from the FINAL
+/// installed set is a hard `FacadeError::Build` naming both the dependent
+/// and the missing dependency.
+#[test]
+fn install_selected_defers_missing_required_check_to_build() {
+    let mut cfg = base_config();
+    cfg.plugins.install = vec!["needs.ui".to_string()];
+
+    let builder = ConwayBuilder::from_parts(cfg)
+        .install_selected(
+            vec![Arc::new(DependentPlugin {
+                id: "needs.ui",
+                requires: vec!["conway.ui".to_string()],
+                optional: vec![],
+            }) as Arc<dyn Plugin>],
+            vec![],
+            vec![],
+        )
+        .expect(
+            "install_selected must not refuse a missing required dependency itself -- it cannot \
+             see whether build() will supply it as a built-in",
+        );
+
+    let result = builder
+        .with_backend(fake_backend("fake"))
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(empty_router())
+        .build();
+
+    let err = expect_build_err(
+        result,
+        "a required dependency absent from the FINAL installed set must fail build()",
+    );
+    match err {
+        FacadeError::Build { message } => {
+            assert!(
+                message.contains("needs.ui"),
+                "the dependent must be named: {message}"
+            );
+            assert!(
+                message.contains("conway.ui"),
+                "the missing dependency must be named: {message}"
+            );
+        }
+        other => panic!("expected FacadeError::Build, got {other:?}"),
+    }
+}
+
+/// `PluginManifest::optional`'s absence NEVER fails `build()`: the
+/// dependent loads anyway, degraded, and the degradation is recorded on
+/// `Conway::warnings()` (`WarningCode::OptionalPluginDependencyMissing`)
+/// naming both the dependent and the missing dependency.
+#[test]
+fn missing_optional_dependency_loads_degraded_and_is_recorded_on_warnings() {
+    let mut cfg = base_config();
+    cfg.plugins.install = vec!["wants.ui".to_string()];
+
+    let conway = ConwayBuilder::from_parts(cfg)
+        .install_selected(
+            vec![Arc::new(DependentPlugin {
+                id: "wants.ui",
+                requires: vec![],
+                optional: vec!["conway.ui".to_string()],
+            }) as Arc<dyn Plugin>],
+            vec![],
+            vec![],
+        )
+        .expect("install_selected must succeed: no REQUIRED dependency is missing")
+        .with_backend(fake_backend("fake"))
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(empty_router())
+        .build()
+        .expect("a missing OPTIONAL dependency must never fail build()");
+
+    let warnings = conway.warnings();
+    let degraded: Vec<_> = warnings
+        .iter()
+        .filter(|w| w.code == conway::config::WarningCode::OptionalPluginDependencyMissing)
+        .collect();
+    assert_eq!(
+        degraded.len(),
+        1,
+        "exactly one degradation warning must be recorded: {warnings:?}"
+    );
+    assert!(
+        degraded[0].message.contains("wants.ui"),
+        "{}",
+        degraded[0].message
+    );
+    assert!(
+        degraded[0].message.contains("conway.ui"),
+        "{}",
+        degraded[0].message
+    );
+}
+
+/// The positive control beside the two refusal tests above: a `requires`
+/// edge that DOES resolve (both plugins present) builds cleanly, and no
+/// degradation warning is recorded for it (only an `optional` miss
+/// produces one).
+#[test]
+fn a_satisfied_requires_edge_builds_cleanly_with_no_warning() {
+    let mut cfg = base_config();
+    cfg.plugins.install = vec!["needs.base".to_string(), "base".to_string()];
+
+    let conway = ConwayBuilder::from_parts(cfg)
+        .install_selected(
+            vec![
+                Arc::new(DependentPlugin {
+                    id: "needs.base",
+                    requires: vec!["base".to_string()],
+                    optional: vec![],
+                }) as Arc<dyn Plugin>,
+                Arc::new(DependentPlugin {
+                    id: "base",
+                    requires: vec![],
+                    optional: vec![],
+                }) as Arc<dyn Plugin>,
+            ],
+            vec![],
+            vec![],
+        )
+        .expect("both ids resolve against the supplied bundle")
+        .with_backend(fake_backend("fake"))
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(empty_router())
+        .build()
+        .expect("a satisfied requires edge must build cleanly");
+
+    assert!(
+        conway
+            .warnings()
+            .iter()
+            .all(|w| w.code != conway::config::WarningCode::OptionalPluginDependencyMissing),
+        "a satisfied requires edge must not produce a degradation warning: {:?}",
+        conway.warnings()
+    );
 }

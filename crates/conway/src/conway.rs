@@ -153,16 +153,39 @@ impl Conway {
     /// (board item `01M03VKQ738DTGHHK2C4RWXC0E`). See the field's own doc for
     /// why this is a snapshot (collected at session-open, before any
     /// `status/1` notifications arrive -- typically empty) rather than a live
-    /// view; the live surface a render path will poll is the
-    /// `Plugin::status_contributions` trait method. Exposed now so the wire
-    /// half has a reachable facade consumer, scoped honestly to what it is.
+    /// view; the live surface a future poll will read is the
+    /// `Plugin::status_contributions` trait method.
+    ///
+    /// **No longer an unrendered accessor** (board item
+    /// `01M0X1B7Z41J57N6YP2JFZ2AZW`; design
+    /// `docs/vision/DESIGN-permission-modes.md` §3d/§6b): `conway-cli`'s TUI
+    /// status line (`view::status::status_line_spans`, the `plugins` field)
+    /// knows how to render a `&[PluginStatusContribution]` -- `key: value`
+    /// per entry, `status: Failed` (and every other non-`Completed` variant)
+    /// visually distinct from `Completed`, bounded rather than silently
+    /// truncated, and NEVER able to displace the permission-mode field's own
+    /// safety signal (`drop_priority` ranks it strictly below `mode`, so
+    /// every contribution is already at its own empty floor before `mode`
+    /// gives up anything). What remains open: `crates/conway-cli`'s
+    /// `AppState::plugin_status_contributions` -- the field that render path
+    /// actually reads -- is not yet populated from a running session by
+    /// calling THIS accessor; that wiring (thread `conway.
+    /// plugin_status_contributions()` through at TUI startup, the same
+    /// "populate once outside the render path" shape `AppState::
+    /// plugin_commands`/`agent_names` already use) is a disclosed follow-up,
+    /// not done here.
     pub fn plugin_status_contributions(&self) -> &[conway_core::ports::PluginStatusContribution] {
         &self.plugin_status_contributions
     }
 
-    /// Non-fatal warnings surfaced by `config::load` (currently only
-    /// headroom-vs-context-window warnings). Empty when this `Conway` was
-    /// built via `ConwayBuilder::from_parts`, which bypasses `load` entirely.
+    /// Non-fatal warnings, from two sources: `config::load` (headroom-vs-
+    /// context-window, a stale `[tui]` section -- empty when this `Conway`
+    /// was built via `ConwayBuilder::from_parts`, which bypasses `load`
+    /// entirely) and `ConwayBuilder::build` itself (a `PluginManifest::
+    /// optional` dependency absent from the final installed plugin set --
+    /// see `WarningCode::OptionalPluginDependencyMissing`'s own doc). Both
+    /// share this one accessor rather than a second, since both are the
+    /// same shape: a non-fatal, named, operator-facing notice.
     pub fn warnings(&self) -> &[ConfigWarning] {
         &self.warnings
     }

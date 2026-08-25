@@ -283,6 +283,8 @@ impl Plugin for MemoryPlugin {
                 ToolName::new(LIST_MEMORIES_TOOL_NAME),
             ],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
 

@@ -39,6 +39,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use conway_core::hook::HookOnFailure;
 use conway_core::ids::RoleAlias;
 use serde::{Deserialize, Serialize};
 
@@ -309,13 +310,13 @@ pub enum PermissionMode {
 /// **Kind-specific keys: the catch-all shape, chosen over its two
 /// alternatives, with its cost stated rather than papered over.** Three
 /// shapes were on the table:
-/// 1. *Chosen*: keep the five typed fields below and add `extra` — a
+/// 1. *Chosen*: keep the six typed fields below and add `extra` — a
 ///    flattened catch-all for whatever else a third-party kind's entry
 ///    carries. Cost, accepted explicitly: `#[serde(flatten)]` cannot
 ///    coexist with `#[serde(deny_unknown_fields)]` (serde denies unknown
 ///    fields by rejecting them before the flatten target ever sees them,
 ///    which defeats the whole point of a catch-all), so this struct drops
-///    that annotation — a typo in one of the five typed field names (e.g.
+///    that annotation — a typo in one of the six typed field names (e.g.
 ///    `base_ur1`) is no longer a parse error; it is silently captured into
 ///    `extra` and never read by either shipped adapter. This is a genuine
 ///    regression in a validation surface `tests/config_precedence.rs`'s
@@ -358,7 +359,49 @@ pub struct BackendEntry {
     pub base_url: String,
     pub dialect: Option<String>,
     pub stream_tools: Option<bool>,
-    /// Every key this entry carries beyond the five typed fields above —
+    /// Whether this backend's inference never leaves the machine conway
+    /// runs on. **Declared, not inferred — the exact predicate is `local ==
+    /// true` in this JSON entry, nothing else.** No code here inspects
+    /// `base_url` at all: setting `base_url` to `http://localhost:11434/v1`
+    /// does not make this `true`, and leaving `local` unset on a backend
+    /// that genuinely only talks to `localhost` does not make it `false` by
+    /// magic either — the operator's declaration is the only source of
+    /// truth, and it is trusted as given, not audited against `base_url`.
+    ///
+    /// **Why not infer it from `base_url` instead:** every string-shaped
+    /// predicate over `base_url` (`localhost`, `127.0.0.1`, `::1`, a
+    /// `.local` name) is a heuristic wearing a fact's clothes, and all of
+    /// them share one failure: an SSH tunnel (`ssh -L 11434:localhost:11434
+    /// remote-box`) makes a genuinely remote server present an identical
+    /// `http://localhost:11434/v1` — the string a heuristic reads is the
+    /// same whether the process on the other end is on this machine or a
+    /// continent away. An explicit, operator-set `bool` does not remove
+    /// that ambiguity (an operator can mis-declare a tunneled backend
+    /// `local: true` just as easily as a heuristic can mis-infer it), but it
+    /// stops conway from *manufacturing* false confidence out of a URL
+    /// string nobody asked it to interpret — see
+    /// `docs/vision/DESIGN-permission-modes.md` §4 and
+    /// `docs/providers.md`/`docs/routing.md` for the fuller discussion and
+    /// this same tunnel case named again.
+    ///
+    /// **This is defence in depth, not a correctness guarantee.** Nothing
+    /// in this crate enforces locality — no routing behaviour changes based
+    /// on this field, and a chain that falls through from a local candidate
+    /// to a non-local one keeps doing so; refusing that is a *consumer's*
+    /// policy (e.g. a permission guard checking
+    /// `crate::config::locality::role_is_local`), not this field's or the
+    /// router's. What a wrong value on this field can
+    /// leak is the *prompt* sent to whatever the guard classifies — the
+    /// command, its arguments, the paths involved — not permission itself,
+    /// since the narrowing-only verdict a guard can return can never widen
+    /// what the operator already authorised.
+    ///
+    /// Defaults to `false`: an undeclared backend is treated as NOT local,
+    /// so an operator who forgets to declare a genuinely local backend gets
+    /// a safe-by-default "not local" rather than an accidental "local" that
+    /// was never asserted.
+    pub local: bool,
+    /// Every key this entry carries beyond the six typed fields above —
     /// where a third-party `kind`'s own configuration lives. See this
     /// struct's own doc comment for the typo-detection cost this flattened
     /// catch-all accepts.
@@ -375,6 +418,7 @@ impl Default for BackendEntry {
             base_url: String::new(),
             dialect: None,
             stream_tools: None,
+            local: false,
             extra: BTreeMap::new(),
         }
     }
@@ -547,16 +591,31 @@ impl ToolCallSupportSpec {
 }
 
 /// `[agents]`.
+///
+/// `dir` is the operator's own agent-definition root — always first in
+/// precedence (`crate::agents::load_agent_defs_from_roots`'s own doc: "the
+/// first root's own definitions always win a name collision with any later
+/// root's"), and the only root a malformed file in fails the build over.
+/// `extra_dirs` (board item `01M0X1EH2GW5DKY9XD1EZ78S3F`, empty by default,
+/// so every existing config keeps behaving identically) is zero or more
+/// ADDITIONAL roots, in the order given, each resolved against `cwd` the
+/// same way `dir` is — meant for a plugin's own `agents/*.md` directory,
+/// whose malformed files are skipped rather than failing the build.
+/// Nothing populates this field automatically yet: an operator can hand-set
+/// it today, but wiring a Claude Code compat plugin's directories into it
+/// is a sibling item's job.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AgentsConfig {
     pub dir: PathBuf,
+    pub extra_dirs: Vec<PathBuf>,
 }
 
 impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
             dir: PathBuf::from(".conway/agents"),
+            extra_dirs: Vec::new(),
         }
     }
 }
@@ -1344,6 +1403,25 @@ pub struct HookEntry {
     /// field here.
     #[serde(default = "default_hook_enabled")]
     pub enabled: bool,
+    /// This rule's own policy for what happens when THIS hook's runner
+    /// cannot be consulted at all -- a missing script, a timeout, or
+    /// stdout that failed to parse -- as opposed to when the hook ran and
+    /// returned an explicit deny. Enforced for real, for a `pre_tool_use`
+    /// rule, by `ConwayBuilder::build`'s translation into
+    /// `conway_runtime::permission::PreToolUseHookSpec::on_failure`
+    /// (board item `01M0X1AH44SNMK5TZ507K30QNP`); like `timeout_ms`, only
+    /// read, never enforced, for any other `event`.
+    ///
+    /// Defaults to `HookOnFailure::Deny` -- **today's exact fail-closed
+    /// behavior, byte-for-byte unchanged, for any entry that does not set
+    /// this field.** `HookOnFailure::Prompt` narrows the outage to the
+    /// operator's own gate instead of denying outright; `Allow` is not a
+    /// legal value at all -- `HookOnFailure` has no such variant, so no
+    /// config value can ever widen what an outage does. See that type's own
+    /// doc (`docs/vision/DESIGN-permission-modes.md` §3a/§3c) for the full
+    /// argument.
+    #[serde(default)]
+    pub on_failure: HookOnFailure,
 }
 
 impl Default for HookEntry {
@@ -1355,6 +1433,7 @@ impl Default for HookEntry {
             command: Vec::new(),
             timeout_ms: default_hook_timeout_ms(),
             enabled: default_hook_enabled(),
+            on_failure: HookOnFailure::default(),
         }
     }
 }

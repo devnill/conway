@@ -7,7 +7,153 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`conway::agents::load_agent_defs` and `conway::skills::load_skill_defs` are no longer single-root** — board item `01M0X1EH2GW5DKY9XD1EZ78S3F`. Both now have a `_from_roots(dirs: &[PathBuf])` counterpart that reads an ORDERED list of roots into one merged map: `dirs[0]` (the operator's own directory) keeps the exact original strict contract — a malformed file there is still a loud, propagated build error — and always wins a name collision against any later root; every root after it is treated as third-party (e.g. a plugin's own directory), so a malformed file, or a within-root name collision, there is logged via `tracing::warn!` and skipped rather than failing the whole load. The single-root functions are now thin one-element-slice wrappers over the new ones, so every existing caller (`ConwayBuilder::build`, `crate::intent`, `conway-cli`'s `--agent` resolution, `conway_plugin_skills::SkillsPlugin::from_dir`) keeps compiling and behaving byte-for-byte identically without a single call site changing. `AgentsConfig` gains `extra_dirs: Vec<PathBuf>` (empty by default, so every existing config keeps behaving identically) — additional agent-definition roots `ConwayBuilder::build` now resolves against `cwd` and folds in alongside `dir`; nothing populates it automatically yet, an operator can hand-set it today. Skills stay configless (no new `[skills]` section — unnecessary config surface this item's own scope doesn't call for, matching this crate's existing precedent for that section). `docs/plugins/claude-compat.md`'s `skills/`/`agents/` "not imported, at all" paragraphs are corrected: the loader capability exists and is tested now, but the Claude Code compat layer does not yet call it with a plugin's own directories — that wiring is a separate, deferred item.
+
 ### Added
+
+- **A migration guide for operators coming from Claude Code's
+  `settings.json`** — board item `01M0X4Z8B8ZWCHABMQAE9KFWHF`, new page
+  `docs/migrating-from-claude-code.md`. Triages every key in a real
+  operator `settings.json` into exactly one bucket — maps to existing
+  conway config, belongs in a plugin (citing the item), or declined with a
+  stated reason — rather than importing Claude Code's configuration model
+  wholesale (`INTENT.md` §2; the plugin tier's "nothing runs unasked" rule).
+  Translates the operator's actual seven `permissions.allow` rules as the
+  worked example: only one survives the trip, because conway deliberately
+  has no durable allow grant for `bash` at all (`docs/permissions.md`'s
+  Limits section) and a second rule pointed at an already-stale ephemeral
+  path. `env` and `hooks.SessionEnd` are recorded as declined per the
+  standing ruling in `docs/vision/DESIGN-permission-modes.md` §9, not
+  reopened. No new core config key: every field the guide's worked
+  `settings.json`/`permissions.json` use already existed in
+  `crates/conway/src/config/schema.rs` and
+  `crates/conway-core/src/permission_pattern.rs` before this item, checked
+  field-for-field against both (and by writing/reading the files back
+  against a scratch `CONWAY_CONFIG_DIR` — not merely asserted).
+- **Backends can now declare locality** — board item
+  `01M0WX4MB7JETFBRZE3AEQNSV3`, closing the gap
+  `docs/vision/DESIGN-permission-modes.md` §2e names: nothing used to
+  distinguish `http://localhost:11434/v1` from `api.openai.com` except the
+  string, and a `local: true` key on a `backends.<id>` entry parsed today
+  straight into the untyped `extra` catch-all, meaning nothing —
+  accepted-and-ignored, worse than rejected. `BackendEntry` gains a typed
+  `local: bool` field (default `false`), and `conway::config::role_is_local`
+  answers whether every candidate in a role's configured chain is declared
+  local. **Declared, not inferred**: no code reads `base_url` to guess at
+  this — every URL-shaped heuristic (`localhost`, `127.0.0.1`, a `.local`
+  name) is defeated by an SSH tunnel presenting a remote server identically
+  to a local one, so the field is the operator's own claim, trusted as
+  given, not audited against the backend's address. This is defence in
+  depth, not a correctness guarantee, and changes no routing behaviour: a
+  chain falling through from a local candidate to a non-local one still
+  does so — refusing that fallthrough is a consumer's policy (e.g. a
+  future permission guard), not something this field or the router
+  enforces on its own. See `docs/providers.md`'s new "Locality" section
+  and `docs/routing.md`'s worked example for the full picture, including
+  the tunnel case named again.
+- **A plugin can now declare it depends on another plugin, and conway
+  enforces it** — board item `01M0WWJMYK0KDC2X7B7MR46FRR`
+  (`docs/vision/DESIGN-plugin-dependencies.md` §4/§4a/§4b), two new
+  `PluginManifest` fields: `requires` and `optional`, both `Vec<String>`
+  of plugin ids, both name-only (no `semver` crate anywhere in this
+  workspace — an id verifies SOME plugin with that id is installed, never
+  which version). `ConwayBuilder::build` checks the full final installed
+  set (built-ins ++ everything `install_selected`/`with_plugin` added):
+  a `requires` id absent from it is a hard build error naming both the
+  dependent and the missing dependency (mirroring the existing
+  `required_host_caps`/`MissingHostCapability` shape, extended to
+  plugin-to-plugin edges — "a plugin cannot be enabled without its
+  dependencies enabled; not degraded, not silently auto-installed —
+  refused"); a cycle among `requires` edges (`a` requires `b` requires
+  `a`) is its own named error, `PluginError::DependencyCycle`, since
+  neither side of a cycle can ever be satisfied first. An `optional` id
+  absent from the installed set never fails the build — the dependent
+  loads anyway, degraded, and the degradation is always announced: a
+  `tracing::warn!` naming both ids, plus a new `ConfigWarning`
+  (`WarningCode::OptionalPluginDependencyMissing`) on `Conway::warnings()`
+  for a host that reads it. `ConwayBuilder::install_selected` also
+  performs an early, best-effort topological cycle check over what it can
+  see before `build()` is reached — but deliberately does **not** reorder
+  the `with_plugin` calls it makes, which stay in plain `[plugins].install`
+  order: that order is `Plugin::instructions()`'s own injection-precedence
+  authority, and resolving a dependency graph is a different question from
+  deciding what precedes what in an assembled prompt. A regression test
+  installs two instruction-declaring plugins with a `requires` edge that
+  would reorder them under a naive topological-injection scheme, and
+  asserts the assembled context still orders fragments by install order.
+- **A `pre_tool_use` hook registration can now declare `on_failure:
+  "deny" | "prompt"` (default `"deny"`), so a guard's own OUTAGE no longer
+  has to look identical to its VERDICT** — board item
+  `01M0X1AH44SNMK5TZ507K30QNP`
+  (`docs/vision/DESIGN-permission-modes.md` §3a/§3c). Before this item,
+  `PermissionBroker::pre_tool_use_hook_denial` collapsed two structurally
+  different facts — a hook running and returning an explicit
+  `HookPermissionVerdict::Deny` ("the guard said no"), and a hook's own
+  runner failing outright (missing script, timeout, or unparseable stdout;
+  "the guard is down") — into the identical `Option<String>` value,
+  distinguishable only by parsing the rendered text for a trailing `--
+  fail-closed`. Fail-closed is correct for an operator-authored policy
+  script (its breakage is the operator's own), but wrong for a guard
+  backed by infrastructure the operator does not directly control (e.g. a
+  local model server): every tool call denies whenever it is unreachable,
+  presenting as the agent being unable to do anything rather than as "your
+  guard is down." A new `conway_core::hook::HookOnFailure` enum (`Deny` |
+  `Prompt`, **no `Allow` variant — unrepresentable in the type, not merely
+  rejected at runtime**, the identical guarantee `HookPermissionVerdict`
+  already gives a hook's own verdict) rides on `HookEntry::on_failure`
+  (`crates/conway/src/config/schema.rs`, `#[serde(default)]`) and
+  `PreToolUseHookSpec::on_failure` (`crates/conway-runtime/src/
+  permission.rs`). `Deny` (the default) reproduces today's exact
+  byte-for-byte fail-closed behavior, message included, for every existing
+  registration that never sets the field. `Prompt` narrows an outage to
+  the operator's own `gate.check` instead of denying outright — never a
+  widening, and never able to bypass the operator's own `deny` rules or
+  plan-mode refusal, both of which still fire unconditionally before and
+  after the hook step in `PermissionBroker::decide`'s existing order.
+  `on_failure` is consulted ONLY when a hook's runner itself fails; an
+  explicit `Deny` verdict from a hook that ran successfully always denies,
+  regardless of that hook's own `on_failure` setting. The two facts are
+  now also distinguished STRUCTURALLY, not only in rendered text: a new
+  private `HookStepOutcome`/`HookDenialCause` pair
+  (`crates/conway-runtime/src/permission.rs`) tags a denial `Verdict` or
+  `Outage`, so a future downstream consumer could match on the cause
+  directly rather than string-matching the message. `docs/plugins/
+  hooks.md`'s status table (points 8 and 13) is corrected to record which
+  parts of the `on_failure` vocabulary it already specified are now built.
+- **A Claude Code plugin's `hooks/hooks.json` now translates into real,
+  dispatchable conway `[hooks].rules[]`-shaped registrations** — board
+  item `01M0X1FCQ80C9ET97HENXSAW2K`, `crates/conway-plugin-claude`'s own
+  `hooks` module, carrying an earlier item's name-level-only mapping
+  (`01M0VR89FB1F3Q4FQ8852K2A5E`) the rest of the way. Six Claude Code
+  events map onto conway's own eight (`SessionStart`/`UserPromptSubmit`/
+  `PreToolUse`/`PostToolUse` exactly; `SubagentStart`->`child_spawned` and
+  `SubagentStop`->`child_reported` **approximate**, per the operator
+  ruling's own best-effort-and-disclosed appetite — the one known
+  divergence for `child_reported` is named in the module doc and the new
+  coverage table alike). `ClaudeCompatReport::hook_registrations()` hands
+  back a `HookRegistration` per `Mapped` rule: the Claude Code command
+  STRING wrapped, never word-split, as `["/bin/sh", "-c", <command>]`,
+  with `${CLAUDE_PLUGIN_ROOT}` already resolved to the discovered plugin
+  directory's own absolute path (every real `hooks.json` checked against —
+  `beepboop` 1.4.0, `ideate` 3.2.2 — uses that token in every command).
+  Proven dispatching end to end, over the real `ProcessHookRunner`, for
+  one observation-tier event (`session_starting`, fail-open) and one
+  deny-capable event (`pre_tool_use`, fail-closed, with a `matcher`) — not
+  a hand-built fixture standing in for dispatch. Zero new core events: an
+  unmapped event (nineteen of `beepboop`'s twenty-five) is still declined
+  and named, never silently dropped, and `SessionEnd` specifically stays
+  declined and settled (operator ruling, `docs/vision/
+  DESIGN-permission-modes.md` §9) — not reopened by this item.
+  `docs/plugins/claude-compat.md` gets a coverage table (every event
+  either real plugin declares, its status — maps/approximate/declined —
+  and, for the mapped ones, the fail-open-or-closed posture it inherits)
+  and its own former "nothing is wired to dispatch" sentence corrected.
+  This crate still never mutates a `HooksConfig` itself — a caller appends
+  the registrations into its own `[hooks].rules[]`; `conway-cli`'s own
+  `[plugins].claude_compat[]` install path does not perform that append
+  yet (still MCP-only), a disclosed, separate follow-up.
 
 - **conway can now install a plugin from a Claude Code marketplace** —
   board item `01M0VR96Y87FF2BVNTBSC6GEYR`, the network-reaching half of the
@@ -215,6 +361,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disclosure sites, `docs/plugins/hooks.md`, `docs/plugins/README.md`, and
   this file's own bullet above are corrected to state the ruling rather
   than the prior (now false) description.
+
+- **Shift+Tab cycles the permission mode** — board item
+  `01M0WX62C2VGJTXSR7XJBGMM9J`. `Action::CyclePermissionMode` (prompt ->
+  plan -> auto-allow) already existed and the app loop already wrote both
+  the broker (the authority) and the display mirror together
+  (`tui/app/run.rs`) — the only thing missing was a way to reach it
+  without opening `/settings` and navigating to its `permission_mode` row.
+  `handle_normal_key` (`crates/conway-cli/src/tui/input.rs`) now binds
+  `Shift-Tab` to the same `Action::CyclePermissionMode`, matching both
+  encodings a terminal might send for the chord (`KeyCode::BackTab`, and
+  bare `KeyCode::Tab` carrying the `SHIFT` modifier). Bound in
+  `Mode::Normal` only, deliberately — cycling to auto-allow while a
+  permission prompt or another modal-bearing surface is up would change
+  the meaning of the decision the operator is mid-way through making, and
+  every one of those surfaces' own key handlers already swallows an
+  unrecognized chorded key rather than needing a carved-out exception. The
+  key handler returns the Action; it never writes the broker itself,
+  preserving the authority split the settings row's own comment
+  documents. `/help`'s keybinding overlay (`tui/view/help.rs`) now lists
+  the binding.
 
 ### Security
 
@@ -1320,6 +1486,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documented
 
 - **A tier-level configurability rule now exists for an operator to read, stated once rather than assumed at three separate sites** — board item `01M0V501HZBMWNC6AE45JJXAFK`. `PluginConfig` is a real, plumbed, per-agent narrowing mechanism (`Runtime::narrow_plugin_config_for_fork`, `conway.fs`'s own `root` key its proving consumer), and `[S1.5]` (39 sites across `conway-core`, `conway-runtime`, `conway-tools`, `conway-session`, and `conway`) already ruled it embedder-only "for this first slice" — but that ruling lived only in source comments an operator never reads, and was never connected to the tier-level question of whether an operator can configure a first-party plugin at all. `docs/plugins/README.md` and `PHILOSOPHY.md` §6 now each state the rule once, in an operator-facing location: `[plugins].install` decides *whether* a first-party plugin runs, never *how* it behaves once installed, citing both `[S1.5]` and `first_party_plugins::bundle()`'s own "a worked example, not a commitment to any of its members individually" framing. `conway-plugin-trim`'s module doc and `docs/plugins/README.md`'s `conway.trim` bullet each carried a standalone no-knob argument that independently reached the same conclusion; both now point at the stated rule instead of re-deriving it, keeping only what is genuinely specific to the 8-turn window (a curation heuristic with no operator feedback loop, not a budget). **What "for this first slice" means today is deliberately left open** — `[S1.5]` names an expiry it never dated, and several waves of plugin work have landed since; that is an operator decision, not a documentation one, and no prose here says or implies it either way. No code, config schema, or test changed.
+
+### Fixed
+
+- **`Plugin::status_contributions()` was collected, exposed on the facade as `Conway::plugin_status_contributions()`, and read by nothing — the built-but-unreachable defect this tree keeps catching, sitting in a surface two design docs now depend on** — board item `01M0X1B7Z41J57N6YP2JFZ2AZW`, argued in `docs/vision/DESIGN-permission-modes.md` §3d/§6b. The TUI status line now has a `plugins` field (`view::status::status_line_spans`) that renders `PluginStatusContribution`s as `key: value`, with `status: Failed` (and every other non-`Completed` variant — `Cancelled`/`BudgetExceeded`/`Rejected`) styled `theme.error` (plain red), visually distinct from the unstyled healthy case and from `theme.fatal_error`, which stays reserved for `AUTO-ALLOW` alone — the design's own hazard was that a live guard and a dead guard reported identically, and this is the type `PluginStatusContribution::status` already carried for exactly this. **The one guarantee that mattered most: a contribution can never displace the permission-mode field.** `drop_priority` ranks `plugins` strictly below `mode`, so every contribution is already forced down to its own empty floor before `mode` is ever asked to give up a column — tested explicitly against the FORCED-IN case (a `fields` config naming neither `mode` nor `plugins`, `AUTO-ALLOW` active, five contributions including two failures all competing for the same narrow width). Bounded, not silently truncated: at most three contributions are spelled out individually; the rest fold into a visible `+N more` marker. Zero contributions (the overwhelmingly common case) renders byte-identically to before this item, pinned by a literal string-equality test. `Conway::plugin_status_contributions()`'s own doc no longer describes an unrendered accessor. **Disclosed gap, not fixed here:** `AppState::plugin_status_contributions` — the field the render path actually reads — is not yet populated from a running session; threading `conway.plugin_status_contributions()` through at TUI startup (the same "populate once outside the render path" shape `AppState::plugin_commands`/`agent_names` already use) is a follow-up, out of this item's file-ownership scope.
 
 ## [0.9.0] — 2026-08-13
 

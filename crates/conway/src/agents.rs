@@ -61,7 +61,67 @@ struct RawFrontmatter {
 /// into an [`AgentDef`], keyed by its `name`. A missing `dir` is not an
 /// error — it yields an empty map. Entries are processed in file-name
 /// sorted order so error reporting is deterministic across platforms.
+///
+/// A single-root convenience over [`load_agent_defs_from_roots`] — `dir`
+/// becomes that function's one-element `dirs[0]` (the "operator's own,
+/// strict" root), so this function's behavior is byte-for-byte what it was
+/// before multi-root support existed (board item
+/// `01M0X1EH2GW5DKY9XD1EZ78S3F`): every existing caller (`ConwayBuilder::
+/// build`, `crate::intent`, `conway-cli`'s `--agent` resolution) keeps
+/// compiling and behaving identically without touching a single call site.
 pub fn load_agent_defs(dir: &Path) -> Result<HashMap<String, AgentDef>> {
+    load_agent_defs_from_roots(&[dir.to_path_buf()])
+}
+
+/// Reads agent definitions from `dirs`, an ORDERED list of roots, and
+/// merges them into one map keyed by name.
+///
+/// **Precedence, in one sentence:** the first root's own definitions always
+/// win a name collision with any later root's — so `dirs[0]`, meant to be
+/// the operator's own `.conway/agents`, always shadows a plugin's.
+///
+/// **Isolation.** `dirs[0]` keeps [`load_agent_defs`]'s original strict
+/// contract unchanged: a malformed file (bad frontmatter, a name/stem
+/// mismatch, an empty prompt, or a name that collides with another file
+/// already loaded from `dirs[0]` itself) is a loud, propagated error. Every
+/// root AFTER `dirs[0]` is treated as third-party (a plugin's own
+/// directory, which the operator did not author and cannot fix): a file in
+/// one of those roots that fails to parse, or whose name collides with
+/// another file already loaded from the SAME root, is skipped
+/// (`tracing::warn!`, never a propagated error) rather than aborting the
+/// whole load — one broken plugin directory must never make the operator's
+/// own agents, or a different, well-formed plugin's, unloadable. An
+/// unreadable or missing non-primary root (including a permission error,
+/// unlike `dirs[0]`'s `NotFound`-only carve-out) is likewise not this
+/// operator's file to fix, so it also yields no entries rather than an
+/// error.
+///
+/// Ties among two OTHER (non-`dirs[0]`) roots resolve the same way: first
+/// in `dirs` wins, no error — the one total order this function has, not a
+/// richer precedence system.
+///
+/// An empty `dirs` yields an empty map (no root is "the operator's own",
+/// so there is nothing to be strict about).
+pub fn load_agent_defs_from_roots(dirs: &[PathBuf]) -> Result<HashMap<String, AgentDef>> {
+    let mut combined: HashMap<String, AgentDef> = HashMap::new();
+    for (index, dir) in dirs.iter().enumerate() {
+        let root_defs = if index == 0 {
+            load_agent_defs_strict(dir)?
+        } else {
+            load_agent_defs_lenient(dir)
+        };
+        for (name, def) in root_defs {
+            combined.entry(name).or_insert(def);
+        }
+    }
+    Ok(combined)
+}
+
+/// The original single-root algorithm, unchanged: a missing `dir` is not an
+/// error (empty map); any other read failure, or any malformed file,
+/// propagates loudly. Used for `dirs[0]` only — see
+/// [`load_agent_defs_from_roots`]'s own doc for why.
+fn load_agent_defs_strict(dir: &Path) -> Result<HashMap<String, AgentDef>> {
     let read_dir = match fs::read_dir(dir) {
         Ok(read_dir) => read_dir,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
@@ -84,6 +144,56 @@ pub fn load_agent_defs(dir: &Path) -> Result<HashMap<String, AgentDef>> {
         insert_unique(&mut defs, def, &path)?;
     }
     Ok(defs)
+}
+
+/// Same directory scan as [`load_agent_defs_strict`], but for a
+/// non-primary (third-party/plugin) root: any failure — the directory
+/// itself unreadable, one file's frontmatter malformed, or a name collision
+/// within this SAME root — is logged via `tracing::warn!` and skipped
+/// rather than propagated, so one broken entry never costs the rest of this
+/// root, or any other root, its own valid definitions. Never returns an
+/// error; a root that cannot be read at all yields an empty map, exactly
+/// like a missing `dirs[0]` does in the strict path.
+fn load_agent_defs_lenient(dir: &Path) -> HashMap<String, AgentDef> {
+    let read_dir = match fs::read_dir(dir) {
+        Ok(read_dir) => read_dir,
+        Err(_) => return HashMap::new(),
+    };
+
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for entry in read_dir {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+
+    let mut defs: HashMap<String, AgentDef> = HashMap::with_capacity(paths.len());
+    for path in paths {
+        match load_one(&path) {
+            Ok(def) => {
+                if defs.contains_key(&def.name) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        name = %def.name,
+                        "duplicate agent name within a non-primary agents root; skipping"
+                    );
+                } else {
+                    defs.insert(def.name.clone(), def);
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "malformed agent definition in a non-primary agents root; skipping"
+                );
+            }
+        }
+    }
+    defs
 }
 
 /// Inserts `def` into `defs`, failing if an agent with the same `name` is
@@ -382,5 +492,114 @@ mod tests {
                 model: ModelId::new("claude-sonnet-4-6"),
             })
         );
+    }
+
+    // -- multi-root (board item `01M0X1EH2GW5DKY9XD1EZ78S3F`) --------------
+
+    fn write_agent(dir: &Path, name: &str, content: &str) {
+        fs::write(dir.join(format!("{name}.md")), content).unwrap();
+    }
+
+    #[test]
+    fn load_agent_defs_from_roots_single_root_matches_load_agent_defs() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_agent(tmp.path(), "reviewer", "---\nname: reviewer\n---\nbody\n");
+
+        let via_single = load_agent_defs(tmp.path()).unwrap();
+        let via_roots = load_agent_defs_from_roots(&[tmp.path().to_path_buf()]).unwrap();
+        assert_eq!(via_single, via_roots);
+    }
+
+    #[test]
+    fn load_agent_defs_from_roots_empty_dirs_is_ok_empty() {
+        let defs = load_agent_defs_from_roots(&[]).unwrap();
+        assert!(defs.is_empty());
+    }
+
+    #[test]
+    fn load_agent_defs_from_roots_a_second_root_actually_contributes_entries() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_agent(
+            primary.path(),
+            "reviewer",
+            "---\nname: reviewer\n---\nbody\n",
+        );
+        write_agent(plugin.path(), "worker", "---\nname: worker\n---\nbody\n");
+
+        let defs = load_agent_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert_eq!(defs.len(), 2);
+        assert!(defs.contains_key("reviewer"));
+        assert!(defs.contains_key("worker"));
+    }
+
+    #[test]
+    fn load_agent_defs_from_roots_primary_root_shadows_a_later_root_on_collision() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_agent(
+            primary.path(),
+            "reviewer",
+            "---\nname: reviewer\ndescription: operator's own\n---\nbody\n",
+        );
+        write_agent(
+            plugin.path(),
+            "reviewer",
+            "---\nname: reviewer\ndescription: a plugin's own\n---\nbody\n",
+        );
+
+        let defs = load_agent_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(
+            defs["reviewer"].description.as_deref(),
+            Some("operator's own")
+        );
+    }
+
+    #[test]
+    fn load_agent_defs_from_roots_malformed_file_in_a_later_root_is_skipped_not_fatal() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_agent(
+            primary.path(),
+            "reviewer",
+            "---\nname: reviewer\n---\nbody\n",
+        );
+        // Malformed: missing frontmatter delimiter entirely.
+        write_agent(plugin.path(), "broken", "not a valid agent file at all\n");
+        // A well-formed sibling in the SAME plugin root must still load.
+        write_agent(plugin.path(), "worker", "---\nname: worker\n---\nbody\n");
+
+        let defs = load_agent_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert_eq!(defs.len(), 2);
+        assert!(defs.contains_key("reviewer"));
+        assert!(defs.contains_key("worker"));
+        assert!(!defs.contains_key("broken"));
+    }
+
+    #[test]
+    fn load_agent_defs_from_roots_malformed_file_in_the_primary_root_still_errors() {
+        let primary = tempfile::tempdir().unwrap();
+        write_agent(primary.path(), "broken", "not a valid agent file at all\n");
+
+        let err = load_agent_defs_from_roots(&[primary.path().to_path_buf()]).unwrap_err();
+        match err {
+            FacadeError::AgentDef { message, .. } => {
+                assert!(message.contains("missing YAML frontmatter"), "{message}");
+            }
+            other => panic!("expected AgentDef error, got {other:?}"),
+        }
     }
 }

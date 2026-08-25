@@ -70,7 +70,67 @@ struct RawFrontmatter {
 /// [`SkillDef`], keyed by its `name`. A missing `dir` is not an error — it
 /// yields an empty map. Subdirectories are processed in name-sorted order so
 /// error reporting is deterministic across platforms.
+///
+/// A single-root convenience over [`load_skill_defs_from_roots`] — `dir`
+/// becomes that function's one-element `dirs[0]` (the "operator's own,
+/// strict" root), so this function's behavior is byte-for-byte what it was
+/// before multi-root support existed (board item
+/// `01M0X1EH2GW5DKY9XD1EZ78S3F`): every existing caller (`ConwayBuilder::
+/// build`, `conway_plugin_skills::SkillsPlugin::from_dir`) keeps compiling
+/// and behaving identically without touching a single call site.
 pub fn load_skill_defs(dir: &Path) -> Result<HashMap<String, SkillDef>> {
+    load_skill_defs_from_roots(&[dir.to_path_buf()])
+}
+
+/// Reads skill definitions from `dirs`, an ORDERED list of roots, and
+/// merges them into one map keyed by name.
+///
+/// **Precedence, in one sentence:** the first root's own definitions always
+/// win a name collision with any later root's — so `dirs[0]`, meant to be
+/// the operator's own `.conway/skills`, always shadows a plugin's.
+///
+/// **Isolation.** `dirs[0]` keeps [`load_skill_defs`]'s original strict
+/// contract unchanged: a malformed `SKILL.md` (bad frontmatter, a
+/// name/directory-name mismatch, an empty body, or a name that collides
+/// with another directory already loaded from `dirs[0]` itself) is a loud,
+/// propagated error. Every root AFTER `dirs[0]` is treated as third-party
+/// (a plugin's own directory, which the operator did not author and cannot
+/// fix): a `SKILL.md` in one of those roots that fails to parse, or whose
+/// name collides with another directory already loaded from the SAME root,
+/// is skipped (`tracing::warn!`, never a propagated error) rather than
+/// aborting the whole load — one broken plugin directory must never make
+/// the operator's own skills, or a different, well-formed plugin's,
+/// unloadable. An unreadable or missing non-primary root (including a
+/// permission error, unlike `dirs[0]`'s `NotFound`-only carve-out) is
+/// likewise not this operator's file to fix, so it also yields no entries
+/// rather than an error.
+///
+/// Ties among two OTHER (non-`dirs[0]`) roots resolve the same way: first
+/// in `dirs` wins, no error — the one total order this function has, not a
+/// richer precedence system.
+///
+/// An empty `dirs` yields an empty map (no root is "the operator's own",
+/// so there is nothing to be strict about).
+pub fn load_skill_defs_from_roots(dirs: &[PathBuf]) -> Result<HashMap<String, SkillDef>> {
+    let mut combined: HashMap<String, SkillDef> = HashMap::new();
+    for (index, dir) in dirs.iter().enumerate() {
+        let root_defs = if index == 0 {
+            load_skill_defs_strict(dir)?
+        } else {
+            load_skill_defs_lenient(dir)
+        };
+        for (name, def) in root_defs {
+            combined.entry(name).or_insert(def);
+        }
+    }
+    Ok(combined)
+}
+
+/// The original single-root algorithm, unchanged: a missing `dir` is not an
+/// error (empty map); any other read failure, or any malformed `SKILL.md`,
+/// propagates loudly. Used for `dirs[0]` only — see
+/// [`load_skill_defs_from_roots`]'s own doc for why.
+fn load_skill_defs_strict(dir: &Path) -> Result<HashMap<String, SkillDef>> {
     let read_dir = match fs::read_dir(dir) {
         Ok(read_dir) => read_dir,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
@@ -104,6 +164,64 @@ pub fn load_skill_defs(dir: &Path) -> Result<HashMap<String, SkillDef>> {
         insert_unique(&mut defs, def, &skill_md)?;
     }
     Ok(defs)
+}
+
+/// Same directory scan as [`load_skill_defs_strict`], but for a non-primary
+/// (third-party/plugin) root: any failure — the directory itself
+/// unreadable, one `SKILL.md`'s frontmatter malformed, or a name collision
+/// within this SAME root — is logged via `tracing::warn!` and skipped
+/// rather than propagated, so one broken entry never costs the rest of this
+/// root, or any other root, its own valid definitions. Never returns an
+/// error; a root that cannot be read at all yields an empty map, exactly
+/// like a missing `dirs[0]` does in the strict path.
+fn load_skill_defs_lenient(dir: &Path) -> HashMap<String, SkillDef> {
+    let read_dir = match fs::read_dir(dir) {
+        Ok(read_dir) => read_dir,
+        Err(_) => return HashMap::new(),
+    };
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for entry in read_dir {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if path.is_dir() {
+            candidates.push(path);
+        }
+    }
+    candidates.sort();
+
+    let mut defs: HashMap<String, SkillDef> = HashMap::with_capacity(candidates.len());
+    for skill_dir in candidates {
+        let skill_md = skill_dir.join("SKILL.md");
+        if !skill_md.is_file() {
+            continue;
+        }
+        let stem = skill_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        match load_one(&skill_md, stem) {
+            Ok(def) => {
+                if defs.contains_key(&def.name) {
+                    tracing::warn!(
+                        path = %skill_md.display(),
+                        name = %def.name,
+                        "duplicate skill name within a non-primary skills root; skipping"
+                    );
+                } else {
+                    defs.insert(def.name.clone(), def);
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    path = %skill_md.display(),
+                    error = %err,
+                    "malformed skill definition in a non-primary skills root; skipping"
+                );
+            }
+        }
+    }
+    defs
 }
 
 /// Inserts `def` into `defs`, failing if a skill with the same `name` is
@@ -378,5 +496,102 @@ mod tests {
         let (yaml, body) = split_frontmatter(content, Path::new("x.md")).unwrap();
         assert_eq!(yaml, "name: x\n");
         assert_eq!(normalize_body(body), "body");
+    }
+
+    // -- multi-root (board item `01M0X1EH2GW5DKY9XD1EZ78S3F`) --------------
+
+    #[test]
+    fn load_skill_defs_from_roots_single_root_matches_load_skill_defs() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(tmp.path(), "example", "---\nname: example\n---\nBody.\n");
+
+        let via_single = load_skill_defs(tmp.path()).unwrap();
+        let via_roots = load_skill_defs_from_roots(&[tmp.path().to_path_buf()]).unwrap();
+        assert_eq!(via_single, via_roots);
+    }
+
+    #[test]
+    fn load_skill_defs_from_roots_empty_dirs_is_ok_empty() {
+        let defs = load_skill_defs_from_roots(&[]).unwrap();
+        assert!(defs.is_empty());
+    }
+
+    #[test]
+    fn load_skill_defs_from_roots_a_second_root_actually_contributes_entries() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_skill(primary.path(), "review", "---\nname: review\n---\nBody.\n");
+        write_skill(plugin.path(), "ideate", "---\nname: ideate\n---\nBody.\n");
+
+        let defs = load_skill_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert_eq!(defs.len(), 2);
+        assert!(defs.contains_key("review"));
+        assert!(defs.contains_key("ideate"));
+    }
+
+    #[test]
+    fn load_skill_defs_from_roots_primary_root_shadows_a_later_root_on_collision() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_skill(
+            primary.path(),
+            "review",
+            "---\nname: review\ndescription: operator's own\n---\nBody.\n",
+        );
+        write_skill(
+            plugin.path(),
+            "review",
+            "---\nname: review\ndescription: a plugin's own\n---\nBody.\n",
+        );
+
+        let defs = load_skill_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(
+            defs["review"].description.as_deref(),
+            Some("operator's own")
+        );
+    }
+
+    #[test]
+    fn load_skill_defs_from_roots_malformed_file_in_a_later_root_is_skipped_not_fatal() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_skill(primary.path(), "review", "---\nname: review\n---\nBody.\n");
+        // Malformed: missing frontmatter delimiter entirely.
+        write_skill(plugin.path(), "broken", "not a valid skill file at all\n");
+        // A well-formed sibling in the SAME plugin root must still load.
+        write_skill(plugin.path(), "ideate", "---\nname: ideate\n---\nBody.\n");
+
+        let defs = load_skill_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert_eq!(defs.len(), 2);
+        assert!(defs.contains_key("review"));
+        assert!(defs.contains_key("ideate"));
+        assert!(!defs.contains_key("broken"));
+    }
+
+    #[test]
+    fn load_skill_defs_from_roots_malformed_file_in_the_primary_root_still_errors() {
+        let primary = tempfile::tempdir().unwrap();
+        write_skill(primary.path(), "broken", "not a valid skill file at all\n");
+
+        let err = load_skill_defs_from_roots(&[primary.path().to_path_buf()]).unwrap_err();
+        match err {
+            FacadeError::SkillDef { message, .. } => {
+                assert!(message.contains("missing YAML frontmatter"), "{message}");
+            }
+            other => panic!("expected SkillDef error, got {other:?}"),
+        }
     }
 }

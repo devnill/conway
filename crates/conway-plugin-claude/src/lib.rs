@@ -69,9 +69,22 @@
 //! - No new `conway_core::ports::plugin` surface, and no new
 //!   `CommandOutcome` variant (acceptance 6) -- this crate does not depend
 //!   on `conway-core` at all.
-//! - No `HooksConfig` mutation, ever -- see [`hooks`]'s own module doc for
-//!   why a name-level event match is not the same claim as "this hook now
-//!   runs."
+//! - **No `HooksConfig` mutation BY THIS CRATE, ever** -- this crate never
+//!   holds, reads, or writes a `conway::config::schema::HooksConfig` of any
+//!   kind (it does not depend on `conway` in production code at all, the
+//!   identical reason [`mcp::TranslatedMcpServer`] hands back a
+//!   `conway_plugin_mcp::McpPluginSpec` rather than reaching into `conway`
+//!   itself). Board item `01M0X1FCQ80C9ET97HENXSAW2K` corrected the
+//!   NARROWER claim this bullet used to make ("name-level match only,
+//!   nothing is ever wired to dispatch"):
+//!   [`hooks::HookTranslation::registration`],
+//!   [`ClaudeCompatReport::hook_registrations`] now produce
+//!   real, dispatchable `[hooks].rules[]`-shaped registrations for every
+//!   `Mapped` rule -- a CALLER (an embedder, or a future `conway-cli`
+//!   wiring point) appends them into ITS OWN `HooksConfig` before
+//!   `ConwayBuilder::build`; this crate still never touches one itself.
+//!   See [`hooks`]'s own module doc for the full "dispatches, but is not
+//!   the same claim as behaves identically to Claude Code" disclosure.
 
 pub mod error;
 mod fsutil;
@@ -83,7 +96,7 @@ pub mod unsupported;
 use std::path::{Path, PathBuf};
 
 pub use error::ClaudeCompatError;
-pub use hooks::{HookMapOutcome, HookTranslation};
+pub use hooks::{HookMapOutcome, HookRegistration, HookTranslation};
 pub use manifest::ClaudePluginManifest;
 pub use mcp::TranslatedMcpServer;
 pub use unsupported::{UnsupportedItem, UnsupportedKind};
@@ -115,8 +128,8 @@ pub struct ClaudeCompatReport {
 
 impl ClaudeCompatReport {
     /// The count of `hooks/hooks.json` rules whose event has a same-named
-    /// conway counterpart (informational only -- see [`hooks`]'s own
-    /// module doc: not a claim they are wired to run).
+    /// conway counterpart -- see [`Self::hook_registrations`] for the
+    /// actual, dispatchable form of these same rules.
     pub fn mapped_hook_count(&self) -> usize {
         self.hooks
             .iter()
@@ -128,6 +141,39 @@ impl ClaudeCompatReport {
     /// all -- named individually in [`Self::unsupported`].
     pub fn unmapped_hook_count(&self) -> usize {
         self.hooks.len() - self.mapped_hook_count()
+    }
+
+    /// Every `Mapped` `hooks/hooks.json` rule, as a ready-to-append
+    /// `[hooks].rules[]`-shaped [`HookRegistration`] -- see
+    /// [`hooks::HookTranslation::registration`]'s own doc for the shell
+    /// wrapping and `${CLAUDE_PLUGIN_ROOT}` substitution every registration
+    /// here already carries. `Unmapped` rules contribute nothing (already
+    /// named in [`Self::unsupported`]).
+    ///
+    /// Each registration's own `id` is
+    /// `"claude_compat:<self.id>:<claude_event>:<n>"`, `n` a stable
+    /// per-event ordinal (this rule's own position among that SAME Claude
+    /// Code event's rules in `hooks.json`) -- unique within one report, and
+    /// namespaced by this plugin's own `id` so two
+    /// `[plugins].claude_compat[]` entries can never collide even if both
+    /// name the identical Claude Code event.
+    pub fn hook_registrations(&self) -> Vec<HookRegistration> {
+        let mut seen_for_event: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        self.hooks
+            .iter()
+            .filter_map(|translation| {
+                let ordinal = seen_for_event
+                    .entry(translation.claude_event.as_str())
+                    .or_insert(0);
+                let id = format!(
+                    "claude_compat:{}:{}:{ordinal}",
+                    self.id, translation.claude_event
+                );
+                *ordinal += 1;
+                translation.registration(id, &self.source_dir)
+            })
+            .collect()
     }
 }
 
@@ -277,5 +323,48 @@ mod tests {
         std::fs::create_dir_all(&named).unwrap();
         let report = discover(&named).unwrap();
         assert_eq!(report.id, "my-claude-plugin");
+    }
+
+    /// `hook_registrations` produces exactly one [`HookRegistration`] per
+    /// `Mapped` rule, skips every `Unmapped` one, and assigns each a
+    /// unique, namespaced, per-event-ordinal `id`.
+    #[test]
+    fn hook_registrations_are_namespaced_by_plugin_id_and_per_event_ordinal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            root.join(".claude-plugin").join("plugin.json"),
+            r#"{"name":"acme-tools"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("hooks")).unwrap();
+        std::fs::write(
+            root.join("hooks").join("hooks.json"),
+            r#"{"hooks":{
+                "PreToolUse": [
+                    {"matcher":"Bash","hooks":[{"type":"command","command":"echo one"}]},
+                    {"matcher":"Read","hooks":[{"type":"command","command":"echo two"}]}
+                ],
+                "Stop": [{"hooks":[{"type":"command","command":"echo bye"}]}]
+            }}"#,
+        )
+        .unwrap();
+
+        let report = discover(root).unwrap();
+        let registrations = report.hook_registrations();
+        // Two `PreToolUse` rules mapped; `Stop` contributes nothing.
+        assert_eq!(registrations.len(), 2);
+        assert!(registrations.iter().all(|r| r.event == "pre_tool_use"));
+
+        let ids: Vec<&str> = registrations.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "claude_compat:acme-tools:PreToolUse:0",
+                "claude_compat:acme-tools:PreToolUse:1",
+            ],
+            "each rule's own id must be unique and stable-ordered: {ids:?}"
+        );
     }
 }

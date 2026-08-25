@@ -116,15 +116,15 @@ every kind the running binary actually recognises — never a silently
 ignored entry.
 
 An entry's keys beyond `kind`/`api_key`/`api_key_env`/`base_url`/`dialect`/
-`stream_tools` are not rejected: they are captured verbatim and handed to
-whichever factory built that entry's backend, so a third-party kind can
-carry its own configuration without this crate knowing its shape in
+`stream_tools`/`local` are not rejected: they are captured verbatim and
+handed to whichever factory built that entry's backend, so a third-party
+kind can carry its own configuration without this crate knowing its shape in
 advance. Concretely: they land in `BackendBuildContext::extra` (a
 `BTreeMap<String, serde_json::Value>`), the exact argument
 `BackendFactory::build` receives — see ["Writing your own
 adapter"](#writing-your-own-adapter) below for a worked example that reads
 one back out and lets it change the backend's own behaviour. The cost: a
-typo in one of the six named keys above (e.g. `base_ur1`) is no longer
+typo in one of the seven named keys above (e.g. `base_ur1`) is no longer
 caught at load time — it is silently captured alongside any real custom key
 rather than erroring. Double-check spelling against the fields named above;
 `conway` cannot catch that typo for you.
@@ -157,7 +157,8 @@ conway's part.
 
 The `"anthropic"` kind reads two keys out of its own `extra` (the same
 catch-all map described [above](#where-a-backend-is-declared) — every key
-beyond `kind`/`api_key`/`api_key_env`/`base_url`/`dialect`/`stream_tools`):
+beyond `kind`/`api_key`/`api_key_env`/`base_url`/`dialect`/`stream_tools`/
+`local`):
 
 | `extra` key | Effect |
 | --- | --- |
@@ -295,6 +296,70 @@ Set exactly one — `api_key` and `api_key_env` both non-empty on the same
 backend is a config error naming the backend. An `api_key_env` naming a
 variable that isn't set at startup is also a named, fail-loud error;
 conway never silently falls back to "no credential."
+
+## Locality
+
+`backends.<id>.local` (bool, default `false`) declares whether a backend's
+inference never leaves the machine conway runs on. This exists for exactly
+one reason: some consumers — a permission guard classifying a tool call
+before it runs is the motivating one, see
+[`docs/vision/DESIGN-permission-modes.md`](../docs/vision/DESIGN-permission-modes.md)
+§2e/§4 — need to know *"which of my backends can see my file contents"*
+before they hand a prompt to one, and nothing before this existed to ask.
+
+```json
+// .conway/settings.json
+{
+  "backends": {
+    "ollama": {
+      "kind": "openai-compat",
+      "dialect": "ollama",
+      "base_url": "http://localhost:11434/v1",
+      "local": true
+    }
+  }
+}
+```
+
+**This is declared, not inferred — say it plainly, because the other option
+was on the table and was rejected.** `local` is exactly the boolean you
+write. Nothing in conway reads `base_url` and *guesses* at this field: a
+`base_url` of `http://localhost:11434/v1` sets nothing by itself, and a
+backend with no `local` key at all defaults to `false` even if its
+`base_url` says `localhost`. Two backend ids in the [worked
+example](routing.md#worked-example-a-fallback-chain-across-a-cloud-and-a-local-provider)
+are both named things — `anthropic`, `local` — but only one of the two
+carries `"local": true`; the *id* `local` was always a name an operator
+chose, never something conway read meaning from, and that has not changed.
+
+**Why not infer it from `base_url` — the case that breaks every
+alternative.** `localhost`, `127.0.0.1`, `::1`, and a bare `.local` hostname
+all look like clean predicates until an SSH tunnel is in the picture:
+`ssh -L 11434:localhost:11434 some-remote-box` makes a server on
+`some-remote-box` answer at `http://localhost:11434/v1` from this machine's
+point of view, and no string-shaped test on `base_url` can tell that apart
+from a real local Ollama install — the bytes on the wire are identical
+either way. An explicit `local` field does not make that ambiguity
+disappear (an operator can mis-declare a tunneled backend `local: true` just
+as wrongly as a heuristic could infer it), but it stops conway from
+manufacturing false confidence out of a URL string nobody asked it to
+interpret, and it means a wrong answer is traceable to one line an operator
+wrote rather than to logic buried in a router.
+
+**This is defence in depth, not a correctness guarantee, and the scope of
+what it protects is narrower than "safe."** No routing behaviour changes
+because of this field — `conway`'s router does not prefer, skip, or reorder
+a chain on locality, and a chain that falls through from a local candidate
+to a non-local one keeps doing so; refusing that fallthrough is a
+*consumer's* policy, not something this field or the router enforces on its
+own. A permission guard checking a role's chain (`role_is_local` in
+`conway::config`, keyed by the backends this page describes) can refuse to
+run when a candidate isn't local — but if it is wrong, what it exposes is
+the *prompt* handed to the non-local candidate: the command, its arguments,
+the paths involved. It cannot widen what an operator has already
+authorised (`HookPermissionVerdict` has no `Allow` variant), so a
+misdeclared `local` is a privacy leak of the prompt, never a permission
+escalation.
 
 ## OpenAI-compatible endpoints
 
@@ -904,7 +969,7 @@ impl BackendFactory for ThirdPartyBackendFactory {
             .get(MODEL_ID)
             .and_then(|overrides: &ModelOverrides| overrides.max_context_tokens)
             .unwrap_or(32_000);
-        // `extra` is the entry's own keys beyond `kind` and the five typed
+        // `extra` is the entry's own keys beyond `kind` and the six typed
         // fields `BackendEntry` recognizes -- absent when the entry sets no
         // `greeting`, in which case `ThirdPartyBackend::respond` gives back
         // `REPLY_TEXT` unchanged.
@@ -991,7 +1056,7 @@ fn write_settings_with_backend_entry(
 
 A `write_settings_with_greeting(dir, "friend")` call therefore renders a
 `backends.thirdparty` entry of `{"kind": "thirdparty-stub", "greeting":
-"friend"}` — the `greeting` key is not one of `BackendEntry`'s five typed
+"friend"}` — the `greeting` key is not one of `BackendEntry`'s six typed
 fields, so it lands in that entry's own `extra` map, which is exactly what
 `ThirdPartyBackendFactory::build` (above) reads back out. `fixture::
 write_settings` (used everywhere else on this page and in `tests/end_to_
