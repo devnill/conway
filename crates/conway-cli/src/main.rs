@@ -6,6 +6,7 @@
 //! there is exactly one place (the bottom of this file) that turns an
 //! `ExitCode` into a process exit status.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -34,6 +35,22 @@ async fn main() -> std::process::ExitCode {
             return to_process_code(ExitCode::Usage);
         }
     }
+
+    // Board item `01M0W5Q569F0T97HSEP6F0MPCR`: this process's real
+    // environment, resolved ONCE, here, at this binary's single entry point
+    // -- mirroring `ConwayBuilder::build`'s own `std::env::vars()` read for
+    // `provider_profile_file_paths`/the central sessions root, and `tui::
+    // app::App::new`'s own `env_vars` (`startup.rs`), each its own
+    // once-at-construction read rather than a value threaded in from
+    // further out. Threaded to `build_conway`/`dispatch` below, and through
+    // them to `first_party_plugins::install`/`installed_plugins` and
+    // `commands::plugin::run`, so the `conway.idiom` plugin's
+    // operator-global instructions file resolves against whatever
+    // `CONWAY_CONFIG_DIR` names in THIS map -- never a second, independent
+    // `std::env::vars()` read at any of those call sites (which would
+    // defeat `CONWAY_CONFIG_DIR`-based test isolation for whichever one did
+    // it, the exact hazard this item exists to close).
+    let env: HashMap<String, String> = std::env::vars().collect();
 
     // **Disclosed reconciliation -- widens this function and
     // `build_conway` beyond `dispatch`'s own match arms, which is the one
@@ -86,14 +103,14 @@ async fn main() -> std::process::ExitCode {
         (Some(gate), None)
     };
 
-    let (conway, memory_store, agent_names) = match build_conway(&cli, gate_override, is_tui).await
-    {
-        Ok(built) => built,
-        Err(e) => {
-            diag::error(e.to_string());
-            return to_process_code(ExitCode::from_error(&e));
-        }
-    };
+    let (conway, memory_store, agent_names) =
+        match build_conway(&cli, gate_override, is_tui, &env).await {
+            Ok(built) => built,
+            Err(e) => {
+                diag::error(e.to_string());
+                return to_process_code(ExitCode::from_error(&e));
+            }
+        };
 
     // `Conway::warnings()` (a real,
     // populated mechanism -- `config::merge::validate` pushes a
@@ -118,7 +135,7 @@ async fn main() -> std::process::ExitCode {
         }
     }
 
-    let result = dispatch(&cli, conway, tui_gate_rx, memory_store, agent_names).await;
+    let result = dispatch(&cli, conway, tui_gate_rx, memory_store, agent_names, &env).await;
 
     match result {
         Ok(code) => to_process_code(code),
@@ -195,6 +212,7 @@ async fn build_conway(
     cli: &Cli,
     gate: Option<Arc<dyn PermissionGate>>,
     is_tui: bool,
+    env: &HashMap<String, String>,
 ) -> conway::Result<(
     Conway,
     Arc<dyn conway::plugin::MemoryStore>,
@@ -243,7 +261,7 @@ async fn build_conway(
     // `[plugins]` section in `settings.json` at all. Every dispatch target
     // sees this union from the SAME choke point, so the property holds for
     // the TUI and every one-shot/subcommand invocation identically.
-    let (builder, memory_store, agent_names) = first_party_plugins::install(builder).await?;
+    let (builder, memory_store, agent_names) = first_party_plugins::install(builder, env).await?;
     // The subprocess plugin tier (board item 01KZY8PATND84AKY0J376E3DWV):
     // a SEPARATE choke point from the line above -- see
     // `subprocess_plugins`'s own module doc for why this is a distinct
@@ -281,6 +299,7 @@ async fn dispatch(
     tui_gate_rx: Option<tui::gate::GateReceiver>,
     memory_store: Arc<dyn conway::plugin::MemoryStore>,
     agent_names: Arc<dyn conway_plugin_names::AgentNames>,
+    env: &HashMap<String, String>,
 ) -> conway::Result<ExitCode> {
     match &cli.command {
         Some(Command::Sessions(args)) => commands::sessions::run(args, &conway).await,
@@ -294,7 +313,7 @@ async fn dispatch(
         // reached any other way. See `commands::plugin`'s own module doc
         // for what it does.
         Some(Command::External(args)) => {
-            commands::plugin::run(args, &conway, memory_store, agent_names).await
+            commands::plugin::run(args, &conway, memory_store, agent_names, env).await
         }
         None if cli.print.is_some() => oneshot::run(cli, conway).await,
         None => {
@@ -314,8 +333,12 @@ async fn dispatch(
             // and `tui::run` (which reads one back to resolve `/steer
             // <name>` and to draw the `/agents` panel). Handing those two a
             // store each would break the loop silently.
-            let plugins =
-                first_party_plugins::installed_plugins(&conway, memory_store, agent_names.clone());
+            let plugins = first_party_plugins::installed_plugins(
+                &conway,
+                memory_store,
+                agent_names.clone(),
+                env,
+            );
             tui::run(cli, conway, gate_rx, &plugins, agent_names).await
         }
     }

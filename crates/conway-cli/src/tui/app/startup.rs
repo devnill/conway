@@ -327,6 +327,7 @@ impl App {
         state.plugin_browser = crate::first_party_plugins::all_bundle_plugins(
             &conway.config().cwd,
             browse_memory_store,
+            &env_vars,
         )
         .iter()
         .map(|p| {

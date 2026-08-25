@@ -77,7 +77,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key — `PluginsConfig` has no per-plugin operator configuration surface
   today, and adding one would be a schema change for text with no reason
   to be a TOML value), `conway.idiom` now reads
-  `<project>/.conway/instructions.md` and `<home>/.conway/instructions.md`
+  `<project>/.conway/instructions.md` and the global-scope
+  `instructions.md` alongside conway's user-scoped `settings.json` (that
+  is, `<home>/.conway/instructions.md` when `CONWAY_CONFIG_DIR` is unset,
+  or `<CONWAY_CONFIG_DIR>/instructions.md` when it is set — board item
+  `01M0W5Q569F0T97HSEP6F0MPCR` closed the isolation gap this file
+  originally shipped with, the same shape board item
+  `01M0VV6CVSZM4XH8J4G6EBV5E3` closed for `settings.json` itself, below)
   when either exists, contributing each as its own named, additive
   `InstructionFragment` (`conway.idiom.operator.project`/`conway.idiom.
   operator.global`) alongside the plugin's shipped idioms primer — neither
@@ -247,6 +253,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`crates/conway-cli/tests/config_isolation_binary.rs`) driving the real
   `conway` binary against a simulated `$HOME`, shown to fail against the
   unmodified code before the fix landed.
+
+- **The operator-global instructions file now honours `CONWAY_CONFIG_DIR`
+  too** — board item `01M0W5Q569F0T97HSEP6F0MPCR`, the identical isolation
+  gap the entry above closed for `settings.json`, reintroduced (while still
+  latent — the file did not yet exist on the reporting operator's own
+  machine) by board item `01M0VR4GMGSZ2682T908JCGVFG` a few hours later:
+  `conway_plugin_idiom::global_instructions_path` derived from
+  `conway::config::discovery::home_settings_path` (the raw,
+  override-independent home path) rather than `user_config_path(env)` (the
+  one that honours the variable), so an operator who set
+  `CONWAY_CONFIG_DIR` to relocate conway's config directory would still
+  have had their real `~/.conway/instructions.md` read and injected into
+  every session's context. `global_instructions_path`/
+  `resolve_operator_paths` (`crates/conway-plugin-idiom/src/lib.rs`) now
+  take an explicit `env: &HashMap<String, String>` and derive from
+  `user_config_path(env)` instead — threaded through
+  `first_party_plugins::resolve_idiom_plugin` and its callers
+  (`install`/`all_bundle_plugins`/`installed_plugins`,
+  `crates/conway-cli/src/first_party_plugins.rs`), `commands::plugin::run`,
+  and `main.rs`'s own `build_conway`/`dispatch`, each resolved from a single
+  `std::env::vars()` read at that binary's one entry point (mirroring
+  `tui::app::App::new`'s own `env_vars` field) rather than a fresh ambient
+  read at any of those call sites. Proven with a compiled-binary regression
+  test (`crates/conway-cli/tests/global_instructions_isolation.rs`) driving
+  a real one-shot turn against a scripted backend and asserting on the
+  captured wire request, shown to fail against the unmodified code before
+  the fix landed.
 
 ### Fixed
 
