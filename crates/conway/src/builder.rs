@@ -1960,7 +1960,9 @@ fn resolve_path(cwd: &Path, p: &Path) -> PathBuf {
 /// plugin-id string references), so it terminates on any input, including
 /// a large or pathological dependency graph, with no recursion-depth
 /// concern.
-fn detect_required_dependency_cycle(manifests: &[PluginManifest]) -> Result<(), PluginError> {
+fn detect_required_dependency_cycle(
+    manifests: &[PluginManifest],
+) -> std::result::Result<(), PluginError> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Color {
         White,
@@ -2041,7 +2043,9 @@ fn detect_required_dependency_cycle(manifests: &[PluginManifest]) -> Result<(), 
 /// set (built-ins ++ everything `install_selected`/`with_plugin` added),
 /// which is the only point this crate has full visibility into that set --
 /// see `PluginManifest::requires`'s own doc.
-fn missing_required_dependency(manifests: &[PluginManifest]) -> Result<(), PluginError> {
+fn missing_required_dependency(
+    manifests: &[PluginManifest],
+) -> std::result::Result<(), PluginError> {
     let ids: HashSet<&str> = manifests.iter().map(|m| m.id.as_str()).collect();
     for manifest in manifests {
         for dep in &manifest.requires {
