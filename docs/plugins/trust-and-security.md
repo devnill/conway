@@ -110,6 +110,57 @@ entrypoint whose real code sits in an adjacent tree would defeat a
 single-digest check — but that shape is recorded here for whoever designs
 the uniform mechanism, not built by this item.
 
+**What would reopen the decline above, recorded at decline time so it would
+not need re-deriving:** a transport that overrides `Plugin::curators()` and
+can append durable, addressable records to the log — a materially larger
+grant than running a tool, and the thing "Requirement 5" just above already
+checked and found absent; a decision to gate `[hooks].rules[].command`,
+which would remove the asymmetry objection that was the deciding argument;
+or a plugin distribution story where an artifact arrives from somewhere
+other than a path the operator typed.
+
+**The third condition has been met and ruled on — decision
+`01M0VS2M8FC25QYCATQ8PKQ73Y` (2026-08-25), superseding the 2026-08-23
+decision above.** Planning marketplace-sourced plugin distribution put a
+fetched artifact in front of the operator for the first time, meeting that
+condition exactly. The ruling: **a plugin artifact conway fetches — from a
+marketplace or any other distribution mechanism this project ever
+builds — sits on the SAME footing as `[hooks].rules[].command`**: named by
+the operator, run with the operator's full privileges, checked against
+**nothing** — no digest, no allow-list, no prompt. The operator's decision
+to install it IS the control point, exactly as it already is for a hook
+command or for a command typed directly into `[plugins].subprocess[]`/
+`[plugins].mcp[]`. A marketplace-sourced artifact is not safer than a
+command path the operator typed by hand; both are checked against nothing,
+and that is the point of this ruling, not an oversight in it. Only the
+third condition above is retired by this ruling — the other two, curator
+override and hook-gating, have not happened and remain live.
+
+**This extends the 2026-08-23 decline rather than reversing it, and the
+distinction is worth preserving because it is easy to lose.** The 2026-08-23
+argument rested on asymmetry: a digest gate on a plugin's command while
+`[hooks].rules[].command` stayed ungated "would read as 'plugins are vetted,
+hooks are not,' which is false" — an objection a future decision to gate
+both surfaces could defeat, which is exactly why it was named as the second
+reopen condition above. The 2026-08-25 ruling supplies a second, independent
+reason that gating both surfaces cannot answer: running third-party code
+carries a risk that is inherent and expected, and a digest check does not
+deliver the safety it appears to promise against that risk. Gating hooks
+too would still leave unaddressed the thing that actually carries the
+risk — the operator's choice to run someone else's code — which is why this
+condition's retirement does not turn on whatever becomes of the other two.
+
+**What this ruling does NOT cover, stated so its shape is not misread as
+broader than it is.** It rules on exactly one mechanism — artifact digest
+trust for a plugin, fetched or not — and is not license to weaken anything
+else. The permission broker's fail-closed defaults, the rule that a `deny`
+rule always applies while an `allow` rule may require trust (see "The
+asymmetry, and why it is the sound part", below), and containment roots
+enforced by the plugin performing the operation (see "What conway DOES
+ship", below) all still apply, unmodified, to whatever a fetched plugin
+does once it is running. The harness operating as safely as it can remains
+a live constraint on everything except this one mechanism.
+
 **A persistent subprocess plugin (board item `01M03VJHG1WFECFJB4ZH3CKWDX`,
 `"transport": "persistent"`) is a larger exposure, not a larger capability
 grant.** A persistent subprocess plugin holds a long-lived, unsandboxed
