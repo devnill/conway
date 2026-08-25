@@ -1,0 +1,39 @@
+[package]
+name = "conway-plugin-idiom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin (board item 01M0VR3BKW5N3V3WS28H7FV8ZK): conway.idiom, prepends a short conway-idioms instruction fragment to a session -- the operator's own 'we send minimal data, add a little extra if desired' framing"
+
+# Versioned WITH the workspace, like every other first-party plugin -- see
+# `conway-plugin-skeleton`'s own Cargo.toml doc comment for the full
+# reasoning. This crate carries none of `conway-core`'s strict-semver
+# discipline; that discipline exists for the crate third-party plugins
+# depend on, and from `conway`'s own point of view this is just another
+# consumer of the public facade.
+
+[dependencies]
+# The ONLY workspace crate this plugin depends on -- the public facade, the
+# exact surface a third-party plugin author gets (GP-03/P-6). `Plugin`,
+# `PluginManifest`, `PluginDescription`, `InstructionFragment` are all
+# reachable through `conway`/`conway::plugin` alone. Unlike
+# `conway-plugin-path`/`conway-plugin-discover`, this crate contributes NO
+# tool, so it needs none of `async-trait`/`schemars`/`serde_json` those
+# crates pull in for `Tool`/`ToolSpec::schema`/`ToolCall::arguments` -- see
+# C-04, dependency minimalism: this only takes what it genuinely uses.
+conway = { path = "../conway" }
+
+[dev-dependencies]
+# Board item 01M0TV8MSFRHHQ5BNZV3NHZCEW: this crate's tests reach
+# `conway::test_support` (the shared `build_conway`/`test_builder` wiring),
+# which is behind the facade's off-by-default `test-support` feature.
+# Dev-only: nothing in `src/` may name it.
+conway = { path = "../conway", features = ["test-support"] }
+# Test-only: builds a real, in-memory `Conway` (fake backend/gate/router)
+# to drive this plugin's fragment through a real turn end to end, mirroring
+# `conway-plugin-path`'s own `tests/` precedent.
+conway-testkit = { path = "../conway-testkit" }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A tenth first-party plugin, `conway.idiom`, prepends a short
+  conway-idioms instruction fragment to a session** — board item
+  `01M0VR3BKW5N3V3WS28H7FV8ZK`. Before this, a bare interactive TUI
+  session sent the model tool schemas and the conversation and nothing
+  else: `App::session_spec` sets no `agent_def`/`system_prompt_override`,
+  and `SessionSpec::system_prompt_override`'s own doc already stated the
+  consequence — no system-prompt segment at all in that case. Installing
+  `["conway.idiom"]` contributes one `Plugin::instructions()` fragment
+  (fork vs. spawn, how an agent ends, configuration-dependent tools,
+  context scarcity, permissions, budgets, steering) — 27 lines, 250 words,
+  well inside the 40-line/400-word budget measured against Pi's own
+  system-prompt template (`docs/vision/INTENT.md`'s citation of Pi as
+  conway's extension-surface reference). Lands in `ContextBuilder::build`'s
+  `[1] PluginInstructions*` step: ahead of every tool schema and the whole
+  conversation always, and ahead of an agent def's own system prompt only
+  when that def supplies none — the ordinary bare-session case this item
+  exists for. `tool_ids` is deliberately empty: the fragment names
+  `conway_fork`/`conway_spawn`/`report` in prose but requires none of them
+  to be announced for the rest of the text to hold, and an interactive
+  root specifically never has `report` — naming it would silently drop
+  the whole fragment from the one session type this plugin targets.
+  **Reaches root agents only** — a forked or spawned child gets no
+  instruction fragments at all, because `SubagentHost::start` passes
+  `instructions: Vec::new()` unconditionally and `resolve_instructions`,
+  the sibling that forwards them unchanged, is root-only and is never
+  called for a child. Disclosed in the fragment's own doc comment, in
+  `PluginDescription::you_lose`, and in
+  [`docs/plugins/idiom.md`](docs/plugins/idiom.md). Opt-in, like every
+  other first-party plugin.
+
 ### Fixed
 
 - **The `/` command palette now generates itself from the same command

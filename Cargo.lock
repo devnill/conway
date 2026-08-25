@@ -550,6 +550,7 @@ dependencies = [
  "conway-plugin-backends",
  "conway-plugin-discover",
  "conway-plugin-history",
+ "conway-plugin-idiom",
  "conway-plugin-mcp",
  "conway-plugin-memory",
  "conway-plugin-names",
@@ -647,6 +648,16 @@ dependencies = [
  "conway",
  "conway-core",
  "conway-testkit",
+ "tokio",
+]
+
+[[package]]
+name = "conway-plugin-idiom"
+version = "0.9.0"
+dependencies = [
+ "conway",
+ "conway-testkit",
+ "tempfile",
  "tokio",
 ]
 
