@@ -394,6 +394,15 @@ Two settings-migration questions this page's neighbours raised, ruled
   `crates/conway/tests/config_isolation_guard.rs`, which exists because the
   ambient-environment hazard already broke a suite) is the position; a
   global env-injection key would reintroduce what that work removed.
+
+  **Verified 2026-08-25, and it strengthens the decline:** conway has **no
+  hooks-scoped `env` either**. `HookEntry` has no `env` field at all — its
+  own doc comment says so. The only `env` map in the whole config schema is
+  `McpPluginEntry::env` (`[plugins].mcp[].env`, struct declared at
+  `schema.rs:988`), which scopes environment to one spawned MCP server and
+  nothing else. So there is no partial precedent to generalise from: a
+  global `env` key would not be widening an existing idea, it would be
+  introducing one this config has deliberately never had.
 - **A `SessionEnd` hook event: declined**, and not a candidate to grow. The
   earlier "file an item if the absence hurts" framing is withdrawn — this is
   settled, not deferred.
