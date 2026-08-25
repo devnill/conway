@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A migration guide for operators coming from Claude Code's
+  `settings.json`** — board item `01M0X4Z8B8ZWCHABMQAE9KFWHF`, new page
+  `docs/migrating-from-claude-code.md`. Triages every key in a real
+  operator `settings.json` into exactly one bucket — maps to existing
+  conway config, belongs in a plugin (citing the item), or declined with a
+  stated reason — rather than importing Claude Code's configuration model
+  wholesale (`INTENT.md` §2; the plugin tier's "nothing runs unasked" rule).
+  Translates the operator's actual seven `permissions.allow` rules as the
+  worked example: only one survives the trip, because conway deliberately
+  has no durable allow grant for `bash` at all (`docs/permissions.md`'s
+  Limits section) and a second rule pointed at an already-stale ephemeral
+  path. `env` and `hooks.SessionEnd` are recorded as declined per the
+  standing ruling in `docs/vision/DESIGN-permission-modes.md` §9, not
+  reopened. No new core config key: every field the guide's worked
+  `settings.json`/`permissions.json` use already existed in
+  `crates/conway/src/config/schema.rs` and
+  `crates/conway-core/src/permission_pattern.rs` before this item, checked
+  field-for-field against both (and by writing/reading the files back
+  against a scratch `CONWAY_CONFIG_DIR` — not merely asserted).
+
 - **conway can now install a plugin from a Claude Code marketplace** —
   board item `01M0VR96Y87FF2BVNTBSC6GEYR`, the network-reaching half of the
   plugin feature (trust was ruled settled beforehand: decision

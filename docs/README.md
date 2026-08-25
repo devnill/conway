@@ -11,6 +11,7 @@ everything else assumes that page's setup.
 | --- | --- | --- |
 | [`getting-started.md`](getting-started.md) | How do I install conway, configure a model provider, and run my first prompt? | You're setting conway up for the first time. |
 | [`GUIDE.md`](../GUIDE.md) | What does a working session actually look like — hooks, the agent tree, recovering from a bad turn, and the things that aren't on the screen? | You're installed and running, and want the practical path rather than a reference. Lives in the repository root beside `README.md`. |
+| [`migrating-from-claude-code.md`](migrating-from-claude-code.md) | Which of my Claude Code `settings.json` keys carry over, which need a plugin conway doesn't ship yet, and which are gone for good? | You already have a Claude Code `settings.json` and want to know, key by key, what a conway one should say instead — including what you lose. |
 
 ## Driving conway
 
