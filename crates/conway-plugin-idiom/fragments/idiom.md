@@ -21,7 +21,7 @@ Conway idioms -- specific to this harness, not general agent advice.
   in-flight instruction or task can change or end without you asking.
 
 Root only: a forked or spawned child gets no instruction fragments at all
-(`resolve_instructions`, `SubagentHost::start` both pass `instructions:
-Vec::new()`) -- the ending/tools/permissions/steering points above
-describe how a *child* should behave, but conway does not deliver this
-text to one.
+(`SubagentHost::start` passes `instructions: Vec::new()` unconditionally)
+-- the ending/tools/permissions/steering points above describe how a
+*child* should behave, but conway does not deliver this text to one. If
+you fork or spawn, restate what the child needs.

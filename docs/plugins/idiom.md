@@ -86,9 +86,12 @@ one session type this plugin exists for.
 
 ## Reach: root agents only
 
-**A forked or spawned child never sees this text.** `resolve_instructions`
-and `SubagentHost::start` both give every child `instructions:
-Vec::new()` unconditionally (`hooks.md` point 17's own disclosed caveat).
+**A forked or spawned child never sees this text.** `SubagentHost::start`
+gives every child `instructions: Vec::new()` unconditionally (`hooks.md`
+point 17's own disclosed caveat). Its sibling `resolve_instructions` is
+the function that forwards every installed plugin's fragments unchanged —
+it is root-only and is never called for a child, which is exactly why a
+child ends up with none.
 Part of the fragment describes how a *child* should behave — ending a turn
 with `report`, reasoning about a permission denial, expecting a parent to
 steer or cancel it — and a child is exactly the agent that never receives

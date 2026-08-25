@@ -83,10 +83,13 @@
 //!
 //! # Reach: root agents only (disclosed, not fixed here)
 //!
-//! `resolve_instructions` (`crates/conway-runtime/src/runtime/root.rs`) and
-//! `SubagentHost::start` (`crates/conway-runtime/src/subagent.rs`) both give
-//! every forked or spawned child `instructions: Vec::new()` unconditionally
-//! -- `docs/plugins/hooks.md`'s point 17 states this as a first-class
+//! `SubagentHost::start` (`crates/conway-runtime/src/subagent.rs`) gives every
+//! forked or spawned child `instructions: Vec::new()` unconditionally. Its
+//! sibling `resolve_instructions` (`crates/conway-runtime/src/runtime/root.rs`)
+//! is the function that forwards every installed plugin's fragments UNCHANGED
+//! -- it is root-only and is never called for a child, which is precisely why
+//! a child ends up with none.
+//! `docs/plugins/hooks.md`'s point 17 states this as a first-class
 //! caveat: "If you author a fragment, assume a subagent will not see it."
 //! [`FRAGMENT_TEXT`] is written KNOWING the audience is the root only: its
 //! "ending a turn"/"permissions"/"steering" bullets describe how a *child*
@@ -158,9 +161,10 @@ impl Plugin for IdiomPlugin {
                       interactive-TUI case this plugin exists for"
                 .to_string(),
             you_lose: "nothing else -- but the fragment reaches ROOT agents only. A forked or \
-                       spawned child gets no instruction fragments at all \
-                       (resolve_instructions/SubagentHost::start both pass instructions: \
-                       Vec::new()), so a subagent never sees this text, even though part of it \
+                       spawned child gets no instruction fragments at all (SubagentHost::start \
+                       passes instructions: Vec::new() unconditionally; the sibling that does \
+                       forward them, resolve_instructions, is root-only and never called for a \
+                       child), so a subagent never sees this text, even though part of it \
                        describes how a child should behave"
                 .to_string(),
             costs: "one system-prompt segment's worth of tokens per turn (roughly 250 words) \
@@ -232,28 +236,19 @@ mod plugin_tests {
         assert!(instructions[0].tool_ids.is_empty());
     }
 
-    /// The `tool_ids` choice deliberately makes this fragment reachable
-    /// even when NO tool at all is announced this turn -- the empty-list
-    /// case `InstructionFragment::tool_ids`'s own doc calls "trivially
-    /// always reachable". Checked directly against `ContextBuilder`'s own
-    /// reachability rule (a tool_id is unreachable iff it is not among the
-    /// turn's announced set) rather than merely asserted: an empty set has
-    /// no such id, so the fragment can never be withheld by this check.
-    #[test]
-    fn tool_ids_are_trivially_always_reachable() {
-        let instructions = IdiomPlugin.instructions();
-        let known_tool_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        let unreachable: Vec<_> = instructions[0]
-            .tool_ids
-            .iter()
-            .filter(|id| !known_tool_ids.contains(id.as_str()))
-            .collect();
-        assert!(
-            unreachable.is_empty(),
-            "an empty tool_ids list must never be withheld, even against an empty announced \
-             tool set"
-        );
-    }
+    // NOTE: there was a `tool_ids_are_trivially_always_reachable` test here.
+    // It was removed rather than repaired. It built an empty `known_tool_ids`
+    // set, filtered `instructions[0].tool_ids` against it, and asserted the
+    // result was empty -- but `tool_ids` is empty by construction, so
+    // filtering it can never yield anything regardless of the set's contents.
+    // The assertion was true by construction and could not fail for any future
+    // change to this plugin. `contributes_exactly_one_fragment_and_no_tool`
+    // above already asserts `tool_ids.is_empty()` directly, and the REAL
+    // reachability property -- that the fragment survives an actual
+    // `ContextBuilder::build` pass -- is proven by
+    // `fragment_reaches_a_bare_sessions_wire_request` in
+    // `tests/idiom_end_to_end.rs`, which drives production code rather than
+    // reimplementing the filter shape locally.
 
     /// Budget pin (acceptance 3): fails loudly if a future edit grows the
     /// fragment past the item's stated 40-line/400-word cap, rather than

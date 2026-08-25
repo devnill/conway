@@ -31,8 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   root specifically never has `report` — naming it would silently drop
   the whole fragment from the one session type this plugin targets.
   **Reaches root agents only** — a forked or spawned child gets no
-  instruction fragments at all (`resolve_instructions`,
-  `SubagentHost::start`), disclosed in the fragment's own doc comment, in
+  instruction fragments at all, because `SubagentHost::start` passes
+  `instructions: Vec::new()` unconditionally and `resolve_instructions`,
+  the sibling that forwards them unchanged, is root-only and is never
+  called for a child. Disclosed in the fragment's own doc comment, in
   `PluginDescription::you_lose`, and in
   [`docs/plugins/idiom.md`](docs/plugins/idiom.md). Opt-in, like every
   other first-party plugin.
