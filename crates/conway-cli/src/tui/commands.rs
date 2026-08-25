@@ -1897,6 +1897,19 @@ fn notice(state: &mut AppState, text: impl Into<String>) {
 ///
 /// A no-op when no modal is open (a stale fate key after the modal already
 /// closed cannot double-apply a fate).
+///
+/// **A failed fate's FULL text is also recorded in the transcript** (board
+/// item `01M0TYRPF1ASGQ77AK04RB7H84`), through the same
+/// `Entry::Error { fatal: false }` channel `apply_trust_decision`'s own
+/// registration-error path already uses: the in-modal footer
+/// (`view/mod.rs::draw_ask_modal`) grows past its normal fixed height to
+/// show an error, but stays capped, so a `RuntimeError::PullInIncomplete`
+/// -- whose `Display` names exactly how many of how many records merged
+/// and which child session still holds the ask, and can run past what even
+/// a grown footer shows -- is never simply lost. `modal.error` itself
+/// still gets the FULL, untruncated `Display` text (unchanged from before
+/// this item): deciding how much of it actually fits on screen is the view
+/// layer's job, not this dispatch's.
 pub async fn apply_ask_fate<H: Host>(fate: AskFate, state: &mut AppState, host: &H) {
     let child = match &state.mode {
         Mode::AskModal(modal) => modal.child,
@@ -1921,7 +1934,14 @@ pub async fn apply_ask_fate<H: Host>(fate: AskFate, state: &mut AppState, host: 
             state.close_ask_modal();
             notice(state, message);
         }
-        Err(e) => state.fail_ask_modal(e.to_string()),
+        Err(e) => {
+            let full = e.to_string();
+            state.transcript.push(Entry::Error {
+                text: format!("ask fate failed: {full}"),
+                fatal: false,
+            });
+            state.fail_ask_modal(full);
+        }
     }
 }
 
@@ -3730,6 +3750,39 @@ mod tests {
                 .any(|e| matches!(e, Entry::Notice { text } if text.contains("pulled in"))),
             "a failed fate must not record a success notice"
         );
+    }
+
+    /// Board item `01M0TYRPF1ASGQ77AK04RB7H84`: a failed fate's FULL error
+    /// text must also land in the transcript (`Entry::Error { fatal: false
+    /// }`), durable and scrollable there regardless of what the in-modal
+    /// footer itself has room to show -- see `view/mod.rs`'s
+    /// `draw_ask_modal`/`ASK_MODAL_MAX_ERROR_ROWS` for the rendering-layer
+    /// half of this fix.
+    #[tokio::test]
+    async fn a_failed_fate_pushes_the_full_error_to_the_transcript() {
+        let (mut state, _child) = modal_state();
+        let host = FakeHost::new(state.root_agent()); // fate_ok: false -> fails
+
+        apply_ask_fate(AskFate::PullIn, &mut state, &host).await;
+
+        assert!(
+            state.transcript.iter().any(
+                |e| matches!(e, Entry::Error { text, fatal: false } if text.contains("fake error"))
+            ),
+            "the full error text must reach the transcript as a non-fatal \
+             Entry::Error, not be dropped once it no longer fits the \
+             footer: {:?}",
+            state.transcript
+        );
+        // The in-modal error and the transcript entry carry the SAME
+        // underlying text -- the transcript is a durable copy, not a
+        // different (shorter or longer) message.
+        match &state.mode {
+            Mode::AskModal(modal) => {
+                assert_eq!(modal.error.as_deref(), Some("fake error"));
+            }
+            other => panic!("expected the modal to stay open, got: {other:?}"),
+        }
     }
 
     /// A stale fate key after the modal already closed must not double-apply
