@@ -189,6 +189,55 @@ treat "does this comment's claim about what's built still match what the
 file does" as part of the review — the same discipline this section already
 asks for prose, applied without a gate behind it.
 
+### A claim that something does NOT exist rots the same way, and two of its shapes already have a guard
+
+Three separate reviews found the identical defect shape in one round: a doc
+comment asserting a *negative* -- "no such caller exists", "this variant has
+no producer", "these types have no injection point" -- is true when written
+and silently false the moment unrelated work adds the thing it denies.
+`crates/conway/src/lib.rs` once grouped `EventSink`/`EventSinkHandle` with
+`SubagentHost` as sharing "no builder injection point at all"; that was true
+when written (`3cb3068`, 2026-08-10) and false six days later when
+`Plugin::observe_sink` shipped (`94299c4`, 2026-08-16), unrevisited for two
+months. Nothing points at prose like this -- the commit that adds the thing
+being denied has no reason to search for a sentence claiming its absence.
+
+This is not one class needing one new mechanism. It is two shapes that
+already had a home, plus one shape that stays deliberately ungated:
+
+1. **An enum variant's own doc comment claims no production constructor
+   exists.** `crates/conway/tests/enum_variant_construction_guard.rs`
+   already does exactly this: for every enum on its `WATCHED_ENUMS` list it
+   mechanically confirms whether a variant's claimed absence of a producer
+   is still true, rather than trusting the prose. When the claim is about a
+   watched enum's variant, extend that list -- do not build a second file
+   for the same check.
+2. **A freestanding prose claim about reachability, checkable against a
+   document that stays current between reviews** -- "no injection point",
+   "no consumer", "is not wired", the `EventSink` case above. This is
+   exactly the shape [`scripts/check-design-claims.py`](scripts/check-design-claims.py)'s
+   predicates already express: an `absent` pattern that must match nothing,
+   or a `present` pattern that must match something (see
+   [`scripts/board-claims.md`](scripts/board-claims.md)'s own header). When
+   a review closes a finding of this shape and the corrected claim is
+   grep-expressible this way, add the predicate **in the same fix** --
+   pinned to the actual call site or type, not to the doc comment's
+   wording, so a refactor that silently drops the wiring trips it rather
+   than a rewording of the sentence leaving it green for the wrong reason.
+3. **A count that drifted** ("nine plugin crates", "eight entries") is a
+   different case on purpose, and stays out of both mechanisms above: a
+   count churns every time a crate is added, which is a bad fit for a
+   static gate the way reachability is not (settled by board item
+   `01M0TWSEH12002BGVG6G25XFB5`, and not re-litigated here). No predicate,
+   no guard -- review only, the same discipline the section above already
+   asks for module-doc prose.
+
+A seventh fast gate was considered for this and rejected: the enum-variant
+shape and the freestanding-claim shape both already had a home before this
+was written, and a unifying third mechanism would be new machinery
+duplicating two that already work, to close a defect those two already close
+between them whenever the claim is one either can express.
+
 ### Citing a board item, and keeping the citation honest
 
 The tree cites board items by id in roughly 920 places. Two rules:

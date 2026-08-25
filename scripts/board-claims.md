@@ -190,3 +190,11 @@ claim: an instruction fragment naming a tool this turn's assembled tool set does
 paths: crates/conway-runtime/src/context/builder.rs
 present: if unreachable_tool_ids.is_empty\(\)
 -->
+
+<!-- claim-check
+why: regression guard: the wiring that makes EventSink reachable has been unwired-by-prose once already, and if it disappears again the corrected claim in crates/conway/src/lib.rs's module doc -- which now names Plugin::observe_sink as the injection point -- silently overstates what a plugin author can reach
+note: added 2026-08-24 (board item 01M0V52D30PQF2C6BC9NN1CG1B). The history it guards against: lib.rs once grouped EventSink/EventSinkHandle with SubagentHost as sharing "no builder injection point at all" -- true when written (3cb3068, 2026-08-10), false six days later when Plugin::observe_sink shipped (94299c4, 2026-08-16), unrevisited for two months until 01M0TW809NJT8P4G111N046CGH found it. Pinned to the actual call site that collects each installed plugin's observe_sink() handle in ConwayBuilder::build (crates/conway/src/builder.rs:1567-1618, forwarded to per-sink tokio tasks), not to lib.rs's doc-comment prose, so a refactor that drops the wiring trips it rather than a rewording leaving it green. Consequence worth stating: this watches the wiring, not the sentence -- reintroducing a false absence claim in lib.rs while the wiring stands trips nothing.
+claim: EventSink/EventSinkHandle DO have a real production builder injection point -- Plugin::observe_sink(), collected and forwarded to per-sink tasks in ConwayBuilder::build
+paths: crates/conway/src/builder.rs
+present: p\.observe_sink\(\)
+-->
