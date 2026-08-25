@@ -106,10 +106,14 @@ with a one-line `settings.json` edit and no rebuild:
   shared with the TUI's own `/agents` panel, so a rename is visible
   immediately, with no reload.
 - `conway.trim` — a `Curator` that omits tool call/result round-trips older
-  than a configurable turn window, keeping context small as a session grows
-  long. Fully wired into the shipped binary, same footing as the four
-  above with dedicated pages — no dedicated page in this set yet; see
-  `conway-plugin-trim`'s own crate-level doc for the full design.
+  than 8 turns, keeping context small as a session grows long. Fully wired
+  into the shipped binary, same footing as the four above with dedicated
+  pages — no dedicated page in this set yet; see `conway-plugin-trim`'s own
+  crate-level doc for the full design, including why the 8-turn window is a
+  fixed constant, not a `settings.json` knob: it is a curation heuristic an
+  operator has no feedback loop to tune, and no other first-party plugin
+  threads a `settings.json` scalar into an analogous per-plugin config
+  value either.
 - `conway.history` — `/conway.history.rewind <seq>`/`.mask`/`.checkout`:
   forks the calling session at a sequence number, masks a record out of
   future context, or checks out a prior session as the active one. No
