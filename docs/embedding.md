@@ -236,6 +236,29 @@ wants to assert against exactly the config it wrote.
 sibling, for callers who want the lower-level `LoadOutcome` (config plus
 warnings) rather than a `ConwayBuilder`.
 
+**`discover()` (no `path` at all) has a second exposure `from_config(path)`
+does not: the *project* layer too.** `from_config(path)`'s project layer is
+whatever `path` names — fixed, never discovered. `discover()`'s project
+layer is `config::discovery::discover`'s own upward walk from `cwd`, which
+used to know nothing about `$CONWAY_CONFIG_DIR` at all: for any `cwd`
+beneath the invoking user's real `$HOME`, that walk could reach
+`~/.conway/settings.json` and return it as the *project* layer, outranking
+even a `$CONWAY_CONFIG_DIR`-relocated user layer — an isolated-looking
+`discover()` call silently reading the invoking user's real settings after
+all (board item `01M0VV6CVSZM4XH8J4G6EBV5E3`; this is the incident that cost
+a live provider call on real credentials during this project's own
+development). Fixed at the source: `discover` now excludes exactly that one
+collision-prone path, so `discover()` alone — with no `from_config_only`/
+`load_ignoring_user_config` needed — is isolated from it as long as
+`CONWAY_CONFIG_DIR` is set in the `env` passed to `LoadOptions`/`ConwayBuilder
+::discover()`. It does NOT exempt every ancestor `.conway/settings.json`
+between `cwd` and `$HOME` — a genuinely distinct project config nested in
+there is still discovered and still wins, exactly as project always
+outranks user; only the one file that would otherwise double as the global
+settings is excluded. An embedder that wants FULL isolation from anything
+on the host filesystem, project layer included, still wants
+`from_config_only`/`load_ignoring_user_config` above, not `discover()`.
+
 **This suppresses the user layer only — not `env`.** `CONWAY_*` environment
 variables are how CI and container entrypoints hand a specific invocation
 its credentials and overrides; they are supplied by the caller of *this*

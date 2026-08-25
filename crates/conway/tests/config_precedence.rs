@@ -6,8 +6,9 @@ mod support;
 
 use std::collections::HashMap;
 
+use conway::config::discovery;
 use conway::config::schema::{ConwayConfig, PermissionMode};
-use conway::config::{load, CliOverrides, LoadOptions};
+use conway::config::{load, load_ignoring_user_config, CliOverrides, LoadOptions};
 use conway_core::ids::RoleAlias;
 
 const FULL_SCHEMA_JSON: &str = r#"
@@ -285,6 +286,109 @@ fn load_discovers_the_nearest_project_config_via_parent_walk() {
     })
     .unwrap();
     assert_eq!(outcome.config.limits.max_steps, 5);
+}
+
+/// Board item `01M0VV6CVSZM4XH8J4G6EBV5E3`, the "one file, two roles"
+/// collision, proven in-process (a compiled-binary sibling,
+/// `crates/conway-cli/tests/config_isolation_binary.rs`, covers the
+/// specific case that actually cost the operator two live provider calls --
+/// `~/.conway/settings.json` reached from a `cwd` under the REAL home
+/// directory, which this in-process test cannot construct without mutating
+/// this test PROCESS's real `HOME`, unsafe under parallel test execution).
+/// This test instead constructs the identical collision SHAPE fully
+/// deterministically: `CONWAY_CONFIG_DIR` is pointed at an ancestor
+/// directory's own `.conway/` subdirectory, so `user_config_path(env)`
+/// (`$CONWAY_CONFIG_DIR/settings.json`) and `discover`'s own upward walk
+/// from a nested `cwd` beneath that ancestor land on the EXACT SAME file --
+/// the literal "resolved user config" collision the item's own Option 3
+/// text names -- with no dependence on this machine's real home directory
+/// at all.
+///
+/// **Uses [`load_ignoring_user_config`], not [`load`] -- load-bearing, not
+/// a stylistic choice.** With the *user* layer read (`load`), the colliding
+/// file's content reaches the merged config via that layer regardless of
+/// whether `discover` also (redundantly) returns it as the *project* layer
+/// -- same file, same bytes, so a correct exclusion is completely
+/// unobservable in the merged result (this is precisely the "harmless
+/// dedup" this module's own doc describes for the CONWAY_CONFIG_DIR-unset
+/// case). `load_ignoring_user_config` removes that channel entirely: the ONLY
+/// way the colliding file's `session.root` can reach `outcome.config` here
+/// is through the *project* layer, so this is a clean pre/post-fix
+/// discriminator -- before the fix, `discover`'s old, un-excluded walk
+/// still finds and returns it; after the fix, `project_discovery_exclusions`
+/// makes `discover` skip it, and NO layer supplies `session.root` at all
+/// (project skipped, user layer not read by this function at all).
+#[test]
+fn load_ignoring_user_config_excludes_a_project_candidate_matching_the_resolved_user_config() {
+    let root = support::unique_temp_dir("collision-session-root");
+    // Stands in for the ancestor directory whose OWN `.conway/` this test
+    // also points `CONWAY_CONFIG_DIR` at -- the shape that makes the two
+    // resolutions collide.
+    let ancestor = root.join("ancestor");
+    let conf_dir = ancestor.join(".conway");
+    std::fs::create_dir_all(&conf_dir).unwrap();
+    let poisoned_root = ancestor.join("POISONED-SESSIONS");
+    std::fs::write(
+        conf_dir.join("settings.json"),
+        format!(
+            r#"{{"session":{{"root":{:?}}}}}"#,
+            poisoned_root.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let nested_cwd = ancestor.join("work").join("project");
+    std::fs::create_dir_all(&nested_cwd).unwrap();
+
+    let mut env = HashMap::new();
+    env.insert(
+        "CONWAY_CONFIG_DIR".to_string(),
+        conf_dir.to_string_lossy().to_string(),
+    );
+
+    // Sanity: `user_config_path` really does resolve to the exact file
+    // `discover` would otherwise find as a project candidate -- this
+    // assertion is what makes the rest of this test a collision test rather
+    // than an ordinary discovery test.
+    assert_eq!(
+        discovery::user_config_path(&env).unwrap(),
+        conf_dir.join("settings.json")
+    );
+
+    let outcome = load_ignoring_user_config(LoadOptions {
+        cwd: nested_cwd.clone(),
+        explicit_path: None,
+        env: env.clone(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .unwrap();
+
+    assert_ne!(
+        outcome.config.session.root,
+        Some(poisoned_root),
+        "the colliding file must not win as a *project* layer when it is \
+         the identical file already excluded as (what would be) the *user* \
+         layer -- with the user layer not even read by \
+         load_ignoring_user_config, nothing should have supplied session.root \
+         from a config file at all"
+    );
+    // `load_impl`'s own central-default resolution runs unconditionally
+    // (regardless of `IncludeUserLayer`) whenever no layer set
+    // `session.root` -- with the collision excluded and no OTHER project
+    // config between `nested_cwd` and the ancestor, that is exactly what
+    // happens here, so `session.root` lands on the SAME central default
+    // `discovery::session_root` computes directly (which itself is based on
+    // `user_config_path(env)`'s directory, i.e. `CONWAY_CONFIG_DIR` -- not
+    // on any file's content).
+    let expected_default = discovery::session_root(&nested_cwd, None, &env);
+    assert_eq!(
+        outcome.config.session.root,
+        Some(expected_default),
+        "with the collision excluded, session.root should fall through to \
+         the central default resolved against CONWAY_CONFIG_DIR, not the \
+         poisoned file content"
+    );
 }
 
 #[test]
