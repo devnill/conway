@@ -640,12 +640,14 @@ impl SubprocessPlugin {
             version: manifest.version.clone(),
             tools: specs.iter().map(|s| s.name.clone()).collect(),
             required_host_caps: manifest.required_host_caps.clone(),
-            // `WireManifest` carries no `requires`/`optional` fields (out of
-            // scope for this pass -- see `PluginManifest::requires`'s own
-            // doc): an out-of-process plugin cannot yet declare a
-            // plugin-to-plugin dependency, only host capabilities.
-            requires: vec![],
-            optional: vec![],
+            // `WireManifest::requires`/`optional` (board item
+            // `01M0XCD3P8S3VR0T1H0KNG5TMD`) carried verbatim into the same
+            // `PluginManifest` fields an in-process `Plugin` populates --
+            // resolved and checked by the SAME `ConwayBuilder::build`
+            // dependency-resolution code, over the resolved set, not a
+            // parallel path.
+            requires: manifest.requires.clone(),
+            optional: manifest.optional.clone(),
         };
 
         let spec = Arc::new(spec);

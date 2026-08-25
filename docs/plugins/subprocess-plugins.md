@@ -53,8 +53,14 @@ each disclosed rather than silently assumed:
   `01M03VJXARFHSDAGHFXGCWKJTY` -- `WireManifest::required_host_caps`,
   `#[serde(default)]`, unknown cap tags fail closed at parse), and the
   `conway` builder consults it at registration to refuse a plugin whose
-  declared cap the host lacks. See [`hooks.md`](hooks.md) point 1 for the
-  full consumed-status disclosure.
+  declared cap the host lacks. `PluginManifest::requires`/`optional` carry
+  the same way (board item `01M0XCD3P8S3VR0T1H0KNG5TMD` --
+  `WireManifest::requires`/`optional`, both `#[serde(default)]`, name-only
+  plugin-id lists): a subprocess plugin can declare a dependency on another
+  plugin exactly as an in-process one does, resolved and checked by the
+  same `ConwayBuilder::build` code, over the resolved set — not a separate
+  wire-only path. See [`hooks.md`](hooks.md) point 1 for the full
+  consumed-status disclosure.
 - **Trust.** No new trust mechanism was built. See "Trust" below.
 
 ## The wire protocol
@@ -111,6 +117,31 @@ Response (stdout, exit 0):
 - `permission` — one of `safe`, `requires_approval`, `dangerous`
   (`conway_core::content::PermissionClass`). **Required, never defaulted**:
   an omitted field is a parse error, not a silent `safe`.
+
+Two more fields sit alongside `id`/`version`/`tools`, both optional and both
+absent from the example above on purpose — an older plugin that omits them
+loads unchanged:
+
+```json
+{
+  "id": "acme.greet",
+  "version": "0.1.0",
+  "tools": [ /* ... */ ],
+  "requires": ["conway.ui"],
+  "optional": ["conway.notifications"]
+}
+```
+
+- `requires` — plugin ids this plugin's stated function cannot perform at
+  all without. Default `[]`. Name-only, no version constraint. A `requires`
+  id absent from the final installed plugin set is a hard build error naming
+  both plugins (`ConwayBuilder::build`) — the same check an in-process
+  `Plugin`'s `PluginManifest::requires` already goes through, not a
+  subprocess-only variant of it.
+- `optional` — plugin ids whose absence degrades only a presentation or
+  convenience of this plugin. Default `[]`. A missing optional dependency
+  never fails the build; it's loaded anyway with a `ConfigWarning` and a
+  `tracing::warn!` naming both ids.
 
 ### `tool/1` — answer one call
 

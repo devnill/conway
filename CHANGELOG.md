@@ -83,6 +83,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installs two instruction-declaring plugins with a `requires` edge that
   would reorder them under a naive topological-injection scheme, and
   asserts the assembled context still orders fragments by install order.
+- **A subprocess plugin can now declare `requires`/`optional` too, closing
+  the privilege asymmetry the same-morning item above left open for the
+  out-of-process tier** — board item `01M0XCD3P8S3VR0T1H0KNG5TMD`. Until
+  now `PluginManifest::requires`/`optional` had nowhere to come from on the
+  wire: `WireManifest` (`crates/conway-plugin-subprocess/src/wire.rs`)
+  carried `required_host_caps` but not plugin-to-plugin dependencies, so an
+  in-process plugin could declare it depended on another plugin and an
+  out-of-process one could not — exactly the asymmetry
+  `docs/vision/DESIGN-plugin-dependencies.md` §2 and `ports/plugin.rs`'s
+  own "there is exactly one extension mechanism ... nothing about them is
+  privileged" argue against. `WireManifest` gains `requires`/`optional`
+  (`Vec<String>`, both `#[serde(default)]` so an older plugin's
+  `tool.spec/1` answer that omits them loads unchanged — a `minor`-
+  compatible addition per `docs/plugins/compatibility.md`'s versioning
+  table), carried verbatim by `SubprocessPlugin::discover` into the SAME
+  `PluginManifest::requires`/`optional` fields an in-process `Plugin`
+  populates, checked by the SAME `ConwayBuilder::build` dependency-
+  resolution code, over the resolved set — not a second resolution path.
+  Declaring a dependency is this item; a subprocess plugin *providing* a
+  capability another plugin calls (Edge B) is a separate, larger item,
+  still open.
 - **A `pre_tool_use` hook registration can now declare `on_failure:
   "deny" | "prompt"` (default `"deny"`), so a guard's own OUTAGE no longer
   has to look identical to its VERDICT** — board item
