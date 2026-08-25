@@ -1666,6 +1666,14 @@ async fn a_reachable_plugin_instruction_reaches_a_real_agents_context() {
 async fn a_requires_edge_does_not_reorder_instruction_fragment_precedence() {
     let mut cfg = base_config();
     cfg.plugins.install = vec!["test.dependent".to_string(), "test.base".to_string()];
+    // `install_selected` resolves `install` UNIONED with `default_backends`
+    // (`PluginsConfig::default_backends`'s own doc -- default
+    // `["anthropic", "openai-compat"]`), and this test supplies EMPTY
+    // backend-factory bundles, so leaving the default in place makes
+    // resolution fail on `anthropic` before the ordering property under
+    // test is ever reached. The backend arrives via `with_backend` below
+    // instead, which needs no factory.
+    cfg.plugins.default_backends = Vec::new();
     let backend = fake_backend("fake");
     let store = Arc::new(FakeStore::new());
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));

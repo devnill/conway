@@ -41,6 +41,13 @@ fn to_hook_entry(registration: HookRegistration) -> HookEntry {
         command: registration.command,
         timeout_ms: registration.timeout_ms,
         enabled: registration.enabled,
+        // `HookEntry::on_failure` landed in the same wave as this test
+        // (board item `01M0X1AH44SNMK5TZ507K30QNP`) and neither writer could
+        // see the other. A TRANSLATED hook takes the default, `Deny`: this
+        // layer must not silently choose a foreign plugin's failure posture
+        // on the operator's behalf, and `Deny` is the posture every
+        // config-declared `pre_tool_use` rule already has.
+        on_failure: Default::default(),
     }
 }
 
