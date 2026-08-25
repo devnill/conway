@@ -792,6 +792,28 @@ pub struct PluginsConfig {
     /// disclosed rather than smuggled in as an "inert wire shape" claim.
     #[serde(default)]
     pub mcp: Vec<McpPluginEntry>,
+    /// **A Claude Code plugin directory an operator already has on disk**
+    /// (board item `01M0VR89FB1F3Q4FQ8852K2A5E`) -- read-at-runtime, never
+    /// downloaded and never written anywhere: `conway_plugin_claude::discover`
+    /// re-parses `dir` fresh every time conway starts, translating its
+    /// `.mcp.json` server declarations into real
+    /// `conway_plugin_mcp::McpPluginSpec` values (the only kind wired to
+    /// actually run -- the compatibility layer's own crate doc has the
+    /// full argument for why hooks/skills/agents/commands are named but
+    /// not wired), resolved by `crates/conway-cli/src/
+    /// claude_compat_plugins.rs`, a choke point sitting alongside
+    /// `subprocess`/`mcp` above.
+    ///
+    /// **Empty by default**, the identical "nothing in this tier runs
+    /// unasked" rule every other `[plugins]` list states.
+    ///
+    /// **Trust, stated here because this is the field that grants the
+    /// capability.** Everything inside `dir` runs, or is read, with the
+    /// operator's own privileges and no sandboxing -- the SAME footing
+    /// `[plugins].subprocess[]`/`[plugins].mcp[]` already have. Naming a
+    /// directory here is exactly as trusted as naming a command directly.
+    #[serde(default)]
+    pub claude_compat: Vec<ClaudeCompatPluginEntry>,
 }
 
 impl Default for PluginsConfig {
@@ -801,6 +823,50 @@ impl Default for PluginsConfig {
             default_backends: vec!["anthropic".to_string(), "openai-compat".to_string()],
             subprocess: Vec::new(),
             mcp: Vec::new(),
+            claude_compat: Vec::new(),
+        }
+    }
+}
+
+/// One `[plugins].claude_compat[]` entry: a Claude Code plugin directory the
+/// operator already has on disk -- see [`PluginsConfig::claude_compat`]'s
+/// own doc for the full trust/reachability disclosure and read-at-runtime
+/// argument.
+///
+/// **Deliberately mirrors [`McpPluginEntry`]'s own shape** (`id`, plus one
+/// path-shaped locator instead of a `command` argv, plus `timeout_ms`)
+/// rather than inventing a fifth config vocabulary.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ClaudeCompatPluginEntry {
+    /// This entry's stable, operator-chosen identity -- used only in error
+    /// messages a reading binary/embedder produces (which configured entry
+    /// failed to discover/translate). **Not** validated against the
+    /// directory's own `.claude-plugin/plugin.json` `name` (which the
+    /// reading binary derives independently) -- the two are allowed to
+    /// differ, the identical relationship [`McpPluginEntry::id`]'s own doc
+    /// states for its own manifest-derived counterpart.
+    pub id: String,
+    /// The Claude Code plugin directory to read -- an absolute or
+    /// relative (resolved against the reading binary's own cwd) path to a
+    /// directory already on the operator's machine. Never a URL: this
+    /// tier never downloads anything (acceptance 7).
+    pub dir: PathBuf,
+    /// Milliseconds any single MCP round-trip discovered from this
+    /// directory's own `.mcp.json` is allowed to run before the reading
+    /// binary kills it -- the identical per-call deadline
+    /// [`McpPluginEntry::timeout_ms`] applies to an operator-authored MCP
+    /// entry, reused here rather than inventing a second default.
+    #[serde(default = "default_hook_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for ClaudeCompatPluginEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            dir: PathBuf::new(),
+            timeout_ms: default_hook_timeout_ms(),
         }
     }
 }

@@ -358,6 +358,60 @@ impl App {
                 command: entry.command.clone(),
             })
             .collect();
+        // Board item `01M0VR89FB1F3Q4FQ8852K2A5E`: the fourth `/plugin`
+        // source. Unlike `subprocess_plugins`/`mcp_plugins` above (a
+        // straight field copy out of already-loaded config), this one
+        // re-runs `conway_plugin_claude::discover` against each
+        // configured directory -- there is no live report to copy,
+        // because `claude_compat_plugins::install` (earlier in this same
+        // startup path) attaches translated MCP plugins to `conway`
+        // WITHOUT keeping their own `ClaudeCompatReport` around
+        // afterward. The re-run is cheap (local JSON/directory reads
+        // only, no MCP handshake -- `discover` itself never spawns
+        // anything) and, since `install` already succeeded against this
+        // exact directory moments before, is not expected to fail here;
+        // a failure at this point (the directory vanishing mid-startup)
+        // degrades that one entry out of the listing with a `tracing::
+        // warn!` rather than panicking the TUI over a display-only
+        // re-read (P-10: never panic on untrusted/racy filesystem state).
+        state.claude_compat_plugins = conway
+            .config()
+            .plugins
+            .claude_compat
+            .iter()
+            .filter_map(|entry| match conway_plugin_claude::discover(&entry.dir) {
+                Ok(report) => Some(crate::tui::state::ClaudeCompatPluginEntry {
+                    id: entry.id.clone(),
+                    source_dir: entry.dir.clone(),
+                    mcp_server_count: report.mcp_servers.len(),
+                    mapped_hook_count: report.mapped_hook_count(),
+                    unmapped_hook_names: report
+                        .hooks
+                        .iter()
+                        .filter(|h| {
+                            matches!(h.outcome, conway_plugin_claude::HookMapOutcome::Unmapped { .. })
+                        })
+                        .map(|h| h.claude_event.clone())
+                        .collect(),
+                    unsupported_names: report
+                        .unsupported
+                        .iter()
+                        .map(|u| u.name.clone())
+                        .collect(),
+                }),
+                Err(err) => {
+                    tracing::warn!(
+                        entry_id = %entry.id,
+                        dir = %entry.dir.display(),
+                        %err,
+                        "re-reading a [plugins].claude_compat directory for the /plugin listing failed; \
+                         omitting its row (the plugin itself, attached earlier in this same startup \
+                         path, is unaffected)"
+                    );
+                    None
+                }
+            })
+            .collect();
         let (modal_ask_tx, modal_ask_rx) = mpsc::unbounded_channel();
         let (plugin_cmd_tx, plugin_cmd_rx) = mpsc::unbounded_channel();
         Ok(Self {

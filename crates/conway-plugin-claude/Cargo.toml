@@ -1,0 +1,41 @@
+[package]
+name = "conway-plugin-claude"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Reads a Claude Code plugin directory already on disk (board item 01M0VR89FB1F3Q4FQ8852K2A5E): translates its MCP server declarations into conway_plugin_mcp::McpPluginSpec values, maps its hook event names onto conway's own vocabulary where one exists, and reports by name everything it cannot use -- no downloading, no writing to the operator's own config"
+
+# Read-at-runtime, not translate-and-write (this crate's own module doc has
+# the full argument): a Claude Code plugin directory is parsed FRESH every
+# time conway starts, never converted into a durable settings.json entry.
+# That keeps the artifact -- the directory the operator already has --
+# intact, reversible, and traceable to its own origin, and sidesteps needing
+# a real array-entry config writer (`crates/conway/src/config/writer.rs`
+# deliberately has none: it patches one id via a hand-rolled text edit,
+# never parse-and-reserialize).
+
+[dependencies]
+# The ONLY workspace crate this reads a translated MCP declaration INTO --
+# `McpPluginSpec` is the exact shape `conway-cli`'s own `mcp_plugins.rs`
+# feeds `McpPlugin::discover`, so a translated Claude `.mcp.json` server
+# becomes a REAL, working `conway::plugin::Plugin` through the identical
+# path an operator-authored `[plugins].mcp[]` entry already uses -- no
+# second MCP client implementation. This crate does NOT depend on `conway`
+# directly: it never constructs a `Plugin`/`Tool` itself, only the spec type
+# a caller hands to one.
+conway-plugin-mcp = { path = "../conway-plugin-mcp" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The public facade, for this crate's own end-to-end test (proving a
+# translated MCP declaration becomes a real, invokable `Tool` -- acceptance
+# 2's "demonstrated end to end" requirement) -- test-only, never named in
+# `src/`.
+conway = { path = "../conway" }
+conway-testkit = { path = "../conway-testkit" }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

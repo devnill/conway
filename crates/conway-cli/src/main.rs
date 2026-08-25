@@ -14,7 +14,8 @@ use conway::{Conway, ConwayBuilder, PermissionGate};
 use conway_cli::cli::{Cli, Command};
 use conway_cli::exit::ExitCode;
 use conway_cli::{
-    commands, diag, first_party_plugins, mcp_plugins, oneshot, subprocess_plugins, tui,
+    claude_compat_plugins, commands, diag, first_party_plugins, mcp_plugins, oneshot,
+    subprocess_plugins, tui,
 };
 
 #[tokio::main]
@@ -258,6 +259,14 @@ async fn build_conway(
     // protocol (JSON-RPC 2.0, MCP). Awaited for the identical reason
     // `subprocess_plugins::install` is -- the handshake spawns a real process.
     let builder = mcp_plugins::install(builder).await?;
+    // The Claude Code plugin directory compatibility tier (board item
+    // 01M0VR89FB1F3Q4FQ8852K2A5E): a FOURTH, sibling choke point -- see
+    // `claude_compat_plugins`'s own module doc for why this is distinct
+    // from every tier above (a directory the operator already has on
+    // disk, read-at-runtime, never downloaded). Awaited for the identical
+    // reason `mcp_plugins::install` is -- discovering a translated MCP
+    // server spawns a real process.
+    let builder = claude_compat_plugins::install(builder).await?;
     let conway = builder.build()?;
     Ok((conway, memory_store, agent_names))
 }

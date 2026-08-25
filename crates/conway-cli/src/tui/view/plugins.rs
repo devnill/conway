@@ -101,7 +101,9 @@ use ratatui::Frame;
 use super::menu::{self, MenuNode, MenuState};
 use super::modal;
 use super::theme::Theme;
-use crate::tui::state::{AppState, ConfiguredPluginEntry, PluginBrowserEntry};
+use crate::tui::state::{
+    AppState, ClaudeCompatPluginEntry, ConfiguredPluginEntry, PluginBrowserEntry,
+};
 
 /// An open set of plugin sources -- see this module's own doc, "The row
 /// model", for why this is a label wrapper rather than a closed enum.
@@ -118,6 +120,13 @@ impl PluginOrigin {
     /// `[plugins].mcp[]` -- an operator-named command speaking MCP
     /// (JSON-RPC 2.0) as a client.
     pub(crate) const MCP: PluginOrigin = PluginOrigin("mcp");
+    /// `[plugins].claude_compat[]` -- a Claude Code plugin directory read
+    /// off disk and translated (board item `01M0VR89FB1F3Q4FQ8852K2A5E`).
+    /// The fourth source this module's own doc anticipated: one new
+    /// `rows_from_*` fn ([`rows_from_claude_compat`]) plus this one new
+    /// const, and one new call in [`all_plugin_rows`] -- nothing else in
+    /// this module changed to add it.
+    pub(crate) const CLAUDE_COMPAT: PluginOrigin = PluginOrigin("claude-compat");
 
     pub(crate) fn label(self) -> &'static str {
         self.0
@@ -170,6 +179,14 @@ const READ_ONLY_SUBPROCESS_REASON: &str =
      no per-entry control here; edit settings.json to remove it";
 const READ_ONLY_MCP_REASON: &str = "installed unconditionally from [plugins].mcp in settings.json \
      -- no per-entry control here; edit settings.json to remove it";
+/// Board item `01M0VR89FB1F3Q4FQ8852K2A5E`: a claude-compat directory is
+/// re-read fresh every startup (read-at-runtime, never written to config)
+/// -- there is nothing here TO toggle, the same "no candidate set" shape
+/// `READ_ONLY_SUBPROCESS_REASON`/`READ_ONLY_MCP_REASON` already state, for
+/// the same reason.
+const READ_ONLY_CLAUDE_COMPAT_REASON: &str =
+    "read-at-runtime from a directory named in [plugins].claude_compat in settings.json -- \
+     no per-entry control here; edit settings.json to remove it";
 
 /// Subprocess wire vocabulary, cited from `conway_plugin_subprocess::
 /// wire`'s own `initialize` point list (`crates/conway-plugin-subprocess/
@@ -233,6 +250,132 @@ fn rows_from_mcp(entries: &[ConfiguredPluginEntry]) -> Vec<PluginRow> {
         .collect()
 }
 
+/// Board item `01M0VR89FB1F3Q4FQ8852K2A5E`: the fourth source, exactly as
+/// this module's own doc anticipated -- one `rows_from_*` fn, no match arm,
+/// no renderer edit.
+///
+/// **Acceptance 5's naming lives ON THE ROW itself, not in
+/// [`PluginRow::description`].** A claude-compat row is
+/// [`PluginToggle::ReadOnly`], and `plugin_row_node`'s own doc already
+/// establishes that a `ReadOnly` row is rendered [`menu::MenuNode::
+/// Static`], which [`MenuState::selected_index`][sel] can never land the
+/// cursor on -- so its detail panel is UNREACHABLE today (the exact
+/// "forward declaration" `draw_plugin_detail`'s own `ReadOnly` arm already
+/// documents for `reason`). Putting the full unsupported-items list only
+/// there would be exactly the "claims to be reached but isn't" failure
+/// GP-14 forbids, one layer down. So [`Self::contributes`] -- via
+/// [`plugin_row_node`], which prints it verbatim on the row -- names every
+/// unmapped hook event and every unsupported item directly, bounded by
+/// [`MAX_NAMED_ITEMS`] with an honest "+N more" tail rather than silently
+/// truncating past a terminal's own width with no indication anything was
+/// cut. `description` is still populated (the same richer breakdown a
+/// compiled-in row's detail panel shows) so this row is ready the moment a
+/// future item makes `ReadOnly` rows selectable -- not because it is
+/// reachable now.
+///
+/// [sel]: super::menu::MenuState::selected_index
+fn rows_from_claude_compat(entries: &[ClaudeCompatPluginEntry]) -> Vec<PluginRow> {
+    entries
+        .iter()
+        .map(|entry| {
+            let total_hooks = entry.mapped_hook_count + entry.unmapped_hook_names.len();
+            let mut contributes = format!(
+                "{} mcp server(s) translated (tools only)",
+                entry.mcp_server_count
+            );
+            if total_hooks > 0 {
+                contributes.push_str(&format!(
+                    "; hooks {}/{} mapped by name (not wired)",
+                    entry.mapped_hook_count, total_hooks
+                ));
+            }
+            if !entry.unmapped_hook_names.is_empty() {
+                contributes.push_str(&format!(
+                    "; unmapped hooks: {}",
+                    bounded_name_list(&entry.unmapped_hook_names)
+                ));
+            }
+            if !entry.unsupported_names.is_empty() {
+                contributes.push_str(&format!(
+                    "; not imported: {}",
+                    bounded_name_list(&entry.unsupported_names)
+                ));
+            }
+            let you_get = if entry.mcp_server_count == 0 {
+                "no .mcp.json server declarations found -- nothing translated".to_string()
+            } else {
+                format!(
+                    "{} mcp server(s) translated into real, running plugins (tools only)",
+                    entry.mcp_server_count
+                )
+            };
+            let you_lose =
+                if entry.unmapped_hook_names.is_empty() && entry.unsupported_names.is_empty() {
+                    "nothing else found in this directory".to_string()
+                } else {
+                    let mut parts = Vec::new();
+                    if !entry.unmapped_hook_names.is_empty() {
+                        parts.push(format!(
+                            "hook event(s) with no conway counterpart: {}",
+                            entry.unmapped_hook_names.join(", ")
+                        ));
+                    }
+                    if !entry.unsupported_names.is_empty() {
+                        parts.push(format!(
+                            "not imported: {}",
+                            entry.unsupported_names.join(", ")
+                        ));
+                    }
+                    parts.join("; ")
+                };
+            let costs = format!(
+                "everything under {} runs/reads with your own privileges, unsandboxed \
+                 (same trust footing as [plugins].mcp/[plugins].subprocess)",
+                entry.source_dir.display()
+            );
+            PluginRow {
+                id: entry.id.clone(),
+                origin: PluginOrigin::CLAUDE_COMPAT,
+                contributes,
+                active: true,
+                toggle: PluginToggle::ReadOnly {
+                    reason: READ_ONLY_CLAUDE_COMPAT_REASON,
+                },
+                description: Some(conway::plugin::PluginDescription {
+                    summary: format!(
+                        "Claude Code plugin directory: {}",
+                        entry.source_dir.display()
+                    ),
+                    you_get,
+                    you_lose,
+                    costs,
+                }),
+            }
+        })
+        .collect()
+}
+
+/// The most names [`rows_from_claude_compat`] prints verbatim on a row
+/// before falling back to a "+N more" tail -- see that function's own doc
+/// for why the full list must be reachable on the row rather than deferred
+/// to an unreachable detail panel. 4 is small enough that an ordinary
+/// plugin directory's own unsupported list fits without a tail at all,
+/// while still bounding a pathological directory (hundreds of `commands/
+/// *.md` files) to one line.
+const MAX_NAMED_ITEMS: usize = 4;
+
+fn bounded_name_list(names: &[String]) -> String {
+    if names.len() <= MAX_NAMED_ITEMS {
+        names.join(", ")
+    } else {
+        format!(
+            "{}, +{} more",
+            names[..MAX_NAMED_ITEMS].join(", "),
+            names.len() - MAX_NAMED_ITEMS
+        )
+    }
+}
+
 /// Every plugin this binary can run today, from every source -- **the one
 /// place a future source registers itself** (see this module's own doc,
 /// "The row model", for exactly what the Claude-compat item does here: one
@@ -242,6 +385,7 @@ pub(crate) fn all_plugin_rows(state: &AppState) -> Vec<PluginRow> {
     rows.extend(rows_from_plugin_browser(&state.plugin_browser));
     rows.extend(rows_from_subprocess(&state.subprocess_plugins));
     rows.extend(rows_from_mcp(&state.mcp_plugins));
+    rows.extend(rows_from_claude_compat(&state.claude_compat_plugins));
     rows
 }
 
@@ -657,6 +801,116 @@ mod tests {
             }
         );
         assert!(row.label.starts_with("[x] "), "{}", row.label);
+    }
+
+    fn claude_compat(
+        id: &str,
+        mcp_server_count: usize,
+        unmapped_hook_names: Vec<&str>,
+        unsupported_names: Vec<&str>,
+    ) -> crate::tui::state::ClaudeCompatPluginEntry {
+        crate::tui::state::ClaudeCompatPluginEntry {
+            id: id.to_string(),
+            source_dir: std::path::PathBuf::from(format!("/tmp/{id}")),
+            mcp_server_count,
+            mapped_hook_count: 1,
+            unmapped_hook_names: unmapped_hook_names
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            unsupported_names: unsupported_names.into_iter().map(str::to_string).collect(),
+        }
+    }
+
+    /// Board item `01M0VR89FB1F3Q4FQ8852K2A5E`, acceptance 3: a
+    /// claude-compat row appears in the SAME listing as a native one, and
+    /// names its own origin -- the real (not hypothetical) fourth-origin
+    /// case the test immediately below this one already proved the
+    /// downstream mechanism handles.
+    #[test]
+    fn a_claude_compat_entry_appears_alongside_a_compiled_in_one_naming_both_origins() {
+        let mut state = AppState::new(AgentId::new());
+        state.plugin_browser = vec![compiled_in("conway.memory", true, "notes")];
+        state.claude_compat_plugins = vec![claude_compat("acme-tools", 1, vec![], vec![])];
+
+        let text = plain_rows(&state);
+        assert!(text.contains("[compiled-in] conway.memory"), "{text}");
+        assert!(text.contains("[claude-compat] acme-tools"), "{text}");
+    }
+
+    /// Acceptance 5, at the `/plugin` layer: a claude-compat row with
+    /// unmapped hooks and unsupported items names them ON THE ROW ITSELF --
+    /// `rows_from_claude_compat`'s own doc explains why it cannot rely on
+    /// the detail panel (unreachable for a `ReadOnly`/`Static` row). Both
+    /// the `PluginRow` value (unbounded -- what `all_plugin_rows` actually
+    /// carries) and the rendered label (what a real terminal shows) are
+    /// checked, the same "String assertion is not enough, pin the
+    /// observable outcome" discipline `read_only_rows_are_static_and_name_
+    /// their_reason_on_the_row` above already established for this row
+    /// kind.
+    #[test]
+    fn a_claude_compat_row_names_what_it_could_not_use() {
+        let mut state = AppState::new(AgentId::new());
+        state.claude_compat_plugins = vec![claude_compat(
+            "acme-tools",
+            1,
+            vec!["Stop"],
+            vec!["commands/review.md", "skills/triage"],
+        )];
+
+        let raw_rows = all_plugin_rows(&state);
+        let raw = raw_rows
+            .iter()
+            .find(|r| r.id == "acme-tools")
+            .expect("the claude-compat row must exist");
+        assert!(raw.contributes.contains("Stop"), "{}", raw.contributes);
+        assert!(
+            raw.contributes.contains("commands/review.md"),
+            "{}",
+            raw.contributes
+        );
+        assert!(
+            raw.contributes.contains("skills/triage"),
+            "{}",
+            raw.contributes
+        );
+
+        let rows = build_tree(&state).rows();
+        let row = rows
+            .iter()
+            .find(|r| r.label.contains("acme-tools"))
+            .expect("the claude-compat row must render");
+        assert_eq!(
+            row.kind,
+            menu::MenuRowKind::Static,
+            "read-only, like subprocess/mcp"
+        );
+        assert!(row.label.contains("read-only"), "{}", row.label);
+        assert!(row.label.contains("Stop"), "{}", row.label);
+        assert!(row.label.contains("commands/review.md"), "{}", row.label);
+    }
+
+    /// A pathological directory (more unsupported items than
+    /// [`MAX_NAMED_ITEMS`]) still names the first few AND says how many
+    /// more there are -- never a silent, unbounded row nor a bare count
+    /// with no names at all.
+    #[test]
+    fn a_long_unsupported_list_is_bounded_with_an_honest_tail() {
+        let mut state = AppState::new(AgentId::new());
+        state.claude_compat_plugins = vec![claude_compat(
+            "acme-tools",
+            0,
+            vec![],
+            vec!["a.md", "b.md", "c.md", "d.md", "e.md", "f.md"],
+        )];
+        let rows = all_plugin_rows(&state);
+        let row = rows.iter().find(|r| r.id == "acme-tools").unwrap();
+        assert!(row.contributes.contains("a.md"), "{}", row.contributes);
+        assert!(
+            row.contributes.contains("+2 more"),
+            "6 items, MAX_NAMED_ITEMS=4, must say 2 more: {}",
+            row.contributes
+        );
     }
 
     /// Acceptance 4's own load-bearing property, checked directly rather

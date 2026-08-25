@@ -10,9 +10,12 @@
 //! install` resolves an operator-named id against a CLOSED set of plugin
 //! crates this binary links; `subprocess_plugins::install` spawns a command
 //! that speaks conway's OWN wire protocol; this module spawns a command that
-//! speaks a DIFFERENT wire protocol (JSON-RPC 2.0, MCP). The three mechanisms
-//! compose independently: `main.rs::build_conway` calls all three, in order,
-//! against the same `ConwayBuilder`. The MCP client is the SAME shape as the
+//! speaks a DIFFERENT wire protocol (JSON-RPC 2.0, MCP). These mechanisms
+//! compose independently: `main.rs::build_conway` calls each in order,
+//! against the same `ConwayBuilder` -- joined by a FOURTH, board item
+//! `01M0VR89FB1F3Q4FQ8852K2A5E`'s `claude_compat_plugins::install`, which
+//! reuses this module's own `McpPlugin::discover` path for a translated
+//! declaration rather than an operator-authored one. The MCP client is the SAME shape as the
 //! subprocess tier (operator names a command in config; the CLI discovers it
 //! async before `build()`; attaches via `with_plugin`) -- only the wire
 //! protocol and the plugin crate differ.

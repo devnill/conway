@@ -27,6 +27,7 @@ a summary pointing somewhere else.
 | [`skills.md`](skills.md) — `conway.skills` | What does progressive skill disclosure narrow, and what does `read_skill` cost? | You have full-body skills in context and want to try narrowing them to a one-line index. |
 | [`names.md`](names.md) — `conway.names` | What does naming an agent actually change, and how does a name interact with the id and short-id it sits alongside? | You are steering more than a couple of agents by id and want a handle you remember instead. |
 | [`mcp.md`](mcp.md) — the MCP client | How do I bring an existing MCP server's tools into conway, and what is conway's own MCP client (not server) posture? | You have an MCP server already and want its tools available to the model, or you're evaluating what naming one in `[plugins].mcp` actually trusts. |
+| [`claude-compat.md`](claude-compat.md) — Claude Code plugin compatibility | I have a Claude Code plugin directory already on disk — what does conway actually do with it, and what does it name but not use? | You want to point conway at an existing Claude Code plugin, or you're deciding whether its MCP-only, read-at-runtime scope is enough for what you have. |
 | [`scripts.md`](scripts.md) — the script convention | How would a hook fire a script in any language, and what does that cost per invocation? | You want a hook in something other than Rust. **Describes a designed convention; no script-dispatching plugin exists yet.** |
 | [`inference-hooks.md`](inference-hooks.md) — hooks judged by a model | When should a hook call an LLM rather than express a static rule, and do I fork or spawn? | You're weighing an inference-evaluated hook. Read its "when NOT to use one" section first. |
 | [`cookbook.md`](cookbook.md) — worked examples | What does a real hook look like end to end — spilling bulky output to a file, compaction, a permission guardrail, progressive skill disclosure, a status-line observer? | You learn faster from a worked example than from a contract. Five examples, each labeled implementable-today, partially-implementable, or blocked, with two treated explicitly as the architecture's own acceptance tests. |
@@ -167,6 +168,20 @@ through `[plugins].mcp[]` (naming a command to spawn), a config surface
 separate from `[plugins].install`, and `first_party_plugins::bundle()` never
 resolves it — `crates/conway-cli/src/mcp_plugins.rs` is its own choke
 point.
+
+## Claude Code plugin compatibility — first-party, but not a `[plugins].install` id either
+
+[`claude-compat.md`](claude-compat.md) — reads a Claude Code plugin
+directory the operator already has on disk (no downloading) and translates
+what it can. **Only its MCP server declarations are wired to actually
+run** — everything else it finds (`commands/*.md`, `skills/`, `agents/*.md`,
+most hook events) is named in an operator-visible report, never silently
+imported. Deliberately excluded from the "ten shipped first-party plugins"
+count above and from the MCP section immediately above this one: it
+attaches through its own `[plugins].claude_compat[]` config surface,
+resolved by `crates/conway-cli/src/claude_compat_plugins.rs`, a fourth
+choke point neither `first_party_plugins::bundle()` nor
+`crates/conway-cli/src/mcp_plugins.rs` ever touches.
 
 ## Everything not in this set
 
