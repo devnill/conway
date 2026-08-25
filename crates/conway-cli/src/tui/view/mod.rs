@@ -476,11 +476,76 @@ fn draw_permission_overlay(
     frame.render_widget(footer, frame_areas.footer_area);
 }
 
-/// Rows the /ask modal's footer ALWAYS reserves (B5): the fate-key hint,
-/// plus one line for the in-modal error shown after a failed fate (blank
-/// when there is none, so the hint never jumps vertically when an error
-/// appears).
+/// Rows the /ask modal's footer reserves when there is NO in-modal error
+/// (B5): the fate-key hint, plus one blank line reserved for symmetry so
+/// the hint never jumps vertically the instant an error appears. Once
+/// `modal_state.error` is `Some`, `draw_ask_modal` instead grows the
+/// footer past this fixed height -- see [`ASK_MODAL_MAX_ERROR_ROWS`]'s own
+/// doc (board item `01M0TYRPF1ASGQ77AK04RB7H84`) for why a fixed one-row
+/// error slot stopped being enough.
 const ASK_MODAL_FOOTER_ROWS: u16 = 2;
+
+/// The most ADDITIONAL rows (beyond the hint's own row) the footer may grow
+/// to for an in-modal error (board item `01M0TYRPF1ASGQ77AK04RB7H84`).
+///
+/// Before this item the error line was a FIXED single row inside a
+/// two-row-total footer (`ASK_MODAL_FOOTER_ROWS`): `RuntimeError::
+/// PullInIncomplete`'s `Display` -- which names exactly how many of how
+/// many records merged and which child session still holds the ask -- runs
+/// to roughly 230-300 characters, so at any realistic terminal width the
+/// operator saw only its first fitted line, right at the moment they most
+/// needed the rest. This is not particular to that one variant: EVERY
+/// error `apply_ask_fate` can hand `AppState::fail_ask_modal` shares the
+/// same one-row slot, so the class this item fixes is "any in-modal error
+/// whose `Display` does not fit one line", not one call site.
+///
+/// `5` rows comfortably fits `PullInIncomplete`'s own `Display` at an
+/// ordinary 80-column terminal without truncation at all (measured: ~230-300
+/// chars / a ~78-column body wraps to 3-4 rows) while still bounding growth
+/// against a pathologically long nested `cause` chain, which would otherwise
+/// be able to squeeze the modal's own body content down to nothing. Past
+/// this cap, [`wrap_ask_modal_error`] hard-truncates the LAST row with an
+/// explicit "…see transcript" pointer rather than silently dropping the
+/// remainder -- and the full, untruncated text is unconditionally also
+/// pushed to the transcript by `commands::apply_ask_fate` (`Entry::Error`),
+/// durable and scrollable, so nothing this footer cannot show is ever lost
+/// outright.
+const ASK_MODAL_MAX_ERROR_ROWS: u16 = 5;
+
+/// Hard-wraps `text` to `width`-character rows, capped at `max_rows`: unlike
+/// `Paragraph`'s own word-boundary `Wrap`, this never needs a second pass to
+/// learn how many rows a body will occupy before that body is rendered --
+/// [`draw_ask_modal`] needs the row COUNT up front to size the footer itself
+/// (`modal::draw_modal_frame`'s `footer_rows` parameter), not just the
+/// wrapped text.
+///
+/// When `text` needs more than `max_rows` rows, the result is truncated to
+/// exactly `max_rows` and the LAST row has its own tail replaced with an
+/// explicit `…see transcript` pointer (never silently dropped -- acceptance
+/// criterion 2 of board item `01M0TYRPF1ASGQ77AK04RB7H84`: "no error
+/// reaching the /ask modal footer is silently truncated -- or, if
+/// truncation remains possible, the footer says so").
+fn wrap_ask_modal_error(text: &str, width: u16, max_rows: u16) -> Vec<String> {
+    let width = (width as usize).max(1);
+    let max_rows = (max_rows as usize).max(1);
+    let chars: Vec<char> = text.chars().collect();
+    let mut rows: Vec<String> = if chars.is_empty() {
+        vec![String::new()]
+    } else {
+        chars.chunks(width).map(|c| c.iter().collect()).collect()
+    };
+    if rows.len() > max_rows {
+        rows.truncate(max_rows);
+        const POINTER: &str = " …see transcript";
+        if let Some(last) = rows.last_mut() {
+            let keep = width.saturating_sub(POINTER.chars().count());
+            let mut truncated: String = last.chars().take(keep).collect();
+            truncated.push_str(POINTER);
+            *last = truncated;
+        }
+    }
+    rows
+}
 
 /// The `/ask` single-turn modal (B5): bottom-anchored, content-sized,
 /// capped, via the shared [`modal`] primitive (V1) -- following
@@ -501,6 +566,12 @@ const ASK_MODAL_FOOTER_ROWS: u16 = 2;
 /// same small-viewport reason the permission overlay's doc explains: a
 /// `Paragraph` clips top-down, so the line the user needs to act on is the
 /// last thing clipped.
+///
+/// **The footer's error region is now variable-height** (board item
+/// `01M0TYRPF1ASGQ77AK04RB7H84`, `ASK_MODAL_MAX_ERROR_ROWS`'s own doc): no
+/// cost while there is no error (`ASK_MODAL_FOOTER_ROWS` still governs that
+/// case, unchanged), but it grows -- squeezing the body, never the hint --
+/// to show a long one, up to a cap, with an explicit pointer past it.
 fn draw_ask_modal(
     frame: &mut Frame,
     transcript_area: Rect,
@@ -526,11 +597,23 @@ fn draw_ask_modal(
         .line_count(modal::body_width(transcript_area))
         .min(u16::MAX as usize) as u16;
 
+    let error_rows = modal_state.error.as_ref().map(|err| {
+        wrap_ask_modal_error(
+            &format!("error: {err}"),
+            modal::body_width(transcript_area),
+            ASK_MODAL_MAX_ERROR_ROWS,
+        )
+    });
+    let footer_rows = match &error_rows {
+        Some(rows) => 1 + rows.len() as u16,
+        None => ASK_MODAL_FOOTER_ROWS,
+    };
+
     let frame_areas = modal::draw_modal_frame(
         frame,
         transcript_area,
         content_rows,
-        ASK_MODAL_FOOTER_ROWS,
+        footer_rows,
         modal::DEFAULT_CAP_DENOMINATOR,
         " ASK ",
         theme.border_warning,
@@ -545,11 +628,14 @@ fn draw_ask_modal(
     } else {
         "[p] pull in  [f] fork  [esc] discard"
     };
-    let error_line = match &modal_state.error {
-        Some(err) => Line::from(Span::styled(format!("error: {err}"), theme.error)),
-        None => Line::from(""),
-    };
-    let footer_lines = vec![Line::from(hint), error_line];
+    let mut footer_lines = vec![Line::from(hint)];
+    match &error_rows {
+        Some(rows) => footer_lines.extend(
+            rows.iter()
+                .map(|row| Line::from(Span::styled(row.clone(), theme.error))),
+        ),
+        None => footer_lines.push(Line::from("")),
+    }
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
     frame.render_widget(footer, frame_areas.footer_area);
 }
@@ -1188,6 +1274,81 @@ mod tests {
         );
         // The fate keys are still on screen -- the user still must choose.
         assert!(text.contains("[p] pull in"), "{text}");
+    }
+
+    /// The rendering-layer regression this item (`01M0TYRPF1ASGQ77AK04RB7H84`)
+    /// exists for: a `RuntimeError::PullInIncomplete`-shaped error (merge
+    /// counts and "still holds the ask" land well past the ~78-character
+    /// budget one fixed footer row gave `error: {err}` at an ordinary
+    /// 80-column terminal) must still reach the screen, not just its first
+    /// fitted line.
+    ///
+    /// **Against the OLD fixed `ASK_MODAL_FOOTER_ROWS = 2` reservation this
+    /// test's SECOND assertion (`"of 5 records were merged"`) fails**: at
+    /// width 80 the error line's budget is 78 characters, and that
+    /// substring starts at character 126 of `error: {long_error}` -- past
+    /// the single error row a 2-row-total footer (1 hint + 1 error) had
+    /// room for, so it was silently clipped along with the rest of the
+    /// message. Reverting this item's `draw_ask_modal`/`ASK_MODAL_MAX_ERROR_ROWS`
+    /// change (keeping `commands.rs`'s transcript push, if desired) is
+    /// enough to reproduce the failure.
+    #[test]
+    fn ask_modal_footer_grows_to_show_a_long_pull_in_incomplete_style_error() {
+        let child = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        let parent = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+        let cause_session = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+        let long_error = format!(
+            "pull_in of child session {child} into parent session {parent} \
+             did not complete: 2 of 5 records were merged (truncation note \
+             appended: true); the child was NOT purged and still holds the \
+             ask; cause: session not found: session {cause_session}"
+        );
+        let state = ask_modal_state("q", "a", Some(&long_error));
+
+        let rows = render(&state, 80, 24);
+        let text = rows.join("\n");
+
+        assert!(
+            text.contains(child),
+            "the child session that still holds the ask must be reachable \
+             in-modal: {text}"
+        );
+        assert!(
+            text.contains("of 5 records were merged"),
+            "the merge counts sit past a single 78-character error row and \
+             must not be silently clipped: {text}"
+        );
+        assert!(
+            text.contains("still holds the ask"),
+            "the recoverability statement sits even further past one row \
+             and must also survive: {text}"
+        );
+        // The fate keys remain reachable -- a grown error region must
+        // squeeze the body, never crowd out the decision still owed.
+        assert!(text.contains("[p] pull in"), "{text}");
+    }
+
+    #[test]
+    fn ask_modal_short_error_still_uses_the_original_two_row_footer() {
+        // A short error (fits in the pre-existing single row) must not
+        // grow the footer beyond `ASK_MODAL_FOOTER_ROWS` -- the no-cost
+        // common case this item's own doc promises is unchanged.
+        let state = ask_modal_state("q", "a", Some("pull_in refused"));
+
+        let rows = render(&state, 80, 24);
+
+        let error_rows = wrap_ask_modal_error(
+            "error: pull_in refused",
+            modal::body_width(Rect::new(0, 0, 80, 24)),
+            ASK_MODAL_MAX_ERROR_ROWS,
+        );
+        assert_eq!(
+            error_rows.len(),
+            1,
+            "a short error must not itself need more than one wrapped row"
+        );
+        let text = rows.join("\n");
+        assert!(text.contains("pull_in refused"), "{text}");
     }
 
     #[test]
