@@ -443,6 +443,44 @@ impl ConwayBuilder {
         &self.config
     }
 
+    /// Mutable access to the config this builder currently holds --
+    /// [`Self::config`]'s write counterpart, added for a caller that needs
+    /// to APPEND to a config-owned collection rather than replace it via a
+    /// whole-value setter (`with_cli_overrides`'s "whole value, not
+    /// additive" contract, and every other `with_*` method's single-field
+    /// replace).
+    ///
+    /// **Board item `01M0XBZNBPXEESX8VNTJDKNG0J`: the wiring gap this
+    /// method closes.** `[hooks].rules[]` has no dedicated builder-level
+    /// injection method the way `Plugin`/`Backend`/`Router` each do
+    /// (`with_plugin`/`with_backend`/`with_router`) -- `build()`'s hook
+    /// step (below) reads `config.hooks.rules` directly, with no
+    /// intervening builder field to push an extra rule onto. A caller that
+    /// discovers additional `[hooks].rules[]`-shaped entries AFTER loading
+    /// (`crates/conway-cli/src/claude_compat_plugins.rs`'s translated
+    /// Claude Code hook registrations is the one caller this method exists
+    /// for) has no other seam to make them real, dispatchable rules: not
+    /// `with_hook_runner` (that injects the DISPATCHER, not a rule), and
+    /// not `from_parts` (reconstructing a builder from a patched config
+    /// would drop every plugin/gate/router/etc. already attached on
+    /// `self`). `builder.config_mut().hooks.rules.extend(...)` is the
+    /// narrowest fix: it reaches exactly the one field that needed a write
+    /// path, on the SAME already-owned `self.config` every other builder
+    /// step reads, so nothing else about `build()`'s hook-step doc
+    /// (`config.hooks.rules.iter().filter(...)`, immediately below) has to
+    /// change to pick appended rules up.
+    ///
+    /// Reflects the loaded/`from_parts` config, exactly like [`Self::config`]
+    /// -- a mutation here is still subject to `build()`'s own step 1
+    /// (`config::merge::apply_cli`) re-validating the WHOLE resulting
+    /// config, appended rules included: a bad id, a duplicate, or an
+    /// invalid `match` on a toolless event fails `build()` the identical
+    /// way an operator-authored `[hooks].rules[]` entry with the same
+    /// defect would.
+    pub fn config_mut(&mut self) -> &mut ConwayConfig {
+        &mut self.config
+    }
+
     /// Injects a backend. Takes precedence over any `[backends.<id>]`
     /// entry's factory-built backend with the same `Backend::id()` -- see
     /// [`Self::with_backend_factory`]'s own doc for the full precedence

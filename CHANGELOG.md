@@ -208,6 +208,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the registrations into its own `[hooks].rules[]`; `conway-cli`'s own
   `[plugins].claude_compat[]` install path does not perform that append
   yet (still MCP-only), a disclosed, separate follow-up.
+- **`[plugins].claude_compat[]` now dispatches its translated hooks, not
+  only its MCP servers** — board item `01M0XBZNBPXEESX8VNTJDKNG0J`, closing
+  the gap the item immediately above disclosed and left open. Until this
+  item, `crates/conway-cli/src/claude_compat_plugins.rs` attached only the
+  MCP half of what a discovered Claude Code plugin directory declared: a
+  `hooks/hooks.json` rule translated cleanly
+  (`ClaudeCompatReport::hook_registrations()`) but nothing ever appended
+  it into the `HooksConfig` `ConwayBuilder::build` reads, so it was
+  reported, never dispatching — the built-but-unreachable defect
+  `DESIGN-plugin-dependencies.md` §1 names as this tree's recurring
+  disease, and the one gap standing between beepboop's own smoke test
+  (`01M0X3AMASEJGHZ6ZDMDFWCHSE`) and hearing a sound actually play.
+  `ConwayBuilder` gains `config_mut()` (`crates/conway/src/builder.rs`) —
+  the write counterpart `config()` never had, and the narrowest seam that
+  let `install` append into `[hooks].rules[]` without reconstructing the
+  builder (which would have dropped every plugin/gate/router already
+  attached). Every translated rule keeps `on_failure: Deny` — this layer
+  never sets it, `HookEntry::default`'s own fail-closed value survives
+  untouched, deliberately: a translation layer must not silently choose a
+  foreign plugin's own outage posture on the operator's behalf. `install`
+  also now reports, on stderr, which registered hooks CAN deny a real tool
+  call (`pre_tool_use`, unconditional `diag::warn`, naming each rule id)
+  versus which are observation-only (`diag::info`, verbose-only) — never
+  one undifferentiated "hooks registered" line, since a `pre_tool_use`
+  rule from a foreign plugin is a real permission consequence of naming a
+  directory in `settings.json`. The payload-shape caveat
+  `crates/conway-plugin-claude/src/hooks.rs` and `docs/plugins/
+  claude-compat.md` already stated is unchanged and unweakened: a
+  dispatched hook script still reads Claude Code's own `tool_name`/
+  `tool_input` shape on stdin, not conway's `HookInvocation`/`HookEvent`
+  payload — "dispatches" was never the same claim as "behaves identically
+  to real Claude Code," and wiring dispatch does not quietly upgrade it.
+  `docs/plugins/claude-compat.md`'s own "does not perform that append yet"
+  sentence (the item immediately above quotes it) is corrected to describe
+  today's behavior.
 
 - **conway can now install a plugin from a Claude Code marketplace** —
   board item `01M0VR96Y87FF2BVNTBSC6GEYR`, the network-reaching half of the
