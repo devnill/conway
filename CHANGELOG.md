@@ -155,6 +155,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[plugins].claude_compat[]` install path does not perform that append
   yet (still MCP-only), a disclosed, separate follow-up.
 
+- **A Claude Code plugin's `commands/*.md` files now translate into real,
+  invokable conway commands** — board item `01M0X1G29EZSFEWB1YAG40SE69`,
+  closing the deferral `01M0VR89FB1F3Q4FQ8852K2A5E` named and
+  `01M0VSMF71S6VXX81YRAAF5S8Q` (`CommandOutcome::SubmitPrompt`) made
+  possible. `crates/conway-plugin-claude`'s new `commands` module turns
+  most `commands/*.md` files into a real `conway_core::ports::Command`
+  (`ClaudeCommand`) whose `invoke` submits the file's own
+  frontmatter-stripped body via `CommandOutcome::SubmitPrompt`;
+  `ClaudeCompatReport::command_registrations()` hands back the
+  ready-to-install list. Proven end to end against `beepboop` 1.4.0's real
+  `commands/config.md` — a real `Conway`/`SessionHandle::prompt_command`,
+  no TUI in the loop (`tests/commands_dispatch.rs`), the identical
+  library-API path `conway_plugin_skeleton::FilePromptCommand`'s own
+  end-to-end test already proved out for an operator-authored prompt file.
+  Best effort, not parity, per the operator ruling this item was scoped
+  under: v1 performs no `$ARGUMENTS`/argument interpolation of any kind,
+  so a command body containing a raw `$ARGUMENTS` placeholder is refused
+  rather than submitted verbatim (named in `unsupported`, like anything
+  else this layer cannot use); every frontmatter key besides `description`
+  (which becomes the command's own one-line summary) is named as ignored
+  even on a command that otherwise translates — a new
+  `UnsupportedKind::CommandFrontmatterKey` — with `allowed-tools`
+  specifically getting a *permission*-shaped reason (an ignored Claude
+  Code tool restriction is a permission surprise, not merely a fidelity
+  gap). Namespacing is reused, not invented: a translated command's own
+  name is always bare, the same "an author never picks their own
+  namespace" rule `conway_core::ports::Plugin::commands` already
+  establishes, so shadowing a built-in stays impossible by the identical
+  structural guarantee (`validate_command_name`) every other plugin
+  command already relies on — nothing new to check here. This crate now
+  depends on `conway-core` in production code for the first time (only
+  `Command`/`CommandOutcome`/`CommandCtx`/`CommandSpec`; still never the
+  `conway` facade). `docs/plugins/claude-compat.md`'s `commands/*.md` "not
+  wired" paragraph is corrected to describe what is true now and what
+  still is not.
+
 - **conway can now install a plugin from a Claude Code marketplace** —
   board item `01M0VR96Y87FF2BVNTBSC6GEYR`, the network-reaching half of the
   plugin feature (trust was ruled settled beforehand: decision
