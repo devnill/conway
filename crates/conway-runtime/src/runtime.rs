@@ -1196,6 +1196,15 @@ impl Runtime {
         self.tree.snapshot()
     }
 
+    /// Board `01M0VWMMEG4CER8Y8VH77KZ0CV`: whether `agent` has a model
+    /// round-trip in flight RIGHT NOW -- `AgentTree::turn_in_flight`'s own
+    /// doc has the full rationale for why this is a narrower question than
+    /// `AgentStatus::Running`, and must not be conflated with it. `false`
+    /// for an unknown agent.
+    pub fn turn_in_flight(&self, agent: AgentId) -> bool {
+        self.tree.turn_in_flight(agent)
+    }
+
     /// The runtime half of the facade's ephemeral→persistent promote (B3):
     /// flips `agent`'s `ephemeral` flag to `false` in the live tree, then
     /// emits exactly one `Event::AgentPromoted` under the agent's OWN

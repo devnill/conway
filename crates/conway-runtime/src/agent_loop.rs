@@ -1085,6 +1085,13 @@ impl AgentLoop {
                 continue;
             }
 
+            // Board `01M0VWMMEG4CER8Y8VH77KZ0CV`: marked BEFORE the bus
+            // emit, mirroring `Event::TurnStarted`'s own ordering guarantee
+            // (this module's doc: no later `seq` observed before an earlier
+            // one) -- so any subscriber that ever observes the live event
+            // is guaranteed to find `AgentTree::turn_in_flight` already
+            // `true`, never a stale `false`.
+            self.deps.tree.mark_turn_started(self.agent_id);
             self.deps.bus.emit(
                 self.session,
                 self.agent_id,
@@ -1422,6 +1429,13 @@ impl AgentLoop {
                     stop: outcome.response.stop,
                 },
             );
+            // Board `01M0VWMMEG4CER8Y8VH77KZ0CV`: the success-path twin of
+            // `mark_turn_started` above. Every OTHER exit from this loop
+            // (error/cancelled/budget-exceeded) never reaches this line, but
+            // all of those are terminal for the whole agent and so always
+            // call `AgentTree::publish_result`, which clears this
+            // defensively too -- see `turn_in_flight`'s own doc.
+            self.deps.tree.mark_turn_finished(self.agent_id);
 
             if outcome.response.tool_calls.is_empty() {
                 let summary = full_text(&outcome.response.content);
