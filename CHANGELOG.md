@@ -122,6 +122,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this file's own bullet above are corrected to state the ruling rather
   than the prior (now false) description.
 
+### Security
+
+- **`CONWAY_CONFIG_DIR` no longer isolates only half of conway's
+  configuration.** — board item `01M0VV6CVSZM4XH8J4G6EBV5E3`. The variable
+  relocates the *user* config layer (`$CONWAY_CONFIG_DIR/settings.json`
+  instead of `~/.conway/settings.json`), but the separate *project* layer's
+  own upward walk from the working directory (`config::discovery::discover`)
+  knew nothing about it: for any `cwd` beneath the invoking user's real
+  `$HOME`, that walk could still reach `~/.conway/settings.json` and return
+  it as the *project* layer, which outranks `user` in the five-source
+  precedence order (`default < user < project < env < CLI`) regardless of
+  where `CONWAY_CONFIG_DIR` pointed. A run that believed itself isolated —
+  a test fixture, an embedder, a hand demo run with a `cwd` under `$HOME` —
+  could silently fall back to the operator's real backends and credentials.
+  This is not theoretical: it cost two live provider calls on the
+  operator's real credentials during this project's own development.
+  `discover` now takes an explicit exclusion list
+  (`config::discovery::project_discovery_exclusions`) and skips — keeps
+  walking past, rather than stopping on — a candidate that names the same
+  underlying file (canonicalized when possible, falling back to a lexical
+  comparison when a side does not exist) as either the currently-resolved
+  user config path or the raw, override-independent
+  `~/.conway/settings.json`. An operator who genuinely keeps a project
+  directly in `$HOME` sees no behavior change: with `CONWAY_CONFIG_DIR`
+  unset the excluded file is applied via the user layer instead, with
+  identical content, and a genuinely different, nearer project config is
+  still discovered exactly as before. `CONWAY_CONFIG_DIR` still does not
+  make itself outrank every possible project config (a real, distinct
+  project `.conway/settings.json` between `cwd` and `$HOME` still wins, as
+  project always has over user) — only the one file that would otherwise
+  double as the global settings is excluded; see
+  [`docs/getting-started.md`](docs/getting-started.md#configure-a-provider)
+  and [`docs/embedding.md`](docs/embedding.md#loading-config-without-the-ambient-user-layer).
+  Proven with a compiled-binary regression test
+  (`crates/conway-cli/tests/config_isolation_binary.rs`) driving the real
+  `conway` binary against a simulated `$HOME`, shown to fail against the
+  unmodified code before the fix landed.
+
 ### Fixed
 
 - **The `/` command palette now generates itself from the same command

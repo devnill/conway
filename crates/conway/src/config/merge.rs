@@ -230,10 +230,19 @@ fn merged_document_impl(
         }
     }
 
-    let project_path = options
-        .explicit_path
-        .clone()
-        .or_else(|| discovery::discover(&options.cwd));
+    // The exclusion list closes the "one file, two roles" collision
+    // `discovery::discover`'s own module doc describes: without it, an
+    // unbounded upward walk from `options.cwd` can reach
+    // `~/.conway/settings.json` and return it as the *project* layer even
+    // when `CONWAY_CONFIG_DIR` (above) has relocated the *user* layer
+    // elsewhere -- silently defeating the isolation that variable
+    // advertises (board item `01M0VV6CVSZM4XH8J4G6EBV5E3`).
+    let project_path = options.explicit_path.clone().or_else(|| {
+        discovery::discover(
+            &options.cwd,
+            &discovery::project_discovery_exclusions(&options.env),
+        )
+    });
     if let Some(path) = project_path {
         if let Some(layer) = read_json_layer(&path)? {
             merge_values(&mut merged, layer);

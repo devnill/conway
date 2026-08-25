@@ -1,23 +1,166 @@
 //! Filesystem/user config discovery of config files. No parsing, no env-var
 //! `CONWAY_*` mapping (that lives in `merge.rs`) — just "which paths exist."
+//!
+//! ## The one-file-two-roles collision, and how [`discover`] closes it
+//!
+//! `~/.conway/settings.json` is, structurally, TWO different things at
+//! once: it is what [`user_config_path`] resolves to whenever
+//! `CONWAY_CONFIG_DIR` is unset (the *user* layer), and it is also an
+//! ordinary match for [`discover`]'s own upward walk from any working
+//! directory beneath `$HOME` (the *project* layer) -- nothing about the walk
+//! ever knew those were the same file wearing two hats. Before this module
+//! closed the gap (board item `01M0VV6CVSZM4XH8J4G6EBV5E3`), that meant two
+//! distinct harms: the redundant-but-harmless case (env unset, the same file
+//! merges twice, once as each layer, producing identical output either way)
+//! MASKED the harmful case -- `CONWAY_CONFIG_DIR` set to relocate the user
+//! layer somewhere isolated (a test fixture, an embedder's own directory)
+//! while the *project* walk, which knows nothing of that variable, still
+//! reached upward from `cwd` and found the real `~/.conway/settings.json`
+//! sitting there unchanged, outranking the isolated layer the operator
+//! believed they had switched to (`project` beats `user` in the five-source
+//! order). One live run cost the operator two real provider calls on real
+//! credentials this way.
+//!
+//! [`discover`] now takes an explicit `exclude` list -- see
+//! `project_discovery_exclusions`, the one function every call site in
+//! this crate builds that list with -- and skips (keeps walking past,
+//! rather than stopping on) any candidate that names the same underlying
+//! file as an excluded path. `project_discovery_exclusions` always includes
+//! the literal, override-independent `~/.conway/settings.json`
+//! ([`home_settings_path`]) in addition to whatever [`user_config_path`]
+//! currently resolves to (which coincide when `CONWAY_CONFIG_DIR` is unset,
+//! and diverge -- the case that matters -- when it is set): this is what
+//! makes the exclusion work in BOTH the unset case (a harmless dedup, since
+//! the file would merge identically either way) and the set case (a real
+//! exclusion, since the two paths differ and only the home file is
+//! collision-prone).
+//!
+//! **Why this does not break "a project genuinely lives in `$HOME`" (the
+//! case an earlier, simpler fix -- bounding the walk at `$HOME` outright --
+//! would have broken).** A project whose own `.conway/settings.json` sits
+//! at some ancestor CLOSER than `$HOME` (e.g. `$HOME/work/proj/.conway/`)
+//! is returned by `discover` exactly as before: the walk finds it first and
+//! never reaches `$HOME` at all. Only the walk's LAST possible candidate --
+//! `$HOME/.conway/settings.json` itself -- is ever excluded, and only
+//! because it is the literal file [`user_config_path`]'s own fallback
+//! branch already reads under a different label. An operator who genuinely
+//! keeps `.conway/settings.json` directly in `$HOME` and relies on it being
+//! discovered as a *project* config sees no behavioral change when
+//! `CONWAY_CONFIG_DIR` is unset (it is applied via the user layer instead,
+//! with byte-identical content, so the merge result is unchanged) and,
+//! correctly, no longer sees it applied at all once `CONWAY_CONFIG_DIR` IS
+//! set -- exactly the isolation that variable advertises.
+//!
+//! **Extends to `permission_file_paths`/`provider_profile_file_paths` too**
+//! (both call `discover` for the same reason and shared the same
+//! collision): each passes `project_discovery_exclusions` through.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Walks from `start` up to the filesystem root looking for
-/// `<dir>/.conway/settings.json`, returning the *nearest* match (i.e. `start`
-/// itself is checked first).
-pub fn discover(start: &Path) -> Option<PathBuf> {
+/// `<dir>/.conway/settings.json`, returning the *nearest* match (i.e.
+/// `start` itself is checked first) that does not name the same underlying
+/// file as anything in `exclude` -- a candidate that DOES match `exclude`
+/// is skipped, not treated as a stopping point, and the walk continues
+/// upward past it. See this module's own doc for the collision `exclude`
+/// exists to close, and `project_discovery_exclusions` for how every
+/// production call site in this crate builds that list.
+///
+/// An empty `exclude` slice reproduces this function's pre-item behavior
+/// exactly (every unit test below that does not care about the exclusion
+/// passes `&[]`).
+pub fn discover(start: &Path, exclude: &[PathBuf]) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();
     loop {
         let candidate = dir.join(".conway").join("settings.json");
-        if candidate.is_file() {
+        if candidate.is_file()
+            && !exclude
+                .iter()
+                .any(|excluded| same_settings_file(&candidate, excluded))
+        {
             return Some(candidate);
         }
         if !dir.pop() {
             return None;
         }
     }
+}
+
+/// Whether `a` and `b` name the same underlying file -- the comparison
+/// [`discover`] uses to decide whether a candidate is the collision this
+/// module's own doc describes.
+///
+/// Canonicalizes both sides when possible, so a spelling difference (a
+/// symlinked `$HOME` -- macOS's `/var` -> `/private/var` is the same shape
+/// one level up the tree, or an operator-managed symlink pointing `.conway`
+/// somewhere else) does not defeat the comparison. But canonicalizing a
+/// path that does not exist, or that this process cannot stat (a broken
+/// symlink, a permission error), is EXPECTED here, not exceptional: the
+/// exclusion set commonly names a file that has never been created (e.g. a
+/// fixture's own `$CONWAY_CONFIG_DIR/settings.json` before the fixture ever
+/// writes one) -- so a side that fails to canonicalize falls back to
+/// [`normalize_lexically`] rather than making the whole comparison bail out
+/// (fail-loud is wrong here; the correct behavior for "one side is a bare
+/// path with nothing there" is simply "compare the paths"). Per P-13 (fail
+/// closed): `discover`'s own candidate side is always an existing file
+/// (`candidate.is_file()` already gated the call), so it is only ever the
+/// EXCLUDE side that can fail to canonicalize -- and falling back to a
+/// normalized-but-uncanonicalized comparison on that side never makes this
+/// function LESS likely to catch a real collision than skipping
+/// canonicalization entirely would have; it only adds symlink-awareness on
+/// top when both sides do resolve.
+fn same_settings_file(a: &Path, b: &Path) -> bool {
+    let resolve = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| normalize_lexically(p));
+    resolve(a) == resolve(b)
+}
+
+/// The set of `settings.json` paths [`discover`] must refuse to return as a
+/// *project* config, because each one plays a second, `user`-layer role
+/// too -- see this module's own doc for the collision this closes. Two
+/// entries, not one, and DELIBERATELY not deduplicated down to whichever
+/// one [`user_config_path`] currently returns:
+///
+/// - `user_config_path(env)`: wherever THIS invocation's user layer
+///   actually reads from right now (`$CONWAY_CONFIG_DIR/settings.json` when
+///   set, `~/.conway/settings.json` otherwise).
+/// - [`home_settings_path`]: the raw, override-INdependent
+///   `~/.conway/settings.json` -- included unconditionally, even when
+///   `CONWAY_CONFIG_DIR` is set and the entry above names a different path
+///   entirely.
+///
+/// When `CONWAY_CONFIG_DIR` is unset the two entries coincide (one path
+/// after `discover`'s own dedup). When it IS set they diverge, and it is
+/// the SECOND entry that does the isolating work this item exists for: the
+/// real home file is excluded from the project walk even though the user
+/// layer itself has moved elsewhere -- which is exactly the case an
+/// operator setting `CONWAY_CONFIG_DIR` for isolation (a test fixture, an
+/// embedder, a hand demo) needs closed, and exactly the case a plain
+/// "exclude whatever `user_config_path` resolves to today" rule would have
+/// missed.
+pub(crate) fn project_discovery_exclusions(env: &HashMap<String, String>) -> Vec<PathBuf> {
+    let mut exclude = Vec::new();
+    if let Some(path) = user_config_path(env) {
+        exclude.push(path);
+    }
+    if let Some(path) = home_settings_path() {
+        if !exclude.contains(&path) {
+            exclude.push(path);
+        }
+    }
+    exclude
+}
+
+/// The literal `~/.conway/settings.json` path, regardless of whether
+/// `CONWAY_CONFIG_DIR` is set in the current invocation -- [`user_config_path`]'s
+/// own fallback branch, exposed standalone so `project_discovery_exclusions`
+/// can name this file even when `user_config_path` itself currently resolves
+/// somewhere else entirely. `None` under the same condition
+/// `user_config_path`'s fallback returns `None`: no home directory
+/// discoverable on this platform/environment.
+pub fn home_settings_path() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".conway").join("settings.json"))
 }
 
 /// The user-scoped config path for `conway`: `~/.conway/settings.json`,
@@ -34,9 +177,26 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
 /// `CONWAY_CONFIG_DIR` names conway's config directory *directly*, so
 /// `settings.json` sits at its root rather than under a `conway/` subdirectory
 /// the way the user config convention required. It mirrors `CLAUDE_CONFIG_DIR` so a
-/// switcher recognises it, and it is what every test uses to stay hermetic —
-/// see `crates/conway/tests/config_isolation_guard.rs` for the ambient-read bug
-/// that isolation exists to prevent.
+/// switcher recognises it, and it is what every IN-PROCESS test uses to stay
+/// hermetic — see `crates/conway/tests/config_isolation_guard.rs` for the
+/// ambient-read bug that guard exists to prevent (in-process calls into this
+/// library only; see that file's own module doc for the scope line).
+///
+/// **This function alone is not what makes `CONWAY_CONFIG_DIR` mean
+/// "isolated," for a compiled-binary invocation.** Relocating the user
+/// layer here does nothing about the PROJECT layer `discover` resolves
+/// separately -- an unbounded upward walk from `cwd` that, for any `cwd`
+/// beneath `$HOME`, used to reach `~/.conway/settings.json` and win, since
+/// `project` outranks `user` in the five-source order regardless of what
+/// this function returns. That collision (`~/.conway/settings.json` playing
+/// BOTH the user role this function resolves and a project role `discover`
+/// can independently reach) is now closed at `discover`'s own call sites via
+/// `project_discovery_exclusions` -- see this module's own top-of-file doc
+/// for the full mechanism and board item `01M0VV6CVSZM4XH8J4G6EBV5E3` for
+/// the incident that surfaced it. `crates/conway-cli/tests/
+/// config_isolation_binary.rs` is the compiled-binary regression test for
+/// that fix; `config_isolation_guard.rs`'s own scope note is why it could
+/// never have caught this in the first place.
 ///
 /// Takes an explicit `env` map (rather than reading `std::env` directly) so
 /// callers can inject it via `LoadOptions.env` and keep precedence tests
@@ -47,7 +207,7 @@ pub fn user_config_path(env: &HashMap<String, String>) -> Option<PathBuf> {
             return Some(Path::new(dir).join("settings.json"));
         }
     }
-    directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".conway").join("settings.json"))
+    home_settings_path()
 }
 
 /// The TUI's persisted input-history file path (T8): alongside the
@@ -77,8 +237,15 @@ pub fn history_file_path(env: &HashMap<String, String>) -> Option<PathBuf> {
 pub fn permission_file_paths(cwd: &std::path::Path, env: &HashMap<String, String>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     // Project scope: alongside the nearest `.conway/settings.json`, or the
-    // cwd's own `.conway/` if no ancestor config exists yet.
-    if let Some(project) = discover(cwd) {
+    // cwd's own `.conway/` if no ancestor config exists yet. Excludes the
+    // same collision-prone paths `discover`'s own doc describes -- without
+    // this, `~/.conway/permissions.json` could be returned once here as
+    // "project" and again below as "global," un-deduplicated whenever
+    // `CONWAY_CONFIG_DIR` relocates the "global scope" push below away from
+    // `~/.conway/` (the `!paths.contains(&global)` dedup below only ever
+    // catches the CONWAY_CONFIG_DIR-unset case, where the two pushes would
+    // already be identical).
+    if let Some(project) = discover(cwd, &project_discovery_exclusions(env)) {
         if let Some(dir) = project.parent() {
             paths.push(dir.join("permissions.json"));
         }
@@ -238,7 +405,9 @@ pub fn provider_profile_file_paths(
     env: &HashMap<String, String>,
 ) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Some(project) = discover(cwd) {
+    // Same exclusion, same reason, as `permission_file_paths`'s own project
+    // scope above.
+    if let Some(project) = discover(cwd, &project_discovery_exclusions(env)) {
         if let Some(dir) = project.parent() {
             paths.push(dir.join("profiles.toml"));
         }
@@ -273,7 +442,7 @@ mod tests {
         fs::create_dir_all(&nested_conf_dir).unwrap();
         fs::write(nested_conf_dir.join("settings.json"), "").unwrap();
 
-        let found = discover(&nested).unwrap();
+        let found = discover(&nested, &[]).unwrap();
         assert_eq!(found, nested_conf_dir.join("settings.json"));
     }
 
@@ -282,7 +451,163 @@ mod tests {
         let tmp = tempfile_dir();
         let nested = tmp.join("x").join("y");
         fs::create_dir_all(&nested).unwrap();
-        assert!(discover(&nested).is_none());
+        assert!(discover(&nested, &[]).is_none());
+    }
+
+    /// The behavior [`discover`]'s own doc names explicitly: an excluded
+    /// candidate is SKIPPED, not treated as "nothing here" -- the walk keeps
+    /// going upward past it, rather than stopping (which `discover_returns_
+    /// none_when_the_only_match_is_excluded` below distinguishes from
+    /// "return None immediately").
+    #[test]
+    fn discover_skips_an_excluded_candidate_and_returns_the_next_ancestor_match() {
+        let tmp = tempfile_dir();
+        let root_conf = tmp.join(".conway");
+        fs::create_dir_all(&root_conf).unwrap();
+        fs::write(root_conf.join("settings.json"), "").unwrap();
+
+        let nested = tmp.join("a").join("b");
+        let nested_conf_dir = nested.join(".conway");
+        fs::create_dir_all(&nested_conf_dir).unwrap();
+        fs::write(nested_conf_dir.join("settings.json"), "").unwrap();
+
+        let excluded = vec![nested_conf_dir.join("settings.json")];
+        let found = discover(&nested, &excluded).unwrap();
+        assert_eq!(
+            found,
+            root_conf.join("settings.json"),
+            "the nearer match was excluded, so discover must keep walking and \
+             return the further ancestor match instead of stopping"
+        );
+    }
+
+    #[test]
+    fn discover_returns_none_when_the_only_match_is_excluded() {
+        let tmp = tempfile_dir();
+        let conf_dir = tmp.join(".conway");
+        fs::create_dir_all(&conf_dir).unwrap();
+        fs::write(conf_dir.join("settings.json"), "").unwrap();
+
+        let excluded = vec![conf_dir.join("settings.json")];
+        assert!(discover(&tmp, &excluded).is_none());
+    }
+
+    /// The "operator genuinely keeps a project in `$HOME`" case this item's
+    /// own spec named explicitly: a NEARER, non-excluded `.conway/
+    /// settings.json` must win exactly as before, even when an excluded
+    /// ancestor ALSO exists further up (standing in for the real
+    /// `~/.conway/settings.json` an operator's project directory sits under).
+    /// `discover`'s nearest-match-first walk never even reaches the excluded
+    /// ancestor here -- this pins that the exclusion mechanism changes
+    /// nothing about ordinary, non-colliding project discovery.
+    #[test]
+    fn discover_returns_a_nearer_non_excluded_match_even_when_an_excluded_ancestor_also_exists() {
+        let tmp = tempfile_dir();
+        // Stands in for `~/.conway/settings.json`.
+        let home_conf = tmp.join(".conway");
+        fs::create_dir_all(&home_conf).unwrap();
+        fs::write(home_conf.join("settings.json"), "").unwrap();
+
+        // Stands in for `~/work/project/.conway/settings.json` -- a real,
+        // ordinary project config nested under that same "home."
+        let project = tmp.join("work").join("project");
+        let project_conf = project.join(".conway");
+        fs::create_dir_all(&project_conf).unwrap();
+        fs::write(project_conf.join("settings.json"), "").unwrap();
+
+        let excluded = vec![home_conf.join("settings.json")];
+        let found = discover(&project, &excluded).unwrap();
+        assert_eq!(found, project_conf.join("settings.json"));
+    }
+
+    /// [`same_settings_file`]'s symlink-awareness: a candidate reached via a
+    /// symlinked ancestor directory must still be recognized as the same
+    /// underlying file as its canonical spelling in the exclude list.
+    /// Skipped where the platform/sandbox refuses to create a symlink
+    /// (matches this crate's other symlink-dependent tests' own posture)
+    /// rather than failing the whole suite over an environment limitation
+    /// unrelated to what this test proves.
+    #[test]
+    fn same_settings_file_recognizes_a_symlinked_spelling_of_the_same_file() {
+        let tmp = tempfile_dir();
+        let real_dir = tmp.join("real");
+        fs::create_dir_all(&real_dir).unwrap();
+        let conf_dir = real_dir.join(".conway");
+        fs::create_dir_all(&conf_dir).unwrap();
+        fs::write(conf_dir.join("settings.json"), "").unwrap();
+
+        let link = tmp.join("linked");
+        #[cfg(unix)]
+        let symlink_result = std::os::unix::fs::symlink(&real_dir, &link);
+        #[cfg(not(unix))]
+        let symlink_result: std::io::Result<()> = Err(std::io::Error::other("unsupported"));
+        if symlink_result.is_err() {
+            eprintln!("skipping: this environment cannot create symlinks");
+            return;
+        }
+
+        let via_symlink = link.join(".conway").join("settings.json");
+        let via_real = conf_dir.join("settings.json");
+        assert!(
+            same_settings_file(&via_symlink, &via_real),
+            "a candidate reached through a symlinked ancestor must still \
+             compare equal to the same file's canonical spelling"
+        );
+    }
+
+    /// [`same_settings_file`]'s fail-closed-toward-comparison fallback: a
+    /// path that does not exist (so `fs::canonicalize` errors) must not
+    /// abort the comparison -- it falls back to a lexical (uncanonicalized)
+    /// comparison instead, per this function's own doc.
+    #[test]
+    fn same_settings_file_falls_back_to_lexical_comparison_when_one_side_does_not_exist() {
+        let tmp = tempfile_dir();
+        let nonexistent_a = tmp.join("never-created-a").join("settings.json");
+        let nonexistent_b = tmp.join("never-created-b").join("settings.json");
+
+        // Two different nonexistent paths must not spuriously compare equal.
+        assert!(!same_settings_file(&nonexistent_a, &nonexistent_b));
+        // The identical nonexistent path, spelled byte-for-byte the same
+        // both times, must still compare equal via the lexical fallback.
+        assert!(same_settings_file(&nonexistent_a, &nonexistent_a.clone()));
+    }
+
+    #[test]
+    fn project_discovery_exclusions_includes_both_the_relocated_and_the_raw_home_path() {
+        let mut env = HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            "/custom/config_dir".to_string(),
+        );
+        let exclude = project_discovery_exclusions(&env);
+        assert!(exclude.contains(&PathBuf::from("/custom/config_dir/settings.json")));
+        if let Some(home) = home_settings_path() {
+            assert!(
+                exclude.contains(&home),
+                "the raw home settings path must be excluded even when \
+                 CONWAY_CONFIG_DIR relocates the user layer elsewhere"
+            );
+            assert_eq!(
+                exclude.len(),
+                2,
+                "the two paths differ here, so both must be present, not deduplicated"
+            );
+        }
+    }
+
+    #[test]
+    fn project_discovery_exclusions_dedupes_to_one_entry_when_conway_config_dir_is_unset() {
+        let env = HashMap::new();
+        let exclude = project_discovery_exclusions(&env);
+        if let Some(home) = home_settings_path() {
+            assert_eq!(
+                exclude,
+                vec![home],
+                "with CONWAY_CONFIG_DIR unset, user_config_path and \
+                 home_settings_path coincide -- exactly one entry, not two \
+                 identical ones"
+            );
+        }
     }
 
     #[test]

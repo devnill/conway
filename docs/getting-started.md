@@ -27,6 +27,18 @@ over conway's built-in defaults). At minimum, `settings.json` needs a
 `roles.<alias>` entry (named by `default_role`) whose model chain points
 at that backend.
 
+**`$CONWAY_CONFIG_DIR`, when set, is exempted from that upward walk too,**
+not just from the `~/.conway/` fallback it replaces — `~/.conway/
+settings.json` is never picked up as a *project* config for a working
+directory beneath `$HOME` while `CONWAY_CONFIG_DIR` names somewhere else
+(board item `01M0VV6CVSZM4XH8J4G6EBV5E3`). This does not exempt every
+`.conway/settings.json` the walk might reach: a genuinely different
+project config nested between your current directory and `$HOME` (a real,
+ordinary setup — a checkout that itself lives under `$HOME`) is still
+discovered and still wins over the `$CONWAY_CONFIG_DIR`-relocated layer,
+exactly as project always outranks user. Only the one file that would
+*otherwise* double as your global settings is excluded.
+
 That is enough to run. **A second file, `.conway/models.json`, is optional
 on a default build and worth adding anyway** — it declares each
 `"backend/model"` pair's capabilities (the file is named by
