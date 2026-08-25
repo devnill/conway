@@ -552,6 +552,7 @@ dependencies = [
  "conway-plugin-discover",
  "conway-plugin-history",
  "conway-plugin-idiom",
+ "conway-plugin-marketplace",
  "conway-plugin-mcp",
  "conway-plugin-memory",
  "conway-plugin-names",
@@ -577,6 +578,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]
@@ -674,6 +676,23 @@ dependencies = [
  "conway-testkit",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "conway-plugin-marketplace"
+version = "0.9.0"
+dependencies = [
+ "conway",
+ "conway-plugin-claude",
+ "conway-plugin-mcp",
+ "conway-testkit",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]

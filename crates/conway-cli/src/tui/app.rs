@@ -45,6 +45,7 @@ use crate::tui::view::Theme;
 
 mod ask;
 mod focus;
+mod marketplace;
 mod plugin_cmd;
 mod plugin_toggle;
 mod run;

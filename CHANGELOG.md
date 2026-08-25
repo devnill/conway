@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **conway can now install a plugin from a Claude Code marketplace** —
+  board item `01M0VR96Y87FF2BVNTBSC6GEYR`, the network-reaching half of the
+  plugin feature (trust was ruled settled beforehand: decision
+  `01M0VS2M8FC25QYCATQ8PKQ73Y`, `docs/plugins/trust-and-security.md`). A
+  new `crates/conway-plugin-marketplace` crate fetches a marketplace's
+  JSON manifest over HTTP and, per plugin, every file its `files: {path
+  -> URL}` map declares — no git clone, no archive extraction, each file
+  fetched and path-validated individually (refuses any relative path whose
+  components are not all ordinary, before writing a byte) — into
+  conway's own plugin store (`<config dir>/plugins/marketplace/<id>`),
+  never partially: a staging directory is committed by a single `rename`
+  only once every declared file has landed. A fetched artifact is declared
+  to conway the exact same way a directory an operator prepared by hand
+  already is (spec update to the item: a fetched artifact needs nothing
+  more than `{ id, dir }`) — an ordinary `[plugins].claude_compat[]` entry,
+  written by a NEW config writer, `conway::config::set_claude_compat_entry`
+  (`crates/conway/src/config/writer.rs`), the array-of-OBJECTS sibling
+  `set_plugin_installed` (array-of-strings) did not have: built from the
+  identical hand-rolled scanner/splicer so an operator's comments, key
+  order, and formatting survive a write untouched, exactly as
+  `set_plugin_installed` already guarantees for `plugins.install`.
+  `crates/conway-cli/src/tui/app/marketplace.rs` wires fetch+install+write
+  into one operator action (`App::apply_marketplace_install`) that
+  discloses what is being installed — name, description, version, every
+  file and its source URL, the destination directory, and the
+  unsandboxed-privilege caveat — before anything is written, and a
+  matching `App::apply_marketplace_uninstall` that removes both the config
+  entry and the artifact, leaving neither behind. Offline, a bad URL, and
+  a malformed marketplace response are each a named, typed error with
+  nothing written to `settings.json` — never a hang (a bounded client
+  timeout) and never a partial install. **No digest check, no allow-list,
+  no trust prompt** — settled, not re-argued: a fetched artifact runs on
+  the identical footing `[hooks].rules[].command` already has. No
+  interactive slash-command/menu trigger is wired yet (deliberately
+  deferred; the methods are real, tested, and end-to-end-correct). Full
+  argument in `docs/plugins/marketplace.md`.
+
 - **conway can now read a Claude Code plugin directory already on disk and
   bring its MCP server declarations in as real, working plugins** — board
   item `01M0VR89FB1F3Q4FQ8852K2A5E`, a new `crates/conway-plugin-claude`

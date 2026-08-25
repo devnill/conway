@@ -28,6 +28,7 @@ a summary pointing somewhere else.
 | [`names.md`](names.md) — `conway.names` | What does naming an agent actually change, and how does a name interact with the id and short-id it sits alongside? | You are steering more than a couple of agents by id and want a handle you remember instead. |
 | [`mcp.md`](mcp.md) — the MCP client | How do I bring an existing MCP server's tools into conway, and what is conway's own MCP client (not server) posture? | You have an MCP server already and want its tools available to the model, or you're evaluating what naming one in `[plugins].mcp` actually trusts. |
 | [`claude-compat.md`](claude-compat.md) — Claude Code plugin compatibility | I have a Claude Code plugin directory already on disk — what does conway actually do with it, and what does it name but not use? | You want to point conway at an existing Claude Code plugin, or you're deciding whether its MCP-only, read-at-runtime scope is enough for what you have. |
+| [`marketplace.md`](marketplace.md) — installing a plugin from a marketplace | How do I fetch a plugin from a marketplace instead of cloning it myself, where does conway put it, and what does the trust ruling say about a fetched artifact? | You want conway to fetch a plugin for you rather than pointing it at a directory you already prepared, or you're evaluating what naming a marketplace URL actually trusts. |
 | [`scripts.md`](scripts.md) — the script convention | How would a hook fire a script in any language, and what does that cost per invocation? | You want a hook in something other than Rust. **Describes a designed convention; no script-dispatching plugin exists yet.** |
 | [`inference-hooks.md`](inference-hooks.md) — hooks judged by a model | When should a hook call an LLM rather than express a static rule, and do I fork or spawn? | You're weighing an inference-evaluated hook. Read its "when NOT to use one" section first. |
 | [`cookbook.md`](cookbook.md) — worked examples | What does a real hook look like end to end — spilling bulky output to a file, compaction, a permission guardrail, progressive skill disclosure, a status-line observer? | You learn faster from a worked example than from a contract. Five examples, each labeled implementable-today, partially-implementable, or blocked, with two treated explicitly as the architecture's own acceptance tests. |
@@ -182,6 +183,21 @@ attaches through its own `[plugins].claude_compat[]` config surface,
 resolved by `crates/conway-cli/src/claude_compat_plugins.rs`, a fourth
 choke point neither `first_party_plugins::bundle()` nor
 `crates/conway-cli/src/mcp_plugins.rs` ever touches.
+
+## Installing from a marketplace — first-party, but not a `[plugins].install` id either
+
+[`marketplace.md`](marketplace.md) — fetches a marketplace's manifest over
+HTTP and a chosen plugin's declared files into conway's own plugin store,
+then writes the exact `[plugins].claude_compat[]` entry the section above
+describes, pointing at where it landed. Not a fourth import mechanism: an
+installed marketplace plugin is, on disk and in `settings.json`,
+indistinguishable from a directory the operator cloned or typed the path to
+by hand — same entry shape, same read-at-runtime translation, same trust
+footing. Deliberately excluded from the "ten shipped first-party plugins"
+count and from both sections immediately above: it writes its own
+`[plugins].claude_compat[]` entry through `crates/conway-cli/src/tui/app/
+marketplace.rs`, not through `first_party_plugins::bundle()`,
+`mcp_plugins.rs`, or `claude_compat_plugins.rs`.
 
 ## Everything not in this set
 
