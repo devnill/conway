@@ -160,9 +160,14 @@ impl Conway {
         &self.plugin_status_contributions
     }
 
-    /// Non-fatal warnings surfaced by `config::load` (currently only
-    /// headroom-vs-context-window warnings). Empty when this `Conway` was
-    /// built via `ConwayBuilder::from_parts`, which bypasses `load` entirely.
+    /// Non-fatal warnings, from two sources: `config::load` (headroom-vs-
+    /// context-window, a stale `[tui]` section -- empty when this `Conway`
+    /// was built via `ConwayBuilder::from_parts`, which bypasses `load`
+    /// entirely) and `ConwayBuilder::build` itself (a `PluginManifest::
+    /// optional` dependency absent from the final installed plugin set --
+    /// see `WarningCode::OptionalPluginDependencyMissing`'s own doc). Both
+    /// share this one accessor rather than a second, since both are the
+    /// same shape: a non-fatal, named, operator-facing notice.
     pub fn warnings(&self) -> &[ConfigWarning] {
         &self.warnings
     }

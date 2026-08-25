@@ -640,6 +640,12 @@ impl SubprocessPlugin {
             version: manifest.version.clone(),
             tools: specs.iter().map(|s| s.name.clone()).collect(),
             required_host_caps: manifest.required_host_caps.clone(),
+            // `WireManifest` carries no `requires`/`optional` fields (out of
+            // scope for this pass -- see `PluginManifest::requires`'s own
+            // doc): an out-of-process plugin cannot yet declare a
+            // plugin-to-plugin dependency, only host capabilities.
+            requires: vec![],
+            optional: vec![],
         };
 
         let spec = Arc::new(spec);

@@ -266,6 +266,8 @@ impl Plugin for SkeletonPlugin {
             version: env!("CARGO_PKG_VERSION").to_string(),
             tools: vec![ToolName::new(TOOL_NAME)],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
 

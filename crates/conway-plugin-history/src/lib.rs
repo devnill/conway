@@ -261,6 +261,8 @@ impl Plugin for HistoryPlugin {
             // here, never a stub.
             tools: vec![],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
 

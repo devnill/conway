@@ -60,6 +60,22 @@ pub enum WarningCode {
     /// for the escape hatch `conway-cli` uses to still read and act on
     /// `[tui]` itself.
     PresentationConfigIgnored,
+    /// A plugin's `PluginManifest::optional` names a plugin id that is not
+    /// among the final installed set -- `message` names both the dependent
+    /// and the missing dependency. Unlike every other `WarningCode` above,
+    /// this one is NOT produced by `config::load`: it is raised by
+    /// `ConwayBuilder::build`, once the final installed plugin set is known
+    /// (`docs/vision/DESIGN-plugin-dependencies.md` §4b: "an optional edge
+    /// carries what the dependent falls back to... the host announces the
+    /// degradation on whatever channel that host has"). Carried on the same
+    /// `ConfigWarning`/`Conway::warnings()` surface as load-time warnings
+    /// rather than a second parallel channel, since both are the identical
+    /// shape -- a non-fatal, named, operator-facing notice -- and a caller
+    /// already reading `Conway::warnings()` for one should not need a
+    /// second accessor for the other. `ConwayBuilder::build` also emits a
+    /// `tracing::warn!` naming the same two ids, for a host with no reason
+    /// to read `Conway::warnings()` at all (e.g. a one-shot `-p` run).
+    OptionalPluginDependencyMissing,
 }
 
 #[cfg(test)]

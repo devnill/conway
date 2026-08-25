@@ -257,6 +257,8 @@ impl Plugin for FakePlugin {
             version: "0.0.0".into(),
             tools: self.tools.iter().map(|t| t.spec().name).collect(),
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
 

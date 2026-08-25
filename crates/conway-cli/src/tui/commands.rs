@@ -3626,6 +3626,8 @@ mod tests {
                 version: "0.1.0".to_string(),
                 tools: vec![],
                 required_host_caps: vec![],
+                requires: vec![],
+                optional: vec![],
             }
         }
 

@@ -131,6 +131,8 @@ impl Plugin for EchoPlugin {
             version: "0.1.0".to_string(),
             tools: vec![ToolName::new("echo")],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
 
@@ -600,6 +602,8 @@ impl Plugin for RecallPlugin {
             version: "0.1.0".into(),
             tools: vec![],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
 

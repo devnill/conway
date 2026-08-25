@@ -100,6 +100,8 @@ impl Plugin for DummyPlugin {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
 
@@ -125,6 +127,8 @@ impl Plugin for InstructingPlugin {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
 
@@ -135,6 +139,44 @@ impl Plugin for InstructingPlugin {
     fn instructions(&self) -> Vec<conway_core::ports::InstructionFragment> {
         vec![conway_core::ports::InstructionFragment {
             name: self.1.to_string(),
+            text: "some instruction text".to_string(),
+            tool_ids: vec![],
+        }]
+    }
+}
+
+/// `InstructingPlugin` plus a `PluginManifest::requires` edge -- the
+/// dedicated fixture for the injection-order/dependency-resolution-order
+/// separation test below (board item `01M0WWJMYK0KDC2X7B7MR46FRR`). Kept
+/// distinct from `InstructingPlugin` (which declares no dependency) so the
+/// two concerns stay legible at each call site.
+#[cfg(feature = "builtin-tools")]
+struct InstructingDependentPlugin {
+    id: &'static str,
+    fragment_name: &'static str,
+    requires: Vec<&'static str>,
+}
+
+#[cfg(feature = "builtin-tools")]
+impl Plugin for InstructingDependentPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: self.id.to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![],
+            required_host_caps: vec![],
+            requires: self.requires.iter().map(|s| s.to_string()).collect(),
+            optional: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![]
+    }
+
+    fn instructions(&self) -> Vec<conway_core::ports::InstructionFragment> {
+        vec![conway_core::ports::InstructionFragment {
+            name: self.fragment_name.to_string(),
             text: "some instruction text".to_string(),
             tool_ids: vec![],
         }]
@@ -709,6 +751,8 @@ impl Plugin for CapPlugin {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: self.required_caps.clone(),
+            requires: vec![],
+            optional: vec![],
         }
     }
 
@@ -1048,6 +1092,8 @@ fn injected_plugin_is_unaffected_by_the_default_builtin_selection() {
                 version: "0.0.0".to_string(),
                 tools: vec![ToolName::new("test_echo")],
                 required_host_caps: vec![],
+                requires: vec![],
+                optional: vec![],
             }
         }
         fn tools(&self) -> Vec<Arc<dyn Tool>> {
@@ -1600,4 +1646,73 @@ async fn a_reachable_plugin_instruction_reaches_a_real_agents_context() {
         entry.unreachable_tool_ids.is_empty(),
         "a fragment naming no tool_ids is trivially reachable"
     );
+}
+
+/// THE TRAP (board item `01M0WWJMYK0KDC2X7B7MR46FRR`,
+/// `docs/vision/DESIGN-plugin-dependencies.md` §5): a topological pass over
+/// `PluginManifest::requires` must NEVER become the injection order
+/// `Plugin::instructions()`'s own doc fixes to `with_plugin`/
+/// `install_selected` INSTALL order. `[plugins].install` names
+/// `test.dependent` FIRST and `test.base` -- `test.dependent`'s OWN
+/// `requires` target -- SECOND: a topological (dependency-before-
+/// dependent) resolution would put `test.base`'s fragment first instead.
+/// This test proves `install_selected`'s dependency-graph validation does
+/// not leak into `ConwayBuilder::build`'s actual plugin order: the
+/// assembled context still orders fragments by INSTALL order,
+/// `test.dependent` then `test.base`, exactly as if `requires` had never
+/// been declared.
+#[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
+#[tokio::test]
+async fn a_requires_edge_does_not_reorder_instruction_fragment_precedence() {
+    let mut cfg = base_config();
+    cfg.plugins.install = vec!["test.dependent".to_string(), "test.base".to_string()];
+    let backend = fake_backend("fake");
+    let store = Arc::new(FakeStore::new());
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    let conway: Conway = ConwayBuilder::from_parts(cfg)
+        .install_selected(
+            vec![
+                Arc::new(InstructingDependentPlugin {
+                    id: "test.dependent",
+                    fragment_name: "dependent-fragment",
+                    requires: vec!["test.base"],
+                }) as Arc<dyn Plugin>,
+                Arc::new(InstructingDependentPlugin {
+                    id: "test.base",
+                    fragment_name: "base-fragment",
+                    requires: vec![],
+                }) as Arc<dyn Plugin>,
+            ],
+            vec![],
+            vec![],
+        )
+        .expect("a satisfied requires edge, in either install order, must resolve cleanly")
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(empty_router())
+        .build()
+        .expect("build should succeed: test.base satisfies test.dependent's own requires");
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+    let turn = handle.prompt("hello there").await.expect("prompt");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+
+    let report = handle
+        .context_report_current(handle.root())
+        .await
+        .expect("context_report_current should succeed");
+    assert_eq!(report.instruction_fragments.len(), 2);
+    assert_eq!(
+        report.instruction_fragments[0].plugin_id, "test.dependent",
+        "injection order must follow with_plugin/install_selected INSTALL order, not the \
+         topological (dependency-before-dependent) order a naive resolution would produce"
+    );
+    assert_eq!(report.instruction_fragments[1].plugin_id, "test.base");
 }

@@ -122,6 +122,8 @@ impl Plugin for FixtureToolsPlugin {
             version: "0.0.0".to_string(),
             tools: vec![conway_core::ids::ToolName::new("probe")],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
 

@@ -447,6 +447,8 @@ impl Plugin for IdiomPlugin {
             version: env!("CARGO_PKG_VERSION").to_string(),
             tools: vec![],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
 
