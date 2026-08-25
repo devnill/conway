@@ -98,6 +98,18 @@ conway-plugin-mcp = { path = "../conway-plugin-mcp" }
 # `mcp_plugins.rs`. See that module's own doc for the full wiring and the
 # trust disclosure this dependency carries.
 conway-plugin-claude = { path = "../conway-plugin-claude" }
+# Board item 01M0VR96Y87FF2BVNTBSC6GEYR: browse a Claude Code marketplace
+# and install a plugin from it. This crate itself never gains a `reqwest`
+# dependency (dependency minimalism, `conway-plugin-marketplace/Cargo.toml`'s
+# own doc) -- `tui/app/marketplace.rs` calls this crate's `fetch_marketplace`/
+# `install_entry`/`uninstall_plugin`, which each build their own HTTP client
+# internally, and writes the resulting artifact's `{id, dir}` into
+# `settings.json` via `conway::config::set_claude_compat_entry` (spec update
+# 1: a fetched artifact is declared to conway as an ordinary
+# `[plugins].claude_compat[]` entry, the exact shape `conway-plugin-claude`
+# above already reads at startup -- no new plugin-loading mechanism, only a
+# new way for that entry to get written).
+conway-plugin-marketplace = { path = "../conway-plugin-marketplace" }
 # Board item 01M090JY3KYHQQMKCZZM1Y6EDZ: `conway.memory` -- the cross-tree
 # curator that recalls records from explicitly labelled past sessions
 # (DESIGN-context-path §11.7). Resolved through the SAME `[plugins].install`
@@ -227,6 +239,13 @@ schemars = { workspace = true }
 # off-by-default `test-support` feature. Dev-only: nothing in `src/` may
 # name it.
 conway = { path = "../conway", features = ["test-support"] }
+# Board item 01M0VR96Y87FF2BVNTBSC6GEYR: `tui/app/marketplace.rs`'s own
+# tests drive `App::apply_marketplace_install`/`apply_marketplace_uninstall`
+# against a real local HTTP server rather than a real network host --
+# already a pinned workspace dependency, used the identical way
+# `conway-plugin-backends`'s own test suite already does (C-04, not a new
+# one). Never named outside `#[cfg(test)]` code.
+wiremock = { workspace = true }
 # Board item 01KZFC43J1J06BM4CCWKCKHSNV: `main.rs`'s own `tracing_target_
 # tests` module additionally constructs a scoped subscriber
 # (`tracing::subscriber::with_default`, test-only -- production code never

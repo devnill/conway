@@ -125,17 +125,31 @@ the fuller argument.
 
 ## What conway does NOT do here
 
-- **No downloading, ever.** This layer reads a directory already on the
-  operator's own filesystem; nothing in this crate makes a network call
-  (`crates/conway-plugin-claude` depends on no HTTP client of any kind).
-- **No config writer.** A translated declaration is never written into
-  `settings.json` or anywhere else — delete the `[plugins].claude_compat[]`
-  entry and the translation vanishes; nothing was ever persisted. This is
-  the "read-at-runtime, not translate-and-write" decision, argued in full
-  in `conway_plugin_claude`'s own crate-level doc: a translate-and-write
-  approach would need a real array-entry config writer conway does not
-  have (`crates/conway/src/config/writer.rs` deliberately patches one id
-  via a hand-rolled text edit, never parse-and-reserialize), and it would
-  leave the operator holding entries whose Claude Code origin nothing
-  records — a direct conflict with `/plugin`'s own requirement to show
-  where a row came from.
+- **No downloading, ever, in THIS crate.** `conway_plugin_claude` reads a
+  directory already on the operator's own filesystem; nothing in it makes a
+  network call (`crates/conway-plugin-claude` depends on no HTTP client of
+  any kind), and this page's own scope stays a directory an operator
+  already has. **A sibling item now fetches one for you** —
+  [`marketplace.md`](marketplace.md) browses a marketplace and installs a
+  plugin's files into conway's own plugin store, then writes the exact
+  `[plugins].claude_compat[]` entry this page describes, pointing at where
+  it landed. That item does not change anything on THIS page: an installed
+  marketplace plugin is, on disk and in `settings.json`, indistinguishable
+  from a directory the operator cloned or typed the path to by hand — same
+  entry shape, same read-at-runtime translation, same trust footing.
+- **No config writer, in THIS crate.** `conway_plugin_claude` itself never
+  writes `settings.json` — delete the `[plugins].claude_compat[]` entry
+  yourself and the translation vanishes; nothing here was ever persisted by
+  this crate. This is the "read-at-runtime, not translate-and-write"
+  decision, argued in full in `conway_plugin_claude`'s own crate-level doc:
+  a translate-and-write approach would need a real array-entry config
+  writer, which did not exist when this item shipped
+  (`crates/conway/src/config/writer.rs` used to patch one id via a
+  hand-rolled text edit only, never parse-and-reserialize an array of
+  objects). **That writer exists now** (`conway::config::
+  set_claude_compat_entry`, [`marketplace.md`](marketplace.md)'s own doc) —
+  built for the marketplace-install item, which needed to write an `{id,
+  dir}` object into this exact array. `conway_plugin_claude` itself still
+  calls no writer of any kind; the marketplace item's own CLI wiring
+  (`crates/conway-cli/src/tui/app/marketplace.rs`) is what calls it, kept
+  entirely outside this crate.

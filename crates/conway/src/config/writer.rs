@@ -192,6 +192,239 @@ fn fresh_document(plugin_id: &str) -> String {
     )
 }
 
+/// Adds (`present: true`) or removes (`present: false`) a
+/// `{ "id": plugin_id, "dir": dir }` object element from the top-level
+/// `plugins.claude_compat` array of the JSON document at `path` -- board
+/// item `01M0VR96Y87FF2BVNTBSC6GEYR`'s config-writer half: a marketplace
+/// install declares itself to conway as an ordinary
+/// `conway::config::schema::ClaudeCompatPluginEntry` (spec update 1: a
+/// fetched artifact needs nothing more than `{ id, dir }`), so this is the
+/// writer that entry needs -- the array-of-OBJECTS sibling
+/// [`set_plugin_installed`]'s own doc names as harder than its own
+/// array-of-strings case ("Writing an object into an array has no writer
+/// and is materially harder under [the operator's-formatting-must-survive]
+/// constraint").
+///
+/// **Every safety property [`set_plugin_installed`] has, this has too, by
+/// construction: it is built from the exact same primitives** (this
+/// module's own hand-rolled scanner/splicer -- `scan_object_members`,
+/// `scan_array_elements`, `insert_member`, `insert_array_element`,
+/// `remove_array_element`), never a second, independent parser. A file that
+/// does not parse as strict JSON is refused before anything is touched
+/// (this module's own "Safety posture" doc); a byte outside the touched
+/// span is never re-emitted from a parsed representation, only copied
+/// verbatim; the write is tmp-then-rename; a goal state already holding
+/// (the SAME `id` already present when installing, or already absent when
+/// uninstalling) performs no write at all.
+///
+/// **Matching an existing element is by `id` ALONE, ignoring `dir`** --
+/// mirrors `set_plugin_installed`'s own single-key match. Installing an id
+/// that is already present is therefore a no-op even if `dir` differs (a
+/// re-install pointing at a new store path does not retarget an existing
+/// entry here; the caller is expected to uninstall-then-install when that
+/// is genuinely wanted, keeping this writer's own contract as simple as its
+/// sibling's).
+///
+/// Returns `Ok(true)` if a write happened, `Ok(false)` if the goal state
+/// already held. A missing file is created (parent directories included)
+/// when `present` is `true`; when `present` is `false` and the file does
+/// not exist, there is nothing to remove, so this returns `Ok(false)` with
+/// no filesystem write at all.
+pub fn set_claude_compat_entry(
+    path: &Path,
+    plugin_id: &str,
+    dir: &str,
+    present: bool,
+) -> Result<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(FacadeError::Io(e)),
+    };
+
+    let new_text = if text.trim().is_empty() {
+        // Same reasoning as `set_plugin_installed`'s identical branch: a
+        // missing/whitespace-only file has no existing document to
+        // preserve, so a no-op removal never creates one.
+        if !present {
+            return Ok(false);
+        }
+        fresh_claude_compat_document(plugin_id, dir)
+    } else {
+        if let Err(e) = serde_json::from_str::<serde_json::Value>(&text) {
+            return Err(FacadeError::Config {
+                path: Some(path.to_path_buf()),
+                message: format!(
+                    "{} is not valid JSON, refusing to rewrite it blindly: {e}",
+                    path.display()
+                ),
+            });
+        }
+        match patch_claude_compat_array(&text, plugin_id, dir, present) {
+            Ok(Some(patched)) => patched,
+            Ok(None) => return Ok(false),
+            Err(msg) => {
+                return Err(FacadeError::Config {
+                    path: Some(path.to_path_buf()),
+                    message: format!("{}: {msg}", path.display()),
+                })
+            }
+        }
+    };
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &new_text)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(true)
+}
+
+/// The `plugins.claude_compat` sibling of [`fresh_document`].
+fn fresh_claude_compat_document(plugin_id: &str, dir: &str) -> String {
+    format!(
+        "{{\n  \"plugins\": {{\n    \"claude_compat\": [\n      {}\n    ]\n  }}\n}}\n",
+        claude_compat_object_literal(plugin_id, dir)
+    )
+}
+
+/// The literal `{"id": ..., "dir": ...}` JSON object text spliced into (or
+/// matched against) the `plugins.claude_compat` array. `timeout_ms` is
+/// deliberately never written here -- `ClaudeCompatPluginEntry::timeout_ms`
+/// already defaults via `#[serde(default = "default_hook_timeout_ms")]`
+/// (`conway::config::schema`), so omitting it is not a loss, and writing it
+/// unconditionally would make every installed entry's own JSON noisier for
+/// no operator-visible benefit; an operator who wants a non-default timeout
+/// edits the array by hand afterward, the same way they would edit any
+/// other value this writer never re-touches.
+fn claude_compat_object_literal(plugin_id: &str, dir: &str) -> String {
+    format!(
+        "{{\"id\": {}, \"dir\": {}}}",
+        json_string_literal(plugin_id),
+        json_string_literal(dir)
+    )
+}
+
+/// The `id` member's raw (still-escaped) string value of array element
+/// `elem`, if `elem` is a JSON object with a string-valued `"id"` member --
+/// `None` for any other shape (a bare string element, a number, an object
+/// with no `id`, or an object whose `id` is not a string), which this
+/// module then simply never matches, exactly mirroring
+/// [`patch_install_array`]'s own "an operator hand-added, non-string
+/// element is left untouched, never a match candidate" posture applied to
+/// object elements instead of string ones.
+fn array_object_id<'a>(text: &'a str, elem: &Elem<'a>) -> Option<&'a str> {
+    let bytes = text.as_bytes();
+    if bytes.get(elem.start) != Some(&b'{') {
+        return None;
+    }
+    let (members, _close) = scan_object_members(text, elem.start).ok()?;
+    let id_member = members.iter().find(|m| m.key == "id")?;
+    if bytes.get(id_member.value_start) != Some(&b'"') {
+        return None;
+    }
+    let end = skip_string(bytes, id_member.value_start).ok()?;
+    Some(&text[id_member.value_start + 1..end - 1])
+}
+
+/// The `plugins.claude_compat` sibling of [`patch_install_array`] -- same
+/// locate-`plugins`/locate-array/insert-or-remove shape, over an
+/// already-validated-as-JSON `text`, differing only in which array key it
+/// targets (`"claude_compat"`, not `"install"`) and in matching an element
+/// by its `id` MEMBER rather than by the element's own raw string value
+/// (`plugins.claude_compat` holds objects, `plugins.install` holds bare
+/// strings).
+fn patch_claude_compat_array(
+    text: &str,
+    plugin_id: &str,
+    dir: &str,
+    present: bool,
+) -> std::result::Result<Option<String>, String> {
+    let bytes = text.as_bytes();
+    let root_open = skip_ws(bytes, 0);
+    if bytes.get(root_open) != Some(&b'{') {
+        return Err("the top-level JSON value must be an object".to_string());
+    }
+    let (root_members, root_close) = scan_object_members(text, root_open)?;
+
+    // LAST match, not first -- see `patch_install_array`'s own doc for why
+    // (duplicate top-level keys resolve last-wins under `serde_json`, the
+    // real loader).
+    let Some(plugins_member) = root_members.iter().rev().find(|m| m.key == "plugins") else {
+        if !present {
+            return Ok(None);
+        }
+        let value = format!(
+            "{{\"claude_compat\": [{}]}}",
+            claude_compat_object_literal(plugin_id, dir)
+        );
+        return Ok(Some(insert_member(
+            text,
+            root_open,
+            &root_members,
+            root_close,
+            "plugins",
+            &value,
+        )));
+    };
+
+    if bytes.get(plugins_member.value_start) != Some(&b'{') {
+        return Err("\"plugins\" must be a JSON object".to_string());
+    }
+    let (plugins_members, plugins_close) = scan_object_members(text, plugins_member.value_start)?;
+
+    let Some(cc_member) = plugins_members
+        .iter()
+        .rev()
+        .find(|m| m.key == "claude_compat")
+    else {
+        if !present {
+            return Ok(None);
+        }
+        let value = format!("[{}]", claude_compat_object_literal(plugin_id, dir));
+        return Ok(Some(insert_member(
+            text,
+            plugins_member.value_start,
+            &plugins_members,
+            plugins_close,
+            "claude_compat",
+            &value,
+        )));
+    };
+
+    if bytes.get(cc_member.value_start) != Some(&b'[') {
+        return Err("\"plugins.claude_compat\" must be a JSON array".to_string());
+    }
+    let (elements, array_close) = scan_array_elements(text, cc_member.value_start)?;
+
+    let found_index = elements
+        .iter()
+        .position(|e| array_object_id(text, e) == Some(plugin_id));
+
+    match (present, found_index) {
+        (true, Some(_)) => Ok(None),
+        (false, None) => Ok(None),
+        (true, None) => {
+            let raw_value = claude_compat_object_literal(plugin_id, dir);
+            Ok(Some(insert_array_element(
+                text,
+                cc_member.value_start,
+                &elements,
+                array_close,
+                &raw_value,
+            )))
+        }
+        (false, Some(idx)) => Ok(Some(remove_array_element(
+            text,
+            cc_member.value_start,
+            array_close,
+            &elements,
+            idx,
+        ))),
+    }
+}
+
 /// The targeted patch itself, over an already-validated-as-JSON `text`.
 /// Returns `Ok(Some(new_text))` when a splice is needed, `Ok(None)` when
 /// the goal state already holds, `Err(message)` when `text`'s shape at the
@@ -1047,5 +1280,300 @@ mod tests {
         let path = dir.join("settings.json");
         set_plugin_installed(&path, "conway.memory", true).expect("write");
         assert!(path.exists());
+    }
+
+    // ---- `set_claude_compat_entry`: the array-of-OBJECTS writer (board
+    // item 01M0VR96Y87FF2BVNTBSC6GEYR) -- the same test shapes as
+    // `set_plugin_installed`'s own suite above, run again against the
+    // object-array case.
+
+    #[test]
+    fn claude_compat_creates_a_fresh_file_with_parent_dirs_when_installing() {
+        let dir = tempfile_dir();
+        let path = dir.join("nested").join("settings.json");
+        let wrote =
+            set_claude_compat_entry(&path, "acme-tools", "/store/acme-tools", true).expect("write");
+        assert!(wrote);
+        let text = std::fs::read_to_string(&path).expect("read back");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+        assert_eq!(
+            value["plugins"]["claude_compat"],
+            serde_json::json!([{"id": "acme-tools", "dir": "/store/acme-tools"}])
+        );
+    }
+
+    #[test]
+    fn claude_compat_removing_from_a_nonexistent_file_is_a_no_op() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let wrote = set_claude_compat_entry(&path, "acme-tools", "/store/acme-tools", false)
+            .expect("write");
+        assert!(!wrote);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn claude_compat_refuses_to_touch_a_file_that_is_not_valid_json() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let original = "{ this is not json";
+        std::fs::write(&path, original).unwrap();
+        let err =
+            set_claude_compat_entry(&path, "acme-tools", "/store/acme-tools", true).unwrap_err();
+        assert!(err.to_string().contains("not valid JSON"), "got: {err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// Acceptance 4's own proof: a hand-edited file with the `"//"`-comment
+    /// convention, unusual key ordering, and unrelated top-level sections
+    /// survives an object-array install byte-for-byte outside the one
+    /// array this touches.
+    fn hand_edited_fixture_with_claude_compat() -> &'static str {
+        r#"{
+  "//": "operator note: do not touch the backends section by hand",
+  "zebra_first_key": "kept exactly as-is",
+  "default_role": "coder",
+  "backends": {
+    "anthropic": { "kind": "anthropic", "api_key": "sk-unused" }
+  },
+  "plugins": {
+    "_comment_plugins": "toggle plugins here",
+    "install": ["conway.skills"],
+    "claude_compat": [
+      { "id": "existing-plugin", "dir": "/home/op/plugins/existing" }
+    ]
+  },
+  "apple_last_key": 42
+}
+"#
+    }
+
+    #[test]
+    fn claude_compat_installing_into_a_hand_edited_file_preserves_comments_ordering_and_unrelated_keys(
+    ) {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, hand_edited_fixture_with_claude_compat()).unwrap();
+
+        let wrote =
+            set_claude_compat_entry(&path, "acme-tools", "/store/acme-tools", true).expect("write");
+        assert!(wrote);
+
+        let new_text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&new_text).expect("still valid json");
+
+        // The one thing that changed.
+        assert_eq!(
+            value["plugins"]["claude_compat"],
+            serde_json::json!([
+                {"id": "existing-plugin", "dir": "/home/op/plugins/existing"},
+                {"id": "acme-tools", "dir": "/store/acme-tools"}
+            ])
+        );
+        // The unrelated `install` array is untouched.
+        assert_eq!(
+            value["plugins"]["install"],
+            serde_json::json!(["conway.skills"])
+        );
+
+        // Byte-for-byte substring survival of everything else -- the same
+        // proof `adding_a_plugin_to_a_hand_edited_file_preserves_comments_
+        // ordering_and_unrelated_keys` gives `set_plugin_installed`.
+        assert!(new_text
+            .contains("\"//\": \"operator note: do not touch the backends section by hand\""));
+        assert!(new_text.contains("\"_comment_plugins\": \"toggle plugins here\""));
+        assert!(new_text.contains("\"zebra_first_key\": \"kept exactly as-is\""));
+        assert!(new_text.contains("\"apple_last_key\": 42"));
+        assert!(new_text
+            .contains("\"anthropic\": { \"kind\": \"anthropic\", \"api_key\": \"sk-unused\" }"));
+        let pos = |needle: &str| new_text.find(needle).expect(needle);
+        assert!(pos("\"//\"") < pos("\"zebra_first_key\""));
+        assert!(pos("\"zebra_first_key\"") < pos("\"default_role\""));
+        assert!(pos("\"default_role\"") < pos("\"backends\""));
+        assert!(pos("\"backends\"") < pos("\"plugins\""));
+        assert!(pos("\"plugins\"") < pos("\"apple_last_key\""));
+    }
+
+    #[test]
+    fn claude_compat_uninstalling_from_a_hand_edited_file_preserves_everything_else() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, hand_edited_fixture_with_claude_compat()).unwrap();
+
+        let wrote =
+            set_claude_compat_entry(&path, "existing-plugin", "ignored", false).expect("write");
+        assert!(wrote);
+
+        let new_text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&new_text).expect("still valid json");
+        assert_eq!(value["plugins"]["claude_compat"], serde_json::json!([]));
+        assert!(new_text
+            .contains("\"//\": \"operator note: do not touch the backends section by hand\""));
+        assert!(new_text.contains("\"apple_last_key\": 42"));
+    }
+
+    #[test]
+    fn claude_compat_matches_only_by_id_ignoring_dir() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        set_claude_compat_entry(&path, "acme-tools", "/store/v1", true).expect("install v1");
+
+        // Installing the SAME id again with a DIFFERENT dir is a no-op --
+        // matched by id alone (this function's own doc).
+        let wrote = set_claude_compat_entry(&path, "acme-tools", "/store/v2", true).expect("write");
+        assert!(!wrote);
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            value["plugins"]["claude_compat"],
+            serde_json::json!([{"id": "acme-tools", "dir": "/store/v1"}]),
+            "dir must stay whatever it was first installed with"
+        );
+
+        // Uninstalling names only the id too -- the dir argument is not
+        // even matched against.
+        let removed = set_claude_compat_entry(&path, "acme-tools", "/some/other/path", false)
+            .expect("uninstall");
+        assert!(removed);
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["plugins"]["claude_compat"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn claude_compat_adding_an_already_present_id_is_a_no_op_and_leaves_the_file_untouched() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let original =
+            r#"{"plugins": {"claude_compat": [{"id": "acme-tools", "dir": "/store/acme-tools"}]}}"#;
+        std::fs::write(&path, original).unwrap();
+        let mtime_before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let wrote =
+            set_claude_compat_entry(&path, "acme-tools", "/store/acme-tools", true).expect("write");
+        assert!(!wrote);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let mtime_after = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(
+            mtime_before, mtime_after,
+            "a no-op must never touch the file at all"
+        );
+    }
+
+    #[test]
+    fn claude_compat_removing_an_already_absent_id_is_a_no_op() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let original = r#"{"plugins": {"claude_compat": [{"id": "acme-tools", "dir": "/x"}]}}"#;
+        std::fs::write(&path, original).unwrap();
+        let wrote = set_claude_compat_entry(&path, "other-plugin", "/y", false).expect("write");
+        assert!(!wrote);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn claude_compat_removing_the_only_element_collapses_the_array_to_empty() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"plugins": {"claude_compat": [{"id": "acme-tools", "dir": "/x"}]}}"#,
+        )
+        .unwrap();
+        let wrote = set_claude_compat_entry(&path, "acme-tools", "/x", false).expect("write");
+        assert!(wrote);
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["plugins"]["claude_compat"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn claude_compat_removing_the_first_of_several_keeps_the_rest_in_order() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"plugins": {"claude_compat": [
+                {"id": "a", "dir": "/a"},
+                {"id": "b", "dir": "/b"},
+                {"id": "c", "dir": "/c"}
+            ]}}"#,
+        )
+        .unwrap();
+        let wrote = set_claude_compat_entry(&path, "a", "/a", false).expect("write");
+        assert!(wrote);
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            value["plugins"]["claude_compat"],
+            serde_json::json!([{"id": "b", "dir": "/b"}, {"id": "c", "dir": "/c"}])
+        );
+    }
+
+    #[test]
+    fn claude_compat_inserts_a_fresh_array_alongside_an_existing_install_array() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"plugins": {"install": ["conway.memory"]}, "default_role": "coder"}"#,
+        )
+        .unwrap();
+        let wrote =
+            set_claude_compat_entry(&path, "acme-tools", "/store/acme-tools", true).expect("write");
+        assert!(wrote);
+        let new_text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&new_text).unwrap();
+        assert_eq!(
+            value["plugins"]["claude_compat"],
+            serde_json::json!([{"id": "acme-tools", "dir": "/store/acme-tools"}])
+        );
+        // The pre-existing, unrelated `install` array survived.
+        assert_eq!(
+            value["plugins"]["install"],
+            serde_json::json!(["conway.memory"])
+        );
+        assert!(new_text.contains("\"default_role\": \"coder\""));
+    }
+
+    #[test]
+    fn claude_compat_round_trip_add_then_remove_restores_the_original_array_contents() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, hand_edited_fixture_with_claude_compat()).unwrap();
+
+        set_claude_compat_entry(&path, "acme-tools", "/store/acme-tools", true).expect("add");
+        set_claude_compat_entry(&path, "acme-tools", "/store/acme-tools", false).expect("remove");
+
+        let new_text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&new_text).unwrap();
+        assert_eq!(
+            value["plugins"]["claude_compat"],
+            serde_json::json!([{"id": "existing-plugin", "dir": "/home/op/plugins/existing"}]),
+            "round-tripping add-then-remove must land back on the original contents"
+        );
+    }
+
+    #[test]
+    fn claude_compat_a_non_object_element_is_never_a_match_candidate() {
+        // An operator (or a future writer) could hand-add a non-object
+        // element to this array; `array_object_id` must simply skip it,
+        // never panic or misparse it as a match.
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"plugins": {"claude_compat": ["not-an-object", {"id": "acme-tools", "dir": "/x"}]}}"#,
+        )
+        .unwrap();
+        let wrote = set_claude_compat_entry(&path, "acme-tools", "/x", false).expect("write");
+        assert!(wrote);
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            value["plugins"]["claude_compat"],
+            serde_json::json!(["not-an-object"])
+        );
     }
 }
