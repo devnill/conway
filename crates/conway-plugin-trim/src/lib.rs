@@ -59,6 +59,40 @@
 //! ```json
 //! { "plugins": { "install": ["conway.trim"] } }
 //! ```
+//!
+//! # No `settings.json` knob for the window
+//!
+//! `DEFAULT_KEEP_TURNS` is not reachable from `settings.json` -- installing
+//! `"conway.trim"` always gets the 8-turn window. Considered and declined,
+//! not an oversight:
+//!
+//! 1. **It is a curation heuristic, not a policy.** Nothing this plugin
+//!    curates is a choice with a right answer an operator can state (unlike,
+//!    say, which memory directory to use, or which skills to load) -- it is
+//!    "how aggressively should stale tool output be dropped", a tuning knob
+//!    an operator has no feedback loop to evaluate. Exposing it invites
+//!    fiddling with a number nobody can tell they got right.
+//! 2. **The closest first-party precedent already declined the analogous
+//!    knob.** `conway_plugin_memory::MemoryConfig`'s `max_memories`/
+//!    `max_bytes` are the same shape of problem -- a numeric injection
+//!    budget for a curation-adjacent mechanism -- and `conway-cli`'s
+//!    `first_party_plugins::bundle` constructs that `MemoryConfig` with
+//!    `Default::default()` unconditionally today: no `settings.json` field
+//!    reaches it either. Giving `conway.trim` a knob its closer sibling
+//!    does not have would be a new, one-off precedent, not a followed one.
+//! 3. **There is no general "thread a `settings.json` scalar into a
+//!    first-party plugin's config" mechanism to follow.** The one config
+//!    surface `conway_core::ports::PluginConfig`/`Plugin::narrowable_keys`
+//!    provides is a shrink-only override carried down a subagent hierarchy
+//!    from a value a caller already set at the root (`conway-tools`' `fs`
+//!    plugin is its only first-party user) -- built for a different problem
+//!    (bounding what a child agent can do relative to its parent), not for
+//!    an operator naming a top-level number in `settings.json`.
+//!
+//! An embedder who genuinely needs a different window keeps the reachable
+//! path this crate always had: constructing `TrimPlugin::with_keep_turns`
+//! directly in Rust, the same way `conway_plugin_memory::MemoryPlugin::new`
+//! takes a caller-supplied `MemoryConfig` today.
 
 use std::sync::Arc;
 
@@ -75,6 +109,15 @@ pub const PLUGIN_ID: &str = "conway.trim";
 /// The default window: keep the last 8 turns' tool round-trips, drop older
 /// ones. Arbitrary but small enough to matter on a session worth curating at
 /// all.
+///
+/// **Provenance: picked, not measured.** This crate's introducing commit
+/// (`df5de41`) already called it "arbitrary" the day it was written -- no
+/// session-cost benchmark, user study, or token-budget model ever compared
+/// 8 against 6 or 12 or anything else. Nobody recorded why 8 specifically,
+/// beyond "small enough to matter"; that absence is the honest note, not a
+/// gap this doc comment is pretending to fill. See the module doc's "No
+/// `settings.json` knob" section for why that is left as a constant rather
+/// than exposed for an operator to pick their own guess instead.
 pub const DEFAULT_KEEP_TURNS: u32 = 8;
 
 /// Drops tool call/result round-trips whose turn is more than `keep_turns`

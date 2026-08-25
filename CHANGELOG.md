@@ -1025,6 +1025,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`scripts/check-orphan-docs.py`, a new fast gate** (registered in `scripts/check-fast-gates.sh`, not yet wired into a `.github/workflows/ci.yml` job — see that script's own header): every tracked `.md` file must either have a link row in `docs/vision/README.md` (if it lives directly in that directory) or be referenced by path or filename from some other tracked `.md` or source file, with an explicit allowlist for prompt fragments and test fixtures that are loaded as data. Run against the tree before the fix above, it named exactly the four pages that fix adds.
 
+### Documented
+
+- **`conway.trim`'s 8-turn keep window gets no `settings.json` knob — considered and declined, argued rather than assumed.** Naming `"conway.trim"` in `[plugins].install` was already reachable; the window that curator drops old tool round-trips against was reachable only by an embedder calling `TrimPlugin::with_keep_turns` in Rust, leaving a binary-only operator with a number someone else picked and no way to change it. Argued and kept a plain constant, not turned into a config surface: it is a curation heuristic an operator has no feedback loop to evaluate, not a policy with a right answer to state, and `conway.memory`'s own `MemoryConfig` — the closest first-party precedent, the same shape of numeric injection budget — is *also* constructed with `Default::default()` in `conway-cli`'s bundling code today, with no `settings.json` field reaching it either; there is no existing "thread a `settings.json` scalar into a first-party plugin's config" pattern to follow, only a shrink-only per-agent narrowing mechanism built for a different problem. `DEFAULT_KEEP_TURNS`'s own doc comment now says plainly that 8 was picked, not measured — the crate's introducing commit already called it "arbitrary" the day it was written, and no benchmark has compared it against another number since. `crates/conway-plugin-trim/src/lib.rs` and `docs/plugins/README.md`'s `conway.trim` bullet carry the argument; no code, config schema, or test changed.
+
 ## [0.9.0] — 2026-08-13
 
 ### Added
