@@ -7,6 +7,49 @@
 //!
 //! `route_reason` stays `serde_json::Value` permanently — the log stores
 //! the reason as data; typed access is via `Event::ModelDecision`.
+//!
+//! ## Wire compatibility contract (board item `01M0V2KE7PG8BF3FK90BFTSG47`)
+//!
+//! **Every record ever written to a `<session-id>.jsonl` file must still
+//! deserialize under every later build, forever.** The log is append-only
+//! and sessions are long-lived (`--resume`, `sessions show/tree/export` all
+//! read a file back from disk, possibly written by a build from months
+//! earlier); there is no floor date or migration step that retires an old
+//! line. Until this paragraph was written, the contract existed only as an
+//! argument made by inspection at one call site (`AgentResult::
+//! transcript_ref`'s own doc, `crate::agent`) — this is that argument
+//! generalized to the rule the next variant or field owes, not just the
+//! one field that prompted it.
+//!
+//! Concretely, for anyone adding to this enum or to [`SessionMeta`]:
+//!
+//! - **A new field on an EXISTING variant/struct MUST be `Option` (or
+//!   otherwise defaulted) with `#[serde(default)]`.** A record already on
+//!   disk from before the field existed has no key for it; without
+//!   `#[serde(default)]`, `serde` fails the whole line with a missing-field
+//!   error. Every field added to [`SessionMeta`] after its first production
+//!   writer already follows this (`ephemeral`, `ask_origin`, `root`,
+//!   `plugin_config` — see each field's own doc for the specific old-data
+//!   reading it decodes as).
+//! - **A field already required when a variant got its first production
+//!   writer may stay required.** No log line written before that writer
+//!   existed can be missing it, because no such line exists.
+//! - **A new [`LogRecord`] variant, or a new variant on an enum a record
+//!   embeds (e.g. `ResultStatus`, `Provenance`), is always safe to add.** A
+//!   build reading an OLD line never encounters a variant that did not
+//!   exist yet; an internally-tagged `serde` enum only rejects a `kind`/
+//!   `type` tag it does not recognize, which an old line can never
+//!   contain.
+//! - **A variant or field, once it has a production writer, may never be
+//!   renamed or removed.** Renaming is exactly the field-recreated-as-
+//!   required failure above wearing a new name; a reader matching on the
+//!   old name breaks either way, `serde` error or not.
+//!
+//! Enforced by `crates/conway-core/tests/log_wire_compat.rs`: a `.jsonl`
+//! fixture hand-authored from this module's shape as it stood at an
+//! earlier commit, asserted to still deserialize under the current one.
+//! See that file's own doc for which commit, why, and why the fixture must
+//! not be regenerated from today's schema.
 
 use std::path::PathBuf;
 
