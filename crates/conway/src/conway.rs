@@ -166,14 +166,23 @@ impl Conway {
     /// truncated, and NEVER able to displace the permission-mode field's own
     /// safety signal (`drop_priority` ranks it strictly below `mode`, so
     /// every contribution is already at its own empty floor before `mode`
-    /// gives up anything). What remains open: `crates/conway-cli`'s
-    /// `AppState::plugin_status_contributions` -- the field that render path
-    /// actually reads -- is not yet populated from a running session by
-    /// calling THIS accessor; that wiring (thread `conway.
-    /// plugin_status_contributions()` through at TUI startup, the same
+    /// gives up anything). **And no longer unreachable either** (board item
+    /// `01M0XC1GF73Z9GTE7TN65TRW4A`): `crates/conway-cli`'s `App::new`
+    /// copies this accessor's result into `AppState::
+    /// plugin_status_contributions` once, at TUI startup -- the same
     /// "populate once outside the render path" shape `AppState::
-    /// plugin_commands`/`agent_names` already use) is a disclosed follow-up,
-    /// not done here.
+    /// plugin_commands`/`agent_names` already use.
+    ///
+    /// **That wiring does not turn this into a live view.** It is still
+    /// exactly the build-time snapshot described above: typically empty at
+    /// real session start, and frozen thereafter for the life of the
+    /// process. A plugin's status changing after `ConwayBuilder::build` has
+    /// run (a guard dying mid-session, a build finishing) is invisible to
+    /// both this accessor and the `AppState` field it feeds. A genuinely
+    /// live per-session poll -- re-reading `Plugin::status_contributions`
+    /// against the actual running plugins, on some cadence, from inside the
+    /// TUI's own event loop -- is a separate and larger piece of work,
+    /// deliberately not built by this wiring.
     pub fn plugin_status_contributions(&self) -> &[conway_core::ports::PluginStatusContribution] {
         &self.plugin_status_contributions
     }

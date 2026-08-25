@@ -930,15 +930,26 @@ pub struct AppState {
     /// never displace the `mode` field's own safety signal).
     ///
     /// `AppState::new` seeds this empty, matching every other collection
-    /// field's construction-time default. **Not yet populated from a
-    /// running `Conway` session by anything in this crate** -- threading
-    /// `conway.plugin_status_contributions()` through to here at session
-    /// startup (the same "populate once outside the render path" shape
-    /// [`Self::plugin_commands`]/[`Self::agent_names`] already use) is a
-    /// disclosed follow-up, out of the file-ownership scope this item was
-    /// built under. Tests in `view/status.rs` set this field directly,
-    /// matching every other `AppState` field's own test idiom in that
-    /// module.
+    /// field's construction-time default. **Populated once, at TUI
+    /// startup** (board item `01M0XC1GF73Z9GTE7TN65TRW4A`), by
+    /// `App::new` copying `conway.plugin_status_contributions()` -- the
+    /// same "populate once outside the render path" shape
+    /// [`Self::plugin_commands`]/[`Self::agent_names`] already use.
+    ///
+    /// **This is a snapshot, not a live view, and it does not update
+    /// mid-session.** `Conway::plugin_status_contributions()`'s own doc
+    /// explains why: the value it returns was collected once, in
+    /// `ConwayBuilder::build`, before this session's own `status/1`
+    /// notifications (if any) had arrived -- typically empty at real
+    /// session start, and frozen at whatever it held at that moment for
+    /// the rest of the process's life. A plugin whose health changes AFTER
+    /// startup (a guard that dies mid-session, a build that finishes) will
+    /// not be reflected here; a genuinely live per-session poll is a
+    /// separate, larger piece, not built by this wiring. Tests in
+    /// `view/status.rs` still set this field directly, matching every
+    /// other `AppState` field's own test idiom in that module; the
+    /// end-to-end "does a real build actually populate it" proof lives in
+    /// `app/startup.rs`'s own test module instead.
     pub plugin_status_contributions: Vec<PluginStatusContribution>,
 }
 
