@@ -186,7 +186,8 @@ const READ_ONLY_MCP_REASON: &str = "installed unconditionally from [plugins].mcp
 /// the same reason.
 const READ_ONLY_CLAUDE_COMPAT_REASON: &str =
     "read-at-runtime from a directory named in [plugins].claude_compat in settings.json -- \
-     no per-entry control here; edit settings.json to remove it";
+     no per-entry control here; run `/plugin uninstall <id>` (or edit settings.json directly) \
+     to remove it";
 
 /// Subprocess wire vocabulary, cited from `conway_plugin_subprocess::
 /// wire`'s own `initialize` point list (`crates/conway-plugin-subprocess/

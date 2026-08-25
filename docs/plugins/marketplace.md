@@ -124,6 +124,46 @@ load outright (`claude_compat_plugins::install`'s own "an unresolvable entry
 fails the whole build" contract) — a worse failure than a stray directory.
 Removing a plugin never installed is a reported no-op, never an error.
 
+## Triggering it: `/plugin install`/`/plugin uninstall`
+
+Board item `01M0WB5W5DX844HSJQG3JP23X0` wired the interactive trigger the
+listing item (`01M0VR5RCCB8NDGG2JEQW8X7XR`) had scoped out: `/plugin` still
+opens the read-only listing bare, and now also takes an action —
+
+```
+/plugin install <marketplace-url> <plugin-id>
+/plugin uninstall <plugin-id>
+```
+
+**Smallest honest v1: a URL argument, not a browsable catalogue.** An
+operator must already know the marketplace URL and the plugin id (from the
+marketplace's own listing page, a README, etc.) — this cannot fetch a
+marketplace's manifest just to let an operator pick from it interactively.
+A browsable catalogue is a real, larger follow-up, not built here.
+
+Both forms extend the existing `SlashCommand::Plugins` variant (the one
+surface that owns plugin listing keeps owning plugin install/uninstall too,
+rather than gaining a competing command) and reach the identical, already-
+tested `App::apply_marketplace_install`/`apply_marketplace_uninstall`
+methods described above — install is awaited directly inside `App::submit`
+(not spawned off the render loop the way a plugin command or `/ask` is:
+`app/marketplace.rs`'s own module doc explains why splitting the tested
+method into a spawn-safe half was judged not worth the drift risk for a
+fetch already bounded by the 20-second client timeout above). Uninstall
+touches no network at all, so it always runs inline. Once installed, the
+plugin appears in `/plugin`'s own listing with a `claude-compat` origin —
+on the NEXT restart, exactly like a toggled compiled-in plugin or a hand-
+edited `[plugins].claude_compat[]` entry (config changes here are never
+live-applied to a running session).
+
+`env`/`cwd` — the one thing this trigger needed that the ordinary slash-
+command dispatch machinery (`commands::Host`) does not carry — are
+resolved once, at `App::new`, from the same ambient sources the TUI
+already reads for its history file and permission-file loading, and parked
+as two `App` fields rather than threaded as a new `App::new` parameter
+(which would have forced every one of this crate's ~40 existing `App::new`
+call sites to name a value almost none of them touch).
+
 ## Trust — read this before installing anything
 
 **Settled, not re-argued here.** A fetched artifact is checked against
@@ -142,13 +182,18 @@ operator would need to walk back is already running.
 
 ## What this does NOT do
 
-- **No slash command or menu yet.** `App::apply_marketplace_install`/
-  `apply_marketplace_uninstall` are real, tested, end-to-end-correct
-  methods with no interactive TUI trigger wired to them yet — deliberately
-  scoped out of this item rather than rushed; see this item's own
-  completion report for exactly what a follow-up (a `SlashCommand` variant
-  mirroring `/ask`'s async-effect pipeline) would touch.
+- **No browsable marketplace catalogue.** `/plugin install` takes a URL and
+  a plugin id the operator already knows — it cannot fetch a marketplace's
+  manifest and let an operator pick from a rendered list of what it offers.
+  See "Triggering it", above.
 - **No digest check, no allow-list, no trust prompt**, and none is coming
   from this mechanism — see "Trust", above.
 - **No git clone, no archive extraction** — see "The manifest format",
   above.
+- **No non-interactive (`conway <plugin-id>.<command>`-style) trigger.**
+  `/plugin install`/`uninstall` are TUI-only, like every other `/plugin`
+  action — a non-interactive trigger was considered and rejected here: the
+  CLI's `external_subcommand` surface dispatches an ALREADY-installed
+  plugin's own command, a different question from installing one in the
+  first place, and one-shot mode has no equivalent to `App`'s `env`/`cwd`
+  fields or transcript to disclose into.

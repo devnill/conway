@@ -819,6 +819,34 @@ impl App {
                                         Effect::RunModalAsk { question } => {
                                             self.spawn_modal_ask(question);
                                         }
+                                        // Structurally unreachable from THIS
+                                        // call site for the same reason
+                                        // `RunPluginCommand`/`RunModalAsk`
+                                        // just above are: `execute_intent_
+                                        // confirm` only ever returns `None`/
+                                        // `FocusNewSession`, never a
+                                        // `SlashCommand::Plugins` action.
+                                        // Handled correctly anyway, mirroring
+                                        // both comments just above.
+                                        Effect::RunMarketplaceInstall {
+                                            marketplace_url,
+                                            plugin_id,
+                                        } => {
+                                            let env = self.env.clone();
+                                            let cwd = self.cwd.clone();
+                                            self.apply_marketplace_install(
+                                                marketplace_url,
+                                                plugin_id,
+                                                &env,
+                                                &cwd,
+                                            )
+                                            .await;
+                                        }
+                                        Effect::RunMarketplaceUninstall { plugin_id } => {
+                                            let env = self.env.clone();
+                                            let cwd = self.cwd.clone();
+                                            self.apply_marketplace_uninstall(plugin_id, &env, &cwd);
+                                        }
                                     }
                                 }
                                 Action::CtrlC => {
