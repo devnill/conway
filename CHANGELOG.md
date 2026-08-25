@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A Claude Code plugin's `hooks/hooks.json` now translates into real,
+  dispatchable conway `[hooks].rules[]`-shaped registrations** — board
+  item `01M0X1FCQ80C9ET97HENXSAW2K`, `crates/conway-plugin-claude`'s own
+  `hooks` module, carrying an earlier item's name-level-only mapping
+  (`01M0VR89FB1F3Q4FQ8852K2A5E`) the rest of the way. Six Claude Code
+  events map onto conway's own eight (`SessionStart`/`UserPromptSubmit`/
+  `PreToolUse`/`PostToolUse` exactly; `SubagentStart`->`child_spawned` and
+  `SubagentStop`->`child_reported` **approximate**, per the operator
+  ruling's own best-effort-and-disclosed appetite — the one known
+  divergence for `child_reported` is named in the module doc and the new
+  coverage table alike). `ClaudeCompatReport::hook_registrations()` hands
+  back a `HookRegistration` per `Mapped` rule: the Claude Code command
+  STRING wrapped, never word-split, as `["/bin/sh", "-c", <command>]`,
+  with `${CLAUDE_PLUGIN_ROOT}` already resolved to the discovered plugin
+  directory's own absolute path (every real `hooks.json` checked against —
+  `beepboop` 1.4.0, `ideate` 3.2.2 — uses that token in every command).
+  Proven dispatching end to end, over the real `ProcessHookRunner`, for
+  one observation-tier event (`session_starting`, fail-open) and one
+  deny-capable event (`pre_tool_use`, fail-closed, with a `matcher`) — not
+  a hand-built fixture standing in for dispatch. Zero new core events: an
+  unmapped event (nineteen of `beepboop`'s twenty-five) is still declined
+  and named, never silently dropped, and `SessionEnd` specifically stays
+  declined and settled (operator ruling, `docs/vision/
+  DESIGN-permission-modes.md` §9) — not reopened by this item.
+  `docs/plugins/claude-compat.md` gets a coverage table (every event
+  either real plugin declares, its status — maps/approximate/declined —
+  and, for the mapped ones, the fail-open-or-closed posture it inherits)
+  and its own former "nothing is wired to dispatch" sentence corrected.
+  This crate still never mutates a `HooksConfig` itself — a caller appends
+  the registrations into its own `[hooks].rules[]`; `conway-cli`'s own
+  `[plugins].claude_compat[]` install path does not perform that append
+  yet (still MCP-only), a disclosed, separate follow-up.
+
 - **conway can now install a plugin from a Claude Code marketplace** —
   board item `01M0VR96Y87FF2BVNTBSC6GEYR`, the network-reaching half of the
   plugin feature (trust was ruled settled beforehand: decision

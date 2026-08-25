@@ -31,11 +31,27 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-# The public facade, for this crate's own end-to-end test (proving a
+# The public facade, for this crate's own end-to-end tests (proving a
 # translated MCP declaration becomes a real, invokable `Tool` -- acceptance
-# 2's "demonstrated end to end" requirement) -- test-only, never named in
-# `src/`.
-conway = { path = "../conway" }
+# 2's "demonstrated end to end" requirement -- and, board item
+# `01M0X1FCQ80C9ET97HENXSAW2K`, that a translated `hooks.json` rule becomes
+# a real, dispatching `[hooks].rules[]` entry) -- test-only, never named in
+# `src/`. `test-support` (implies `testkit`) is what puts
+# `conway::test_support::test_builder` and friends in reach, the same
+# feature `conway`'s own test suite dev-depends on itself for.
+conway = { path = "../conway", features = ["test-support"] }
+# `hooks_dispatch.rs`'s own tests build `conway_core::agent`/`content`/
+# `ids`/`log`/`ports` values directly (a scripted `Backend` response, a
+# `PermissionGate` double, a `LogRecord` read back) -- the identical
+# direct dependency `crates/conway/tests/hook_revoke_seam.rs` already has
+# for the same reason, made explicit here since this crate (unlike
+# `conway` itself) does not get `conway_core` for free.
+conway-core = { path = "../conway-core" }
 conway-testkit = { path = "../conway-testkit" }
+# `hooks_dispatch.rs`'s own `pre_tool_use` test implements `PermissionGate`
+# (an `async_trait` port, like every `conway_core::ports` trait) inline,
+# the identical pattern `crates/conway/tests/hook_revoke_seam.rs` already
+# uses for its own `RecordingAllowGate`.
+async-trait = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
