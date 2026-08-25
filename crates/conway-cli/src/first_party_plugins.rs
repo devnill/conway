@@ -105,6 +105,7 @@
 //! `settings.json` with no `[plugins]` section at all: `default_backends`
 //! defaults to naming both, unioned in regardless.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use conway::plugin::{MemoryStore, Plugin};
@@ -332,9 +333,17 @@ fn bundle(
 /// set independently, so the browser's own "N installed of M compiled-in"
 /// count can never drift from what `[plugins].install` actually resolves
 /// against.
+/// `env` is the same explicit process-environment map every
+/// `CONWAY_CONFIG_DIR`-aware resolver in this codebase takes -- forwarded to
+/// `resolve_idiom_plugin`, never read from `std::env` here (board item
+/// `01M0W5Q569F0T97HSEP6F0MPCR`). This function's one production caller
+/// (`tui::app::startup`'s `App::new`) already resolves an `env` map once, at
+/// construction, for `history_path`/permission-file loading -- the same map
+/// is reused here, not re-read.
 pub fn all_bundle_plugins(
     cwd: &std::path::Path,
     memory_store: Arc<dyn MemoryStore>,
+    env: &HashMap<String, String>,
 ) -> Vec<Arc<dyn Plugin>> {
     // A throwaway `InMemoryAgentNames` backs the `conway.names` candidate
     // for this scan, deliberately -- and, unlike `memory_store` above,
@@ -351,7 +360,7 @@ pub fn all_bundle_plugins(
     // fallback for an unselected build ("unused, cheap, no I/O").
     let browse_names: Arc<dyn AgentNames> =
         Arc::new(conway_plugin_names::InMemoryAgentNames::new());
-    let idiom_plugin = resolve_idiom_plugin(cwd)
+    let idiom_plugin = resolve_idiom_plugin(cwd, env)
         .unwrap_or_else(|_| Arc::new(conway_plugin_idiom::IdiomPlugin::new()) as Arc<dyn Plugin>);
     bundle(cwd, memory_store, browse_names, idiom_plugin)
 }
@@ -382,8 +391,19 @@ pub fn all_bundle_plugins(
 /// `instructions.md` already failed the real build in `install` first,
 /// mirroring `skills_plugin`'s own fallback in `bundle` above for the
 /// identical reason.
-fn resolve_idiom_plugin(cwd: &std::path::Path) -> conway::Result<Arc<dyn Plugin>> {
-    let (project, global) = conway_plugin_idiom::resolve_operator_paths(cwd);
+///
+/// `env` is forwarded verbatim to `conway_plugin_idiom::resolve_operator_paths`
+/// (and, through it, `global_instructions_path`) so the GLOBAL operator file
+/// honours `CONWAY_CONFIG_DIR` exactly as `settings.json` itself does (board
+/// item `01M0W5Q569F0T97HSEP6F0MPCR`) -- never read from `std::env` at any
+/// point in this call chain; every caller of this function threads its own
+/// `env` map through from wherever it was resolved once, at that caller's own
+/// construction boundary.
+fn resolve_idiom_plugin(
+    cwd: &std::path::Path,
+    env: &HashMap<String, String>,
+) -> conway::Result<Arc<dyn Plugin>> {
+    let (project, global) = conway_plugin_idiom::resolve_operator_paths(cwd, env);
     let plugin =
         conway_plugin_idiom::IdiomPlugin::from_operator_files(Some(&project), global.as_deref())?;
     Ok(Arc::new(plugin))
@@ -624,13 +644,22 @@ fn resolve_agent_names(install_ids: &[String]) -> Result<Arc<dyn AgentNames>, Fa
 /// convention -- the shape the governing decision rejected, and the one
 /// `conway_core::ports::memory_store`'s own module doc records this project
 /// abandoning once already.
+///
+/// `env` is the process environment map `main.rs`'s own `main` resolves
+/// once, at the binary's single entry point (mirroring `ConwayBuilder::
+/// build`'s own `std::env::vars()` read for `provider_profile_file_paths`/
+/// the central sessions root) -- forwarded to `resolve_idiom_plugin` so
+/// the operator-global instructions file honours `CONWAY_CONFIG_DIR` (board
+/// item `01M0W5Q569F0T97HSEP6F0MPCR`), never re-read ambiently inside this
+/// function or anything it calls.
 pub async fn install(
     builder: ConwayBuilder,
+    env: &HashMap<String, String>,
 ) -> Result<(ConwayBuilder, Arc<dyn MemoryStore>, Arc<dyn AgentNames>), FacadeError> {
     let cwd = builder.config().cwd.clone();
     let memory_store = resolve_memory_store(&cwd, &builder.config().plugins.install).await?;
     let agent_names = resolve_agent_names(&builder.config().plugins.install)?;
-    let idiom_plugin = resolve_idiom_plugin(&cwd)?;
+    let idiom_plugin = resolve_idiom_plugin(&cwd, env)?;
     let plugins = bundle(
         &cwd,
         memory_store.clone(),
@@ -678,14 +707,22 @@ pub async fn install(
 /// same `Arc`, then reads back to resolve `/steer <name>`. Handing this
 /// function a second store would break that loop silently: the rename would
 /// succeed and the name would resolve to nothing.
+///
+/// `env` is forwarded to `resolve_idiom_plugin` for the identical reason
+/// [`install`]'s own doc gives (board item `01M0W5Q569F0T97HSEP6F0MPCR`):
+/// `Conway::config()` does not retain the `env` map it was loaded with (only
+/// `cwd` survives onto `ConwayConfig`), so this is NOT already in reach
+/// through `conway` alone -- every caller threads its own resolved-once map
+/// through instead of re-deriving one here.
 pub fn installed_plugins(
     conway: &conway::Conway,
     memory_store: Arc<dyn MemoryStore>,
     agent_names: Arc<dyn AgentNames>,
+    env: &HashMap<String, String>,
 ) -> Vec<Arc<dyn Plugin>> {
     let install = &conway.config().plugins.install;
     let cwd = conway.config().cwd.clone();
-    let idiom_plugin = resolve_idiom_plugin(&cwd)
+    let idiom_plugin = resolve_idiom_plugin(&cwd, env)
         .unwrap_or_else(|_| Arc::new(conway_plugin_idiom::IdiomPlugin::new()) as Arc<dyn Plugin>);
     bundle(&cwd, memory_store, agent_names, idiom_plugin)
         .into_iter()
@@ -804,7 +841,8 @@ mod tests {
     fn all_bundle_plugins_returns_every_linked_candidate_unfiltered() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let ids: Vec<String> = all_bundle_plugins(&cwd, memory_store)
+        let env = HashMap::new();
+        let ids: Vec<String> = all_bundle_plugins(&cwd, memory_store, &env)
             .iter()
             .map(|p| p.manifest().id)
             .collect();

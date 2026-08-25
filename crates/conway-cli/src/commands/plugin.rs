@@ -62,11 +62,19 @@ use crate::tui::commands::CommandRegistry;
 /// store (board item `01M0TV5BSE98S16SFYECG9G9WP`): forwarded, never
 /// re-resolved, so `conway conway.names.rename ...` run as a one-shot
 /// subcommand writes into the SAME file the TUI reads names out of.
+///
+/// `env` is `main.rs`'s own process-environment map, resolved once at that
+/// binary's single entry point and forwarded through `dispatch` -- passed to
+/// [`first_party_plugins::installed_plugins`] so the `conway.idiom` plugin's
+/// operator-global instructions file honours `CONWAY_CONFIG_DIR` here too
+/// (board item `01M0W5Q569F0T97HSEP6F0MPCR`), never re-read ambiently in
+/// this function.
 pub async fn run(
     args: &[String],
     conway: &Conway,
     memory_store: Arc<dyn MemoryStore>,
     agent_names: Arc<dyn conway_plugin_names::AgentNames>,
+    env: &std::collections::HashMap<String, String>,
 ) -> conway::Result<ExitCode> {
     let Some(full_name) = args.first() else {
         // Unreachable through clap's own `external_subcommand`, which never
@@ -79,7 +87,7 @@ pub async fn run(
     };
     let rest = args[1..].join(" ");
 
-    let plugins = first_party_plugins::installed_plugins(conway, memory_store, agent_names);
+    let plugins = first_party_plugins::installed_plugins(conway, memory_store, agent_names, env);
     let registry = match CommandRegistry::build(&plugins) {
         Ok(registry) => registry,
         Err(e) => {

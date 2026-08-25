@@ -130,16 +130,16 @@ path.** `<project>/.conway/instructions.md`, matching the direct-`cwd`-join
 convention `.conway/agents/`/`.conway/skills/` already use (never walked up
 an ancestor chain, unlike Pi's own multi-directory merge — conway's project
 file convention never walks upward for `.conway/*`, so a search path would
-be new shape for this file alone). And, additionally, `<home>/.conway/
-instructions.md` — the SAME directory `conway::config::discovery::
-home_settings_path` already resolves `settings.json` into, filename
-swapped, at zero cost in new dependencies or schema. That reuse is
-deliberately the raw, `CONWAY_CONFIG_DIR`-independent home directory, not
-threaded through the env-aware `user_config_path` an embedder's isolated
-`CONWAY_CONFIG_DIR` would otherwise expect — doing so would mean adding an
-`env` parameter to `first_party_plugins::bundle` and every caller between
-it and `main.rs`, well past this item's sizing for a file most operators
-write once, in their real home directory. Both files are read when
+be new shape for this file alone). And, additionally, the SAME directory
+`conway::config::discovery::user_config_path` resolves `settings.json`
+into, filename swapped, at zero cost in new dependencies or schema — that
+is `<home>/.conway/instructions.md` when `CONWAY_CONFIG_DIR` is unset, and
+`<CONWAY_CONFIG_DIR>/instructions.md` when it is set (board item
+`01M0W5Q569F0T97HSEP6F0MPCR`, closing an isolation gap identical in shape
+to the one board item `01M0VV6CVSZM4XH8J4G6EBV5E3` closed for
+`settings.json` itself: an operator or embedder relocating conway's
+user-config layer relocates this file with it too, not only
+`settings.json`). Both files are read when
 present, and **both are additive — neither one's presence disables the
 other**, unlike `settings.json`'s project-overrides-user merge: an operator
 who has authored both a house-wide preference and a per-project convention

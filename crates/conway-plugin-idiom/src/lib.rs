@@ -147,19 +147,24 @@
 //! **2. Project AND global, both additive.** conway's config discovery
 //! already resolves a project layer (`conway::config::discovery::discover`,
 //! upward-walking for `settings.json` specifically) and a user layer
-//! (`conway::config::discovery::user_config_path`/[`home_settings_path`
-//! ](conway::config::discovery::home_settings_path)). Reuse is cheap for
-//! the GLOBAL half: [`global_instructions_path`] below is one call to the
-//! already-public `home_settings_path` plus a filename swap, no new
-//! dependency, no schema change. It is deliberately the raw, override-
-//! independent `~/.conway/` -- NOT threaded through `CONWAY_CONFIG_DIR`
-//! the way `user_config_path` is, because doing that would mean adding an
-//! `env: &HashMap<String, String>` parameter to `first_party_plugins::
-//! bundle` and every caller between it and `main.rs`, well past this
-//! item's "S-M" sizing for a file most operators write once in their real
-//! home directory. Stated as a limitation, not fixed: an embedder or test
-//! isolating `CONWAY_CONFIG_DIR` does not thereby isolate this file too.
-//! The PROJECT half does not reuse `discover` at all -- that function's
+//! (`conway::config::discovery::user_config_path`). Reuse is cheap for the
+//! GLOBAL half: [`global_instructions_path`] below is one call to
+//! `user_config_path` plus a filename swap, no new dependency, no schema
+//! change. **It honours `CONWAY_CONFIG_DIR` exactly the way
+//! `settings.json` itself does** (board item
+//! `01M0W5Q569F0T97HSEP6F0MPCR`, closing the same isolation gap board item
+//! `01M0VV6CVSZM4XH8J4G6EBV5E3` closed for `settings.json` -- an operator
+//! or embedder relocating conway's user-config layer relocates THIS file
+//! with it, not only `settings.json`) -- so `global_instructions_path`
+//! takes the same explicit `env: &HashMap<String, String>` every other
+//! `CONWAY_CONFIG_DIR`-aware resolver in this codebase takes, threaded
+//! from `first_party_plugins::install`/`all_bundle_plugins`/
+//! `installed_plugins` (`crates/conway-cli/src/first_party_plugins.rs`)
+//! down through `resolve_idiom_plugin`/`resolve_operator_paths` to here --
+//! never read from `std::env` directly at any point in that chain (see
+//! `config_isolation_guard.rs`'s own doc for why an ambient read anywhere
+//! along it would be the identical defect wearing a new file's name). The
+//! PROJECT half does not reuse `discover` at all -- that function's
 //! candidate is hardcoded to `settings.json` (`crates/conway/src/config/
 //! discovery.rs`), not a generic file-discovery primitive, so "reusing"
 //! it here would mean requiring a `settings.json` to already exist beside
@@ -312,13 +317,20 @@ pub fn project_instructions_path(cwd: &Path) -> PathBuf {
 }
 
 /// The default global-scope operator file: alongside conway's user-scoped
-/// `settings.json` (`conway::config::discovery::home_settings_path`'s own
+/// `settings.json` (`conway::config::discovery::user_config_path`'s own
 /// directory) -- `None` under the exact condition that function returns
-/// `None` (no home directory discoverable on this platform/environment).
-/// Deliberately the raw, `CONWAY_CONFIG_DIR`-independent home directory --
-/// see this module's own doc, "Operator instructions", point 2, for why.
-pub fn global_instructions_path() -> Option<PathBuf> {
-    conway::config::discovery::home_settings_path()
+/// `None` (no home directory discoverable on this platform/environment,
+/// and `CONWAY_CONFIG_DIR` unset or empty in `env`). **Honours
+/// `CONWAY_CONFIG_DIR`** (board item `01M0W5Q569F0T97HSEP6F0MPCR`): unlike
+/// the raw, override-independent `home_settings_path`, `user_config_path`
+/// relocates to `$CONWAY_CONFIG_DIR/settings.json` whenever that variable
+/// is set and non-empty in `env`, and this function follows it there --
+/// see this module's own doc, "Operator instructions", point 2, for why
+/// that parity with `settings.json` matters.
+pub fn global_instructions_path(
+    env: &std::collections::HashMap<String, String>,
+) -> Option<PathBuf> {
+    conway::config::discovery::user_config_path(env)
         .and_then(|settings| settings.parent().map(Path::to_path_buf))
         .map(|dir| dir.join(OPERATOR_INSTRUCTIONS_FILENAME))
 }
@@ -328,9 +340,16 @@ pub fn global_instructions_path() -> Option<PathBuf> {
 /// path (an operator whose project genuinely lives at `$HOME`) -- see this
 /// module's own doc, "Operator instructions", point 3, for why that case
 /// must not inject the same text twice under two fragment names.
-pub fn resolve_operator_paths(cwd: &Path) -> (PathBuf, Option<PathBuf>) {
+///
+/// `env` is the same explicit map every `CONWAY_CONFIG_DIR`-aware resolver
+/// in this codebase takes -- forwarded to [`global_instructions_path`],
+/// never read from `std::env` here or anywhere downstream of this call.
+pub fn resolve_operator_paths(
+    cwd: &Path,
+    env: &std::collections::HashMap<String, String>,
+) -> (PathBuf, Option<PathBuf>) {
     let project = project_instructions_path(cwd);
-    let global = collapse_global_onto_project(project.clone(), global_instructions_path());
+    let global = collapse_global_onto_project(project.clone(), global_instructions_path(env));
     (project, global)
 }
 
@@ -685,18 +704,57 @@ mod operator_file_tests {
     }
 
     /// [`resolve_operator_paths`]: an ordinary project/global split names
-    /// two distinct paths.
+    /// two distinct paths -- driven through an isolated `CONWAY_CONFIG_DIR`
+    /// (never a real, ambient home directory: this crate's own tests must
+    /// stay parallel-safe and must never touch the invoking user's real
+    /// `$HOME`).
     #[test]
     fn resolve_operator_paths_names_two_distinct_paths_in_the_ordinary_case() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let (project, global) = resolve_operator_paths(tmp.path());
-        assert_eq!(project, tmp.path().join(".conway").join("instructions.md"));
-        // `global` may legitimately be `None` in a sandboxed test
-        // environment with no resolvable home directory; when `Some`, it
-        // must not equal the project path (this tempdir is never $HOME).
-        if let Some(global) = global {
-            assert_ne!(global, project);
-        }
+        let project_tmp = tempfile::tempdir().expect("tempdir");
+        let global_tmp = tempfile::tempdir().expect("tempdir");
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            global_tmp.path().display().to_string(),
+        );
+        let (project, global) = resolve_operator_paths(project_tmp.path(), &env);
+        assert_eq!(
+            project,
+            project_tmp.path().join(".conway").join("instructions.md")
+        );
+        assert_eq!(global, Some(global_tmp.path().join("instructions.md")));
+    }
+
+    /// Board item `01M0W5Q569F0T97HSEP6F0MPCR`, at the unit level:
+    /// [`global_instructions_path`] must track wherever `CONWAY_CONFIG_DIR`
+    /// points -- two distinct values must resolve to two distinct paths,
+    /// never a single ambient location neither one names.
+    #[test]
+    fn global_instructions_path_honours_conway_config_dir() {
+        let dir_a = tempfile::tempdir().expect("tempdir");
+        let dir_b = tempfile::tempdir().expect("tempdir");
+        let mut env_a = std::collections::HashMap::new();
+        env_a.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            dir_a.path().display().to_string(),
+        );
+        let mut env_b = std::collections::HashMap::new();
+        env_b.insert(
+            "CONWAY_CONFIG_DIR".to_string(),
+            dir_b.path().display().to_string(),
+        );
+        assert_eq!(
+            global_instructions_path(&env_a),
+            Some(dir_a.path().join("instructions.md"))
+        );
+        assert_eq!(
+            global_instructions_path(&env_b),
+            Some(dir_b.path().join("instructions.md"))
+        );
+        assert_ne!(
+            global_instructions_path(&env_a),
+            global_instructions_path(&env_b)
+        );
     }
 
     /// The collapse case (point 3 of this module's own doc): when the

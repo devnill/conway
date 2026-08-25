@@ -126,7 +126,20 @@ pub fn command(args: &[&str], fixture: &Fixture) -> Command {
 /// Runs the real `conway` binary to completion and returns its captured
 /// stdout/stderr/status. For tests that need to interact with the process
 /// while it is still running (read a line before it exits, send a signal),
-/// build a `Command` via [`command`] and `.spawn()` it directly instead.
+/// build a `Command` via [`command`] and `.spawn()` it directly instead --
+/// and for a test that needs extra `.env(...)` overrides on top of
+/// [`command`]'s own defaults (e.g. a simulated `HOME`/`USERPROFILE`,
+/// `global_instructions_isolation.rs`'s own shape, mirroring `oneshot.rs`),
+/// call [`command`] directly and `.output()` it there instead of through
+/// this wrapper.
+///
+/// `#[allow(dead_code)]` for the same reason [`session_dir`]/`open_conway`
+/// carry one: each `tests/*.rs` integration file compiles this module
+/// fresh as its own independent crate, so a file that builds its own
+/// `Command` via [`command`] directly (rather than through this thin
+/// wrapper) makes this look unused *for that one binary*, even though most
+/// other suites in this same directory do call it.
+#[allow(dead_code)]
 pub fn run_conway(args: &[&str], fixture: &Fixture) -> Output {
     command(args, fixture).output().expect("run conway binary")
 }
