@@ -43,12 +43,25 @@
 # copy them from there, not from a paraphrase, for the same reason this
 # script exists: two spellings of the same gate can silently disagree.
 #
+# A SIXTH GATE, NOT (YET) ONE OF CI'S JOBS. `orphan docs (docs/vision index +
+# reachability)` (board item 01M0TWSEH12002BGVG6G25XFB5) checks that every
+# tracked `.md` file is reachable from somewhere -- the same shape as
+# `design-claims`/`board-citations` above, network-free and needing no
+# toolchain, so it belongs in this fast tier on its own merits. Unlike the
+# other five it has no matching job in `.github/workflows/ci.yml` yet: wiring
+# a ninth CI job is that workflow's owner's call, out of this item's file
+# ownership. Until that lands, it runs locally -- in the default (no `--gate`)
+# sweep below and via `--gate "orphan docs (docs/vision index + reachability)"`
+# -- but is NOT enforced on a PR the way the other five are. Whoever wires the
+# CI job should delete this paragraph and fold it into the list above.
+#
 # SINGLE SOURCE OF TRUTH FOR THE INVOCATIONS. `.github/workflows/ci.yml`'s
 # `fmt`, `design-claims`, `board-citations`, `doc`, and `clippy` jobs each
 # call `scripts/check-fast-gates.sh --gate "<name>"` rather than repeating
 # the command inline -- so the local run and the CI run are the same code
 # path, not two hand-kept spellings of the same command that can drift apart
-# the way this file's own motivating incident happened.
+# the way this file's own motivating incident happened. `orphan docs` is the
+# one gate below without such a job -- see the paragraph above.
 #
 # WHAT THIS SCRIPT DELIBERATELY DOES NOT DO, for the same reason
 # `check-disk-floor.sh` and `run-workspace-tests.sh` each state their own
@@ -97,6 +110,10 @@ gate_board_citations() {
   python3 scripts/check-board-citations.py
 }
 
+gate_orphan_docs() {
+  python3 scripts/check-orphan-docs.py
+}
+
 gate_doc() {
   RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 }
@@ -111,6 +128,7 @@ GATE_NAMES=(
   "board citations (steering-shorthand half)"
   "cargo doc (-D warnings)"
   "cargo clippy (-D warnings)"
+  "orphan docs (docs/vision index + reachability)"
 )
 GATE_FUNCS=(
   gate_fmt
@@ -118,6 +136,7 @@ GATE_FUNCS=(
   gate_board_citations
   gate_doc
   gate_clippy
+  gate_orphan_docs
 )
 
 usage() {

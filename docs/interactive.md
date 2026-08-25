@@ -187,6 +187,7 @@ shrinking the candidate list).
 | `/agents` | `/agents` | Toggle the below-chat agent-tree panel. |
 | `/settings` | `/settings` | Open the settings menu (display preferences, permission mode, and grant management). |
 | `/steer` | `/steer <agent> <text>` | Send a steering message to a running agent. |
+| `/cancel` | `/cancel <agent> [<reason>]` | Cancel a running agent immediately — stops it and its whole subtree, but never the session itself: cancelling any OTHER agent leaves the parent session working, and cancelling the session's own root agent is refused (use `/quit` to end the session instead). The cancelled agent's row in `/agents`/`/tree` flips to `Cancelled`. |
 | `/context` | `/context [<agent>]` | Show an agent's assembled context, including its preamble (see below). With no argument, shows the focused agent's context; see [the agent panel](#the-agent-panel-agents) for where to find another agent's id. |
 | `/why` | `/why` | Show the last routing decision — and, after a `/model`/`/role` switch, what changed. |
 | `/fork` | `/fork [<text>]` or `/fork @<agent> <directive>` | Open an interactive fork of the focused agent (inherits its context, frozen at the fork point), or fork a specific agent explicitly. Free text is classified into a fork/spawn recipe and confirmed before anything is created. |
@@ -321,8 +322,8 @@ session's tree: a status marker, the agent's **short id** (its id's first
 fields already use), a label, and how it was created (`fork @seq N`,
 `@agent_def`, `(inherit)`, with `(ephemeral)` for an in-flight `/ask`). The
 currently focused agent's row is tagged `(focused)`. The short id is the
-one thing this panel shows that `/context`/`/steer`/`/fork @<agent>`
-actually accept as an argument — a plain label is not unique (several
+one thing this panel shows that `/context`/`/steer`/`/cancel`/`/fork
+@<agent>` actually accept as an argument — a plain label is not unique (several
 agents can share one, and any agent spawned with no `agent_def` renders
 the same literal `agent`) and is never matched against those commands'
 own `<agent>` argument. A short id is not guaranteed unique either — two

@@ -43,9 +43,11 @@ these as unsolved and conway already has a stronger answer to both.
   sessions and the DeepSeek harness's forkable/replayable trajectory each
   reach for from a flatter starting point — an append-only log of immutable
   records, a persisted `rewind` command (`conway-plugin-history`,
-  `/conway.history.rewind <seq>`), and a designed (not yet built) path
-  layer, `INTENT.md` §5a/§5b, that turns "fork into a branch" into
-  something with a literal, git-shaped meaning. **[quality]**
+  `/conway.history.rewind <seq>`), and a path layer (`INTENT.md` §5a/§5b)
+  whose composing tool now ships — `conway.path`'s `compose_context_path`
+  (`crates/conway-plugin-path`, `DESIGN-context-path.md` §11.7) — turning
+  "fork into a branch" into something with a literal, git-shaped meaning.
+  **[quality]**
 - **Typed refusal over silent recovery** as a load-bearing property, not a
   slogan: no truncation on overflow (`RoutingError::ContextTooLarge`), no
   permission-denied exit code that kills a run instead of feeding the model
