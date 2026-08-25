@@ -52,18 +52,24 @@ may claim to be reached that isn't).
   file to it is a separate, deferred item, not something this layer's own
   absence of the capability ever blocked. Every `commands/*.md` file found
   is named in the operator-visible report; none of them run anything.
-- **`skills/<name>/SKILL.md` — not imported, at all.** conway's own skill
-  loader (`crates/conway/src/skills.rs`) reads exactly one hardcoded root,
-  `.conway/skills`; there is no mechanism to read a second directory. Making
-  that multi-rooted is a real, separate change (a public config field
-  widened, the loader touched, its own test coverage) that this item
-  deliberately did not take on — a directory-read layer that imports MCP
-  correctly and says plainly that skills are not yet translated is worth
-  more than one that ships a partial, half-working skill import. Every
-  `skills/<name>/SKILL.md` directory found is named in the report.
-- **`agents/*.md` — not imported, at all,** for the identical reason:
-  `AgentsConfig::dir` is a single `PathBuf`, not a list of roots to search.
-  Named in the report, never read for content.
+- **`skills/<name>/SKILL.md` — still not imported by THIS layer.** conway's
+  own skill loader (`crates/conway/src/skills.rs`) is no longer
+  single-root: `skills::load_skill_defs_from_roots` (board item
+  `01M0X1EH2GW5DKY9XD1EZ78S3F`) accepts an ORDERED list of roots — the
+  operator's own `.conway/skills` always shadows a plugin's on a name
+  collision, and a plugin root's own malformed `SKILL.md` is skipped rather
+  than failing the whole load. Reading a second directory is now possible
+  in the loader; this layer just does not yet CALL it with a plugin's own
+  `skills/` directory, so nothing changes for an operator naming a
+  `[plugins].claude_compat[]` entry today. That wiring — the translation
+  step, not the loader capability — is a separate, deferred item. Every
+  `skills/<name>/SKILL.md` directory found is still named in the report.
+- **`agents/*.md` — still not imported by THIS layer,** for the identical
+  reason: `agents::load_agent_defs_from_roots` and the new
+  `AgentsConfig::extra_dirs` field (same board item) exist and an operator
+  can hand-set `extra_dirs` in their own config today, but this layer does
+  not yet populate it from a plugin's own `agents/` directory. Named in the
+  report, never read for content.
 - **`hooks/hooks.json` — event names are matched, nothing is wired to
   dispatch.** `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, and
   `SessionStart` each have a same-named conway event
