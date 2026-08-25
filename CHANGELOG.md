@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A `pre_tool_use` hook registration can now declare `on_failure:
+  "deny" | "prompt"` (default `"deny"`), so a guard's own OUTAGE no longer
+  has to look identical to its VERDICT** — board item
+  `01M0X1AH44SNMK5TZ507K30QNP`
+  (`docs/vision/DESIGN-permission-modes.md` §3a/§3c). Before this item,
+  `PermissionBroker::pre_tool_use_hook_denial` collapsed two structurally
+  different facts — a hook running and returning an explicit
+  `HookPermissionVerdict::Deny` ("the guard said no"), and a hook's own
+  runner failing outright (missing script, timeout, or unparseable stdout;
+  "the guard is down") — into the identical `Option<String>` value,
+  distinguishable only by parsing the rendered text for a trailing `--
+  fail-closed`. Fail-closed is correct for an operator-authored policy
+  script (its breakage is the operator's own), but wrong for a guard
+  backed by infrastructure the operator does not directly control (e.g. a
+  local model server): every tool call denies whenever it is unreachable,
+  presenting as the agent being unable to do anything rather than as "your
+  guard is down." A new `conway_core::hook::HookOnFailure` enum (`Deny` |
+  `Prompt`, **no `Allow` variant — unrepresentable in the type, not merely
+  rejected at runtime**, the identical guarantee `HookPermissionVerdict`
+  already gives a hook's own verdict) rides on `HookEntry::on_failure`
+  (`crates/conway/src/config/schema.rs`, `#[serde(default)]`) and
+  `PreToolUseHookSpec::on_failure` (`crates/conway-runtime/src/
+  permission.rs`). `Deny` (the default) reproduces today's exact
+  byte-for-byte fail-closed behavior, message included, for every existing
+  registration that never sets the field. `Prompt` narrows an outage to
+  the operator's own `gate.check` instead of denying outright — never a
+  widening, and never able to bypass the operator's own `deny` rules or
+  plan-mode refusal, both of which still fire unconditionally before and
+  after the hook step in `PermissionBroker::decide`'s existing order.
+  `on_failure` is consulted ONLY when a hook's runner itself fails; an
+  explicit `Deny` verdict from a hook that ran successfully always denies,
+  regardless of that hook's own `on_failure` setting. The two facts are
+  now also distinguished STRUCTURALLY, not only in rendered text: a new
+  private `HookStepOutcome`/`HookDenialCause` pair
+  (`crates/conway-runtime/src/permission.rs`) tags a denial `Verdict` or
+  `Outage`, so a future downstream consumer could match on the cause
+  directly rather than string-matching the message. `docs/plugins/
+  hooks.md`'s status table (points 8 and 13) is corrected to record which
+  parts of the `on_failure` vocabulary it already specified are now built.
+
 - **conway can now install a plugin from a Claude Code marketplace** —
   board item `01M0VR96Y87FF2BVNTBSC6GEYR`, the network-reaching half of the
   plugin feature (trust was ruled settled beforehand: decision

@@ -24,7 +24,7 @@ use conway_core::canon::canonical_json_bytes;
 use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::content::ToolCategory;
 use conway_core::event::Event;
-use conway_core::hook::{HookEvent, HookInvocation, HookPermissionVerdict};
+use conway_core::hook::{HookEvent, HookInvocation, HookOnFailure, HookPermissionVerdict};
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{HookRunner, PathArgs, PermissionGate, RenderKind};
 
@@ -191,6 +191,17 @@ pub struct PreToolUseHookSpec {
     /// so unlike that sibling field there is no "payload with no tool"
     /// case to defend against here.
     pub matcher: Option<String>,
+    /// This registration's own `on_failure` policy -- what
+    /// [`PermissionBroker::pre_tool_use_hook_denial`] does when THIS hook's
+    /// `HookRunner::run` call itself fails (a missing script, a timeout, or
+    /// stdout that failed to parse), never consulted for a hook that ran to
+    /// completion and returned an explicit
+    /// [`HookPermissionVerdict::Deny`] -- see [`HookOnFailure`]'s own doc
+    /// for why those are two different facts. Defaults to
+    /// [`HookOnFailure::Deny`] via `HookEntry::on_failure`'s own
+    /// `#[serde(default)]`, so an existing `[hooks].rules[]` entry that
+    /// never sets `on_failure` denies on outage exactly as it always did.
+    pub on_failure: HookOnFailure,
 }
 
 /// This agent's confinement root (S3's `SessionMeta.root`/`SubagentSpec.
@@ -741,6 +752,66 @@ pub struct PermissionBroker {
     /// either alone is inert by construction (see
     /// [`Self::pre_tool_use_hook_denial`]).
     pre_tool_use_hooks: RwLock<Vec<PreToolUseHookSpec>>,
+}
+
+/// WHY a [`HookStepOutcome::Denied`] denies -- an explicit hook verdict, or
+/// this hook's own outage resolved (by its `on_failure` policy) to `Deny`.
+/// **This is the structural fix
+/// (`docs/vision/DESIGN-permission-modes.md` §3a/§3c): the two used to be
+/// the identical `Option<String>` value, distinguishable only by parsing
+/// the rendered text for the trailing `-- fail-closed`.** Now a downstream
+/// consumer -- a future status surface, or a test -- can match on `cause`
+/// directly and never read `rendered_error` at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HookDenialCause {
+    /// A hook ran to completion and returned
+    /// [`HookPermissionVerdict::Deny`] itself. The guard said no.
+    Verdict,
+    /// This hook's `HookRunner::run` call failed (a missing script, a
+    /// timeout, or stdout that failed to parse), and its own `on_failure`
+    /// policy is [`HookOnFailure::Deny`] (today's only behavior, and still
+    /// the default). The guard is down.
+    Outage,
+}
+
+/// The distinguishable outcome of consulting every INSTALLED `pre_tool_use`
+/// hook once for one call -- [`PermissionBroker::pre_tool_use_hook_denial`]'s
+/// own return type, `PermissionBroker::decide`'s only caller (see that
+/// method's own doc for WHY this sits at the deny tier). Replaces a plain
+/// `Option<String>`, whose collapse of a hook's own verdict and a hook's own
+/// outage into the same value is exactly the defect [`HookDenialCause`]'s
+/// own doc names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HookStepOutcome {
+    /// No installed hook had anything to say about this call --
+    /// `PermissionBroker::decide` proceeds exactly as if the hook step did
+    /// not exist.
+    NoOpinion,
+    /// This call is refused outright, tagged with WHY (see
+    /// [`HookDenialCause`]). `PermissionBroker::decide` returns
+    /// [`PermissionOutcome::Deny`] for either `cause` identically -- the
+    /// RENDERED effect is unchanged from before this type existed -- but
+    /// the two are now different VALUES, not merely different substrings of
+    /// one rendered message.
+    Denied {
+        rendered_error: String,
+        cause: HookDenialCause,
+    },
+    /// A hook's runner failed and its `on_failure` policy resolved to
+    /// [`HookOnFailure::Prompt`], with no HARDER denial (an explicit
+    /// verdict, or another hook's `on_failure: Deny` outage) matched
+    /// anywhere in the same pass. Not a denial: forces
+    /// `PermissionBroker::decide`'s `must_reach_gate` accumulator exactly
+    /// as `PermissionBroker::prompt_matches` already does, so the call
+    /// proceeds to the operator's own `gate.check` -- never the cache, a
+    /// pattern grant, or `AutoAllow`. `PermissionBroker::decide`'s existing
+    /// step order (deny-pattern, then this step, then plan-mode) already
+    /// places an operator `Deny` rule before this step and plan-mode's own
+    /// denial after it -- both still apply unconditionally, so an
+    /// `on_failure: Prompt` firing can only ever narrow, never bypass
+    /// either (the subordination boundary
+    /// `docs/vision/DESIGN-permission-modes.md` §3c requires).
+    MustReachGate,
 }
 
 impl PermissionBroker {
@@ -1431,33 +1502,42 @@ impl PermissionBroker {
             .map(|(rule, _, _)| rule.clone())
     }
 
-    /// The rendered denial, if any INSTALLED `pre_tool_use` hook refuses
-    /// this call --, `Self::decide`'s
-    /// only caller (see that method's own doc for WHY this sits at the deny
-    /// tier).
+    /// The `pre_tool_use` hook-check step: consults every INSTALLED hook
+    /// once for this call, returning the distinguishable [`HookStepOutcome`]
+    /// (see that type's own doc for WHY this sits at the deny tier, and
+    /// [`HookDenialCause`]'s own doc for the structural fix this replaces).
     ///
-    /// **Deny-only, not three-way (deny/prompt/no-opinion) -- decided, not
-    /// left open.** A hook that wants a human decision rather than an
-    /// outright refusal already has two existing ways to get one without
-    /// this method growing a second `must_reach_gate` source of its own: an
+    /// **Deny/prompt-only, not open-ended -- decided, not left open.** A
+    /// hook that WANTS a human decision rather than an outright refusal
+    /// already has two existing ways to get one without this method growing
+    /// an unbounded set of `must_reach_gate` sources of its own: an
     /// operator-installed `prompt` pattern rule (`Self::prompt_matches`,
     /// above) for a call shape a plugin author can identify statically, or
-    /// the hook script itself simply choosing not to run in "blocking" mode.
-    /// `HookPermissionVerdict` (this method's own answer type) has no
-    /// `Prompt` variant for the identical reason `decide()`'s isolation-tooling bound
-    /// applies to this whole item: one narrowing-only chain step, a FIXED
-    /// amount of mechanism, not a variable one -- adding a second
-    /// `must_reach_gate` source here, with different provenance than
-    /// `prompt_matches`' own, is exactly the kind of branching growth that
-    /// bound exists to block, for a capability the pattern-rule mechanism
-    /// already covers.
+    /// the hook script itself simply choosing not to run in "blocking"
+    /// mode. `HookPermissionVerdict` (a successfully-run hook's own answer
+    /// type) still has no `Prompt` variant -- a hook's own VERDICT can only
+    /// ever narrow to `Deny` or say nothing; only its OUTAGE, via
+    /// `on_failure`, may narrow to `Prompt`, and only that one, fixed,
+    /// per-registration knob.
     ///
-    /// **Fail-closed inherits from the runner, not a second implementation
-    /// of it.** `HookRunner::run`'s `Err(HookFailure)` -- a missing script,
-    /// a timeout, or stdout that failed to parse as a [`conway_core::hook::
-    /// HookAnswer`] -- is treated as a denial by this method directly; there
-    /// is no separate "is this hook broken" check layered on top that could
-    /// disagree with the runner's own verdict.
+    /// **Fail-closed still inherits from the runner by default, never
+    /// re-implemented.** `HookRunner::run`'s `Err(HookFailure)` -- a missing
+    /// script, a timeout, or stdout that failed to parse as a
+    /// [`conway_core::hook::HookAnswer`] -- resolves through THIS hook's own
+    /// `on_failure` policy, which defaults to [`HookOnFailure::Deny`]:
+    /// unchanged from before this policy existed for every registration
+    /// that does not set it. There is still no separate "is this hook
+    /// broken" check layered on top that could disagree with the runner's
+    /// own verdict; `on_failure` decides what to DO about that failure, it
+    /// never second-guesses whether it happened.
+    ///
+    /// **A `Prompt`-resolved outage does not short-circuit the loop.** The
+    /// remaining installed hooks are still consulted -- a LATER hook's
+    /// explicit `Deny`, or another hook's OWN `on_failure: Deny` outage,
+    /// must still win over an earlier hook's `on_failure: Prompt` outage,
+    /// most-restrictive-wins, exactly the posture `Self::decide`'s own
+    /// `must_reach_gate` accumulator already documents for `check_root`'s
+    /// `MustReachGate` and `Self::prompt_matches`.
     ///
     /// Every `RwLock` this reads is acquired, cloned out of, and released
     /// BEFORE the only `.await` point below (`runner.run`) -- the same
@@ -1467,19 +1547,22 @@ impl PermissionBroker {
         &self,
         ctx: &PermissionCtx,
         call: &AuthorizedCall,
-    ) -> Option<String> {
-        let runner = self
+    ) -> HookStepOutcome {
+        let Some(runner) = self
             .hook_runner
             .read()
             .expect("hook runner lock poisoned")
-            .clone()?;
+            .clone()
+        else {
+            return HookStepOutcome::NoOpinion;
+        };
         let hooks = self
             .pre_tool_use_hooks
             .read()
             .expect("pre_tool_use hooks lock poisoned")
             .clone();
         if hooks.is_empty() {
-            return None;
+            return HookStepOutcome::NoOpinion;
         }
 
         // Built once, reused for every configured hook: `AuthorizedCall`'s
@@ -1496,6 +1579,12 @@ impl PermissionBroker {
             "session": ctx.session,
             "cwd": ctx.cwd,
         });
+
+        // Accumulates an `on_failure: Prompt` outage across the loop -- see
+        // `HookStepOutcome::MustReachGate`'s own doc for why this does not
+        // return immediately: a later hook's explicit `Deny`, or another
+        // hook's own `on_failure: Deny` outage, must still be able to win.
+        let mut must_reach_gate = false;
 
         for hook in hooks.iter().filter(|hook| {
             // a matcher only
@@ -1516,26 +1605,51 @@ impl PermissionBroker {
             match runner.run(&invocation).await {
                 Ok(answer) => {
                     if let HookPermissionVerdict::Deny { reason } = answer.permission {
-                        return Some(format!(
-                            "`{}` is denied by `pre_tool_use` hook `{}`: {reason}",
-                            call.tool.as_str(),
-                            hook.id
-                        ));
+                        // A hook's own VERDICT -- `on_failure` is never
+                        // consulted here: it governs ONLY what happens when
+                        // this hook's runner cannot be reached at all, never
+                        // a hook that ran and had an opinion. An explicit
+                        // `Deny` denies, full stop, regardless of this
+                        // hook's `on_failure` setting.
+                        return HookStepOutcome::Denied {
+                            rendered_error: format!(
+                                "`{}` is denied by `pre_tool_use` hook `{}`: {reason}",
+                                call.tool.as_str(),
+                                hook.id
+                            ),
+                            cause: HookDenialCause::Verdict,
+                        };
                     }
                     // `HookPermissionVerdict::NoOpinion`: this hook has
                     // nothing to say -- consult the next one, if any.
                 }
-                Err(failure) => {
-                    return Some(format!(
-                        "`{}` is denied: `pre_tool_use` hook `{}` failed ({failure}) -- \
-                         fail-closed",
-                        call.tool.as_str(),
-                        hook.id
-                    ));
-                }
+                Err(failure) => match hook.on_failure {
+                    HookOnFailure::Deny => {
+                        return HookStepOutcome::Denied {
+                            rendered_error: format!(
+                                "`{}` is denied: `pre_tool_use` hook `{}` failed ({failure}) \
+                                 -- fail-closed",
+                                call.tool.as_str(),
+                                hook.id
+                            ),
+                            cause: HookDenialCause::Outage,
+                        };
+                    }
+                    HookOnFailure::Prompt => {
+                        // Narrows only -- does not deny, does not
+                        // short-circuit the remaining hooks. See this
+                        // method's own doc.
+                        must_reach_gate = true;
+                    }
+                },
             }
         }
-        None
+
+        if must_reach_gate {
+            HookStepOutcome::MustReachGate
+        } else {
+            HookStepOutcome::NoOpinion
+        }
     }
 
     /// Authorize one tool call, consulting the cache first and the gate on a
@@ -1660,20 +1774,42 @@ impl PermissionBroker {
         // regardless of `must_reach_gate`, for the identical
         // most-restrictive-wins reason `deny_matches` already states. No
         // hook here can ever produce `Allow`: `Self::pre_tool_use_hook_
-        // denial` returns `Some(..)` only for an explicit
-        // `HookPermissionVerdict::Deny` or a runner failure (fail-closed),
-        // never for `NoOpinion` -- and `HookPermissionVerdict` itself has no
+        // denial` returns `HookStepOutcome::Denied` only for an explicit
+        // `HookPermissionVerdict::Deny` or a runner failure whose
+        // `on_failure` resolved to `Deny` -- never for `NoOpinion` -- and
+        // neither `HookPermissionVerdict` nor `HookOnFailure` has an
         // `Allow` variant for a future edit to accidentally start acting on
-        // (see that type's own doc).
-        if let Some(rendered_error) = self.pre_tool_use_hook_denial(ctx, call).await {
-            self.emit(
-                ctx,
-                Event::PermissionResolved {
-                    call_id: call.call_id.clone(),
-                    decision: PermissionDecisionKind::Denied,
-                },
-            );
-            return PermissionOutcome::Deny { rendered_error };
+        // (see each type's own doc).
+        //
+        // `HookStepOutcome::MustReachGate` -- an `on_failure: Prompt`
+        // outage, and only that -- is NOT a denial: it ONLY sets
+        // `must_reach_gate`, the same accumulator `check_root` and
+        // `Self::prompt_matches` already write to, and execution falls
+        // through to the plan-mode gate immediately below exactly as it
+        // would with nothing installed here at all. This is what makes the
+        // operator's own `Deny` rules (checked above, unconditionally) and
+        // plan-mode's own refusal (checked immediately below, also
+        // unconditionally) still outrank an `on_failure: Prompt` firing --
+        // neither check is skipped, so a narrowing here can never widen
+        // past either.
+        match self.pre_tool_use_hook_denial(ctx, call).await {
+            HookStepOutcome::NoOpinion => {}
+            HookStepOutcome::MustReachGate => {
+                must_reach_gate = true;
+            }
+            HookStepOutcome::Denied {
+                rendered_error,
+                cause: _,
+            } => {
+                self.emit(
+                    ctx,
+                    Event::PermissionResolved {
+                        call_id: call.call_id.clone(),
+                        decision: PermissionDecisionKind::Denied,
+                    },
+                );
+                return PermissionOutcome::Deny { rendered_error };
+            }
         }
 
         // V2 mode gate. Ordered deliberately: PLAN's denial is checked
@@ -1992,6 +2128,21 @@ mod tests {
             command: vec!["/usr/bin/env".to_string(), "true".to_string()],
             timeout_ms: 1_000,
             matcher: None,
+            // Today's -- and the default's -- fail-closed posture: every
+            // EXISTING test below that builds its fixture through this
+            // helper keeps exercising the exact same outage behavior as
+            // before `on_failure` existed.
+            on_failure: HookOnFailure::default(),
+        }
+    }
+
+    /// Sibling of [`hook_spec`] for the tests that need a NON-default
+    /// `on_failure` policy -- `..hook_spec(id)` keeps every other field
+    /// identical, so only the one field under test ever varies.
+    fn hook_spec_with_on_failure(id: &str, on_failure: HookOnFailure) -> PreToolUseHookSpec {
+        PreToolUseHookSpec {
+            on_failure,
+            ..hook_spec(id)
         }
     }
 
@@ -2491,6 +2642,322 @@ mod tests {
         assert!(matches!(read_outcome, PermissionOutcome::Deny { .. }));
         assert!(matches!(bash_outcome, PermissionOutcome::Deny { .. }));
         assert_eq!(gate.call_count(), 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // `on_failure` (board item `01M0X1AH44SNMK5TZ507K30QNP`):
+    // `docs/vision/DESIGN-permission-modes.md` §3a/§3c. A hook VERDICT
+    // (`HookPermissionVerdict::Deny`) and a hook OUTAGE (`Err(HookFailure)`,
+    // resolved through this registration's own `on_failure` policy) are two
+    // structurally different facts -- "the guard said no" versus "the guard
+    // is down" -- and these tests pin both the structural distinction
+    // itself (`HookStepOutcome`'s `cause` field) and the behavior it now
+    // makes possible (`on_failure: Prompt` degrading an outage to the
+    // operator's own gate instead of bricking the session).
+    // ---------------------------------------------------------------------
+
+    /// **The structural fix, proven directly.** A hook that runs to
+    /// completion and returns an explicit `Deny`, and a hook whose runner
+    /// itself fails (with `on_failure` at its default, `Deny`), both still
+    /// deny -- but `HookStepOutcome::Denied`'s `cause` field is DIFFERENT
+    /// for the two, provably: a downstream consumer (a future status
+    /// surface, or this test) can match on `cause` alone and never inspect
+    /// `rendered_error` at all. Before this item, both were the identical
+    /// `Option<String>` value.
+    #[tokio::test]
+    async fn hook_step_outcome_distinguishes_a_verdict_denial_from_an_outage_denial_structurally() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        // A hook that RAN and said no.
+        let verdict_broker = PermissionBroker::new(RecordingGate::new(), EventBus::new(64));
+        verdict_broker.set_hook_runner(Some(ScriptedHookRunner::deny(
+            "touches a path this hook refuses",
+        )));
+        verdict_broker.set_pre_tool_use_hooks(vec![hook_spec("guard")]);
+        let verdict_outcome = verdict_broker
+            .pre_tool_use_hook_denial(&ctx, &bash_call("c1", "git status"))
+            .await;
+        assert!(
+            matches!(
+                verdict_outcome,
+                HookStepOutcome::Denied {
+                    cause: HookDenialCause::Verdict,
+                    ..
+                }
+            ),
+            "a hook that ran and said no must tag its denial `Verdict`: {verdict_outcome:?}"
+        );
+
+        // A hook whose runner could not be reached at all -- `on_failure`
+        // at its default, `Deny`.
+        let outage_broker = PermissionBroker::new(RecordingGate::new(), EventBus::new(64));
+        outage_broker.set_hook_runner(Some(ScriptedHookRunner::failing(HookFailure::Spawn {
+            detail: "no such file or directory".to_string(),
+        })));
+        outage_broker.set_pre_tool_use_hooks(vec![hook_spec("guard")]);
+        let outage_outcome = outage_broker
+            .pre_tool_use_hook_denial(&ctx, &bash_call("c2", "git status"))
+            .await;
+        assert!(
+            matches!(
+                outage_outcome,
+                HookStepOutcome::Denied {
+                    cause: HookDenialCause::Outage,
+                    ..
+                }
+            ),
+            "a hook whose runner failed must tag its denial `Outage`: {outage_outcome:?}"
+        );
+    }
+
+    /// **Acceptance 1: omitting `on_failure` reproduces today's exact
+    /// behavior, message included.** `hook_spec` never sets `on_failure`
+    /// explicitly (it uses `HookOnFailure::default()`) -- this is the SAME
+    /// fixture every pre-existing fail-closed test in this module already
+    /// uses (`a_hook_that_fails_to_spawn_denies_the_call`,
+    /// `a_hook_that_times_out_denies_the_call`,
+    /// `a_hook_with_malformed_output_denies_the_call`, all run UNEDITED),
+    /// so this test only needs to pin the exact rendered message stays
+    /// byte-for-byte what it was before `on_failure` existed.
+    #[tokio::test]
+    async fn omitting_on_failure_denies_with_the_exact_pre_existing_message() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        let runner = ScriptedHookRunner::failing(HookFailure::Spawn {
+            detail: "no such file or directory".to_string(),
+        });
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec("guard")]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        match outcome {
+            PermissionOutcome::Deny { rendered_error } => {
+                assert_eq!(
+                    rendered_error,
+                    "`bash` is denied: `pre_tool_use` hook `guard` failed \
+                     (hook command failed to spawn: no such file or directory) -- fail-closed",
+                );
+            }
+            PermissionOutcome::Allow => panic!("a hook that fails to spawn must deny"),
+        }
+        assert_eq!(gate.call_count(), 0);
+    }
+
+    /// **Acceptance 2: `on_failure: Prompt` whose runner fails reaches the
+    /// operator's gate, not a denial.** Mirrors
+    /// `plugin_prompt_forces_the_gate_even_under_autoallow`'s own shape:
+    /// `AutoAllow` is the mode this matters most in (no human already in
+    /// the loop), so proving the gate is still reached there is the
+    /// load-bearing case.
+    #[tokio::test]
+    async fn on_failure_prompt_whose_runner_fails_reaches_the_operators_gate_not_a_denial() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        broker.set_mode(PermissionMode::AutoAllow);
+        let runner = ScriptedHookRunner::failing(HookFailure::Spawn {
+            detail: "connection refused".to_string(),
+        });
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec_with_on_failure(
+            "local-model-guard",
+            HookOnFailure::Prompt,
+        )]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        assert_eq!(
+            outcome,
+            PermissionOutcome::Allow,
+            "the gate grants AllowOnce -- an outage resolved to `Prompt` is not a denial"
+        );
+        assert_eq!(
+            gate.call_count(),
+            1,
+            "an `on_failure: Prompt` outage must force the gate even under AutoAllow -- \
+             not auto-allowed and not denied"
+        );
+        assert_eq!(runner.call_count(), 1);
+    }
+
+    /// **Acceptance 3: a hook declaring `Prompt` whose runner returns an
+    /// EXPLICIT `Deny` still denies -- an outage and a verdict take
+    /// different paths.** `on_failure` governs ONLY what happens when the
+    /// runner itself cannot be consulted; it is never consulted for a hook
+    /// that ran to completion and had an opinion. Paired with the previous
+    /// test in this same file: same hook, same `on_failure: Prompt`
+    /// registration, but the runner SUCCEEDS this time and says no --
+    /// denied outright, gate never reached.
+    #[tokio::test]
+    async fn on_failure_prompt_whose_runner_returns_an_explicit_deny_still_denies() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        broker.set_mode(PermissionMode::AutoAllow);
+        let runner = ScriptedHookRunner::deny("touches a path this hook refuses");
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec_with_on_failure(
+            "local-model-guard",
+            HookOnFailure::Prompt,
+        )]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        match outcome {
+            PermissionOutcome::Deny { rendered_error } => {
+                assert!(
+                    rendered_error.contains("touches a path this hook refuses"),
+                    "an explicit verdict's own reason must still be rendered: {rendered_error}"
+                );
+            }
+            PermissionOutcome::Allow => {
+                panic!(
+                    "a hook's own explicit Deny verdict must still deny, regardless of that \
+                     hook's `on_failure` setting -- `on_failure` governs outages only"
+                )
+            }
+        }
+        assert_eq!(
+            gate.call_count(),
+            0,
+            "the operator's gate must never be consulted for an explicit hook denial"
+        );
+        assert_eq!(runner.call_count(), 1);
+    }
+
+    /// **Acceptance 4: an unparseable answer takes the `on_failure` path,
+    /// never a guessed verdict.** `HookFailure::UnparseableAnswer` is just
+    /// another `Err(HookFailure)` as far as this broker is concerned --
+    /// routed through the SAME `on_failure` policy as a spawn failure or a
+    /// timeout, never given a carve-out that silently denies (or silently
+    /// allows) regardless of what the registration asked for.
+    #[tokio::test]
+    async fn unparseable_hook_output_with_on_failure_prompt_reaches_the_gate_not_a_guessed_verdict()
+    {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        broker.set_mode(PermissionMode::AutoAllow);
+        let runner = ScriptedHookRunner::failing(HookFailure::UnparseableAnswer {
+            detail: "not valid JSON".to_string(),
+        });
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec_with_on_failure(
+            "local-model-guard",
+            HookOnFailure::Prompt,
+        )]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        assert_eq!(
+            outcome,
+            PermissionOutcome::Allow,
+            "an unparseable answer with `on_failure: Prompt` must reach the gate, not be \
+             denied or silently allowed"
+        );
+        assert_eq!(gate.call_count(), 1);
+    }
+
+    /// **Acceptance 5, half one: `on_failure: Prompt` never bypasses an
+    /// operator `Deny` rule -- the subordination boundary.** Mirrors
+    /// `operator_deny_beats_plugin_prompt`'s own shape: the operator
+    /// independently denied this tool; a guard's outage resolving to
+    /// `Prompt` must not widen past that denial into an ask.
+    #[tokio::test]
+    async fn on_failure_prompt_never_bypasses_an_operator_deny_rule() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        broker.set_mode(PermissionMode::AutoAllow);
+        assert!(
+            broker.remember_deny_rule(
+                operator_deny_rule("bash"),
+                PatternOrigin::Interactive,
+                Path::new("/"),
+            ),
+            "the operator deny rule installs"
+        );
+        let runner = ScriptedHookRunner::failing(HookFailure::Spawn {
+            detail: "connection refused".to_string(),
+        });
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec_with_on_failure(
+            "local-model-guard",
+            HookOnFailure::Prompt,
+        )]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "the operator's own deny rule must beat an `on_failure: Prompt` outage: {outcome:?}"
+        );
+        assert_eq!(
+            gate.call_count(),
+            0,
+            "the operator deny fires before the hook step even runs; the outage never forces \
+             a prompt"
+        );
+        // The operator's deny rule short-circuits `decide()` before the
+        // hook step is ever reached, so the (failing) hook runner is never
+        // even invoked -- the strongest form of "cannot bypass."
+        assert_eq!(runner.call_count(), 0);
+    }
+
+    /// **Acceptance 5, half two: `on_failure: Prompt` never bypasses
+    /// plan-mode refusal.** Mirrors `plan_mode_denial_beats_plugin_prompt`'s
+    /// own shape: plan mode denies `bash` (an `Execute` tool) outright; a
+    /// guard's outage resolving to `Prompt` -- checked BEFORE the plan-mode
+    /// gate in `decide()`'s own step order -- sets `must_reach_gate` but
+    /// must not widen past the mode refusal that follows it.
+    #[tokio::test]
+    async fn on_failure_prompt_never_bypasses_plan_mode_refusal() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        broker.set_mode(PermissionMode::Plan);
+        let runner = ScriptedHookRunner::failing(HookFailure::Spawn {
+            detail: "connection refused".to_string(),
+        });
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec_with_on_failure(
+            "local-model-guard",
+            HookOnFailure::Prompt,
+        )]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "plan mode's own refusal must beat an `on_failure: Prompt` outage: {outcome:?}"
+        );
+        assert_eq!(
+            gate.call_count(),
+            0,
+            "plan mode fires before the gate; the outage never forces a prompt"
+        );
+        assert_eq!(
+            runner.call_count(),
+            1,
+            "the hook step DOES run here (it precedes plan mode in decide()'s own order) -- \
+             it is the RESULT (must_reach_gate, not a bypass) that plan mode still overrides"
+        );
     }
 
     // ---------------------------------------------------------------------

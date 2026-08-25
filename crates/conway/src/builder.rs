@@ -1696,6 +1696,11 @@ impl ConwayBuilder {
                 // unchanged -- `PermissionBroker::pre_tool_use_hook_denial`
                 // is where `None` vs `Some` actually decides anything.
                 matcher: rule.match_tool.clone(),
+                // carried through unchanged -- `HookEntry::on_failure`
+                // already defaults to `HookOnFailure::Deny`, so an existing
+                // rule that never sets it keeps denying on outage
+                // byte-for-byte (board item `01M0X1AH44SNMK5TZ507K30QNP`).
+                on_failure: rule.on_failure,
             })
             .collect();
         // The observation and deny-only events, and: the

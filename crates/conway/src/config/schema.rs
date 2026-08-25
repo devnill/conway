@@ -39,6 +39,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use conway_core::hook::HookOnFailure;
 use conway_core::ids::RoleAlias;
 use serde::{Deserialize, Serialize};
 
@@ -1344,6 +1345,25 @@ pub struct HookEntry {
     /// field here.
     #[serde(default = "default_hook_enabled")]
     pub enabled: bool,
+    /// This rule's own policy for what happens when THIS hook's runner
+    /// cannot be consulted at all -- a missing script, a timeout, or
+    /// stdout that failed to parse -- as opposed to when the hook ran and
+    /// returned an explicit deny. Enforced for real, for a `pre_tool_use`
+    /// rule, by `ConwayBuilder::build`'s translation into
+    /// `conway_runtime::permission::PreToolUseHookSpec::on_failure`
+    /// (board item `01M0X1AH44SNMK5TZ507K30QNP`); like `timeout_ms`, only
+    /// read, never enforced, for any other `event`.
+    ///
+    /// Defaults to `HookOnFailure::Deny` -- **today's exact fail-closed
+    /// behavior, byte-for-byte unchanged, for any entry that does not set
+    /// this field.** `HookOnFailure::Prompt` narrows the outage to the
+    /// operator's own gate instead of denying outright; `Allow` is not a
+    /// legal value at all -- `HookOnFailure` has no such variant, so no
+    /// config value can ever widen what an outage does. See that type's own
+    /// doc (`docs/vision/DESIGN-permission-modes.md` §3a/§3c) for the full
+    /// argument.
+    #[serde(default)]
+    pub on_failure: HookOnFailure,
 }
 
 impl Default for HookEntry {
@@ -1355,6 +1375,7 @@ impl Default for HookEntry {
             command: Vec::new(),
             timeout_ms: default_hook_timeout_ms(),
             enabled: default_hook_enabled(),
+            on_failure: HookOnFailure::default(),
         }
     }
 }
