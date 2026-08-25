@@ -156,9 +156,12 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   the translation `SubagentHandle` performs at its boundary), so
 ///   `RuntimeError` has no reachable call site from this facade's surface
 ///   at all.
-/// - `SubagentHost`/`CwdHandle`/`EventSinkHandle`/`SubagentHandle`/
-///   `EventSink` (the host-capability traits and handle types themselves)
+/// - `SubagentHost`/`CwdHandle`/`SubagentHandle` (the host-capability
+///   traits and handle types that remain unreachable through this module)
 ///   — see "Deliberately NOT here" below; unchanged by this resolution.
+///   `EventSinkHandle`/`EventSink` are NOT grouped with those three: a real
+///   production injection point exists for them, so they are exported, not
+///   absent — see the same section for why.
 ///
 /// This is a *curated* re-export, deliberately narrower than
 /// `conway_core::ports` (F8, the extension design phase 0): the traits above were always re-exported at the crate
@@ -173,17 +176,32 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///
 /// Deliberately NOT here:
 ///
-/// - `CwdHandle`, `EventSinkHandle`, `SubagentHandle`, `SubagentHost`,
-///   `EventSink` — they appear only as `ToolCtx` *fields* an implementor
-///   reads (method calls on `ctx.chdir`/`ctx.events`/`ctx.subagents` never
-///   name the type — a tool calls `ctx.subagents.start(spec)` by method
-///   dispatch, exactly like the pre-existing `ctx.chdir.set(..)` precedent).
-///   `SubagentHost`/`EventSink` have no builder injection point at all — no
-///   `pub fn with_*` in `crates/conway/src/builder.rs` accepts either — which
-///   is the actual, IN-PROCESS reason they stay absent here. (§13.5 is a
-///   non-goals list for the OUT-OF-PROCESS subprocess transport and was
-///   never authority for this in-process question — the extension design's
-///   own 2026-08-09 dated status note said so.)
+/// - `CwdHandle`, `SubagentHandle`, `SubagentHost` — they appear only as
+///   `ToolCtx` *fields* an implementor reads (method calls on
+///   `ctx.chdir`/`ctx.subagents` never name the type — a tool calls
+///   `ctx.subagents.start(spec)` by method dispatch, exactly like the
+///   pre-existing `ctx.chdir.set(..)` precedent).
+///
+///   `SubagentHost` has no builder injection point at all, and none is
+///   coming: this is a decided design, not an unfilled seam. Fork and spawn
+///   are mechanism with exactly one implementation, and the runtime that
+///   keeps the log is the only thing that may fork it (INTENT.md §7 —
+///   *"if it wants them" means uncalled, not replaced*); a second
+///   `SubagentHost` would be a second authority over what a session's
+///   ancestry means. No `pub fn with_*` in `crates/conway/src/builder.rs`
+///   accepts one. `HostCaps::from_config`
+///   (`crates/conway/src/host_caps.rs`) states the identical ruling from
+///   the capability-advertisement side: the host always offers
+///   `HostCapability::Subagent` because the runtime always provides the
+///   implementation, never because an embedder chose to supply one.
+///   `crates/conway-core/src/ports/subagent.rs`'s own module doc ("Exactly
+///   one intended implementor") states the same invariant a third time, at
+///   the port itself (INTENT.md §8.6 — an invariant belongs to the seam,
+///   not to its call sites). (§13.5 is a non-goals list for the OUT-OF-PROCESS
+///   subprocess transport and was never authority for this in-process
+///   question — the extension design's own 2026-08-09 dated status note
+///   said so.)
+///
 ///   `CwdHandle`/`SubagentHandle` stay absent for a DIFFERENT reason now
 ///   than they used to (see the dated note below): assembling them by hand
 ///   is no longer what a third party has to do at all.
@@ -233,6 +251,28 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   no-longer-unprecedented "kind 2" test-fixture constructor rather than
 ///   the builder/`#[non_exhaustive]` combination `ToolCtx`'s own doc
 ///   rejects as disproportionate for ordinary struct-literal construction.
+///
+///   `EventSinkHandle`/`EventSink` are NOT part of this closed list, and an
+///   earlier version of this doc was wrong to say they were: it grouped
+///   them with `SubagentHost` as sharing "no builder injection point at
+///   all," and that stopped being true the moment `Plugin::observe_sink`
+///   (`conway_core::ports::Plugin::observe_sink`) shipped. A plugin
+///   author implements `EventSink` on their own type and returns
+///   `Some(handle)` from `observe_sink` to receive a copy of the host's
+///   live event stream as an observer; `ConwayBuilder::build`
+///   (`crates/conway/src/builder.rs`) collects every installed plugin's
+///   `observe_sink` and spawns the forwarding task that wires it in — a
+///   real, production, in-process injection point, not a theoretical one.
+///   `EventSink`/`EventSinkHandle` are exported from this module for
+///   exactly the reason `ContextHook` is above: the capability is real and
+///   shipped, so naming the type completes the port list instead of
+///   leaving it authorable only in theory. What IS still true of
+///   `EventSink`, and is a narrower claim than "no injection point at
+///   all": no `ConwayBuilder::with_*` method lets an embedder replace what
+///   `ToolCtx.events` itself holds (that field is always the runtime's own
+///   internal sink, unlike the separate `observe_sink` path above) — but
+///   that narrower absence is not why `EventSink` is unreachable through
+///   this module, because it isn't unreachable.
 /// - The `SessionStore`/`HealthRegistry` implementation surfaces.
 ///   `SessionStore` because *implementing* it means spelling
 ///   `SessionStore::append`'s own signature, and the full set that requires
@@ -242,7 +282,7 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   `StoreError` are re-exported from `plugin` below — without them that
 ///   advertised read surface would not compile from a facade-only crate.
 ///   Implementing the port from outside remains out of scope;
-///   `HealthRegistry` because, like `SubagentHost`/`EventSink` above, no
+///   `HealthRegistry` because, like `SubagentHost` above, no
 ///   `ConwayBuilder::with_*` method injects a replacement. Both checked by
 ///   compiling a facade-only scratch crate against each claim, not by
 ///   reading.
