@@ -1459,7 +1459,17 @@ impl ConwayBuilder {
         //      the host might lack") is always satisfied. The check lives in
         //      the builder, NOT in `PluginRegistry::from_plugins`, so
         //      `conway-core`'s surface is unchanged.
+        //
+        //      `PluginManifest::optional_host_caps` (board item
+        //      `01M0WWKA8K1E7JPK87J6RRQMZF`, that field's own doc) rides
+        //      the SAME per-plugin loop, right after the mandatory check:
+        //      a cap this host does NOT offer never fails the build -- the
+        //      plugin loads degraded, and the degradation is announced on
+        //      the SAME two channels `10a2`'s missing-optional-DEPENDENCY
+        //      loop below uses for the identical idea one edge over
+        //      (`tracing::warn!` plus a `ConfigWarning`).
         let host_caps = HostCaps::from_config(&config);
+        let mut warnings = warnings;
         for plugin in &resolved_plugins {
             let manifest = plugin.manifest();
             host_caps
@@ -1467,6 +1477,22 @@ impl ConwayBuilder {
                 .map_err(|err| FacadeError::Build {
                     message: err.to_string(),
                 })?;
+            for cap in host_caps.missing_optional(&manifest) {
+                tracing::warn!(
+                    plugin = %manifest.id,
+                    capability = %cap,
+                    "plugin's optional host capability is not offered by this host; loading \
+                     degraded"
+                );
+                warnings.push(ConfigWarning {
+                    code: WarningCode::OptionalHostCapabilityMissing,
+                    message: format!(
+                        "plugin '{}' optionally uses host capability '{cap}', which this host \
+                         does not offer; '{}' will load degraded",
+                        manifest.id, manifest.id
+                    ),
+                });
+            }
         }
 
         // 10a2. Plugin-to-plugin dependency gate (board item
@@ -1498,7 +1524,10 @@ impl ConwayBuilder {
         missing_required_dependency(&installed_manifests).map_err(|err| FacadeError::Build {
             message: err.to_string(),
         })?;
-        let mut warnings = warnings;
+        // `warnings` was already rebound `mut` above, at the host-capability
+        // gate (10a), so the optional-DEPENDENCY loop below can push onto
+        // the SAME `Vec` the optional-host-capability loop above already
+        // does.
         for (plugin, dependency) in missing_optional_dependencies(&installed_manifests) {
             tracing::warn!(
                 plugin = %plugin,
@@ -2100,6 +2129,7 @@ mod plugin_dependency_resolution_tests {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: requires.iter().map(|s| s.to_string()).collect(),
             optional: optional.iter().map(|s| s.to_string()).collect(),
         }

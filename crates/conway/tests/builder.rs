@@ -100,6 +100,7 @@ impl Plugin for DummyPlugin {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }
@@ -127,6 +128,7 @@ impl Plugin for InstructingPlugin {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }
@@ -165,6 +167,7 @@ impl Plugin for InstructingDependentPlugin {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: self.requires.iter().map(|s| s.to_string()).collect(),
             optional: vec![],
         }
@@ -751,6 +754,7 @@ impl Plugin for CapPlugin {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: self.required_caps.clone(),
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }
@@ -835,6 +839,116 @@ fn plugin_requiring_a_cap_the_host_lacks_is_refused_naming_both() {
         }
         other => panic!("expected Build error, got {other:?}"),
     }
+}
+
+/// A minimal no-op `Plugin` that declares a single OPTIONAL host cap, used
+/// to exercise the build-time optional-host-capability degrade path
+/// (board item `01M0WWKA8K1E7JPK87J6RRQMZF`). Distinct from `CapPlugin`
+/// (which declares a REQUIRED cap and whose two existing tests above stay
+/// unedited) so this item's own new fixture never touches that struct or
+/// its call sites.
+#[cfg(feature = "builtin-tools")]
+struct OptionalCapPlugin {
+    id: &'static str,
+    optional_caps: Vec<HostCapability>,
+}
+
+#[cfg(feature = "builtin-tools")]
+impl Plugin for OptionalCapPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: self.id.to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![],
+            required_host_caps: vec![],
+            optional_host_caps: self.optional_caps.clone(),
+            requires: vec![],
+            optional: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![]
+    }
+}
+
+/// Acceptance 4: a plugin whose `optional_host_caps` names a cap the host
+/// LACKS still builds -- unlike a missing REQUIRED cap, this never refuses
+/// the plugin -- and the degradation is announced on `Conway::warnings()`
+/// with `WarningCode::OptionalHostCapabilityMissing`, naming both the
+/// plugin and the missing cap. `base_config()` has no
+/// `[plugins].subprocess[]` entries, so the host offers no
+/// `PersistentTransport`.
+#[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
+#[test]
+fn plugin_with_missing_optional_host_cap_builds_and_warns() {
+    let cfg = base_config();
+    let backend = fake_backend("fake");
+    let store = Arc::new(FakeStore::new());
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    let conway: Conway = ConwayBuilder::from_parts(cfg)
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(empty_router())
+        .with_plugin(Arc::new(OptionalCapPlugin {
+            id: "test.optional-persistent",
+            optional_caps: vec![HostCapability::PersistentTransport],
+        }))
+        .build()
+        .expect(
+            "a plugin whose optional_host_caps names a cap the host lacks must still build, \
+             degraded",
+        );
+
+    let warning = conway
+        .warnings()
+        .iter()
+        .find(|w| w.code == conway::config::WarningCode::OptionalHostCapabilityMissing)
+        .expect("build() must record an OptionalHostCapabilityMissing warning");
+    assert!(
+        warning.message.contains("test.optional-persistent"),
+        "warning must name the plugin: {}",
+        warning.message
+    );
+    assert!(
+        warning.message.contains("persistent_transport"),
+        "warning must name the missing cap: {}",
+        warning.message
+    );
+}
+
+/// A plugin whose `optional_host_caps` names a cap the host HAS builds with
+/// no warning recorded for it -- the degrade path only fires for a cap
+/// that is actually missing.
+#[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
+#[test]
+fn plugin_with_satisfied_optional_host_cap_builds_with_no_warning() {
+    let cfg = base_config();
+    let backend = fake_backend("fake");
+    let store = Arc::new(FakeStore::new());
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    let conway: Conway = ConwayBuilder::from_parts(cfg)
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(empty_router())
+        .with_plugin(Arc::new(OptionalCapPlugin {
+            id: "test.optional-subagent",
+            optional_caps: vec![HostCapability::Subagent],
+        }))
+        .build()
+        .expect("a plugin whose optional_host_caps names a cap the host has must build");
+
+    assert!(
+        conway
+            .warnings()
+            .iter()
+            .all(|w| w.code != conway::config::WarningCode::OptionalHostCapabilityMissing),
+        "no OptionalHostCapabilityMissing warning is expected when the cap is offered"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -1092,6 +1206,7 @@ fn injected_plugin_is_unaffected_by_the_default_builtin_selection() {
                 version: "0.0.0".to_string(),
                 tools: vec![ToolName::new("test_echo")],
                 required_host_caps: vec![],
+                optional_host_caps: vec![],
                 requires: vec![],
                 optional: vec![],
             }

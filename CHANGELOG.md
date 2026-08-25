@@ -436,6 +436,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   documents. `/help`'s keybinding overlay (`tui/view/help.rs`) now lists
   the binding.
 
+- **`HostCapability` opens from a closed two-variant enum to a namespaced
+  vocabulary, and `PluginManifest` gains `optional_host_caps`** — board item
+  `01M0WWKA8K1E7JPK87J6RRQMZF`
+  (`docs/vision/DESIGN-plugin-dependencies.md` §2 Edge A/§4a/§7d). Until
+  now, `HostCapability` (`crates/conway-core/src/ports/plugin.rs`) was a
+  fixed two-member list (`Subagent`, `PersistentTransport`); a third party
+  could never declare a capability core had not already blessed, and
+  `docs/plugins/inference-hooks.md:64` referenced `optional_host_caps` as
+  though it existed — it did not, anywhere in the tree. It reuses the exact
+  naming discipline `crate::event_name::validate_event_name` already
+  established for a plugin's own event names (reused, not reimplemented,
+  per that item's own instruction): a bare name (`subagent`,
+  `persistent_transport`) is reserved for what the core host itself
+  blesses and stays a unit variant, so both keep resolving with **no
+  `settings.json` change**; any other well-formed name (bare or
+  `namespace.name`) constructs `HostCapability::Named` via the new
+  `HostCapability::named` constructor. Wire-compatible with the old closed
+  form: serialization is still a bare string for every variant, so an
+  existing manifest parses unchanged; a malformed tag still fails closed at
+  deserialization, only a well-formed but previously-unknown tag now
+  succeeds. `PluginManifest::optional_host_caps` (`#[serde(default)]`,
+  empty by default) is the host-capability analogue of the `requires`/
+  `optional` plugin-to-plugin edges landed the same day: a missing
+  *required* cap still hard-fails `ConwayBuilder::build` unchanged
+  (`PluginError::MissingHostCapability`, naming both sides); a missing
+  *optional* cap now loads the plugin anyway, degraded, and announces it on
+  the same two channels `requires`/`optional`'s own missing-optional path
+  uses — a `tracing::warn!` plus a `ConfigWarning`
+  (`WarningCode::OptionalHostCapabilityMissing`) on `Conway::warnings()` —
+  via the new `conway::HostCaps::missing_optional`. `docs/plugins/
+  inference-hooks.md:64`'s `optional_host_caps` reference now describes
+  something real; no wording change was needed there. No actual new
+  capability ships with this item (no `ui.ask/1`, no host profile) — this
+  opens the vocabulary and the field only.
+
 ### Security
 
 - **`CONWAY_CONFIG_DIR` no longer isolates only half of conway's

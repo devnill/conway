@@ -54,6 +54,7 @@ impl Plugin for SubagentPlugin {
             // built-in loads; a host that lacked it would refuse this plugin
             // at registration with `PluginError::MissingHostCapability`.
             required_host_caps: vec![HostCapability::Subagent],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }
