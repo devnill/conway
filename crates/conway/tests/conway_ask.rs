@@ -59,7 +59,9 @@ use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
 use conway_core::ids::{BackendId, ModelId, ModelRef, SeqRange, ToolName};
 use conway_core::log::{LogRecord, SessionFilter, SubagentMode};
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 
 // ---------------------------------------------------------------------
 // Harness (mirrors `ask.rs`'s own helpers)
@@ -109,17 +111,6 @@ fn build_conway(store: Arc<dyn SessionStore>, backend: Arc<dyn Backend>) -> Conw
         .with_router(fake_router())
         .build()
         .expect("build should succeed with every port injected")
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
 }
 
 fn tool_call_response(call_id: &str, tool: &str, args: serde_json::Value) -> GenerateResponse {

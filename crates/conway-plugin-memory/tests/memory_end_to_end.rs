@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::backend::{BackendId, GenerateResponse, ModelId, StopReason, Usage};
+use conway::backend::{BackendId, ModelId};
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
@@ -41,7 +41,9 @@ use conway::{
     Conway, ConwayBuilder, MemoryId, ModelRef, PermissionDecision, RoleAlias, SessionId,
     SessionSpec,
 };
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 
 use conway_plugin_memory::{InMemoryMemoryStore, MemoryConfig, MemoryPlugin};
 
@@ -70,17 +72,6 @@ fn base_config() -> ConwayConfig {
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
-    }
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
     }
 }
 

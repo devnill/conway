@@ -89,7 +89,7 @@ use conway_core::ports::{
     Backend, BoxStream, GenerateRequest, GenerateResponse, PermissionGate, PluginManifest,
     StreamChunk, ToolCtx, ToolOutput,
 };
-use conway_testkit::{FakeGate, FakeRouter, FakeStore};
+use conway_testkit::{text_response, FakeGate, FakeRouter, FakeStore};
 use futures_core::Stream;
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
@@ -97,17 +97,6 @@ fn fake_router() -> Arc<dyn conway_core::ports::Router> {
         backend: BackendId::new("fake"),
         model: ModelId::new("echo-model"),
     }))
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
 }
 
 fn tool_call_response(tool: &str, arguments: serde_json::Value) -> GenerateResponse {

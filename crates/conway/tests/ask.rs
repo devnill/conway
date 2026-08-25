@@ -52,24 +52,15 @@ use conway_core::log::{LogRecord, SessionFilter};
 use conway_core::ports::{
     Backend, GenerateResponse, PluginManifest, SessionStore, ToolCtx, ToolOutput,
 };
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {
         backend: BackendId::new("fake"),
         model: ModelId::new("echo-model"),
     }))
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: conway_core::content::StopReason::EndTurn,
-        usage: conway_core::content::Usage::default(),
-    }
 }
 
 fn tool_call_response(call_id: &str, tool: &str) -> GenerateResponse {

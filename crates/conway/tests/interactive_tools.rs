@@ -25,10 +25,10 @@ use conway::config::schema::{
 };
 use conway::{Conway, ConwayBuilder, SessionSpec, SpawnSpec, ToolSelector};
 use conway_core::agent::PermissionDecision;
-use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
-use conway_core::ports::GenerateResponse;
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {
@@ -62,17 +62,6 @@ fn base_config() -> ConwayConfig {
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
-    }
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
     }
 }
 

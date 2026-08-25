@@ -52,7 +52,9 @@ use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, SeqRange, ToolNa
 use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, SessionStore};
 use conway_core::provenance::Provenance;
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 
 use conway_plugin_skills::{SkillsPlugin, PLUGIN_ID, TOOL_NAME};
 
@@ -150,17 +152,6 @@ fn base_config(cwd: PathBuf) -> ConwayConfig {
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
         hooks: conway::config::schema::HooksConfig::default(),
-    }
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
     }
 }
 

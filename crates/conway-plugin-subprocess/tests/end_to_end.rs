@@ -41,7 +41,9 @@ use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, SeqRange, ToolNa
 use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, SessionStore};
 use conway_plugin_subprocess::SubprocessPlugin;
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {
@@ -80,17 +82,6 @@ fn base_config() -> ConwayConfig {
         // generally.
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
-    }
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
     }
 }
 

@@ -28,7 +28,9 @@ use conway::plugin::{ContentBlock, Event, ToolCall, ToolName};
 use conway::{
     Conway, ConwayBuilder, EventStream, ModelRef, PermissionDecision, RoleAlias, SessionSpec,
 };
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 
 use conway_plugin_discover::{DiscoverPlugin, SEARCH_TOOL_NAME};
 use conway_plugin_path::{PathPlugin, COMPOSE_TOOL_NAME};
@@ -58,17 +60,6 @@ fn base_config(cwd: std::path::PathBuf) -> ConwayConfig {
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
-    }
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
     }
 }
 

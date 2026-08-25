@@ -43,7 +43,9 @@ use conway_core::content::ContentBlock;
 use conway_core::event::Event;
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 
 /// How long a test sleeps after `new_session` to give an idle keep_alive
 /// session's agent loop a moment to actually reach its idle-await gate
@@ -62,17 +64,6 @@ fn fake_router() -> Arc<dyn conway_core::ports::Router> {
 /// Mirrors `resume.rs`/`ask.rs`'s own identical helper -- this crate has no
 /// shared fixture module for it (each integration test binary is its own
 /// crate root).
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: conway_core::content::StopReason::EndTurn,
-        usage: conway_core::content::Usage::default(),
-    }
-}
-
 /// Mirrors `ask.rs`'s own identical helper -- builds a `GenerateResponse`
 /// carrying exactly one tool call, no text content.
 fn tool_call_response(call_id: &str, tool: &str, args: serde_json::Value) -> GenerateResponse {

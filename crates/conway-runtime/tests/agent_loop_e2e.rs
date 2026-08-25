@@ -45,7 +45,10 @@ use conway_runtime::events::EventBus;
 use conway_runtime::permission::PermissionBroker;
 use conway_runtime::tools::PluginRegistry;
 use conway_runtime::tree::{AgentNode, AgentTree};
-use conway_testkit::{FakeGate, FakeHealth, FakeStore, FakeSubagentHost};
+use conway_testkit::{
+    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeStore,
+    FakeSubagentHost,
+};
 use futures::future::FutureExt;
 use futures::stream::{self, StreamExt};
 use tokio_util::sync::CancellationToken;
@@ -73,21 +76,6 @@ fn make_route(backend: &str, model: &str) -> Route {
         params: SamplingParams::default(),
         reason: RoutingReason::AliasPrimary {
             alias: RoleAlias::new("test"),
-        },
-    }
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            ..Default::default()
         },
     }
 }

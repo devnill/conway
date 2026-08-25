@@ -30,8 +30,10 @@ use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{ForkOrigin, SessionFilter, SubagentMode};
-use conway_core::ports::{Backend, GenerateResponse, SessionStore};
-use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::ports::{Backend, SessionStore};
+use conway_testkit::{
+    text_response, FakeBackend, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {
@@ -90,17 +92,6 @@ fn pin_aware_router() -> Arc<dyn conway_core::ports::Router> {
 /// `conway-runtime/tests/resume_root.rs`'s own `text_response` helper (this
 /// crate has no equivalent already, and that one is private to its own
 /// integration test binary).
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: conway_core::content::StopReason::EndTurn,
-        usage: conway_core::content::Usage::default(),
-    }
-}
-
 /// The concatenated text of every `ContentBlock::Text` in `req`'s segments
 /// -- for asserting what a `ScriptedBackend` call's assembled context
 /// actually contained.

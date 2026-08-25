@@ -32,27 +32,15 @@ use conway_core::ports::{
 use conway_core::provenance::Provenance;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
-use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeRouter, FakeStore,
+    ScriptedBackend, ScriptedTurn,
+};
 use futures::StreamExt;
 
 // ---------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            ..Default::default()
-        },
-    }
-}
 
 fn tool_call_response(call_id: &str, tool: &str) -> GenerateResponse {
     GenerateResponse {

@@ -46,7 +46,8 @@ use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_runtime::tools::PluginRegistry;
 use conway_runtime::tree::{AgentNode, AgentTree};
 use conway_testkit::{
-    FakeGate, FakeRouter, FakeStore, FakeSubagentHost, ScriptedBackend, ScriptedTurn,
+    text_response_with_stub_usage as text_response, FakeGate, FakeRouter, FakeStore,
+    FakeSubagentHost, ScriptedBackend, ScriptedTurn,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -63,21 +64,6 @@ fn caps_ok() -> Capabilities {
         max_context_tokens: 1_000_000,
         reasoning: false,
         reliability_tier: ReliabilityTier::Verified,
-    }
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            ..Default::default()
-        },
     }
 }
 

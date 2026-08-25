@@ -271,7 +271,7 @@ mod tests {
     use conway_core::error::ToolError;
     use conway_core::ids::{BackendId, ModelId, ToolName};
     use conway_core::ports::{GenerateResponse, PluginManifest, ToolCtx, ToolOutput};
-    use conway_testkit::{FakeStore, ScriptedBackend, ScriptedTurn};
+    use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
     use super::super::fixtures::{base_config, minimal_cli};
     use super::{App, AskUpdate};
@@ -361,17 +361,6 @@ mod tests {
 
         fn tools(&self) -> Vec<Arc<dyn Tool>> {
             vec![Arc::new(MarkerTool)]
-        }
-    }
-
-    fn text_response(text: &str) -> GenerateResponse {
-        GenerateResponse {
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-            }],
-            tool_calls: vec![],
-            stop: StopReason::EndTurn,
-            usage: Usage::default(),
         }
     }
 

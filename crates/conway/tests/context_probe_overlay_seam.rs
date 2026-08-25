@@ -159,10 +159,9 @@ use conway_core::agent::{PermissionDecision, ResultStatus};
 use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
-use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::ids::{BackendId, ModelId, RoleAlias};
-use conway_core::ports::{GenerateResponse, SessionStore};
-use conway_testkit::{FakeGate, FakeStore};
+use conway_core::ports::SessionStore;
+use conway_testkit::{text_response, FakeGate, FakeStore};
 use serde_json::json;
 use support::MutableCapsBackend;
 use wiremock::matchers::{method, path};
@@ -673,17 +672,6 @@ fn caps(max_context_tokens: u32) -> Capabilities {
         max_context_tokens,
         reasoning: true,
         reliability_tier: ReliabilityTier::Verified,
-    }
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
     }
 }
 

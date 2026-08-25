@@ -94,26 +94,14 @@ use conway_core::agent::{PermissionDecision, ResultStatus};
 use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
-use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::ids::{BackendId, RoleAlias};
-use conway_core::ports::{Backend, GenerateResponse, SessionStore};
-use conway_testkit::{FakeGate, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::ports::{Backend, SessionStore};
+use conway_testkit::{text_response, FakeGate, FakeStore, ScriptedBackend, ScriptedTurn};
 
 /// The one model this fixture's role chain names. Its window
 /// (`max_context_tokens`) is the only knob that differs between the
 /// rejection test and its negative control.
 const MODEL: &str = "fake/tiny-model";
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
-}
 
 /// Every capability EXCEPT the context window set generously — see the
 /// module doc's "headroom-only, not mixed" note: this is what keeps the

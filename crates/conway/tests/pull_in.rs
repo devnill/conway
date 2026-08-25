@@ -28,15 +28,16 @@ use conway::config::schema::{
 };
 use conway::{Conway, ConwayBuilder, FacadeError, Provenance, SessionHandle, SessionSpec};
 use conway_core::agent::PermissionDecision;
-use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::event::Event;
 use conway_core::ids::{
     AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SeqRange, SessionId,
 };
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
-use conway_core::ports::{Backend, GenerateResponse, SessionStore};
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::ports::{Backend, SessionStore};
+use conway_testkit::{
+    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 use futures_core::Stream as _;
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
@@ -44,17 +45,6 @@ fn fake_router() -> Arc<dyn conway_core::ports::Router> {
         backend: BackendId::new("fake"),
         model: ModelId::new("echo-model"),
     }))
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: conway_core::content::StopReason::EndTurn,
-        usage: conway_core::content::Usage::default(),
-    }
 }
 
 fn base_config() -> ConwayConfig {

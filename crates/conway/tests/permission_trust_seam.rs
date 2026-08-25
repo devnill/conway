@@ -42,10 +42,10 @@ use conway::config::schema::{
 };
 use conway::{Conway, ConwayBuilder, PluginSelection, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
-use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
+use conway_core::content::{StopReason, ToolCall, Usage};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolName};
 use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
-use conway_testkit::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{text_response, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use tempfile::TempDir;
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
@@ -53,17 +53,6 @@ fn fake_router() -> Arc<dyn conway_core::ports::Router> {
         backend: BackendId::new("fake"),
         model: ModelId::new("echo-model"),
     }))
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
 }
 
 fn bash_call_response(command: &str) -> GenerateResponse {

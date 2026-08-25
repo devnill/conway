@@ -32,17 +32,17 @@ mod result_contract_via_def {
     use conway_core::capabilities::{
         CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
     };
-    use conway_core::content::{ContentBlock, StopReason, Usage};
     use conway_core::error::RoutingError;
     use conway_core::ids::{AgentId, BackendId, ModelId, RoleAlias};
     use conway_core::log::LogRecord;
-    use conway_core::ports::{
-        Backend, GenerateResponse, HealthRegistry, Plugin, Router, SessionStore, SubagentHost,
-    };
+    use conway_core::ports::{Backend, HealthRegistry, Plugin, Router, SessionStore, SubagentHost};
     use conway_core::routing::{Route, RouteRequest, RoutingReason};
     use conway_runtime::events::EventBus;
     use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
-    use conway_testkit::{FakeGate, FakeHealth, FakeStore, ScriptedBackend, ScriptedTurn};
+    use conway_testkit::{
+        text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeStore,
+        ScriptedBackend, ScriptedTurn,
+    };
 
     use super::{dir_with_fixtures, load_agent_defs};
 
@@ -55,21 +55,6 @@ mod result_contract_via_def {
             max_context_tokens: 1_000_000,
             reasoning: false,
             reliability_tier: ReliabilityTier::Verified,
-        }
-    }
-
-    fn text_response(text: &str) -> GenerateResponse {
-        GenerateResponse {
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-            }],
-            tool_calls: vec![],
-            stop: StopReason::EndTurn,
-            usage: Usage {
-                input_tokens: 10,
-                output_tokens: 5,
-                ..Default::default()
-            },
         }
     }
 

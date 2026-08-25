@@ -21,12 +21,13 @@ use conway::config::schema::{
 };
 use conway::{AgentIntent, Conway, ConwayBuilder, FacadeError, SessionHandle, SessionSpec};
 use conway_core::agent::{PermissionDecision, SubagentMode};
-use conway_core::content::ContentBlock;
 use conway_core::error::BackendError;
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::log::SessionFilter;
-use conway_core::ports::{Backend, GenerateResponse, SessionStore};
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::ports::{Backend, SessionStore};
+use conway_testkit::{
+    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 
 const CLASSIFY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -35,17 +36,6 @@ fn fake_router() -> Arc<dyn conway_core::ports::Router> {
         backend: BackendId::new("fake"),
         model: ModelId::new("echo-model"),
     }))
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: conway_core::content::StopReason::EndTurn,
-        usage: conway_core::content::Usage::default(),
-    }
 }
 
 /// `with_intent_role` toggles the `[roles.intent]` entry -- the switch the

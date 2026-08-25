@@ -28,7 +28,7 @@ use conway_core::capabilities::{
     CacheMode, Capabilities, HeadroomPolicy, ProbeReport, ReliabilityTier, StructuredOutput,
     ToolCallSupport,
 };
-use conway_core::content::{ContentBlock, SamplingParams, StopReason, Usage};
+use conway_core::content::{ContentBlock, SamplingParams};
 use conway_core::error::{HookFailure, RoutingError};
 use conway_core::hook::{ContextDelta, HookAnswer, HookInvocation};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId};
@@ -49,7 +49,10 @@ use conway_runtime::hook_dispatch::{HookSpec, CONTEXT_OVERFLOW, REQUEST_ASSEMBLE
 use conway_runtime::permission::PermissionBroker;
 use conway_runtime::tools::PluginRegistry;
 use conway_runtime::tree::{AgentNode, AgentTree};
-use conway_testkit::{FakeGate, FakeHealth, FakeStore, FakeSubagentHost};
+use conway_testkit::{
+    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeStore,
+    FakeSubagentHost,
+};
 
 // --------------------------------------------------------------- fixtures --
 
@@ -72,21 +75,6 @@ fn make_route(backend: &str, model: &str) -> Route {
         params: SamplingParams::default(),
         reason: RoutingReason::AliasPrimary {
             alias: RoleAlias::new("test"),
-        },
-    }
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            ..Default::default()
         },
     }
 }

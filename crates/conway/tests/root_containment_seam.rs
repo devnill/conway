@@ -82,7 +82,7 @@ use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolNam
 use conway_core::log::LogRecord;
 use conway_core::permission_mode::PermissionMode;
 use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
-use conway_testkit::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{text_response, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use tempfile::TempDir;
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
@@ -90,17 +90,6 @@ fn fake_router() -> Arc<dyn conway_core::ports::Router> {
         backend: BackendId::new("fake"),
         model: ModelId::new("echo-model"),
     }))
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
 }
 
 fn tool_call_response(tool: &str, arguments: serde_json::Value) -> GenerateResponse {

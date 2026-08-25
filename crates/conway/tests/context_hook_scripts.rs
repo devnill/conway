@@ -41,12 +41,13 @@ use conway::config::schema::{
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
 use conway::{Conway, ConwayBuilder, PluginSelection};
-use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
-use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
+use conway_core::ports::{Backend, PermissionGate};
 use conway_runtime::context::{apply_script_deltas, prefix_key};
 use conway_runtime::hook_dispatch::ContextHookAnswer;
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 use tempfile::TempDir;
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
@@ -54,17 +55,6 @@ fn fake_router() -> Arc<dyn conway_core::ports::Router> {
         backend: BackendId::new("fake"),
         model: ModelId::new("echo-model"),
     }))
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
 }
 
 fn base_config(cwd: &Path, hooks: HooksConfig) -> ConwayConfig {
