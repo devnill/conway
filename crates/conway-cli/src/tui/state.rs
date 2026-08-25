@@ -1240,9 +1240,59 @@ impl AppState {
                     self.activity = Activity::Thinking;
                 }
             }
+            // This item (board: "pulling in an /ask answer wedges the status
+            // bar in a working state forever"): the `turn_started_at.
+            // is_some()` guard added to the `activity` write. Pulling in an
+            // ask answer is a LOG operation (`Runtime::pull_in`), not an
+            // agent run -- it copies the child's records into the parent's
+            // log and emits synthetic "live twin" events (`Event::UserTurn`,
+            // `Event::TextDelta`) so a subscriber sees the merged content
+            // appear, but it never emits `Event::TurnStarted` because no
+            // turn ever actually starts. Before this guard, this arm set
+            // `activity = Responding` on the twin exactly like it does for a
+            // real streaming reply, and nothing was left to ever clear it --
+            // `Event::TurnFinished`/`Event::AgentFinished` (the only two
+            // event-driven paths back to `Idle`, alongside a focus switch)
+            // never fire for a pull-in, so the status bar spun forever after
+            // the merge. `turn_started_at` is `Some` ONLY between
+            // `Event::TurnStarted` and `Event::TurnFinished`
+            // (`TurnStarted`'s own arm above; `clear_turn_state`, called
+            // from the `TurnFinished` arm below) -- exactly the predicate
+            // "a real turn is running" -- so a pull-in's twin, which carries
+            // no such bracket, now leaves `activity` untouched instead of
+            // wedging it.
+            //
+            // Ordering premise, traced (not assumed): a real turn's
+            // `Event::TurnStarted` is unconditionally emitted (`agent_loop.
+            // rs`, `AgentLoop::run_inner`) before any context assembly,
+            // model call, or streamed `TextDelta` for that same turn, over
+            // one shared, per-session-ordered `EventBus` (`events.rs`:
+            // `emit`/`emit_pruning` hold the per-session seq mutex ACROSS
+            // the broadcast `send`, specifically so no later `seq` can ever
+            // be observed before an earlier one). So for every real turn,
+            // `TurnStarted` is guaranteed to reach `apply` -- and stamp
+            // `turn_started_at` -- strictly before that turn's own first
+            // `TextDelta` can. The two call sites that flip `activity` to
+            // `Thinking` optimistically at submit time, WITHOUT stamping
+            // `turn_started_at` (`app.rs`'s `submit`, `app/focus.rs`'s
+            // `deliver_first_message`), do not race this: they run before
+            // `Runtime::prompt`/`prompt_agent` even returns, i.e. before
+            // that call's own `TurnStarted` can have been emitted, so this
+            // guard cannot yet see a `TextDelta` for that turn either.
+            //
+            // Sibling closed for free, verified (`record_to_event`,
+            // `conway/src/session_handle.rs`): a `--resume`/focus-switch
+            // replay batch whose last content record is an assistant reply
+            // maps that record to this same `Event::TextDelta` shape and
+            // likewise never synthesizes a `Event::TurnStarted` -- and
+            // `AppState::focus_agent` (`state.rs`, this file) resets BOTH
+            // `activity` to `Idle` AND `turn_started_at` to `None` before
+            // the replay batch is ever applied. So a replayed assistant
+            // reply now leaves `activity` at that reset `Idle` instead of
+            // wedging it into `Responding` the same way pull-in used to.
             Event::TextDelta { text } => {
                 self.append_assistant_text(text, env.ts);
-                if env.agent == self.focused_agent {
+                if env.agent == self.focused_agent && self.turn_started_at.is_some() {
                     self.activity = Activity::Responding;
                 }
             }

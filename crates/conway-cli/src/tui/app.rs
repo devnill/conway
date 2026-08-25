@@ -332,7 +332,12 @@ impl App {
         // status line on "thinking" forever: a finished agent emits no
         // further `TurnFinished`/`AgentFinished` to ever reset it (`state.
         // rs`'s own `Event::AgentFinished`/`TurnStarted` arms are the only
-        // things that clear `Thinking`). Checked BEFORE the message is even
+        // things that clear `Thinking`). Same wedge shape, a different door,
+        // as an `/ask` pull-in used to wedge `Responding` instead --
+        // `state.rs`'s `Event::TextDelta` arm now guards its own write the
+        // same way this comment describes, on `turn_started_at.is_some()`
+        // rather than a live-registry check, since that arm has no
+        // registry to consult. Checked BEFORE the message is even
         // echoed into the transcript, so a message that was never actually
         // sent never appears to have been. `AppState::
         // block_message_if_focused_agent_finished` (which itself defers to
@@ -432,7 +437,7 @@ mod tests {
     };
     use super::{App, SubmitOutcome};
     use crate::tui::commands;
-    use crate::tui::state::{AskFate, AskModal, Entry, Mode};
+    use crate::tui::state::{Activity, AskFate, AskModal, Entry, Mode};
 
     /// The `Effect::Resumed` call site's own `refresh_session_head` call
     /// (`Self::submit`, this item): resuming a DIFFERENT, non-empty
@@ -1255,6 +1260,89 @@ mod tests {
         assert!(
             all.iter().all(|m| m.agent_id != child),
             "the pulled-in child must be purged, not merely closed: {all:?}"
+        );
+    }
+
+    /// This item's own load-bearing test (board: "pulling in an /ask answer
+    /// wedges the status bar in a working state forever"). `pull_in` is a
+    /// LOG operation, not an agent run -- it never emits `TurnStarted`, so
+    /// nothing about it should ever leave `AppState::activity` reading as
+    /// though a turn were in flight.
+    ///
+    /// Non-vacuous by construction, not merely by assertion shape: `App::new`
+    /// leaves `activity` at its default `Idle`, and NOTHING in
+    /// `drive_ask_to_modal` (the modal `/ask` flow runs on the CHILD's own
+    /// forked session, never on `app.handle`'s stream) touches it either --
+    /// so if this test's `drain_and_apply` below did not really exercise the
+    /// merge's live `TextDelta` twin on the parent's OWN focused stream, the
+    /// final assertion would trivially hold against broken code too. It does
+    /// not: pre-fix, this test fails with `left: Responding, right: Idle`
+    /// (captured verbatim in this item's own report) -- proof the fixture
+    /// genuinely drives `activity` away from `Idle` before the fix makes it
+    /// return.
+    #[tokio::test]
+    async fn ask_fate_pull_in_leaves_the_status_bar_idle_not_wedged_responding() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        assert_eq!(
+            app.state.activity,
+            Activity::Idle,
+            "sanity: a fresh App starts idle"
+        );
+
+        let _child = drive_ask_to_modal(&mut app, "what time is it").await;
+        assert_eq!(
+            app.state.activity,
+            Activity::Idle,
+            "the modal /ask round trip runs on the child's OWN forked session, \
+             never on app.handle's stream -- it must not have touched activity \
+             either, or the assertion below would be vacuous"
+        );
+
+        // Subscribed BEFORE the fate call, mirroring `pull_in.rs`'s own
+        // subscribe-first discipline (`crates/conway/tests/pull_in.rs:305`):
+        // the merge's live twins are emitted synchronously during
+        // `apply_ask_fate` itself, so a subscription taken afterward would
+        // miss them on the broadcast bus.
+        let mut events = app.handle.events();
+
+        let host = commands::LiveHost {
+            handle: &app.handle,
+            conway: &app.conway,
+            commands: &app.command_registry,
+        };
+        commands::apply_ask_fate(AskFate::PullIn, &mut app.state, &host).await;
+
+        // The exact run-loop call: poll the parent's own stream to
+        // `Poll::Pending` and apply every envelope through the REAL
+        // `AppState::apply`.
+        super::fixtures::drain_and_apply(&mut events, &mut app.state);
+
+        // Enum assertion: this is `AppState::activity` returning to `Idle`
+        // after the merge, not staying at its untouched default -- see the
+        // sanity assertions above.
+        assert_eq!(
+            app.state.activity,
+            Activity::Idle,
+            "a pull-in merge starts no turn (no TurnStarted is ever emitted for \
+             it), so it must never leave activity reading as though one were \
+             still running"
+        );
+
+        // Render assertion (acceptance 3: the enum alone would not catch a
+        // renderer reading a different field) -- the same
+        // no-spinner-glyph shape `view/status.rs`'s own
+        // `status_line_shows_no_elapsed_or_running_tokens_while_idle` uses.
+        let text = crate::tui::test_support::render_text(&app.state, 80, 24);
+        assert!(
+            !crate::tui::state::SPINNER_FRAMES
+                .iter()
+                .any(|glyph| text.contains(glyph)),
+            "the rendered status line must show no spinner glyph once the merge \
+             has settled: {text}"
         );
     }
 

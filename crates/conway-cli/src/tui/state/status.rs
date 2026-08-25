@@ -21,6 +21,19 @@ use super::*;
 /// focus itself changes ([`AppState::focus_agent`]) -- a freshly focused
 /// agent shows no activity signal until its own next event arrives, rather
 /// than carrying over whatever the PREVIOUS focus was doing.
+///
+/// **`TextDelta`->`Responding` is additionally gated on
+/// `turn_started_at.is_some()`** (board: "pulling in an /ask answer wedges
+/// the status bar in a working state forever") -- an `/ask` pull-in
+/// (`Runtime::pull_in`) and a `--resume`/focus-switch replay batch
+/// (`record_to_event`) both synthesize a `TextDelta` twin for a persisted
+/// assistant reply with no bracketing `TurnStarted`/`TurnFinished` pair,
+/// since neither is a real turn. Without the gate, that twin wedged
+/// `activity` at `Responding` forever -- nothing downstream of a
+/// non-turn ever emits the `TurnFinished`/`AgentFinished` this enum's own
+/// `Idle` transitions depend on. See `AppState::apply`'s `TextDelta` arm
+/// for the full trace, including why this cannot race a REAL turn's own
+/// first `TextDelta`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Activity {
     Idle,
@@ -109,11 +122,30 @@ mod tests {
         assert_eq!(state.activity, Activity::Thinking);
     }
 
+    /// Real ordering, not a bare `TextDelta`: `agent_loop.rs`'s
+    /// `AgentLoop::run_inner` always emits `Event::TurnStarted` before any
+    /// context assembly, model call, or streamed `TextDelta` for that same
+    /// turn, over the SAME per-session-ordered `EventBus` -- so a
+    /// `TextDelta` belonging to a real turn is never observed by `apply`
+    /// before that turn's own `TurnStarted` already stamped
+    /// `turn_started_at`. This item's gate on `TextDelta` (`turn_started_at.
+    /// is_some()`) depends on exactly that ordering, so the test now
+    /// establishes it explicitly rather than asserting `TextDelta` alone
+    /// suffices (see `ask_fate_pull_in_leaves_the_status_bar_idle_not_
+    /// wedged_responding` in `app.rs` for the sibling case where NO
+    /// `TurnStarted` ever precedes the twin, and `activity` must stay put
+    /// instead).
     #[test]
-    fn text_delta_sets_activity_responding() {
+    fn text_delta_after_turn_started_sets_activity_responding() {
         let session = SessionId::new();
         let agent = AgentId::new();
         let mut state = AppState::new(agent);
+
+        state.apply(&envelope(session, agent, Event::TurnStarted { turn: 0 }));
+        assert!(
+            state.turn_started_at.is_some(),
+            "sanity: TurnStarted must stamp turn_started_at before TextDelta arrives"
+        );
 
         state.apply(&envelope(
             session,
@@ -124,6 +156,38 @@ mod tests {
         ));
 
         assert_eq!(state.activity, Activity::Responding);
+    }
+
+    /// This item's own regression guard, the mirror image of the test
+    /// above: a `TextDelta` with NO preceding `TurnStarted` (exactly the
+    /// shape `Runtime::pull_in`'s merge twin and a replay batch's
+    /// `record_to_event` mapping both produce) must leave `activity`
+    /// untouched rather than wedging it at `Responding` -- see
+    /// `AppState::apply`'s `TextDelta` arm for the full trace.
+    #[test]
+    fn text_delta_with_no_turn_started_leaves_activity_untouched() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        assert_eq!(
+            state.activity,
+            Activity::Idle,
+            "sanity: a fresh AppState starts idle"
+        );
+
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::TextDelta {
+                text: "the ask answer".to_string(),
+            },
+        ));
+
+        assert_eq!(
+            state.activity,
+            Activity::Idle,
+            "a TextDelta with no bracketing TurnStarted must not move activity"
+        );
     }
 
     #[test]
