@@ -53,6 +53,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enforces on its own. See `docs/providers.md`'s new "Locality" section
   and `docs/routing.md`'s worked example for the full picture, including
   the tunnel case named again.
+- **A plugin can now declare it depends on another plugin, and conway
+  enforces it** — board item `01M0WWJMYK0KDC2X7B7MR46FRR`
+  (`docs/vision/DESIGN-plugin-dependencies.md` §4/§4a/§4b), two new
+  `PluginManifest` fields: `requires` and `optional`, both `Vec<String>`
+  of plugin ids, both name-only (no `semver` crate anywhere in this
+  workspace — an id verifies SOME plugin with that id is installed, never
+  which version). `ConwayBuilder::build` checks the full final installed
+  set (built-ins ++ everything `install_selected`/`with_plugin` added):
+  a `requires` id absent from it is a hard build error naming both the
+  dependent and the missing dependency (mirroring the existing
+  `required_host_caps`/`MissingHostCapability` shape, extended to
+  plugin-to-plugin edges — "a plugin cannot be enabled without its
+  dependencies enabled; not degraded, not silently auto-installed —
+  refused"); a cycle among `requires` edges (`a` requires `b` requires
+  `a`) is its own named error, `PluginError::DependencyCycle`, since
+  neither side of a cycle can ever be satisfied first. An `optional` id
+  absent from the installed set never fails the build — the dependent
+  loads anyway, degraded, and the degradation is always announced: a
+  `tracing::warn!` naming both ids, plus a new `ConfigWarning`
+  (`WarningCode::OptionalPluginDependencyMissing`) on `Conway::warnings()`
+  for a host that reads it. `ConwayBuilder::install_selected` also
+  performs an early, best-effort topological cycle check over what it can
+  see before `build()` is reached — but deliberately does **not** reorder
+  the `with_plugin` calls it makes, which stay in plain `[plugins].install`
+  order: that order is `Plugin::instructions()`'s own injection-precedence
+  authority, and resolving a dependency graph is a different question from
+  deciding what precedes what in an assembled prompt. A regression test
+  installs two instruction-declaring plugins with a `requires` edge that
+  would reorder them under a naive topological-injection scheme, and
+  asserts the assembled context still orders fragments by install order.
 
 - **conway can now install a plugin from a Claude Code marketplace** —
   board item `01M0VR96Y87FF2BVNTBSC6GEYR`, the network-reaching half of the

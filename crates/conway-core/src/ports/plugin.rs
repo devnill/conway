@@ -1426,6 +1426,78 @@ pub struct PluginManifest {
     /// registration (`ConwayBuilder::build`), naming both the plugin and the
     /// cap. See [`HostCapability`] for the closed vocabulary.
     pub required_host_caps: Vec<HostCapability>,
+    /// Plugin ids this plugin's stated function cannot perform at all
+    /// without (`docs/vision/DESIGN-plugin-dependencies.md` §4/§4a's
+    /// participant/observer-derived criterion: "the dependent cannot
+    /// perform its stated function at all without the dependency"). An
+    /// empty vec (the common case) means "depends on no other plugin".
+    ///
+    /// **Enforced at `ConwayBuilder::build`, not at registration order.**
+    /// A dependency id absent from the FINAL installed plugin set (built-in
+    /// ++ every `with_plugin`/`install_selected`-installed plugin, in
+    /// whatever order they were added) is a hard `FacadeError::Build`
+    /// naming both the dependent and the missing dependency -- the same
+    /// "a plugin cannot be enabled without its dependencies enabled; not
+    /// degraded, not silently auto-installed -- refused" posture
+    /// [`required_host_caps`](Self::required_host_caps) already has for
+    /// host capabilities, applied here to plugin-to-plugin edges. A cycle
+    /// among `requires` edges (`a` requires `b` requires `a`) is its own
+    /// distinct, named build error -- neither side of a cycle can ever be
+    /// "satisfied first", so it is refused rather than resolved by
+    /// accident of iteration order.
+    ///
+    /// **Name-only: NO version constraint is expressed or checked.** There
+    /// is no `semver` crate anywhere in this workspace, and this field is a
+    /// bare plugin id string -- `requires: vec!["conway.ui".into()]`
+    /// verifies only that SOME plugin with that id is installed, never
+    /// which [`PluginManifest::version`] it reports. A dependent that needs
+    /// a version floor (e.g. "a widget `ui.form/1` only gained in
+    /// `conway.ui` 0.4") has no way to express that yet; see
+    /// `docs/vision/DESIGN-plugin-dependencies.md` §7b for the tradeoff
+    /// argued and the condition under which this should change.
+    ///
+    /// **Resolution order is topological; installation/injection order is
+    /// not.** `ConwayBuilder::install_selected` uses a dependency-ordered
+    /// (topological) walk internally to validate this graph -- detecting a
+    /// missing-required id early where it can, and any cycle authoritatively
+    /// -- but never reorders the actual `with_plugin` calls it makes: those
+    /// stay in `[plugins].install`'s own order, because [`Plugin::instructions`]'s
+    /// own precedence rule ("Multiple plugins' fragments
+    /// are injected in `with_plugin`/`install_selected` install order")
+    /// depends on it. Resolving a dependency graph and deciding what
+    /// PRECEDES what in an assembled prompt are two different questions;
+    /// this field answers only the first.
+    ///
+    /// `#[serde(default)]`: a manifest deserialized from a source that
+    /// predates this field (or simply omits it, the common case) parses as
+    /// empty -- "depends on nothing" -- never a deserialization error.
+    #[serde(default)]
+    pub requires: Vec<String>,
+    /// Plugin ids whose absence degrades only a presentation or convenience
+    /// of this plugin -- its stated function otherwise survives intact
+    /// (`docs/vision/DESIGN-plugin-dependencies.md` §4a's observer half of
+    /// the same criterion: "the dependent's function survives; only a
+    /// presentation or convenience of it is lost"). An empty vec (the
+    /// common case) means "nothing about this plugin degrades based on
+    /// another plugin's presence".
+    ///
+    /// **Absence never fails `build()`.** Unlike [`Self::requires`], a
+    /// missing optional dependency loads this plugin anyway, degraded --
+    /// and the degradation is always announced, never silent: `build()`
+    /// records a `ConfigWarning` (`WarningCode::OptionalPluginDependencyMissing`,
+    /// in the `conway` facade's `config` module) naming both this plugin and
+    /// the missing dependency, and emits a `tracing::warn!` with the same
+    /// two ids, so a headless run with no plugin browser to render a notice
+    /// into still has SOMEWHERE the omission is written down (see that
+    /// design page's §4b: "no surface may degrade silently").
+    ///
+    /// **Same name-only limitation as [`Self::requires`]**: an id here
+    /// names a plugin, never a version of one.
+    ///
+    /// `#[serde(default)]`, the same reason [`Self::requires`] has it: a
+    /// manifest predating this field parses as empty, never an error.
+    #[serde(default)]
+    pub optional: Vec<String>,
 }
 
 /// A plugin's untyped configuration values, as loaded and handed down by the
@@ -2148,6 +2220,8 @@ mod tests {
             version: "0.1.0".into(),
             tools: vec![ToolName::new("read"), ToolName::new("write")],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let back: PluginManifest = serde_json::from_str(&json).unwrap();
@@ -2322,6 +2396,8 @@ mod tests {
                     version: "0.1.0".into(),
                     tools: vec![],
                     required_host_caps: vec![],
+                    requires: vec![],
+                    optional: vec![],
                 }
             }
             fn tools(&self) -> Vec<Arc<dyn Tool>> {
@@ -2641,6 +2717,8 @@ mod tests {
                 version: "0.1.0".into(),
                 tools: vec![],
                 required_host_caps: vec![],
+                requires: vec![],
+                optional: vec![],
             }
         }
 
@@ -2835,6 +2913,8 @@ mod tests {
                 version: "0.1.0".into(),
                 tools: vec![],
                 required_host_caps: vec![],
+                requires: vec![],
+                optional: vec![],
             }
         }
 
@@ -2879,6 +2959,8 @@ mod tests {
                 version: "0.1.0".into(),
                 tools: vec![],
                 required_host_caps: vec![],
+                requires: vec![],
+                optional: vec![],
             }
         }
 

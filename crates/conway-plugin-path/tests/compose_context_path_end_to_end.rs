@@ -454,6 +454,8 @@ impl conway::plugin::Plugin for ProbePlugin {
             version: "0.0.0".to_string(),
             tools: vec![ToolName::new("probe")],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
     fn tools(&self) -> Vec<Arc<dyn conway::plugin::Tool>> {

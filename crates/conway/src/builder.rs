@@ -124,14 +124,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use conway_core::capabilities::{HeadroomPolicy, ReliabilityTier};
+use conway_core::error::PluginError;
 use conway_core::ids::{BackendId, ModelRef};
 use conway_core::permission_pattern::{PatternOrigin, Rule, Select, Then, When};
 use conway_core::ports::CapabilityIndex;
 use conway_core::ports::{
     Backend, BackendBuildContext, BackendFactory, ContextHook, CurateOutcome, Curator,
-    HealthRegistry, HookRunner, PathStore, PermissionGate, Plugin, PluginPermissionRule,
-    PluginPermissionVerdict, PluginStatusContribution, Router, RouterBuildContext, RouterBundle,
-    RouterFactory, RoutingExplainer, SessionStore,
+    HealthRegistry, HookRunner, PathStore, PermissionGate, Plugin, PluginManifest,
+    PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution, Router,
+    RouterBuildContext, RouterBundle, RouterFactory, RoutingExplainer, SessionStore,
 };
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::context::PluginInstruction;
@@ -142,7 +143,7 @@ use conway_runtime::runtime::{Runtime, RuntimeDeps};
 
 use crate::agents;
 use crate::config::schema::{BackendEntry, ConwayConfig};
-use crate::config::{self, CliOverrides, ConfigWarning, LoadOptions};
+use crate::config::{self, CliOverrides, ConfigWarning, LoadOptions, WarningCode};
 use crate::conway::Conway;
 use crate::discovery_host;
 use crate::error::{FacadeError, Result};
@@ -909,6 +910,20 @@ impl ConwayBuilder {
     /// configuration). Whether `build()` later fails with "no backends
     /// configured" depends on `backend_factories`/`with_backend`/
     /// `[backends.<id>]` alone, unrelated to this method's own return.
+    ///
+    /// **Also validates the `PluginManifest::requires` graph among what
+    /// this call can see** (every plugin already on `self`, plus every
+    /// `plugins` bundle entry `wanted` selects) -- a cycle there is a hard
+    /// [`FacadeError::Build`], since a cycle is unsatisfiable no matter
+    /// what `build()` later adds. **This validation is topological; the
+    /// `with_plugin` calls below are not** -- they still run in plain
+    /// `wanted` order (== `[plugins].install` order), unchanged, because
+    /// that order is `Plugin::instructions()`'s own injection-precedence
+    /// authority. See `PluginManifest::requires`'s own doc for the full
+    /// disclosure of what this method's own visibility can and cannot
+    /// check (it cannot see built-ins, so a MISSING required dependency is
+    /// deferred to `build()`'s later, full-set pass rather than risking a
+    /// false positive here).
     pub fn install_selected(
         mut self,
         plugins: Vec<Arc<dyn Plugin>>,
@@ -943,6 +958,38 @@ impl ConwayBuilder {
         if wanted.is_empty() {
             return Ok(self);
         }
+
+        // Dependency-graph validation (board item
+        // `01M0WWJMYK0KDC2X7B7MR46FRR`), topological -- but see
+        // `PluginManifest::requires`'s own doc for why this call NEVER
+        // reorders the `with_plugin` calls the loop below still makes in
+        // plain `wanted` (== `[plugins].install`) order: install order is
+        // `Plugin::instructions()`'s own precedence authority, and this
+        // step exists to validate the dependency graph, not to choose an
+        // injection order. Scoped to what THIS call can see -- every
+        // plugin already installed on `self` plus every `plugins` bundle
+        // entry `wanted` is about to select -- which does NOT include
+        // built-ins (those are resolved later, in `build()`, which is why
+        // this step checks a cycle only: a cycle among visible ids is
+        // already unsatisfiable no matter what `build()` later adds, but a
+        // missing-required id here might yet turn out to be a built-in, so
+        // that check is deferred to `build()`'s authoritative, full-set
+        // pass (`PluginManifest::requires`'s own doc, "Enforced at
+        // ConwayBuilder::build, not at registration order").
+        let visible_manifests: Vec<PluginManifest> = self
+            .plugins
+            .iter()
+            .map(|p| p.manifest())
+            .chain(
+                wanted
+                    .iter()
+                    .filter_map(|id| plugins.iter().find(|p| &p.manifest().id == id))
+                    .map(|p| p.manifest()),
+            )
+            .collect();
+        detect_required_dependency_cycle(&visible_manifests).map_err(|err| FacadeError::Build {
+            message: err.to_string(),
+        })?;
 
         let mut router_factory_installed: Option<String> = None;
         for id in &wanted {
@@ -1422,6 +1469,51 @@ impl ConwayBuilder {
                 })?;
         }
 
+        // 10a2. Plugin-to-plugin dependency gate (board item
+        //       `01M0WWJMYK0KDC2X7B7MR46FRR`, `PluginManifest::requires`/
+        //       `::optional`'s own docs): the authoritative pass, run here
+        //       (not inside `install_selected`) because `resolved_plugins`
+        //       is the FIRST point with the FULL final installed set --
+        //       built-ins ++ everything `install_selected`/`with_plugin`
+        //       added -- in view; `install_selected`'s own earlier cycle
+        //       check (its own doc explains why) cannot see built-ins at
+        //       all. Required-edge cycle first (structurally unsatisfiable
+        //       regardless of what is or isn't missing), then presence:
+        //       a missing REQUIRED dependency is a hard `FacadeError::
+        //       Build` naming both the dependent and the missing id
+        //       (mirroring the host-capability gate immediately above); a
+        //       missing OPTIONAL dependency never fails the build -- the
+        //       dependent loads degraded, and the degradation is announced
+        //       on two channels so no host is left with no way to notice
+        //       it (`tracing::warn!`, for a host with no reason to read
+        //       `Conway::warnings()` at all, plus a `ConfigWarning` on that
+        //       same accessor for a host that does).
+        let installed_manifests: Vec<PluginManifest> =
+            resolved_plugins.iter().map(|p| p.manifest()).collect();
+        detect_required_dependency_cycle(&installed_manifests).map_err(|err| {
+            FacadeError::Build {
+                message: err.to_string(),
+            }
+        })?;
+        missing_required_dependency(&installed_manifests).map_err(|err| FacadeError::Build {
+            message: err.to_string(),
+        })?;
+        let mut warnings = warnings;
+        for (plugin, dependency) in missing_optional_dependencies(&installed_manifests) {
+            tracing::warn!(
+                plugin = %plugin,
+                dependency = %dependency,
+                "plugin's optional dependency is not installed; loading degraded"
+            );
+            warnings.push(ConfigWarning {
+                code: WarningCode::OptionalPluginDependencyMissing,
+                message: format!(
+                    "plugin '{plugin}' optionally depends on '{dependency}', which is not \
+                     installed; '{plugin}' will load degraded"
+                ),
+            });
+        }
+
         // 10b. Every installed plugin's own declared custom events (board
         //      item, `PHILOSOPHY.md` §5's open
         //      vocabulary: "A plugin declares the events it emits...
@@ -1848,6 +1940,255 @@ fn resolve_path(cwd: &Path, p: &Path) -> PathBuf {
         p.to_path_buf()
     } else {
         cwd.join(p)
+    }
+}
+
+/// Detects a cycle in the `PluginManifest::requires` graph, restricted to
+/// ids present in `manifests` -- an edge to an id NOT present here is
+/// simply absent from this graph (missing-ness is a distinct, separately
+/// enforced check: [`missing_required_dependency`]). Returns
+/// [`PluginError::DependencyCycle`] naming one full cycle (ids in
+/// traversal order, the starting id repeated at both ends, e.g.
+/// `"a -> b -> a"`) on the first cycle found.
+///
+/// Iterative three-color DFS over indices into `manifests` (never over
+/// plugin-id string references), so it terminates on any input, including
+/// a large or pathological dependency graph, with no recursion-depth
+/// concern.
+fn detect_required_dependency_cycle(manifests: &[PluginManifest]) -> Result<(), PluginError> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Color {
+        White,
+        Gray,
+        Black,
+    }
+
+    let index_of: HashMap<&str, usize> = manifests
+        .iter()
+        .enumerate()
+        .map(|(i, m)| (m.id.as_str(), i))
+        .collect();
+    let mut color = vec![Color::White; manifests.len()];
+
+    for start in 0..manifests.len() {
+        if color[start] != Color::White {
+            continue;
+        }
+        // (node, next-`requires`-index-to-visit) -- an explicit stack, not
+        // a recursive call, so depth is bounded only by heap, not the
+        // process's call stack.
+        let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
+        color[start] = Color::Gray;
+        while let Some(&top) = stack.last() {
+            // Copy the frame out (both fields are `usize`, `Copy`) so
+            // nothing below holds a live borrow of `stack` while it is
+            // also pushed/popped/mutated.
+            let (node, edge_idx) = top;
+            let deps = &manifests[node].requires;
+            if edge_idx >= deps.len() {
+                color[node] = Color::Black;
+                stack.pop();
+                continue;
+            }
+            stack
+                .last_mut()
+                .expect("stack non-empty: just matched above")
+                .1 += 1;
+            let Some(&dep) = index_of.get(deps[edge_idx].as_str()) else {
+                // Not among the manifests THIS call can see -- membership,
+                // not cycle, and checked elsewhere.
+                continue;
+            };
+            match color[dep] {
+                Color::White => {
+                    color[dep] = Color::Gray;
+                    stack.push((dep, 0));
+                }
+                Color::Gray => {
+                    // `dep` is on the current path -- everything from its
+                    // own stack position onward, plus `dep` again, IS the
+                    // cycle.
+                    let cycle_start = stack
+                        .iter()
+                        .position(|&(n, _)| n == dep)
+                        .expect("dep is Gray, so it is on the current stack");
+                    let mut cycle: Vec<String> = stack[cycle_start..]
+                        .iter()
+                        .map(|&(n, _)| manifests[n].id.clone())
+                        .collect();
+                    cycle.push(manifests[dep].id.clone());
+                    return Err(PluginError::DependencyCycle {
+                        cycle: cycle.join(" -> "),
+                    });
+                }
+                Color::Black => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Checks every manifest's `PluginManifest::requires` against the id set
+/// `manifests` itself carries -- a plain membership test, no ordering
+/// question. Returns the FIRST missing required dependency as
+/// [`PluginError::MissingDependency`], naming both the dependent and the
+/// missing id. Called at `ConwayBuilder::build` with the FINAL installed
+/// set (built-ins ++ everything `install_selected`/`with_plugin` added),
+/// which is the only point this crate has full visibility into that set --
+/// see `PluginManifest::requires`'s own doc.
+fn missing_required_dependency(manifests: &[PluginManifest]) -> Result<(), PluginError> {
+    let ids: HashSet<&str> = manifests.iter().map(|m| m.id.as_str()).collect();
+    for manifest in manifests {
+        for dep in &manifest.requires {
+            if !ids.contains(dep.as_str()) {
+                return Err(PluginError::MissingDependency {
+                    plugin: manifest.id.clone(),
+                    dependency: dep.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The `optional` counterpart of [`missing_required_dependency`]: every
+/// `(dependent id, missing dependency id)` pair for a `PluginManifest::
+/// optional` entry absent from the final installed set. Never an error --
+/// an optional dependency's absence degrades rather than refuses
+/// (`PluginManifest::optional`'s own doc) -- the caller (`ConwayBuilder::
+/// build`) turns each pair into a `tracing::warn!` and a `ConfigWarning`
+/// rather than failing the build.
+fn missing_optional_dependencies(manifests: &[PluginManifest]) -> Vec<(String, String)> {
+    let ids: HashSet<&str> = manifests.iter().map(|m| m.id.as_str()).collect();
+    let mut missing = Vec::new();
+    for manifest in manifests {
+        for dep in &manifest.optional {
+            if !ids.contains(dep.as_str()) {
+                missing.push((manifest.id.clone(), dep.clone()));
+            }
+        }
+    }
+    missing
+}
+
+#[cfg(test)]
+mod plugin_dependency_resolution_tests {
+    //! Unit coverage for the three free functions above
+    //! ([`detect_required_dependency_cycle`], [`missing_required_dependency`],
+    //! [`missing_optional_dependencies`]) directly, at the graph-algorithm
+    //! level -- distinct from `crates/conway/tests/install_selected.rs`'s
+    //! (`::build`) end-to-end coverage of the SAME behaviour through the
+    //! real facade, and from `crates/conway/tests/builder.rs`'s own
+    //! `a_requires_edge_does_not_reorder_instruction_fragment_precedence`
+    //! (the injection-order/resolution-order separation this graph exists
+    //! to serve, without itself deciding).
+
+    use super::*;
+
+    fn manifest(id: &str, requires: &[&str], optional: &[&str]) -> PluginManifest {
+        PluginManifest {
+            id: id.to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![],
+            required_host_caps: vec![],
+            requires: requires.iter().map(|s| s.to_string()).collect(),
+            optional: optional.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn no_edges_is_never_a_cycle_or_missing() {
+        let manifests = vec![manifest("a", &[], &[]), manifest("b", &[], &[])];
+        assert!(detect_required_dependency_cycle(&manifests).is_ok());
+        assert!(missing_required_dependency(&manifests).is_ok());
+        assert!(missing_optional_dependencies(&manifests).is_empty());
+    }
+
+    #[test]
+    fn a_satisfied_requires_edge_is_neither_a_cycle_nor_missing() {
+        let manifests = vec![
+            manifest("dependent", &["base"], &[]),
+            manifest("base", &[], &[]),
+        ];
+        assert!(detect_required_dependency_cycle(&manifests).is_ok());
+        assert!(missing_required_dependency(&manifests).is_ok());
+    }
+
+    #[test]
+    fn detect_required_dependency_cycle_finds_a_two_node_cycle() {
+        let manifests = vec![manifest("a", &["b"], &[]), manifest("b", &["a"], &[])];
+        let err = detect_required_dependency_cycle(&manifests)
+            .expect_err("a requires b requires a must be refused as a cycle");
+        match err {
+            PluginError::DependencyCycle { cycle } => {
+                assert!(cycle.contains('a'), "{cycle}");
+                assert!(cycle.contains('b'), "{cycle}");
+                assert!(cycle.contains("->"), "{cycle}");
+            }
+            other => panic!("expected DependencyCycle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detect_required_dependency_cycle_finds_a_self_loop() {
+        let manifests = vec![manifest("a", &["a"], &[])];
+        let err = detect_required_dependency_cycle(&manifests)
+            .expect_err("a requiring itself must be refused as a cycle");
+        assert!(matches!(err, PluginError::DependencyCycle { .. }));
+    }
+
+    #[test]
+    fn detect_required_dependency_cycle_ignores_optional_only_edges() {
+        // a optionally depends on b, b optionally depends on a: no REQUIRES
+        // edge exists at all, so this is not a cycle -- a mutual optional
+        // relationship is a perfectly ordinary, harmless configuration
+        // (each simply checks whether the other happens to be installed).
+        let manifests = vec![manifest("a", &[], &["b"]), manifest("b", &[], &["a"])];
+        assert!(detect_required_dependency_cycle(&manifests).is_ok());
+    }
+
+    #[test]
+    fn detect_required_dependency_cycle_ignores_edges_to_ids_absent_from_the_set() {
+        // "ghost" is not among `manifests` at all -- absence is a
+        // membership question (`missing_required_dependency`'s own job),
+        // never a cycle question.
+        let manifests = vec![manifest("a", &["ghost"], &[])];
+        assert!(detect_required_dependency_cycle(&manifests).is_ok());
+    }
+
+    #[test]
+    fn missing_required_dependency_names_both_sides() {
+        let manifests = vec![manifest("dependent", &["missing.base"], &[])];
+        let err = missing_required_dependency(&manifests)
+            .expect_err("a requires edge to an absent id must be refused");
+        match err {
+            PluginError::MissingDependency { plugin, dependency } => {
+                assert_eq!(plugin, "dependent");
+                assert_eq!(dependency, "missing.base");
+            }
+            other => panic!("expected MissingDependency, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_optional_dependencies_lists_every_missing_pair_never_erroring() {
+        let manifests = vec![
+            manifest("a", &[], &["missing.one"]),
+            manifest("b", &[], &["missing.two"]),
+        ];
+        let missing = missing_optional_dependencies(&manifests);
+        assert_eq!(missing.len(), 2);
+        assert!(missing.contains(&("a".to_string(), "missing.one".to_string())));
+        assert!(missing.contains(&("b".to_string(), "missing.two".to_string())));
+        // Never an error -- optional absence degrades, it never refuses.
+        assert!(detect_required_dependency_cycle(&manifests).is_ok());
+        assert!(missing_required_dependency(&manifests).is_ok());
+    }
+
+    #[test]
+    fn a_present_optional_dependency_is_not_reported_missing() {
+        let manifests = vec![manifest("a", &[], &["b"]), manifest("b", &[], &[])];
+        assert!(missing_optional_dependencies(&manifests).is_empty());
     }
 }
 

@@ -380,6 +380,8 @@ impl McpPlugin {
             // wire plugin, offered iff a `[plugins].subprocess[]` entry is
             // configured persistent).
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         };
 
         let session = Arc::new(session);

@@ -274,6 +274,8 @@ impl Plugin for FakePlugin {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
         }
     }
     fn tools(&self) -> Vec<Arc<dyn Tool>> {

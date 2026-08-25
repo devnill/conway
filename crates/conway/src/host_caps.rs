@@ -139,6 +139,8 @@ mod tests {
             version: "0.0.0".to_string(),
             tools: Vec::<ToolName>::new(),
             required_host_caps: caps.to_vec(),
+            requires: vec![],
+            optional: vec![],
         }
     }
 
