@@ -769,6 +769,44 @@ elif op == "tool/1":
     }))
 "#;
 
+/// A one-shot fixture that declares BOTH `requires` (`["conway.ui"]`) and
+/// `optional` (`["conway.notifications"]`) in its `tool.spec/1` manifest --
+/// board item `01M0XCD3P8S3VR0T1H0KNG5TMD`: discovery must LOAD the plugin
+/// and map both fields verbatim into `PluginManifest::requires`/`optional`,
+/// carried the same way `CAP_REQUIRED_PLUGIN` proves for
+/// `required_host_caps`. (Whether the declared dependency is actually
+/// satisfied by the final installed plugin set is `ConwayBuilder::build`'s
+/// gate, the SAME code an in-process `Plugin`'s `requires`/`optional`
+/// already goes through -- this fixture proves only that the wire carries
+/// the fields and `discover` maps them.)
+pub const DEPENDENCY_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+req = json.loads(sys.stdin.read())
+op = req.get("op")
+
+if op == "tool.spec/1":
+    print(json.dumps({
+        "id": "acme.needs-ui",
+        "version": "0.1.0",
+        "requires": ["conway.ui"],
+        "optional": ["conway.notifications"],
+        "tools": [{
+            "name": "frob",
+            "description": "declares a required and an optional plugin dependency",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }))
+elif op == "tool/1":
+    print(json.dumps({
+        "ok": True,
+        "blocks": [{"type": "text", "text": "frobbed"}],
+        "is_error": False,
+    }))
+"#;
+
 // ----- initialize/1 handshake fixtures (board item 01M03VK7MRPSAVWMW7YNYPRPGT)
 //       Each fixture is a persistent-transport line loop that handles
 //       `tool.spec/1` (the one-shot discovery path -- the host closes stdin

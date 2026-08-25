@@ -228,6 +228,30 @@ pub struct WireManifest {
     /// one-shot-only host).
     #[serde(default)]
     pub required_host_caps: Vec<HostCapability>,
+    /// Plugin ids this subprocess plugin's stated function cannot perform
+    /// at all without -- the wire projection of
+    /// [`conway::plugin::PluginManifest::requires`], carried verbatim
+    /// (name-only, no version constraint; see that field's own doc).
+    /// `#[serde(default)]` so an existing plugin manifest that predates this
+    /// field (or simply omits it) parses as empty -- "depends on nothing" --
+    /// never a deserialization error; `docs/plugins/compatibility.md`'s
+    /// versioning table calls a new optional field a `minor`-compatible
+    /// addition for exactly this reason. Mapped into
+    /// [`conway::plugin::PluginManifest::requires`] by
+    /// `crate::SubprocessPlugin::discover` and checked there by the SAME
+    /// `ConwayBuilder::build` dependency-resolution code an in-process
+    /// plugin's `requires` already goes through -- no parallel resolution
+    /// path.
+    #[serde(default)]
+    pub requires: Vec<String>,
+    /// Plugin ids whose absence degrades only a presentation or convenience
+    /// of this subprocess plugin -- the wire projection of
+    /// [`conway::plugin::PluginManifest::optional`], carried verbatim
+    /// (name-only, no version constraint; see that field's own doc).
+    /// `#[serde(default)]`, the same reason [`Self::requires`] has it: a
+    /// manifest predating this field parses as empty, never an error.
+    #[serde(default)]
+    pub optional: Vec<String>,
 }
 
 /// One tool a [`WireManifest`] declares -- the wire projection of

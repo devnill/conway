@@ -1351,36 +1351,57 @@ impl Default for PathArgs {
 }
 
 /// A host capability a plugin may declare it requires (via
-/// [`PluginManifest::required_host_caps`]) and the host separately grants at
-/// build time (via `conway::HostCaps`), never implied by trust alone.
+/// [`PluginManifest::required_host_caps`]) or may only optionally use (via
+/// [`PluginManifest::optional_host_caps`]), and the host separately grants
+/// at build time (via `conway::HostCaps`), never implied by trust alone.
 ///
-/// **A closed, `#[non_exhaustive]` vocabulary, not a free-form `Vec<String>`
-/// the host never validates.** A plugin names a cap from this enum; the host
-/// compares the declared set against what it actually offers and refuses
-/// registration (a `PluginError::MissingHostCapability`) for any cap the host
-/// lacks -- see `conway::HostCaps` (in the `conway` facade) and the
-/// registration-seam check in `ConwayBuilder::build`. `#[non_exhaustive]` so
-/// future caps add without breaking downstream; an unknown tag on the wire
-/// (a newer plugin naming a cap this host's enum doesn't have) FAILS CLOSED
-/// (deserialization error -> the plugin is refused), the NARROWING/safe
-/// direction -- consistent with the unknown-tag item
-/// `01M03VJPRT8629CYR8JK4A8JPF`'s "structural malformation fails closed" line.
+/// **An OPEN, namespaced vocabulary -- not the closed two-variant enum this
+/// type used to be.** Until `docs/vision/DESIGN-plugin-dependencies.md` §2
+/// (Edge A) named the defect, a plugin could name a cap only from a fixed,
+/// `#[non_exhaustive]`-but-still-closed membership list (`Subagent`,
+/// `PersistentTransport`): a third party could never declare a capability
+/// core had not already blessed, and every new host surface was a breaking
+/// enum edit. This reuses the naming discipline that already solved the
+/// identical problem for a plugin's own event names
+/// (`crate::event_name`'s own module doc; design §2: *"That is the right
+/// model for a capability vocabulary"*): [`crate::event_name::
+/// validate_event_name`] (the `None`-declaring-plugin, subscriber-side
+/// branch -- the SAME shape check `[hooks].rules[].event` already applies)
+/// is reused rather than reimplemented, so a name is legal here iff it is
+/// either bare (no [`crate::event_name::EVENT_NAMESPACE_SEPARATOR`]) or a
+/// well-formed `namespace.name`. Two bare names are reserved for what the
+/// CORE host itself blesses and stay unit variants for that reason --
+/// [`Self::Subagent`] and [`Self::PersistentTransport`] -- so both keep
+/// resolving with **no `settings.json` change** and no existing call site
+/// naming them needs to change. Any other well-formed name -- conventionally
+/// `plugin_id.cap_name`, the offering plugin's own namespace, though this
+/// type does not enforce that convention structurally the same way
+/// [`crate::event_name::validate_event_name`]'s `Some(id)` branch enforces
+/// self-namespacing for a plugin's OWN declared events -- constructs
+/// [`Self::Named`] via [`Self::named`].
 ///
-/// The initial set is MINIMAL -- each variant maps to something real a built-in
-/// or host genuinely uses, not a speculative cap padded to look complete:
-/// - [`HostCapability::Subagent`] -- fork/spawn a child session through a
-///   `SubagentHost`. The `conway.subagent` built-in (`conway-tools`'s
-///   `subagent` plugin) uses this; the `conway` runtime always provides a
-///   `SubagentHost`, so the host always offers this cap.
-/// - [`HostCapability::PersistentTransport`] -- the persistent NDJSON
-///   `tool/1` channel (`conway-plugin-subprocess`'s `SubprocessTransport::
-///   Persistent`). The host offers this cap iff at least one
-///   `[plugins].subprocess[]` entry is configured with `"transport":
-///   "persistent"`; a plugin requiring it against a one-shot-only host is
-///   refused.
+/// **Shape only, not a closed-vocabulary check.** Exactly as
+/// `crate::event_name`'s own module doc records for events (§16.6 point 2):
+/// this type answers "is `name` well-formed", never "does anything actually
+/// offer `name`". The latter is `conway::HostCaps::check_manifest`/
+/// `missing_optional`'s job, comparing a manifest's declared caps against
+/// what the host built at `ConwayBuilder::build` -- unchanged by this item,
+/// still a hard `PluginError::MissingHostCapability` for a missing
+/// *required* cap, still narrowing/safe.
+///
+/// **Still wire-compatible with the old closed form.** Serialization is a
+/// bare string (`"subagent"`, `"persistent_transport"`, or an arbitrary
+/// well-formed name for [`Self::Named`]) -- the identical shape the old
+/// `#[serde(rename_all = "snake_case")]` derive produced for the two
+/// original variants, so a manifest already on disk or over the wire parses
+/// unchanged. A malformed tag (empty, or containing the separator with an
+/// empty prefix or suffix) still fails closed at deserialization -- the
+/// NARROWING/safe direction, consistent with the unknown-tag item
+/// `01M03VJPRT8629CYR8JK4A8JPF`'s "structural malformation fails closed"
+/// line; only a well-formed but previously-unknown tag now succeeds, which
+/// is the entire point of opening the vocabulary.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum HostCapability {
     /// Fork/spawn a child session through a `SubagentHost`. Required by the
     /// `conway.subagent` built-in; offered by the `conway` runtime (which
@@ -1391,17 +1412,70 @@ pub enum HostCapability {
     /// `SubprocessTransport::Persistent`; a plugin requiring it against a
     /// one-shot-only host is refused at registration.
     PersistentTransport,
+    /// An open-vocabulary capability name -- anything other than the two
+    /// core-blessed bare caps above. `#[non_exhaustive]` on the enum already
+    /// keeps a downstream crate from constructing this variant directly;
+    /// within this crate, prefer [`Self::named`] so the shape check and the
+    /// "known bare name collapses to the matching unit variant"
+    /// normalization (see that method's own doc) run rather than being
+    /// bypassed.
+    Named(String),
 }
 
 impl HostCapability {
-    /// The wire string for this cap -- the `#[serde(rename_all =
-    /// "snake_case")]` name, the same value `to_string()` returns and
-    /// the only form a plugin author puts on the wire. Centralized so the
-    /// snake_case name lives in exactly one place, not restated per use.
-    pub fn as_wire_str(&self) -> &'static str {
+    /// The wire string for [`Self::Subagent`] -- kept as a named constant
+    /// so [`Self::named`]/[`Self::as_wire_str`] and `Deserialize` all read
+    /// from one place rather than restating the literal.
+    const SUBAGENT_WIRE: &'static str = "subagent";
+    /// The wire string for [`Self::PersistentTransport`]; see
+    /// [`Self::SUBAGENT_WIRE`]'s own doc.
+    const PERSISTENT_TRANSPORT_WIRE: &'static str = "persistent_transport";
+
+    /// Constructs an open-vocabulary [`HostCapability`] from `name`,
+    /// validating its shape with [`crate::event_name::validate_event_name`]
+    /// (`None` declaring-plugin branch) -- the SAME subscriber-side shape
+    /// rule `[hooks].rules[].event` already applies: bare (no
+    /// [`crate::event_name::EVENT_NAMESPACE_SEPARATOR`]) or a well-formed
+    /// `namespace.name`, reused rather than reimplemented (see this enum's
+    /// own doc). `name` equal to one of the two core wire strings
+    /// (`"subagent"`, `"persistent_transport"`) normalizes to
+    /// [`Self::Subagent`]/[`Self::PersistentTransport`] rather than a
+    /// [`Self::Named`] wrapping the identical string, so equality and
+    /// matching against the core variants keep working regardless of which
+    /// construction path produced a given value (the [`Deserialize`] impl
+    /// performs the same normalization for a value that arrives over the
+    /// wire).
+    pub fn named(name: impl Into<String>) -> Result<Self, String> {
+        let name = name.into();
+        validate_event_name(&name, None).map_err(|err| {
+            format!(
+                "host capability name is malformed (reusing the plugin-event name shape rule): \
+                 {err}"
+            )
+        })?;
+        Ok(Self::normalize(name))
+    }
+
+    /// Collapses a validated, well-formed `name` to the matching core unit
+    /// variant if it equals one of the two reserved bare wire strings,
+    /// otherwise wraps it as [`Self::Named`]. Shared by [`Self::named`] and
+    /// `Deserialize` so both construction paths normalize identically.
+    fn normalize(name: String) -> Self {
+        match name.as_str() {
+            Self::SUBAGENT_WIRE => HostCapability::Subagent,
+            Self::PERSISTENT_TRANSPORT_WIRE => HostCapability::PersistentTransport,
+            _ => HostCapability::Named(name),
+        }
+    }
+
+    /// The wire string for this cap -- the same value `to_string()` returns
+    /// and the only form a plugin author puts on the wire. Centralized so
+    /// the two core names live in exactly one place, not restated per use.
+    pub fn as_wire_str(&self) -> &str {
         match self {
-            HostCapability::Subagent => "subagent",
-            HostCapability::PersistentTransport => "persistent_transport",
+            HostCapability::Subagent => Self::SUBAGENT_WIRE,
+            HostCapability::PersistentTransport => Self::PERSISTENT_TRANSPORT_WIRE,
+            HostCapability::Named(name) => name.as_str(),
         }
     }
 }
@@ -1411,6 +1485,39 @@ impl std::fmt::Display for HostCapability {
     /// `PluginError::MissingHostCapability { capability: String }`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_wire_str())
+    }
+}
+
+impl Serialize for HostCapability {
+    /// A bare string -- the wire form every consumer (this crate's own
+    /// round-trip test, `conway-plugin-subprocess`'s `WireManifest`) already
+    /// expects, unchanged by opening the vocabulary. See this enum's own doc,
+    /// "Still wire-compatible with the old closed form".
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_wire_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for HostCapability {
+    /// Parses the bare wire string and re-validates its shape with
+    /// [`crate::event_name::validate_event_name`] (via `Self::normalize`,
+    /// which is private -- a plain code span, not an intra-doc link, since
+    /// the `-D warnings` doc gate rejects a public doc linking to a private
+    /// item; the same normalization [`Self::named`] performs) -- a malformed tag
+    /// FAILS CLOSED here exactly as the old closed-enum derive did for an
+    /// unrecognized tag; a well-formed but previously-unknown tag now
+    /// succeeds as [`Self::Named`], which is the point of opening the
+    /// vocabulary. See this enum's own doc.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        validate_event_name(&raw, None).map_err(serde::de::Error::custom)?;
+        Ok(Self::normalize(raw))
     }
 }
 
@@ -1424,8 +1531,36 @@ pub struct PluginManifest {
     /// means "needs nothing the host might lack" (the common case). Any cap
     /// the host does NOT offer -> `PluginError::MissingHostCapability` at
     /// registration (`ConwayBuilder::build`), naming both the plugin and the
-    /// cap. See [`HostCapability`] for the closed vocabulary.
+    /// cap. See [`HostCapability`] for the open, namespaced vocabulary.
     pub required_host_caps: Vec<HostCapability>,
+    /// Host capabilities whose absence degrades only a presentation or
+    /// convenience of this plugin -- the host-capability analogue of
+    /// [`Self::optional`] (plugin -> plugin), applying design §4a's
+    /// identical criterion one edge up: Edge A (plugin -> host) rather than
+    /// Edge B (plugin -> plugin). An empty vec (the common case) means
+    /// "nothing about this plugin degrades based on a host capability's
+    /// absence".
+    ///
+    /// **Absence never fails `build()`.** Same posture as [`Self::optional`]:
+    /// a missing optional cap loads this plugin anyway, degraded -- and the
+    /// degradation is always announced, never silent: `ConwayBuilder::build`
+    /// records a `ConfigWarning` (`WarningCode::OptionalHostCapabilityMissing`,
+    /// in the `conway` facade's `config` module) naming both this plugin and
+    /// the missing cap, and emits a `tracing::warn!` with the same two
+    /// names, so a headless run with no plugin browser to render a notice
+    /// into still has SOMEWHERE the omission is written down
+    /// (`docs/vision/DESIGN-plugin-dependencies.md` §4b: "no surface may
+    /// degrade silently") -- the SAME two-channel announcement
+    /// [`Self::optional`]'s own doc already describes for a missing
+    /// optional plugin dependency, reused rather than a second mechanism
+    /// invented for the identical idea one edge over.
+    ///
+    /// `#[serde(default)]`, the same reason [`Self::required_host_caps`]
+    /// predates it needing none and [`Self::requires`]/[`Self::optional`]
+    /// have it: a manifest predating this field parses as empty, never an
+    /// error.
+    #[serde(default)]
+    pub optional_host_caps: Vec<HostCapability>,
     /// Plugin ids this plugin's stated function cannot perform at all
     /// without (`docs/vision/DESIGN-plugin-dependencies.md` §4/§4a's
     /// participant/observer-derived criterion: "the dependent cannot
@@ -2220,12 +2355,105 @@ mod tests {
             version: "0.1.0".into(),
             tools: vec![ToolName::new("read"), ToolName::new("write")],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let back: PluginManifest = serde_json::from_str(&json).unwrap();
         assert_eq!(manifest, back);
+    }
+
+    /// A manifest predating `optional_host_caps` -- no such key in the JSON
+    /// at all -- still parses, defaulting to empty (`#[serde(default)]`,
+    /// the same reason `requires`/`optional` predating manifests parse
+    /// unmodified).
+    #[test]
+    fn plugin_manifest_without_optional_host_caps_key_defaults_to_empty() {
+        let json = serde_json::json!({
+            "id": "builtin.fs",
+            "version": "0.1.0",
+            "tools": [],
+            "required_host_caps": [],
+            "requires": [],
+            "optional": []
+        });
+        let manifest: PluginManifest = serde_json::from_value(json).unwrap();
+        assert_eq!(manifest.optional_host_caps, Vec::<HostCapability>::new());
+    }
+
+    // -----------------------------------------------------------------
+    // HostCapability -- open, namespaced vocabulary (Acceptance 1, 5)
+    // -----------------------------------------------------------------
+
+    /// `subagent`/`persistent_transport` -- the two core-blessed bare
+    /// caps -- still resolve to the SAME unit variants with no
+    /// `settings.json` change: constructing via `named` normalizes to
+    /// them rather than wrapping them as `Named`.
+    #[test]
+    fn named_normalizes_known_core_wire_strings_to_the_unit_variants() {
+        assert_eq!(
+            HostCapability::named("subagent").unwrap(),
+            HostCapability::Subagent
+        );
+        assert_eq!(
+            HostCapability::named("persistent_transport").unwrap(),
+            HostCapability::PersistentTransport
+        );
+    }
+
+    /// A bare, previously-unknown name is shape-legal (open vocabulary --
+    /// "does anything offer it" is a separate, host-side check this type
+    /// does not perform; see `HostCapability`'s own doc).
+    #[test]
+    fn named_accepts_a_bare_previously_unknown_name() {
+        let cap = HostCapability::named("widgets").unwrap();
+        assert_eq!(cap, HostCapability::Named("widgets".to_string()));
+        assert_eq!(cap.as_wire_str(), "widgets");
+    }
+
+    /// A well-formed `plugin_id.cap_name` -- the conventional shape for a
+    /// plugin-declared capability -- is accepted, matching the identical
+    /// shape `validate_event_name` already accepts for a subscriber-side
+    /// event name.
+    #[test]
+    fn named_accepts_a_well_formed_namespaced_name() {
+        let cap = HostCapability::named("acme.ui.ask").unwrap();
+        assert_eq!(cap, HostCapability::Named("acme.ui.ask".to_string()));
+    }
+
+    /// A malformed tag (empty, or a dot with an empty side) still fails
+    /// closed -- opening the vocabulary does not relax shape validity.
+    #[test]
+    fn named_rejects_malformed_names() {
+        assert!(HostCapability::named("").is_err());
+        assert!(HostCapability::named(".ask").is_err());
+        assert!(HostCapability::named("acme.").is_err());
+    }
+
+    /// `HostCapability` serializes/deserializes as a bare string for every
+    /// variant, including `Named` -- wire-compatible with the old closed
+    /// two-variant form (see the enum's own doc, "Still wire-compatible").
+    #[test]
+    fn host_capability_named_round_trips_as_a_bare_wire_string() {
+        let cap = HostCapability::named("acme.ui.ask").unwrap();
+        let json = serde_json::to_value(&cap).unwrap();
+        assert_eq!(json, serde_json::json!("acme.ui.ask"));
+        let back: HostCapability = serde_json::from_value(json).unwrap();
+        assert_eq!(cap, back);
+    }
+
+    /// A well-formed but previously-unknown tag on the wire now succeeds
+    /// (`Named`) rather than failing closed the way the old closed enum
+    /// derive did -- the entire point of opening the vocabulary. A
+    /// malformed tag still fails closed at deserialization.
+    #[test]
+    fn host_capability_deserialize_accepts_unknown_well_formed_tag_rejects_malformed() {
+        let ok: Result<HostCapability, _> = serde_json::from_value(serde_json::json!("acme.new"));
+        assert_eq!(ok.unwrap(), HostCapability::Named("acme.new".to_string()));
+
+        let err: Result<HostCapability, _> = serde_json::from_value(serde_json::json!(".bad"));
+        assert!(err.is_err());
     }
 
     #[test]
@@ -2396,6 +2624,7 @@ mod tests {
                     version: "0.1.0".into(),
                     tools: vec![],
                     required_host_caps: vec![],
+                    optional_host_caps: vec![],
                     requires: vec![],
                     optional: vec![],
                 }
@@ -2717,6 +2946,7 @@ mod tests {
                 version: "0.1.0".into(),
                 tools: vec![],
                 required_host_caps: vec![],
+                optional_host_caps: vec![],
                 requires: vec![],
                 optional: vec![],
             }
@@ -2913,6 +3143,7 @@ mod tests {
                 version: "0.1.0".into(),
                 tools: vec![],
                 required_host_caps: vec![],
+                optional_host_caps: vec![],
                 requires: vec![],
                 optional: vec![],
             }
@@ -2959,6 +3190,7 @@ mod tests {
                 version: "0.1.0".into(),
                 tools: vec![],
                 required_host_caps: vec![],
+                optional_host_caps: vec![],
                 requires: vec![],
                 optional: vec![],
             }

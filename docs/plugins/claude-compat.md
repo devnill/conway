@@ -46,12 +46,30 @@ naming the offending entry's own `id`, mirroring `mcp.md`'s own posture.
 This is the equally-prominent half of this page, by design (nothing here
 may claim to be reached that isn't).
 
-- **`commands/*.md` — not wired.** conway now has a capability that could,
-  in principle, submit a command file's own prompt into a session
-  (`SessionHandle::prompt_command`) — but connecting a Claude Code command
-  file to it is a separate, deferred item, not something this layer's own
-  absence of the capability ever blocked. Every `commands/*.md` file found
-  is named in the operator-visible report; none of them run anything.
+- **`commands/*.md` — wired, best effort (board item
+  `01M0X1G29EZSFEWB1YAG40SE69`).** Most command files translate into a
+  real `conway_core::ports::Command` returning `CommandOutcome::
+  SubmitPrompt` — `ClaudeCompatReport::command_registrations()` hands back
+  the ready-to-install list, proven end to end (a real `Conway`/
+  `SessionHandle::prompt_command`, no TUI in the loop — `conway-plugin-
+  claude`'s own `tests/commands_dispatch.rs`, against `beepboop`'s real
+  `commands/config.md`) through the identical `SessionHandle::
+  prompt_command` path `conway_plugin_skeleton::FilePromptCommand`
+  already proved out for an operator-authored prompt file. **Best effort,
+  not parity, by explicit operator ruling:** v1 performs no `$ARGUMENTS`/
+  argument interpolation of any kind, so a command whose body contains a
+  raw `$ARGUMENTS` placeholder is refused rather than submitted verbatim
+  — named in the operator-visible report like anything else this layer
+  cannot use. Every frontmatter key besides `description` (which becomes
+  the command's own one-line summary) is named, not silently honored,
+  even on a command that otherwise translates — `allowed-tools` above
+  all: an operator who wrote a Claude Code tool restriction and had it
+  silently ignored has a *permission* surprise, not merely a fidelity
+  gap. A translated command's own name is always bare (never
+  pre-namespaced) — the host prefixes it with the declaring plugin's own
+  id and validates the result with `validate_command_name`, the same
+  structural guarantee that already makes shadowing a built-in impossible
+  for every other plugin command, translated or not.
 - **`skills/<name>/SKILL.md` — still not imported by THIS layer.** conway's
   own skill loader (`crates/conway/src/skills.rs`) is no longer
   single-root: `skills::load_skill_defs_from_roots` (board item
@@ -89,15 +107,23 @@ may claim to be reached that isn't).
   claim as "behaves identically to running under real Claude Code." **And
   this crate itself still never mutates a `HooksConfig`** — it hands back
   registrations; a CALLER appends them into its own `[hooks].rules[]`
-  before `ConwayBuilder::build`. As shipped, `conway-cli`'s own
+  before `ConwayBuilder::build`. **As shipped (board item
+  `01M0XBZNBPXEESX8VNTJDKNG0J`), `conway-cli`'s own
   `[plugins].claude_compat[]` install path (`claude_compat_plugins.rs`)
-  does not perform that append yet — it still wires the MCP half only — so
-  naming a directory in `settings.json` today gets you its MCP servers
-  running and its hooks *reported*, not yet its hooks *dispatching*,
-  without also copying `{event, matcher}` into your own `[hooks].rules[]`
-  by hand (or building on the registrations this crate's own test proves
-  work end to end). Wiring that CLI append is a disclosed, separate
-  follow-up, not something this item silently left half-done.
+  now performs that append**: naming a directory in `settings.json` gets
+  you both its MCP servers running *and* its mapped hooks dispatching,
+  with no hand-copying of `{event, matcher}` into your own
+  `[hooks].rules[]` required. Every appended rule keeps `on_failure:
+  "deny"` — the CLI never chooses a foreign plugin's own outage posture
+  for you — and the CLI reports, on startup, which registered hooks *can
+  deny* a real tool call (`pre_tool_use`) versus which are
+  observation-only, so naming a directory here is never presented as
+  merely "hooks registered." **This does not change the payload-shape
+  caveat two paragraphs up**: a dispatched hook script still receives
+  conway's own `HookInvocation`/`HookEvent` payload on stdin, not Claude
+  Code's `tool_name`/`tool_input` shape — wiring dispatch makes the
+  registration real, it does not make conway behave identically to Claude
+  Code for whatever that script does with what it reads.
 
 ### Coverage table: which of a Claude Code plugin's own hooks actually run
 

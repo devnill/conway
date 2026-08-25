@@ -357,6 +357,7 @@ mod tests {
                 version: "0.0.0".to_string(),
                 tools: vec![ToolName::new("marker")],
                 required_host_caps: vec![],
+                optional_host_caps: vec![],
                 requires: vec![],
                 optional: vec![],
             }

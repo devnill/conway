@@ -83,6 +83,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installs two instruction-declaring plugins with a `requires` edge that
   would reorder them under a naive topological-injection scheme, and
   asserts the assembled context still orders fragments by install order.
+- **A subprocess plugin can now declare `requires`/`optional` too, closing
+  the privilege asymmetry the same-morning item above left open for the
+  out-of-process tier** — board item `01M0XCD3P8S3VR0T1H0KNG5TMD`. Until
+  now `PluginManifest::requires`/`optional` had nowhere to come from on the
+  wire: `WireManifest` (`crates/conway-plugin-subprocess/src/wire.rs`)
+  carried `required_host_caps` but not plugin-to-plugin dependencies, so an
+  in-process plugin could declare it depended on another plugin and an
+  out-of-process one could not — exactly the asymmetry
+  `docs/vision/DESIGN-plugin-dependencies.md` §2 and `ports/plugin.rs`'s
+  own "there is exactly one extension mechanism ... nothing about them is
+  privileged" argue against. `WireManifest` gains `requires`/`optional`
+  (`Vec<String>`, both `#[serde(default)]` so an older plugin's
+  `tool.spec/1` answer that omits them loads unchanged — a `minor`-
+  compatible addition per `docs/plugins/compatibility.md`'s versioning
+  table), carried verbatim by `SubprocessPlugin::discover` into the SAME
+  `PluginManifest::requires`/`optional` fields an in-process `Plugin`
+  populates, checked by the SAME `ConwayBuilder::build` dependency-
+  resolution code, over the resolved set — not a second resolution path.
+  Declaring a dependency is this item; a subprocess plugin *providing* a
+  capability another plugin calls (Edge B) is a separate, larger item,
+  still open.
+- **The interactive `/plugin` browser now enforces `requires`/`optional`
+  at toggle time, not only at the next restart's `build()`** — board item
+  `01M0WWMQZN5WK1AADKW4WKTQQZ`
+  (`docs/vision/DESIGN-plugin-dependencies.md` §3/§4b). Before this item,
+  turning a plugin OFF while an enabled plugin still `requires` it wrote
+  straight to `settings.json` and printed a cheerful "turned off" notice
+  — the operator found out the dependent broke only at the next restart.
+  `App::apply_plugin_toggle` now refuses that write, before it happens,
+  naming the still-enabled dependent; toggling off a merely `optional`
+  dependency stays allowed, with a Notice naming what presentation/
+  convenience is lost (the dependent's core function is unaffected).
+  Toggling ON a plugin whose bundled `requires` is unmet no longer
+  silently writes either plugin — an offer notice names the missing,
+  bundled dependency and how to proceed (a dependency this binary does
+  not even link at all is refused outright, matching the marketplace
+  trigger's own refusal to auto-install a non-bundled dependency, a
+  distinct enablement point this item does not touch). A degraded plugin
+  (installed, with a missing `optional` dependency) now says so in the
+  browser itself: `PluginBrowserEntry::description.you_lose` carries a
+  `[DEGRADED: ...]` annotation, refreshed idempotently after every toggle
+  and rendered by `view/plugins.rs`'s existing detail panel with no
+  renderer change needed. The pre-existing "the mirror flips only on a
+  successful write" guarantee holds for a refusal too — checked against
+  `settings.json` itself, not merely that an error was shown. The
+  decision logic (`App::apply_plugin_toggle_against`) is split out from
+  bundle resolution specifically so it can be driven against a fabricated
+  manifest graph in tests: no real first-party plugin declares a
+  `requires`/`optional` edge yet, so a test that could only exercise the
+  real compiled-in bundle could never observe a refusal. The true
+  one-keystroke "accept the offer and enable both" interactive affordance
+  is left as a disclosed follow-up — it needs a new confirm surface on
+  the `/plugin` browser's own row (`view/plugins.rs`/`input.rs`), outside
+  this item's file scope.
 - **A `pre_tool_use` hook registration can now declare `on_failure:
   "deny" | "prompt"` (default `"deny"`), so a guard's own OUTAGE no longer
   has to look identical to its VERDICT** — board item
@@ -154,6 +208,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the registrations into its own `[hooks].rules[]`; `conway-cli`'s own
   `[plugins].claude_compat[]` install path does not perform that append
   yet (still MCP-only), a disclosed, separate follow-up.
+- **`[plugins].claude_compat[]` now dispatches its translated hooks, not
+  only its MCP servers** — board item `01M0XBZNBPXEESX8VNTJDKNG0J`, closing
+  the gap the item immediately above disclosed and left open. Until this
+  item, `crates/conway-cli/src/claude_compat_plugins.rs` attached only the
+  MCP half of what a discovered Claude Code plugin directory declared: a
+  `hooks/hooks.json` rule translated cleanly
+  (`ClaudeCompatReport::hook_registrations()`) but nothing ever appended
+  it into the `HooksConfig` `ConwayBuilder::build` reads, so it was
+  reported, never dispatching — the built-but-unreachable defect
+  `DESIGN-plugin-dependencies.md` §1 names as this tree's recurring
+  disease, and the one gap standing between beepboop's own smoke test
+  (`01M0X3AMASEJGHZ6ZDMDFWCHSE`) and hearing a sound actually play.
+  `ConwayBuilder` gains `config_mut()` (`crates/conway/src/builder.rs`) —
+  the write counterpart `config()` never had, and the narrowest seam that
+  let `install` append into `[hooks].rules[]` without reconstructing the
+  builder (which would have dropped every plugin/gate/router already
+  attached). Every translated rule keeps `on_failure: Deny` — this layer
+  never sets it, `HookEntry::default`'s own fail-closed value survives
+  untouched, deliberately: a translation layer must not silently choose a
+  foreign plugin's own outage posture on the operator's behalf. `install`
+  also now reports, on stderr, which registered hooks CAN deny a real tool
+  call (`pre_tool_use`, unconditional `diag::warn`, naming each rule id)
+  versus which are observation-only (`diag::info`, verbose-only) — never
+  one undifferentiated "hooks registered" line, since a `pre_tool_use`
+  rule from a foreign plugin is a real permission consequence of naming a
+  directory in `settings.json`. The payload-shape caveat
+  `crates/conway-plugin-claude/src/hooks.rs` and `docs/plugins/
+  claude-compat.md` already stated is unchanged and unweakened: a
+  dispatched hook script still reads Claude Code's own `tool_name`/
+  `tool_input` shape on stdin, not conway's `HookInvocation`/`HookEvent`
+  payload — "dispatches" was never the same claim as "behaves identically
+  to real Claude Code," and wiring dispatch does not quietly upgrade it.
+  `docs/plugins/claude-compat.md`'s own "does not perform that append yet"
+  sentence (the item immediately above quotes it) is corrected to describe
+  today's behavior.
+
+- **A Claude Code plugin's `commands/*.md` files now translate into real,
+  invokable conway commands** — board item `01M0X1G29EZSFEWB1YAG40SE69`,
+  closing the deferral `01M0VR89FB1F3Q4FQ8852K2A5E` named and
+  `01M0VSMF71S6VXX81YRAAF5S8Q` (`CommandOutcome::SubmitPrompt`) made
+  possible. `crates/conway-plugin-claude`'s new `commands` module turns
+  most `commands/*.md` files into a real `conway_core::ports::Command`
+  (`ClaudeCommand`) whose `invoke` submits the file's own
+  frontmatter-stripped body via `CommandOutcome::SubmitPrompt`;
+  `ClaudeCompatReport::command_registrations()` hands back the
+  ready-to-install list. Proven end to end against `beepboop` 1.4.0's real
+  `commands/config.md` — a real `Conway`/`SessionHandle::prompt_command`,
+  no TUI in the loop (`tests/commands_dispatch.rs`), the identical
+  library-API path `conway_plugin_skeleton::FilePromptCommand`'s own
+  end-to-end test already proved out for an operator-authored prompt file.
+  Best effort, not parity, per the operator ruling this item was scoped
+  under: v1 performs no `$ARGUMENTS`/argument interpolation of any kind,
+  so a command body containing a raw `$ARGUMENTS` placeholder is refused
+  rather than submitted verbatim (named in `unsupported`, like anything
+  else this layer cannot use); every frontmatter key besides `description`
+  (which becomes the command's own one-line summary) is named as ignored
+  even on a command that otherwise translates — a new
+  `UnsupportedKind::CommandFrontmatterKey` — with `allowed-tools`
+  specifically getting a *permission*-shaped reason (an ignored Claude
+  Code tool restriction is a permission surprise, not merely a fidelity
+  gap). Namespacing is reused, not invented: a translated command's own
+  name is always bare, the same "an author never picks their own
+  namespace" rule `conway_core::ports::Plugin::commands` already
+  establishes, so shadowing a built-in stays impossible by the identical
+  structural guarantee (`validate_command_name`) every other plugin
+  command already relies on — nothing new to check here. This crate now
+  depends on `conway-core` in production code for the first time (only
+  `Command`/`CommandOutcome`/`CommandCtx`/`CommandSpec`; still never the
+  `conway` facade). `docs/plugins/claude-compat.md`'s `commands/*.md` "not
+  wired" paragraph is corrected to describe what is true now and what
+  still is not.
 
 - **conway can now install a plugin from a Claude Code marketplace** —
   board item `01M0VR96Y87FF2BVNTBSC6GEYR`, the network-reaching half of the
@@ -381,6 +506,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preserving the authority split the settings row's own comment
   documents. `/help`'s keybinding overlay (`tui/view/help.rs`) now lists
   the binding.
+
+- **`HostCapability` opens from a closed two-variant enum to a namespaced
+  vocabulary, and `PluginManifest` gains `optional_host_caps`** — board item
+  `01M0WWKA8K1E7JPK87J6RRQMZF`
+  (`docs/vision/DESIGN-plugin-dependencies.md` §2 Edge A/§4a/§7d). Until
+  now, `HostCapability` (`crates/conway-core/src/ports/plugin.rs`) was a
+  fixed two-member list (`Subagent`, `PersistentTransport`); a third party
+  could never declare a capability core had not already blessed, and
+  `docs/plugins/inference-hooks.md:64` referenced `optional_host_caps` as
+  though it existed — it did not, anywhere in the tree. It reuses the exact
+  naming discipline `crate::event_name::validate_event_name` already
+  established for a plugin's own event names (reused, not reimplemented,
+  per that item's own instruction): a bare name (`subagent`,
+  `persistent_transport`) is reserved for what the core host itself
+  blesses and stays a unit variant, so both keep resolving with **no
+  `settings.json` change**; any other well-formed name (bare or
+  `namespace.name`) constructs `HostCapability::Named` via the new
+  `HostCapability::named` constructor. Wire-compatible with the old closed
+  form: serialization is still a bare string for every variant, so an
+  existing manifest parses unchanged; a malformed tag still fails closed at
+  deserialization, only a well-formed but previously-unknown tag now
+  succeeds. `PluginManifest::optional_host_caps` (`#[serde(default)]`,
+  empty by default) is the host-capability analogue of the `requires`/
+  `optional` plugin-to-plugin edges landed the same day: a missing
+  *required* cap still hard-fails `ConwayBuilder::build` unchanged
+  (`PluginError::MissingHostCapability`, naming both sides); a missing
+  *optional* cap now loads the plugin anyway, degraded, and announces it on
+  the same two channels `requires`/`optional`'s own missing-optional path
+  uses — a `tracing::warn!` plus a `ConfigWarning`
+  (`WarningCode::OptionalHostCapabilityMissing`) on `Conway::warnings()` —
+  via the new `conway::HostCaps::missing_optional`. `docs/plugins/
+  inference-hooks.md:64`'s `optional_host_caps` reference now describes
+  something real; no wording change was needed there. No actual new
+  capability ships with this item (no `ui.ask/1`, no host profile) — this
+  opens the vocabulary and the field only.
 
 ### Security
 
@@ -1490,6 +1650,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`Plugin::status_contributions()` was collected, exposed on the facade as `Conway::plugin_status_contributions()`, and read by nothing — the built-but-unreachable defect this tree keeps catching, sitting in a surface two design docs now depend on** — board item `01M0X1B7Z41J57N6YP2JFZ2AZW`, argued in `docs/vision/DESIGN-permission-modes.md` §3d/§6b. The TUI status line now has a `plugins` field (`view::status::status_line_spans`) that renders `PluginStatusContribution`s as `key: value`, with `status: Failed` (and every other non-`Completed` variant — `Cancelled`/`BudgetExceeded`/`Rejected`) styled `theme.error` (plain red), visually distinct from the unstyled healthy case and from `theme.fatal_error`, which stays reserved for `AUTO-ALLOW` alone — the design's own hazard was that a live guard and a dead guard reported identically, and this is the type `PluginStatusContribution::status` already carried for exactly this. **The one guarantee that mattered most: a contribution can never displace the permission-mode field.** `drop_priority` ranks `plugins` strictly below `mode`, so every contribution is already forced down to its own empty floor before `mode` is ever asked to give up a column — tested explicitly against the FORCED-IN case (a `fields` config naming neither `mode` nor `plugins`, `AUTO-ALLOW` active, five contributions including two failures all competing for the same narrow width). Bounded, not silently truncated: at most three contributions are spelled out individually; the rest fold into a visible `+N more` marker. Zero contributions (the overwhelmingly common case) renders byte-identically to before this item, pinned by a literal string-equality test. `Conway::plugin_status_contributions()`'s own doc no longer describes an unrendered accessor. **Disclosed gap, not fixed here:** `AppState::plugin_status_contributions` — the field the render path actually reads — is not yet populated from a running session; threading `conway.plugin_status_contributions()` through at TUI startup (the same "populate once outside the render path" shape `AppState::plugin_commands`/`agent_names` already use) is a follow-up, out of this item's file-ownership scope.
+- **That follow-up: `AppState::plugin_status_contributions` was still only ever set by tests — the same built-but-unreachable shape, moved one link further along the chain** — board item `01M0XC1GF73Z9GTE7TN65TRW4A`. `App::new` now copies `Conway::plugin_status_contributions()` into `AppState::plugin_status_contributions` once at TUI startup, the same "populate once, outside the render path" shape `plugin_commands`/`agent_names` already use — proven with a real `ConwayBuilder::with_plugin`-installed plugin (never `AppState` set by hand) whose contribution reaches both the field and the actually rendered status line. **This is the snapshot option, not the live one, stated plainly rather than implied:** `Conway::plugin_status_contributions()` is, and remains, a build-time snapshot collected once in `ConwayBuilder::build`, before any `status/1` notification has arrived — typically empty at real session start, and frozen at whatever it held for the rest of the process's life. A plugin's health changing mid-session (a guard dying, a build finishing) will not move this value; a genuinely live per-session poll is a separate, larger piece, not built here. Both `Conway::plugin_status_contributions()`'s own doc and `AppState::plugin_status_contributions`'s own doc say so. The `Mode`-outranks-`plugins` safety property (`drop_priority`) is untouched — its existing test needed no edit.
 
 ## [0.9.0] — 2026-08-13
 

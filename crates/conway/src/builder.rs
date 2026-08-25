@@ -443,6 +443,44 @@ impl ConwayBuilder {
         &self.config
     }
 
+    /// Mutable access to the config this builder currently holds --
+    /// [`Self::config`]'s write counterpart, added for a caller that needs
+    /// to APPEND to a config-owned collection rather than replace it via a
+    /// whole-value setter (`with_cli_overrides`'s "whole value, not
+    /// additive" contract, and every other `with_*` method's single-field
+    /// replace).
+    ///
+    /// **Board item `01M0XBZNBPXEESX8VNTJDKNG0J`: the wiring gap this
+    /// method closes.** `[hooks].rules[]` has no dedicated builder-level
+    /// injection method the way `Plugin`/`Backend`/`Router` each do
+    /// (`with_plugin`/`with_backend`/`with_router`) -- `build()`'s hook
+    /// step (below) reads `config.hooks.rules` directly, with no
+    /// intervening builder field to push an extra rule onto. A caller that
+    /// discovers additional `[hooks].rules[]`-shaped entries AFTER loading
+    /// (`crates/conway-cli/src/claude_compat_plugins.rs`'s translated
+    /// Claude Code hook registrations is the one caller this method exists
+    /// for) has no other seam to make them real, dispatchable rules: not
+    /// `with_hook_runner` (that injects the DISPATCHER, not a rule), and
+    /// not `from_parts` (reconstructing a builder from a patched config
+    /// would drop every plugin/gate/router/etc. already attached on
+    /// `self`). `builder.config_mut().hooks.rules.extend(...)` is the
+    /// narrowest fix: it reaches exactly the one field that needed a write
+    /// path, on the SAME already-owned `self.config` every other builder
+    /// step reads, so nothing else about `build()`'s hook-step doc
+    /// (`config.hooks.rules.iter().filter(...)`, immediately below) has to
+    /// change to pick appended rules up.
+    ///
+    /// Reflects the loaded/`from_parts` config, exactly like [`Self::config`]
+    /// -- a mutation here is still subject to `build()`'s own step 1
+    /// (`config::merge::apply_cli`) re-validating the WHOLE resulting
+    /// config, appended rules included: a bad id, a duplicate, or an
+    /// invalid `match` on a toolless event fails `build()` the identical
+    /// way an operator-authored `[hooks].rules[]` entry with the same
+    /// defect would.
+    pub fn config_mut(&mut self) -> &mut ConwayConfig {
+        &mut self.config
+    }
+
     /// Injects a backend. Takes precedence over any `[backends.<id>]`
     /// entry's factory-built backend with the same `Backend::id()` -- see
     /// [`Self::with_backend_factory`]'s own doc for the full precedence
@@ -1459,7 +1497,17 @@ impl ConwayBuilder {
         //      the host might lack") is always satisfied. The check lives in
         //      the builder, NOT in `PluginRegistry::from_plugins`, so
         //      `conway-core`'s surface is unchanged.
+        //
+        //      `PluginManifest::optional_host_caps` (board item
+        //      `01M0WWKA8K1E7JPK87J6RRQMZF`, that field's own doc) rides
+        //      the SAME per-plugin loop, right after the mandatory check:
+        //      a cap this host does NOT offer never fails the build -- the
+        //      plugin loads degraded, and the degradation is announced on
+        //      the SAME two channels `10a2`'s missing-optional-DEPENDENCY
+        //      loop below uses for the identical idea one edge over
+        //      (`tracing::warn!` plus a `ConfigWarning`).
         let host_caps = HostCaps::from_config(&config);
+        let mut warnings = warnings;
         for plugin in &resolved_plugins {
             let manifest = plugin.manifest();
             host_caps
@@ -1467,6 +1515,22 @@ impl ConwayBuilder {
                 .map_err(|err| FacadeError::Build {
                     message: err.to_string(),
                 })?;
+            for cap in host_caps.missing_optional(&manifest) {
+                tracing::warn!(
+                    plugin = %manifest.id,
+                    capability = %cap,
+                    "plugin's optional host capability is not offered by this host; loading \
+                     degraded"
+                );
+                warnings.push(ConfigWarning {
+                    code: WarningCode::OptionalHostCapabilityMissing,
+                    message: format!(
+                        "plugin '{}' optionally uses host capability '{cap}', which this host \
+                         does not offer; '{}' will load degraded",
+                        manifest.id, manifest.id
+                    ),
+                });
+            }
         }
 
         // 10a2. Plugin-to-plugin dependency gate (board item
@@ -1498,7 +1562,10 @@ impl ConwayBuilder {
         missing_required_dependency(&installed_manifests).map_err(|err| FacadeError::Build {
             message: err.to_string(),
         })?;
-        let mut warnings = warnings;
+        // `warnings` was already rebound `mut` above, at the host-capability
+        // gate (10a), so the optional-DEPENDENCY loop below can push onto
+        // the SAME `Vec` the optional-host-capability loop above already
+        // does.
         for (plugin, dependency) in missing_optional_dependencies(&installed_manifests) {
             tracing::warn!(
                 plugin = %plugin,
@@ -2100,6 +2167,7 @@ mod plugin_dependency_resolution_tests {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: requires.iter().map(|s| s.to_string()).collect(),
             optional: optional.iter().map(|s| s.to_string()).collect(),
         }

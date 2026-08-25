@@ -112,6 +112,32 @@ impl App {
     /// objects writer this item's own completion report proves preserves
     /// an operator's hand-edited formatting.
     ///
+    /// **Dependency enforcement (board item `01M0WWMQZN5WK1AADKW4WKTQQZ`,
+    /// this trigger's own scope fence): a resolved `MarketplacePluginEntry`
+    /// carries no dependency field of any kind today** --
+    /// `conway_plugin_marketplace::manifest::MarketplacePluginEntry` is
+    /// `id`/`name`/`description`/`version`/`files` only, `#[serde(deny_
+    /// unknown_fields)]`, so there is no wire shape through which a
+    /// marketplace manifest could even express "depends on plugin X" yet.
+    /// This method therefore has nothing to check here, and checking
+    /// nothing is the CORRECT behavior, not a gap: there is no case in
+    /// which this trigger could silently fetch past an unsatisfied
+    /// dependency, because no dependency can be named on this wire at all.
+    /// Ruling 3's scope fence for this enablement point --
+    /// "auto-install of a non-bundled dependency is not designed and must
+    /// not be built; report the conflict and stop, do not fetch" -- is
+    /// satisfied trivially rather than by a new check, and this paragraph
+    /// exists so that stays a documented finding rather than a silent
+    /// absence: the moment `MarketplacePluginEntry` (or the underlying
+    /// Claude Code `plugin.json` format `conway_plugin_claude` translates)
+    /// grows a `dependencies`/`requires`-shaped field, THIS is the call
+    /// site that must resolve it against `self.state.plugin_browser`/
+    /// `[plugins].claude_compat` before the `install_entry` call below and
+    /// refuse (never fetch) on an unmet, non-bundled id -- installed here
+    /// once, in one place, exactly as `apply_plugin_toggle`'s own three
+    /// checks are installed in one place for the browser-toggle enablement
+    /// point.
+    ///
     /// Every step is reported to the transcript: a fetch/install failure
     /// (offline, a bad URL, a malformed marketplace response, an unsafe
     /// path, ...) as a non-fatal `Entry::Error` naming the plugin id and

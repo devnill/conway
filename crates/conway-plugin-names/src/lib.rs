@@ -699,6 +699,7 @@ impl Plugin for NamesPlugin {
             // OPERATOR's addressing affordance (module doc).
             tools: vec![],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }

@@ -92,6 +92,7 @@ impl Plugin for DiscoverPlugin {
             version: env!("CARGO_PKG_VERSION").to_string(),
             tools: vec![ToolName::new(SEARCH_TOOL_NAME)],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }

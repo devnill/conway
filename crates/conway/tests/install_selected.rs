@@ -134,6 +134,7 @@ impl Plugin for FakePlugin {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: vec![],
             optional: vec![],
         }
@@ -161,6 +162,7 @@ impl Plugin for DependentPlugin {
             version: "0.0.0".to_string(),
             tools: vec![],
             required_host_caps: vec![],
+            optional_host_caps: vec![],
             requires: self.requires.clone(),
             optional: self.optional.clone(),
         }
