@@ -111,6 +111,23 @@ impl App {
         // (`Self::refresh_session_head`).
         state.session_head_seq = conway.session_head(handle.id()).await.ok();
         state.plugin_commands = std::sync::Arc::new(command_registry.palette_entries());
+        // Board item `01M0XC1GF73Z9GTE7TN65TRW4A`: populate the status
+        // line's `plugins` field from the one build-time snapshot
+        // `Conway::plugin_status_contributions()` holds -- the same
+        // "populate once, outside the render path" shape `plugin_commands`
+        // just above and `agent_names` (`with_agent_names`, below) already
+        // use. **This is a snapshot, not a live poll**: `conway.
+        // plugin_status_contributions()` was collected once, in
+        // `ConwayBuilder::build`, before this session's own `status/1`
+        // notifications (if any) had arrived -- see that accessor's own
+        // doc. Copying it here closes the "renders but nothing feeds it"
+        // gap for a plugin that already had a contribution at build time;
+        // it does NOT make a later, mid-session health change (a guard
+        // dying, a build finishing) show up -- that is a genuinely live
+        // per-session poll, a separate and larger piece, deliberately not
+        // built here. See `AppState::plugin_status_contributions`'s own
+        // doc for the same caveat spelled out at the read side.
+        state.plugin_status_contributions = conway.plugin_status_contributions().to_vec();
         // Stage 2a: `[tui]` no longer lives in `conway::config::ConwayConfig`
         // at all (`conway.config()` has no `.tui` field any more) -- this
         // crate reads it back via its OWN separate, layered load, using the
@@ -501,12 +518,14 @@ mod tests {
     use std::sync::Arc;
 
     use conway::config::{CliOverrides, LoadOptions};
-    use conway::{ConwayBuilder, PermissionGate};
+    use conway::plugin::{Plugin, PluginManifest, PluginStatusContribution, Tool};
+    use conway::test_support::test_builder;
+    use conway::{ConwayBuilder, PermissionGate, ResultStatus};
     use conway_core::agent::PermissionDecision;
     use conway_core::ids::{BackendId, ModelId};
     use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
-    use super::super::fixtures::{echo_conway, minimal_cli};
+    use super::super::fixtures::{base_config, echo_conway, minimal_cli};
     use super::App;
     use crate::tui::state::Entry;
 
@@ -985,6 +1004,118 @@ mod tests {
         assert!(
             !text.trim().is_empty(),
             "a session built from a config carrying a full [tui] block must still render"
+        );
+    }
+
+    /// A plugin with no `status_contributions()` override (every fixture
+    /// in this module up to here, and every first-party plugin `App::new`
+    /// otherwise installs) contributes nothing -- the trait's own
+    /// zero-cost default. Only a plugin that overrides it produces a
+    /// contribution, which is why this fixture exists as its own type
+    /// rather than reusing `install_selected.rs::FakePlugin`-shaped
+    /// zero-dependency plugins already scattered across this crate's test
+    /// suites: none of them override this one method.
+    struct ContributingPlugin;
+
+    impl Plugin for ContributingPlugin {
+        fn manifest(&self) -> PluginManifest {
+            PluginManifest {
+                id: "test.guard".to_string(),
+                version: "0.0.0".to_string(),
+                tools: vec![],
+                required_host_caps: vec![],
+                requires: vec![],
+                optional: vec![],
+            }
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            vec![]
+        }
+
+        fn status_contributions(&self) -> Vec<PluginStatusContribution> {
+            vec![PluginStatusContribution {
+                key: "guard".to_string(),
+                status: ResultStatus::Completed,
+                value: "qwen2.5-3b".to_string(),
+            }]
+        }
+    }
+
+    /// Board item `01M0XC1GF73Z9GTE7TN65TRW4A`. The render path
+    /// (`view::status::status_line_spans`'s `plugins` field,
+    /// `view/status.rs`'s own `a_plugin_contribution_appears_in_the_status_
+    /// line`) was real and tested before this item -- what it lacked was
+    /// live data: `AppState::plugin_status_contributions` was set only by
+    /// hand, in tests, never by `App::new` from a running `Conway`. This
+    /// proves the missing link, end to end: a plugin installed through the
+    /// REAL `ConwayBuilder::with_plugin` (never `AppState` set directly)
+    /// whose `Plugin::status_contributions()` returns one contribution
+    /// reaches BOTH `app.state.plugin_status_contributions` AND the
+    /// actually rendered status line through the real `App::new` +
+    /// `view::draw` -- the same "assert on the observable, rendered
+    /// outcome, not the intermediate field" idiom every other startup test
+    /// in this module already uses (see
+    /// `registration_error_surfaces_as_a_transcript_error`'s own doc).
+    ///
+    /// **Also proves this is a snapshot, not a live poll.** `App::new`
+    /// copies `conway.plugin_status_contributions()` -- itself the
+    /// build-time value `ConwayBuilder::build` collected from
+    /// `ContributingPlugin::status_contributions()` at `test_builder(..)
+    /// .build()` time above, BEFORE any session exists -- so a value
+    /// reaching the screen here says nothing about a value pushed by a
+    /// `status/1` notification during a live turn (`Conway::
+    /// plugin_status_contributions()`'s own doc; this crate's test suite
+    /// has no harness for driving that wire path at all).
+    #[tokio::test]
+    async fn app_new_populates_plugin_status_contributions_from_a_real_plugin() {
+        let conway = test_builder(base_config())
+            .with_backend(Arc::new(FakeBackend::echo(BackendId::new("fake"))))
+            .with_plugin(Arc::new(ContributingPlugin))
+            .build()
+            .expect("build should succeed with a status-contributing plugin installed");
+        let mut cli = minimal_cli();
+        // `plugins` is NOT in `StatusLineConfig::default`'s Lean line
+        // (`session,lineage,mode,model,ctx,tokens,activity,hint`) -- an
+        // operator has to opt in, matching every other status-line field
+        // this module's own render tests configure explicitly. `cli.config`
+        // drives `crate::tui::config::load` (`App::new`'s OWN separate
+        // `[tui]` load, entirely independent of the `test_builder`-built
+        // `conway` above, which never reads this file at all), so this
+        // settings.json need only carry the one key this test cares about.
+        let tui_config_dir = tempfile::tempdir().expect("tempdir");
+        let tui_config_path = tui_config_dir.path().join("settings.json");
+        std::fs::write(
+            &tui_config_path,
+            serde_json::json!({"tui": {"status_line": {"fields": ["plugins"]}}}).to_string(),
+        )
+        .expect("write settings.json carrying [tui.status_line.fields]");
+        cli.config = Some(tui_config_path);
+        let app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        assert_eq!(
+            app.state.plugin_status_contributions,
+            vec![PluginStatusContribution {
+                key: "guard".to_string(),
+                status: ResultStatus::Completed,
+                value: "qwen2.5-3b".to_string(),
+            }],
+            "App::new must copy Conway::plugin_status_contributions() into AppState, not \
+             leave it at AppState::new's empty default"
+        );
+
+        // Buffer-asserting half (this crate's binding TUI test convention,
+        // used by every other startup test in this module): render the
+        // REAL AppState through the REAL view::draw and confirm the
+        // contribution is actually READABLE on screen, not merely present
+        // on the struct -- the exact "renders but nothing feeds it" defect
+        // this item exists to close.
+        let text = crate::tui::test_support::render_text(&app.state, 120, 40);
+        assert!(
+            text.contains("guard: qwen2.5-3b"),
+            "the plugin's status contribution must reach the rendered status line: {text}"
         );
     }
 }
