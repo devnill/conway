@@ -81,6 +81,28 @@ impl App {
         match self.handle.agent_events(agent).await {
             Ok(stream) => {
                 self.state.focus_agent(agent);
+                // Board `01M0VWMMEG4CER8Y8VH77KZ0CV`: `focus_agent` just
+                // reset `turn_started_at` to `None` -- correct for the
+                // common case (a freshly focused agent with no turn in
+                // flight), wrong for the one this item exists to fix: `agent`
+                // was already streaming a reply when this switch happened,
+                // and `Event::TurnStarted` is bus-only (never replayed), so
+                // the fresh subscription above can never observe the
+                // bracket that already started. `SessionHandle::
+                // turn_in_progress` is the authoritative, facade-level
+                // answer to "is a turn in flight for `agent` right now" --
+                // see that method's own doc for why it cannot fire for a
+                // pull-in's synthetic twin or a replayed assistant reply
+                // (both leave it `false`, since neither one is a real
+                // `AgentTree::mark_turn_started`/`mark_turn_finished`
+                // bracket). Seeded with the SAME two fields `Event::
+                // TurnStarted`'s own `apply` arm sets (`state.rs`), so a
+                // refocus shows the working indicator immediately rather
+                // than waiting for the turn's next live delta.
+                if self.handle.turn_in_progress(agent) {
+                    self.state.activity = Activity::Thinking;
+                    self.state.turn_started_at = Some(std::time::Instant::now());
+                }
                 let host = commands::LiveHost {
                     handle: &self.handle,
                     conway: &self.conway,
@@ -152,7 +174,163 @@ impl App {
 mod tests {
     use super::super::fixtures::{drain_and_apply, echo_conway, minimal_cli};
     use super::App;
-    use crate::tui::state::Entry;
+    use crate::tui::state::{Activity, Entry, SPINNER_FRAMES};
+
+    /// Board `01M0VWMMEG4CER8Y8VH77KZ0CV`'s own repro backend: a `Backend`
+    /// whose `stream()` yields ONE real `TextDelta`, then genuinely
+    /// suspends (a `tokio::sync::Notify` await, not a busy-loop) until the
+    /// test releases it, then yields a second `TextDelta` and `Done`.
+    ///
+    /// **Why not `conway_testkit::ScriptedTurn::Pending`:** that variant
+    /// suspends `generate()`/`stream()` itself BEFORE any chunk is ever
+    /// produced (`std::future::pending()`), which is exactly right for a
+    /// "this agent never responds" repro (`pull_in.rs`'s still-running-child
+    /// guard) but wrong for this one -- this item's own bug is specifically
+    /// about REAL, already-streaming `TextDelta` chunks arriving before AND
+    /// after a focus switch, so the repro needs a turn that has genuinely
+    /// started producing text, not one stuck before its first byte.
+    struct GatedStreamBackend {
+        id: conway_core::ids::BackendId,
+        gate: std::sync::Arc<tokio::sync::Notify>,
+    }
+
+    impl GatedStreamBackend {
+        fn new(gate: std::sync::Arc<tokio::sync::Notify>) -> Self {
+            Self {
+                id: conway_core::ids::BackendId::new("fake"),
+                gate,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl conway_core::ports::Backend for GatedStreamBackend {
+        fn id(&self) -> conway_core::ids::BackendId {
+            self.id.clone()
+        }
+
+        fn capabilities(
+            &self,
+            _model: &conway_core::ids::ModelId,
+        ) -> conway_core::capabilities::Capabilities {
+            // `Streaming { validated: true }`, not `None`: the real `App`
+            // this test drives registers built-in tools unconditionally
+            // (`bash` "ships off by default and cannot be declined" --
+            // `conway::config::schema::PluginsConfig`'s own doc), so
+            // `attempt.rs::strategy_for`'s `has_tools` is `true` here even
+            // though this test never calls a tool -- without this,
+            // `strategy_for` falls back to `Strategy::Generate` and this
+            // backend's deliberately-`unimplemented!` `generate` panics.
+            conway_core::capabilities::Capabilities {
+                tool_calling: conway_core::capabilities::ToolCallSupport::Streaming {
+                    validated: true,
+                },
+                cache: conway_core::capabilities::CacheMode::None,
+                parallel_tool_calls: false,
+                structured_output: conway_core::capabilities::StructuredOutput::None,
+                max_context_tokens: 128_000,
+                reasoning: false,
+                reliability_tier: conway_core::capabilities::ReliabilityTier::Unknown,
+            }
+        }
+
+        async fn generate(
+            &self,
+            _req: conway_core::ports::GenerateRequest,
+        ) -> Result<conway_core::ports::GenerateResponse, conway_core::error::BackendError>
+        {
+            unimplemented!(
+                "this backend's own `capabilities()` declares \
+                 `Streaming {{ validated: true }}`, so `attempt.rs::strategy_for` \
+                 always chooses `Strategy::Stream` -- `generate` is never called"
+            )
+        }
+
+        async fn stream(
+            &self,
+            _req: conway_core::ports::GenerateRequest,
+        ) -> Result<
+            conway_core::ports::BoxStream<
+                'static,
+                Result<conway_core::ports::StreamChunk, conway_core::error::BackendError>,
+            >,
+            conway_core::error::BackendError,
+        > {
+            let gate = self.gate.clone();
+            let done = conway_core::ports::GenerateResponse {
+                content: vec![conway_core::content::ContentBlock::Text {
+                    text: "first chunk more".to_string(),
+                }],
+                tool_calls: vec![],
+                stop: conway_core::content::StopReason::EndTurn,
+                usage: conway_core::content::Usage::default(),
+            };
+            let stream = futures::stream::unfold(0u8, move |step| {
+                let gate = gate.clone();
+                let done = done.clone();
+                async move {
+                    match step {
+                        0 => Some((
+                            Ok(conway_core::ports::StreamChunk::TextDelta(
+                                "first chunk ".to_string(),
+                            )),
+                            1,
+                        )),
+                        // The genuine suspend point: the test drives a
+                        // focus-away-and-back sequence while this future is
+                        // parked here, un-notified.
+                        1 => {
+                            gate.notified().await;
+                            Some((
+                                Ok(conway_core::ports::StreamChunk::TextDelta(
+                                    "more".to_string(),
+                                )),
+                                2,
+                            ))
+                        }
+                        // Deliberately never resolves (mirrors
+                        // `conway_testkit::ScriptedTurn::Pending`'s own
+                        // `std::future::pending()`), so `Event::TurnFinished`
+                        // never fires and cannot race the test's own
+                        // post-"more" assertion -- a real `Done` here would
+                        // let `run_inner`'s per-round finish (`clear_turn_
+                        // state`'s own `TurnFinished` arm) reset `activity`
+                        // back to `Idle` in the SAME `drain_and_apply` batch
+                        // as the "more" delta, which is correct production
+                        // behavior (a finished round legitimately goes
+                        // idle) but would make this test unable to observe
+                        // the moment this item's fix is actually
+                        // responsible for.
+                        2 => {
+                            let _ = done;
+                            std::future::pending::<()>().await;
+                            unreachable!("never notified a second time")
+                        }
+                        _ => None,
+                    }
+                }
+            });
+            Ok(Box::pin(stream))
+        }
+
+        async fn probe(
+            &self,
+        ) -> Result<conway_core::capabilities::ProbeReport, conway_core::error::BackendError>
+        {
+            unimplemented!("not exercised by this test")
+        }
+    }
+
+    /// [`echo_conway`]'s shape, over [`GatedStreamBackend`] instead of the
+    /// echo backend, for the one test that needs a turn it can genuinely
+    /// pause mid-stream.
+    fn conway_with_gated_backend(gate: std::sync::Arc<tokio::sync::Notify>) -> conway::Conway {
+        conway::test_support::build_conway(
+            super::super::fixtures::base_config(),
+            std::sync::Arc::new(GatedStreamBackend::new(gate)),
+            std::sync::Arc::new(conway_testkit::FakeStore::new()),
+        )
+    }
 
     /// Acceptance test: "focus-switching to an agent with history shows its
     /// prompts as user turns." Spawns a real child with a real prompt,
@@ -362,6 +540,181 @@ mod tests {
             !app.state.focused_seen_segments.is_empty(),
             "the re-fetch must also seed the dedup set from the report's own \
              segments, or the child's next live turn would double-count them"
+        );
+    }
+
+    /// THIS ITEM'S OWN ACCEPTANCE TEST (board `01M0VWMMEG4CER8Y8VH77KZ0CV`):
+    /// focusing away from a streaming agent and back before its turn ends
+    /// must not lose the working indicator.
+    ///
+    /// Built at the `AppState`/`App` level with the real `drain_and_apply`
+    /// harness, per the item's own "determine before building" instruction
+    /// -- no compiled binary, real focus switches, real events.
+    /// [`GatedStreamBackend`] is what makes "still mid-turn" a fact the test
+    /// controls rather than a race: the agent's `TurnStarted` has fired and
+    /// its `Event::TurnFinished` provably has not, because the backend's
+    /// `stream()` is parked on a `Notify` the test itself releases.
+    ///
+    /// Pre-fix, this test fails exactly where the item's own report quotes
+    /// it: the assertion right after the refocus, `left: Idle, right:
+    /// Thinking` (reverting `App::try_focus_agent`'s `turn_in_progress`
+    /// seed reproduces it -- see this item's completion report for the
+    /// verbatim output).
+    #[tokio::test]
+    async fn focus_away_and_back_mid_turn_keeps_the_working_indicator() {
+        let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+        let conway = conway_with_gated_backend(gate.clone());
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        // Keep-alive, like the replay-sibling test above: its own loop task
+        // is already running, idling at `resume_gate`, ready to consume a
+        // prompt the instant one lands.
+        let child = app
+            .handle
+            .spawn(
+                app.handle.root(),
+                conway::SpawnSpec::new("").keep_alive(true),
+            )
+            .await
+            .expect("keep-alive spawn should succeed");
+
+        // Focus the child BEFORE it has ever run a turn -- mirrors the real
+        // sequence (the operator is already watching this agent when its
+        // reply starts streaming). `turn_in_progress` must read `false`
+        // here: nothing has happened yet.
+        let mut events = app
+            .try_focus_agent(child, None)
+            .await
+            .expect("focusing a known child must succeed");
+        assert_eq!(
+            app.state.activity,
+            Activity::Idle,
+            "sanity: a freshly focused, never-prompted agent starts idle"
+        );
+
+        let _turn = app
+            .handle
+            .prompt_agent(child, "what time is it")
+            .await
+            .expect("prompt_agent must drive the keep-alive child's first turn");
+
+        // Same synchronization idiom `conway/tests/pull_in.rs` uses for its
+        // own `ScriptedTurn::Pending` repro: a real sleep, not a busy poll,
+        // gives the child's own background loop task a genuine scheduling
+        // turn to run everything synchronous up to the gate (`TurnStarted`
+        // emitted, `mark_turn_started` recorded, first `TextDelta` emitted,
+        // then parked on `gate.notified()`).
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        drain_and_apply(&mut events, &mut app.state);
+
+        // Non-vacuous, P-15: establish the ABSENT-then-present shape before
+        // claiming the fix restores it. This is the state BEFORE any focus
+        // switch -- genuinely streaming, not the default.
+        assert_eq!(
+            app.state.activity,
+            Activity::Responding,
+            "sanity: the child must already be genuinely streaming before any \
+             focus switch, or this test cannot tell a real fix from a no-op"
+        );
+        assert!(
+            app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Assistant { .. })),
+            "sanity: the first chunk must have rendered as a real assistant \
+             entry, got {:?}",
+            app.state.transcript
+        );
+
+        // Focus AWAY -- to root, an unrelated agent -- exactly the
+        // "switched away" half of the item's own repro shape. This drops
+        // the child-scoped subscription (`agent_events`'s stream) entirely;
+        // nothing about the child's still-running turn is observed from
+        // here until refocused.
+        let root = app.handle.root();
+        let _root_events = app
+            .try_focus_agent(root, None)
+            .await
+            .expect("focusing root must succeed");
+        assert_eq!(
+            app.state.activity,
+            Activity::Idle,
+            "focus_agent resets activity for the newly focused agent (root, \
+             which has never run a turn) -- expected, not the bug"
+        );
+
+        // Focus BACK onto the child WHILE its turn is still genuinely in
+        // flight: the backend is still parked on `gate`, so `Event::
+        // TurnFinished` has provably not fired. This is the exact
+        // resubscribe this item's report traces: `agent_events` cannot
+        // replay a bus-only `Event::TurnStarted` that already fired before
+        // this subscription existed.
+        let mut events = app
+            .try_focus_agent(child, None)
+            .await
+            .expect("refocusing the child must succeed");
+
+        // ACCEPTANCE 1: the working indicator survives the switch --
+        // asserted immediately, with NOTHING drained from the fresh
+        // subscription yet, so this is `try_focus_agent`'s own seed, not a
+        // side effect of the replay batch.
+        assert_eq!(
+            app.state.activity,
+            Activity::Thinking,
+            "the working indicator must survive focusing away and back onto \
+             an agent whose turn has not yet finished"
+        );
+        assert!(
+            app.state.turn_started_at.is_some(),
+            "turn_started_at must be seeded on refocus so the elapsed clock \
+             and the TextDelta gate both read a turn as in flight"
+        );
+
+        // Prove the seed is not merely cosmetic: the turn's REAL remaining
+        // `TextDelta` must still reach `Entry::Assistant` and flip
+        // `activity` back to `Responding` through the ordinary, unchanged
+        // gate (`turn_started_at.is_some()`) -- not a special case for the
+        // seeded value.
+        gate.notify_one();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        drain_and_apply(&mut events, &mut app.state);
+
+        assert_eq!(
+            app.state.activity,
+            Activity::Responding,
+            "the turn's remaining live TextDelta must flip activity back to \
+             Responding through the ordinary gate, using the seeded \
+             turn_started_at"
+        );
+
+        // ACCEPTANCE 3: the rendered line, not only the enum -- both the
+        // status line's spinner/\"responding…\" label and the transcript's
+        // own streaming cursor read `activity`, and a fix that satisfies
+        // one but not the other is half a fix.
+        // 150 columns, not the crate's usual 80x24 default: at 80 columns
+        // the status line's own width-aware field ladder (`view/status.rs`)
+        // legitimately drops the LOWER-priority `activity` field entirely
+        // before `mode`/`hint` give up anything (verified directly: at 300
+        // columns the very same state renders `"... | ⠋ responding… 0s · +0
+        // tok | ..."`) -- unrelated to this item, and not something a wider
+        // render is "cheating" around, just a real terminal size where the
+        // configured Lean field set actually fits.
+        let text = crate::tui::test_support::render_text(&app.state, 150, 24);
+        assert!(
+            SPINNER_FRAMES.iter().any(|glyph| text.contains(glyph)),
+            "the rendered status line must show the working spinner: {text}"
+        );
+        assert!(
+            text.contains("responding…"),
+            "the rendered status line must show the responding… label: {text}"
+        );
+        assert!(
+            text.contains('▌'),
+            "the rendered transcript must show the streaming cursor on the \
+             live assistant line: {text}"
         );
     }
 }

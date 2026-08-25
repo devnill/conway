@@ -1326,26 +1326,27 @@ impl AppState {
             // scheduling: they never stamp `turn_started_at` at all, so their
             // timing relative to `prompt_agent`'s return is irrelevant to it.
             //
-            // KNOWN LIMIT OF THIS GUARD, stated rather than discovered later.
-            // The premise above holds only for a stream subscribed BEFORE the
-            // turn started. `Event::TurnStarted` is bus-only -- it is not a
-            // `LogRecord` variant and `record_to_event` has no arm for it --
-            // so it is never replayed to a subscriber that attaches later.
-            // `SessionHandle::agent_events` replays persisted records plus the
-            // live bus from `subscribed_at` onward, and `focus_agent` (this
-            // file) resets `turn_started_at` to `None`. So focusing away from
-            // a streaming agent and back mid-turn attaches a fresh stream that
-            // missed that turn's `TurnStarted`: the remaining real `TextDelta`
-            // chunks then leave `activity` at `Idle` and the transcript's
-            // streaming cursor off, until `TurnFinished` ends the turn. That
-            // is a narrower and self-healing failure than the permanent wedge
-            // this guard removes, and it is NOT fixed here: the obvious seed,
-            // `NodeStatus::Running`, cannot distinguish an idle keep-alive
-            // root from one mid-turn, and a keep-alive root is exactly the
-            // agent a pull-in merges into -- seeding from it would reinstate
-            // the wedge. Tracked on the board; the open question is what
-            // signal means "a turn is in flight" for an agent that stays
-            // alive between turns.
+            // RESOLVED (board `01M0VWMMEG4CER8Y8VH77KZ0CV`): the premise
+            // above holds only for a stream subscribed BEFORE the turn
+            // started -- `Event::TurnStarted` is bus-only (not a
+            // `LogRecord` variant; `record_to_event` has no arm for it) so
+            // it is never replayed to a subscriber that attaches later, and
+            // `focus_agent` (this file) resets `turn_started_at` to `None`
+            // on every switch. Focusing away from a streaming agent and
+            // back mid-turn used to attach a fresh stream that missed that
+            // turn's `TurnStarted`, leaving `activity` at `Idle` and the
+            // streaming cursor off for the remainder of that turn. Fixed at
+            // the FACADE, not here: `App::try_focus_agent` (`app/focus.rs`)
+            // now seeds both `turn_started_at` and `activity` itself, right
+            // after `focus_agent`'s reset, from `SessionHandle::
+            // turn_in_progress` -- a `conway-runtime::AgentTree`-backed
+            // query answering "is a turn in flight for this agent right
+            // now" that is NOT `NodeStatus::Running` (which cannot tell an
+            // idle keep-alive root from one mid-turn, and would reinstate
+            // the wedge this guard exists to prevent -- see that method's
+            // own doc). This arm's own gate is unchanged: it still only
+            // ever gets to `Some` between a real `TurnStarted` and
+            // `TurnFinished`, whichever subscriber first observes it.
             //
             // Sibling closed for free, verified (`record_to_event`,
             // `conway/src/session_handle.rs`): a `--resume`/focus-switch

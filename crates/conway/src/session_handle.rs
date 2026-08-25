@@ -550,6 +550,48 @@ impl SessionHandle {
         self.rt.tree()
     }
 
+    /// Board `01M0VWMMEG4CER8Y8VH77KZ0CV` ("focusing back onto a streaming
+    /// agent mid-turn loses the working indicator"): whether `agent` has a
+    /// model round-trip in flight RIGHT NOW, straight from `Runtime::
+    /// turn_in_flight` (sync, no I/O, like `Self::tree` immediately above).
+    ///
+    /// **This is the chosen fix's whole surface (P-8/GP-05: a behavioural
+    /// difference between modes is a renderer bug, so this belongs on the
+    /// facade, not bolted onto the TUI's own `AppState` alone).** The item's
+    /// three candidates were: (1) a runtime query -- this method, (2) make
+    /// `Event::TurnStarted` survive resubscription (persisted or
+    /// synthesized), (3) track it in the TUI. Option 3 was checked and
+    /// falsified first: the TUI's own live subscription is *always* scoped
+    /// to at most one agent at a time (`Self::events`/`Self::agent_events`
+    /// both filter on `self.agent`/`agent`, and the interactive app loop
+    /// only ever holds one such stream, swapped wholesale on every focus
+    /// switch) -- it structurally cannot observe `TurnStarted`/
+    /// `TurnFinished` for an agent it is not currently subscribed to, so
+    /// there is nothing for a per-agent "seen it" map to accumulate for an
+    /// agent the operator is not looking at. That collapses the choice to
+    /// (1) or (2).
+    ///
+    /// **Deliberately NOT `NodeStatus::Running`/`AgentStatus::Running`,
+    /// which the item's own text names as a trap.** That status answers
+    /// "has a terminal result been published" -- `true` for a keep-alive
+    /// agent's entire idle-between-prompts lifetime, exactly the case a
+    /// pull-in merges into, so seeding from it would reinstate the
+    /// permanent wedge `01M0VQ650R31MGTXD8E225RRFH` fixed.
+    /// `AgentTree::turn_in_flight` (this method's source) answers a
+    /// strictly narrower question instead -- see its own doc for the
+    /// `mark_turn_started`/`mark_turn_finished` bracket and why an
+    /// error/cancelled/budget-exceeded exit cannot leave it stuck `true`.
+    ///
+    /// **Not a wire-format change.** No new `LogRecord`/`Event` variant,
+    /// nothing persisted, nothing added to the replay path -- purely
+    /// in-process bookkeeping inside `conway-runtime`'s `AgentTree`,
+    /// queried fresh at focus time. Chosen over option 2 (persisting a
+    /// turn boundary) precisely to avoid that wire-format commitment for
+    /// what is, today, a UI-indicator-only need.
+    pub fn turn_in_progress(&self, agent: AgentId) -> bool {
+        self.rt.turn_in_flight(agent)
+    }
+
     /// Delegates to `Runtime::context_report`, which is itself synchronous
     /// (an in-memory read, no I/O) -- this method is `async` only to match
     /// the binding criterion's signature; there is nothing to await.

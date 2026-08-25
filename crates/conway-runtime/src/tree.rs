@@ -137,6 +137,30 @@ struct TreeEntry {
     /// after `attach`, without upgrading every cancel to a tree-wide write
     /// lock.
     cancel_reason: std::sync::Mutex<Option<String>>,
+    /// Board `01M0VWMMEG4CER8Y8VH77KZ0CV`: `true` strictly between
+    /// [`AgentTree::mark_turn_started`] and [`AgentTree::mark_turn_finished`]
+    /// for THIS agent -- i.e. exactly the window `agent_loop.rs`'s
+    /// `Event::TurnStarted`/`Event::TurnFinished` bracket for one model
+    /// round-trip, mirrored here so it survives being asked about from
+    /// OUTSIDE that bracket's own live subscribers. `false` at `attach` and
+    /// for every agent that has never started a turn.
+    ///
+    /// **This is deliberately NOT [`AgentStatus`]/`NodeStatus::Running`.**
+    /// That status is "has a terminal result been published" -- `true` for
+    /// a keep-alive agent's ENTIRE idle-between-prompts lifetime, which
+    /// cannot distinguish an idle keep-alive root from one mid-reply (the
+    /// exact trap this item's own spec names and forbids retrying). This
+    /// field answers a narrower, turn-scoped question instead: "is a model
+    /// round-trip actually in flight for this agent RIGHT NOW."
+    ///
+    /// Cleared defensively in [`AgentTree::publish_result`] too, not only at
+    /// the per-round success `TurnFinished` emission site: a turn that ends
+    /// via `finish_error`/`finish_cancelled`/budget-exceeded never reaches
+    /// that success path, but every one of those IS terminal for the whole
+    /// agent (never returns to keep-alive's "await next prompt" gate) and so
+    /// always calls `publish_result` exactly once -- the one place every
+    /// exit path, however the loop leaves it, is guaranteed to pass through.
+    turn_in_flight: AtomicBool,
 }
 
 /// The multi-agent tree: attachment, structural lookups, cancellation
@@ -194,6 +218,7 @@ impl AgentTree {
                 _keepalive_rx: keepalive_rx,
                 resolved: AtomicBool::new(false),
                 cancel_reason: std::sync::Mutex::new(None),
+                turn_in_flight: AtomicBool::new(false),
             },
         );
         // Released before emitting: `EventBus::emit` is synchronous and
@@ -335,11 +360,58 @@ impl AgentTree {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
+            // Board `01M0VWMMEG4CER8Y8VH77KZ0CV`: a terminal result means
+            // this agent's whole life just ended, so whatever `turn_in_flight`
+            // was reading is now definitely stale -- clear it here too, not
+            // only at the per-round success `TurnFinished` site
+            // (`mark_turn_finished`'s own call site in `agent_loop.rs`),
+            // since an error/cancelled/budget-exceeded turn never reaches
+            // that site but always reaches this one (see `turn_in_flight`'s
+            // own doc on `TreeEntry`).
+            entry.turn_in_flight.store(false, Ordering::SeqCst);
             let _ = entry.result_tx.send(Some(result));
             Ok(true)
         } else {
             Ok(false)
         }
+    }
+
+    /// Board `01M0VWMMEG4CER8Y8VH77KZ0CV`: records that `agent` has just
+    /// emitted `Event::TurnStarted` for a fresh model round-trip. Called
+    /// from `agent_loop.rs` immediately alongside that emission (before, so
+    /// a subscriber that ever observes the live event is guaranteed to find
+    /// this already `true`, never a stale `false`). A no-op for an unknown
+    /// agent -- this is best-effort UI bookkeeping, not a lifecycle
+    /// guarantee, so there is nothing to error over.
+    pub fn mark_turn_started(&self, agent: AgentId) {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        if let Some(entry) = nodes.get(&agent) {
+            entry.turn_in_flight.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// The success-path twin of [`Self::mark_turn_started`]: called
+    /// alongside the per-round `Event::TurnFinished` emission. See
+    /// [`Self::publish_result`] for the OTHER paths (error/cancelled/
+    /// budget-exceeded) that also clear this, since none of those reaches
+    /// this call site.
+    pub fn mark_turn_finished(&self, agent: AgentId) {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        if let Some(entry) = nodes.get(&agent) {
+            entry.turn_in_flight.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Whether `agent` currently has a model round-trip in flight -- see
+    /// `turn_in_flight`'s own doc on why this is NOT the same question as
+    /// [`AgentStatus::Running`]/`NodeStatus::Running`. `false` for an
+    /// unknown agent, matching [`Self::ephemeral_of`]'s same default.
+    pub fn turn_in_flight(&self, agent: AgentId) -> bool {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        nodes
+            .get(&agent)
+            .map(|entry| entry.turn_in_flight.load(Ordering::SeqCst))
+            .unwrap_or(false)
     }
 
     /// Reads `agent`'s `ephemeral` flag from its attached [`AgentNode`], for

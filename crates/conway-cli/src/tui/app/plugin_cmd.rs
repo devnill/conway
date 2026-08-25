@@ -282,14 +282,23 @@ impl App {
                 // exactly the "a turn is in flight" predicate that fix
                 // already established (`state.rs`'s own `TextDelta` arm
                 // doc). Scoped to the FOCUSED agent because that is the
-                // only agent `AppState` tracks turn-in-flight state for at
-                // all today -- `Runtime` itself keeps no "is this agent
-                // mid-turn" registry either (the same absence that arm's
-                // own "KNOWN LIMIT" paragraph already names as an open
-                // question tracked on the board, not something this item
-                // invents or silently papers over). A target agent the
-                // operator has since navigated away from therefore has no
-                // tracked state here to consult, so the submission
+                // only agent `AppState` tracks turn-in-flight state for
+                // itself. **Updated by board `01M0VWMMEG4CER8Y8VH77KZ0CV`:**
+                // `Runtime` now DOES keep such a registry
+                // (`AgentTree::turn_in_flight`, reachable here via
+                // `SessionHandle::turn_in_progress`) -- built for
+                // `App::try_focus_agent`'s own refocus-mid-turn seed, not
+                // yet consulted by this guard. Widening THIS check to query
+                // it for a non-focused `done.agent` is a genuine option a
+                // future item can pick up (it would let this guard refuse a
+                // target the operator has merely navigated away from, not
+                // only the one currently on screen) but is deliberately not
+                // done here -- this item's own ownership was `state.rs`/
+                // `focus.rs`/`session_handle.rs`, and widening a REFUSAL
+                // surface is a behavior change this guard's own author,
+                // not this item, should weigh. A target agent the operator
+                // has since navigated away from therefore still has no
+                // tracked state HERE to consult, so the submission
                 // proceeds in that case -- `Runtime::prompt`'s own
                 // concurrent-call contract (durable append either way,
                 // never lost, never corrupted -- `SessionHandle::prompt`'s
