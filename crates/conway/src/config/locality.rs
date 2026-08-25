@@ -198,7 +198,7 @@ mod tests {
             serde_json::from_str(json).expect("must parse");
         assert!(entry.local, "local: true must set the typed field");
         assert!(
-            entry.extra.get("local").is_none(),
+            !entry.extra.contains_key("local"),
             "local must not also land in the extra catch-all"
         );
     }
