@@ -32,6 +32,8 @@ this convention.
 | [`CATALOGUE.md`](CATALOGUE.md) | What a default install should have one toggle away — a candidate survey against `INTENT.md` §7a/§7b, ranked and costed. Board item `01M00QEQ0PVAM2S7Y9EQNZV32F` (R1). | Living. Swept for accuracy each review, not replaced. |
 | [`DESIGN-context-path.md`](DESIGN-context-path.md) | The context-path and curation design: what a `PathLog` is, what a curator may do, what stayed genuinely open and what settled. Corrections are appended dated, never absorbed upward. | Living. Amended in place, append-only. |
 | [`DESIGN-bindings.md`](DESIGN-bindings.md) | The non-Rust bindings survey — Diplomat vs. UniFFI vs. `cbindgen` against conway's async streaming public API — in the same falsifiable-hypothesis register as the page above. Supersedes `BINDINGS.md`. | Living. Amended in place, append-only. |
+| [`DESIGN-plugin-dependencies.md`](DESIGN-plugin-dependencies.md) | Plugin dependency edges, host-surface capability negotiation, and the bundle-liberally/enable-nothing rule — what `conway.ui` needs in order to be depended on, and what breaks on the way. | Living. Amended in place, append-only. |
+| [`DESIGN-permission-modes.md`](DESIGN-permission-modes.md) | Inference-gated permission modes: the enforcement point that already ships, why a local guard needs a plugin rather than a script, and the two hazards (fail-closed bricking, a status line that lies by omission). | Living. Amended in place, append-only. |
 | [`BINDINGS.md`](BINDINGS.md) | Retired. A 26-line pointer to `DESIGN-bindings.md`, kept instead of deleted because two board items and git history cite it by path. | Historical. Read `DESIGN-bindings.md` instead. |
 
 ## How these relate to the rest of the documentation
