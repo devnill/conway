@@ -198,24 +198,62 @@ async fn discover_maps_a_declared_known_host_cap_into_the_manifest() {
     );
 }
 
-/// A `tool.spec/1` manifest declaring an UNKNOWN `required_host_caps` tag
-/// (`"quantum-cap"`) FAILS CLOSED at parse -- a capability requirement is a
-/// GATE, not a value that degrades, so an unknown cap tag surfaces as
-/// `SubprocessPluginError::UnparseableAnswer` and the plugin is refused,
-/// unlike the `ToolCategory`/`PermissionClass`/`ContentBlock` degradation
-/// table (an unknown TAG there degrades to the most restrictive value).
+/// A `tool.spec/1` manifest declaring a previously-UNKNOWN
+/// `required_host_caps` tag (`"quantum-cap"`) is still REFUSED -- but at the
+/// host-capability gate, not at parse.
+///
+/// **This test used to assert the opposite location, and the relocation is
+/// deliberate** (board item `01M0WWKA8K1E7JPK87J6RRQMZF`, which opened
+/// `HostCapability` from a closed two-variant enum to a namespaced
+/// vocabulary). Under the closed enum, `discover` could reject an unknown
+/// tag because the CORE did not know the word. Under an open vocabulary
+/// that rejection is impossible by construction: if parsing refused every
+/// name the core has not blessed, no third party could ever declare a
+/// capability, which is the entire point of opening it.
+///
+/// **The fail-closed guarantee is not weakened, it moved and got sharper.**
+/// `discover` now resolves the tag to `HostCapability::Named`, and
+/// `conway::HostCaps::check_manifest` refuses it with
+/// `PluginError::MissingHostCapability` naming BOTH the plugin and the cap
+/// -- a better error than the old `UnparseableAnswer`, and it answers the
+/// semantically right question ("does this host offer that?") rather than
+/// the accidental one ("has the core heard of that word?").
+///
+/// A MALFORMED tag -- one failing `validate_event_name`'s shape check --
+/// still fails closed at parse, unchanged. Well-formed-but-unknown is the
+/// only case that moved.
 #[tokio::test]
-async fn discover_fails_closed_on_an_unknown_required_host_cap_tag() {
+async fn an_unknown_required_host_cap_is_refused_by_the_gate_not_by_the_parser() {
     let dir = tempfile::tempdir().expect("tempdir");
     let spec =
         common::spec_for_warmed(dir.path(), "unknown_cap.py", common::UNKNOWN_CAP_PLUGIN).await;
 
-    let err = SubprocessPlugin::discover(spec)
+    let plugin = SubprocessPlugin::discover(spec)
         .await
-        .expect_err("an unknown required_host_caps tag must fail closed, never degrade");
+        .expect("a well-formed but unknown cap tag now parses -- see this test's own doc");
+    let manifest = plugin.manifest();
+    assert_eq!(
+        manifest.required_host_caps,
+        vec![conway::plugin::HostCapability::named("quantum-cap").expect("well-formed")],
+        "the unknown tag resolves to a Named capability rather than failing to parse"
+    );
+
+    // The refusal itself, at its new home: a host offering BOTH built-in
+    // caps still does not offer `quantum-cap`, so the plugin is refused --
+    // naming both sides. Built explicitly rather than from config so the
+    // assertion is about the cap being unoffered, not about which caps a
+    // particular config happened to enable.
+    let host = conway::HostCaps::with_capabilities([
+        conway::plugin::HostCapability::Subagent,
+        conway::plugin::HostCapability::PersistentTransport,
+    ]);
+    let err = host
+        .check_manifest(&manifest)
+        .expect_err("an unoffered required cap must still refuse the plugin");
+    let rendered = err.to_string();
     assert!(
-        matches!(err, SubprocessPluginError::UnparseableAnswer { .. }),
-        "expected UnparseableAnswer for an unknown cap tag, got {err:?}"
+        rendered.contains("acme.needs-quantum") && rendered.contains("quantum-cap"),
+        "the refusal must name both the plugin and the cap, got: {rendered}"
     );
 }
 
