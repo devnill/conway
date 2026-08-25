@@ -25,6 +25,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
+use conway::plugin::PluginStatusContribution;
 use conway::{
     AgentId, AgentIntent, AgentResult, Envelope, Event, LogSeq, PermissionMode, ResultStatus,
     SegmentId, SubagentMode, Usage,
@@ -921,6 +922,24 @@ pub struct AppState {
     /// word "name". This crate may name it because it already links that
     /// crate in order to install it; see `conway_plugin_names`'s module doc.
     pub agent_names: Option<std::sync::Arc<dyn conway_plugin_names::AgentNames>>,
+    /// A snapshot of `Conway::plugin_status_contributions()` (board item
+    /// `01M03VKQ738DTGHHK2C4RWXC0E`), read by the status line's `plugins`
+    /// field (board item `01M0X1B7Z41J57N6YP2JFZ2AZW`,
+    /// `view::status::status_line_spans` -- see that module's own doc for
+    /// the bounding/degrade rules and the guarantee that a contribution can
+    /// never displace the `mode` field's own safety signal).
+    ///
+    /// `AppState::new` seeds this empty, matching every other collection
+    /// field's construction-time default. **Not yet populated from a
+    /// running `Conway` session by anything in this crate** -- threading
+    /// `conway.plugin_status_contributions()` through to here at session
+    /// startup (the same "populate once outside the render path" shape
+    /// [`Self::plugin_commands`]/[`Self::agent_names`] already use) is a
+    /// disclosed follow-up, out of the file-ownership scope this item was
+    /// built under. Tests in `view/status.rs` set this field directly,
+    /// matching every other `AppState` field's own test idiom in that
+    /// module.
+    pub plugin_status_contributions: Vec<PluginStatusContribution>,
 }
 
 impl AppState {
@@ -1018,6 +1037,7 @@ impl AppState {
             // palette_entries()`; see this field's own doc for why
             // `/resume` must NOT go through this default a second time.
             plugin_commands: std::sync::Arc::new(Vec::new()),
+            plugin_status_contributions: Vec::new(),
         }
     }
 
