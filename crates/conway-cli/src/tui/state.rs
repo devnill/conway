@@ -1240,9 +1240,79 @@ impl AppState {
                     self.activity = Activity::Thinking;
                 }
             }
+            // This item (board: "pulling in an /ask answer wedges the status
+            // bar in a working state forever"): the `turn_started_at.
+            // is_some()` guard added to the `activity` write. Pulling in an
+            // ask answer is a LOG operation (`Runtime::pull_in`), not an
+            // agent run -- it copies the child's records into the parent's
+            // log and emits synthetic "live twin" events (`Event::UserTurn`,
+            // `Event::TextDelta`) so a subscriber sees the merged content
+            // appear, but it never emits `Event::TurnStarted` because no
+            // turn ever actually starts. Before this guard, this arm set
+            // `activity = Responding` on the twin exactly like it does for a
+            // real streaming reply, and nothing was left to ever clear it --
+            // `Event::TurnFinished`/`Event::AgentFinished` (the only two
+            // event-driven paths back to `Idle`, alongside a focus switch)
+            // never fire for a pull-in, so the status bar spun forever after
+            // the merge. `turn_started_at` is `Some` ONLY between
+            // `Event::TurnStarted` and `Event::TurnFinished`
+            // (`TurnStarted`'s own arm above; `clear_turn_state`, called
+            // from the `TurnFinished` arm below) -- exactly the predicate
+            // "a real turn is running" -- so a pull-in's twin, which carries
+            // no such bracket, now leaves `activity` untouched instead of
+            // wedging it.
+            //
+            // Ordering premise, traced (not assumed): a real turn's
+            // `Event::TurnStarted` is unconditionally emitted (`agent_loop.
+            // rs`, `AgentLoop::run_inner`) before any context assembly,
+            // model call, or streamed `TextDelta` for that same turn, over
+            // one shared, per-session-ordered `EventBus` (`events.rs`:
+            // `emit`/`emit_pruning` hold the per-session seq mutex ACROSS
+            // the broadcast `send`, specifically so no later `seq` can ever
+            // be observed before an earlier one). So for a subscriber that
+            // was ALREADY ATTACHED when the turn began, `TurnStarted` is
+            // guaranteed to reach `apply` -- and stamp `turn_started_at` --
+            // strictly before that turn's own first `TextDelta` can. The two
+            // call sites that flip `activity` to `Thinking` optimistically
+            // (`app.rs`'s `submit`, `app/focus.rs`'s `deliver_first_message`)
+            // cannot spoof this guard either, for a simpler reason than
+            // scheduling: they never stamp `turn_started_at` at all, so their
+            // timing relative to `prompt_agent`'s return is irrelevant to it.
+            //
+            // KNOWN LIMIT OF THIS GUARD, stated rather than discovered later.
+            // The premise above holds only for a stream subscribed BEFORE the
+            // turn started. `Event::TurnStarted` is bus-only -- it is not a
+            // `LogRecord` variant and `record_to_event` has no arm for it --
+            // so it is never replayed to a subscriber that attaches later.
+            // `SessionHandle::agent_events` replays persisted records plus the
+            // live bus from `subscribed_at` onward, and `focus_agent` (this
+            // file) resets `turn_started_at` to `None`. So focusing away from
+            // a streaming agent and back mid-turn attaches a fresh stream that
+            // missed that turn's `TurnStarted`: the remaining real `TextDelta`
+            // chunks then leave `activity` at `Idle` and the transcript's
+            // streaming cursor off, until `TurnFinished` ends the turn. That
+            // is a narrower and self-healing failure than the permanent wedge
+            // this guard removes, and it is NOT fixed here: the obvious seed,
+            // `NodeStatus::Running`, cannot distinguish an idle keep-alive
+            // root from one mid-turn, and a keep-alive root is exactly the
+            // agent a pull-in merges into -- seeding from it would reinstate
+            // the wedge. Tracked on the board; the open question is what
+            // signal means "a turn is in flight" for an agent that stays
+            // alive between turns.
+            //
+            // Sibling closed for free, verified (`record_to_event`,
+            // `conway/src/session_handle.rs`): a `--resume`/focus-switch
+            // replay batch whose last content record is an assistant reply
+            // maps that record to this same `Event::TextDelta` shape and
+            // likewise never synthesizes a `Event::TurnStarted` -- and
+            // `AppState::focus_agent` (`state.rs`, this file) resets BOTH
+            // `activity` to `Idle` AND `turn_started_at` to `None` before
+            // the replay batch is ever applied. So a replayed assistant
+            // reply now leaves `activity` at that reset `Idle` instead of
+            // wedging it into `Responding` the same way pull-in used to.
             Event::TextDelta { text } => {
                 self.append_assistant_text(text, env.ts);
-                if env.agent == self.focused_agent {
+                if env.agent == self.focused_agent && self.turn_started_at.is_some() {
                     self.activity = Activity::Responding;
                 }
             }

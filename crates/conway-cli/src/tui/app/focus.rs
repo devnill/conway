@@ -210,6 +210,107 @@ mod tests {
         );
     }
 
+    /// This item's own replay-sibling acceptance test (board: "pulling in
+    /// an /ask answer wedges the status bar in a working state forever" --
+    /// the item's own text names this as "a likely sibling ... NOT verified
+    /// empirically"). `record_to_event` (`conway/src/session_handle.rs`)
+    /// maps a replayed `LogRecord::Assistant` to the SAME bare
+    /// `Event::TextDelta` shape `Runtime::pull_in`'s merge twin uses, with
+    /// no synthesized `Event::TurnStarted` either -- so a focus switch onto
+    /// an agent whose persisted history ends in an assistant reply replays
+    /// that same wedge shape, unless the `TextDelta` arm's
+    /// `turn_started_at.is_some()` gate (this item) also covers it.
+    ///
+    /// Non-vacuous: `try_focus_agent`'s own `state.focus_agent` call resets
+    /// `activity` to `Idle` BEFORE the replay batch below is ever applied
+    /// (asserted explicitly), so the closing assertion is not "stayed at
+    /// its untouched default" -- it is "the replay batch, once actually
+    /// drained through the real `apply`, did not move it away". Confirmed to
+    /// fail pre-fix (this item's own report quotes the output): with the
+    /// `turn_started_at` gate reverted, this same replay batch left
+    /// `activity` at `Responding` after the drain below.
+    ///
+    /// **Deliberately a KEEP-ALIVE child that is re-promptable, not a
+    /// one-shot spawn.** A one-shot child's log ends with an
+    /// `AgentResultRecord` after its `Assistant` reply, which
+    /// `record_to_event` maps to `Event::AgentFinished` -- and `apply`'s own
+    /// `AgentFinished` arm resets `activity` back to `Idle` regardless of
+    /// this item's gate, masking the exact bug this test exists to catch.
+    /// A keep-alive child's log genuinely ends on the bare `Assistant`
+    /// record (`keep_alive_spawn_starts_idle_with_no_own_records_then_runs_
+    /// and_is_repromptable`, `conway/tests/session_handle_subagent.rs`, is
+    /// the source for this shape) -- no finish record ever follows, which is
+    /// exactly why the item's own text calls this sibling out as
+    /// independently dangerous.
+    #[tokio::test]
+    async fn focus_switch_replaying_an_assistant_reply_does_not_wedge_activity_responding() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        // Bare `/spawn`'s own shape (`commands.rs::bare_spawn`): empty
+        // prompt, `keep_alive: true` -- the child idles with NO records of
+        // its own until prompted.
+        let child = app
+            .handle
+            .spawn(
+                app.handle.root(),
+                conway::SpawnSpec::new("").keep_alive(true),
+            )
+            .await
+            .expect("keep-alive spawn should succeed");
+
+        // The echo backend replies with the prompt text verbatim, so this
+        // real turn completes with a persisted `LogRecord::Assistant` reply
+        // -- the shape `record_to_event`'s `Assistant` arm replays as
+        // `TextDelta` -- and, being keep-alive, the child's log ends
+        // THERE: no `AgentResultRecord`/`Event::AgentFinished` follows to
+        // mask the gate under test.
+        let turn = app
+            .handle
+            .prompt_agent(child, "what time is it")
+            .await
+            .expect("prompt_agent must drive the idle keep-alive child's first turn");
+        tokio::time::timeout(std::time::Duration::from_secs(5), turn.text())
+            .await
+            .expect("turn.text() must not hang")
+            .expect("turn.text() should resolve");
+
+        let mut events = app
+            .try_focus_agent(child, None)
+            .await
+            .expect("focusing a known child must succeed");
+        assert_eq!(
+            app.state.activity,
+            crate::tui::state::Activity::Idle,
+            "sanity: AppState::focus_agent resets activity to Idle BEFORE the \
+             replay batch below is applied -- this is the reset the drain \
+             must not move away from"
+        );
+
+        drain_and_apply(&mut events, &mut app.state);
+
+        // The replay really did reach the assistant reply -- otherwise the
+        // assertion below would not be exercising anything.
+        assert!(
+            app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Assistant { .. })),
+            "the child's replayed assistant reply must have rendered, got {:?}",
+            app.state.transcript
+        );
+        assert_eq!(
+            app.state.activity,
+            crate::tui::state::Activity::Idle,
+            "a replayed assistant reply carries no bracketing TurnStarted \
+             either -- it must not wedge activity at Responding, same as a \
+             pull-in merge's twin must not"
+        );
+    }
+
     /// T3 follow-up acceptance test: focusing an agent that has already run
     /// a turn shows its real serving model and a non-zero `ctx` total
     /// IMMEDIATELY -- straight out of `try_focus_agent`, with nothing
