@@ -125,8 +125,9 @@ with a one-line `settings.json` edit and no rebuild:
   configuration-dependent tools, context, permissions, budgets, steering)
   near the front of a session's assembled context — what makes a bare
   interactive session, which otherwise sends no system-prompt segment at
-  all, carry any harness orientation. Reaches root agents only; a forked or
-  spawned child never sees it.
+  all, carry any harness orientation. Reaches every forked or spawned
+  child too, not the root alone (board item `01M0VSKA76NSEHDSH25XJGJ2J5`'s
+  ruling — see `idiom.md`'s own "Reach" section for the argument).
 - [`names.md`](names.md) — `conway.names`, operator-chosen, renameable
   names for agents: `/conway.names.rename`/`.unname`/`.list` over a store
   shared with the TUI's own `/agents` panel, so a rename is visible

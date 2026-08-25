@@ -81,23 +81,32 @@
 //! because a session lacks any single tool it happens to mention would be
 //! the wrong failure mode for that kind of content.
 //!
-//! # Reach: root agents only (disclosed, not fixed here)
+//! # Reach: every agent, root or child (board item `01M0VSKA76NSEHDSH25XJGJ2J5`)
 //!
-//! `SubagentHost::start` (`crates/conway-runtime/src/subagent.rs`) gives every
-//! forked or spawned child `instructions: Vec::new()` unconditionally. Its
-//! sibling `resolve_instructions` (`crates/conway-runtime/src/runtime/root.rs`)
-//! is the function that forwards every installed plugin's fragments UNCHANGED
-//! -- it is root-only and is never called for a child, which is precisely why
-//! a child ends up with none.
-//! `docs/plugins/hooks.md`'s point 17 states this as a first-class
-//! caveat: "If you author a fragment, assume a subagent will not see it."
-//! [`FRAGMENT_TEXT`] is written KNOWING the audience is the root only: its
-//! "ending a turn"/"permissions"/"steering" bullets describe how a *child*
-//! agent should behave, which a child reading this text would need most --
-//! and will never receive. This item does not fix that gap; it ships the
-//! content anyway, with the limitation stated here, in
-//! [`IdiomPlugin::description`]'s `you_lose`, and in `docs/plugins/
-//! idiom.md`'s own row, rather than leaving it to be discovered.
+//! At the time this plugin first shipped, `SubagentHost::start`
+//! (`crates/conway-runtime/src/subagent.rs`) gave every forked or spawned
+//! child `instructions: Vec::new()` unconditionally, and its sibling
+//! `resolve_instructions` (`crates/conway-runtime/src/runtime/root.rs`) --
+//! the function that forwards every installed plugin's fragments UNCHANGED
+//! -- was root-only. That was disclosed as a caveat (`docs/plugins/
+//! hooks.md` point 17: "If you author a fragment, assume a subagent will
+//! not see it") but never *decided*: nobody had argued whether a child
+//! SHOULD see it.
+//!
+//! Board item `01M0VSKA76NSEHDSH25XJGJ2J5` argued it and ruled a plugin
+//! instruction fragment is harness configuration keyed to tool
+//! reachability (the existing `tool_ids` gate), not transcript context --
+//! so fork/spawn's "whole transcript vs. empty transcript" split does not
+//! govern it, the same way it already does not govern `plugin_config`
+//! (narrowed-and-inherited from the parent for spawn exactly as for fork,
+//! predating this item). `SubagentHost::start` now calls the SAME
+//! `resolve_instructions`/`resolve_skills` a root agent does, for both
+//! fork and spawn, with no per-mode branch -- see that function's own doc
+//! (`runtime/root.rs`) for the full argument. [`FRAGMENT_TEXT`] was written
+//! knowing its "ending a turn"/"permissions"/"steering" bullets describe
+//! how a *child* agent should behave; those agents now receive it, filtered
+//! per turn by [`IdiomPlugin::instructions`]'s empty `tool_ids` (always
+//! reachable) exactly as for a root.
 //!
 //! # Naming
 //!
@@ -124,12 +133,12 @@ pub const INSTRUCTION_NAME: &str = "conway.idiom.base";
 /// The fragment's text, sourced from a markdown file in this crate's own
 /// `fragments/` directory (`crates/conway-plugin-path`/
 /// `crates/conway-plugin-discover`'s own `include_str!` convention --
-/// `Plugin::instructions`'s own doc, "Convention, not enforcement"). 27
-/// lines, 250 words -- against a 40-line/400-word budget measured from
-/// Pi's own `system-prompt.ts` core template (`docs/vision/INTENT.md`'s
-/// citation of Pi as conway's extension-surface reference). See this
-/// module's own doc, "Reach: root agents only", for who actually reads
-/// this text.
+/// `Plugin::instructions`'s own doc, "Convention, not enforcement"). 28
+/// lines, well under a 40-line/400-word budget measured from Pi's own
+/// `system-prompt.ts` core template (`docs/vision/INTENT.md`'s citation of
+/// Pi as conway's extension-surface reference). See this module's own
+/// doc, "Reach: every agent, root or child", for who actually reads this
+/// text.
 pub const FRAGMENT_TEXT: &str = include_str!("../fragments/idiom.md");
 
 /// The `conway.idiom` plugin: contributes no tool, one instruction
@@ -158,16 +167,16 @@ impl Plugin for IdiomPlugin {
                       steering) injected near the front of the assembled context, ahead of the \
                       tool schemas and the conversation -- and ahead of the whole context when \
                       no agent def supplies its own system prompt, which is the ordinary \
-                      interactive-TUI case this plugin exists for"
+                      interactive-TUI case this plugin exists for. Reaches every forked or \
+                      spawned child too, not the root alone (board item \
+                      01M0VSKA76NSEHDSH25XJGJ2J5's ruling: an instruction fragment is harness \
+                      configuration, not transcript context, so fork/spawn's inheritance split \
+                      does not govern it) -- the ending/permissions/steering bullets it carries \
+                      describe how a *child* agent should behave, and now reach exactly that \
+                      agent"
                 .to_string(),
-            you_lose: "nothing else -- but the fragment reaches ROOT agents only. A forked or \
-                       spawned child gets no instruction fragments at all (SubagentHost::start \
-                       passes instructions: Vec::new() unconditionally; the sibling that does \
-                       forward them, resolve_instructions, is root-only and never called for a \
-                       child), so a subagent never sees this text, even though part of it \
-                       describes how a child should behave"
-                .to_string(),
-            costs: "one system-prompt segment's worth of tokens per turn (roughly 250 words) \
+            you_lose: "nothing else".to_string(),
+            costs: "one system-prompt segment's worth of tokens per turn (roughly 275 words) \
                     -- /context's preamble section names conway.idiom.base and its exact token \
                     cost"
                 .to_string(),
@@ -205,18 +214,21 @@ mod plugin_tests {
         assert!(!description.costs.is_empty());
     }
 
-    /// The subagent-reach limitation must be disclosed in `you_lose`
-    /// verbatim, not merely in this crate's own doc comment -- GP-14: a
-    /// declaration site is one artifact, and an operator deciding whether
-    /// to install this plugin reads the description, not the source.
+    /// Board item `01M0VSKA76NSEHDSH25XJGJ2J5` ruled a plugin instruction
+    /// fragment reaches a forked/spawned child too, not the root alone --
+    /// `you_get` (not `you_lose`, now that this is a capability rather than
+    /// a limitation) must say so verbatim, not merely in this crate's own
+    /// doc comment -- GP-14: a declaration site is one artifact, and an
+    /// operator deciding whether to install this plugin reads the
+    /// description, not the source.
     #[test]
-    fn you_lose_names_the_subagent_limitation() {
+    fn you_get_names_the_subagent_reach() {
         let description = IdiomPlugin.description();
         assert!(
-            description.you_lose.to_lowercase().contains("subagent")
-                || description.you_lose.to_lowercase().contains("child"),
-            "you_lose must state that the fragment does not reach a forked/spawned child: {:?}",
-            description.you_lose
+            description.you_get.to_lowercase().contains("subagent")
+                || description.you_get.to_lowercase().contains("child"),
+            "you_get must state that the fragment reaches a forked/spawned child: {:?}",
+            description.you_get
         );
     }
 

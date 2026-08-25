@@ -497,6 +497,20 @@ impl SubagentHost for Runtime {
             agent_def: d.name.clone(),
             text: d.system_prompt.clone(),
         });
+        // RULING (board item `01M0VSKA76NSEHDSH25XJGJ2J5`, argued in full at
+        // `runtime::root::resolve_instructions`'s own doc): a plugin
+        // instruction fragment is harness configuration keyed to tool
+        // reachability, not transcript context, so fork/spawn's "whole
+        // transcript vs. empty transcript" split does not govern it -- both
+        // modes call the SAME `resolve_instructions`/`resolve_skills`
+        // `runtime::root` already uses for a root agent, unconditionally,
+        // with no `spec.mode` branch. `resolve_skills` takes THIS child's
+        // own already-resolved `agent_def` (just above), never the
+        // parent's: a skill is name-scoped through `AgentDef.skills`, so a
+        // fork that inherited no def (and whose parent had none either)
+        // still gets none, exactly as before this item.
+        let instructions = crate::runtime::root::resolve_instructions(self.instructions());
+        let skills = crate::runtime::root::resolve_skills(agent_def, self.skills())?;
         let tools = spec
             .tools
             .clone()
@@ -849,16 +863,13 @@ impl SubagentHost for Runtime {
         let last_report = Arc::new(Mutex::new(None));
         let agent_spec = AgentSpec {
             system_prompt,
-            // A forked/spawned child gets no plugin instruction fragments,
-            // matching `skills: Vec::new()` immediately below -- a
-            // pre-existing gap (this agent def's `skills:` names are ALSO
-            // never resolved for a child), unaddressed by board item
-            // `01M0K5MD59YZRSHE31JKZKFRMY`: that item scoped root-agent
-            // injection only (`runtime::root::resolve_instructions`) and
-            // flagged this as a follow-up rather than fixing it as a
-            // silent bycatch.
-            instructions: Vec::new(),
-            skills: Vec::new(),
+            // Resolved above, board item `01M0VSKA76NSEHDSH25XJGJ2J5` -- a
+            // forked/spawned child now gets the SAME plugin instruction
+            // fragments a root gets (unconditional, `tool_ids`-gated per
+            // turn same as root) and this child's OWN agent def's named
+            // skills (empty when it has none, exactly as before this item).
+            instructions,
+            skills,
             tools,
             role: role.clone(),
             pin,

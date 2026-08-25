@@ -12,7 +12,7 @@ A plugin that prepends a short, conway-specific instruction fragment near
 the front of a session's assembled context — the operator's own framing:
 *"this is a plugin which prepends a custom system prompt. Currently we send
 minimal data, and the purpose of this is to add a little extra if
-desired."* A little extra: 27 lines, 250 words, well inside a 40-line/
+desired."* A little extra: 28 lines, 275 words, well inside a 40-line/
 400-word budget measured against Pi's own system-prompt template
 (`docs/vision/INTENT.md`'s citation of Pi as conway's extension-surface
 reference).
@@ -84,20 +84,33 @@ still hold — and an interactive root specifically never has `report`
 so naming `report` in `tool_ids` would make the fragment vanish from the
 one session type this plugin exists for.
 
-## Reach: root agents only
+## Reach: every agent, root or child — a ruling, not a bare description
 
-**A forked or spawned child never sees this text.** `SubagentHost::start`
-gives every child `instructions: Vec::new()` unconditionally (`hooks.md`
-point 17's own disclosed caveat). Its sibling `resolve_instructions` is
-the function that forwards every installed plugin's fragments unchanged —
-it is root-only and is never called for a child, which is exactly why a
-child ends up with none.
+**A forked or spawned child sees this text too, not the root alone.**
+`SubagentHost::start` now resolves a fork/spawn child's `AgentSpec.
+instructions` through the same `resolve_instructions` function
+`start_root`/`resume_root` already call — board item
+`01M0VSKA76NSEHDSH25XJGJ2J5`'s ruling, argued at that function's own doc
+(`crates/conway-runtime/src/runtime/root.rs`): a plugin instruction
+fragment is harness configuration keyed to tool reachability (the
+pre-existing `tool_ids` gate, unchanged by this ruling), not transcript
+context, so fork/spawn's "whole transcript vs. empty transcript" split
+does not govern it — the same way it already does not govern
+`plugin_config`, which narrows-and-inherits from the parent for spawn
+exactly as for fork, predating this ruling.
+
 Part of the fragment describes how a *child* should behave — ending a turn
 with `report`, reasoning about a permission denial, expecting a parent to
-steer or cancel it — and a child is exactly the agent that never receives
-it. This plugin does not fix that gap; it ships the content anyway, with
-the limitation stated here, in `PluginDescription::you_lose`, and in the
-crate's own module doc, rather than leaving it to be discovered.
+steer or cancel it — and a child is exactly the agent most likely to need
+it. That is now the audience that receives it, stated here, in
+`PluginDescription::you_get`, and in the crate's own module doc, rather
+than left to be discovered.
+
+Before this ruling, the absence was *disclosed* (this page, `hooks.md`
+point 17, the fragment's own shipped text, `PluginDescription::you_lose`)
+but never *decided* — nobody had argued whether a child SHOULD receive it.
+The board item argued it in full; this page, and the other three sites
+just named, are the record of that decision, corrected to match.
 
 ## Seeing it in `/context`
 

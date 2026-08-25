@@ -150,7 +150,7 @@ use crate::supervisor::{self, SuperviseArgs};
 use crate::tools::{PluginRegistry, ToolRunner};
 use crate::tree::{AgentNode, AgentTree};
 
-mod root;
+pub(crate) mod root;
 pub use root::{ResumeSpec, RootSpec};
 
 /// Every port-shaped dependency the runtime needs, injected by the facade
@@ -488,6 +488,26 @@ impl Runtime {
 
     pub(crate) fn agent_defs(&self) -> &HashMap<String, AgentDef> {
         &self.agent_defs
+    }
+
+    /// `RuntimeDeps.skills`, for `subagent.rs`'s `impl SubagentHost for
+    /// Runtime` -- the same field `runtime::root`'s `resolve_skills` already
+    /// reads directly (a descendant module sees a private field; `subagent`
+    /// is a sibling and needs this accessor). Board item
+    /// `01M0VSKA76NSEHDSH25XJGJ2J5`: `SubagentHost::start` now resolves a
+    /// fork/spawn child's own skills through the SAME `resolve_skills`
+    /// root/resume already call, rather than hardcoding `Vec::new()`.
+    pub(crate) fn skills(&self) -> &Arc<HashMap<String, SkillDef>> {
+        &self.skills
+    }
+
+    /// `RuntimeDeps.instructions`, mirroring [`Self::skills`] immediately
+    /// above -- board item `01M0VSKA76NSEHDSH25XJGJ2J5`: `SubagentHost::
+    /// start` now resolves a fork/spawn child's own plugin instruction
+    /// fragments through the SAME `resolve_instructions` root/resume
+    /// already call.
+    pub(crate) fn instructions(&self) -> &Arc<Vec<PluginInstruction>> {
+        &self.instructions
     }
 
     pub(crate) fn tree_ref(&self) -> &Arc<AgentTree> {
