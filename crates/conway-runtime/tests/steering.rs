@@ -39,7 +39,10 @@ use conway_runtime::mailbox::{self, Mailbox, MailboxSender};
 use conway_runtime::permission::PermissionBroker;
 use conway_runtime::tools::{PluginRegistry, ToolRunner};
 use conway_runtime::tree::{AgentNode, AgentTree};
-use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeRouter, FakeStore,
+    ScriptedBackend, ScriptedTurn,
+};
 use futures::future::FutureExt;
 use futures::stream::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -57,21 +60,6 @@ fn caps_ok() -> Capabilities {
         max_context_tokens: 1_000_000,
         reasoning: false,
         reliability_tier: ReliabilityTier::Verified,
-    }
-}
-
-fn text_response(text: &str) -> conway_core::ports::GenerateResponse {
-    conway_core::ports::GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            ..Default::default()
-        },
     }
 }
 

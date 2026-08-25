@@ -41,36 +41,22 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, Plugin, SessionSpec, Tool};
+use conway::test_support::build_conway;
+use conway::test_support::echo_model;
+use conway::{ConwayBuilder, Plugin, SessionSpec, Tool};
 use conway_core::agent::PermissionDecision;
 use conway_core::content::{
     ContentBlock, PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy,
 };
 use conway_core::error::ToolError;
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, SeqRange, ToolName};
+use conway_core::ids::{BackendId, RoleAlias, SeqRange, ToolName};
 use conway_core::log::{LogRecord, SessionFilter};
 use conway_core::ports::{
     Backend, GenerateResponse, PluginManifest, SessionStore, ToolCtx, ToolOutput,
 };
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: conway_core::content::StopReason::EndTurn,
-        usage: conway_core::content::Usage::default(),
-    }
-}
+use conway_testkit::{
+    text_response, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 
 fn tool_call_response(call_id: &str, tool: &str) -> GenerateResponse {
     GenerateResponse {
@@ -127,17 +113,6 @@ fn base_config() -> ConwayConfig {
     }
 }
 
-fn build_conway_with_backend(store: Arc<dyn SessionStore>, backend: Arc<dyn Backend>) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .build()
-        .expect("build should succeed with every port injected")
-}
-
 // ---------------------------------------------------------------------
 // Catalog hiding
 // ---------------------------------------------------------------------
@@ -152,7 +127,7 @@ async fn ask_child_is_hidden_from_default_listing_but_visible_with_include_ephem
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -249,7 +224,7 @@ async fn ask_never_appends_to_the_parent_and_does_not_leak_into_a_resumed_contin
             ])
             .with_id(BackendId::new("fake")),
         );
-        let conway = build_conway_with_backend(store.clone(), backend);
+        let conway = build_conway(base_config(), backend, store.clone());
 
         let handle = conway
             .new_session(SessionSpec::default())
@@ -289,7 +264,7 @@ async fn ask_never_appends_to_the_parent_and_does_not_leak_into_a_resumed_contin
         ))])
         .with_id(BackendId::new("fake")),
     );
-    let conway2 = build_conway_with_backend(store.clone(), backend2.clone());
+    let conway2 = build_conway(base_config(), backend2.clone(), store.clone());
     let resumed = conway2
         .resume(sid)
         .await
@@ -343,7 +318,7 @@ async fn transcript_resolves_the_ephemeral_ask_child_by_agent_id_via_the_parents
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -417,7 +392,7 @@ async fn ask_child_inherits_the_parents_prior_turn_text() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend.clone());
+    let conway = build_conway(base_config(), backend.clone(), store.clone());
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -538,7 +513,7 @@ async fn ask_child_can_invoke_a_tool_the_parent_session_had() {
         .with_backend(backend as Arc<dyn Backend>)
         .with_session_store(store.clone())
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(Arc::new(FakeRouter::single(echo_model())))
         .with_plugin(Arc::new(MarkerPlugin))
         .build()
         .expect("build should succeed");
@@ -669,7 +644,7 @@ async fn ask_child_completes_with_prose_despite_a_def_declared_result_contract_i
         .with_backend(backend as Arc<dyn Backend>)
         .with_session_store(store.clone())
         .with_permission_gate(gate)
-        .with_router(fake_router())
+        .with_router(Arc::new(FakeRouter::single(echo_model())))
         .build()
         .expect("build should succeed");
 
@@ -735,7 +710,7 @@ async fn ask_child_emits_agent_finished_with_ephemeral_true() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -829,7 +804,7 @@ async fn ask_child_attaches_as_ephemeral_fork_child_of_the_asker() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway_with_backend(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let handle = conway
         .new_session(SessionSpec::default())

@@ -34,21 +34,14 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, SessionSpec};
-use conway_core::agent::PermissionDecision;
+use conway::test_support::test_builder;
+use conway::{Conway, SessionSpec};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, SeqRange, ToolName};
+use conway_core::ids::{BackendId, RoleAlias, SeqRange, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, SessionStore};
 use conway_plugin_subprocess::SubprocessPlugin;
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
 fn base_config() -> ConwayConfig {
     let mut roles = BTreeMap::new();
@@ -83,17 +76,6 @@ fn base_config() -> ConwayConfig {
     }
 }
 
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
-}
-
 fn tool_call_response(call_id: &str, tool: &str, arguments: serde_json::Value) -> GenerateResponse {
     GenerateResponse {
         content: vec![],
@@ -107,17 +89,14 @@ fn tool_call_response(call_id: &str, tool: &str, arguments: serde_json::Value) -
     }
 }
 
-fn build_conway(
+fn subprocess_conway(
     backend: Arc<ScriptedBackend>,
     plugin: Option<SubprocessPlugin>,
 ) -> (Conway, Arc<FakeStore>) {
     let store = Arc::new(FakeStore::new());
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let builder = ConwayBuilder::from_parts(base_config())
+    let builder = test_builder(base_config())
         .with_backend(backend)
-        .with_session_store(store.clone())
-        .with_permission_gate(gate)
-        .with_router(fake_router());
+        .with_session_store(store.clone());
     let builder = match plugin {
         Some(plugin) => builder.with_plugin(Arc::new(plugin)),
         None => builder,
@@ -167,7 +146,7 @@ async fn tool_is_callable_end_to_end_through_a_real_turn() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let (conway, store) = build_conway(backend, Some(plugin));
+    let (conway, store) = subprocess_conway(backend, Some(plugin));
     let store: Arc<dyn SessionStore> = store;
 
     let handle = conway
@@ -229,7 +208,7 @@ async fn tool_is_absent_without_the_plugin_attached() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("hi"))])
             .with_id(BackendId::new("fake")),
     );
-    let (conway, _store) = build_conway(backend, None);
+    let (conway, _store) = subprocess_conway(backend, None);
     assert_eq!(
         conway.tool_render_kind(&ToolName::new("greet")),
         None,

@@ -29,6 +29,12 @@ description = "First-party plugin (board item 01KZY8Q1CMMNVSF54CTC270N3H): /conw
 conway = { path = "../conway" }
 
 [dev-dependencies]
+# Board item 01M0TV8MSFRHHQ5BNZV3NHZCEW: this crate's tests reach
+# `conway::test_support` (the shared `build_conway`/`test_builder` wiring
+# that used to be hand-rolled per test file), which is behind the facade's
+# off-by-default `test-support` feature. Dev-only: nothing in `src/` may
+# name it.
+conway = { path = "../conway", features = ["test-support"] }
 # Test-only: builds a real, in-memory `Conway` (fake backend/store/gate/
 # router) to drive this plugin's command through a real turn end to end --
 # the same precedent `conway-plugin-skeleton`'s own

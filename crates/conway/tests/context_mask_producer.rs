@@ -50,31 +50,13 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, ForkSpec, SessionSpec};
-use conway_core::agent::PermissionDecision;
-use conway_core::content::{ContentBlock, StopReason, Usage};
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, SeqRange};
+use conway::test_support::test_builder;
+use conway::{Conway, ForkSpec, SessionSpec};
+use conway_core::content::ContentBlock;
+use conway_core::ids::{BackendId, RoleAlias, SeqRange};
 use conway_core::log::LogRecord;
 use conway_core::ports::Backend;
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
-
-fn text_response(text: &str) -> conway_core::ports::GenerateResponse {
-    conway_core::ports::GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
-}
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
 fn base_config() -> ConwayConfig {
     let mut roles = BTreeMap::new();
@@ -111,19 +93,20 @@ fn base_config() -> ConwayConfig {
 /// Returns the store AND the backend handle -- `Conway` exposes no
 /// accessor for "the backend it was built with," so every test keeps its
 /// own `Arc<ScriptedBackend>` to inspect `calls()` after driving turns.
-fn build_conway_and_store(turns: usize) -> (Conway, Arc<FakeStore>, Arc<ScriptedBackend>) {
+/// A `Conway` scripted to answer `turns` turns with `"ack"`, plus the
+/// concrete store and backend handles the assertions need.
+///
+/// Delegates the port wiring to `conway::test_support::test_builder`;
+/// only the script and the two retained handles are local.
+fn scripted_conway_and_store(turns: usize) -> (Conway, Arc<FakeStore>, Arc<ScriptedBackend>) {
     let script = (0..turns)
         .map(|_| ScriptedTurn::Respond(text_response("ack")))
         .collect();
     let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
     let store = Arc::new(FakeStore::new());
-    let gate: Arc<dyn conway_core::ports::PermissionGate> =
-        Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let conway = ConwayBuilder::from_parts(base_config())
+    let conway = test_builder(base_config())
         .with_backend(backend.clone() as Arc<dyn Backend>)
         .with_session_store(store.clone())
-        .with_permission_gate(gate)
-        .with_router(fake_router())
         .build()
         .expect("build should succeed");
     (conway, store, backend)
@@ -171,7 +154,7 @@ fn contains_marker(texts: &[String], marker: &str) -> bool {
 /// (an unmasked sibling turn) must still be present.
 #[tokio::test]
 async fn a_masked_record_is_absent_from_the_forked_childs_assembled_segments() {
-    let (conway, store, backend) = build_conway_and_store(3);
+    let (conway, store, backend) = scripted_conway_and_store(3);
     let handle = conway
         .new_session(SessionSpec {
             keep_alive: true,
@@ -260,7 +243,7 @@ async fn a_masked_record_is_absent_from_the_forked_childs_assembled_segments() {
 /// fail.
 #[tokio::test]
 async fn without_a_mask_the_same_turn_is_present() {
-    let (conway, _store, backend) = build_conway_and_store(3);
+    let (conway, _store, backend) = scripted_conway_and_store(3);
     let handle = conway
         .new_session(SessionSpec {
             keep_alive: true,
@@ -327,7 +310,7 @@ async fn without_a_mask_the_same_turn_is_present() {
 /// fixture.
 #[tokio::test]
 async fn the_mask_record_round_trips_and_is_reversible() {
-    let (conway, store, backend) = build_conway_and_store(2);
+    let (conway, store, backend) = scripted_conway_and_store(2);
     let handle = conway
         .new_session(SessionSpec::default())
         .await

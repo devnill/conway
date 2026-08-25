@@ -14,17 +14,17 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::backend::{BackendId, GenerateRequest, GenerateResponse, ModelId, StopReason, Usage};
+use conway::backend::{BackendId, GenerateRequest};
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
 use conway::plugin::{ContentBlock, SeqRange};
+use conway::test_support::build_conway;
 use conway::{
-    Conway, ConwayBuilder, ForkSpec, LogRecord, LogSeq, ModelRef, PermissionDecision, RecordRef,
-    RoleAlias, SessionSpec, SessionStore, SpawnSpec,
+    ForkSpec, LogRecord, LogSeq, RecordRef, RoleAlias, SessionSpec, SessionStore, SpawnSpec,
 };
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
 fn base_config() -> ConwayConfig {
     let mut roles = BTreeMap::new();
@@ -52,33 +52,6 @@ fn base_config() -> ConwayConfig {
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
     }
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
-}
-
-fn build_conway(store: Arc<dyn SessionStore>, backend: Arc<ScriptedBackend>) -> Conway {
-    let gate: Arc<dyn conway::PermissionGate> =
-        Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(router)
-        .build()
-        .expect("build should succeed with every port injected")
 }
 
 fn all_text(req: &GenerateRequest) -> String {
@@ -113,7 +86,7 @@ async fn fork_with_chosen_context_replaces_the_inherited_transcript() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("b replies"))])
             .with_id(BackendId::new("fake")),
     );
-    let mint_conway = build_conway(store.clone(), mint_backend);
+    let mint_conway = build_conway(base_config(), mint_backend, store.clone());
     let session_b = mint_conway
         .new_session(SessionSpec::default())
         .await
@@ -132,7 +105,7 @@ async fn fork_with_chosen_context_replaces_the_inherited_transcript() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(store.clone(), backend.clone());
+    let conway = build_conway(base_config(), backend.clone(), store.clone());
     let session_a = conway
         .new_session(SessionSpec::default())
         .await
@@ -222,7 +195,7 @@ async fn spawn_with_chosen_context_primes_an_otherwise_clean_slate_child() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("b replies"))])
             .with_id(BackendId::new("fake")),
     );
-    let mint_conway = build_conway(store.clone(), mint_backend);
+    let mint_conway = build_conway(base_config(), mint_backend, store.clone());
     let session_b = mint_conway
         .new_session(SessionSpec::default())
         .await
@@ -241,7 +214,7 @@ async fn spawn_with_chosen_context_primes_an_otherwise_clean_slate_child() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(store.clone(), backend.clone());
+    let conway = build_conway(base_config(), backend.clone(), store.clone());
     let session_a = conway
         .new_session(SessionSpec::default())
         .await
@@ -303,7 +276,7 @@ async fn boundary_time_chosen_context_does_not_invalidate_the_parents_cached_pre
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("b replies"))])
             .with_id(BackendId::new("fake")),
     );
-    let mint_conway = build_conway(store.clone(), mint_backend);
+    let mint_conway = build_conway(base_config(), mint_backend, store.clone());
     let session_b = mint_conway
         .new_session(SessionSpec::default())
         .await
@@ -323,7 +296,7 @@ async fn boundary_time_chosen_context_does_not_invalidate_the_parents_cached_pre
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(store.clone(), backend.clone());
+    let conway = build_conway(base_config(), backend.clone(), store.clone());
     // `keep_alive: true`: this session is prompted TWICE below, and a
     // non-keep-alive session's agent task terminates after its first
     // prompt-to-completion turn (see `fork_from_keep_alive_child_persists_

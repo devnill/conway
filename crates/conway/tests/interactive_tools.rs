@@ -23,19 +23,10 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, SessionSpec, SpawnSpec, ToolSelector};
-use conway_core::agent::PermissionDecision;
-use conway_core::content::{ContentBlock, StopReason, Usage};
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
-use conway_core::ports::GenerateResponse;
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
+use conway::test_support::build_conway;
+use conway::{SessionSpec, SpawnSpec, ToolSelector};
+use conway_core::ids::{BackendId, RoleAlias};
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
 fn base_config() -> ConwayConfig {
     let mut roles = BTreeMap::new();
@@ -65,33 +56,6 @@ fn base_config() -> ConwayConfig {
     }
 }
 
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
-}
-
-/// Builds a `Conway` with `ScriptedBackend` (records every `GenerateRequest`
-/// it receives -- including `tools`, the announced set) and the crate's real
-/// built-in plugin set (`ConwayBuilder::build`'s own `builtin-tools`
-/// registration, unmodified -- no `.with_plugins` override here).
-fn build_conway(backend: Arc<ScriptedBackend>) -> Conway {
-    let store = Arc::new(FakeStore::new());
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .build()
-        .expect("build should succeed with every port injected")
-}
-
 /// The sorted tool names `req.tools` announced, as plain `String`s.
 fn announced_names(req: &conway_core::ports::GenerateRequest) -> Vec<String> {
     let mut names: Vec<String> = req.tools.iter().map(|t| t.name.to_string()).collect();
@@ -105,7 +69,7 @@ async fn default_session_spec_announces_report_and_other_builtin_tools() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("hi back"))])
             .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(backend.clone());
+    let conway = build_conway(base_config(), backend.clone(), Arc::new(FakeStore::new()));
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -139,7 +103,7 @@ async fn session_spec_tools_except_report_excludes_report_but_keeps_the_rest() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("hi back"))])
             .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(backend.clone());
+    let conway = build_conway(base_config(), backend.clone(), Arc::new(FakeStore::new()));
 
     let spec = SessionSpec {
         tools: Some(ToolSelector::Except(vec!["report".into()])),
@@ -188,7 +152,7 @@ async fn default_spawn_spec_still_announces_report_to_the_child() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(backend.clone());
+    let conway = build_conway(base_config(), backend.clone(), Arc::new(FakeStore::new()));
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -241,7 +205,7 @@ async fn report_excluded_parent_still_gives_an_autonomous_child_report() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(backend.clone());
+    let conway = build_conway(base_config(), backend.clone(), Arc::new(FakeStore::new()));
 
     let spec = SessionSpec {
         tools: Some(ToolSelector::Except(vec!["report".into()])),

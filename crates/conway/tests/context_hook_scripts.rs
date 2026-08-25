@@ -33,39 +33,19 @@
 #![cfg(feature = "builtin-tools")]
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HookEntry, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, PluginSelection};
-use conway_core::content::{ContentBlock, StopReason, Usage};
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
-use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
+use conway::test_support::{scripted_backend, test_builder};
+use conway::PluginSelection;
+use conway_core::ids::{ModelId, RoleAlias};
 use conway_runtime::context::{apply_script_deltas, prefix_key};
 use conway_runtime::hook_dispatch::ContextHookAnswer;
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{text_response, ScriptedTurn};
 use tempfile::TempDir;
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
-}
 
 fn base_config(cwd: &Path, hooks: HooksConfig) -> ConwayConfig {
     let mut roles = std::collections::BTreeMap::new();
@@ -93,23 +73,6 @@ fn base_config(cwd: &Path, hooks: HooksConfig) -> ConwayConfig {
         plugins: PluginsConfig::default(),
         hooks,
     }
-}
-
-fn build_conway(cwd: &Path, hooks: HooksConfig, script: Vec<ScriptedTurn>) -> Conway {
-    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
-    let store = Arc::new(FakeStore::new());
-    let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(
-        conway_core::agent::PermissionDecision::AllowOnce,
-    ));
-    ConwayBuilder::from_parts(base_config(cwd, hooks))
-        .with_backend(backend as Arc<dyn Backend>)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .with_builtin_plugins(PluginSelection::All)
-        .with_default_hook_runner()
-        .build()
-        .expect("build should succeed with the real hook runner wired")
 }
 
 fn request_assembled_rule(id: &str, command: Vec<&str>) -> HookEntry {
@@ -279,7 +242,12 @@ async fn a_configured_script_hook_appends_a_segment_the_real_request_carries() {
         rules: vec![request_assembled_rule("annotator", script)],
     };
     let backend_calls_script = vec![ScriptedTurn::Respond(text_response("done"))];
-    let conway = build_conway(cwd.path(), hooks, backend_calls_script);
+    let conway = test_builder(base_config(cwd.path(), hooks))
+        .with_backend(scripted_backend(backend_calls_script))
+        .with_builtin_plugins(PluginSelection::All)
+        .with_default_hook_runner()
+        .build()
+        .expect("build should succeed with the real hook runner wired");
 
     let handle = conway
         .new_session(conway::SessionSpec::default())
@@ -311,11 +279,14 @@ async fn a_configured_script_hook_appends_a_segment_the_real_request_carries() {
 #[tokio::test]
 async fn no_configured_context_editing_hooks_leaves_a_turn_unaffected() {
     let cwd = TempDir::new().expect("tempdir");
-    let conway = build_conway(
-        cwd.path(),
-        HooksConfig::default(),
-        vec![ScriptedTurn::Respond(text_response("done"))],
-    );
+    let conway = test_builder(base_config(cwd.path(), HooksConfig::default()))
+        .with_backend(scripted_backend(vec![ScriptedTurn::Respond(
+            text_response("done"),
+        )]))
+        .with_builtin_plugins(PluginSelection::All)
+        .with_default_hook_runner()
+        .build()
+        .expect("build should succeed with the real hook runner wired");
     let handle = conway
         .new_session(conway::SessionSpec::default())
         .await

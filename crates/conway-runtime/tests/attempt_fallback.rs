@@ -10,7 +10,7 @@ use conway_core::capabilities::{
     CacheMode, Capabilities, ProbeReport, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::content::{
-    ContentBlock, PermissionClass, Role, SamplingParams, StopReason, ToolCategory, ToolSpec, Usage,
+    ContentBlock, PermissionClass, Role, SamplingParams, ToolCategory, ToolSpec,
 };
 use conway_core::error::{BackendError, RoutingError, RuntimeError};
 use conway_core::event::Event;
@@ -26,7 +26,7 @@ use conway_core::routing::{BreakerKind, BreakerState, Route, RoutingReason};
 use conway_core::segment::{CacheTtl, PromptSegment};
 use conway_runtime::attempt::{AttemptEngine, AttemptRequest};
 use conway_runtime::events::EventBus;
-use conway_testkit::FakeHealth;
+use conway_testkit::{text_response, FakeHealth};
 use futures::future::FutureExt;
 use futures::stream::{self, StreamExt};
 use tokio_util::sync::CancellationToken;
@@ -232,17 +232,6 @@ fn fallback(position: u8) -> RoutingReason {
     RoutingReason::Fallback {
         position,
         after: Vec::new(),
-    }
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
     }
 }
 

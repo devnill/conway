@@ -34,32 +34,16 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
+use conway::test_support::echo_model;
+use conway::test_support::{scripted_backend, test_builder};
 use conway::{Conway, ConwayBuilder, ForkSpec, PluginSelection, SessionHandle, SessionSpec};
 use conway_core::agent::PermissionDecision;
 use conway_core::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
+use conway_core::ids::{BackendId, RoleAlias};
 use conway_core::log::LogRecord;
 use conway_core::ports::{Backend, GenerateResponse, PermissionGate, PluginConfig};
-use conway_testkit::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{text_response, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use tempfile::TempDir;
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
-}
 
 fn read_call(call_id: &str, path: &str) -> ToolCall {
     ToolCall {
@@ -133,20 +117,20 @@ impl PermissionGate for AllowGate {
 /// `cwd ⊆ root`, so a test whose parent session is confined to `root` must
 /// set the parent's cwd inside it. Mirrors `resume_plugin_config.rs`'s
 /// `build_conway_with_plugins`.
-fn build_conway(
+/// A `Conway` over `base_config()` with `cwd` overridden and an optional
+/// `--root`, the two things these tests vary.
+fn conway_at(
     store: Arc<dyn conway_core::ports::SessionStore>,
     script: Vec<ScriptedTurn>,
     cwd: &Path,
     root: Option<&Path>,
 ) -> Conway {
-    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
     let mut config = base_config();
     config.cwd = cwd.to_path_buf();
-    let mut builder = ConwayBuilder::from_parts(config)
-        .with_backend(backend as Arc<dyn Backend>)
+    let mut builder = test_builder(config)
+        .with_backend(scripted_backend(script))
         .with_session_store(store)
         .with_permission_gate(Arc::new(AllowGate))
-        .with_router(fake_router())
         .with_builtin_plugins(PluginSelection::All);
     if let Some(root) = root {
         builder = builder.with_root(root);
@@ -224,7 +208,7 @@ async fn fork_from_keep_alive_child_persists_for_a_second_turn() {
         .with_backend(backend.clone() as Arc<dyn Backend>)
         .with_session_store(store.clone())
         .with_permission_gate(Arc::new(AllowGate))
-        .with_router(fake_router())
+        .with_router(Arc::new(FakeRouter::single(echo_model())))
         .build()
         .expect("build should succeed");
 
@@ -322,7 +306,7 @@ async fn fork_from_with_narrowed_conway_fs_root_refuses_a_read_outside_it() {
     // narrowing (unbounded -> bounded), always accepted by `PluginConfig::
     // narrow` -- the simplest parent that still lets the child's confinement
     // be proven.
-    let conway = build_conway(
+    let conway = conway_at(
         store.clone(),
         vec![
             ScriptedTurn::Respond(text_response("parent ack")),
@@ -418,7 +402,7 @@ async fn fork_from_with_a_conway_fs_root_wider_than_the_parent_is_refused() {
     let store: Arc<dyn conway_core::ports::SessionStore> = Arc::new(FakeStore::new());
     // Parent: confined to `narrow_root` via `with_root`, so its persisted
     // `SessionMeta::plugin_config` carries `conway.fs.root = narrow_root`.
-    let conway = build_conway(
+    let conway = conway_at(
         store.clone(),
         vec![ScriptedTurn::Respond(text_response("parent ack"))],
         &narrow_root,

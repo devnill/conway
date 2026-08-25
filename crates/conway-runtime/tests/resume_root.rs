@@ -21,23 +21,11 @@ use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, Session
 use conway_core::ports::{Backend, Router, SessionStore};
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime, RuntimeDeps};
-use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeRouter, FakeStore,
+    ScriptedBackend, ScriptedTurn,
+};
 use futures::StreamExt;
-
-fn text_response(text: &str) -> conway_core::ports::GenerateResponse {
-    conway_core::ports::GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: conway_core::content::StopReason::EndTurn,
-        usage: conway_core::content::Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            ..Default::default()
-        },
-    }
-}
 
 /// Builds a `Runtime` over the given (possibly already-populated) store, with
 /// its own fresh `ScriptedBackend`/router/event bus -- mirroring a fresh

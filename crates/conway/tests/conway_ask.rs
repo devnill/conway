@@ -53,24 +53,17 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, SessionSpec};
-use conway_core::agent::PermissionDecision;
+use conway::test_support::build_conway;
+use conway::SessionSpec;
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
-use conway_core::ids::{BackendId, ModelId, ModelRef, SeqRange, ToolName};
+use conway_core::ids::{BackendId, SeqRange, ToolName};
 use conway_core::log::{LogRecord, SessionFilter, SubagentMode};
-use conway_core::ports::{Backend, GenerateResponse, SessionStore};
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::ports::{GenerateResponse, SessionStore};
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
 // ---------------------------------------------------------------------
 // Harness (mirrors `ask.rs`'s own helpers)
 // ---------------------------------------------------------------------
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
 
 fn base_config() -> ConwayConfig {
     let mut roles = BTreeMap::new();
@@ -97,28 +90,6 @@ fn base_config() -> ConwayConfig {
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
-    }
-}
-
-fn build_conway(store: Arc<dyn SessionStore>, backend: Arc<dyn Backend>) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        .build()
-        .expect("build should succeed with every port injected")
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
     }
 }
 
@@ -271,7 +242,7 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(store.clone(), backend);
+    let conway = build_conway(base_config(), backend, store.clone());
 
     let handle = conway
         .new_session(SessionSpec::default())

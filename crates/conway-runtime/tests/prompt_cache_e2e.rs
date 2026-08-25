@@ -44,14 +44,17 @@ use conway_core::capabilities::{
     CacheMode, CacheTtl, Capabilities, HeadroomPolicy, ReliabilityTier, StructuredOutput,
     ToolCallSupport,
 };
-use conway_core::content::{ContentBlock, StopReason, Usage};
+use conway_core::content::ContentBlock;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{Backend, GenerateRequest, Router, SessionStore, SubagentHost};
 use conway_core::provenance::Provenance;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
-use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeRouter, FakeStore,
+    ScriptedBackend, ScriptedTurn,
+};
 use futures::StreamExt;
 
 // ---------------------------------------------------------------------
@@ -72,21 +75,6 @@ fn anthropic_like_capabilities() -> Capabilities {
         parallel_tool_calls: true,
         reliability_tier: ReliabilityTier::Verified,
         reasoning: false,
-    }
-}
-
-fn text_response(text: &str) -> conway_core::ports::GenerateResponse {
-    conway_core::ports::GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            ..Default::default()
-        },
     }
 }
 

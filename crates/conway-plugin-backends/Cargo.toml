@@ -51,7 +51,12 @@ schemars = { workspace = true }
 # `openai-compat`/`anthropic` fixtures -- a dev-only cycle, which Cargo
 # supports (dev-dependencies are excluded from the normal build graph a
 # consumer of either crate ever compiles).
-conway = { path = "../conway" }
+# Board item 01M0TV8MSFRHHQ5BNZV3NHZCEW: this crate's tests reach
+# `conway::test_support` (the shared `build_conway`/`test_builder` wiring
+# that used to be hand-rolled per test file), which is behind the facade's
+# off-by-default `test-support` feature. Dev-only: nothing in `src/` may
+# name it.
+conway = { path = "../conway", features = ["test-support"] }
 # `conway_testkit::{FakeGate, FakeStore}` -- the credential-free fake
 # family `tests/builder_end_to_end.rs` uses for every port BESIDES the
 # backend under test. `conway-core` itself is already a pinned dependency

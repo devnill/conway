@@ -60,11 +60,11 @@ use conway_core::agent::PermissionDecision;
 use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
-use conway_core::content::{ContentBlock, SamplingParams, StopReason, Usage};
+use conway_core::content::SamplingParams;
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
-use conway_core::ports::{Backend, GenerateResponse};
+use conway_core::ports::Backend;
 use conway_core::routing::{Route, RoutingReason};
-use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
+use conway_testkit::{text_response, FakeBackend, FakeGate, FakeRouter, FakeStore};
 
 fn caps() -> Capabilities {
     Capabilities {
@@ -75,17 +75,6 @@ fn caps() -> Capabilities {
         max_context_tokens: 100_000,
         reasoning: true,
         reliability_tier: ReliabilityTier::Verified,
-    }
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
     }
 }
 
@@ -165,7 +154,11 @@ fn config_naming_kind_twice(entry_a: &str, entry_b: &str, kind: &str) -> ConwayC
     cfg
 }
 
-fn fake_router_single(id: &str) -> Arc<dyn conway_core::ports::Router> {
+/// DIVERGENT, deliberately: the backend id is a PARAMETER (each test
+/// resolves to a differently-named config-derived backend) and the model
+/// is `"stub-model"`, so this is neither
+/// `conway::test_support::echo_model()` nor a wrapper around it.
+fn router_to(id: &str) -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {
         backend: BackendId::new(id),
         model: ModelId::new("stub-model"),
@@ -253,7 +246,7 @@ async fn factory_built_backend_serves_a_turn() {
     let conway = ConwayBuilder::from_parts(cfg)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router_single("stub-instance"))
+        .with_router(router_to("stub-instance"))
         .with_backend_factory(factory)
         .build()
         .expect("build must succeed: the registered factory is the build's only backend source");
@@ -305,7 +298,7 @@ async fn injected_backend_wins_over_factory_built_backend_sharing_its_id() {
     let conway = ConwayBuilder::from_parts(cfg)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router_single("shared-id"))
+        .with_router(router_to("shared-id"))
         .with_backend_factory(factory)
         .with_backend(injected)
         .build()
@@ -360,7 +353,7 @@ fn duplicate_factory_kind_is_a_build_error_before_either_build_runs() {
     let result = ConwayBuilder::from_parts(cfg)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router_single("a"))
+        .with_router(router_to("a"))
         .with_backend_factory(factory_a)
         .with_backend_factory(factory_b)
         .build();
@@ -404,7 +397,7 @@ fn factory_build_error_surfaces_as_build_error() {
     let result = ConwayBuilder::from_parts(cfg)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_router(fake_router_single("irrelevant"))
+        .with_router(router_to("irrelevant"))
         .with_backend_factory(factory)
         .build();
 

@@ -150,7 +150,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{build_conway_with_echo_backend, drain_and_apply, minimal_cli};
+    use super::super::fixtures::{drain_and_apply, echo_conway, minimal_cli};
     use super::App;
     use crate::tui::state::Entry;
 
@@ -162,7 +162,7 @@ mod tests {
     /// -- not `Entry::Notice`, and not string-matched.
     #[tokio::test]
     async fn focus_switch_replays_a_spawned_childs_prompt_as_a_user_turn() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await
@@ -221,7 +221,7 @@ mod tests {
     /// just its absence of a crash.
     #[tokio::test]
     async fn focus_switch_shows_real_model_and_ctx_total_with_no_live_turn_required() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[])
             .await

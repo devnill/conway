@@ -89,31 +89,20 @@ use conway::config::schema::{
     ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
     ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, SessionSpec};
-use conway_core::agent::{PermissionDecision, ResultStatus};
+use conway::test_support::test_builder_without_router;
+use conway::SessionSpec;
+use conway_core::agent::ResultStatus;
 use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
-use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::ids::{BackendId, RoleAlias};
-use conway_core::ports::{Backend, GenerateResponse, SessionStore};
-use conway_testkit::{FakeGate, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::ports::SessionStore;
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
 /// The one model this fixture's role chain names. Its window
 /// (`max_context_tokens`) is the only knob that differs between the
 /// rejection test and its negative control.
 const MODEL: &str = "fake/tiny-model";
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
-}
 
 /// Every capability EXCEPT the context window set generously — see the
 /// module doc's "headroom-only, not mixed" note: this is what keeps the
@@ -199,32 +188,6 @@ fn config_naming(headroom: u32, metadata_path: PathBuf) -> ConwayConfig {
     }
 }
 
-/// Wires a `Conway` exactly as a real embedder would: `ConwayBuilder`
-/// compiles its OWN `DeclarativeRouter` from `config` (no `.with_router`
-/// call anywhere in this file) — the real seam this item exists to test.
-fn build_conway(
-    config: ConwayConfig,
-    backend: Arc<dyn Backend>,
-    store: Arc<dyn SessionStore>,
-) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    ConwayBuilder::from_parts(config)
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        // `conway` no longer
-        // compiles either dialect in, so this file's config-derived
-        // `kind = "openai-compat"` entry (overwritten by the injected
-        // `backend` above, but still resolved by `build()` before that
-        // overwrite happens) needs a registered factory.
-        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
-        .build()
-        .expect(
-            "build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine wiring \
-             from valid config",
-        )
-}
-
 #[tokio::test]
 async fn oversized_context_is_refused_before_the_backend_is_ever_called() {
     let dir = support::unique_temp_dir("context-admission-seam-reject");
@@ -243,7 +206,20 @@ async fn oversized_context_is_refused_before_the_backend_is_ever_called() {
         .with_capabilities(caps(1)),
     );
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(config, backend.clone(), store);
+    let conway = test_builder_without_router(config)
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        // `conway` no longer
+        // compiles either dialect in, so this file's config-derived
+        // `kind = "openai-compat"` entry (overwritten by the injected
+        // `backend` above, but still resolved by `build()` before that
+        // overwrite happens) needs a registered factory.
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
+        .build()
+        .expect(
+            "build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine wiring \
+             from valid config",
+        );
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -300,7 +276,20 @@ async fn widening_the_model_window_admits_the_identical_request_and_calls_the_ba
             .with_capabilities(caps(10_000_000)),
     );
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let conway = build_conway(config, backend.clone(), store);
+    let conway = test_builder_without_router(config)
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        // `conway` no longer
+        // compiles either dialect in, so this file's config-derived
+        // `kind = "openai-compat"` entry (overwritten by the injected
+        // `backend` above, but still resolved by `build()` before that
+        // overwrite happens) needs a registered factory.
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
+        .build()
+        .expect(
+            "build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine wiring \
+             from valid config",
+        );
 
     let handle = conway
         .new_session(SessionSpec::default())

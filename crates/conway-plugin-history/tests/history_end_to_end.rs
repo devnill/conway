@@ -34,11 +34,11 @@ use conway::config::schema::{
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
 use conway::plugin::{Command, CommandCtx, CommandOutcome, Plugin as _};
-use conway::{Conway, ConwayBuilder, LogSeq, PermissionGate};
-use conway_core::agent::PermissionDecision;
-use conway_core::ids::{BackendId, ModelId, RoleAlias};
-use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
+use conway::LogSeq;
+use conway_core::ids::{BackendId, RoleAlias};
+use conway_testkit::FakeBackend;
 
+use conway::test_support::test_builder;
 use conway_plugin_history::{
     HistoryPlugin, COMMAND_NAME_CHECKOUT, COMMAND_NAME_MASK, COMMAND_NAME_REWIND, PLUGIN_ID,
 };
@@ -75,34 +75,19 @@ fn base_config() -> ConwayConfig {
     }
 }
 
-/// A real, fully-faked `Conway` (no network, no live provider) with
-/// [`HistoryPlugin`] attached exactly the way a library embedder would --
-/// `ConwayBuilder::with_plugin`, the identical call
-/// `crates/conway-cli/src/first_party_plugins.rs` makes internally.
-fn build_conway() -> Conway {
-    let backend: Arc<dyn conway::Backend> = Arc::new(FakeBackend::echo(BackendId::new("fake")));
-    let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(Arc::new(FakeStore::new()))
-        .with_permission_gate(gate)
-        .with_router(router)
-        .with_plugin(Arc::new(HistoryPlugin))
-        .build()
-        .expect("build should succeed with HistoryPlugin installed and every port injected")
-}
-
 /// A real `Conway` build succeeds with this plugin installed -- the same
 /// "no stub, no special case" property `PluginManifest` validation would
 /// otherwise catch (a malformed manifest, a tool-name collision) fails
 /// `build()` outright rather than silently.
 #[test]
 fn conway_builds_with_history_plugin_installed() {
-    let _conway = build_conway();
+    let _conway = test_builder(base_config())
+        .with_backend(
+            Arc::new(FakeBackend::echo(BackendId::new("fake"))) as Arc<dyn conway::Backend>
+        )
+        .with_plugin(Arc::new(HistoryPlugin))
+        .build()
+        .expect("build should succeed with HistoryPlugin installed and every port injected");
 }
 
 /// The plugin's manifest id matches the published constant a config author

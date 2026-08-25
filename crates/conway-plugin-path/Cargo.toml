@@ -30,6 +30,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+# Board item 01M0TV8MSFRHHQ5BNZV3NHZCEW: this crate's tests reach
+# `conway::test_support` (the shared `build_conway`/`test_builder` wiring
+# that used to be hand-rolled per test file), which is behind the facade's
+# off-by-default `test-support` feature. Dev-only: nothing in `src/` may
+# name it.
+conway = { path = "../conway", features = ["test-support"] }
 # Test-only: builds a real, in-memory `Conway` (fake backend/gate/router,
 # real disk-backed `FsPathStore` under a tempdir) to drive this plugin's
 # tool through real turns end to end -- the same precedent

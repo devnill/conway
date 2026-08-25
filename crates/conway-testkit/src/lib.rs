@@ -5,6 +5,10 @@
 //! (`PathStore`), `FakeSessionDiscoveryHost` (`SessionDiscoveryHost`), and
 //! `CollectingEventSink` (`EventSink`).
 //!
+//! Plus the response constructors those doubles get scripted with —
+//! `text_response` and `text_response_with_stub_usage` — which 52 test
+//! files across five crates hand-rolled before they moved here.
+//!
 //! These used to live inside `conway-core` itself, behind `feature =
 //! "fakes"` (board item 01KZVYS0E0H0SKPZ9BM9WYXHTB labeled that gap; board
 //! item 01KZVYWNA24EYMPVW3NPGBW51M, "Extract conway-testkit", is what moved
@@ -139,6 +143,49 @@ impl<T: Unpin> futures_core::Stream for VecStream<T> {
         _cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Option<T>> {
         core::task::Poll::Ready(self.get_mut().items.pop_front())
+    }
+}
+
+// ---------------------------------------------------------------------
+// Response constructors
+// ---------------------------------------------------------------------
+
+/// A single plain-text assistant turn that ends the turn, reporting no
+/// token usage at all.
+///
+/// This was hand-rolled, identically, in 39 test files across five crates
+/// before it moved here. Use it wherever a scripted turn just needs to say
+/// something; use `text_response_with_stub_usage` instead where the test
+/// asserts on token accounting, and build the `GenerateResponse` literal
+/// by hand where anything else about it matters.
+pub fn text_response(text: &str) -> GenerateResponse {
+    GenerateResponse {
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        tool_calls: vec![],
+        stop: StopReason::EndTurn,
+        usage: Usage::default(),
+    }
+}
+
+/// [`text_response`] carrying a fixed, non-zero stub usage: 10 input
+/// tokens, 5 output tokens, everything else zero.
+///
+/// A separate function rather than a parameter on [`text_response`]
+/// because these exact numbers are what the runtime's token-accounting
+/// suites assert against — 13 test files hand-rolled this same pair, and
+/// they are not free to change independently of those assertions. A test
+/// that needs some other usage should write the `GenerateResponse` literal
+/// out, so the numbers it depends on are visible where they are used.
+pub fn text_response_with_stub_usage(text: &str) -> GenerateResponse {
+    GenerateResponse {
+        usage: Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Default::default()
+        },
+        ..text_response(text)
     }
 }
 

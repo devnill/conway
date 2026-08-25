@@ -31,7 +31,6 @@ use std::time::Duration;
 
 use conway_core::agent::{Budget, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec};
 use conway_core::capabilities::HeadroomPolicy;
-use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::SessionMeta;
@@ -40,7 +39,10 @@ use conway_core::provenance::Provenance;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_runtime::tree::{AgentNode, AgentTree};
-use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeRouter, FakeStore,
+    ScriptedBackend, ScriptedTurn,
+};
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
@@ -227,21 +229,6 @@ async fn snapshot_projects_ephemeral_flag_per_node() {
 // ---------------------------------------------------------------------
 // End-to-end `conway_fork`: both events `ephemeral: false`
 // ---------------------------------------------------------------------
-
-fn text_response(text: &str) -> conway_core::ports::GenerateResponse {
-    conway_core::ports::GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            ..Default::default()
-        },
-    }
-}
 
 fn build_runtime(turns: usize) -> Arc<Runtime> {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());

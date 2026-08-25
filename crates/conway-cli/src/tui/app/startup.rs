@@ -406,7 +406,7 @@ mod tests {
     use conway_core::ids::{BackendId, ModelId};
     use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
-    use super::super::fixtures::{build_conway_with_echo_backend, minimal_cli};
+    use super::super::fixtures::{echo_conway, minimal_cli};
     use super::App;
     use crate::tui::state::Entry;
 
@@ -466,7 +466,7 @@ mod tests {
     /// backed `run()` call exists here today).
     #[tokio::test]
     async fn app_new_populates_the_initial_session_head_seq() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let app = App::new(&cli, &conway, &[])
             .await
@@ -484,7 +484,7 @@ mod tests {
     /// nothing is on yet.
     #[tokio::test]
     async fn app_new_populates_the_plugin_browser_with_every_candidate_off_by_default() {
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let cli = minimal_cli();
         let app = App::new(&cli, &conway, &[])
             .await
@@ -526,7 +526,7 @@ mod tests {
     async fn app_new_marks_a_configured_plugin_as_installed_in_the_browser() {
         let mut config = super::super::fixtures::base_config();
         config.plugins.install = vec![conway_plugin_memory::PLUGIN_ID.to_string()];
-        let conway = super::super::fixtures::build_conway_with_config(config);
+        let conway = super::super::fixtures::conway_over_config(config);
         let cli = minimal_cli();
         let app = App::new(&cli, &conway, &[])
             .await
@@ -577,7 +577,7 @@ mod tests {
         )
         .expect("write permissions.json");
 
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let mut cli = minimal_cli();
         cli.cwd = Some(project.path().to_path_buf());
         let app = App::new(&cli, &conway, &[])
@@ -641,7 +641,7 @@ mod tests {
         )
         .expect("write permissions.json");
 
-        let conway = build_conway_with_echo_backend();
+        let conway = echo_conway();
         let mut cli = minimal_cli();
         cli.cwd = Some(project.path().to_path_buf());
         let app = App::new(&cli, &conway, &[])
@@ -696,7 +696,7 @@ mod tests {
     /// own doc: "Empty when this `Conway` was built via
     /// `ConwayBuilder::from_parts`, which bypasses `load` entirely", so
     /// this is the one test in this module that cannot reuse
-    /// `build_conway_with_echo_backend`. `models.metadata_path` is written
+    /// `echo_conway`. `models.metadata_path` is written
     /// as an ABSOLUTE path so its resolution never depends on this test
     /// process's current directory (`config::merge::resolve_metadata_path`
     /// only joins a RELATIVE path onto the load's own `cwd`). The

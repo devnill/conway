@@ -30,19 +30,22 @@ use conway::agents::load_agent_defs;
 use conway::skills::load_skill_defs;
 use conway_core::agent::{AgentDefRef, Budget, PermissionDecision};
 use conway_core::capabilities::{CacheMode, HeadroomPolicy};
-use conway_core::content::{ContentBlock, StopReason, Usage};
+use conway_core::content::ContentBlock;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef};
 use conway_core::ids::{LogSeq, SessionId};
 use conway_core::log::LogRecord;
-use conway_core::ports::{Backend, GenerateResponse, HealthRegistry, Plugin, Router, SessionStore};
+use conway_core::ports::{Backend, HealthRegistry, Plugin, Router, SessionStore};
 use conway_core::provenance::Provenance;
 use conway_core::segment::CacheTtl;
 use conway_runtime::context::path::path_from_legacy;
 use conway_runtime::context::{ContextBuilder, ContextInput, SkillFragment};
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
-use conway_testkit::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeRouter, FakeStore,
+    ScriptedBackend, ScriptedTurn,
+};
 use futures::StreamExt;
 
 /// The skill body the fixture writes, exactly as `normalize_body` leaves it
@@ -88,21 +91,6 @@ fn write_fixtures() -> PathBuf {
     .expect("write skilled.md");
 
     dir
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            ..Default::default()
-        },
-    }
 }
 
 /// Builds a real `Runtime` with `skills` and `agent_defs` both produced by

@@ -34,13 +34,12 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, ModelRef, PermissionGate};
+use conway::test_support::build_conway_with_echo_backend;
+use conway::ModelRef;
 use conway_cli::cli::{Cli, OutputFormat, PermissionMode};
 use conway_cli::exit::ExitCode;
 use conway_cli::tui::app::App;
-use conway_core::agent::PermissionDecision;
-use conway_core::ids::{BackendId, ModelId};
-use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
+use conway_testkit::FakeStore;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -194,7 +193,7 @@ fn session_continuity_flags_are_rejected_not_silently_ignored() {
 /// starting the TUI actually takes.
 #[tokio::test]
 async fn session_flags_are_rejected_by_app_new_not_silently_ignored() {
-    let conway = build_conway_with_echo_backend();
+    let conway = build_conway_with_echo_backend(base_config(), Arc::new(FakeStore::new()));
     let mut cli = minimal_cli();
     cli.resume = Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string());
 
@@ -231,24 +230,4 @@ fn base_config() -> ConwayConfig {
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
     }
-}
-
-/// Mirrors `tui::app`'s own in-crate test helper of the same name (private
-/// to that module, so duplicated here rather than shared -- same pattern
-/// `routes_explain_injected_router.rs`'s own `config_with_role` doc already
-/// explains).
-fn build_conway_with_echo_backend() -> Conway {
-    let backend: Arc<dyn conway::Backend> = Arc::new(FakeBackend::echo(BackendId::new("fake")));
-    let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }));
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(Arc::new(FakeStore::new()))
-        .with_permission_gate(gate)
-        .with_router(router)
-        .build()
-        .expect("build should succeed with every port injected")
 }

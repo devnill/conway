@@ -781,3 +781,18 @@ pub use conway_core::routing::ModelOverrides;
 pub mod testkit {
     pub use conway_testkit::*;
 }
+
+/// Facade-level test scaffolding -- the one place a `Conway` is assembled
+/// for a test -- behind the non-default `test-support` feature.
+///
+/// `conway::testkit` (above) forwards the port doubles; this forwards the
+/// *wiring* of those doubles into a built `Conway`, which no core-only
+/// crate can offer because none of them can see `ConwayBuilder`. Board
+/// item 01M0TV8MSFRHHQ5BNZV3NHZCEW: a local `build_conway` helper was
+/// hand-rolled in 46 test files across seven crates for exactly that
+/// reason.
+///
+/// Off by default for the same reason `testkit` is, and it implies
+/// `testkit`: it is built out of those doubles.
+#[cfg(feature = "test-support")]
+pub mod test_support;

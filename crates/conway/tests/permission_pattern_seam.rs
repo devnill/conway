@@ -33,30 +33,12 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, PatternRule, PluginSelection, Rule, SessionSpec};
+use conway::test_support::build_conway_with_builtins;
+use conway::{PatternRule, Rule, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
-use conway_core::content::ContentBlock;
-use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias};
-use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
-use conway_testkit::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
-
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
-
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: conway_core::content::StopReason::EndTurn,
-        usage: conway_core::content::Usage::default(),
-    }
-}
+use conway_core::ids::{AgentId, BackendId, RoleAlias};
+use conway_core::ports::{GenerateResponse, PermissionGate};
+use conway_testkit::{text_response, ScriptedBackend, ScriptedTurn};
 
 /// A single scripted `bash` call, followed immediately by a final text
 /// response once the tool step completes.
@@ -133,21 +115,6 @@ impl PermissionGate for RecordingGate {
     }
 }
 
-fn build_conway(backend: Arc<dyn Backend>, gate: Arc<dyn PermissionGate>) -> Conway {
-    let store = Arc::new(FakeStore::new());
-    ConwayBuilder::from_parts(base_config())
-        .with_backend(backend)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_router(fake_router())
-        // (bash ships on by default and cannot be declined):
-        // this file drives the REAL `bash` tool end to end, so it must now
-        // opt in explicitly -- the facade's own default excludes it.
-        .with_builtin_plugins(PluginSelection::All)
-        .build()
-        .expect("build should succeed with the real builtin `bash` tool registered")
-}
-
 /// Runs one `bash` call end to end (a fresh session, one prompt, one
 /// scripted tool call, one final text response) and returns the requests
 /// the gate actually saw.
@@ -159,7 +126,11 @@ async fn run_one_bash_call(gate: Arc<RecordingGate>, command: &str) -> Vec<Permi
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(backend, gate.clone() as Arc<dyn PermissionGate>);
+    let conway = build_conway_with_builtins(
+        base_config(),
+        backend,
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
 
     conway.grant_permission_pattern(
         PatternRule::parse("bash:git status").expect("valid rule"),
@@ -350,7 +321,11 @@ async fn a_read_wildcard_grant_actually_grants_through_the_real_render_seam() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(backend, gate.clone() as Arc<dyn PermissionGate>);
+    let conway = build_conway_with_builtins(
+        base_config(),
+        backend,
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
 
     conway.grant_permission_pattern(
         PatternRule::parse("read:*").expect("valid rule"),
@@ -424,7 +399,11 @@ async fn run_one_call_with_rule(
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = build_conway(backend, gate.clone() as Arc<dyn PermissionGate>);
+    let conway = build_conway_with_builtins(
+        base_config(),
+        backend,
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
 
     let installed = conway.grant_permission_rule(rule, scope, AgentId::new());
     assert!(

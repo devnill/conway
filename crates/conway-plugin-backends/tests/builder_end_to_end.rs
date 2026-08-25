@@ -29,11 +29,10 @@ use conway::config::schema::{
     ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
     ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, SessionSpec};
-use conway_core::agent::PermissionDecision;
+use conway::test_support::test_builder_without_router;
+use conway::SessionSpec;
 use conway_core::ids::RoleAlias;
 use conway_plugin_backends::OpenAiCompatBackendFactory;
-use conway_testkit::{FakeGate, FakeStore};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -81,25 +80,6 @@ fn config(base_url: String) -> ConwayConfig {
     }
 }
 
-/// Wires a `Conway` exactly as a library embedder linking this crate
-/// directly would: `ConwayBuilder::with_backend_factory(Arc::new(
-/// OpenAiCompatBackendFactory))`, the same call `conway-cli`'s own
-/// `first_party_plugins::backend_bundle` makes internally for the shipped
-/// binary -- no `.with_backend` injection anywhere in this file.
-fn build_conway(config: ConwayConfig) -> Conway {
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let store = Arc::new(FakeStore::new());
-    ConwayBuilder::from_parts(config)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .with_backend_factory(Arc::new(OpenAiCompatBackendFactory))
-        .build()
-        .expect(
-            "build should succeed: a real config-derived openai-compat backend, resolved \
-             through the registered OpenAiCompatBackendFactory",
-        )
-}
-
 /// Renders `events` as an SSE body, one `data:` line per event, terminated
 /// by `data: [DONE]` -- mirrors `tests/openai_compat_stream.rs`'s own
 /// `sse_body` helper. Real SSE, not a single JSON document, is required
@@ -137,7 +117,13 @@ async fn factory_installed_backend_completes_a_real_turn_against_a_loopback_serv
         .mount(&server)
         .await;
 
-    let conway = build_conway(config(server.uri()));
+    let conway = test_builder_without_router(config(server.uri()))
+        .with_backend_factory(Arc::new(OpenAiCompatBackendFactory))
+        .build()
+        .expect(
+            "build should succeed: a real config-derived openai-compat backend, resolved \
+             through the registered OpenAiCompatBackendFactory",
+        );
 
     let handle = conway
         .new_session(SessionSpec::default())

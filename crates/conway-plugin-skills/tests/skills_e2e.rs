@@ -45,15 +45,15 @@ use conway::config::schema::{
     PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
 };
 use conway::plugin::Plugin;
-use conway::{ConwayBuilder, SessionSpec, SkillDef};
-use conway_core::agent::PermissionDecision;
+use conway::{SessionSpec, SkillDef};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, SeqRange, ToolName};
+use conway_core::ids::{BackendId, RoleAlias, SeqRange, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, SessionStore};
 use conway_core::provenance::Provenance;
-use conway_testkit::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
+use conway::test_support::test_builder;
 use conway_plugin_skills::{SkillsPlugin, PLUGIN_ID, TOOL_NAME};
 
 /// The skill body the fixture writes, exactly as `normalize_body` leaves
@@ -110,13 +110,6 @@ fn write_fixtures() -> PathBuf {
     dir
 }
 
-fn fake_router() -> Arc<dyn conway_core::ports::Router> {
-    Arc::new(FakeRouter::single(ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }))
-}
-
 fn base_config(cwd: PathBuf) -> ConwayConfig {
     let mut roles = BTreeMap::new();
     roles.insert(
@@ -153,17 +146,6 @@ fn base_config(cwd: PathBuf) -> ConwayConfig {
     }
 }
 
-fn text_response(text: &str) -> GenerateResponse {
-    GenerateResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
-        tool_calls: vec![],
-        stop: StopReason::EndTurn,
-        usage: Usage::default(),
-    }
-}
-
 fn tool_call_response(call_id: &str, tool: &str, arguments: serde_json::Value) -> GenerateResponse {
     GenerateResponse {
         content: vec![],
@@ -185,18 +167,15 @@ fn tool_call_response(call_id: &str, tool: &str, arguments: serde_json::Value) -
 /// The plugin's `context_hooks()` contribution is installed by the builder
 /// itself (no separate `with_context_hook` call) -- the packaging surface
 /// this item exists to prove.
-fn build_conway(
+fn skills_conway(
     scratch: &std::path::Path,
     backend: Arc<ScriptedBackend>,
     install: bool,
 ) -> (conway::Conway, Arc<FakeStore>) {
     let store = Arc::new(FakeStore::new());
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let mut builder = ConwayBuilder::from_parts(base_config(scratch.to_path_buf()))
+    let mut builder = test_builder(base_config(scratch.to_path_buf()))
         .with_backend(backend)
-        .with_session_store(store.clone())
-        .with_permission_gate(gate)
-        .with_router(fake_router());
+        .with_session_store(store.clone());
     if install {
         let plugin = SkillsPlugin::from_dir(&scratch.join(".conway").join("skills"))
             .expect("SkillsPlugin::from_dir loads the on-disk skill");
@@ -267,7 +246,7 @@ async fn skill_segment_is_narrowed_to_a_one_line_index_entry_end_to_end() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("ok"))])
             .with_id(BackendId::new("fake")),
     );
-    let (conway_with, _store) = build_conway(&scratch, backend_with.clone(), true);
+    let (conway_with, _store) = skills_conway(&scratch, backend_with.clone(), true);
     one_turn(&conway_with, session_spec_naming_example_skill()).await;
 
     let reqs_with = backend_with.calls();
@@ -306,7 +285,7 @@ async fn skill_segment_is_narrowed_to_a_one_line_index_entry_end_to_end() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("ok"))])
             .with_id(BackendId::new("fake")),
     );
-    let (conway_without, _store) = build_conway(&scratch, backend_without.clone(), false);
+    let (conway_without, _store) = skills_conway(&scratch, backend_without.clone(), false);
     one_turn(&conway_without, session_spec_naming_example_skill()).await;
 
     let reqs_without = backend_without.calls();
@@ -344,7 +323,7 @@ async fn read_skill_returns_the_full_body_on_invoke_end_to_end() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let (conway, store) = build_conway(&scratch, backend, true);
+    let (conway, store) = skills_conway(&scratch, backend, true);
     let store: Arc<dyn SessionStore> = store;
 
     let handle = conway
@@ -408,7 +387,7 @@ async fn read_skill_for_an_unknown_name_returns_a_model_visible_error_not_a_cras
         ])
         .with_id(BackendId::new("fake")),
     );
-    let (conway, store) = build_conway(&scratch, backend, true);
+    let (conway, store) = skills_conway(&scratch, backend, true);
     let store: Arc<dyn SessionStore> = store;
 
     let handle = conway

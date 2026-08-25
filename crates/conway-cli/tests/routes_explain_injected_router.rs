@@ -25,12 +25,11 @@ use conway::config::schema::{
     ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
     ToolsConfig,
 };
-use conway::{Conway, ConwayBuilder, PermissionGate};
+use conway::test_support::test_builder;
 use conway_cli::commands::routes::{run, RoutesAction, RoutesArgs};
 use conway_cli::exit::ExitCode;
-use conway_core::agent::PermissionDecision;
-use conway_core::ids::{BackendId, ModelId};
-use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
+use conway_core::ids::BackendId;
+use conway_testkit::FakeBackend;
 
 /// A `ConwayConfig` declaring `role` (with a real chain entry) plus
 /// `"empty-chain"` (present in `[roles]` but with an EMPTY chain), otherwise
@@ -95,33 +94,6 @@ fn config_with_role(role: &str) -> ConwayConfig {
     }
 }
 
-/// A fully in-memory `Conway` built with every port injected, `router`
-/// included -- `ConwayBuilder::build` therefore leaves `router_explain:
-/// None` (`builder.rs`, step 7), which is exactly the case under test:
-/// `Conway::explain_routing` has no concrete `DeclarativeRouter` to project
-/// through and must fall back to `conway_core::routing::MinimalRouter`.
-fn build_conway(role: &str) -> Conway {
-    let backend: Arc<dyn conway::Backend> = Arc::new(FakeBackend::echo(BackendId::new("fake")));
-    let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-    let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
-        backend: BackendId::new("fake"),
-        model: ModelId::new("echo-model"),
-    }));
-
-    ConwayBuilder::from_parts(config_with_role(role))
-        .with_backend(backend)
-        .with_session_store(Arc::new(FakeStore::new()))
-        .with_permission_gate(gate)
-        .with_router(router)
-        // `conway` no longer
-        // compiles the `"fake"` entry's default `kind = "anthropic"` in
-        // (overwritten by the injected `FakeBackend` above, but still
-        // resolved by `build()` before that overwrite happens).
-        .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
-        .build()
-        .expect("build should succeed with every port injected")
-}
-
 fn explain_args(role: &str) -> RoutesArgs {
     RoutesArgs {
         action: RoutesAction::Explain {
@@ -170,7 +142,17 @@ async fn capture_stderr<F: std::future::Future<Output = R>, R>(fut: F) -> (R, St
 #[cfg(unix)]
 #[tokio::test]
 async fn injected_router_explain_stays_honest_for_configured_and_unknown_roles() {
-    let conway = build_conway("primary");
+    let conway = test_builder(config_with_role("primary"))
+        .with_backend(
+            Arc::new(FakeBackend::echo(BackendId::new("fake"))) as Arc<dyn conway::Backend>
+        )
+        // `conway` no longer
+        // compiles the `"fake"` entry's default `kind = "anthropic"` in
+        // (overwritten by the injected `FakeBackend` above, but still
+        // resolved by `build()` before that overwrite happens).
+        .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
+        .build()
+        .expect("build should succeed with every port injected");
 
     // A configured role: `Conway::explain_routing` must fall back to
     // `MinimalRouter`'s honest degenerate report, not the old
