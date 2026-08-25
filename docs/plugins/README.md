@@ -75,6 +75,24 @@ omitting the id. `conway.routing` installs the same way but is resolved by
 `backend_bundle()` — both outside `bundle()` itself, so both are outside
 this section's rule; see [`docs/routing.md`](../routing.md) for the former.
 
+**What `[plugins].install` decides, and what it does not.** Naming an id
+here decides *whether* that plugin runs; nothing here decides *how* it
+behaves once it does. Every id below ships with an opinionated default and
+no `settings.json` field of its own — `PluginsConfig` accepts `install`
+plus the backends exception and rejects any other key outright
+(`#[serde(deny_unknown_fields)]`), so the absence is not something waiting
+to be filled in later. Per-agent plugin configuration is a real, separate
+mechanism (`conway_core::ports::PluginConfig`, narrowed down a subagent
+tree via `Plugin::narrowable_keys`, `conway.fs`'s `root` key its one
+production consumer today), but it is reachable only from embedding code,
+deliberately, for this first slice — `[S1.5]`, cited at
+`crates/conway-tools/src/subagent/tools.rs` and across
+`crates/conway/src/subagent_spec.rs`. `first_party_plugins::bundle()`'s own
+module doc makes the matching claim from the install side: it is "a worked
+example, not a commitment to any of its members individually" — the list
+below decides which plugins ship, not what an operator may tune about any
+one of them from outside code.
+
 Nine capabilities beyond the mechanism itself now ship, each installable
 with a one-line `settings.json` edit and no rebuild:
 
@@ -109,11 +127,11 @@ with a one-line `settings.json` edit and no rebuild:
   than 8 turns, keeping context small as a session grows long. Fully wired
   into the shipped binary, same footing as the four above with dedicated
   pages — no dedicated page in this set yet; see `conway-plugin-trim`'s own
-  crate-level doc for the full design, including why the 8-turn window is a
-  fixed constant, not a `settings.json` knob: it is a curation heuristic an
-  operator has no feedback loop to tune, and no other first-party plugin
-  threads a `settings.json` scalar into an analogous per-plugin config
-  value either.
+  crate-level doc for the full design. The 8-turn window is an instance of
+  the rule stated above, not an exception argued separately: no
+  `settings.json` field reaches it, and that crate's own doc adds the one
+  fact specific to this constant — it is a curation heuristic an operator
+  has no feedback loop to tune, not a budget.
 - `conway.history` — `/conway.history.rewind <seq>`/`.mask`/`.checkout`:
   forks the calling session at a sequence number, masks a record out of
   future context, or checks out a prior session as the active one. No

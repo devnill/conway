@@ -759,6 +759,22 @@ Several already have a plausible answer written and shipped as a
 you install if you want it. What matters is that you took it, rather than
 discovering later that it had been applied on your behalf.
 
+Taking one is a different question from tuning it. A first-party plugin
+ships an opinionated default and no `settings.json` field of its own —
+`[plugins].install` decides *whether* it runs, never *how* it behaves once
+it does, and `first_party_plugins::bundle()`'s own module doc says the
+matching thing from the install side: it is "a worked example, not a
+commitment to any of its members individually," a statement about which
+plugins ship, not about what you may reconfigure inside one from outside
+code. The mechanism that exists below that tier,
+`conway_core::ports::PluginConfig` narrowed down a subagent tree via
+`Plugin::narrowable_keys`, is an embedder surface, deliberately, for this
+first slice (`[S1.5]`) — no model-invoked tool and no CLI flag reaches it,
+and no first-party plugin's own tuning constant is threaded through it
+either. Wanting a different answer than the shipped one still means what
+it always has: fork the plugin, or construct it yourself with the config
+you want and hand it to `ConwayBuilder::with_plugin`.
+
 **What to forget when context fills.** There is no automatic compaction. Nothing
 is dropped, rewritten, or summarized behind your back, because a compactor
 encodes a guess about what your work can afford to lose. The first answer is

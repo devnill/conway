@@ -64,30 +64,30 @@
 //!
 //! `DEFAULT_KEEP_TURNS` is not reachable from `settings.json` -- installing
 //! `"conway.trim"` always gets the 8-turn window. Considered and declined,
-//! not an oversight:
+//! not an oversight, and the general reason lives one level up rather than
+//! being re-argued here: `docs/plugins/README.md`'s "What
+//! `[plugins].install` decides, and what it does not" paragraph and
+//! `PHILOSOPHY.md` §6 state it once -- a first-party plugin ships an
+//! opinionated default and no `settings.json` field of its own,
+//! `[plugins].install` decides whether one runs rather than how, and the
+//! one config surface below that tier
+//! (`conway_core::ports::PluginConfig`/`Plugin::narrowable_keys`) is an
+//! embedder-only mechanism for a different problem (`[S1.5]`) -- narrowing
+//! what a CHILD agent may do relative to its parent, not a channel for an
+//! operator to name a top-level number.
 //!
-//! 1. **It is a curation heuristic, not a policy.** Nothing this plugin
-//!    curates is a choice with a right answer an operator can state (unlike,
-//!    say, which memory directory to use, or which skills to load) -- it is
-//!    "how aggressively should stale tool output be dropped", a tuning knob
-//!    an operator has no feedback loop to evaluate. Exposing it invites
-//!    fiddling with a number nobody can tell they got right.
-//! 2. **The closest first-party precedent already declined the analogous
-//!    knob.** `conway_plugin_memory::MemoryConfig`'s `max_memories`/
-//!    `max_bytes` are the same shape of problem -- a numeric injection
-//!    budget for a curation-adjacent mechanism -- and `conway-cli`'s
-//!    `first_party_plugins::bundle` constructs that `MemoryConfig` with
-//!    `Default::default()` unconditionally today: no `settings.json` field
-//!    reaches it either. Giving `conway.trim` a knob its closer sibling
-//!    does not have would be a new, one-off precedent, not a followed one.
-//! 3. **There is no general "thread a `settings.json` scalar into a
-//!    first-party plugin's config" mechanism to follow.** The one config
-//!    surface `conway_core::ports::PluginConfig`/`Plugin::narrowable_keys`
-//!    provides is a shrink-only override carried down a subagent hierarchy
-//!    from a value a caller already set at the root (`conway-tools`' `fs`
-//!    plugin is its only first-party user) -- built for a different problem
-//!    (bounding what a child agent can do relative to its parent), not for
-//!    an operator naming a top-level number in `settings.json`.
+//! What is specific to this window, on top of that general rule: even
+//! where a `settings.json` field could reach a first-party plugin, this
+//! constant would be a poor candidate for it. It is a curation heuristic,
+//! not a budget -- nothing this plugin curates is a choice with a right
+//! answer an operator can state (unlike, say, which memory directory to
+//! use, or which skills to load); it is "how aggressively should stale
+//! tool output be dropped", a number with no feedback loop an operator can
+//! evaluate it against. `conway_plugin_memory::MemoryConfig`'s
+//! `max_memories`/`max_bytes` are the nearest first-party comparison -- an
+//! actual per-turn injection budget, not a heuristic -- and still land on
+//! the same no-knob answer today (`first_party_plugins::bundle` constructs
+//! it with `Default::default()` unconditionally).
 //!
 //! An embedder who genuinely needs a different window keeps the reachable
 //! path this crate always had: constructing `TrimPlugin::with_keep_turns`
