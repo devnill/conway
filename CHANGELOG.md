@@ -48,11 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal call sites across the workspace). `ToolCtx` gains a `capabilities:
   CapabilityCallHandle` field, documented as the one handle on that struct
   that reaches ANOTHER PLUGIN rather than a host service; `conway-runtime`'s
-  one production construction site (`tools::runner`) now binds it (`noop`,
-  bound to the calling plugin's own id) so the workspace keeps compiling,
-  though a live `CapabilityRegistry` built from every installed plugin's
-  registrations is not yet threaded through — a disclosed follow-up, not
-  silently done. `crates/conway/src/builder.rs`'s existing
+  one production construction site (`tools::runner`) binds it to the
+  calling plugin's own id. As shipped in this item that binding was a
+  `noop` and the gap was disclosed rather than hidden; the follow-up it
+  named (`01M0XXWV3BVDM6Y646WMEBTYT1`, above) landed in the same release
+  and threads a real `CapabilityRegistry` through, so nothing in this
+  entry's own description of the channel is left unreachable. `crates/conway/src/builder.rs`'s existing
   `missing_required_dependency`/`missing_optional_dependencies` (the
   `PluginManifest::requires`/`::optional` resolution pass) now ALSO treat a
   `requires`/`optional` entry as satisfied by a provided capability name,
