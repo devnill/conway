@@ -201,9 +201,7 @@ fn report_hook_registrations(entry_id: &str, registrations: &[HookRegistration])
 /// verbose-gated `diag::info`, it reaches) is checkable directly, without
 /// capturing real stderr. Order-preserving within each bucket; every id in
 /// `registrations` appears in exactly one of the two returned lists.
-fn classify_hook_registrations<'a>(
-    registrations: &'a [HookRegistration],
-) -> (Vec<&'a str>, Vec<&'a str>) {
+fn classify_hook_registrations(registrations: &[HookRegistration]) -> (Vec<&str>, Vec<&str>) {
     let deny_capable = registrations
         .iter()
         .filter(|r| DENY_CAPABLE_EVENTS.contains(&r.event))
