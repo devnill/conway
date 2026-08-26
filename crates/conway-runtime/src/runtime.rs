@@ -129,8 +129,9 @@ use conway_core::ids::{
 };
 use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 use conway_core::ports::{
-    Backend, ContextHook, HealthRegistry, HookRunner, PathStore, PermissionGate, Plugin,
-    PluginConfig, PluginEventEmitter, RegisteredObserver, Router, SessionStore, SubagentHost,
+    Backend, CapabilityHost, ContextHook, HealthRegistry, HookRunner, PathStore, PermissionGate,
+    Plugin, PluginConfig, PluginEventEmitter, RegisteredObserver, Router, SessionStore,
+    SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::segment::CacheTtl;
@@ -231,6 +232,24 @@ pub struct RuntimeDeps {
     /// sole real-build producer; a test build injects
     /// `conway_testkit::FakeSessionDiscoveryHost`.
     pub session_discovery: Arc<dyn conway_core::ports::SessionDiscoveryHost>,
+    /// Edge B's plugin -> plugin capability CALL channel (board item
+    /// `01M0WWNHQQYN1EVTH8WPZ33EBF`; `01M0XXWV3BVDM6Y646WMEBTYT1` wired this
+    /// field in -- `conway_core::ports::capability`'s own module doc has the
+    /// full design). One runtime-wide dispatcher, built ONCE from every
+    /// installed plugin's own `Plugin::capabilities()` registrations
+    /// (`crates/conway/src/builder.rs`'s `ConwayBuilder::build`, the sole
+    /// real-build producer -- mirrors [`Self::session_discovery`] exactly:
+    /// injected whole, narrowed per call at the dispatch seam, never rebuilt
+    /// per call). `conway_runtime::tools::runner` binds a
+    /// [`conway_core::ports::CapabilityCallHandle`] to THIS host, paired
+    /// with each call's own resolved tool's declaring plugin id for
+    /// provenance (that pairing stays per-call; only the host itself is
+    /// shared). A test build injects `Arc::new(conway_core::ports::
+    /// CapabilityRegistry::default())` (refuses every call with
+    /// `NotProvided`, exactly like the `CapabilityCallHandle::noop` this
+    /// field replaced on the production path) or a registry built from
+    /// fixture providers when a suite actually exercises the channel.
+    pub capabilities: Arc<dyn CapabilityHost>,
 }
 
 /// Everything the runtime keeps about one live (or finished-but-not-yet-
@@ -352,6 +371,7 @@ impl Runtime {
             event_bus,
             headroom,
             session_discovery,
+            capabilities,
         } = deps;
         let skills = Arc::new(skills);
         let instructions = Arc::new(instructions);
@@ -417,6 +437,7 @@ impl Runtime {
                 path_store,
                 context_path_host,
                 session_discovery_host: session_discovery,
+                capabilities,
                 router,
                 attempt,
                 registry: registry.clone(),

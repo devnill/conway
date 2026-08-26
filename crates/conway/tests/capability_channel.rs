@@ -12,9 +12,19 @@
 //! not merely through the private functions that implement them --
 //! mirroring `install_selected.rs`'s own split for the plugin-id case
 //! (`PluginManifest::requires`/`::optional`).
+//!
+//! Board item `01M0XXWV3BVDM6Y646WMEBTYT1` (this file's own headline suite,
+//! below the pre-existing `build()`-only tests above) extends this file to
+//! the RUNTIME half of the same channel: a real dispatched tool call,
+//! through the real `conway_runtime::tools::runner`, reaching a real
+//! provider registered by a DIFFERENT installed plugin -- the gap that
+//! item's own report names (`runner.rs`'s call site was bound to
+//! `CapabilityCallHandle::noop`, so a `requires` edge that resolved as
+//! satisfied at `build()` time still refused every live call).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use conway::config::schema::{
     AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
@@ -22,18 +32,21 @@ use conway::config::schema::{
     ToolsConfig,
 };
 use conway::plugin::{
-    CapabilityError, CapabilityProvider, CapabilityRegistration, HostCapability, PluginManifest,
-    Tool,
+    CapabilityCallError, CapabilityError, CapabilityProvider, CapabilityRegistration, ContentBlock,
+    HostCapability, PermissionClass, PluginManifest, Tool, ToolCategory, ToolCtx, ToolError,
+    ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
+use conway::test_support::{echo_model, scripted_backend};
 use conway::{Conway, ConwayBuilder, FacadeError, Plugin};
 use conway_core::agent::PermissionDecision;
 use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
-use conway_core::content::{StopReason, Usage};
+use conway_core::content::{StopReason, ToolCall, Usage};
 use conway_core::ids::{BackendId, RoleAlias};
+use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, Router};
-use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
+use conway_testkit::{text_response, FakeBackend, FakeGate, FakeRouter, FakeStore, ScriptedTurn};
 
 fn caps() -> Capabilities {
     Capabilities {
@@ -332,5 +345,421 @@ fn an_optional_capability_something_provides_produces_no_warning() {
             .all(|w| w.code != conway::config::WarningCode::OptionalPluginDependencyMissing),
         "a satisfied optional capability must not produce a degradation warning: {:?}",
         conway.warnings()
+    );
+}
+
+// ---- board item 01M0XXWV3BVDM6Y646WMEBTYT1: the RUNTIME half ----
+//
+// Everything below drives a REAL dispatched tool call through
+// `ConwayBuilder::build()` and a real session/prompt/turn -- never a
+// hand-built `ToolRunner`/`ToolBatchCtx` -- so these tests fail if the
+// production wiring (`RuntimeDeps::capabilities` ->
+// `conway_runtime::tools::runner`'s `execute_one`) regresses back to a
+// `CapabilityCallHandle::noop`, even though every primitive it is built
+// from is already covered elsewhere (this file's own tests above, and
+// `conway-core`'s `ports::capability` test module).
+
+/// A provider that always fails with a fixed message -- Acceptance 2's own
+/// fixture: proves a provider's own [`CapabilityError`] reaches the caller
+/// as [`CapabilityCallError::Provider`], distinguishable from
+/// [`CapabilityCallError::NotProvided`] (Acceptance 3's regression case,
+/// exercised below with NO provider installed at all).
+struct FailingProvider;
+
+#[async_trait::async_trait]
+impl CapabilityProvider for FailingProvider {
+    async fn call(
+        &self,
+        _payload: serde_json::Value,
+    ) -> Result<serde_json::Value, CapabilityError> {
+        Err(CapabilityError::new("acme.fixture.fail always fails"))
+    }
+}
+
+/// A provider that requires the payload's `"caller_plugin_id"` field to
+/// equal `expected_caller` -- Acceptance 5's own fixture. `caller_plugin_id`
+/// is the field this item's own spec calls out as most likely to be wired
+/// to the REGISTRY's owner (this plugin's own id, `"acme.ui"` below) by
+/// mistake rather than the per-call CALLER's id (`"acme.consumer"`): either
+/// mistake fails LOUDLY here as `CapabilityCallError::Provider`, never a
+/// silent pass.
+struct AssertingProvider {
+    expected_caller: &'static str,
+}
+
+#[async_trait::async_trait]
+impl CapabilityProvider for AssertingProvider {
+    async fn call(&self, payload: serde_json::Value) -> Result<serde_json::Value, CapabilityError> {
+        let actual = payload
+            .get("caller_plugin_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if actual == self.expected_caller {
+            Ok(serde_json::json!({ "ok": true }))
+        } else {
+            Err(CapabilityError::new(format!(
+                "expected caller_plugin_id '{}', got '{actual}'",
+                self.expected_caller
+            )))
+        }
+    }
+}
+
+/// A `Plugin` fake that registers a live provider built from `make_provider`
+/// -- the SAME shape `ProvidingPlugin` (above) is, generalized over which
+/// provider it registers so [`FailingProvider`]/[`AssertingProvider`] don't
+/// each need their own bespoke `Plugin` impl.
+struct ProviderPlugin<F> {
+    id: &'static str,
+    capability: &'static str,
+    make_provider: F,
+}
+
+impl<F> Plugin for ProviderPlugin<F>
+where
+    F: Fn() -> Arc<dyn CapabilityProvider> + Send + Sync + 'static,
+{
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: self.id.to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![],
+            required_host_caps: vec![],
+            optional_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![]
+    }
+
+    fn capabilities(&self) -> Vec<CapabilityRegistration> {
+        vec![CapabilityRegistration {
+            capability: HostCapability::named(self.capability).unwrap(),
+            provider: (self.make_provider)(),
+        }]
+    }
+}
+
+/// A `Tool` whose `invoke` calls straight through `ctx.capabilities` -- the
+/// REAL production seam this item wires (`conway_runtime::tools::runner`'s
+/// `execute_one`), never a hand-built `CapabilityRegistry`/
+/// `CapabilityCallHandle` pair. Embeds `ctx.capabilities.caller_plugin_id()`
+/// into the outgoing payload so a provider fixture ([`AssertingProvider`])
+/// can assert on it, and renders the call's outcome as plain text so a test
+/// can read it straight off the resulting `ToolResultRecord` -- one branch
+/// per [`CapabilityCallError`] variant, so a wrong variant is as visible as
+/// a wrong value.
+struct CapabilityCallingTool {
+    capability: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Tool for CapabilityCallingTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: ToolName::new("acme_call_capability"),
+            description: "calls a capability through ctx.capabilities".into(),
+            schema: serde_json::from_value(serde_json::json!({"type": "object"}))
+                .expect("valid RootSchema JSON"),
+            category: ToolCategory::Read,
+            permission: PermissionClass::Safe,
+        }
+    }
+
+    async fn invoke(&self, _call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        let caller = ctx.capabilities.caller_plugin_id().to_string();
+        let result = ctx
+            .capabilities
+            .call(
+                self.capability,
+                serde_json::json!({ "caller_plugin_id": caller }),
+            )
+            .await;
+        let text = match result {
+            Ok(value) => format!("ok:{value}"),
+            Err(CapabilityCallError::NotProvided { capability }) => {
+                format!("not_provided:{capability}")
+            }
+            Err(CapabilityCallError::Provider { capability, error }) => {
+                format!("provider_error:{capability}:{}", error.message)
+            }
+            Err(CapabilityCallError::MalformedName { capability, reason }) => {
+                format!("malformed:{capability}:{reason}")
+            }
+        };
+        Ok(ToolOutput {
+            blocks: vec![ContentBlock::Text { text }],
+            is_error: false,
+            truncation: TruncationPolicy::None,
+            artifacts: Vec::new(),
+        })
+    }
+}
+
+/// A `Plugin` whose sole tool is [`CapabilityCallingTool`] -- mirrors
+/// `ProvidingPlugin`/`ProviderPlugin` one edge over: this one CALLS a
+/// capability rather than providing one.
+struct CallingPlugin {
+    id: &'static str,
+    capability: &'static str,
+}
+
+impl Plugin for CallingPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: self.id.to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![ToolName::new("acme_call_capability")],
+            required_host_caps: vec![],
+            optional_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![Arc::new(CapabilityCallingTool {
+            capability: self.capability,
+        })]
+    }
+}
+
+/// A single scripted turn that calls `acme_call_capability`, followed by a
+/// plain-text turn so the session finishes cleanly.
+fn call_capability_tool_script() -> Vec<ScriptedTurn> {
+    vec![
+        ScriptedTurn::Respond(GenerateResponse {
+            content: vec![],
+            tool_calls: vec![ToolCall {
+                call_id: "call_1".to_string(),
+                name: ToolName::new("acme_call_capability"),
+                arguments: serde_json::json!({}),
+            }],
+            stop: StopReason::ToolUse,
+            usage: Usage::default(),
+        }),
+        ScriptedTurn::Respond(text_response("done")),
+    ]
+}
+
+/// Runs one prompt/turn to completion and returns the session's transcript
+/// -- mirrors `hook_revoke_seam.rs`'s own `run_one_bash_call` exactly, one
+/// tool over.
+async fn run_one_turn(conway: &Conway) -> Vec<LogRecord> {
+    let handle = conway
+        .new_session(conway::SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+    let root = handle.root();
+    let turn = handle.prompt("do the thing").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    handle.transcript(root).await.expect("transcript")
+}
+
+/// The `acme_call_capability` tool's own rendered result text, read straight
+/// off the transcript's `ToolResultRecord`.
+fn capability_call_result_text(records: &[LogRecord]) -> Option<String> {
+    records.iter().find_map(|r| match r {
+        LogRecord::ToolResultRecord { result, .. }
+            if result.tool.as_str() == "acme_call_capability" =>
+        {
+            result.blocks.iter().find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+        }
+        _ => None,
+    })
+}
+
+/// A `ConwayBuilder` for this section's own tests: `plugins`, driven through
+/// a scripted backend that calls `acme_call_capability` once, with the
+/// port doubles every other test in this file already uses.
+fn build_calling_conway(plugins: Vec<Arc<dyn Plugin>>, install: Vec<&str>) -> Conway {
+    let mut cfg = base_config();
+    cfg.plugins.install = install.into_iter().map(str::to_string).collect();
+
+    ConwayBuilder::from_parts(cfg)
+        .install_selected(plugins, vec![], vec![])
+        .expect("every listed id must resolve against the supplied bundle")
+        .with_backend(scripted_backend(call_capability_tool_script()))
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(Arc::new(FakeRouter::single(echo_model())))
+        .build()
+        .expect("build should succeed with every installed plugin resolving cleanly")
+}
+
+/// Acceptance 1: a tool invoked through the REAL runner (via
+/// `ConwayBuilder::build`, a real session, a real prompt/turn -- never a
+/// hand-built `ToolRunner`) reaches a provider registered by a DIFFERENT
+/// installed plugin, and gets its answer.
+#[tokio::test]
+async fn a_tool_invoked_through_the_real_runner_reaches_a_different_plugins_provider() {
+    let conway = build_calling_conway(
+        vec![
+            Arc::new(ProvidingPlugin {
+                id: "acme.ui",
+                capability: "acme.ui.checkbox",
+            }) as Arc<dyn Plugin>,
+            Arc::new(CallingPlugin {
+                id: "acme.consumer",
+                capability: "acme.ui.checkbox",
+            }) as Arc<dyn Plugin>,
+        ],
+        vec!["acme.ui", "acme.consumer"],
+    );
+
+    let records = run_one_turn(&conway).await;
+    let text = capability_call_result_text(&records)
+        .expect("a ToolResultRecord for acme_call_capability must exist");
+    assert!(
+        text.starts_with("ok:"),
+        "the call must reach acme.ui's real EchoProvider and succeed: {text}"
+    );
+    assert!(
+        text.contains("acme.consumer"),
+        "the echoed payload must carry the caller's own id: {text}"
+    );
+}
+
+/// Acceptance 2: an error returned by the provider reaches the caller as
+/// `CapabilityCallError::Provider`, distinguishable from `NotProvided`.
+#[tokio::test]
+async fn an_error_from_the_provider_reaches_the_caller_as_capabilitycallerror_provider() {
+    let conway = build_calling_conway(
+        vec![
+            Arc::new(ProviderPlugin {
+                id: "acme.ui",
+                capability: "acme.ui.checkbox",
+                make_provider: || Arc::new(FailingProvider) as Arc<dyn CapabilityProvider>,
+            }) as Arc<dyn Plugin>,
+            Arc::new(CallingPlugin {
+                id: "acme.consumer",
+                capability: "acme.ui.checkbox",
+            }) as Arc<dyn Plugin>,
+        ],
+        vec!["acme.ui", "acme.consumer"],
+    );
+
+    let records = run_one_turn(&conway).await;
+    let text = capability_call_result_text(&records)
+        .expect("a ToolResultRecord for acme_call_capability must exist");
+    assert!(
+        text.starts_with("provider_error:acme.ui.checkbox:"),
+        "a provider failure must surface as Provider, naming the capability: {text}"
+    );
+    assert!(
+        text.contains("acme.fixture.fail always fails"),
+        "the provider's own error message must reach the caller: {text}"
+    );
+}
+
+/// Acceptance 3 (regression): a call naming a capability nothing installed
+/// provides still gets `NotProvided` through the REAL runner -- the no-op's
+/// one correct behaviour must survive its replacement by a real registry.
+#[tokio::test]
+async fn a_call_naming_an_unprovided_capability_still_gets_not_provided() {
+    let conway = build_calling_conway(
+        vec![Arc::new(CallingPlugin {
+            id: "acme.consumer",
+            capability: "acme.ui.checkbox",
+        }) as Arc<dyn Plugin>],
+        vec!["acme.consumer"],
+    );
+
+    let records = run_one_turn(&conway).await;
+    let text = capability_call_result_text(&records)
+        .expect("a ToolResultRecord for acme_call_capability must exist");
+    assert_eq!(
+        text, "not_provided:acme.ui.checkbox",
+        "nothing installed provides this capability -- must be NotProvided, never a panic \
+         or a silent success: {text}"
+    );
+}
+
+/// Acceptance 4: two plugins registering the same capability name fail
+/// `build()` with an error naming both plugins and the capability -- the
+/// duplicate-provider refusal `CapabilityRegistry::from_registrations`
+/// itself returns MUST reach `build()`, not be swallowed while constructing
+/// the registry.
+#[test]
+fn two_plugins_registering_the_same_capability_fail_build_naming_both_and_the_capability() {
+    let mut cfg = base_config();
+    cfg.plugins.install = vec!["acme.ui.one".to_string(), "acme.ui.two".to_string()];
+
+    let result = ConwayBuilder::from_parts(cfg)
+        .install_selected(
+            vec![
+                Arc::new(ProvidingPlugin {
+                    id: "acme.ui.one",
+                    capability: "acme.ui.checkbox",
+                }) as Arc<dyn Plugin>,
+                Arc::new(ProvidingPlugin {
+                    id: "acme.ui.two",
+                    capability: "acme.ui.checkbox",
+                }) as Arc<dyn Plugin>,
+            ],
+            vec![],
+            vec![],
+        )
+        .expect("both ids resolve against the supplied bundle")
+        .with_backend(fake_backend("fake"))
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(empty_router())
+        .build();
+
+    let err = expect_build_err(
+        result,
+        "two providers for the same capability name must fail build(), never silently pick one",
+    );
+    match err {
+        FacadeError::Build { message } => {
+            assert!(message.contains("acme.ui.one"), "{message}");
+            assert!(message.contains("acme.ui.two"), "{message}");
+            assert!(message.contains("acme.ui.checkbox"), "{message}");
+        }
+        other => panic!("expected FacadeError::Build, got {other:?}"),
+    }
+}
+
+/// Acceptance 5: `caller_plugin_id` is the CALLING tool's own declaring
+/// plugin (`acme.consumer`), verified by a provider that asserts on it --
+/// not the registry's own owner (`acme.ui`, the providing plugin), which is
+/// the mistake this field is most likely wired to.
+#[tokio::test]
+async fn caller_plugin_id_is_the_calling_tools_declaring_plugin() {
+    let conway = build_calling_conway(
+        vec![
+            Arc::new(ProviderPlugin {
+                id: "acme.ui",
+                capability: "acme.ui.checkbox",
+                make_provider: || {
+                    Arc::new(AssertingProvider {
+                        expected_caller: "acme.consumer",
+                    }) as Arc<dyn CapabilityProvider>
+                },
+            }) as Arc<dyn Plugin>,
+            Arc::new(CallingPlugin {
+                id: "acme.consumer",
+                capability: "acme.ui.checkbox",
+            }) as Arc<dyn Plugin>,
+        ],
+        vec!["acme.ui", "acme.consumer"],
+    );
+
+    let records = run_one_turn(&conway).await;
+    let text = capability_call_result_text(&records)
+        .expect("a ToolResultRecord for acme_call_capability must exist");
+    assert!(
+        text.starts_with("ok:"),
+        "the provider must see caller_plugin_id == 'acme.consumer', not the registry's own \
+         owner 'acme.ui' or anything else: {text}"
     );
 }

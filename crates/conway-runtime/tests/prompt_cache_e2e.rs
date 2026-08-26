@@ -116,6 +116,7 @@ fn build_runtime(turns: usize) -> (Arc<Runtime>, Arc<ScriptedBackend>) {
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     (runtime, backend)
 }
@@ -354,6 +355,7 @@ async fn gp06_stripping_cache_hint_makes_a_cached_and_uncached_route_identical()
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     start_and_finish_root(&cached_runtime, "investigate the bug").await;
     start_and_finish_root(&uncached_runtime, "investigate the bug").await;

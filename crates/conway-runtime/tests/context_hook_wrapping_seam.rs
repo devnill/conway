@@ -99,6 +99,7 @@ fn build_runtime_over(store: Arc<dyn SessionStore>, backend: Arc<dyn Backend>) -
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     })
 }
 

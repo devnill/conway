@@ -42,10 +42,10 @@ use conway_core::error::ToolError;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{
-    CancellationToken as CoreCancellationToken, CapabilityCallHandle, ContextPathHandle,
-    ContextPathHost, CwdHandle, EventSinkHandle, PluginConfig, PluginEventEmitter,
-    PluginEventHandle, SessionDiscoveryHandle, SessionDiscoveryHost, SubagentHandle, SubagentHost,
-    Tool, ToolCtx, ToolOutput,
+    CancellationToken as CoreCancellationToken, CapabilityCallHandle, CapabilityHost,
+    ContextPathHandle, ContextPathHost, CwdHandle, EventSinkHandle, PluginConfig,
+    PluginEventEmitter, PluginEventHandle, SessionDiscoveryHandle, SessionDiscoveryHost,
+    SubagentHandle, SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use futures::FutureExt;
 use tokio::sync::Semaphore;
@@ -88,6 +88,16 @@ pub struct ToolBatchCtx {
     /// exactly: one runtime-wide `Arc`, cross-session by construction so
     /// (unlike `context_path_host`) nothing narrows it per call.
     pub session_discovery_host: Arc<dyn SessionDiscoveryHost>,
+    /// Edge B's plugin -> plugin capability CALL channel (board item
+    /// `01M0XXWV3BVDM6Y646WMEBTYT1`; `conway_core::ports::capability`'s own
+    /// module doc) -- mirrors [`Self::context_path_host`]/
+    /// [`Self::session_discovery_host`] exactly: one runtime-wide `Arc`
+    /// (`RuntimeDeps::capabilities`, via `LoopDeps::capabilities`), narrowed
+    /// per call below into a [`CapabilityCallHandle`] bound to THAT call's
+    /// own resolved tool's declaring plugin id -- never a registry-wide
+    /// identity, so provenance stays per-call exactly like
+    /// `plugin_events`'s `caller_plugin_id` already does.
+    pub capability_host: Arc<dyn CapabilityHost>,
     pub plugin_config: Arc<PluginConfig>,
     pub max_parallel_tools: usize,
     /// S5: this agent's confinement root, reconstructed exactly once per
@@ -218,6 +228,7 @@ impl ToolRunner {
             let subagents = ctx.subagents.clone();
             let context_path_host = ctx.context_path_host.clone();
             let session_discovery_host = ctx.session_discovery_host.clone();
+            let capability_host = ctx.capability_host.clone();
             let plugin_config = ctx.plugin_config.clone();
             let root = ctx.root.clone();
             let hooks = self.hooks.clone();
@@ -246,6 +257,7 @@ impl ToolRunner {
                     subagents,
                     context_path_host,
                     session_discovery_host,
+                    capability_host,
                     plugin_config,
                     root,
                     call,
@@ -307,6 +319,7 @@ async fn execute_one(
     subagents: Arc<dyn SubagentHost>,
     context_path_host: Arc<dyn ContextPathHost>,
     session_discovery_host: Arc<dyn SessionDiscoveryHost>,
+    capability_host: Arc<dyn CapabilityHost>,
     plugin_config: Arc<PluginConfig>,
     root: AgentRoot,
     call: ToolCall,
@@ -450,24 +463,21 @@ async fn execute_one(
                 config: plugin_config.clone(),
                 // Edge B (`docs/vision/DESIGN-plugin-dependencies.md` §2):
                 // the plugin -> plugin capability call channel
-                // (`conway_core::ports::capability`'s own module doc).
-                // `CapabilityCallHandle::noop` here, bound to this call's
-                // own resolved tool's declaring plugin id (mirrors
-                // `plugin_events` immediately above) -- a live
-                // `CapabilityRegistry` built from every installed plugin's
-                // `Plugin::capabilities()` is NOT yet threaded through
-                // `RuntimeDeps` into this runner (board item
-                // `01M0WWNHQQYN1EVTH8WPZ33EBF`'s own report names this the
-                // disclosed follow-up: the channel and its build-time
-                // `requires`/`optional`-vs-`provides` resolution check are
-                // built and tested; wiring a real registry into every live
-                // dispatched call is the next step). A tool calling
-                // `ctx.capabilities` today is refused with
-                // `CapabilityCallError::NotProvided`, never silently
-                // wrong -- the SAME "refuse, never silently succeed"
-                // posture every other `::noop` default on this struct
-                // already holds.
-                capabilities: CapabilityCallHandle::noop(resolved.plugin_id.to_string()),
+                // (`conway_core::ports::capability`'s own module doc). Bound
+                // to `capability_host` -- the REAL, runtime-wide
+                // `CapabilityRegistry` `RuntimeDeps::capabilities` threads in
+                // via `LoopDeps`/`ToolBatchCtx` (board item
+                // `01M0XXWV3BVDM6Y646WMEBTYT1`; `01M0WWNHQQYN1EVTH8WPZ33EBF`
+                // built the channel and its build-time resolution check but
+                // left every live dispatched call unconditionally refused) --
+                // paired with THIS call's own resolved tool's declaring
+                // plugin id for caller provenance, mirroring `plugin_events`
+                // immediately above exactly: the handle's identity is
+                // per-call, never the registry's own.
+                capabilities: CapabilityCallHandle::new(
+                    capability_host.clone(),
+                    resolved.plugin_id.to_string(),
+                ),
             };
 
             let invoked = resolved.tool.invoke(call.clone(), tool_ctx).await;

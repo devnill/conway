@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documented
 
+- **Two small correctness debts the audit named: an untested two-hook interaction, and a field promising a discovery surface that does not exist** — board item `01M0XREWGA03EDQ5PK2C18KW75`, two unrelated fixes. First: `crates/conway-runtime/src/permission.rs`'s `pre_tool_use` hook step correctly lets a hook that defers-on-failure (`HookOnFailure::Prompt`, its runner failing) fall through to the next installed hook rather than short-circuiting the loop, so a LATER hook's outright refusal still wins — but every existing test in that module installed exactly one hook, leaving the two-hook interaction the guarantee is actually about unpinned (finding `01M0XQBTW4JMS7XQESDMS3KNZY`). New test `a_second_hooks_outright_refusal_still_wins_after_an_earlier_hooks_deferred_outage` installs two hooks (one deferring-on-failure and failing, one refusing outright) behind a new `PerCommandHookRunner` test double (a `HookRunner` that answers differently per invocation, needed because the broker holds one shared runner for every installed hook) and asserts `Deny`, not merely a forced trip to the operator's gate. Second: `EventDecl::summary`'s doc comment claimed a discovery purpose — "how does an operator discover what is hookable" — it does not serve: unlike `Plugin::commands`, whose `CommandSpec`s reach the slash palette and `/help`, no code in `crates/conway-cli` reads a declared event or its summary, and the one production call site (`crates/conway/src/builder.rs`'s plugin-event validation pass) reads only `EventDecl::carries_tool_name`, never `summary` (finding `01M0XQGR9RR3DVFWN8WBKWVGEY`, pre-existing). The doc is corrected to say plainly that no discovery surface consumes the field yet, naming what one would be (a `/plugin` row or `/help` section) — no discovery surface was built; that is separate, future work.
+
 - **Seven-going-on-more stale documentation claims about the plugin capability vocabulary and the plugin status render path are corrected** — board item `01M0XKP5BWCPY3BHPJZHXKR4H3`. `docs/plugins/concepts.md`, `trust-and-security.md`, `hooks.md` (two separate locations: the `required_host_caps` point and the page's own opening summary), and `subprocess-plugins.md` no longer describe `HostCapability` as a closed two-variant enum — it opened to a shape-checked `Named(String)` catch-all under board item `01M0WWKA8K1E7JPK87J6RRQMZF` — and now state precisely which failure mode still fails closed AT PARSE (a malformed tag) versus which now resolves and is refused later at the host-capability GATE (a well-formed but previously-unknown tag); `crates/conway-plugin-subprocess/src/wire.rs`'s own `required_host_caps` doc comment gets the identical, surgical correction, since a vague rewrite there would be worse than the half-truth it replaces. `hooks.md`'s `status.declare/1` row and its own opening summary no longer claim nobody renders a plugin's pushed status — the TUI render path and startup snapshot population both shipped (board item `01M0X1B7Z41J57N6YP2JFZ2AZW`) and are now cited by file — while the row's separate, still-true TTL-expiry claim (no sweep runs) is left untouched, verified independently rather than blessed by association. `docs/plugins/claude-compat.md`'s "What works, fully, end to end" section no longer claims MCP is the only kind this layer wires to run: hooks and commands both dispatch now too, without restating either bullet's own fidelity caveats (payload-shape, best-effort) that page's coverage section already states. No behaviour change: docs and one doc comment only.
 
 ### Fixed
 
 - **An operator can now tell what a foreign plugin's hooks can do to them** — board item `01M0XRD8VMWD273W0W51T8ECCM`, two defects, one outcome. First: `crates/conway-cli/src/claude_compat_plugins.rs`'s deny-capable/observation-only split used to hardcode `"pre_tool_use"` as conway's ONLY deny-capable event, missing `prompt_submitted` (`conway_runtime::hook_dispatch::PROMPT_SUBMITTED`, dispatched via `HookDispatcher::dispatch_deny_only` — the event a translated `UserPromptSubmit` hook maps to) — so a foreign plugin whose only hook was `UserPromptSubmit` could deny every prompt the operator typed, reported only on the verbose-gated channel, invisible at default verbosity. Fixed by reading a new canonical `conway::DENY_CAPABLE_EVENTS` (the facade's own two-event set, already established by `Conway::active_deny_capable_hook_rules`) rather than re-declaring the pair a second time. Second: the `/plugin` browser still rendered mapped hooks as `"(not wired)"` — true when written, false since a same-day sibling item made every mapped hook a real, dispatchable `[hooks].rules[]` entry; `crates/conway-cli/src/tui/view/plugins.rs`'s claude-compat row now says hooks dispatch and names how many are deny-capable vs observation-only (`ClaudeCompatPluginEntry::deny_capable_hook_count`, `crates/conway-cli/src/tui/state.rs`), and that struct's own doc no longer claims a mapped hook is merely "informational."
+- **A plugin's `requires` edge, satisfied by a provided capability, is now actually reachable at runtime** — board item `01M0XXWV3BVDM6Y646WMEBTYT1`, closing the gap `01M0WWNHQQYN1EVTH8WPZ33EBF`'s own report disclosed. Before this item, `crates/conway-runtime/src/tools/runner.rs`'s one production `ToolCtx` construction site bound `capabilities: CapabilityCallHandle::noop(..)` unconditionally: `ConwayBuilder::build` correctly resolved a `requires`/`optional` entry as satisfied by an installed plugin's `Plugin::capabilities()` registration, but every LIVE call through `ctx.capabilities` was refused with `NotProvided` regardless — a declaration that resolves as reached while being unreachable, the exact shape declaration-honesty forbids, and the believer here is a third-party plugin author who has no reason to doubt a manifest contract that already builds. Fixed by building a real `conway_core::ports::CapabilityRegistry` ONCE, at `ConwayBuilder::build`, from the SAME `Plugin::capabilities()` iteration `provided_capability_names` already performs, and threading it through a new `RuntimeDeps::capabilities` field into `conway_runtime::tools::runner`'s dispatch seam (`LoopDeps::capabilities` → `ToolBatchCtx::capability_host`), where it now binds a real `CapabilityCallHandle` — still paired with THAT call's own resolved tool's declaring plugin id for `caller_plugin_id` provenance, per-call exactly as the `noop` it replaces already was, never the registry's own owner. `CapabilityRegistry::from_registrations`' duplicate-provider refusal (fail closed, never "last one wins") now reaches `build()` as a real `FacadeError::Build` naming both offending plugins and the capability, rather than risking being swallowed while constructing the registry. Tested end to end through `ConwayBuilder::build` and a real dispatched tool call (`crates/conway/tests/capability_channel.rs`): a call reaching a different plugin's provider and getting its answer, a provider error surfacing as `CapabilityCallError::Provider` distinguishable from `NotProvided`, the `NotProvided` no-provider-installed case surviving as a regression, the duplicate-provider build failure naming both plugins, and `caller_plugin_id` provenance staying bound to the calling tool's own plugin. Out of scope, disclosed rather than silently done: the subprocess wire protocol declaring/forwarding a capability out-of-process (a separate, dependent item) and any unification of this pull-shaped channel with `PluginStatusContribution`'s half-built push case (explicitly left unresolved by `conway_core::ports::capability`'s own module doc).
 
 ### Changed
 
@@ -45,11 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal call sites across the workspace). `ToolCtx` gains a `capabilities:
   CapabilityCallHandle` field, documented as the one handle on that struct
   that reaches ANOTHER PLUGIN rather than a host service; `conway-runtime`'s
-  one production construction site (`tools::runner`) now binds it (`noop`,
-  bound to the calling plugin's own id) so the workspace keeps compiling,
-  though a live `CapabilityRegistry` built from every installed plugin's
-  registrations is not yet threaded through — a disclosed follow-up, not
-  silently done. `crates/conway/src/builder.rs`'s existing
+  one production construction site (`tools::runner`) binds it to the
+  calling plugin's own id. As shipped in this item that binding was a
+  `noop` and the gap was disclosed rather than hidden; the follow-up it
+  named (`01M0XXWV3BVDM6Y646WMEBTYT1`, above) landed in the same release
+  and threads a real `CapabilityRegistry` through, so nothing in this
+  entry's own description of the channel is left unreachable. `crates/conway/src/builder.rs`'s existing
   `missing_required_dependency`/`missing_optional_dependencies` (the
   `PluginManifest::requires`/`::optional` resolution pass) now ALSO treat a
   `requires`/`optional` entry as satisfied by a provided capability name,
@@ -72,6 +76,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capability through this channel, which is the disclosed next step, not
   built here. No actual capability ships in this item (no `conway.ui`, no
   UI) — this is the channel only.
+- **Plugin-declared permission modes — a name plus a narrowing, layered on
+  a base core mode** — board item `01M0X4YDNVP7TZ0PVSRJ0388SS`, new page
+  `docs/plugins/permission-modes.md`. `PermissionMode` stays a closed
+  three-variant enum; `Plugin::permission_modes()` (zero-cost default, so
+  every existing `Plugin` implementor keeps compiling unmodified) lets a
+  plugin declare `PluginDeclaredMode { name, base }` — a display name over
+  one of the three core modes. **Structurally cannot be more permissive
+  than its base**: the type carries exactly one field anything permission-
+  related ever reads (`base`), the same "nothing to widen" shape
+  `HookOnFailure`/`HookPermissionVerdict`/`PluginPermissionVerdict` already
+  use one level down. New `conway_runtime::permission_mode` module:
+  `ModeCycle` computes the Shift+Tab cycle deterministically (three core
+  modes, then declared modes sorted by name, independent of plugin install
+  order), excludes — never silently picks — a name two plugins collide on
+  (naming both), and reconciles a session's active declared mode back to a
+  plain core label when its declaring plugin is uninstalled, rather than
+  leaving a dangling name. `PermissionBroker` gains
+  `active_declared_mode`/`set_active_declared_mode`/
+  `select_mode_cycle_entry`, pure display bookkeeping `decide()` never
+  reads — `decide()` remains the ONE place a mode's enforcement is decided,
+  never duplicated into a second place, unchanged by this item. **An
+  `AutoAllow`-based declared
+  mode's display label always carries the base's own unmodified
+  `"AUTO-ALLOW"` warning verbatim** (`"auto-gated (AUTO-ALLOW)"`, never a
+  softened paraphrase) — an inference-gated mode is full permission
+  filtered by a model, not a safer mode, and its status-line presentation
+  must not imply otherwise (design
+  `docs/vision/DESIGN-permission-modes.md` §3b, corrected in place after an
+  earlier draft had this backwards). **Not yet wired**: the
+  `crates/conway/src/*` facade change that gathers a real plugin's declared
+  modes at startup and drives `Action::CyclePermissionMode` through them —
+  today every build still cycles exactly the three core modes, byte-
+  identically to before this item — and `Plugin::hooks()` itself, which a
+  declared mode's own classifier ultimately needs and which is deliberately
+  a separate item's job (design §6c) rather than built only for this one
+  consumer.
+
 - **A migration guide for operators coming from Claude Code's
   `settings.json`** — board item `01M0X4Z8B8ZWCHABMQAE9KFWHF`, new page
   `docs/migrating-from-claude-code.md`. Triages every key in a real

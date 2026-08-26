@@ -315,6 +315,7 @@ fn batch_ctx_with_chdir(max_parallel_tools: usize, chdir: CwdHandle) -> ToolBatc
             Arc::new(conway_core::transcript::TranscriptResolver::new(4)),
         )),
         session_discovery_host: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capability_host: Arc::new(conway_core::ports::CapabilityRegistry::default()),
         plugin_config: Arc::new(PluginConfig::default()),
         max_parallel_tools,
         // S5: this file exercises `ToolRunner` dispatch mechanics, not the

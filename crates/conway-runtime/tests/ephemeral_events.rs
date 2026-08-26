@@ -262,6 +262,7 @@ fn build_runtime(turns: usize) -> Arc<Runtime> {
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     })
 }
 
