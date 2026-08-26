@@ -679,7 +679,7 @@ default. Dynamic routing, context compaction, memory, skills, MCP support. You
 get them by choosing them.
 
 > **Where the tree is today.** Dynamic routing, memory (`conway.memory`), and
-> skills (`conway.skills`) are all built and installable, as are eight
+> skills (`conway.skills`) are all built and installable, as are eleven
 > members this list does not name by capability — the provider adapters, a
 > session-rewind command, repeated-step detection (`conway.stepguard`, which
 > §6 below is about), the out-of-process subprocess plugin host,
@@ -689,9 +689,16 @@ get them by choosing them.
 > model calls to find a session or record it does not already hold a
 > reference to), a curator that ages out old tool round-trips
 > (`conway.trim` — omits tool call/result pairs older than a configurable
-> turn window), and operator-chosen, renameable agent names
+> turn window), operator-chosen, renameable agent names
 > (`conway.names` — three commands over a small store the TUI reads
-> directly). MCP
+> directly), a prepended instruction fragment (`conway.idiom` — what makes a
+> bare interactive session carry any harness orientation at all), a reader
+> for a Claude Code plugin directory already on disk (`conway-plugin-claude`
+> — read-at-runtime, no downloading, everything it cannot translate reported
+> by name rather than silently dropped), and installing a plugin from a
+> marketplace instead of pointing at a directory by hand
+> (`conway-plugin-marketplace` — fetches over HTTP into the same plugin
+> store the reader above already uses). MCP
 > support is built too, but does not name a plugin id the way the others
 > do: an operator lists an external MCP server under `[plugins].mcp` and its
 > tools attach directly, the same shape as the subprocess host one line

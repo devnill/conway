@@ -25,6 +25,19 @@ matching and the check fails, naming the claim. A claim that says something
 exists declares a `present` predicate, which fails if that thing is deleted or
 renamed.
 
+A third kind, `glob`, exists for a narrower problem those two cannot express:
+"every member of a directory family is named somewhere in this doc." `absent`/
+`present` evaluate one fixed pattern against one fixed path set -- there is no
+way to derive the pattern itself from the filesystem, so a claim of the form
+"every crates/conway-plugin-* directory is mentioned in ARCHITECTURE.md" would,
+in the `present` vocabulary, have to spell out today's crate names in the
+regex by hand -- which regresses the moment an existing one is deleted, but
+says nothing at all about a new one arriving unmentioned, because nothing
+re-derives the set. A `glob` block re-globs its directory family on every run
+and checks each match's basename against the target file's text itself, so
+adding crate seventeen without a matching mention is what fails it, not a
+predicate someone forgot to widen.
+
 Against the case above it fires exactly: the hooks claim "every event other
 than pre_tool_use dispatches nothing" is an `absent` predicate over the other
 six event names, so wiring one up turns the check red in the same change. And
@@ -43,6 +56,11 @@ the same defect one level up:
     incoherent" is not checkable here.
   * **Rot in the prose around a still-true predicate** -- a rationale that has
     been overtaken while the mechanical fact it cites is unchanged.
+  * **A `glob` claim only proves a basename appears somewhere in the target
+    file's text.** It does not check that the surrounding sentence is
+    accurate, non-vacuous, or even about that crate -- the same substring-only
+    caveat `check-orphan-docs.py`'s module doc states for its own reachability
+    search. It is a coverage floor, not a prose review.
 
 Usage:  python3 scripts/check-design-claims.py [--list]
 Exit:   0 all declared claims hold | 1 one or more failed | 2 malformed block
@@ -74,7 +92,11 @@ class Claim:
         self.why = fields.get("why", "")
         self.claim = fields.get("claim", "")
         self.note = fields.get("note", "")
-        self.kind = "absent" if "absent" in fields else "present"
+        self.glob = fields.get("glob", "")
+        if self.glob:
+            self.kind = "glob"
+        else:
+            self.kind = "absent" if "absent" in fields else "present"
         self.pattern = fields.get("absent") or fields.get("present") or ""
         self.paths = fields.get("paths", "")
 
@@ -83,7 +105,9 @@ class Claim:
         return self.why or self.claim
 
     def evaluate(self) -> tuple[bool, str]:
-        """Returns (holds, evidence).
+        """Returns (holds, evidence). See `_evaluate_glob` for the `glob`
+        kind's own contract; the rest of this docstring is the `absent`/
+        `present` kinds this method also serves.
 
         **A MISSING PATH IS A HARD ERROR, NOT AN ABSENT MATCH.** grep over a
         path that does not exist prints nothing to stdout and exits non-zero
@@ -106,6 +130,9 @@ class Claim:
             )
             sys.exit(2)
 
+        if self.kind == "glob":
+            return self._evaluate_glob()
+
         cmd = ["grep", "-rEn", "--include=*.rs", "--include=*.toml", "--include=*.md"]
         cmd += [self.pattern]
         cmd += [str(ROOT / p) for p in self.paths.split()]
@@ -120,6 +147,33 @@ class Claim:
         if self.kind == "absent":
             return (not hits, "\n".join(f"      {h[len(str(ROOT)) + 1:]}" for h in hits[:5]))
         return (bool(hits), "      (no match anywhere in: " + self.paths + ")")
+
+    def _evaluate_glob(self) -> tuple[bool, str]:
+        """`glob` re-derives its own subject set from the filesystem on every
+        run -- see the module doc's "A third kind, `glob`" section for why
+        `absent`/`present` cannot express this. Every directory `self.glob`
+        matches (relative to ROOT) must have its basename appear as a
+        substring somewhere in the concatenated text of `self.paths`.
+
+        A glob matching nothing is treated the same as a missing `paths`
+        entry above: silent success over an empty set is exactly the
+        false-green this script exists to prevent, most likely caused by a
+        typo'd pattern or a directory family that no longer exists.
+        """
+        matches = sorted(p for p in ROOT.glob(self.glob) if p.is_dir())
+        if not matches:
+            print(
+                f"{CLAIM_SOURCE}:{self.lineno}: BROKEN CLAIM: {self.claim}\n"
+                f"    its `glob:` pattern {self.glob!r} matched no directory.\n"
+                f"    Nothing was scanned, so this claim is unverified rather than true.\n"
+                f"    Repoint the glob, or delete the claim if its subject is gone."
+            )
+            sys.exit(2)
+        target_text = "\n".join((ROOT / p).read_text() for p in self.paths.split())
+        missing_names = [m.name for m in matches if m.name not in target_text]
+        holds = not missing_names
+        evidence = "\n".join(f"      {n}" for n in missing_names[:10])
+        return (holds, evidence)
 
 
 def parse(doc: str) -> list[Claim]:
@@ -141,8 +195,8 @@ def parse(doc: str) -> list[Claim]:
             if required not in fields:
                 print(f"{doc}:{lineno}: claim-check block is missing `{required}`")
                 sys.exit(2)
-        if "absent" not in fields and "present" not in fields:
-            print(f"{doc}:{lineno}: claim-check block needs `absent` or `present`")
+        if "absent" not in fields and "present" not in fields and "glob" not in fields:
+            print(f"{doc}:{lineno}: claim-check block needs `absent`, `present`, or `glob`")
             sys.exit(2)
         claims.append(Claim(fields, lineno))
     return claims
@@ -174,9 +228,12 @@ def main() -> int:
             print(f"    but this pattern now matches, so the claim is no longer true:")
             print(f"      /{c.pattern}/")
             print(evidence)
-        else:
+        elif c.kind == "present":
             print(f"    but this pattern no longer matches anywhere:")
             print(f"      /{c.pattern}/")
+            print(evidence)
+        else:
+            print(f"    but glob {c.glob!r} found member(s) not mentioned in {c.paths}:")
             print(evidence)
         print(" Update this predicate in the same change as the code")
         print("    that made this true, or correct the predicate if the claim was")
