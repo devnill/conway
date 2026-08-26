@@ -211,13 +211,31 @@ pub struct WireManifest {
     /// Host capabilities this subprocess plugin requires the host to offer
     /// (board item `01M03VJXARFHSDAGHFXGCWKJTY`). `#[serde(default)]` so an
     /// existing plugin that omits the field parses as empty ("needs nothing
-    /// the host might lack"). An UNKNOWN cap tag (a string this host's
-    /// `HostCapability` enum does not recognize, sent by a NEWER plugin)
-    /// FAILS CLOSED -- serde rejects it, the `WireManifest` fails to parse,
-    /// and the plugin is refused (`SubprocessPluginError::UnparseableAnswer`)
-    /// -- the NARROWING/safe direction, consistent with the unknown-tag item
-    /// `01M03VJPRT8629CYR8JK4A8JPF`'s "structural malformation fails closed"
-    /// line. No degrade path for unknown host-caps (unlike the
+    /// the host might lack"). `HostCapability` is now an OPEN vocabulary
+    /// (board item `01M0WWKA8K1E7JPK87J6RRQMZF`, which opened it from a
+    /// closed two-variant enum): two core-blessed bare names plus a
+    /// shape-checked `Named(String)` catch-all for anything else a plugin
+    /// declares -- which splits "an unknown cap tag" into two DIFFERENT
+    /// failure modes at two DIFFERENT seams, not one. A MALFORMED tag
+    /// (empty, or failing `crate::event_name::validate_event_name`'s shape
+    /// check) still FAILS CLOSED at parse -- serde rejects it, the
+    /// `WireManifest` fails to parse, and the plugin is refused
+    /// (`SubprocessPluginError::UnparseableAnswer`) -- unchanged, and
+    /// consistent with the unknown-tag item
+    /// `01M03VJPRT8629CYR8JK4A8JPF`'s "structural malformation fails
+    /// closed" line. A WELL-FORMED but previously-unknown tag (sent by a
+    /// NEWER plugin), by contrast, now PARSES -- resolving to
+    /// `HostCapability::Named` -- and is refused LATER, at the
+    /// host-capability gate (`conway::HostCaps::check_manifest`, consulted
+    /// at registration), with the SAME `PluginError::MissingHostCapability`
+    /// naming both the plugin and the cap (see
+    /// `an_unknown_required_host_cap_is_refused_by_the_gate_not_by_the_parser`,
+    /// `crates/conway-plugin-subprocess/tests/mechanism.rs`). Rejecting a
+    /// well-formed name at parse would mean no third party could ever
+    /// declare a capability the core has not blessed, defeating the point
+    /// of opening the vocabulary -- the fail-closed guarantee is not
+    /// weakened, it moved and got sharper. No degrade path for an unoffered
+    /// host-cap in either case (unlike the
     /// `ToolCategory`/`PermissionClass`/`ContentBlock` degradation table):
     /// a capability requirement is a gate, and silently degrading a cap a
     /// plugin NEEDS into one it does not would load a plugin the host cannot

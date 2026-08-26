@@ -18,9 +18,11 @@ permission rules, declarative script hooks, plugin commands, plugin-fired
 events, and the two observer-class wire points (`observe/1`,
 `status.declare/1`); what still reads designed-not-built is the composed
 inference-evaluated policy chain, a remote `context.hook/1` transport, a
-plugin-declared tool-hide selector, a `subagent_mode` field, and the TUI
-render paths that would display the status contributions the wire half now
-collects.
+plugin-declared tool-hide selector, a `subagent_mode` field, and the TTL
+sweep that would age a `status.declare/1` contribution out once its
+declared `ttl_ms` passes (the render path that displays those
+contributions, and the startup snapshot that populates it, both shipped —
+see point 12 below).
 
 ## How to read a point's table
 
@@ -55,31 +57,38 @@ Every point gets all nine fields:
 | Status | **Implemented**, in-process (`Plugin::manifest`/`Plugin::tools`, `crates/conway-core/src/ports/plugin.rs`, exercised by `crates/conway/tests/plugin_surface.rs` and `crates/conway/tests/plugin_builtin_parity.rs`). **The wire projection is now ALSO implemented, as a thin, disclosed slice**: `tool.spec/1` (`conway_plugin_subprocess::wire::WireManifest`/`WireTool`) is a real, one-shot-exec request a `SubprocessPlugin` sends once at `SubprocessPlugin::discover`, projecting `PluginManifest`/`ToolSpec` over JSON — see [`subprocess-plugins.md`](subprocess-plugins.md) for the full contract. Narrower than the design's own persistent-connection shape (disclosed on that page) |
 
 **`required_host_caps` is now consulted at registration.** A plugin declares
-what it needs (a `Vec<HostCapability>` -- a closed, `#[non_exhaustive]` enum
-in `crates/conway-core/src/ports/plugin.rs`, not a free-form `Vec<String>`
-the host never validates); the host separately grants, never implied by
-trust alone. The `conway` builder consults the field once per installed
-plugin at the manifest-validation seam (right where the duplicate-plugin-id
-check already runs, `crates/conway/src/builder.rs`), comparing each declared
-cap against what THIS host offers (`conway::HostCaps::from_config`); a cap
-the host does NOT offer is a `PluginError::MissingHostCapability` naming both
-the plugin and the cap, and the plugin is refused -- the narrowing direction
-(a plugin declares what it needs; the host refuses to load it if the host
-can't provide it). Empty `required_host_caps` (the common case -- "needs
-nothing the host might lack") is always satisfied. The initial cap set is
-minimal, each variant mapped to something real: `subagent` (fork/spawn a
-child session; required by the `conway.subagent` built-in, offered by the
-`conway` runtime which always provides a `SubagentHost`) and
-`persistent_transport` (the persistent NDJSON `tool/1` channel; offered iff
-at least one `[plugins].subprocess[]` entry is configured `persistent` -- a
-plugin requiring it against a one-shot-only host is refused). The wire
-projection carries the field too: `conway_plugin_subprocess::wire::
-WireManifest::required_host_caps` (`#[serde(default)]`, an unknown cap tag
-fails closed at parse -- a capability requirement is a gate, not a value
-that degrades). The glossary entry in `concepts.md` now states it is consumed
-("consulted at registration, never implied by trust alone"). This is no
-longer a declared field with zero consumers; it is a capability gate wired
-into the build.
+what it needs (a `Vec<HostCapability>` -- an OPEN, `#[non_exhaustive]` enum
+in `crates/conway-core/src/ports/plugin.rs`: two core-blessed bare names
+plus a shape-checked `Named(String)` catch-all, not a free-form
+`Vec<String>` the host never validates, since a malformed name still fails
+to parse); the host separately grants, never implied by trust alone. The
+`conway` builder consults the field once per installed plugin at the
+manifest-validation seam (right where the duplicate-plugin-id check already
+runs, `crates/conway/src/builder.rs`), comparing each declared cap against
+what THIS host offers (`conway::HostCaps::from_config`); a cap the host does
+NOT offer is a `PluginError::MissingHostCapability` naming both the plugin
+and the cap, and the plugin is refused -- the narrowing direction (a plugin
+declares what it needs; the host refuses to load it if the host can't
+provide it). Empty `required_host_caps` (the common case -- "needs nothing
+the host might lack") is always satisfied. The two core-blessed variants
+each map to something real: `subagent` (fork/spawn a child session;
+required by the `conway.subagent` built-in, offered by the `conway` runtime
+which always provides a `SubagentHost`) and `persistent_transport` (the
+persistent NDJSON `tool/1` channel; offered iff at least one
+`[plugins].subprocess[]` entry is configured `persistent` -- a plugin
+requiring it against a one-shot-only host is refused). A plugin may also
+declare any OTHER well-formed name via the open `Named` variant; nothing
+this host builds offers one today, so it is refused at this same gate. The
+wire projection carries the field too: `conway_plugin_subprocess::wire::
+WireManifest::required_host_caps` (`#[serde(default)]`). A MALFORMED cap
+tag still fails closed AT PARSE, unchanged; a WELL-FORMED but
+previously-unknown tag now parses (resolving to `HostCapability::Named`)
+and is refused HERE, at this registration gate, not at parse -- the
+fail-closed guarantee did not weaken, it moved and got sharper, naming both
+the plugin and the cap either way. The glossary entry in `concepts.md` now
+states it is consumed and open ("consulted at registration, never implied
+by trust alone"). This is no longer a declared field with zero consumers;
+it is a capability gate wired into the build.
 
 ### 2. Tool execution — `Tool::invoke`
 
@@ -333,7 +342,7 @@ three previously-divergent copies.
 | Receives / May return / failure modes | A plugin declares per-key `{ max_len, ttl_ms }` via `status.declare/1` at engagement, then PUSHES `status/1` notifications as no-`id` inbound NDJSON lines on its stdout: `{ "op": "status/1", "key": "..", "status": "..", "value": ".." }`. The host's reader routes no-`id` lines to a bounded notification channel (NOT `kill_all(MalformedFrame)`, the pre-observer posture), and a handler task parses each `status/1` line into a `WireStatusContribution { key, status, value }` and stores it by `key` in the session's shared status map. An unknown `ResultStatus` tag DEGRADES to `Failed { error: "unknown status tag: <tag>" }` (the compatibility table's `ResultStatus` row, never `Completed`) so the degradation is auditable in the value itself. A stale value expires at snapshot time and the render path never calls a plugin or blocks on one — the snapshot is a polled `HashMap` read, not a live call |
 | On error / timeout / garbage | A `status/1` line that fails to parse is dropped with a `tracing::warn` (never kills the session — the notification channel is observer-class). A FULL notification channel drops the line with a warn (bounded, drop+warn, never blocks the host turn — the SAME discipline `observe/1`'s bounded sink uses, for the SAME reason: an observer that blocks its own read loop must not stall the host turn). An unknown `ResultStatus` tag degrades to `Failed`, never to a session error |
 | When absent | `conway-cli`'s status line still reads only conway's own computed state; a plugin that does not declare `status.declare/1` contributes nothing (`Plugin::status_contributions` defaults to an empty `Vec`, and the host never sends an engagement request for the point — presence-gated, same rule as `observe/1`) |
-| Status | **Implemented** as the wire half over the persistent NDJSON transport (board item `01M03VKQ738DTGHHK2C4RWXC0E`), AFTER `initialize/1`, `permission.policy/1`, and `observe/1`. The host advertises `status.declare/1` at version 1 in `initialize/1`; a plugin that declares it at a SUPPORTED version (1) engages via `PersistentStatusDeclareRequest`/`PersistentStatusDeclareAnswer` (per-key `StatusDeclaration { key, max_len, ttl_ms }`); a plugin that declares it at an UNSUPPORTED version DEGRADES — the host WARNS and LOADS WITHOUT the point, it does NOT refuse (the observer rule, the OPPOSITE of `permission.policy/1`'s participant REFUSAL — see `an_unsupported_status_declare_version_degrades_not_refuses`); a plugin that declares NEITHER point loads normally and contributes no status (presence-gated). After engagement, the host's reader routes no-`id` stdout lines to a bounded `mpsc` notification channel (a SECOND reader task is NOT spawned — the EXISTING reader gained a no-`id` arm that `try_send`s into the channel, preserving the single-reader invariant), and a handler task drains the channel, parsing `status/1` lines into `WireStatusContribution` and storing them by `key`. `Plugin::status_contributions` returns a live snapshot of that map (polled — proven by `a_status_declaring_plugin_surfaces_contributions_with_unknown_degraded_to_failed`, which polls until both a known `Completed` and an unknown-tag-degraded-to-`Failed` contribution surface). Wire types: `conway_plugin_subprocess::wire::{PersistentStatusDeclareRequest, StatusDeclaration, WireStatusContribution, parse_status_notification, parse_persistent_status_declare_response}` (`crates/conway-plugin-subprocess/src/wire.rs`); session plumbing: `PersistentSession::request_status_declare`/`status_contributions` (`crates/conway-plugin-subprocess/src/session.rs`); trait surface: `Plugin::status_contributions` + `PluginStatusContribution` (`crates/conway-core/src/ports/plugin.rs`); facade wiring: `ConwayBuilder::build` collects the snapshot into `Conway::plugin_status_contributions` (`crates/conway/src/builder.rs`, `crates/conway/src/conway.rs`). **What REMAINS design-only:** the `ttl_ms`/`max_len` declarations are CARRIED by the wire type and stored on the session, but the snapshot does not yet EXPIRE stale values (no TTL sweep runs), and `conway-cli`'s TUI status line does not yet READ `plugin_status_contributions` — the wire half, the trait surface, and the facade snapshot are built; the TUI render path that would display them is not, and the TTL enforcement that would age them out is not. This row does not over-claim: the plugin can PUSH status and the host can POLL it; nobody RENDERS it yet |
+| Status | **Implemented** as the wire half over the persistent NDJSON transport (board item `01M03VKQ738DTGHHK2C4RWXC0E`), AFTER `initialize/1`, `permission.policy/1`, and `observe/1`. The host advertises `status.declare/1` at version 1 in `initialize/1`; a plugin that declares it at a SUPPORTED version (1) engages via `PersistentStatusDeclareRequest`/`PersistentStatusDeclareAnswer` (per-key `StatusDeclaration { key, max_len, ttl_ms }`); a plugin that declares it at an UNSUPPORTED version DEGRADES — the host WARNS and LOADS WITHOUT the point, it does NOT refuse (the observer rule, the OPPOSITE of `permission.policy/1`'s participant REFUSAL — see `an_unsupported_status_declare_version_degrades_not_refuses`); a plugin that declares NEITHER point loads normally and contributes no status (presence-gated). After engagement, the host's reader routes no-`id` stdout lines to a bounded `mpsc` notification channel (a SECOND reader task is NOT spawned — the EXISTING reader gained a no-`id` arm that `try_send`s into the channel, preserving the single-reader invariant), and a handler task drains the channel, parsing `status/1` lines into `WireStatusContribution` and storing them by `key`. `Plugin::status_contributions` returns a live snapshot of that map (polled — proven by `a_status_declaring_plugin_surfaces_contributions_with_unknown_degraded_to_failed`, which polls until both a known `Completed` and an unknown-tag-degraded-to-`Failed` contribution surface). Wire types: `conway_plugin_subprocess::wire::{PersistentStatusDeclareRequest, StatusDeclaration, WireStatusContribution, parse_status_notification, parse_persistent_status_declare_response}` (`crates/conway-plugin-subprocess/src/wire.rs`); session plumbing: `PersistentSession::request_status_declare`/`status_contributions` (`crates/conway-plugin-subprocess/src/session.rs`); trait surface: `Plugin::status_contributions` + `PluginStatusContribution` (`crates/conway-core/src/ports/plugin.rs`); facade wiring: `ConwayBuilder::build` collects the snapshot into `Conway::plugin_status_contributions` (`crates/conway/src/builder.rs`, `crates/conway/src/conway.rs`). **The TUI render path shipped (board item `01M0X1B7Z41J57N6YP2JFZ2AZW`):** `App::new` copies the snapshot into `AppState::plugin_status_contributions` at startup (`crates/conway-cli/src/tui/app/startup.rs`), and `crates/conway-cli/src/tui/view/status.rs` reads it to render each contribution on the status line — `conway-cli`'s TUI status line now DOES read `plugin_status_contributions`; it is not merely POLLED, it is RENDERED. **What REMAINS design-only:** the `ttl_ms`/`max_len` declarations are still only CARRIED by the wire type and stored on the session — no TTL sweep runs anywhere in the pipeline, so the snapshot does not yet EXPIRE a stale value (`crates/conway-plugin-subprocess/src/session.rs`'s own doc: "the ttl/expiry RENDER path itself stays design-only"); a plugin that stops updating a key leaves its last-pushed value on screen indefinitely rather than aging it out. This row does not over-claim in either direction: the plugin PUSHES status, the host POLLS and now RENDERS it, but nothing yet ages a stale value out |
 
 ### 13. Declarative script-fired hooks — the `hooks` configuration block
 

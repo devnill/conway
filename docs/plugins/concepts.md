@@ -343,12 +343,18 @@ separate, later work.
   `required_host_caps` at registration (the manifest-validation seam),
   comparing each declared cap against `conway::HostCaps::from_config` and
   refusing a plugin whose cap the host lacks with
-  `PluginError::MissingHostCapability`. The cap set is a closed,
-  `#[non_exhaustive]` `HostCapability` enum (not a free-form `Vec<String>`):
-  `subagent` (offered by the `conway` runtime's always-present
-  `SubagentHost`) and `persistent_transport` (offered iff a
-  `[plugins].subprocess[]` entry is configured `persistent`). Empty
-  `required_host_caps` means "needs nothing the host might lack."
+  `PluginError::MissingHostCapability`. The cap set is an **open**,
+  `#[non_exhaustive]` `HostCapability` enum, not a free-form `Vec<String>`
+  the host never validates: two core-blessed bare names, `subagent`
+  (offered by the `conway` runtime's always-present `SubagentHost`) and
+  `persistent_transport` (offered iff a `[plugins].subprocess[]` entry is
+  configured `persistent`), plus a shape-checked, catch-all `Named(String)`
+  variant for anything else a plugin declares (a malformed name still fails
+  to parse; only a well-formed, previously-unknown one succeeds). Opening
+  the vocabulary widened what PARSES, not what a host GRANTS — a cap the
+  host does not offer, whether one of the two core names or an open one,
+  still refuses the plugin at this same gate. Empty `required_host_caps`
+  means "needs nothing the host might lack."
 - **Trust subject** — the specific thing a trust decision is made about: in
   the full design, `(kind, id, content-digest)`; built today for exactly one
   kind, `(absolute path, content-digest)` for a project's `permissions.json`.

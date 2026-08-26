@@ -16,14 +16,21 @@ everything it cannot.
 
 ## What works, fully, end to end
 
-**MCP server declarations, and only MCP server declarations.** A
+**MCP server declarations translate and run with no fidelity caveat.** A
 directory's own `.mcp.json` (`{"mcpServers": {"<name>": {"command", "args",
 "env"}}}`) is translated into a real `conway_plugin_mcp::McpPluginSpec` and
 discovered through the identical `conway_plugin_mcp::McpPlugin::discover` ->
 `ConwayBuilder::with_plugin` path an operator-authored `[plugins].mcp[]`
 entry already uses. This is the one pairing that is a genuine structural
 match — both sides are stdio JSON-RPC with a `command`/`env` declaration —
-and it is the only kind this item wires to actually run.
+and it is the only kind translated here that needs no disclosure beyond
+this section: an MCP server declared in a Claude Code plugin behaves
+exactly as one hand-written in `[plugins].mcp[]` would. **It is not,
+however, the only kind this layer wires to actually run any more.**
+`hooks/hooks.json` and `commands/*.md` both now dispatch too — see the next
+section for exactly what each does and does not cover, including the
+payload-shape gap a dispatched hook still has against real Claude Code and
+the best-effort, non-parity ruling that governs a dispatched command.
 
 ```json
 {
