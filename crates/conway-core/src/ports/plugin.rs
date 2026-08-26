@@ -18,8 +18,8 @@ use crate::error::{CwdError, ToolError};
 use crate::event_name::{validate_event_name, EVENT_NAMESPACE_SEPARATOR};
 use crate::ids::{AgentId, LogSeq, ModelRef, SessionId, ToolName};
 use crate::ports::{
-    ArtifactWriteHandle, ContextPathHandle, EventSink, EventSinkHandle, SessionDiscoveryHandle,
-    SubagentHandle, SubagentHost,
+    ArtifactWriteHandle, CapabilityCallHandle, CapabilityRegistration, ContextPathHandle,
+    EventSink, EventSinkHandle, SessionDiscoveryHandle, SubagentHandle, SubagentHost,
 };
 use crate::segment::PromptSegment;
 
@@ -523,6 +523,55 @@ pub trait Plugin: Send + Sync + 'static {
     /// 12's own "Status" row); this method is the surface a future render path
     /// will read, exposed now so the wire half has a reachable consumer.
     fn status_contributions(&self) -> Vec<PluginStatusContribution> {
+        Vec::new()
+    }
+
+    /// Zero or more capabilities this plugin makes callable by ANOTHER
+    /// plugin -- Edge B, `docs/vision/DESIGN-plugin-dependencies.md` §2:
+    /// "every plugin that wants a checkbox reimplements a checkbox" is the
+    /// defect this method exists to close. The default returns none, the
+    /// SAME zero-cost-default precedent [`Self::commands`]/[`Self::events`]/
+    /// [`Self::observers`]/[`Self::status_contributions`] establish above:
+    /// every existing `Plugin` implementor -- every built-in, every
+    /// first-party plugin, every third party's -- keeps compiling
+    /// unmodified.
+    ///
+    /// **Deliberately a trait method, not a [`PluginManifest`] field.**
+    /// [`PluginManifest`] is constructed as a plain struct literal (no
+    /// `Default` impl) at three dozen call sites across this workspace --
+    /// see [`Self::instructions`]'s own doc for the identical argument
+    /// applied to a different method. A required field there breaks every
+    /// one of those call sites at once; a defaulted trait method breaks
+    /// none. This mirrors [`Self::tools`]'s own split exactly:
+    /// [`PluginManifest::tools`] is a plain `Vec<ToolName>` -- names only,
+    /// checkable without ever constructing a `Plugin` -- while
+    /// [`Self::tools`] (this trait) returns the actual `Arc<dyn Tool>`
+    /// objects. The STATIC declaration a resolution check can run over
+    /// ahead of any live plugin object is [`crate::ports::HostCapability`]-named,
+    /// carried by whatever `requires`/`optional` name a CONSUMER plugin
+    /// already writes (`PluginManifest::requires`/`::optional`'s own docs);
+    /// this method is the PROVIDER side's runtime registration, resolved
+    /// against those names by `crates/conway/src/builder.rs` at
+    /// `ConwayBuilder::build` -- see that module's own doc for the
+    /// closed-vocabulary check this makes possible ("does anything
+    /// installed actually provide this name", the missing piece
+    /// `crate::event_name`'s own doc records at §16.6 point 2, built here
+    /// for capabilities).
+    ///
+    /// **One vocabulary, not two.** Each `CapabilityRegistration::capability`
+    /// is a [`crate::ports::HostCapability`] -- the SAME open, namespaced
+    /// type `PluginManifest::required_host_caps`/`::optional_host_caps`
+    /// already validate through [`crate::event_name::validate_event_name`],
+    /// reused rather than a second, parallel capability-name type invented
+    /// for the plugin-to-plugin edge.
+    ///
+    /// See `crate::ports::capability`'s own module doc for the full
+    /// request/response channel this registers a provider onto:
+    /// [`CapabilityProvider`](crate::ports::CapabilityProvider),
+    /// [`CapabilityRegistry`](crate::ports::CapabilityRegistry), and the
+    /// `ToolCtx::capabilities` handle a consumer plugin's own
+    /// [`Tool::invoke`] calls through.
+    fn capabilities(&self) -> Vec<CapabilityRegistration> {
         Vec::new()
     }
 }
@@ -1971,6 +2020,27 @@ pub struct ToolCtx {
     /// Cross-session by construction -- unlike `context_path`, there is no
     /// single session to bind this to.
     pub session_discovery: SessionDiscoveryHandle,
+    /// **THE plugin -> plugin seam (Edge B,
+    /// `docs/vision/DESIGN-plugin-dependencies.md` §2) -- the one field on
+    /// this struct that reaches ANOTHER PLUGIN, not a host service.** Every
+    /// other handle here -- `events`, `subagents`, `plugin_events`,
+    /// `config`, `context_path`, `session_discovery` -- is backed by
+    /// something the HOST implements and offers uniformly to every plugin.
+    /// `capabilities` is different: a call through it is answered by
+    /// whichever OTHER installed plugin registered a
+    /// [`crate::ports::CapabilityProvider`] for the name this call asks
+    /// for (`crate::ports::capability`'s own module doc has the full
+    /// design). Request/response, one provider, one answer or one error --
+    /// *pull*, never *push* (design §7c); see [`CapabilityCallHandle`]'s own
+    /// doc for why this is not [`PluginEventHandle`] reused.
+    ///
+    /// Defaults to [`CapabilityCallHandle::noop`] wherever a construction
+    /// site does not care about this capability (this crate's own tests,
+    /// `conway-tools`' fixtures) -- the SAME "unconditional, no I/O,
+    /// refuses rather than silently succeeds" default every other
+    /// capability-bearing handle on this struct already uses
+    /// ([`ContextPathHandle::noop`], [`PluginEventHandle::noop`]).
+    pub capabilities: CapabilityCallHandle,
 }
 
 impl std::fmt::Debug for ToolCtx {
@@ -1987,6 +2057,7 @@ impl std::fmt::Debug for ToolCtx {
             .field("config", &self.config)
             .field("context_path", &self.context_path)
             .field("session_discovery", &self.session_discovery)
+            .field("capabilities", &self.capabilities)
             .finish()
     }
 }
@@ -2074,6 +2145,13 @@ impl ToolCtx {
             // struct-update syntax, mirroring `context_path` immediately
             // above.
             session_discovery: SessionDiscoveryHandle::noop(),
+            // Same reasoning again -- a fixture that DOES exercise a
+            // capability call builds its own `CapabilityCallHandle` (a
+            // real `CapabilityRegistry` seeded with one or more fixture
+            // `CapabilityProvider`s) and overrides this field via
+            // struct-update syntax, mirroring `context_path`/
+            // `session_discovery` immediately above.
+            capabilities: CapabilityCallHandle::noop("test"),
         }
     }
 }

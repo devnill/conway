@@ -1606,21 +1606,36 @@ impl ConwayBuilder {
         //       it (`tracing::warn!`, for a host with no reason to read
         //       `Conway::warnings()` at all, plus a `ConfigWarning` on that
         //       same accessor for a host that does).
+        //
+        //       Extended by board item `01M0WWNHQQYN1EVTH8WPZ33EBF` (Edge B's
+        //       capability CALL channel, `conway_core::ports::capability`'s
+        //       own module doc) to union each `requires`/`optional` entry
+        //       against `provided_caps` -- the capability names some
+        //       installed plugin's `Plugin::capabilities()` registers a
+        //       runtime provider for -- alongside the plugin-id set already
+        //       checked here, "one vocabulary, not two" applied to the SAME
+        //       `requires`/`optional` fields rather than a second, parallel
+        //       pair of capability-only lists.
         let installed_manifests: Vec<PluginManifest> =
             resolved_plugins.iter().map(|p| p.manifest()).collect();
+        let provided_caps = provided_capability_names(&resolved_plugins);
         detect_required_dependency_cycle(&installed_manifests).map_err(|err| {
             FacadeError::Build {
                 message: err.to_string(),
             }
         })?;
-        missing_required_dependency(&installed_manifests).map_err(|err| FacadeError::Build {
-            message: err.to_string(),
+        missing_required_dependency(&installed_manifests, &provided_caps).map_err(|err| {
+            FacadeError::Build {
+                message: err.to_string(),
+            }
         })?;
         // `warnings` was already rebound `mut` above, at the host-capability
         // gate (10a), so the optional-DEPENDENCY loop below can push onto
         // the SAME `Vec` the optional-host-capability loop above already
         // does.
-        for (plugin, dependency) in missing_optional_dependencies(&installed_manifests) {
+        for (plugin, dependency) in
+            missing_optional_dependencies(&installed_manifests, &provided_caps)
+        {
             tracing::warn!(
                 plugin = %plugin,
                 dependency = %dependency,
@@ -2169,20 +2184,33 @@ fn detect_required_dependency_cycle(
 }
 
 /// Checks every manifest's `PluginManifest::requires` against the id set
-/// `manifests` itself carries -- a plain membership test, no ordering
-/// question. Returns the FIRST missing required dependency as
-/// [`PluginError::MissingDependency`], naming both the dependent and the
-/// missing id. Called at `ConwayBuilder::build` with the FINAL installed
-/// set (built-ins ++ everything `install_selected`/`with_plugin` added),
-/// which is the only point this crate has full visibility into that set --
-/// see `PluginManifest::requires`'s own doc.
+/// `manifests` itself carries, UNION the set of capability names some
+/// installed plugin's `Plugin::capabilities()` provides (`provided_caps`) --
+/// Edge B (`docs/vision/DESIGN-plugin-dependencies.md` §2): a `requires`
+/// entry is satisfied by EITHER an installed plugin id OR a provided
+/// capability name, "one vocabulary, not two" applied to the SAME field
+/// rather than a second, parallel `requires_capability` list. A plain
+/// membership test, no ordering question. Returns the FIRST missing
+/// required dependency as [`PluginError::MissingDependency`], naming both
+/// the dependent and the missing id/capability. Called at
+/// `ConwayBuilder::build` with the FINAL installed set (built-ins ++
+/// everything `install_selected`/`with_plugin` added), which is the only
+/// point this crate has full visibility into that set -- see
+/// `PluginManifest::requires`'s own doc.
+///
+/// This is the "does anything installed actually provide this name" check
+/// `crate::event_name`'s own doc records as missing one layer down (§16.6
+/// point 2), built here for capabilities: a `requires` naming a capability
+/// nothing provides now fails the SAME way a `requires` naming an absent
+/// plugin id already did, rather than resolving to silence.
 fn missing_required_dependency(
     manifests: &[PluginManifest],
+    provided_caps: &HashSet<String>,
 ) -> std::result::Result<(), PluginError> {
     let ids: HashSet<&str> = manifests.iter().map(|m| m.id.as_str()).collect();
     for manifest in manifests {
         for dep in &manifest.requires {
-            if !ids.contains(dep.as_str()) {
+            if !ids.contains(dep.as_str()) && !provided_caps.contains(dep.as_str()) {
                 return Err(PluginError::MissingDependency {
                     plugin: manifest.id.clone(),
                     dependency: dep.clone(),
@@ -2194,18 +2222,22 @@ fn missing_required_dependency(
 }
 
 /// The `optional` counterpart of [`missing_required_dependency`]: every
-/// `(dependent id, missing dependency id)` pair for a `PluginManifest::
-/// optional` entry absent from the final installed set. Never an error --
-/// an optional dependency's absence degrades rather than refuses
-/// (`PluginManifest::optional`'s own doc) -- the caller (`ConwayBuilder::
-/// build`) turns each pair into a `tracing::warn!` and a `ConfigWarning`
-/// rather than failing the build.
-fn missing_optional_dependencies(manifests: &[PluginManifest]) -> Vec<(String, String)> {
+/// `(dependent id, missing dependency-or-capability id)` pair for a
+/// `PluginManifest::optional` entry absent from the final installed set AND
+/// from `provided_caps` (see that function's own doc for the union rule).
+/// Never an error -- an optional dependency's absence degrades rather than
+/// refuses (`PluginManifest::optional`'s own doc) -- the caller
+/// (`ConwayBuilder::build`) turns each pair into a `tracing::warn!` and a
+/// `ConfigWarning` rather than failing the build.
+fn missing_optional_dependencies(
+    manifests: &[PluginManifest],
+    provided_caps: &HashSet<String>,
+) -> Vec<(String, String)> {
     let ids: HashSet<&str> = manifests.iter().map(|m| m.id.as_str()).collect();
     let mut missing = Vec::new();
     for manifest in manifests {
         for dep in &manifest.optional {
-            if !ids.contains(dep.as_str()) {
+            if !ids.contains(dep.as_str()) && !provided_caps.contains(dep.as_str()) {
                 missing.push((manifest.id.clone(), dep.clone()));
             }
         }
@@ -2213,14 +2245,34 @@ fn missing_optional_dependencies(manifests: &[PluginManifest]) -> Vec<(String, S
     missing
 }
 
+/// The set of capability names (`HostCapability::as_wire_str`) some
+/// installed plugin's `Plugin::capabilities()` registers a provider for --
+/// the STATIC input [`missing_required_dependency`]/
+/// [`missing_optional_dependencies`] union against each manifest's own id
+/// set. Deliberately takes `&[Arc<dyn Plugin>]`, not `&[PluginManifest]`: a
+/// provided capability is a RUNTIME registration (`Plugin::capabilities`'s
+/// own doc: the runtime half of a declaration, mirroring `Plugin::tools`
+/// vs `PluginManifest::tools`), not manifest data, so it cannot be read
+/// from a manifest alone.
+fn provided_capability_names(plugins: &[Arc<dyn Plugin>]) -> HashSet<String> {
+    plugins
+        .iter()
+        .flat_map(|p| p.capabilities())
+        .map(|registration| registration.capability.as_wire_str().to_string())
+        .collect()
+}
+
 #[cfg(test)]
 mod plugin_dependency_resolution_tests {
-    //! Unit coverage for the three free functions above
+    //! Unit coverage for the four free functions above
     //! ([`detect_required_dependency_cycle`], [`missing_required_dependency`],
-    //! [`missing_optional_dependencies`]) directly, at the graph-algorithm
-    //! level -- distinct from `crates/conway/tests/install_selected.rs`'s
-    //! (`::build`) end-to-end coverage of the SAME behaviour through the
-    //! real facade, and from `crates/conway/tests/builder.rs`'s own
+    //! [`missing_optional_dependencies`], [`provided_capability_names`])
+    //! directly, at the graph-algorithm level -- distinct from
+    //! `crates/conway/tests/install_selected.rs`'s (`::build`) end-to-end
+    //! coverage of the plugin-id case through the real facade,
+    //! `crates/conway/tests/capability_channel.rs`'s equivalent end-to-end
+    //! coverage of the Edge B capability case, and from
+    //! `crates/conway/tests/builder.rs`'s own
     //! `a_requires_edge_does_not_reorder_instruction_fragment_precedence`
     //! (the injection-order/resolution-order separation this graph exists
     //! to serve, without itself deciding).
@@ -2239,12 +2291,16 @@ mod plugin_dependency_resolution_tests {
         }
     }
 
+    fn no_caps() -> HashSet<String> {
+        HashSet::new()
+    }
+
     #[test]
     fn no_edges_is_never_a_cycle_or_missing() {
         let manifests = vec![manifest("a", &[], &[]), manifest("b", &[], &[])];
         assert!(detect_required_dependency_cycle(&manifests).is_ok());
-        assert!(missing_required_dependency(&manifests).is_ok());
-        assert!(missing_optional_dependencies(&manifests).is_empty());
+        assert!(missing_required_dependency(&manifests, &no_caps()).is_ok());
+        assert!(missing_optional_dependencies(&manifests, &no_caps()).is_empty());
     }
 
     #[test]
@@ -2254,7 +2310,7 @@ mod plugin_dependency_resolution_tests {
             manifest("base", &[], &[]),
         ];
         assert!(detect_required_dependency_cycle(&manifests).is_ok());
-        assert!(missing_required_dependency(&manifests).is_ok());
+        assert!(missing_required_dependency(&manifests, &no_caps()).is_ok());
     }
 
     #[test]
@@ -2302,7 +2358,7 @@ mod plugin_dependency_resolution_tests {
     #[test]
     fn missing_required_dependency_names_both_sides() {
         let manifests = vec![manifest("dependent", &["missing.base"], &[])];
-        let err = missing_required_dependency(&manifests)
+        let err = missing_required_dependency(&manifests, &no_caps())
             .expect_err("a requires edge to an absent id must be refused");
         match err {
             PluginError::MissingDependency { plugin, dependency } => {
@@ -2319,19 +2375,148 @@ mod plugin_dependency_resolution_tests {
             manifest("a", &[], &["missing.one"]),
             manifest("b", &[], &["missing.two"]),
         ];
-        let missing = missing_optional_dependencies(&manifests);
+        let missing = missing_optional_dependencies(&manifests, &no_caps());
         assert_eq!(missing.len(), 2);
         assert!(missing.contains(&("a".to_string(), "missing.one".to_string())));
         assert!(missing.contains(&("b".to_string(), "missing.two".to_string())));
         // Never an error -- optional absence degrades, it never refuses.
         assert!(detect_required_dependency_cycle(&manifests).is_ok());
-        assert!(missing_required_dependency(&manifests).is_ok());
+        assert!(missing_required_dependency(&manifests, &no_caps()).is_ok());
     }
 
     #[test]
     fn a_present_optional_dependency_is_not_reported_missing() {
         let manifests = vec![manifest("a", &[], &["b"]), manifest("b", &[], &[])];
-        assert!(missing_optional_dependencies(&manifests).is_empty());
+        assert!(missing_optional_dependencies(&manifests, &no_caps()).is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // Edge B: a `requires`/`optional` entry satisfied by a PROVIDED
+    // capability rather than a plugin id (board item
+    // `01M0WWNHQQYN1EVTH8WPZ33EBF`, acceptance 2/3).
+    // -----------------------------------------------------------------
+
+    fn caps(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_requires_edge_satisfied_by_a_provided_capability_is_not_missing() {
+        // "dependent" requires "acme.ui.checkbox" -- no PLUGIN named that,
+        // but SOME installed plugin's `Plugin::capabilities()` provides it.
+        let manifests = vec![manifest("dependent", &["acme.ui.checkbox"], &[])];
+        assert!(
+            missing_required_dependency(&manifests, &caps(&["acme.ui.checkbox"])).is_ok(),
+            "a provided capability satisfies a requires entry exactly as an installed plugin id does"
+        );
+    }
+
+    #[test]
+    fn missing_required_dependency_names_the_unprovided_capability() {
+        // Nothing installed is named "acme.ui.checkbox" AND no installed
+        // plugin provides a capability by that name -- must fail the SAME
+        // way a `requires` naming an absent plugin id already does, not
+        // resolve to silence.
+        let manifests = vec![manifest("dependent", &["acme.ui.checkbox"], &[])];
+        let err = missing_required_dependency(&manifests, &no_caps())
+            .expect_err("a requires entry naming an unprovided capability must be refused");
+        match err {
+            PluginError::MissingDependency { plugin, dependency } => {
+                assert_eq!(plugin, "dependent");
+                assert_eq!(dependency, "acme.ui.checkbox");
+            }
+            other => panic!("expected MissingDependency, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_optional_capability_nothing_provides_degrades_not_errors() {
+        let manifests = vec![manifest("dependent", &[], &["acme.ui.checkbox"])];
+        let missing = missing_optional_dependencies(&manifests, &no_caps());
+        assert_eq!(
+            missing,
+            vec![("dependent".to_string(), "acme.ui.checkbox".to_string())]
+        );
+        assert!(missing_required_dependency(&manifests, &no_caps()).is_ok());
+    }
+
+    #[test]
+    fn an_optional_capability_something_provides_is_not_reported_missing() {
+        let manifests = vec![manifest("dependent", &[], &["acme.ui.checkbox"])];
+        assert!(missing_optional_dependencies(&manifests, &caps(&["acme.ui.checkbox"])).is_empty());
+    }
+
+    /// A minimal fixture `Plugin` that provides one or more capabilities --
+    /// used only to exercise [`provided_capability_names`] itself, which
+    /// (unlike the two functions above) reads live `Plugin::capabilities()`
+    /// registrations rather than manifest data.
+    struct ProvidingPlugin {
+        id: &'static str,
+        provides: Vec<&'static str>,
+    }
+
+    struct EchoProvider;
+
+    #[async_trait::async_trait]
+    impl conway_core::ports::CapabilityProvider for EchoProvider {
+        async fn call(
+            &self,
+            payload: serde_json::Value,
+        ) -> std::result::Result<serde_json::Value, conway_core::ports::CapabilityError> {
+            Ok(payload)
+        }
+    }
+
+    impl Plugin for ProvidingPlugin {
+        fn manifest(&self) -> PluginManifest {
+            PluginManifest {
+                id: self.id.to_string(),
+                version: "0.0.0".to_string(),
+                tools: vec![],
+                required_host_caps: vec![],
+                optional_host_caps: vec![],
+                requires: vec![],
+                optional: vec![],
+            }
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn conway_core::ports::Tool>> {
+            vec![]
+        }
+
+        fn capabilities(&self) -> Vec<conway_core::ports::CapabilityRegistration> {
+            self.provides
+                .iter()
+                .map(|name| conway_core::ports::CapabilityRegistration {
+                    capability: conway_core::ports::HostCapability::named(*name).unwrap(),
+                    provider: Arc::new(EchoProvider)
+                        as Arc<dyn conway_core::ports::CapabilityProvider>,
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn provided_capability_names_collects_every_installed_plugins_registrations() {
+        let plugins: Vec<Arc<dyn Plugin>> = vec![
+            Arc::new(ProvidingPlugin {
+                id: "acme.ui",
+                provides: vec!["acme.ui.checkbox", "acme.ui.select"],
+            }),
+            Arc::new(ProvidingPlugin {
+                id: "acme.other",
+                provides: vec!["acme.other.thing"],
+            }),
+            Arc::new(ProvidingPlugin {
+                id: "acme.silent",
+                provides: vec![],
+            }),
+        ];
+        let names = provided_capability_names(&plugins);
+        assert_eq!(
+            names,
+            caps(&["acme.ui.checkbox", "acme.ui.select", "acme.other.thing"])
+        );
     }
 }
 
