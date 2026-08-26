@@ -28,6 +28,8 @@ use conway_core::hook::{HookEvent, HookInvocation, HookOnFailure, HookPermission
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{HookRunner, PathArgs, PermissionGate, RenderKind};
 
+use crate::permission_mode::DeclaredModeRef;
+
 use crate::events::EventBus;
 
 /// The already-prefixed per-agent plugin-config key `conway_tools::fs`'s
@@ -681,6 +683,23 @@ pub struct PermissionBroker {
     /// [`PermissionBroker::set_mode`] so `/settings` can switch out of an
     /// over-broad mode mid-session without a restart.
     mode: RwLock<PermissionMode>,
+    /// V2c: which plugin-declared mode (if any) the operator is CURRENTLY
+    /// displaying as active -- board item `01M0X4YDNVP7TZ0PVSRJ0388SS`, see
+    /// `crate::permission_mode`'s own module doc for the full argument.
+    ///
+    /// **Pure bookkeeping, read by NOTHING in `Self::decide`.** `mode`
+    /// above remains the ONLY field `decide()` consults to answer "what
+    /// does the current mode allow" (steering P-14: one implementation) --
+    /// this field exists solely so a display surface (the status line, the
+    /// mode cycle) can show a plugin's own name instead of a bare core
+    /// label, and so `crate::permission_mode::ModeCycle::reconcile_active`
+    /// has something to reconcile against when a plugin is uninstalled.
+    /// Selecting a declared mode always writes BOTH fields together via
+    /// [`Self::select_mode_cycle_entry`], the same "both are written here,
+    /// together" precedent [`Self::set_mode`]'s own callers (the app loop)
+    /// already establish for `mode` and its `AppState` mirror -- so `mode`
+    /// can never disagree with what a `Declared` selection actually meant.
+    active_declared_mode: RwLock<Option<DeclaredModeRef>>,
     /// V2: prefix-pattern ALLOW grants, paired with the scope they were
     /// granted at and where they came from. Checked BEFORE the gate, so a
     /// matching pattern spares the operator a prompt -- but never for a
@@ -821,6 +840,7 @@ impl PermissionBroker {
             bus,
             cache: RwLock::new(HashMap::new()),
             mode: RwLock::new(PermissionMode::default()),
+            active_declared_mode: RwLock::new(None),
             patterns: RwLock::new(Vec::new()),
             deny_patterns: RwLock::new(Vec::new()),
             prompt_patterns: RwLock::new(Vec::new()),
@@ -887,6 +907,52 @@ impl PermissionBroker {
     /// without restarting the session.
     pub fn set_mode(&self, mode: PermissionMode) {
         *self.mode.write().expect("permission mode poisoned") = mode;
+    }
+
+    /// The plugin-declared mode currently displayed as active, if any --
+    /// `None` means the operator is in a plain core mode. See the
+    /// `active_declared_mode` field's own doc (private, above) for why
+    /// `Self::mode` remains the sole enforcement authority regardless of
+    /// this value.
+    pub fn active_declared_mode(&self) -> Option<DeclaredModeRef> {
+        self.active_declared_mode
+            .read()
+            .expect("active declared mode poisoned")
+            .clone()
+    }
+
+    /// Sets which declared mode is displayed as active, independent of
+    /// [`Self::set_mode`] -- prefer [`Self::select_mode_cycle_entry`] for
+    /// selecting a whole [`crate::permission_mode::ModeCycleEntry`], which
+    /// writes both fields together. Exposed on its own for the uninstall
+    /// path: `crate::permission_mode::ModeCycle::reconcile_active` decides
+    /// whether the CURRENT value survives a plugin uninstall, and its
+    /// caller writes the (possibly now-`None`) result back here without
+    /// touching `Self::mode` at all -- the base mode was never anything
+    /// but one of the closed three, so it needs no correction.
+    pub fn set_active_declared_mode(&self, declared: Option<DeclaredModeRef>) {
+        *self
+            .active_declared_mode
+            .write()
+            .expect("active declared mode poisoned") = declared;
+    }
+
+    /// Selects one [`crate::permission_mode::ModeCycleEntry`] -- the ONE
+    /// place selecting a cycle entry (core or declared) is meant to happen,
+    /// so `Self::mode` and `Self::active_declared_mode` are always written
+    /// together and can never drift apart the way an ad hoc "write mode,
+    /// then separately remember to write the declared ref" call site
+    /// could. Mirrors the app loop's own "both are written here, together"
+    /// comment for `Conway::set_permission_mode` and `AppState::
+    /// permission_mode`, one layer down at the broker itself.
+    ///
+    /// `entry.base()` is the ONLY thing this reads off `entry` for
+    /// enforcement (steering P-14) -- `entry.declared_ref()` is purely the
+    /// display/bookkeeping half, `None` for a `Core` entry and `Some` for a
+    /// `Declared` one.
+    pub fn select_mode_cycle_entry(&self, entry: &crate::permission_mode::ModeCycleEntry) {
+        self.set_mode(entry.base());
+        self.set_active_declared_mode(entry.declared_ref());
     }
 
     /// Installs a pattern ALLOW grant at `scope`, attributed to `origin`
@@ -2957,6 +3023,138 @@ mod tests {
             1,
             "the hook step DOES run here (it precedes plan mode in decide()'s own order) -- \
              it is the RESULT (must_reach_gate, not a bypass) that plan mode still overrides"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Plugin-declared permission modes (board item
+    // `01M0X4YDNVP7TZ0PVSRJ0388SS`, `crate::permission_mode`). `Self::mode`
+    // stays the ONLY field `decide()` ever reads; `active_declared_mode` is
+    // pure bookkeeping. These tests pin that structurally: selecting a
+    // declared mode can never change `decide()`'s own answer beyond what
+    // selecting its bare `base` already would.
+    // ---------------------------------------------------------------------
+
+    /// `active_declared_mode` round-trips through
+    /// `set_active_declared_mode`/`active_declared_mode`, independent of
+    /// `mode`/`set_mode` -- the two fields are genuinely separate storage,
+    /// not one derived from the other.
+    #[tokio::test]
+    async fn active_declared_mode_round_trips_independent_of_mode() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate, EventBus::new(64));
+        assert_eq!(broker.active_declared_mode(), None);
+
+        let declared = DeclaredModeRef {
+            plugin_id: "conway.permissions".to_string(),
+            name: "auto-gated".to_string(),
+        };
+        broker.set_active_declared_mode(Some(declared.clone()));
+        assert_eq!(broker.active_declared_mode(), Some(declared));
+        // `mode` is untouched by `set_active_declared_mode` alone -- still
+        // the constructor default, `Prompt`.
+        assert_eq!(broker.mode(), PermissionMode::default());
+
+        broker.set_active_declared_mode(None);
+        assert_eq!(broker.active_declared_mode(), None);
+    }
+
+    /// `select_mode_cycle_entry` writes both fields together: selecting a
+    /// `Declared` entry sets `mode` to the entry's own `base` AND records
+    /// the declared ref; selecting a `Core` entry sets `mode` and clears
+    /// `active_declared_mode`.
+    #[tokio::test]
+    async fn select_mode_cycle_entry_writes_mode_and_declared_ref_together() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate, EventBus::new(64));
+
+        let declared_entry = crate::permission_mode::ModeCycleEntry::Declared {
+            plugin_id: "conway.permissions".to_string(),
+            name: "auto-gated".to_string(),
+            base: PermissionMode::AutoAllow,
+        };
+        broker.select_mode_cycle_entry(&declared_entry);
+        assert_eq!(broker.mode(), PermissionMode::AutoAllow);
+        assert_eq!(
+            broker.active_declared_mode(),
+            Some(DeclaredModeRef {
+                plugin_id: "conway.permissions".to_string(),
+                name: "auto-gated".to_string(),
+            })
+        );
+
+        let core_entry = crate::permission_mode::ModeCycleEntry::Core(PermissionMode::Plan);
+        broker.select_mode_cycle_entry(&core_entry);
+        assert_eq!(broker.mode(), PermissionMode::Plan);
+        assert_eq!(
+            broker.active_declared_mode(),
+            None,
+            "selecting a Core entry must clear whatever declared ref was active before it"
+        );
+    }
+
+    /// **Acceptance 3, the structural half.** A `Plan`-based declared mode
+    /// is selected via `select_mode_cycle_entry` exactly as a plugin's own
+    /// UI trigger would -- `decide()`'s plan-mode denial fires IDENTICALLY
+    /// to `plan_mode_denial_beats_plugin_prompt`'s own bare-`Plan` case
+    /// (see that test's own doc, above the `permission.policy/1`
+    /// subordination section). Because `decide()` never reads
+    /// `active_declared_mode` at all, this cannot be explained by a
+    /// declared-mode-aware code path getting the right answer -- there is
+    /// no such path to get right or wrong; `mode` alone decides, exactly as
+    /// it did before this field existed.
+    #[tokio::test]
+    async fn declared_plan_mode_denies_execute_exactly_like_bare_plan_mode() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        broker.select_mode_cycle_entry(&crate::permission_mode::ModeCycleEntry::Declared {
+            plugin_id: "acme.strict".to_string(),
+            name: "strict-plan".to_string(),
+            base: PermissionMode::Plan,
+        });
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "a Plan-based declared mode must deny Execute exactly like bare Plan mode: \
+             {outcome:?}"
+        );
+        assert_eq!(
+            gate.call_count(),
+            0,
+            "plan mode's own refusal fires before the gate, regardless of whether the \
+             session got there via a bare `set_mode(Plan)` or a declared-mode selection"
+        );
+    }
+
+    /// The `AutoAllow` counterpart: a declared `AutoAllow`-based mode
+    /// allows exactly what bare `AutoAllow` allows -- selecting a declared
+    /// name never narrows OR widens `decide()`'s own answer for a call the
+    /// base mode alone would already resolve.
+    #[tokio::test]
+    async fn declared_auto_allow_mode_allows_exactly_like_bare_auto_allow_mode() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        broker.select_mode_cycle_entry(&crate::permission_mode::ModeCycleEntry::Declared {
+            plugin_id: "conway.permissions".to_string(),
+            name: "auto-gated".to_string(),
+            base: PermissionMode::AutoAllow,
+        });
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        assert_eq!(outcome, PermissionOutcome::Allow);
+        assert_eq!(
+            gate.call_count(),
+            0,
+            "AutoAllow (declared or bare) never reaches the gate for an ordinary call"
         );
     }
 

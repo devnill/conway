@@ -72,6 +72,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capability through this channel, which is the disclosed next step, not
   built here. No actual capability ships in this item (no `conway.ui`, no
   UI) — this is the channel only.
+- **Plugin-declared permission modes — a name plus a narrowing, layered on
+  a base core mode** — board item `01M0X4YDNVP7TZ0PVSRJ0388SS`, new page
+  `docs/plugins/permission-modes.md`. `PermissionMode` stays a closed
+  three-variant enum; `Plugin::permission_modes()` (zero-cost default, so
+  every existing `Plugin` implementor keeps compiling unmodified) lets a
+  plugin declare `PluginDeclaredMode { name, base }` — a display name over
+  one of the three core modes. **Structurally cannot be more permissive
+  than its base**: the type carries exactly one field anything permission-
+  related ever reads (`base`), the same "nothing to widen" shape
+  `HookOnFailure`/`HookPermissionVerdict`/`PluginPermissionVerdict` already
+  use one level down. New `conway_runtime::permission_mode` module:
+  `ModeCycle` computes the Shift+Tab cycle deterministically (three core
+  modes, then declared modes sorted by name, independent of plugin install
+  order), excludes — never silently picks — a name two plugins collide on
+  (naming both), and reconciles a session's active declared mode back to a
+  plain core label when its declaring plugin is uninstalled, rather than
+  leaving a dangling name. `PermissionBroker` gains
+  `active_declared_mode`/`set_active_declared_mode`/
+  `select_mode_cycle_entry`, pure display bookkeeping `decide()` never
+  reads — `decide()` remains the ONE place a mode's enforcement is decided,
+  never duplicated into a second place, unchanged by this item. **An
+  `AutoAllow`-based declared
+  mode's display label always carries the base's own unmodified
+  `"AUTO-ALLOW"` warning verbatim** (`"auto-gated (AUTO-ALLOW)"`, never a
+  softened paraphrase) — an inference-gated mode is full permission
+  filtered by a model, not a safer mode, and its status-line presentation
+  must not imply otherwise (design
+  `docs/vision/DESIGN-permission-modes.md` §3b, corrected in place after an
+  earlier draft had this backwards). **Not yet wired**: the
+  `crates/conway/src/*` facade change that gathers a real plugin's declared
+  modes at startup and drives `Action::CyclePermissionMode` through them —
+  today every build still cycles exactly the three core modes, byte-
+  identically to before this item — and `Plugin::hooks()` itself, which a
+  declared mode's own classifier ultimately needs and which is deliberately
+  a separate item's job (design §6c) rather than built only for this one
+  consumer.
+
 - **A migration guide for operators coming from Claude Code's
   `settings.json`** — board item `01M0X4Z8B8ZWCHABMQAE9KFWHF`, new page
   `docs/migrating-from-claude-code.md`. Triages every key in a real

@@ -72,6 +72,18 @@ pub enum Action {
     /// `BackTab`/`Tab`+`SHIFT` arm) -- both paths return this same variant,
     /// never a separate one, so the app loop's single handling arm covers
     /// either origin identically.
+    ///
+    /// **V2c (board item `01M0X4YDNVP7TZ0PVSRJ0388SS`): this variant's own
+    /// meaning does not change** -- it still says "advance one step" and
+    /// carries no payload of its own. What the app loop's single handling
+    /// arm resolves it AGAINST is what grows: `crate::tui::state::
+    /// AppState::declared_modes` (today always empty, since nothing yet
+    /// populates it -- see that field's own doc) alongside the three core
+    /// modes, via `conway_runtime::permission_mode::ModeCycle` (the ONE
+    /// cycle-order/collision/uninstall-reconciliation implementation,
+    /// steering P-14) once the facade wiring this item names as a
+    /// follow-up lands. Until then this key/action keeps cycling exactly
+    /// the three core modes, byte-identically to before this item.
     CyclePermissionMode,
     /// V2b: drop every pattern grant and cached allow-always.
     RevokePermissionGrants,
