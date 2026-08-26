@@ -1,188 +1,209 @@
 # Plan of attack
 
-**Written 2026-08-24 from [`STATE-OF-THE-UNION.md`](STATE-OF-THE-UNION.md),
-against the working tree at `7654041`. Filed to the board 2026-08-24.**
+**Written 2026-08-26 from [`STATE-OF-THE-UNION.md`](STATE-OF-THE-UNION.md),
+against the working tree at `bc2a174`.**
 
 > For the agents doing the work. Snapshot document — replaced wholesale on the
 > next run of [`REVIEW-PROMPT.md`](REVIEW-PROMPT.md), not merged into.
 >
 > **The board is the authority; this page is the dispatch aid.** Every item
-> below exists on the board with its full spec; the id is the thing to claim.
-> What this page adds is what a board cannot express: which items collide, and
-> the order shared files must be touched in.
+> below already exists on the board, with its full spec, its own size, and
+> (where recorded) its own `depends_on` edges — the id is the thing to claim.
+> **Every item below was cross-checked against `work_list(status:"done")`
+> immediately before writing this page; none is finished work.** What this
+> page adds is what the board cannot express on its own: which items collide
+> on a file, and the order that forces.
 >
-> | Item | Board id | | Item | Board id |
-> | --- | --- | --- | --- | --- |
-> | REC-1 | `01M0TV3R2T4ZEDR1G7JG5QJ887` | | EMB-2 | `01M0TV643ZWRSR8Q79Z4Q1KVR5` |
-> | REC-2 | `01M0TV447NAJ1R06S455DZPP54` | | CON-1 | `01M0TV6E2K6QF9VXP6C7TFH06X` |
-> | REC-3 | `01M0TV7GFSNNRZV522XCRMTHVX` | | CON-2 | `01M0TV7ZDS8X4F4TEJPRZB9P6T` |
-> | OP-1 | `01M0TV4J05PYE8PG6YTV0HX5HN` | | CON-3 | `01M0TV6WNCZ58N5BBGYWT6J06A` |
-> | OP-2 | `01M0TV4Y1K9ESJQ4PDRCP7R3FA` | | CON-4 | `01M0TV8MSFRHHQ5BNZV3NHZCEW` |
-> | OP-3 | `01M0TV5CYSP844XR8PJ59D8QM4` | | OP-4 | `01M0TNCAP1HH4YNC5K9753YG26` |
-> | EMB-1 | `01M0TV5PN8RR9NN97AWP09E6K7` | | OP-5 | `01M0TNBACHQSAMMJ3TY14S47MX` |
->
-> Fan-out is chosen at dispatch time. Honour the collision table and the
-> serialisation notes rather than the domain count.
+> **This round is different from the last one.** The 2026-08-24 plan (REC/OP/
+> EMB/CON, 14 items) is the reason this page exists — it is the thing that
+> finished, silently, while its own record sat unregenerated for 138 commits.
+> This page does not re-propose a single item from it. Everything below is
+> either one of today's six audit findings or one of two programs (permission
+> modes, plugin dependencies) opened by the two prior agent waves and still
+> mid-flight.
 
 ---
 
 ## 0. Board state
 
-Surveyed live (MCP) during this review: **2 open items, 0 in progress, no
-stale claims**. Both open items are from the 2026-08-24 cycle review, both are
-claimable, and both fold into the operator domain below:
+Surveyed live (MCP) 2026-08-26: **12 open, 6 in progress, 0 stale claims, 0
+cancelled-but-listed.** Nothing below double-counts a done item — the done
+list (110+ items, paged) was read in full for REC/OP/EMB/CON and spot-checked
+for every id this page names.
 
-| Open on the board | Folded in as |
-| --- | --- |
-| `01M0TNCAP1HH4YNC5K9753YG26` — /tree prints a full agent id, /agents a short one, /tree's doc claims they match | OP-4 |
-| `01M0TNBACHQSAMMJ3TY14S47MX` — /ask pull-in is not atomic; failure halfway leaves an orphan | OP-5 |
+Two board items are explicitly **not** dispatch targets for anyone reading
+this page, named here only so the collision table below is honest:
 
-The six operator questions in `STATE-OF-THE-UNION.md` §7 were **answered
-2026-08-24** — the accepted sentiments are folded into `INTENT.md` (§7, §7a,
-§7b, §7c, §8.10) and `DESIGN-context-path.md` §10 is closed. Every item below
-is claimable the moment it is filed.
+- `01M0XRKQTAB9C2GNQJ72YDM9WA` (in progress) — loops the three living design
+  records (`DESIGN-plugin-dependencies.md`, `DESIGN-permission-modes.md`,
+  `CATALOGUE.md`) back to the code that closed their gaps same-day. Already
+  claimed; its owner already holds those three files this round.
+- The plugin-tier enumeration gap `STATE-OF-THE-UNION.md` §1 found (thirteen
+  crates listed in `ARCHITECTURE.md` §2b, sixteen on disk) **has no board
+  item.** It is real, cited, and deliberately not filed by this item — filing
+  is a refine-cycle action, not a docs-regeneration one. Flagged for the next
+  cycle rather than silently absorbed here.
 
 ---
 
 ## 1. Domains and the collision table
 
-Four domains, workable in parallel. Each names the files it owns this round;
-nobody else touches them.
+Four live programs, not the four domains of the last round — the shape
+follows what is actually on the board, not a fixed template.
 
-| Domain | Owns this round |
-| --- | --- |
-| **D-REC** — the record | `ARCHITECTURE.md`, `PHILOSOPHY.md` §6, `docs/README.md`, `docs/plugins/README.md`, `docs/vision/DESIGN-context-path.md`, doc comments in `crates/conway-core/src/{path,log}.rs` and `crates/conway-runtime/src/runtime.rs`, the enum-guard test |
-| **D-OP** — operator surface | `crates/conway-cli/**`, `docs/scripting.md`, `docs/sessions.md`, `docs/interactive.md` |
-| **D-EMB** — embedding | `crates/conway/src/{builder,host_caps}.rs`, `crates/conway-core/src/ports/subagent.rs`, a new survey doc under `docs/vision/` |
-| **D-CON** — consolidation | `crates/conway-plugin-mcp/**`, `crates/conway-plugin-subprocess/**`, `crates/conway-tools/src/process.rs`, `crates/conway/src/error.rs`, `crates/conway-testkit/**` |
-
-Shared files, their single owner, and the serialisation order:
-
-| Shared file | Owner | Order notes |
+| Program | What it covers | Board items |
 | --- | --- | --- |
-| `PHILOSOPHY.md` | D-REC | only REC-3 touches it this round |
-| `ARCHITECTURE.md` | D-REC | only REC-3 |
-| `Cargo.toml` (workspace + crate manifests) | D-CON | REC-2 adds one conway-cli dependency **first** (small, mechanical); CON-2 lands after it if a shared crate is blessed |
-| `crates/conway-core/src/ports/*` | D-EMB | nothing else touches ports this round; D-REC's core edits are doc comments in `path.rs`/`log.rs`, outside `ports/` |
-| `crates/conway-runtime/src/agent_loop.rs` | — | **untouched this round**; if an item turns out to need it, stop and re-plan |
-| `crates/conway-cli/src/tui/commands.rs` | D-OP | OP-4 before OP-2 — both edit the command surface, OP-4 is already specced on the board |
-| `tests/` workspace-wide | D-CON | CON-4 **last of all items**, after every other domain's code has landed — it rewrites helpers other items' tests may add copies of |
+| **P-COMPAT** — Claude Code compatibility catching up to itself | commands unreachable, one deny-capable event missing, skills loader unwired, doc staleness, two small debts | 6 items, §2 |
+| **P-PERM** — plugin-declared permission modes | premise check → hook registration → the modes themselves → the guard that consumes them | 4 items, §3 |
+| **P-PLUGDEP** — plugin-to-plugin capability sharing | the Edge B channel → an altitude ruling → the first real consumer (`conway.ui`) | 3 items, §4 |
+| **P-CHAIN** — inherited chain-completion defect | `/resume` drops a plugin-status snapshot, the third link in a chain closed one gap at a time | 1 item, §5 |
+
+Shared files and the serialisation they force:
+
+| File | Claimed by | Order |
+| --- | --- | --- |
+| `crates/conway-cli/src/claude_compat_plugins.rs` | `01M0XRCAFD7DD7N64RNRM3P8W9` (full ownership), `01M0XRD8VMWD273W0W51T8ECCM` (full ownership) | Commands item first — **already in progress** — then the deny-capable-event item. Both touch this file's dispatch logic; do not run concurrently. |
+| `docs/plugins/claude-compat.md` | `01M0XRCAFD7DD7N64RNRM3P8W9` (the `commands/*.md` bullet only), `01M0XKP5BWCPY3BHPJZHXKR4H3` (the "What works" section only) | Same order as above — the commands item's correction is a precondition for the staleness item's own "state what is true of each" instruction (that item's own guard rail names this explicitly). |
+| `crates/conway-core/src/ports/plugin.rs` | `01M0XREWGA03EDQ5PK2C18KW75` (one doc comment only), `01M0WX3WSXWYF6N3G6SWN0DSHP` (full ownership, adds `hooks()`) | Small-debts item first (doc comment, S, quick) — then the hooks-registration item, which is L and will rewrite around it. |
+| `crates/conway-runtime/src/permission.rs` | `01M0XREWGA03EDQ5PK2C18KW75` (one test only), `01M0WX3WSXWYF6N3G6SWN0DSHP` (full ownership) | Same order as above, same reason. |
+| `crates/conway/src/builder.rs` | `01M0XRE2N96ATHEXJ1617E133P` (skills loader wiring), `01M0WX3WSXWYF6N3G6SWN0DSHP` (hooks registration) | Skills-loader item first — **already in progress**, S-sized — then hooks registration. |
+| `docs/vision/DESIGN-plugin-dependencies.md`, `DESIGN-permission-modes.md`, `docs/vision/CATALOGUE.md` | `01M0XRKQTAB9C2GNQJ72YDM9WA` only | Not touched by any item below; named per §0. |
+| `PHILOSOPHY.md`, `ARCHITECTURE.md`, `Cargo.toml`, `crates/conway-core/src/ports/*` (the other fifteen files), `crates/conway-runtime/src/agent_loop.rs` | — | **Untouched by every item on this page.** Standing collision risks per this process's own template — carried forward, not newly at risk this round. |
+
+Everything else below is a single-owner file this round; only the five rows
+above force an order.
 
 ---
 
-## 2. D-REC — the record catches up (adherence · evidence)
+## 2. P-COMPAT — Claude Code compatibility catching up to itself
 
-**REC-1. Retire the three "no production caller" comments.** *(S, unblocked)*
-Done: `crates/conway-core/src/path.rs:120-123`,
-`crates/conway-core/src/log.rs:363-367`,
-`crates/conway-runtime/src/runtime.rs:168-172` name
-`conway.path`/`compose_context_path` as the producer (matching
-`docs/plugins/hooks.md:778`); `Selector` added to the enum guard's
-`WATCHED_ENUMS`. (`DESIGN-context-path.md` §10 was closed with the operator's
-2026-08-24 ruling — already done, not part of this item.)
+The critical finding first, because two other items in this program collide
+on the file it touches (table above).
 
-**REC-2. `conway.trim` becomes reachable or declared unreachable.** *(S–M, owned by D-OP's crate but sequenced here, unblocked)*
-Done: either conway-cli depends on `conway-plugin-trim` and `"conway.trim"`
-resolves in `[plugins].install`, or every enumeration that should list it says
-"built, embedder-only" explicitly. The decision drives REC-3's wording, so this
-lands first. Touches `crates/conway-cli/Cargo.toml` +
-`first_party_plugins.rs`.
+**`01M0XRCAFD7DD7N64RNRM3P8W9`** — *(M, in progress)* Make a translated
+command actually invokable: `command_registrations()` gets a real call site
+in `conway-cli`, and `docs/plugins/claude-compat.md`'s `commands/*.md` bullet
+stops claiming it already does. The audit's one CRITICAL finding.
 
-**REC-3. The enumerations tell the whole plugin tier.** *(S, depends: REC-2)*
-Done: `ARCHITECTURE.md` §2b lists all twelve plugin crates;
-`docs/plugins/README.md` and `PHILOSOPHY.md` §6 account for `trim` per REC-2's
-outcome; `docs/README.md` gains its `docs/dogfooding.md` row.
+**`01M0XRD8VMWD273W0W51T8ECCM`** — *(M, open, depends: none; serialise after
+the item above — same file)* One deny-capable event is invisible
+(`DENY_CAPABLE_EVENT` hardcodes `pre_tool_use`; a translated
+`UserPromptSubmit` hook can silently deny every prompt) and the `/plugin`
+browser still tells an operator a live, deny-capable hook is "not wired."
+Two defects, one root cause, one item.
 
----
+**`01M0XRE2N96ATHEXJ1617E133P`** — *(S, in progress)* The multi-root skills
+loader has a reading half (tested) and no calling half: no config surface,
+no production caller. Its agents-loader twin got both; this finishes the
+other one. Serialise before the hooks-registration item in P-PERM (table
+above — shared file, unrelated concern).
 
-## 3. D-OP — the operator surface (operator lens + existing board items)
+**`01M0XKP5BWCPY3BHPJZHXKR4H3`** — *(S, open)* Six documentation locations
+(five plus a sixth the audit found after this item was filed) still describe
+the host-capability vocabulary as closed, or claim parse-time fail-closed
+behaviour that is now half-true. Sweep-shaped: `grep -rn "HostCapability"
+docs/ crates/*/src`, correct every hit, report the sweep whether or not it
+finds a seventh. Serialise after the commands item (table above).
 
-**OP-1. The resume handle is named where the JSON example lives.** *(S, unblocked)*
-Done: `docs/scripting.md`'s JSON-output section states in prose that
-`transcript_ref` — not `agent_id` — is what `--resume` accepts, and
-`docs/sessions.md`'s resume walkthrough shows where the id comes from.
-(Alias/rename of the field is a separate call; the doc sentence is the fix a
-scripting user needs today.)
+**`01M0XREWGA03EDQ5PK2C18KW75`** — *(S, open)* Two unrelated one-line debts
+bundled for economy: an `on_failure: Prompt` two-hook interaction with no
+test, and `EventDecl::summary`'s doc claiming a CLI consumer that does not
+exist. Land first among anything touching `ports/plugin.rs` or
+`permission.rs` (table above) — it is the smallest change to either file.
 
-**OP-2. The operator can cancel one subagent.** *(M, unblocked; Q3 decides whether it becomes a standing rule)*
-Done: a `/cancel <agent>` command (mirroring `/steer <agent>`) cancels a
-specific non-focused subagent without ending the session, visible in the
-palette, covered by a TUI-level test. `/await` parity rides along if cheap.
-Serialise **after OP-4** (same file).
-
-**OP-3. Sessions an operator returns to can be told apart.** *(S–M, unblocked — Q4 answered: names are in)*
-Done: a session can carry an operator-chosen name (`--session` accepts it,
-`sessions list` shows it); the id stays the identity, the name is furniture,
-per INTENT §7b's ruling.
-
-**OP-4. Board `01M0TNCAP1HH4YNC5K9753YG26`** — /tree vs /agents id mismatch.
-*(claimable now; spec on the board)*
-
-**OP-5. Board `01M0TNBACHQSAMMJ3TY14S47MX`** — /ask pull-in atomicity.
-*(claimable now; spec on the board)*
+**`01M0X3AMASEJGHZ6ZDMDFWCHSE`** — *(S — elapsed time, not code; open;
+depends: `01M0X1FCQ80C9ET97HENXSAW2K`, `01M0X1G29EZSFEWB1YAG40SE69`,
+`01M0XBZNBPXEESX8VNTJDKNG0J`, all three done — unblocked)* Smoke-test the
+hook translation for real: sounds on, use conway, report what fired.
+Produces evidence and board items, not code — do not let it grow into an
+audit of all 25 events.
 
 ---
 
-## 4. D-EMB — the third surface (surfaces lens)
+## 3. P-PERM — plugin-declared permission modes
 
-**EMB-1. The §7c binding survey.** *(S, unblocked; Q5 asks only whether to prioritise it)*
-Done: a written comparison of Diplomat, UniFFI, and cbindgen against conway's
-async, streaming public API — who drives the runtime, how an event stream
-crosses, crash and memory ownership — ending in a recommendation and a rough
-shape. No code. This is the deliverable INTENT §7c itself blesses as the
-acceptable first step.
+A strict chain — each item's `depends_on` is already recorded on the board,
+reproduced here so the fan-out order is visible without four separate
+`work_get` calls.
 
-**EMB-2. The subagent host's non-swappability cites its ruling.** *(S — Q1 answered: core-owned)*
-INTENT §7 now states fork/spawn are mechanism with exactly one implementation.
-Done: `crates/conway/src/host_caps.rs:68-73` and
-`crates/conway-core/src/ports/subagent.rs`'s header cite that decision instead
-of describing the missing injection point as an unexplained absence.
+**`01M0WX32AKGA9W3S0KCVZHAGED`** — *(S — elapsed time, not code; open;
+depends: none — unblocked, first)* Can a ~4B local model actually classify
+a tool call as dangerous or routine? Run the shell-script version for real
+against real hardware and a real prompt. Everything downstream rests on
+this answer.
+
+**`01M0WX3WSXWYF6N3G6SWN0DSHP`** — *(L, open; depends:
+`01M0WX32AKGA9W3S0KCVZHAGED`)* `Plugin::hooks()` — the registration surface
+two design pages (`docs/plugins/hooks.md`, `docs/plugins/inference-hooks.md`)
+are already written against and no code has ever had. Owns
+`crates/conway-core/src/ports/plugin.rs`, `crates/conway/src/builder.rs`,
+`crates/conway-runtime/src/permission.rs` — see the collision table for what
+must land first in each.
+
+**`01M0X4YDNVP7TZ0PVSRJ0388SS`** — *(L, open; depends:
+`01M0X1B7Z41J57N6YP2JFZ2AZW`, done — unblocked in parallel with the two
+items above)* Plugin-declared permission modes: "auto, gated" becomes a mode
+you can name and cycle to. Independent of the hooks-registration item's file
+set; can run concurrently with it.
+
+**`01M0WX6ZW84A1G0RV20GBY93J1`** — *(L, open; depends:
+`01M0WX3WSXWYF6N3G6SWN0DSHP`, `01M0X4YDNVP7TZ0PVSRJ0388SS`, plus four already-done
+items)* `conway.permissions` — the inference-gated guard itself, and the
+item the operator originally asked for. Last in the chain; do not start
+until both items above are merged.
 
 ---
 
-## 5. D-CON — cost of change (sustainability ×2)
+## 4. P-PLUGDEP — plugin-to-plugin capability sharing
 
-**CON-1. One authority for the subprocess timeout default.** *(S, unblocked)*
-Done: a single `DEFAULT_TIMEOUT_MS` both plugin crates reference (the
-`kill_group` facade-re-export precedent, `crates/conway-tools/src/process.rs`,
-already shows an acceptable route); the "must match" comment in
-`conway-plugin-mcp/src/lib.rs:72-77` deleted because nothing is left to match.
+**`01M0WWNHQQYN1EVTH8WPZ33EBF`** — *(L, in progress; depends: two done
+items — unblocked)* Edge B: the channel that lets one plugin call a
+capability another plugin provides, which does not exist today at all.
+Report, as part of the item's own acceptance, whether an out-of-process
+plugin reaches this on the same terms as an in-process one — the surfaces
+lens's open question from §2 of the state of the union, not assumed here.
 
-**CON-2. The subprocess twins share their lifecycle layer.** *(M, unblocked — Q6 answered)*
-Done: process-lifecycle + fail-closed error taxonomy (spawn / timeout /
-session-died / malformed-frame) defined once and consumed by both
-`conway-plugin-mcp` and `conway-plugin-subprocess`; the wire protocols stay
-separate on purpose. Shape per INTENT §8.10's ruling: facade re-export
-preferred; a new shared crate only if the facade would have to learn something
-it has no reason to know. Depends: CON-1 (it subsumes the constant's home).
+**`01M0WWM0ZB6BR45XJ8HMTJWZ0Z`** — *(S, open; depends: none — can run in
+parallel with the item above, both block the one after)* Two operator
+rulings, not an agent's to make: the host/toolkit altitude for `conway.ui`,
+and whether `[S1.5]`'s "first slice" scope is over. No code change.
 
-**CON-3. One of the two `ConwayError`s is renamed.** *(S, unblocked)*
-Done: `crates/conway/src/error.rs`'s enum takes a distinct name (the newer,
-narrower of the pair), the `CoreConwayError` alias machinery in
-`crates/conway/src/lib.rs:98-114` shrinks or disappears, no behaviour change.
-Mechanical, wide, low-risk — run the full workspace suite after.
+**`01M0WWPA70E8YAAN981EK10D3D`** — *(L, open; depends: both items above)*
+`conway.ui` — the first bundled provider, and the proof that a
+plugin-provided capability is real end to end. Do not start until the
+altitude ruling lands.
 
-**CON-4. A facade-level test-support tier.** *(M, unblocked; lands LAST)*
-Done: `build_conway`/`text_response` exist once in a test-support module only
-workspace crates see (testkit itself stays core-only for third parties);
-`fake_router` copies deleted in favour of testkit's existing
-`FakeRouter::single`; the 46/52/36 hand-rolled copies gone. Touches test files
-across every crate — serialise after all other items so it does not invalidate
-in-flight work.
+---
+
+## 5. P-CHAIN — the inherited chain-completion defect
+
+**`01M0XDEDBR5YDF71Q7ZRXYMT85`** — *(S if a snapshot fix, M if it needs to
+be live; in progress)* `/resume` drops `plugin_status_contributions` because
+`commands.rs`'s `Resume` arm hand-carries two process-lifetime fields across
+an `AppState` reset and not this third, same-shaped one — the third link in
+a chain (`status_contributions` → render → populate → resume) closed one gap
+at a time, disclosed by the writer of the item before it, outside that
+item's own file fence. Single-owner file (`tui/commands.rs`); no collision
+with anything else on this page.
 
 ---
 
 ## 6. Dispatch
 
-**All fourteen items are dispatchable** (Q1–Q6 answered 2026-08-24). Order:
-OP-4, OP-5 (already on the board) and the small unblocked set — REC-1, REC-2 →
-REC-3, OP-1, OP-2 (after OP-4), OP-3, EMB-1, EMB-2, CON-1, CON-3 — then CON-2,
-with CON-4 last. Suggested fan-out 3: one worker each for D-REC, D-OP, D-CON;
-EMB-1 and EMB-2 are small enough to ride with any worker or a researcher.
+No single suggested fan-out number — the four programs are already
+differently shaped (P-COMPAT is six small-to-medium items with one internal
+serialisation pair; P-PERM and P-PLUGDEP are each a strict three/four-item
+chain; P-CHAIN is one item). Reasonable read: one worker per program (4-wide),
+with P-COMPAT's worker handling its own internal ordering (commands →
+{deny-capable-event, staleness-docs} in either order after; skills-loader and
+small-debts land whenever convenient, ahead of anything that touches their
+shared files per §1's table) and P-PERM/P-PLUGDEP's workers following their
+chains strictly since each item's `depends_on` is enforced by the board, not
+just documented here.
 
-**Coverage debt for the next review** (from §6 of the state of the union): the
-TUI has still never been driven under a real pty; the security-bearing pages
-(`docs/permissions.md`, `docs/tools.md`) are unverified this round; the full
-workspace suite was last run at `da9813c`. The next run should spend an
-operator-lens budget on a real terminal, and an adherence budget on the
-permissions pages.
+**Coverage debt for the next review**, carried from
+`STATE-OF-THE-UNION.md` §6: no independent reviewer fan-out ran this cycle;
+the TUI has not been driven under a real pty since 2026-08-24; the
+plugin-tier enumeration gap (§0) needs its own board item; a sustainability
+pass has not yet looked at the Claude-compat or plugin-dependency surfaces
+landed in this window.
