@@ -905,6 +905,14 @@ pub(crate) struct PersistentCapabilityResponse {
 /// into the `Result<serde_json::Value, CapabilityError>`
 /// [`conway::plugin::CapabilityProvider::call`]'s own trait signature
 /// requires.
+///
+/// `Debug` is derived here where [`WireToolResult`] does not derive it, for
+/// one reason: this type's own parse tests assert on the FAILURE side with
+/// `expect_err`, which requires the ok-side to be printable. Both members
+/// (`serde_json::Value`, [`CapabilityError`]) already are, so the derive
+/// costs nothing and buys a legible message when a fail-closed parse test
+/// regresses.
+#[derive(Debug)]
 pub(crate) enum WireCapabilityResult {
     Ok(serde_json::Value),
     Err(CapabilityError),
