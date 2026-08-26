@@ -3,6 +3,9 @@
 mod support;
 
 use std::collections::BTreeMap;
+// Only named by the `jsonl-store`-gated tests below.
+#[cfg(feature = "jsonl-store")]
+use std::fs;
 use std::sync::Arc;
 
 use conway::config::schema::BackendEntry;
@@ -27,6 +30,9 @@ use conway_core::ids::{BackendId, RoleAlias};
 use conway_core::ports::{GenerateResponse, SessionStore};
 #[cfg(feature = "builtin-tools")]
 use conway_core::ports::{HostCapability, Plugin, PluginManifest, RenderKind, Tool};
+// Only named by the `jsonl-store`-gated tests below.
+#[cfg(feature = "jsonl-store")]
+use conway_core::provenance::Provenance;
 use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
 /// `Conway` deliberately does not derive `Debug` (it wraps `Arc<Runtime>`,
@@ -1838,4 +1844,138 @@ async fn a_requires_edge_does_not_reorder_instruction_fragment_precedence() {
          topological (dependency-before-dependent) order a naive resolution would produce"
     );
     assert_eq!(report.instruction_fragments[1].plugin_id, "test.base");
+}
+
+// ---------------------------------------------------------------------
+// A second skills root, reached ONLY through `ConwayBuilder` (board item
+// `01M0XRE2N96ATHEXJ1617E133P`). Before this item, `skills::
+// load_skill_defs_from_roots` had zero production callers -- `build()`
+// called the single-root `skills::load_skill_defs` only, and no config
+// surface or builder method could reach the multi-root capability at all.
+// This drives the REAL construction path end to end
+// (`ConwayBuilder::from_parts(..).with_extra_skill_dir(..).build()` ->
+// a real session -> a real prompt -> the assembled context), not a direct
+// call to the loader -- a direct call is exactly what the prior item
+// shipped (`crates/conway/src/skills.rs`'s own unit tests, and
+// `tests/skills_e2e.rs`, both drive the loader directly), and is why
+// nothing noticed the capability was unreachable through any real build.
+// ---------------------------------------------------------------------
+#[cfg(feature = "jsonl-store")]
+#[tokio::test]
+async fn a_second_skills_root_added_via_with_extra_skill_dir_reaches_a_real_agents_context() {
+    let root = support::unique_temp_dir("builder-second-skills-root");
+    // The operator's own agent-def root (`.conway/agents`, `AgentsConfig::
+    // default().dir`), naming a skill by name only -- the def itself never
+    // says WHERE that skill lives; discovering that is the loader's job.
+    let agents_dir = root.join(".conway").join("agents");
+    fs::create_dir_all(&agents_dir).unwrap();
+    fs::write(
+        agents_dir.join("skilled.md"),
+        "---\nname: skilled\nskills: [example]\n---\nYou are an agent that uses a skill.\n",
+    )
+    .unwrap();
+
+    // The plugin's own skills root -- deliberately NOT under `.conway/skills`
+    // (the operator's own root, which this test leaves entirely absent), so
+    // the ONLY way "example" can be discovered at all is through the SECOND
+    // root `with_extra_skill_dir` adds.
+    let plugin_skills_dir = support::unique_temp_dir("builder-second-skills-root-plugin");
+    let skill_dir = plugin_skills_dir.join("example");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: example\ndescription: An example skill.\n---\nBody text.\n",
+    )
+    .unwrap();
+
+    let mut cfg = base_config();
+    cfg.cwd = root.clone();
+
+    let conway: Conway = ConwayBuilder::from_parts(cfg)
+        .with_backend(fake_backend("fake"))
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(empty_router())
+        .with_extra_skill_dir(plugin_skills_dir)
+        .build()
+        .expect("build should succeed with a second skills root supplied");
+
+    let handle = conway
+        .new_session(SessionSpec {
+            agent_def: Some("skilled".to_string()),
+            ..SessionSpec::default()
+        })
+        .await
+        .expect("new_session should succeed");
+    let turn = handle.prompt("hello there").await.expect("prompt");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+
+    let report = handle
+        .context_report_current(handle.root())
+        .await
+        .expect("context_report_current should succeed");
+    let found = report
+        .segments
+        .iter()
+        .any(|s| matches!(&s.provenance, Provenance::Skill { name } if name == "example"));
+    assert!(
+        found,
+        "a skill discoverable ONLY through the second (extra) skills root must reach the \
+         assembled context via the real ConwayBuilder construction path; provenances seen: \
+         {:?}",
+        report
+            .segments
+            .iter()
+            .map(|s| s.provenance.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The agents-side twin of the skills test immediately above, proving the
+/// symmetric guarantee this item's own report must argue: an agent def
+/// discoverable ONLY through `ConwayBuilder::with_extra_agent_dir` (the
+/// operator's own `.conway/agents` root is left entirely absent) is still
+/// reachable and startable through a real build -- the SAME "second root
+/// reached only via a builder method, proven end to end" shape, over the
+/// agents loader instead of the skills one.
+#[cfg(feature = "jsonl-store")]
+#[tokio::test]
+async fn a_second_agents_root_added_via_with_extra_agent_dir_reaches_a_real_session() {
+    let root = support::unique_temp_dir("builder-second-agents-root");
+    let plugin_agents_dir = support::unique_temp_dir("builder-second-agents-root-plugin");
+    fs::create_dir_all(&plugin_agents_dir).unwrap();
+    fs::write(
+        plugin_agents_dir.join("plugin_agent.md"),
+        "---\nname: plugin_agent\n---\nYou are a plugin-supplied agent.\n",
+    )
+    .unwrap();
+
+    let mut cfg = base_config();
+    cfg.cwd = root.clone();
+
+    let conway: Conway = ConwayBuilder::from_parts(cfg)
+        .with_backend(fake_backend("fake"))
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(empty_router())
+        .with_extra_agent_dir(plugin_agents_dir)
+        .build()
+        .expect("build should succeed with a second agents root supplied");
+
+    let handle = conway
+        .new_session(SessionSpec {
+            agent_def: Some("plugin_agent".to_string()),
+            ..SessionSpec::default()
+        })
+        .await
+        .expect(
+            "new_session naming an agent def discoverable ONLY through the second agents root \
+             must succeed",
+        );
+    let turn = handle.prompt("hello there").await.expect("prompt");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
 }

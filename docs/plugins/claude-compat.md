@@ -77,17 +77,23 @@ may claim to be reached that isn't).
   operator's own `.conway/skills` always shadows a plugin's on a name
   collision, and a plugin root's own malformed `SKILL.md` is skipped rather
   than failing the whole load. Reading a second directory is now possible
-  in the loader; this layer just does not yet CALL it with a plugin's own
-  `skills/` directory, so nothing changes for an operator naming a
-  `[plugins].claude_compat[]` entry today. That wiring — the translation
-  step, not the loader capability — is a separate, deferred item. Every
-  `skills/<name>/SKILL.md` directory found is still named in the report.
+  in the loader, and (board item `01M0XRE2N96ATHEXJ1617E133P`)
+  `ConwayBuilder::with_extra_skill_dir` is a real, callable seam that reaches
+  it through an actual build; this layer just does not yet CALL that seam
+  with a plugin's own `skills/` directory, so nothing changes for an
+  operator naming a `[plugins].claude_compat[]` entry today. That wiring —
+  the translation step, not the loader capability or its seam — is a
+  separate, deferred item. Every `skills/<name>/SKILL.md` directory found is
+  still named in the report.
 - **`agents/*.md` — still not imported by THIS layer,** for the identical
-  reason: `agents::load_agent_defs_from_roots` and the new
-  `AgentsConfig::extra_dirs` field (same board item) exist and an operator
-  can hand-set `extra_dirs` in their own config today, but this layer does
-  not yet populate it from a plugin's own `agents/` directory. Named in the
-  report, never read for content.
+  reason: `agents::load_agent_defs_from_roots` exists and (board item
+  `01M0XRE2N96ATHEXJ1617E133P`) `ConwayBuilder::with_extra_agent_dir` is a
+  real, callable seam onto it, but this layer does not yet call it with a
+  plugin's own `agents/` directory. Named in the report, never read for
+  content. (An earlier version of this paragraph pointed at an
+  `AgentsConfig::extra_dirs` config field; that field was retired in favor
+  of the builder method above so the agents and skills halves of this
+  capability stay symmetric — see `AgentsConfig`'s own doc.)
 - **`hooks/hooks.json` — event names are matched, and (board item
   `01M0X1FCQ80C9ET97HENXSAW2K`) a mapped rule now translates into a real,
   dispatchable `[hooks].rules[]`-shaped registration.**

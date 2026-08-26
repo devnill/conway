@@ -298,6 +298,22 @@ pub struct ConwayBuilder {
     /// literaled by a caller), so a field here costs nothing outside this
     /// file and `conway.rs`.
     root: Option<PathBuf>,
+    /// Empty (the default) means [`Self::build`]'s agent-def step reads
+    /// exactly `config.agents.dir`, unchanged from before this field
+    /// existed. A non-empty list is folded in AFTER `config.agents.dir`
+    /// (which therefore always wins a name collision against every entry
+    /// here — `agents::load_agent_defs_from_roots`'s own precedence rule),
+    /// each entry resolved against `cwd` the same way `config.agents.dir`
+    /// is, in the order [`Self::with_extra_agent_dir`] was called. See
+    /// [`crate::config::schema::AgentsConfig`]'s own doc for why this lives
+    /// here rather than as a config field.
+    extra_agent_dirs: Vec<PathBuf>,
+    /// The skills-side twin of `extra_agent_dirs` immediately above — same
+    /// empty-by-default/fold-in-after/resolved-against-`cwd` contract, over
+    /// the fixed `.conway/skills` operator root [`Self::build`] always
+    /// reads first instead of a config field (skills has never had one —
+    /// see `skills::load_skill_defs_from_roots`'s own doc).
+    extra_skill_dirs: Vec<PathBuf>,
 }
 
 impl ConwayBuilder {
@@ -415,6 +431,8 @@ impl ConwayBuilder {
             builtin_selection: None,
             warnings: Vec::new(),
             root: None,
+            extra_agent_dirs: Vec::new(),
+            extra_skill_dirs: Vec::new(),
         }
     }
 
@@ -1134,6 +1152,40 @@ impl ConwayBuilder {
         self
     }
 
+    /// Appends one additional agent-definition root. [`Self::build`] folds
+    /// it in AFTER `config.agents.dir` (the operator's own root, which
+    /// therefore always wins a name collision against it —
+    /// `agents::load_agent_defs_from_roots`'s own precedence rule), resolved
+    /// against `cwd` the same way `config.agents.dir` is. Call multiple
+    /// times, in the order roots should take precedence over one another,
+    /// to add more than one — mirrors [`Self::with_plugin`]'s own
+    /// repeat-to-add shape rather than taking a `Vec` up front.
+    ///
+    /// Deliberately NOT a `ConwayConfig` field — see
+    /// [`crate::config::schema::AgentsConfig`]'s own doc for why (the same
+    /// blast-radius reasoning [`Self::with_root`]'s own doc gives for that
+    /// field). This is the seam a Claude Code compat layer (or any other
+    /// embedder) calls to hand a plugin's own `agents/` directory to a real
+    /// build, rather than requiring an operator to hand-edit `settings.json`
+    /// first.
+    pub fn with_extra_agent_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.extra_agent_dirs.push(dir.into());
+        self
+    }
+
+    /// The skills-side twin of [`Self::with_extra_agent_dir`] — identical
+    /// add-order/precedence contract, over
+    /// `skills::load_skill_defs_from_roots` instead of the agent-def loader.
+    /// [`Self::build`] always reads the fixed `.conway/skills` operator root
+    /// first (skills has never had a `dir` config field to override that
+    /// default with — see that function's own doc); a root appended here is
+    /// folded in after it, and after any earlier-appended extra root, in
+    /// call order.
+    pub fn with_extra_skill_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.extra_skill_dirs.push(dir.into());
+        self
+    }
+
     /// Assembles the `Conway`. See the module doc for the full
     /// construction-order rationale and disclosed reconciliations.
     pub fn build(self) -> Result<Conway> {
@@ -1156,6 +1208,8 @@ impl ConwayBuilder {
             builtin_selection,
             warnings,
             root,
+            extra_agent_dirs,
+            extra_skill_dirs,
         } = self;
         let declined_backend_kinds: HashSet<String> = declined_backend_kinds.into_iter().collect();
 
@@ -1601,38 +1655,50 @@ impl ConwayBuilder {
 
         // 11. Agent defs. `AgentsConfig::dir` is the operator's own root
         // (strict: a malformed file here is a loud build error, unchanged
-        // from before multi-root support existed);
-        // `AgentsConfig::extra_dirs` (board item
-        // `01M0X1EH2GW5DKY9XD1EZ78S3F`, empty by default) is zero or more
-        // ADDITIONAL roots, each resolved against the same `cwd`, that
-        // shadow-lose to `dir` and to each other in list order on a name
-        // collision, and whose own malformed files are skipped rather than
-        // failing the build -- see `agents::load_agent_defs_from_roots`'s
-        // own doc for the exact contract. Nothing populates `extra_dirs`
-        // yet: wiring a Claude Code compat plugin's own directories into it
-        // is a sibling item's job, not this one's.
+        // from before multi-root support existed); `extra_agent_dirs` (this
+        // builder's own field, destructured from `self` above -- board item
+        // `01M0X1EH2GW5DKY9XD1EZ78S3F` first added a config-field version of
+        // this, `01M0XRE2N96ATHEXJ1617E133P` moved it here -- see
+        // `crate::config::schema::AgentsConfig`'s own doc for why) is zero
+        // or more ADDITIONAL roots, each resolved against the same
+        // `cwd`, that shadow-lose to `dir` and to each other in call order
+        // on a name collision, and whose own malformed files are skipped
+        // rather than failing the build -- see
+        // `agents::load_agent_defs_from_roots`'s own doc for the exact
+        // contract. Nothing calls `with_extra_agent_dir` in this crate
+        // itself yet: wiring a Claude Code compat plugin's own directories
+        // into it is a sibling item's job.
         let agents_dir = resolve_path(&cwd, &config.agents.dir);
         let mut agent_roots = vec![agents_dir];
-        agent_roots.extend(
-            config
-                .agents
-                .extra_dirs
-                .iter()
-                .map(|dir| resolve_path(&cwd, dir)),
-        );
+        agent_roots.extend(extra_agent_dirs.iter().map(|dir| resolve_path(&cwd, dir)));
         let agent_defs = agents::load_agent_defs_from_roots(&agent_roots)?;
 
-        // 11b. Skill defs (board item `01M03GKZ3MGZK3ETP6R27E2M9Y`). No
-        // `[skills]` config section exists (or is needed): unlike
+        // 11b. Skill defs (board item `01M03GKZ3MGZK3ETP6R27E2M9Y` produced
+        // the loader; `01M0XRE2N96ATHEXJ1617E133P` wired it to a caller).
+        // No `[skills]` config section exists (or is needed) -- unlike
         // `AgentsConfig::dir`, skill *selection* is already fully
-        // established by `AgentDef.skills`' name list -- a configurable
-        // directory would add config surface this item's own scope doesn't
-        // call for. `.conway/skills`, resolved against the same `cwd` as
-        // every other `.conway/`-relative path here, mirrors
-        // `AgentsConfig::dir`'s own default (`.conway/agents`) and
-        // `docs/vision/CATALOGUE.md` entry 2's proposed layout.
+        // established by `AgentDef.skills`' name list, so a configurable
+        // directory would add config surface neither loader needs (see
+        // `AgentsConfig`'s own doc: THIS is the reason `extra_agent_dirs`
+        // moved off `ConwayConfig` too, so both loaders end symmetric).
+        // `.conway/skills`, resolved against the same `cwd` as every other
+        // `.conway/`-relative path here, mirrors `AgentsConfig::dir`'s own
+        // default (`.conway/agents`) and `docs/vision/CATALOGUE.md` entry
+        // 2's proposed layout, and is always the first (operator-own,
+        // strict) root -- exactly like `agents_dir` above.
+        // `extra_skill_dirs` (this builder's own field, destructured from
+        // `self` above) is the skills-side twin of `extra_agent_dirs`: zero
+        // or more ADDITIONAL roots, in call order,
+        // each resolved against `cwd`, shadow-losing to the operator's own
+        // root and to each other on a name collision, with malformed files
+        // in them skipped rather than failing the build -- see
+        // `skills::load_skill_defs_from_roots`'s own doc for the exact
+        // contract. Nothing calls `with_extra_skill_dir` in this crate
+        // itself yet either, for the same reason `agent_roots` above names.
         let skills_dir = resolve_path(&cwd, Path::new(".conway/skills"));
-        let skill_defs = skills::load_skill_defs(&skills_dir)?;
+        let mut skill_roots = vec![skills_dir];
+        skill_roots.extend(extra_skill_dirs.iter().map(|dir| resolve_path(&cwd, dir)));
+        let skill_defs = skills::load_skill_defs_from_roots(&skill_roots)?;
 
         // 12. Runtime::new.
         //

@@ -596,26 +596,34 @@ impl ToolCallSupportSpec {
 /// precedence (`crate::agents::load_agent_defs_from_roots`'s own doc: "the
 /// first root's own definitions always win a name collision with any later
 /// root's"), and the only root a malformed file in fails the build over.
-/// `extra_dirs` (board item `01M0X1EH2GW5DKY9XD1EZ78S3F`, empty by default,
-/// so every existing config keeps behaving identically) is zero or more
-/// ADDITIONAL roots, in the order given, each resolved against `cwd` the
-/// same way `dir` is — meant for a plugin's own `agents/*.md` directory,
-/// whose malformed files are skipped rather than failing the build.
-/// Nothing populates this field automatically yet: an operator can hand-set
-/// it today, but wiring a Claude Code compat plugin's directories into it
-/// is a sibling item's job.
+///
+/// **No `extra_dirs` field here.** Board item `01M0X1EH2GW5DKY9XD1EZ78S3F`
+/// added one; board item `01M0XRE2N96ATHEXJ1617E133P` retired it, because
+/// the skills loader's own equivalent capability
+/// (`skills::load_skill_defs_from_roots`) had shipped with nowhere to plug
+/// a second root in at all, and the fix for THAT gap is not a matching
+/// `[skills]` config section: `ConwayConfig` has no `#[derive(Default)]`
+/// (`default_role` has no sensible built-in value — see its own doc), so
+/// every one of its ~40 existing struct-literal call sites across the
+/// workspace would have to name a new field the instant one were added —
+/// exactly the blast-radius argument `ConwayBuilder::with_root`'s own doc
+/// already makes for keeping *that* field off `ConwayConfig` and on the
+/// builder instead. A second root for EITHER loader is now supplied
+/// directly to the builder — see `ConwayBuilder::with_extra_agent_dir` and
+/// `ConwayBuilder::with_extra_skill_dir` — so agents and skills end
+/// symmetric: neither has a config surface, and both are reachable through
+/// the same builder-level seam a Claude Code compat layer (or any other
+/// embedder) calls before `build()`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AgentsConfig {
     pub dir: PathBuf,
-    pub extra_dirs: Vec<PathBuf>,
 }
 
 impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
             dir: PathBuf::from(".conway/agents"),
-            extra_dirs: Vec::new(),
         }
     }
 }
