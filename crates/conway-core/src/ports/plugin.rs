@@ -887,15 +887,20 @@ pub struct EventDecl {
     /// [`CommandSpec::name`]'s own identical division of labor.
     pub name: String,
     /// One line describing when this event fires and what its payload
-    /// carries -- the answer to "how does an operator discover what is
-    /// hookable given what they have installed" (`PHILOSOPHY.md` §5's own
-    /// "an open vocabulary nobody can enumerate is worse than a closed
-    /// one" concern): an embedder already holding the `&[Arc<dyn Plugin>]`
-    /// it is about to pass to `ConwayBuilder` can call
-    /// `conway_runtime::hook_dispatch::declared_plugin_events` itself and
-    /// read this field for every event every installed plugin declares --
-    /// no separate registry, no new port, the identical mechanism
-    /// [`Plugin::commands`] already exposes for command discovery.
+    /// carries. **Populated by plugins, but not yet surfaced to an
+    /// operator anywhere** -- unlike [`Plugin::commands`], whose
+    /// `CommandSpec`s reach the slash palette and `/help`, nothing in
+    /// `conway-cli` reads this field or `conway_runtime::hook_dispatch::
+    /// declared_plugin_events` for display; the one production call site
+    /// (`crates/conway/src/builder.rs`'s plugin-event validation pass)
+    /// reads only [`Self::carries_tool_name`], never this field. An
+    /// embedder or a future `/plugin`-row/`/help`-section discovery
+    /// surface CAN call `declared_plugin_events` and read this field for
+    /// every event every installed plugin declares -- the machinery is
+    /// real and namespaced -- but until such a surface exists, this is a
+    /// forward declaration an operator has no way to see (`PHILOSOPHY.md`
+    /// §5's own "an open vocabulary nobody can enumerate is worse than a
+    /// closed one" concern is not yet addressed by this field alone).
     pub summary: String,
     /// Whether this event's payload carries a `"tool"` string field --
     /// decides whether an operator's `[hooks].rules[]` entry may pair this

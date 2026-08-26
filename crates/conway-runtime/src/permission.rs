@@ -2188,6 +2188,51 @@ mod tests {
         }
     }
 
+    /// A `HookRunner` double that answers PER `command[0]` rather than
+    /// `ScriptedHookRunner`'s one fixed answer for every invocation --
+    /// `PermissionBroker` holds a single shared `Arc<dyn HookRunner>` for
+    /// every installed hook, so proving the two-hook interaction below
+    /// (one hook's outage, a DIFFERENT hook's own verdict) needs one
+    /// double that can tell the two invocations apart and answer each
+    /// differently. Also records the ORDER `command[0]` values were seen
+    /// in, so a test can assert both hooks were actually consulted, and in
+    /// registration order.
+    struct PerCommandHookRunner {
+        scripted: BTreeMap<String, Result<HookAnswer, HookFailure>>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl PerCommandHookRunner {
+        fn new(scripted: Vec<(&str, Result<HookAnswer, HookFailure>)>) -> Arc<Self> {
+            Arc::new(Self {
+                scripted: scripted
+                    .into_iter()
+                    .map(|(command, result)| (command.to_string(), result))
+                    .collect(),
+                calls: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn call_order(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl HookRunner for PerCommandHookRunner {
+        async fn run(&self, invocation: &HookInvocation) -> Result<HookAnswer, HookFailure> {
+            let key = invocation
+                .command
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "<empty command>".to_string());
+            self.calls.lock().unwrap().push(key.clone());
+            self.scripted.get(&key).cloned().unwrap_or_else(|| {
+                panic!("PerCommandHookRunner invoked for unscripted command `{key}`")
+            })
+        }
+    }
+
     fn hook_spec(id: &str) -> PreToolUseHookSpec {
         PreToolUseHookSpec {
             id: id.to_string(),
@@ -3023,6 +3068,93 @@ mod tests {
             1,
             "the hook step DOES run here (it precedes plan mode in decide()'s own order) -- \
              it is the RESULT (must_reach_gate, not a bypass) that plan mode still overrides"
+        );
+    }
+
+    /// **The two-hook interaction `HookStepOutcome::MustReachGate`'s own
+    /// doc promises, actually exercised.** Every OTHER test in this module
+    /// installs exactly one hook; this one installs two. Hook A declares
+    /// `on_failure: Prompt` and its runner FAILS -- an outage, resolved to
+    /// `must_reach_gate = true`, which must NOT stop the loop. Hook B is a
+    /// second, independently installed hook whose runner returns an
+    /// outright `HookPermissionVerdict::Deny`. The call must come back
+    /// `Deny` -- hook B's refusal winning over hook A's mere
+    /// prompt-worthy outage -- not `Allow`, and not merely a forced trip
+    /// to the operator's gate.
+    ///
+    /// **Why this goes red under the drift board item `01M0XQBTW4JMS7XQESDMS3KNZY`
+    /// names.** `pre_tool_use_hook_denial`'s loop has no literal `continue`
+    /// keyword in its `HookOnFailure::Prompt` arm today -- it merely sets
+    /// `must_reach_gate = true` and falls off the end of the `for` body,
+    /// which is what lets the next iteration (hook B) run at all. Every
+    /// NEIGHBOURING arm in that same loop (`HookOnFailure::Deny`, and the
+    /// `HookPermissionVerdict::Deny` check above it) instead `return`s
+    /// immediately -- so a refactor that "regularizes" the `Prompt` arm to
+    /// match its neighbours, turning `must_reach_gate = true;` into
+    /// `return HookStepOutcome::MustReachGate;`, is exactly the drift this
+    /// item's spec warns is the natural direction. Under that mutation,
+    /// the loop would return after hook A without ever reaching hook B:
+    /// `runner.call_order()` would contain only `"hook-a"` (proven below
+    /// to contain both), `pre_tool_use_hook_denial` would report
+    /// `MustReachGate` instead of `Denied`, `decide()` would fall through
+    /// to `RecordingGate` (which always grants), and this test's `assert!
+    /// (matches!(outcome, PermissionOutcome::Deny { .. }))` would fail
+    /// against an `Allow` outcome -- as would the `gate.call_count() == 0`
+    /// assertion, which would observe `1`. Both assertions fail for the
+    /// same underlying reason, from two independent angles.
+    #[tokio::test]
+    async fn a_second_hooks_outright_refusal_still_wins_after_an_earlier_hooks_deferred_outage() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        let runner = PerCommandHookRunner::new(vec![
+            (
+                "hook-a",
+                Err(HookFailure::Spawn {
+                    detail: "no such file or directory".to_string(),
+                }),
+            ),
+            (
+                "hook-b",
+                Ok(HookAnswer {
+                    permission: HookPermissionVerdict::Deny {
+                        reason: "hook B refuses outright".to_string(),
+                    },
+                    ..HookAnswer::default()
+                }),
+            ),
+        ]);
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![
+            PreToolUseHookSpec {
+                command: vec!["hook-a".to_string()],
+                on_failure: HookOnFailure::Prompt,
+                ..hook_spec("hook-a")
+            },
+            PreToolUseHookSpec {
+                command: vec!["hook-b".to_string()],
+                ..hook_spec("hook-b")
+            },
+        ]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "hook B's outright refusal must win over hook A's deferred outage: {outcome:?}"
+        );
+        assert_eq!(
+            runner.call_order(),
+            vec!["hook-a".to_string(), "hook-b".to_string()],
+            "both hooks must have been consulted, in registration order -- hook A's outage \
+             must not have short-circuited the loop before hook B ran"
+        );
+        assert_eq!(
+            gate.call_count(),
+            0,
+            "hook B's own verdict denies outright -- the operator's gate is never reached"
         );
     }
 
