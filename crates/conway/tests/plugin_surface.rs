@@ -36,8 +36,9 @@ use conway::config::schema::{
 };
 use conway::plugin::{
     async_trait, Artifact, ArtifactKind, ArtifactWriteError, ArtifactWriteHandle, ArtifactWriter,
-    CancellationToken, ContentBlock, ContextHook, ContextHookCtx, ContextPayload, CwdError, Fact,
-    HookAnswer, HookEvent, HookFailure, HookInvocation, HookPermissionVerdict, HookRunner,
+    CancellationToken, CapabilityError, CapabilityProvider, CapabilityRegistration, ContentBlock,
+    ContextHook, ContextHookCtx, ContextPayload, CwdError, Fact, HookAnswer, HookEvent,
+    HookFailure, HookInvocation, HookPermissionVerdict, HookRunner, HostCapability,
     InstructionFragment, OverflowInfo, PathArgs, PermissionClass, Plugin, PluginConfig,
     PluginManifest, PromptSegment, Provenance, RenderKind, Role, SubagentError, Tool, ToolCall,
     ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
@@ -153,6 +154,31 @@ impl Plugin for EchoPlugin {
             text: "Call echo when the operator asks you to repeat something verbatim.".to_string(),
             tool_ids: vec![ToolName::new("echo")],
         }]
+    }
+
+    /// F8 liveness for Edge B's capability channel (board item
+    /// `01M0WWNHQQYN1EVTH8WPZ33EBF`): a third-party plugin author
+    /// implements `CapabilityProvider` and registers it via
+    /// `CapabilityRegistration`, naming a `HostCapability`, using nothing
+    /// but the curated `conway::plugin` surface -- the same "implementable
+    /// from outside the workspace, not merely nameable" property this
+    /// whole file exists to check, extended to the new channel.
+    fn capabilities(&self) -> Vec<CapabilityRegistration> {
+        vec![CapabilityRegistration {
+            capability: HostCapability::named("test.echo.repeat").unwrap(),
+            provider: Arc::new(EchoCapabilityProvider) as Arc<dyn CapabilityProvider>,
+        }]
+    }
+}
+
+/// A trivial third-party capability provider, written against
+/// `conway::plugin` alone -- see `EchoPlugin::capabilities` above.
+struct EchoCapabilityProvider;
+
+#[async_trait]
+impl CapabilityProvider for EchoCapabilityProvider {
+    async fn call(&self, payload: serde_json::Value) -> Result<serde_json::Value, CapabilityError> {
+        Ok(payload)
     }
 }
 

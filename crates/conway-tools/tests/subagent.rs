@@ -1101,6 +1101,7 @@ async fn cancel_during_blocked_await_cancels_child_and_returns_cancelled() {
         config: Arc::new(PluginConfig::default()),
         context_path: conway_core::ports::ContextPathHandle::noop(),
         session_discovery: conway_core::ports::SessionDiscoveryHandle::noop(),
+        capabilities: conway_core::ports::CapabilityCallHandle::noop("test"),
     };
 
     let tool = ForkTool::new();

@@ -13,6 +13,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Edge B: a plugin -> plugin capability CALL channel** — board item
+  `01M0WWNHQQYN1EVTH8WPZ33EBF`,
+  `docs/vision/DESIGN-plugin-dependencies.md` §2. Before this item there
+  was no way for one plugin to call into another: `ToolCtx`'s handles were
+  all host services, and `PluginEventHandle` is emit-only, fire-and-forget
+  pub/sub, not call-and-return — every plugin wanting a checkbox
+  reimplemented a checkbox. New `crates/conway-core/src/ports/capability.rs`
+  adds `CapabilityProvider` (an object-safe, JSON-in/JSON-out async trait —
+  dynamic and serialisable, deliberately NOT a capability-specific Rust
+  trait, so an out-of-process plugin can implement it exactly as an
+  in-process one does), `CapabilityHost`/`CapabilityRegistry` (the runtime
+  dispatcher, refusing rather than silently picking a winner when two
+  plugins register the same capability name), and `CapabilityCallHandle`
+  (the `ToolCtx`-facing handle, `noop` by default). `Plugin` gains a new
+  zero-cost-default `capabilities()` method (the runtime registration,
+  mirroring `Plugin::tools` vs `PluginManifest::tools`'s own static/runtime
+  split — deliberately NOT a new `PluginManifest` field, which would have
+  broken every one of the three dozen existing `PluginManifest { .. }`
+  literal call sites across the workspace). `ToolCtx` gains a `capabilities:
+  CapabilityCallHandle` field, documented as the one handle on that struct
+  that reaches ANOTHER PLUGIN rather than a host service; `conway-runtime`'s
+  one production construction site (`tools::runner`) now binds it (`noop`,
+  bound to the calling plugin's own id) so the workspace keeps compiling,
+  though a live `CapabilityRegistry` built from every installed plugin's
+  registrations is not yet threaded through — a disclosed follow-up, not
+  silently done. `crates/conway/src/builder.rs`'s existing
+  `missing_required_dependency`/`missing_optional_dependencies` (the
+  `PluginManifest::requires`/`::optional` resolution pass) now ALSO treat a
+  `requires`/`optional` entry as satisfied by a provided capability name,
+  not only an installed plugin id — "one vocabulary, not two" applied to
+  the same fields rather than a second, parallel capability-only pair — so
+  a `requires` naming a capability nothing installed provides fails at
+  `build()` exactly as a `requires` naming an absent plugin id already did,
+  and an `optional` one degrades with the same two-channel announcement.
+  Every capability name (`Plugin::capabilities()`'s registrations, and every
+  name `CapabilityCallHandle::call` is asked to dispatch) is validated
+  through the SAME `conway_core::event_name::validate_event_name` shape
+  check `HostCapability` already uses — reused, not reimplemented. Tested
+  end to end with a fixture provider and consumer, INCLUDING a provider
+  that returns an error (`crates/conway-core/src/ports/capability.rs`'s own
+  test module) and a fixture provider that forwards over a REAL child
+  process (`cat`, over stdin/stdout) to check the channel reaches an
+  out-of-process-style implementor on identical terms — genuinely, at the
+  trait/channel level; `conway-plugin-subprocess`'s own wire protocol
+  (`tool.spec/1`/`tool/1`) is not yet extended to declare or forward a
+  capability through this channel, which is the disclosed next step, not
+  built here. No actual capability ships in this item (no `conway.ui`, no
+  UI) — this is the channel only.
 - **A migration guide for operators coming from Claude Code's
   `settings.json`** — board item `01M0X4Z8B8ZWCHABMQAE9KFWHF`, new page
   `docs/migrating-from-claude-code.md`. Triages every key in a real

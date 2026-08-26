@@ -42,9 +42,10 @@ use conway_core::error::ToolError;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{
-    CancellationToken as CoreCancellationToken, ContextPathHandle, ContextPathHost, CwdHandle,
-    EventSinkHandle, PluginConfig, PluginEventEmitter, PluginEventHandle, SessionDiscoveryHandle,
-    SessionDiscoveryHost, SubagentHandle, SubagentHost, Tool, ToolCtx, ToolOutput,
+    CancellationToken as CoreCancellationToken, CapabilityCallHandle, ContextPathHandle,
+    ContextPathHost, CwdHandle, EventSinkHandle, PluginConfig, PluginEventEmitter,
+    PluginEventHandle, SessionDiscoveryHandle, SessionDiscoveryHost, SubagentHandle, SubagentHost,
+    Tool, ToolCtx, ToolOutput,
 };
 use futures::FutureExt;
 use tokio::sync::Semaphore;
@@ -447,6 +448,26 @@ async fn execute_one(
                     resolved.plugin_id.to_string(),
                 ),
                 config: plugin_config.clone(),
+                // Edge B (`docs/vision/DESIGN-plugin-dependencies.md` §2):
+                // the plugin -> plugin capability call channel
+                // (`conway_core::ports::capability`'s own module doc).
+                // `CapabilityCallHandle::noop` here, bound to this call's
+                // own resolved tool's declaring plugin id (mirrors
+                // `plugin_events` immediately above) -- a live
+                // `CapabilityRegistry` built from every installed plugin's
+                // `Plugin::capabilities()` is NOT yet threaded through
+                // `RuntimeDeps` into this runner (board item
+                // `01M0WWNHQQYN1EVTH8WPZ33EBF`'s own report names this the
+                // disclosed follow-up: the channel and its build-time
+                // `requires`/`optional`-vs-`provides` resolution check are
+                // built and tested; wiring a real registry into every live
+                // dispatched call is the next step). A tool calling
+                // `ctx.capabilities` today is refused with
+                // `CapabilityCallError::NotProvided`, never silently
+                // wrong -- the SAME "refuse, never silently succeed"
+                // posture every other `::noop` default on this struct
+                // already holds.
+                capabilities: CapabilityCallHandle::noop(resolved.plugin_id.to_string()),
             };
 
             let invoked = resolved.tool.invoke(call.clone(), tool_ctx).await;

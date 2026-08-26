@@ -382,6 +382,25 @@ pub mod plugin {
         PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution,
         RegisteredObserver, RenderKind, Tool, ToolCtx, ToolObserver, ToolOutput,
     };
+    /// Edge B's plugin -> plugin capability CALL channel (board item
+    /// `01M0WWNHQQYN1EVTH8WPZ33EBF`,
+    /// `docs/vision/DESIGN-plugin-dependencies.md` §2;
+    /// `conway_core::ports::capability`'s own module doc has the full
+    /// design). `CapabilityProvider` is what a `Plugin::capabilities`
+    /// implementor implements; `CapabilityRegistration` pairs one with the
+    /// `HostCapability` name it answers for; `CapabilityError` is what a
+    /// provider returns on failure; `CapabilityCallError`/`CapabilityHost`/
+    /// `CapabilityRegistry`/`CapabilityCallHandle` are the caller-facing
+    /// dispatch machinery (`ToolCtx::capabilities` is a
+    /// `CapabilityCallHandle`, re-exported above already via `ToolCtx`
+    /// itself needing no separate name). Re-exported here for the SAME
+    /// reason every other plugin-facing type in this module is: a
+    /// third-party plugin implementing `Plugin::capabilities` needs to
+    /// name every one of these without depending on `conway-core` directly.
+    pub use conway_core::ports::{
+        CapabilityCallError, CapabilityCallHandle, CapabilityError, CapabilityHost,
+        CapabilityProvider, CapabilityRegistration, CapabilityRegistry,
+    };
     pub use conway_core::provenance::Provenance;
     pub use conway_core::segment::PromptSegment;
     /// The memoised effective-transcript resolver a [`CurateCtx`] carries
