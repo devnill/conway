@@ -327,6 +327,10 @@ own machine. Unresolved.
   no amount of plumbing helps, and the honest answer is pattern rules.
   **This is testable today, before any of the code below is written** — and
   it should be.
+
+  **FIRED, 2026-08-26.** It was tested, and it failed. See §8's entry for
+  the numbers. This falsifier is satisfied, not violated: the check worked,
+  and it worked before the guard was built.
 - **Fail-closed turns out to be right after all.** If §6a's `Prompt`
   fallback produces a session that nags constantly whenever the model is
   slow, the bricking failure may be the more honest one.
@@ -339,6 +343,51 @@ own machine. Unresolved.
 ## 8. Revisions
 
 Corrections are appended here dated, never absorbed upward.
+
+**2026-08-26 — §7's second falsifier FIRED. The premise this design rests
+on does not hold.** Board item `01M0WX32AKGA9W3S0KCVZHAGED`, evidence on
+branch `w/localmodel` at `experiments/local-classifier-premise/`.
+
+A real `pre_tool_use` hook script was run against a 48-case labelled
+corpus — 12 destructive, 10 superficially alarming but routine, 12 plain,
+and 7 near-miss pairs — built from this project's own recorded hazards.
+Two models, three repeats each.
+
+- `gemma4:e4b` (8.0B): **27.3% false-allow** — 9 of 33 dangerous cases
+  permitted, including reading the operator's real `~/.conway/settings.json`
+  and `git clean -fdx` on the real repository.
+- `qwen2.5:14b` (14.8B): **12.1% false-allow** — nearly twice the
+  parameters, still 4 of 33 missed.
+- **The paradigm case failed at both sizes.** `git reset --hard HEAD`,
+  identical but for `cwd` — a scratch worktree versus a real checkout with
+  uncommitted work — was judged routine in 6 of 6 combined runs. That
+  discrimination is the entire thing the guard was for.
+- **Zero non-determinism.** Not one near-miss flipped across repeats. The
+  failures are stable and wrong, which is worse than noisy: a flaky
+  classifier could be voted on; a confidently wrong one cannot.
+
+So this is a failure mode, not a size problem, and "use a bigger model" is
+a restatement rather than a fix. §7 said the honest answer would then be
+pattern rules. It is.
+
+**What this does NOT invalidate.** Everything §2 and §5 describe about the
+*mechanism* still stands and has shipped: `Plugin::hooks()`'s registration
+surface, plugin-declared modes, the cycle, the status-line reporting, the
+fail-closed hook path. A mode-and-guard mechanism is correct independently
+of what any particular guard decides. What is in question is
+`conway.permissions` itself — the one guard this design was written to
+carry.
+
+**A hybrid is a different proposal, not a rescue.** Pattern rules as the
+gate with the model as an additional deny-only narrowing layer may well be
+worth building, but it inherits none of this design's evidence and needs
+its own premise check. Do not let it in through the back door as a tuning
+knob on what was tested.
+
+**Two questions remain unanswered and need a human at a live TUI**, not a
+corpus replay: what the fail-closed hazard (§3a/§6a) actually feels like
+when the model server is killed mid-session, and whether the `AUTO-ALLOW`
+status line misleads while a guard is running (§3b).
 
 **2026-08-25 — §3a and §3b resolved in place (new §3c, §3d); §6a and §6b
 narrowed to what actually remains open.** Operator-raised, against the
