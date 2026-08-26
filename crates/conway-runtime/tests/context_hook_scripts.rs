@@ -343,6 +343,7 @@ fn build_loop(
             resolver.clone(),
         )),
         session_discovery_host: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
         router,
         attempt,
         registry: plugin_registry,

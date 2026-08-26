@@ -139,6 +139,7 @@ fn tool_batch_ctx() -> ToolBatchCtx {
             Arc::new(conway_core::transcript::TranscriptResolver::new(4)),
         )),
         session_discovery_host: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capability_host: Arc::new(conway_core::ports::CapabilityRegistry::default()),
         plugin_config: Arc::new(PluginConfig::default()),
         max_parallel_tools: 4,
         root: AgentRoot::Unconfined,
@@ -381,6 +382,7 @@ fn build_runtime_with_store() -> (Arc<Runtime>, Arc<FakeStore>) {
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     (rt, fake)
 }

@@ -57,6 +57,7 @@ fn build_runtime_over(
         headroom: std::sync::Arc::new(HeadroomPolicy::default()),
 
         session_discovery: std::sync::Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: std::sync::Arc::new(conway_core::ports::CapabilityRegistry::default()),
     })
 }
 

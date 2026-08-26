@@ -161,6 +161,7 @@ fn build_runtime(backend: Arc<dyn Backend>) -> (Arc<Runtime>, Arc<dyn SessionSto
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     (runtime, store)
 }

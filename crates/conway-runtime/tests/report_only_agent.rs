@@ -263,6 +263,7 @@ fn build_loop(
             resolver.clone(),
         )),
         session_discovery_host: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
         router: route(),
         attempt,
         registry: plugin_registry,
@@ -702,6 +703,7 @@ fn runtime_with_plugins(
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     (runtime, store)
 }

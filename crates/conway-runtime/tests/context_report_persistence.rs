@@ -175,6 +175,7 @@ fn build_runtime(
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     (runtime, store)
 }
@@ -402,6 +403,7 @@ async fn restart_over_the_same_store_returns_a_byte_equal_report() {
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     let restored = runtime2
         .context_report_at(root, live_report.turn)

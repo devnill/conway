@@ -184,6 +184,7 @@ fn build_runtime(
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     (runtime, store)
 }
@@ -1005,6 +1006,7 @@ async fn await_result_blocks_until_the_child_actually_finishes_then_resolves_eve
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     let root = start_and_finish_root(&runtime, "hi").await;
     let child = SubagentHost::start(&*runtime, root, root, fork_spec("go slow"))
@@ -1599,6 +1601,7 @@ async fn tool_ctx_subagents_is_the_runtime_itself() {
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     let mut stream = runtime.subscribe();
     let root = runtime.start_root(root_spec("use the tool")).await.unwrap();
@@ -1755,6 +1758,7 @@ fn build_probe_runtime(
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     (runtime, store, probe)
 }
@@ -1790,6 +1794,7 @@ fn build_runtime_over(store: Arc<dyn SessionStore>, script: Vec<ScriptedTurn>) -
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     })
 }
 
@@ -2766,6 +2771,7 @@ fn build_runtime_with_two_tools_and_defs(
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     (runtime, backend)
 }
@@ -2921,6 +2927,7 @@ fn build_runtime_with_pin_aware_router(
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     (runtime, backend)
 }
@@ -3822,6 +3829,7 @@ fn build_runtime_with_panicking_reviewer(turns: usize) -> (Arc<Runtime>, Arc<Scr
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     (runtime, planner_backend)
 }
@@ -4034,6 +4042,7 @@ fn build_runtime_with_two_tools_defs_and_instructions(
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     (runtime, backend)
 }
