@@ -1829,11 +1829,29 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                     // themselves are per-agent and the resumed session has
                     // new agents, so nothing stale carries over -- only the
                     // store handle does.
+                    //
+                    // The plugin status-contribution snapshot is carried
+                    // across for the SAME reason as its two siblings above
+                    // (board item `01M0XDEDBR5YDF71Q7ZRXYMT85`, closing the
+                    // third link in the chain those two items opened):
+                    // `Conway::plugin_status_contributions()` is a
+                    // `Conway`-level, build-time value -- exactly as
+                    // process-lifetime as `plugin_commands`/`agent_names`,
+                    // not session-scoped state -- so `AppState::new`'s empty
+                    // default is the wrong value to leave it at here. This
+                    // does NOT make the snapshot live: it is still the same
+                    // frozen, typically-empty value `App::new` copied once
+                    // at TUI startup (see `AppState::
+                    // plugin_status_contributions`'s own doc for the
+                    // caveat, restated rather than silently dropped by this
+                    // carry-across).
                     let agent_names = state.agent_names.clone();
                     let plugin_commands = state.plugin_commands.clone();
+                    let plugin_status_contributions = state.plugin_status_contributions.clone();
                     *state = AppState::new(handle.root());
                     state.plugin_commands = plugin_commands;
                     state.agent_names = agent_names;
+                    state.plugin_status_contributions = plugin_status_contributions;
                     notice(state, format!("resumed session {sid}"));
                     Effect::Resumed(handle)
                 }

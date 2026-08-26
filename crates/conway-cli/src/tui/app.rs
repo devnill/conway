@@ -492,7 +492,8 @@ mod tests {
 
     use super::ask;
     use super::fixtures::{
-        base_config, echo_conway, echo_conway_and_store, echo_conway_over, minimal_cli,
+        base_config, conway_with_contributing_plugin_and_store, echo_conway, echo_conway_and_store,
+        echo_conway_over, minimal_cli,
     };
     use super::{App, SubmitOutcome};
     use crate::tui::commands;
@@ -561,6 +562,104 @@ mod tests {
             Some(other_head),
             "resuming must read back the RESUMED session's own head, not leave it None or \
              stale"
+        );
+    }
+
+    /// Board item `01M0XDEDBR5YDF71Q7ZRXYMT85`: the third link in the
+    /// "populate `AppState::plugin_status_contributions`" chain, closed
+    /// end to end. `commands::execute`'s `Resume` arm used to carry
+    /// `plugin_commands`/`agent_names` across its `AppState::new` reset by
+    /// hand but leave `plugin_status_contributions` out of that list --
+    /// this is that field's OWN `resuming_a_session_refreshes_its_own_
+    /// head_seq`, proving the fix the same "real `App::submit`, two
+    /// `Conway`s sharing one `FakeStore`" way that test proves
+    /// `session_head_seq`'s own survival.
+    ///
+    /// **Still a snapshot, not a live view** -- the assertion is that
+    /// `/resume` does not DROP the value `App::new` already captured, not
+    /// that a health change occurring on the resumed session is now
+    /// visible (`app/startup.rs`'s `ContributingPlugin`/`AppState::
+    /// plugin_status_contributions`'s own doc name that as a separate,
+    /// larger, deliberately unbuilt piece). Render-asserts too, matching
+    /// this crate's own binding convention: the value must still reach the
+    /// literal rendered status line after `/resume`, not merely survive on
+    /// the struct.
+    #[tokio::test]
+    async fn plugin_status_contribution_survives_resume() {
+        let (conway, store) = conway_with_contributing_plugin_and_store();
+        let mut cli = minimal_cli();
+        // `plugins` is not in the Lean line's default fields -- an
+        // operator has to opt in, matching `app/startup.rs`'s own
+        // `app_new_populates_plugin_status_contributions_from_a_real_
+        // plugin` fixture exactly.
+        let tui_config_dir = tempfile::tempdir().expect("tempdir");
+        let tui_config_path = tui_config_dir.path().join("settings.json");
+        std::fs::write(
+            &tui_config_path,
+            serde_json::json!({"tui": {"status_line": {"fields": ["plugins"]}}}).to_string(),
+        )
+        .expect("write settings.json carrying [tui.status_line.fields]");
+        cli.config = Some(tui_config_path);
+
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let expected = vec![conway::plugin::PluginStatusContribution {
+            key: "guard".to_string(),
+            status: conway::ResultStatus::Completed,
+            value: "qwen2.5-3b".to_string(),
+        }];
+        assert_eq!(
+            app.state.plugin_status_contributions, expected,
+            "precondition: App::new must populate the contribution before any /resume runs"
+        );
+
+        // Same "simulated restart" shape as `resuming_a_session_refreshes_
+        // its_own_head_seq`: a second, independent `Conway`/`Runtime` over
+        // the SAME store, dropped before `app.submit` runs, leaving only
+        // its persisted record for `app.conway.resume` to re-attach.
+        let other_sid = {
+            let other_conway = echo_conway_over(store.clone());
+            let other = other_conway
+                .new_session(conway::SessionSpec::default())
+                .await
+                .expect("new_session should succeed");
+            let sid = other.id();
+            other
+                .prompt("hello")
+                .await
+                .expect("prompt should not error")
+                .text()
+                .await
+                .expect("turn should complete");
+            sid
+        };
+
+        let outcome = app
+            .submit(format!("/resume {other_sid}"))
+            .await
+            .expect("submit should not error");
+        assert!(
+            matches!(outcome, SubmitOutcome::Resubscribe),
+            "transcript: {:?}",
+            app.state.transcript
+        );
+
+        assert_eq!(
+            app.state.plugin_status_contributions, expected,
+            "/resume must not drop the plugin status-contribution snapshot, matching how \
+             plugin_commands/agent_names already survive it"
+        );
+
+        // Buffer-asserting half (this crate's binding TUI test convention):
+        // the contribution must still be READABLE on the real, rendered
+        // status line after `/resume`, not merely present on the struct.
+        let text = crate::tui::test_support::render_text(&app.state, 120, 40);
+        assert!(
+            text.contains("guard: qwen2.5-3b"),
+            "the plugin's status contribution must still reach the rendered status line after \
+             /resume: {text}"
         );
     }
 

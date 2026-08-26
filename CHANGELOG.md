@@ -609,6 +609,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/resume` no longer drops a plugin's status-contribution snapshot from
+  the status line** — board item `01M0XDEDBR5YDF71Q7ZRXYMT85`, the third
+  and final link in a chain three items closed one gap at a time: a plugin's
+  `status_contributions()` were collected and exposed on the facade
+  (pre-existing), then rendered (`01M0X1B7Z41J57N6YP2JFZ2AZW`), then
+  populated into `AppState` at TUI startup (`01M0XC1GF73Z9GTE7TN65TRW4A`) —
+  and each of those items correctly left `commands::execute`'s `Resume` arm
+  alone, which already hand-carried `plugin_commands`/`agent_names` (both
+  process-lifetime, `Conway`/binary-level values) across the `AppState::new`
+  reset a `/resume` performs, but never carried
+  `AppState::plugin_status_contributions`, the same shape. `/resume` now
+  carries it across too, proven end to end (not only asserted on the
+  struct): a real `App`, a real plugin contributing a status, resumed via a
+  real `App::submit("/resume <id>")`, still shows the contribution on the
+  actually-rendered status line afterward
+  (`crates/conway-cli/src/tui/app.rs::plugin_status_contribution_survives_resume`).
+  **Still a build-time snapshot, not a live view** — carrying it across
+  `/resume` does not change that; every doc describing the field
+  (`AppState::plugin_status_contributions`, `Conway::
+  plugin_status_contributions`, `app/startup.rs`'s own `App::new` wiring)
+  says so explicitly, and a genuinely live per-session poll remains a
+  separate, larger, deliberately unbuilt piece — a guard that dies
+  mid-session still reports whatever it held (typically nothing) at build
+  time, resumed session or not.
+
 - **The `/` command palette now generates itself from the same command
   table `commands.rs` parses, instead of a hand-kept second listing** —
   board item `01M0RW29F2ATVGCV0R8H0GQEYH`. The two had drifted: `/trust`
