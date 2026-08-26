@@ -198,3 +198,10 @@ claim: EventSink/EventSinkHandle DO have a real production builder injection poi
 paths: crates/conway/src/builder.rs
 present: p\.observe_sink\(\)
 -->
+
+<!-- claim-check
+why: board item 01M0XVAMA0N0TH8CX324EC9593 -- this enumeration went stale by hand twice (nine of twelve, then twelve of sixteen), and each fix corrected the prose without adding a check, so the next crate landed unmentioned again. A `glob` predicate re-derives the crate set from the filesystem on every run instead of trusting the last person who counted, so it is the one shape of this check that does not need editing when crate seventeen lands
+claim: every crates/conway-plugin-* directory is named somewhere in ARCHITECTURE.md
+paths: ARCHITECTURE.md
+glob: crates/conway-plugin-*
+-->
