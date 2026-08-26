@@ -85,10 +85,45 @@
 //! with the operator's own privileges and no sandboxing --
 //! `conway::config::schema::PluginsConfig::claude_compat`'s own doc has the
 //! full disclosure.
+//!
+//! **Board item `01M0XRCAFD7DD7N64RNRM3P8W9`: the command half is reachable
+//! now too -- through a SEPARATE seam from `install`, not through it.**
+//! `install`, above, is `ConwayBuilder`-shaped: it attaches every MCP server
+//! and appends every mapped hook rule into the ONE `ConwayBuilder` `main.rs`
+//! carries through `build_conway`. `conway::plugin::Plugin::commands()` has
+//! no equivalent consumer inside the facade at all -- `ConwayBuilder::build`
+//! never reads it (grep `crates/conway/src/builder.rs` for `.commands()`:
+//! nothing). The ONLY reader is `conway_cli::tui::commands::
+//! CommandRegistry::build`, called from TWO places, and NEITHER one takes
+//! its `&[Arc<dyn Plugin>]` from the built `Conway`/`Runtime` (which retains
+//! no such accessor -- `first_party_plugins::installed_plugins`'s own doc
+//! states the identical constraint for the first-party bundle): both
+//! `tui::app::App::new` and `commands::plugin::run` take it as a plain
+//! parameter that `first_party_plugins::installed_plugins` RE-DERIVES from
+//! `conway.config()`, independently of whatever `ConwayBuilder::
+//! with_plugin` calls happened at build time. A `[plugins].claude_compat[]`
+//! entry's own translated commands were invisible to that re-derivation
+//! entirely -- not merely unregistered by `install` (this item's own
+//! starting defect), but unreachable by CONSTRUCTION even if `install` had
+//! called `with_plugin` for them, since `installed_plugins` never looks at
+//! `ConwayBuilder`'s attached plugins at all. [`command_plugins`], below, is
+//! this crate's other half: called from `first_party_plugins::
+//! installed_plugins` (not from `install`), it re-derives every
+//! `[plugins].claude_compat[]` entry's own `ClaudeCompatReport::
+//! command_registrations()` the SAME way `installed_plugins` already
+//! re-derives the first-party bundle -- one more source feeding the SAME
+//! list, read by the SAME two consumers, with no change to either of them.
+//! Attaching a commands-only `Plugin` to the `ConwayBuilder` inside
+//! `install` instead was considered and rejected: nothing in `build()` ever
+//! reads `Plugin::commands()` (confirmed above), so it would add a
+//! duplicate-manifest-id risk against every other installed plugin for zero
+//! behavioral effect -- the real reader lives entirely on the CLI side of
+//! `build()`, so this crate's fix lives there too.
 
 use std::sync::Arc;
 
-use conway::config::schema::HookEntry;
+use conway::config::schema::{ConwayConfig, HookEntry};
+use conway::plugin::{Command, Plugin, PluginManifest, Tool};
 use conway::{ConwayBuilder, FacadeError};
 use conway_plugin_claude::HookRegistration;
 use conway_plugin_mcp::McpPlugin;
@@ -210,6 +245,86 @@ pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
     Ok(builder)
 }
 
+/// A `[plugins].claude_compat[]` entry's own translated `commands/*.md`
+/// files, wrapped as a real `conway::plugin::Plugin` -- the ONLY shape
+/// that reaches `conway_cli::tui::commands::CommandRegistry::build`
+/// (`Plugin::commands()` is the one method it reads; see this module's own
+/// top doc, "the command half is reachable now too"). Carries no tools and
+/// no host-capability requirements: its single job is handing back the
+/// `Ready` translations [`command_plugins`] already resolved.
+struct ClaudeCompatCommandsPlugin {
+    /// [`conway_plugin_claude::ClaudeCompatReport::id`] -- the
+    /// manifest-derived identity, NOT the config entry's own
+    /// `ClaudeCompatPluginEntry::id` (the two are allowed to differ; see
+    /// `ClaudeCompatReport::hook_registrations`'s own doc for the identical
+    /// choice made for hook-id namespacing). `CommandRegistry::build`
+    /// prefixes every bare command name here with THIS id.
+    id: String,
+    commands: Vec<Arc<dyn Command>>,
+}
+
+impl Plugin for ClaudeCompatCommandsPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: self.id.clone(),
+            version: "0.0.0".to_string(),
+            tools: Vec::new(),
+            required_host_caps: Vec::new(),
+            optional_host_caps: Vec::new(),
+            requires: Vec::new(),
+            optional: Vec::new(),
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        Vec::new()
+    }
+
+    fn commands(&self) -> Vec<Arc<dyn Command>> {
+        self.commands.clone()
+    }
+}
+
+/// Re-derives every `[plugins].claude_compat[]` entry's own translated
+/// `commands/*.md` files as ready-to-fold-in `Arc<dyn conway::plugin::
+/// Plugin>`s -- the commands-only counterpart to [`install`]'s own MCP/hook
+/// wiring, read from a config value rather than a live `ConwayBuilder`
+/// because its ONE caller, `first_party_plugins::installed_plugins`, is
+/// itself a read-only re-derivation from `conway.config()` (see that
+/// function's own doc, and this module's own top doc for why the command
+/// surface needs a SECOND seam rather than reusing [`install`]).
+///
+/// An entry with no `Ready` command translations contributes no `Plugin` at
+/// all -- an installed `Plugin` with an empty `commands()` would be a
+/// behavioral no-op either way, so this skips constructing one rather than
+/// padding the registry with vacuous entries.
+///
+/// **Discovery failure here mirrors [`install`]'s own posture, not a softer
+/// one.** [`install`] already proved every configured entry's directory
+/// resolves, at `ConwayBuilder::build` time, before this ever runs -- a
+/// failure here (the directory changed on disk since) is the same kind of
+/// since-startup config drift `install` itself would refuse to paper over,
+/// so this returns a named [`FacadeError::Build`] identically, rather than
+/// silently dropping the entry's commands.
+pub fn command_plugins(config: &ConwayConfig) -> conway::Result<Vec<Arc<dyn Plugin>>> {
+    let mut plugins: Vec<Arc<dyn Plugin>> = Vec::new();
+    for entry in &config.plugins.claude_compat {
+        let report =
+            conway_plugin_claude::discover(&entry.dir).map_err(|err| FacadeError::Build {
+                message: format!("[plugins].claude_compat entry '{}': {err}", entry.id),
+            })?;
+        let commands = report.command_registrations();
+        if commands.is_empty() {
+            continue;
+        }
+        plugins.push(Arc::new(ClaudeCompatCommandsPlugin {
+            id: report.id.clone(),
+            commands,
+        }) as Arc<dyn Plugin>);
+    }
+    Ok(plugins)
+}
+
 #[cfg(test)]
 mod tests {
     //! **Wiring-only, exactly like `subprocess_plugins`/`mcp_plugins`'s own
@@ -220,7 +335,6 @@ mod tests {
     //! build, naming the entry -- P-13, checked directly rather than only
     //! asserted in prose.
     use super::*;
-    use conway::config::schema::ConwayConfig;
 
     fn minimal_config() -> ConwayConfig {
         use std::collections::BTreeMap;
@@ -502,5 +616,205 @@ mod tests {
         // collide even though both name the identical Claude Code event.
         assert!(rules.iter().any(|r| r.id.contains("entry-a")));
         assert!(rules.iter().any(|r| r.id.contains("entry-b")));
+    }
+
+    // ---- command wiring (board item `01M0XRCAFD7DD7N64RNRM3P8W9`) ----
+
+    fn write_command_md(dir: &std::path::Path, file_name: &str, contents: &str) {
+        std::fs::create_dir_all(dir.join("commands")).unwrap();
+        std::fs::write(dir.join("commands").join(file_name), contents).unwrap();
+    }
+
+    fn config_with_one_claude_compat_entry(dir: &std::path::Path, entry_id: &str) -> ConwayConfig {
+        let mut config = minimal_config();
+        config.plugins.claude_compat.push(ClaudeCompatPluginEntry {
+            id: entry_id.to_string(),
+            dir: dir.to_path_buf(),
+            timeout_ms: 5_000,
+        });
+        config
+    }
+
+    /// **The headline claim this item exists to prove, at the wiring
+    /// level**: a `Ready` `commands/*.md` translation produces a real
+    /// `conway::plugin::Plugin` -- namespaced by the report's own manifest
+    /// id, exactly like [`ClaudeCompatCommandsPlugin::manifest`] documents
+    /// -- and invoking the ONE command it carries submits the file's own
+    /// body, verbatim. `crates/conway-cli/tests/claude_compat_commands.rs`
+    /// is the sibling end-to-end proof that this reaches the compiled
+    /// binary's real command dispatch; this test pins the wiring step that
+    /// makes that reachable at all.
+    #[tokio::test]
+    async fn a_ready_command_translation_becomes_a_real_invokable_plugin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".claude-plugin")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude-plugin").join("plugin.json"),
+            r#"{"name":"acme-tools"}"#,
+        )
+        .unwrap();
+        write_command_md(
+            dir.path(),
+            "greet.md",
+            "---\ndescription: Greets the operator\n---\n\nSay a friendly hello.\n",
+        );
+
+        let config = config_with_one_claude_compat_entry(dir.path(), "acme-tools");
+        let plugins = command_plugins(&config).expect("command_plugins must succeed");
+        assert_eq!(plugins.len(), 1, "exactly one plugin: {:?}", plugins.len());
+
+        let manifest = plugins[0].manifest();
+        assert_eq!(
+            manifest.id, "acme-tools",
+            "namespaced by the report's own manifest id, not the config entry's id"
+        );
+        assert!(plugins[0].tools().is_empty());
+
+        let commands = plugins[0].commands();
+        assert_eq!(commands.len(), 1);
+        let spec = commands[0].spec();
+        assert_eq!(spec.name, "greet", "the command name must stay bare");
+        assert_eq!(spec.summary, "Greets the operator");
+
+        let ctx = conway::plugin::CommandCtx {
+            focused_agent: conway_core::ids::AgentId::new(),
+            root_agent: conway_core::ids::AgentId::new(),
+            session_id: conway_core::ids::SessionId::new(),
+            args: String::new(),
+        };
+        let outcome = commands[0].invoke(ctx).await;
+        assert_eq!(
+            outcome,
+            conway::plugin::CommandOutcome::SubmitPrompt {
+                text: "Say a friendly hello.".to_string()
+            }
+        );
+    }
+
+    /// The config entry's own `id` and the report's manifest-derived `id`
+    /// are allowed to differ (`ClaudeCompatPluginEntry::id`'s own doc) --
+    /// `command_plugins` namespaces by the LATTER, mirroring
+    /// `hook_registrations`'s identical choice, checked directly rather
+    /// than only asserted alongside the happy-path test above.
+    #[tokio::test]
+    async fn a_command_plugin_is_namespaced_by_the_reports_id_not_the_config_entrys_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".claude-plugin")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude-plugin").join("plugin.json"),
+            r#"{"name":"acme-tools"}"#,
+        )
+        .unwrap();
+        write_command_md(dir.path(), "greet.md", "Say hello.\n");
+
+        // The config entry's own id deliberately differs from the
+        // manifest's `name` above.
+        let config = config_with_one_claude_compat_entry(dir.path(), "config-entry-id");
+        let plugins = command_plugins(&config).expect("command_plugins must succeed");
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].manifest().id, "acme-tools");
+    }
+
+    /// An entry with no `Ready` commands (an empty body, refused) must not
+    /// contribute a vacuous `Plugin` -- an installed plugin with an empty
+    /// `commands()` would register nothing anyway, so `command_plugins`
+    /// skips constructing one rather than padding the returned list.
+    #[tokio::test]
+    async fn an_entry_with_no_ready_commands_contributes_no_plugin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_command_md(dir.path(), "blank.md", "");
+
+        let config = config_with_one_claude_compat_entry(dir.path(), "acme-tools");
+        let plugins = command_plugins(&config).expect("command_plugins must succeed");
+        assert!(
+            plugins.is_empty(),
+            "an entry with no Ready commands must contribute nothing: {}",
+            plugins.len()
+        );
+    }
+
+    /// An entry declaring no `commands/` directory at all is the same true
+    /// no-op -- mirrors `install`'s own "an empty entry list is a true
+    /// no-op" posture, one level down (a real entry with nothing to
+    /// translate, rather than no entries at all).
+    #[tokio::test]
+    async fn an_entry_with_no_commands_directory_contributes_no_plugin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = config_with_one_claude_compat_entry(dir.path(), "acme-tools");
+        let plugins = command_plugins(&config).expect("command_plugins must succeed");
+        assert!(plugins.is_empty());
+    }
+
+    /// An empty `[plugins].claude_compat[]` list is a true no-op -- the
+    /// identical property `install`'s own
+    /// `an_empty_claude_compat_list_is_a_true_no_op` pins for the MCP/hook
+    /// half.
+    #[tokio::test]
+    async fn an_empty_claude_compat_list_contributes_no_command_plugins() {
+        let config = minimal_config();
+        let plugins = command_plugins(&config).expect("command_plugins must succeed");
+        assert!(plugins.is_empty());
+    }
+
+    /// A directory that does not exist fails the whole call, naming the
+    /// offending entry -- the identical P-13 posture `install`'s own
+    /// `a_nonexistent_directory_fails_the_whole_build_naming_the_entry`
+    /// pins for the MCP/hook half, checked here for the command half.
+    #[tokio::test]
+    async fn a_nonexistent_directory_fails_command_plugins_naming_the_entry() {
+        let config = config_with_one_claude_compat_entry(
+            std::path::Path::new("/does/not/exist/at/all"),
+            "acme-tools",
+        );
+        let err = match command_plugins(&config) {
+            Ok(_) => panic!("a nonexistent claude_compat directory must fail command_plugins"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("acme-tools"),
+            "the failing entry's own id must be named: {err}"
+        );
+    }
+
+    /// Two entries, each contributing a command, produce two separately
+    /// namespaced plugins -- `command_plugins` accumulates across entries
+    /// exactly like `install`'s own hook loop does for `HooksConfig`.
+    #[tokio::test]
+    async fn two_claude_compat_entries_each_contribute_their_own_command_plugin() {
+        let dir_a = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir_a.path().join(".claude-plugin")).unwrap();
+        std::fs::write(
+            dir_a.path().join(".claude-plugin").join("plugin.json"),
+            r#"{"name":"entry-a"}"#,
+        )
+        .unwrap();
+        write_command_md(dir_a.path(), "greet.md", "Hello from a.\n");
+
+        let dir_b = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir_b.path().join(".claude-plugin")).unwrap();
+        std::fs::write(
+            dir_b.path().join(".claude-plugin").join("plugin.json"),
+            r#"{"name":"entry-b"}"#,
+        )
+        .unwrap();
+        write_command_md(dir_b.path(), "greet.md", "Hello from b.\n");
+
+        let mut config = minimal_config();
+        config.plugins.claude_compat.push(ClaudeCompatPluginEntry {
+            id: "entry-a".to_string(),
+            dir: dir_a.path().to_path_buf(),
+            timeout_ms: 5_000,
+        });
+        config.plugins.claude_compat.push(ClaudeCompatPluginEntry {
+            id: "entry-b".to_string(),
+            dir: dir_b.path().to_path_buf(),
+            timeout_ms: 5_000,
+        });
+
+        let plugins = command_plugins(&config).expect("command_plugins must succeed");
+        assert_eq!(plugins.len(), 2);
+        let ids: Vec<String> = plugins.iter().map(|p| p.manifest().id).collect();
+        assert!(ids.contains(&"entry-a".to_string()));
+        assert!(ids.contains(&"entry-b".to_string()));
     }
 }

@@ -282,6 +282,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `conway` facade). `docs/plugins/claude-compat.md`'s `commands/*.md` "not
   wired" paragraph is corrected to describe what is true now and what
   still is not.
+- **`[plugins].claude_compat[]` now reaches a `commands/*.md` file all the
+  way to a running `conway` process, not only `conway-plugin-claude`'s own
+  library-level tests** — board item `01M0XRCAFD7DD7N64RNRM3P8W9`, the
+  audit's single CRITICAL finding, closing the gap the item immediately
+  above left standing: `crates/conway-cli/src/claude_compat_plugins.rs`
+  never called `ClaudeCompatReport::command_registrations()` at all, so an
+  operator naming a directory in `settings.json` got zero working commands
+  from it. **Tracing the whole path found a SECOND, deeper joint, fixed in
+  this same item**: `conway::plugin::Plugin::commands()` has no reader
+  inside the facade whatsoever (`ConwayBuilder::build` never looks at it)
+  — the only reader is `conway_cli::tui::commands::CommandRegistry::build`,
+  fed by `first_party_plugins::installed_plugins`, which RE-DERIVES its
+  plugin list from `conway.config()` rather than reading back whatever
+  `ConwayBuilder::with_plugin` attached at build time. Merely calling
+  `command_registrations()` from `install` and attaching the result via
+  `with_plugin` would still have produced zero reachable commands.
+  `claude_compat_plugins` gains a new `command_plugins` function — called
+  from `first_party_plugins::installed_plugins` instead, the SAME
+  re-derive-from-config seam that already feeds the first-party bundle —
+  so a translated command now shows up in the slash palette, dispatches
+  through the ordinary `<plugin-id>.<name>` path (both the TUI's
+  `/`-prefixed dispatch and the `conway <plugin-id>.<command>` external
+  subcommand), cannot shadow a built-in, and submits its prompt for real.
+  Proven through the compiled binary, not the library API alone:
+  `crates/conway-cli/tests/claude_compat_commands.rs` drives a real
+  `conway <plugin-id>.<command>` invocation end to end and asserts the
+  persisted `LogRecord::UserTurn`/`Provenance::CommandPrompt` names the
+  translated command's own full name. `docs/plugins/claude-compat.md`'s
+  `commands/*.md` bullet is corrected again: it previously claimed
+  "proven end to end" while nothing in `conway-cli` ever reached this far;
+  it now states what is actually wired, with the same "best effort, not
+  parity" caveats (no `$ARGUMENTS` interpolation, `allowed-tools` named but
+  not enforced) unweakened.
 
 - **conway can now install a plugin from a Claude Code marketplace** —
   board item `01M0VR96Y87FF2BVNTBSC6GEYR`, the network-reaching half of the
