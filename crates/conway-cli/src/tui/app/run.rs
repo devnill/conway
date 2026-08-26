@@ -37,6 +37,21 @@ const REDRAW_TICK: Duration = Duration::from_millis(16);
 /// idle cost stays flat. Additive to `REDRAW_TICK`, which is kept for
 /// input/event responsiveness.
 const ANIMATION_TICK: Duration = Duration::from_millis(125);
+/// Board item `01M0Y3A8MYKKE0GMYKZE1K0QTD`'s cadence floor: the ONLY place
+/// this loop calls `Conway::poll_plugin_status_contributions` -- see that
+/// method's own doc for why re-reading it is cheap (non-blocking by
+/// contract) but still not free to do on every 16ms `REDRAW_TICK`, which
+/// this guards against ("polling every plugin per frame is unacceptable",
+/// this item's own spec). 1000ms -- the SAME floor
+/// `conway_plugin_statusline::MIN_REFRESH_INTERVAL_MS` enforces on that
+/// crate's own background loop -- is chosen deliberately, not arbitrarily:
+/// polling faster than the fastest any status-contributing plugin can
+/// possibly produce a new value buys nothing, so this loop's own floor
+/// matches the fastest producer's floor exactly. Worst case: 60 polls per
+/// minute, matching that crate's own documented worst-case process-spawn
+/// cadence (module doc, "Cadence") one-for-one, even though this tick
+/// itself spawns nothing.
+const PLUGIN_STATUS_POLL_TICK: Duration = Duration::from_millis(1000);
 
 impl App {
     /// Drives the app loop until the user quits, cancels twice, or a fatal
@@ -63,6 +78,21 @@ impl App {
         let mut keys = CrosstermEventStream::new();
         let mut ticker = tokio::time::interval(REDRAW_TICK);
         let mut anim_ticker = tokio::time::interval(ANIMATION_TICK);
+        let mut plugin_status_ticker = tokio::time::interval(PLUGIN_STATUS_POLL_TICK);
+        // Matches `ticker`/`anim_ticker`'s own choice, not a new one: a
+        // `tokio::time::interval`'s first tick always resolves immediately
+        // regardless of `MissedTickBehavior`, so this loop's very first
+        // iteration polls once right away (redundant with, but no more
+        // costly than, `App::new`'s own build-time-snapshot copy a moment
+        // earlier -- `Self::refresh_plugin_status_contributions` is cheap
+        // and idempotent either way) and every poll after that is spaced a
+        // full `PLUGIN_STATUS_POLL_TICK` apart. `Skip` (rather than the
+        // default `Burst`) is still worth setting explicitly: if this loop
+        // is ever busy long enough to miss a tick, catching up with a burst
+        // of polls would defeat the very floor this constant exists to
+        // enforce -- `Skip` folds any missed ticks into one, preserving the
+        // "no faster than the floor" guarantee even under load.
+        plugin_status_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut dirty = true;
         let mut last_ctrl_c: Option<Instant> = None;
         // Taken out of `self` once here (rather than borrowed from it inside
@@ -115,6 +145,17 @@ impl App {
                 _ = anim_ticker.tick() => {
                     if should_animate(&self.state.activity) || self.state.ask_in_flight {
                         self.state.tick_animation();
+                        dirty = true;
+                    }
+                }
+                // Board item `01M0Y3A8MYKKE0GMYKZE1K0QTD`: the live poll
+                // acceptance criterion 1 exists to close -- see
+                // `Self::refresh_plugin_status_contributions`'s own doc for
+                // what this does and why it is a synchronous, non-blocking
+                // call safe to make directly inside this `select!` (never
+                // spawned, never awaited).
+                _ = plugin_status_ticker.tick() => {
+                    if self.refresh_plugin_status_contributions() {
                         dirty = true;
                     }
                 }

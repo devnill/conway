@@ -47,6 +47,7 @@ mod ask;
 mod focus;
 mod marketplace;
 mod plugin_cmd;
+mod plugin_status;
 mod plugin_toggle;
 mod run;
 mod shutdown;

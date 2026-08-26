@@ -1005,23 +1005,34 @@ pub struct AppState {
     /// `commands::execute`'s `Resume` arm carries it across the
     /// `AppState::new` reset by hand, alongside its two siblings.
     ///
-    /// **This is a snapshot, not a live view, and it does not update
-    /// mid-session -- carrying it across `/resume` does not change that.**
-    /// `Conway::plugin_status_contributions()`'s own doc explains why: the
-    /// value it returns was collected once, in `ConwayBuilder::build`,
-    /// before this session's own `status/1` notifications (if any) had
-    /// arrived -- typically empty at real session start, and frozen at
-    /// whatever it held at that moment for the rest of the process's life,
-    /// resumed session or not. A plugin whose health changes AFTER startup
-    /// (a guard that dies mid-session, a build that finishes) will not be
-    /// reflected here; a genuinely live per-session poll is a separate,
-    /// larger piece, not built by this wiring. Tests in `view/status.rs`
-    /// still set this field directly, matching every other `AppState`
-    /// field's own test idiom in that module; the end-to-end "does a real
-    /// build actually populate it" proof lives in `app/startup.rs`'s own
-    /// test module, and the end-to-end "does it survive `/resume`" proof
-    /// lives in `app.rs`'s own test module (board item
-    /// `01M0XDEDBR5YDF71Q7ZRXYMT85`).
+    /// **`App::new`'s copy is a one-time snapshot; this field itself is no
+    /// longer frozen for the rest of the process's life** (board item
+    /// `01M0Y3A8MYKKE0GMYKZE1K0QTD`). `App::run`'s own event loop
+    /// (`app/run.rs`'s `plugin_status_ticker` arm) calls `App::
+    /// refresh_plugin_status_contributions` on a bounded cadence
+    /// (`PLUGIN_STATUS_POLL_TICK`), which overwrites this field wholesale
+    /// with whatever `Conway::poll_plugin_status_contributions()` returns at
+    /// that moment -- a plugin whose health changes mid-session (a guard
+    /// that dies, a build that finishes, a build that later FAILS) is
+    /// reflected here within one tick either way, and a plugin that stops
+    /// reporting entirely drops out of this field on the very next tick
+    /// rather than leaving a stale value behind. See `app/plugin_status.rs`
+    /// for the refresh method and its own tests, and `Conway::
+    /// poll_plugin_status_contributions`'s doc for the non-blocking
+    /// contract the cadence relies on.
+    ///
+    /// Tests in `view/status.rs` still set this field directly, matching
+    /// every other `AppState` field's own test idiom in that module; the
+    /// end-to-end "does a real build actually populate it at startup" proof
+    /// lives in `app/startup.rs`'s own test module, the end-to-end "does a
+    /// live poll actually update it" proof lives in `app/plugin_status.rs`'s
+    /// own test module, and the end-to-end "does it survive `/resume`"
+    /// proof lives in `app.rs`'s own test module (board item
+    /// `01M0XDEDBR5YDF71Q7ZRXYMT85`) -- `/resume` still carries whatever
+    /// this field CURRENTLY holds across the `AppState::new` reset, live
+    /// poll or not, for the same reason it always has: the value is
+    /// `Conway`-level, process-lifetime-reachable data, not something a
+    /// resume should reset to empty and wait a full tick to refill.
     pub plugin_status_contributions: Vec<PluginStatusContribution>,
 }
 
