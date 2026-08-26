@@ -2375,10 +2375,15 @@ mod tests {
         }"#;
         let err = serde_json::from_str::<WireManifest>(json)
             .expect_err("a malformed capability name must fail WireManifest parsing");
+        // Asserted on what the message must DO for a plugin author -- name
+        // the offending value and say it is not well formed -- rather than
+        // on a particular phrasing. `validate_event_name` owns the wording
+        // and is shared by three call sites; pinning its exact words here
+        // would make this test fail on an improvement to any of them.
+        let msg = err.to_string();
         assert!(
-            err.to_string().to_lowercase().contains("host capability")
-                || err.to_string().to_lowercase().contains("malformed"),
-            "the parse error should name the shape violation: {err}"
+            msg.contains(".bad") && msg.to_lowercase().contains("well-formed"),
+            "the parse error should name the offending value and the shape violation: {err}"
         );
     }
 
