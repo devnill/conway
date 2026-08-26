@@ -129,10 +129,11 @@ use conway_core::ids::{BackendId, ModelRef};
 use conway_core::permission_pattern::{PatternOrigin, Rule, Select, Then, When};
 use conway_core::ports::CapabilityIndex;
 use conway_core::ports::{
-    Backend, BackendBuildContext, BackendFactory, ContextHook, CurateOutcome, Curator,
-    HealthRegistry, HookRunner, PathStore, PermissionGate, Plugin, PluginManifest,
-    PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution, Router,
-    RouterBuildContext, RouterBundle, RouterFactory, RoutingExplainer, SessionStore,
+    Backend, BackendBuildContext, BackendFactory, CapabilityRegistration, CapabilityRegistry,
+    ContextHook, CurateOutcome, Curator, HealthRegistry, HookRunner, PathStore, PermissionGate,
+    Plugin, PluginManifest, PluginPermissionRule, PluginPermissionVerdict,
+    PluginStatusContribution, Router, RouterBuildContext, RouterBundle, RouterFactory,
+    RoutingExplainer, SessionStore,
 };
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::context::PluginInstruction;
@@ -1650,6 +1651,68 @@ impl ConwayBuilder {
             });
         }
 
+        // 10a3. The runtime CALL half of Edge B (board item
+        //       `01M0XXWV3BVDM6Y646WMEBTYT1`; `conway_core::ports::capability`'s
+        //       own module doc): build the REAL `CapabilityRegistry`, ONCE,
+        //       here, from the SAME `Plugin::capabilities()` registrations
+        //       every installed plugin offers -- the runtime counterpart of
+        //       `provided_caps` immediately above, which only kept the
+        //       capability NAMES for the static requires/optional check and
+        //       discarded the providers themselves. Paired with the
+        //       declaring plugin's own id (`capability_owners`) so a
+        //       duplicate-provider refusal below can name BOTH offending
+        //       plugins, not just the capability name
+        //       `DuplicateCapabilityProvider` itself carries -- `manifest.id`
+        //       for every plugin was already computed once, above, as
+        //       `installed_manifests`, but that Vec is not keyed by plugin,
+        //       so this re-derives the id per plugin directly from
+        //       `resolved_plugins` rather than re-zipping the two Vecs.
+        let capability_registrations: Vec<(String, CapabilityRegistration)> = resolved_plugins
+            .iter()
+            .flat_map(|p| {
+                let plugin_id = p.manifest().id;
+                p.capabilities()
+                    .into_iter()
+                    .map(move |registration| (plugin_id.clone(), registration))
+            })
+            .collect();
+        let capability_owners: Vec<(String, String)> = capability_registrations
+            .iter()
+            .map(|(plugin_id, registration)| {
+                (
+                    plugin_id.clone(),
+                    registration.capability.as_wire_str().to_string(),
+                )
+            })
+            .collect();
+        // The refusal `CapabilityRegistry::from_registrations` returns on a
+        // duplicate provider MUST reach `build()` as a real error -- an
+        // `.unwrap_or_default()` or an ignored `Err` here would silently
+        // resolve to one arbitrary provider, which is worse than the no-op
+        // this item replaces (see that method's own doc: fail closed, never
+        // "last one wins").
+        let capability_registry = CapabilityRegistry::from_registrations(
+            capability_registrations
+                .into_iter()
+                .map(|(_, registration)| registration),
+        )
+        .map_err(|dup| {
+            let mut owners: Vec<&str> = capability_owners
+                .iter()
+                .filter(|(_, capability)| capability == &dup.capability)
+                .map(|(plugin_id, _)| plugin_id.as_str())
+                .collect();
+            owners.sort_unstable();
+            owners.dedup();
+            FacadeError::Build {
+                message: format!(
+                    "capability '{}' has more than one provider: {}",
+                    dup.capability,
+                    owners.join(", ")
+                ),
+            }
+        })?;
+
         // 10b. Every installed plugin's own declared custom events (board
         //      item, `PHILOSOPHY.md` §5's open
         //      vocabulary: "A plugin declares the events it emits...
@@ -1892,6 +1955,8 @@ impl ConwayBuilder {
             event_bus,
             headroom: Arc::new(headroom_policy),
             session_discovery,
+            capabilities: Arc::new(capability_registry)
+                as Arc<dyn conway_core::ports::CapabilityHost>,
         });
         // `RuntimeDeps` has no `context_hook` field (out of that
         // item's file scope to add -- see `conway_runtime::runtime`'s

@@ -275,6 +275,15 @@ pub struct LoopDeps {
     /// instance (`Runtime::new`), never narrowed to a session (discovery is
     /// cross-session by construction).
     pub session_discovery_host: Arc<dyn conway_core::ports::SessionDiscoveryHost>,
+    /// Edge B's plugin -> plugin capability CALL channel (board item
+    /// `01M0XXWV3BVDM6Y646WMEBTYT1`) every turn's `ToolBatchCtx` threads
+    /// straight through to `ToolRunner::run_batch`, mirroring
+    /// `context_path_host`/`session_discovery_host` immediately above
+    /// exactly: one runtime-wide instance (`Runtime::new`, sourced from
+    /// `RuntimeDeps::capabilities`), narrowed per call to that call's own
+    /// resolved tool's declaring plugin id at the dispatch seam
+    /// (`conway_runtime::tools::runner`), never here.
+    pub capabilities: Arc<dyn conway_core::ports::CapabilityHost>,
     pub plugin_config: Arc<PluginConfig>,
     pub bus: Arc<EventBus>,
     pub builder: Arc<ContextBuilder>,
@@ -1555,6 +1564,7 @@ impl AgentLoop {
                 subagents: self.deps.subagents.clone(),
                 context_path_host: self.deps.context_path_host.clone(),
                 session_discovery_host: self.deps.session_discovery_host.clone(),
+                capability_host: self.deps.capabilities.clone(),
                 // [S1.5]: this agent's own EFFECTIVE per-agent config
                 // (`self.plugin_config`, resolved once at construction --
                 // see that field's own doc), not the shared, process-wide

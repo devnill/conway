@@ -255,6 +255,7 @@ fn build_loop_with_contract(
             resolver.clone(),
         )),
         session_discovery_host: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
         router,
         attempt,
         registry: plugin_registry,
@@ -892,6 +893,7 @@ async fn a_spawned_childs_result_contract_is_enforced_through_subagent_host() {
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     let parent = runtime
         .start_root(RootSpec {
@@ -1208,6 +1210,7 @@ async fn keep_alive_with_a_result_contract_is_refused_by_subagent_host() {
         headroom: Arc::new(HeadroomPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
+        capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
     });
     let parent = runtime
         .start_root(RootSpec {
