@@ -35,6 +35,21 @@
 //! echoed `id`, one per line (see [`crate::wire::PersistentToolRequest`] /
 //! [`crate::wire::PersistentToolResponse`]).
 //!
+//! **`capability/1` (board item `01M0XXXX3HK8914NE418P5GNRY`) rides the
+//! IDENTICAL id-correlated framing, one call kind over.**
+//! [`PersistentSession::capability_round_trip`] mirrors
+//! [`PersistentSession::tool_round_trip`] line for line: same
+//! `ChildSession::framed_round_trip` call, same dead-session/timeout/
+//! malformed-frame/id-mismatch fail-closed handling -- projected onto
+//! `conway::plugin::CapabilityError` instead of `ToolError` (via
+//! `SubprocessPluginError::into_capability_error`, `lib.rs`'s own doc), since
+//! `CapabilityProvider::call`'s signature has no `ToolError` in it at all.
+//! `crate::SubprocessCapabilityProvider` (`lib.rs`) is the
+//! `CapabilityProvider` implementor that calls this method for the
+//! persistent transport; the one-shot transport dispatches through
+//! `crate::spawn_one_shot` instead, the SAME one-shot spawn `tool/1`
+//! already uses.
+//!
 //! **Correlation discipline: JSON-RPC `id` + `ChildSession`'s
 //! outstanding-request table.** Each call rides `ChildSession::
 //! send_request`/`framed_round_trip` (a monotonic `id` from
@@ -136,19 +151,20 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use conway::plugin::{
-    ChildSession, Event, EventSink, EventSinkHandle, NotificationRoute, ToolError,
+    CapabilityError, ChildSession, Event, EventSink, EventSinkHandle, NotificationRoute, ToolError,
 };
 
 use crate::wire::{
-    build_observe_notification, parse_persistent_initialize_response,
-    parse_persistent_observe_response, parse_persistent_permission_policy_response,
-    parse_persistent_status_declare_response, parse_persistent_tool_response,
-    parse_status_notification, InitializeParseError, ObserveParseError, PermissionPolicyAnswer,
-    PermissionPolicyParseError, PersistentInitializeRequest, PersistentObserveRequest,
+    build_observe_notification, parse_persistent_capability_response,
+    parse_persistent_initialize_response, parse_persistent_observe_response,
+    parse_persistent_permission_policy_response, parse_persistent_status_declare_response,
+    parse_persistent_tool_response, parse_status_notification, InitializeParseError,
+    ObserveParseError, PermissionPolicyAnswer, PermissionPolicyParseError,
+    PersistentCapabilityRequest, PersistentInitializeRequest, PersistentObserveRequest,
     PersistentPermissionPolicyRequest, PersistentStatusDeclareRequest, PersistentToolRequest,
-    StatusDeclaration, StatusDeclareParseError, WirePermissionRule, WireStatusContribution,
-    WireToolResult, HOST_OBSERVE_VERSION, HOST_PERMISSION_POLICY_VERSION, HOST_STATUS_VERSION,
-    HOST_WIRE_MAJOR, HOST_WIRE_MINOR,
+    StatusDeclaration, StatusDeclareParseError, WireCapabilityResult, WirePermissionRule,
+    WireStatusContribution, WireToolResult, HOST_OBSERVE_VERSION, HOST_PERMISSION_POLICY_VERSION,
+    HOST_STATUS_VERSION, HOST_WIRE_MAJOR, HOST_WIRE_MINOR,
 };
 use crate::{SubprocessPluginError, SubprocessPluginSpec};
 
@@ -529,6 +545,89 @@ impl PersistentSession {
             return Err(err.into_tool_error());
         }
         Ok(result)
+    }
+
+    /// One `capability/1` round-trip over the persistent channel -- the
+    /// SAME shape [`Self::tool_round_trip`] uses for `tool/1`, one call kind
+    /// over (board item `01M0XXXX3HK8914NE418P5GNRY`): assigns a JSON-RPC
+    /// `id`, writes the framed request line, and awaits the correlated
+    /// response, bounded by `spec.timeout_ms`, via
+    /// [`ChildSession::framed_round_trip`]. Returns the provider's
+    /// classified answer -- `Ok(value)` on the provider's own success, or
+    /// `Err(CapabilityError)` on either the provider's own declared failure
+    /// OR a transport-level one.
+    ///
+    /// **Dead-child and malformed-response outcomes -- reusing
+    /// [`Self::tool_round_trip`]'s own posture, not a second one.** A dead
+    /// session, a write failure, a per-call timeout, a malformed frame, or
+    /// an `id` mismatch are the IDENTICAL `SubprocessPluginError` causes
+    /// `tool_round_trip` maps onto `ToolError` via
+    /// `SubprocessPluginError::into_tool_error` -- here mapped onto
+    /// [`CapabilityError`] via `SubprocessPluginError::into_capability_error`
+    /// instead (`lib.rs`'s own doc on that method states the reuse
+    /// explicitly). Never a hang and never a silent retry, on the SAME
+    /// terms `tool_round_trip`'s own doc states.
+    pub(crate) async fn capability_round_trip(
+        &self,
+        capability: String,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, CapabilityError> {
+        if self.is_dead() {
+            return Err(self
+                .death_error()
+                .unwrap_or_else(|| SubprocessPluginError::SessionDied {
+                    config_id: self.inner.config_id().to_string(),
+                    detail: "session is no longer alive (re-discover to spawn a fresh one)".into(),
+                })
+                .into_capability_error());
+        }
+
+        let id = self.inner.next_id();
+        let request = PersistentCapabilityRequest::capability_v1(id, capability, payload);
+        let mut json = serde_json::to_vec(&request).map_err(|err| {
+            CapabilityError::new(format!(
+                "failed to serialize persistent capability/1 request: {err}"
+            ))
+        })?;
+        json.push(b'\n');
+
+        let value = self
+            .inner
+            .framed_round_trip(id, json)
+            .await
+            .map_err(SubprocessPluginError::into_capability_error)?;
+
+        // Parse + classify the response, then correlate the echoed `id`
+        // against the request's -- the SAME two-step discipline
+        // `tool_round_trip` runs.
+        let bytes = serde_json::to_vec(&value).map_err(|err| {
+            CapabilityError::new(format!(
+                "failed to re-serialize persistent capability response: {err}"
+            ))
+        })?;
+        let (resp_id, result) = parse_persistent_capability_response(&bytes).map_err(|detail| {
+            // A malformed response frame kills the session, fail-closed --
+            // the same posture `tool_round_trip` applies to a malformed
+            // tool/1 frame.
+            let err = SubprocessPluginError::MalformedFrame {
+                config_id: self.inner.config_id().to_string(),
+                detail,
+            };
+            self.inner.kill_all(err.clone());
+            err.into_capability_error()
+        })?;
+        if resp_id != id {
+            let err = SubprocessPluginError::SessionDied {
+                config_id: self.inner.config_id().to_string(),
+                detail: format!("response id {resp_id} did not match request id {id}"),
+            };
+            self.inner.kill_all(err.clone());
+            return Err(err.into_capability_error());
+        }
+        match result {
+            WireCapabilityResult::Ok(value) => Ok(value),
+            WireCapabilityResult::Err(err) => Err(err),
+        }
     }
 
     /// The one-time `initialize/1` version-negotiation handshake (board item

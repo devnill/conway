@@ -45,25 +45,34 @@ each disclosed rather than silently assumed:
     `tool/1` rides this channel — `tool.spec/1` discovery stays one-shot
     under both transports (see "The persistent transport" below for the
     framing decision, the failure modes, and the trust statement).
-- **Points.** Only `tool.spec/1` (declaration) and `tool/1` (execution) are
-  wired. `permission.policy/1`, `context.hook/1`, `observe/1` are still exactly
-  as design-only/unconsumed as [`hooks.md`](hooks.md)'s own tables state —
-  nothing here widens any of them. `PluginManifest::required_host_caps` is the
-  exception: the `tool.spec/1` wire answer now CARRIES it (board item
-  `01M03VJXARFHSDAGHFXGCWKJTY` -- `WireManifest::required_host_caps`,
+- **Points.** `tool.spec/1` (declaration), `tool/1` (execution), and
+  `capability/1` (capability calls — board item `01M0XXXX3HK8914NE418P5GNRY`)
+  are wired under BOTH transports; `initialize/1`, `permission.policy/1`,
+  `observe/1`, and `status.declare/1`/`status/1` are wired for the
+  persistent transport only. `context.hook/1` is still exactly as
+  design-only/unconsumed as
+  [`hooks.md`](hooks.md)'s own tables state. `PluginManifest::
+  required_host_caps`/`::optional_host_caps` are both carried: the
+  `tool.spec/1` wire answer CARRIES them (board item
+  `01M03VJXARFHSDAGHFXGCWKJTY` for `required_host_caps`; `optional_host_caps`
+  closed for this tier by board item `01M0XXXX3HK8914NE418P5GNRY` --
+  `WireManifest::required_host_caps`/`::optional_host_caps`, both
   `#[serde(default)]`; a MALFORMED cap tag fails closed at parse, but a
   WELL-FORMED, previously-unknown one now parses -- `HostCapability` is an
   open vocabulary, board item `01M0WWKA8K1E7JPK87J6RRQMZF` -- and is
-  refused instead at the host-capability gate below), and the `conway`
-  builder consults it at registration to refuse a plugin whose declared cap
-  the host lacks. `PluginManifest::requires`/`optional` carry
+  refused (required) or degraded-and-announced (optional) instead, per
+  "Host capabilities" below), and the `conway` builder consults them at
+  registration. `PluginManifest::requires`/`optional` carry
   the same way (board item `01M0XCD3P8S3VR0T1H0KNG5TMD` --
   `WireManifest::requires`/`optional`, both `#[serde(default)]`, name-only
   plugin-id lists): a subprocess plugin can declare a dependency on another
   plugin exactly as an in-process one does, resolved and checked by the
   same `ConwayBuilder::build` code, over the resolved set — not a separate
-  wire-only path. See [`hooks.md`](hooks.md) point 1 for the full
-  consumed-status disclosure.
+  wire-only path. The same item (`01M0XXXX3HK8914NE418P5GNRY`) also added
+  `WireManifest::provides`/`capability/1`: a subprocess plugin can now
+  register a REAL `CapabilityProvider` another plugin calls — see
+  "Providing a capability" below. See [`hooks.md`](hooks.md) point 1 for the
+  full consumed-status disclosure.
 - **Trust.** No new trust mechanism was built. See "Trust" below.
 
 ## The wire protocol
@@ -121,7 +130,7 @@ Response (stdout, exit 0):
   (`conway_core::content::PermissionClass`). **Required, never defaulted**:
   an omitted field is a parse error, not a silent `safe`.
 
-Two more fields sit alongside `id`/`version`/`tools`, both optional and both
+Five more fields sit alongside `id`/`version`/`tools`, all optional and all
 absent from the example above on purpose — an older plugin that omits them
 loads unchanged:
 
@@ -131,7 +140,10 @@ loads unchanged:
   "version": "0.1.0",
   "tools": [ /* ... */ ],
   "requires": ["conway.ui"],
-  "optional": ["conway.notifications"]
+  "optional": ["conway.notifications"],
+  "required_host_caps": ["persistent_transport"],
+  "optional_host_caps": ["acme.greet.brand_new_feature"],
+  "provides": ["acme.greet.checkbox"]
 }
 ```
 
@@ -145,6 +157,10 @@ loads unchanged:
   convenience of this plugin. Default `[]`. A missing optional dependency
   never fails the build; it's loaded anyway with a `ConfigWarning` and a
   `tracing::warn!` naming both ids.
+- `required_host_caps` / `optional_host_caps` — host capabilities you need,
+  or would merely like, from `conway` itself. See "Host capabilities" below.
+- `provides` — capability names another plugin can call INTO you. See
+  "Providing a capability" below.
 
 ### `tool/1` — answer one call
 
@@ -182,6 +198,92 @@ Declared-failure response:
 already offers an in-process `Tool`, so a subprocess plugin can report
 exactly the same failures a Rust one could, no narrower. `timeout` alone
 also reads an `after_secs` field (default `0`).
+
+## Host capabilities
+
+`required_host_caps` / `optional_host_caps` (board item
+`01M03VJXARFHSDAGHFXGCWKJTY`; `optional_host_caps` closed for this tier by
+board item `01M0XXXX3HK8914NE418P5GNRY`) name host features you need, or
+would merely like, from `conway` itself — the SAME `HostCapability`
+vocabulary and the SAME `ConwayBuilder::build`-time gate an in-process
+`Plugin`'s own `PluginManifest::required_host_caps`/`::optional_host_caps`
+already go through, not a subprocess-only variant of either:
+
+- **`required_host_caps`** — a cap the host does NOT offer refuses the
+  WHOLE build (`PluginError::MissingHostCapability`, naming both the plugin
+  and the cap).
+- **`optional_host_caps`** — a cap the host does NOT offer never fails the
+  build: your plugin loads anyway, degraded, and the degradation is always
+  announced (`ConfigWarning { code: OptionalHostCapabilityMissing }` plus a
+  `tracing::warn!`, naming both).
+
+Both lists are bare capability-name strings — the two core-blessed names
+`conway` itself offers (`"subagent"`, `"persistent_transport"`) or any other
+well-formed `namespace.name` (conventionally your own plugin id as the
+namespace). **The fail-closed boundary (sharpened by board item
+`01M0XKP5BWCPY3BHPJZHXKR4H3`, applying identically to both lists):** a
+MALFORMED name (empty, or a bare `namespace`/`name` split with either side
+empty) fails `tool.spec/1` parsing outright — discovery refuses your plugin
+before either list is even consulted. A WELL-FORMED but previously-unknown
+name (one `conway`'s core does not itself bless) still PARSES — third
+parties are not locked out of naming their own capabilities — and is
+resolved only afterward, at the gate described above.
+
+## Providing a capability
+
+`provides` (board item `01M0XXXX3HK8914NE418P5GNRY`) names capabilities
+ANOTHER plugin (in-process or out-of-process) can call INTO you — the
+out-of-process leg of Edge B, `docs/vision/DESIGN-plugin-dependencies.md`
+§2. Declaring a name here registers a real capability provider `conway`
+routes calls to through the exact same channel an in-process plugin's own
+`Plugin::capabilities` implementor answers on — a subprocess plugin is not
+a second-class citizen on this mechanism. Names follow the SAME shape rule
+"Host capabilities" states above, and MUST be unique within your own
+manifest (a repeated name is a discovery-time `InvalidManifest` error, not
+"last one wins").
+
+A capability call reaches you as a `capability/1` request — under EITHER
+transport, one-shot (fresh spawn per call) or persistent (over the same
+long-lived NDJSON channel `tool/1` already uses there):
+
+Request (stdin, or one NDJSON line):
+
+```json
+{"op": "capability/1", "capability": "acme.greet.checkbox", "payload": {"label": "Enable dark mode"}}
+```
+
+`payload` is opaque to `conway` — whatever shape you and the calling plugin
+agree this capability's own request looks like (this page states no
+capability's own contract; a future capability's own doc would).
+
+Success response:
+
+```json
+{"ok": true, "result": {"checked": true}}
+```
+
+`result` defaults to `null` if you have nothing to return.
+
+Declared-failure response:
+
+```json
+{"ok": false, "error": {"message": "cannot render outside a TTY", "detail": {"code": "no_tty"}}}
+```
+
+`error` is `{"message": <string>, "detail": <any JSON value, default null>}`
+— the SAME shape `conway_core::ports::CapabilityError` is on the Rust side,
+so a caller (Rust or another subprocess plugin) sees an identical error
+shape regardless of which side of the process boundary answered. `ok:false`
+with no `error` object is a contract violation and fails closed, the same
+line `tool/1`'s own `ok:false` answer draws.
+
+**A dead child mid-call, or a malformed answer, both fail closed — reusing
+the identical posture `tool/1` already has, not a second one:** a session
+that dies before answering, a per-call timeout, and an unparseable/malformed
+response every map onto a typed `CapabilityError` naming the failure (never
+a hang, never a silently-empty success) — see `crate::SubprocessCapabilityProvider::call`'s
+own doc in `conway-plugin-subprocess` for exactly which existing
+`SubprocessPluginError` variant each cause reuses.
 
 ## Every failure mode fails closed
 
@@ -381,14 +483,18 @@ elif op == "tool/1":
 
 ## What's left, named rather than lost
 
-- **`permission.policy/1`, `context.hook/1`, `observe/1`.** Only
-  `tool.spec/1`/`tool/1` are wired. A subprocess plugin cannot yet
-  contribute a permission policy, edit context, or observe events —
-  `hooks.md`'s own tables for those points are unchanged by this page. The
-  persistent transport's JSON-RPC `id` correlation table is built so a
-  later item can add `observe/1` notifications alongside requests without
-  redesigning framing, but no notifications are wired yet.
+- **`context.hook/1`.** Still design-only/unconsumed — `hooks.md`'s own
+  table for that point is unchanged by this page. `initialize/1`,
+  `permission.policy/1`, `observe/1`, and `status.declare/1`/`status/1` ARE
+  wired over the persistent transport, and `capability/1` (this page's own
+  subject) is wired over BOTH transports (see "The persistent transport"
+  and "Providing a capability" above); this bullet used to name all four of
+  the earlier points as unwired together, which is now stale for everything
+  but `context.hook/1` — left named here rather than silently corrected
+  elsewhere, since fully reconciling this page's own drift against each
+  point's landing item is outside this item's own scope.
 - **A `plugin` trust subject.** Deliberately not built here — see "Trust"
   above.
-- **Backends, routers, capability negotiation.** None of the three is
-  reachable through a subprocess yet — only `Tool`.
+- **Backends, routers.** Neither is reachable through a subprocess yet —
+  only `Tool` (execution) and, as of this page's own "Providing a
+  capability" section, a `CapabilityProvider` (Edge B, plugin-to-plugin).
