@@ -20,7 +20,7 @@ use std::sync::Arc;
 use conway::config::schema::{
     AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
     ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    StatusLineCommandConfig, ToolsConfig,
+    ToolsConfig,
 };
 use conway::plugin::{PluginManifest, Tool};
 use conway::{Conway, ConwayBuilder, ModeCycleEntry, PermissionMode, Plugin, PluginDeclaredMode};
@@ -95,7 +95,6 @@ fn base_config() -> ConwayConfig {
             // this field after this literal was written -- spelled out
             // explicitly for the same reason every field above it already
             // is (see `capability_channel.rs`'s identical note).
-            statusline: StatusLineCommandConfig::default(),
         },
         hooks: HooksConfig::default(),
     }

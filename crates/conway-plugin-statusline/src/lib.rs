@@ -124,13 +124,13 @@
 //!
 //! # Trust posture
 //!
-//! `[plugins].statusline.command` runs an operator-named command with the
+//! `[tui.status_line_command].command` runs an operator-named command with the
 //! operator's own process privileges -- no sandboxing, no digest check, no
 //! confirmation prompt. This is the IDENTICAL footing
 //! `[hooks].rules[].command` already has
 //! (`crates/conway/src/config/schema.rs`'s own `HookEntry::command` doc):
 //! an operator who would not paste an unfamiliar command into `[hooks]`
-//! should not paste one into `[plugins].statusline.command` either. Stated
+//! should not paste one into `[tui.status_line_command].command` either. Stated
 //! plainly in `docs/plugins/statusline.md`, not merely implied by this
 //! doc comment.
 //!
@@ -166,7 +166,7 @@ use conway::plugin::{
 /// operator names in `[plugins].install` -- unlike `first_party_plugins::
 /// bundle()`'s ten candidates, this plugin has no closed-candidate-set
 /// entry to opt into by naming an id at all: the ENTIRE opt-in is writing
-/// a non-empty `[plugins].statusline.command`
+/// a non-empty `[tui.status_line_command].command`
 /// (`crates/conway/src/config/schema.rs`'s `StatusLineCommandConfig`,
 /// resolved by `crates/conway-cli/src/statusline_plugin.rs`) -- see that
 /// config field's own doc for the full argument. This constant exists for
@@ -184,7 +184,7 @@ pub const PLUGIN_ID: &str = "conway.statusline";
 /// own doc, "Cadence", for the full worst-case argument.
 pub const MIN_REFRESH_INTERVAL_MS: u64 = 1000;
 
-/// The default refresh interval when `[plugins].statusline` sets none: 12
+/// The default refresh interval when `[tui.status_line_command]` sets none: 12
 /// spawns/minute, chosen the same way `crates/conway/src/config/schema.rs`'s
 /// `default_hook_timeout_ms` (5000ms) was -- long enough that an
 /// operator's status line does not become the dominant source of process
@@ -192,7 +192,7 @@ pub const MIN_REFRESH_INTERVAL_MS: u64 = 1000;
 /// clock reads as "current" rather than obviously frozen.
 pub const DEFAULT_REFRESH_INTERVAL_MS: u64 = 5000;
 
-/// The default per-run timeout when `[plugins].statusline` sets none.
+/// The default per-run timeout when `[tui.status_line_command]` sets none.
 /// Deliberately shorter than [`conway::plugin::DEFAULT_TIMEOUT_MS`]
 /// (5000ms, the shared default for a hook callout / a subprocess plugin
 /// call): those are one-shot, operator-INITIATED calls an agent turn is
@@ -203,10 +203,10 @@ pub const DEFAULT_REFRESH_INTERVAL_MS: u64 = 5000;
 pub const DEFAULT_TIMEOUT_MS: u64 = 2000;
 
 /// The default [`PluginStatusContribution::key`] this plugin files its
-/// result under when `[plugins].statusline` names none.
+/// result under when `[tui.status_line_command]` names none.
 pub const DEFAULT_KEY: &str = "statusline";
 
-/// This plugin's own configuration -- what `[plugins].statusline`
+/// This plugin's own configuration -- what `[tui.status_line_command]`
 /// (`crates/conway/src/config/schema.rs`'s `StatusLineCommandConfig`)
 /// converts into, at the one site that performs that conversion
 /// (`crates/conway-cli/src/statusline_plugin.rs::install`), mirroring how
@@ -215,7 +215,7 @@ pub const DEFAULT_KEY: &str = "statusline";
 /// (`crates/conway-cli/src/subprocess_plugins.rs`).
 ///
 /// **Off by construction when [`Self::command`] is empty** (the [`Default`]
-/// value, and the state of `[plugins].statusline` when an operator writes
+/// value, and the state of `[tui.status_line_command]` when an operator writes
 /// nothing at all): [`StatusLinePlugin::new`] starts no background task at
 /// all in that case, so `crates/conway-cli/src/statusline_plugin.rs::install`
 /// does not even attach the plugin -- zero process spawns, zero
@@ -366,7 +366,7 @@ impl Plugin for StatusLinePlugin {
                       a visible `failed` badge with a legible reason when it errors or times \
                       out"
             .to_string(),
-            you_lose: "nothing -- absent a `[plugins].statusline.command`, this plugin is \
+            you_lose: "nothing -- absent a `[tui.status_line_command].command`, this plugin is \
                        installed but completely inert"
                 .to_string(),
             costs: "one operator-named command, run with the operator's own privileges on the \

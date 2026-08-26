@@ -54,7 +54,7 @@ plugin being linked.
 - `timeout_ms` — milliseconds a single run is allowed before it is treated
   as failed. Defaults to 2000.
 
-Absent `[plugins].statusline` entirely, or present with an empty `command`
+Absent `[tui.status_line_command]` entirely, or present with an empty `command`
 (the default), **this plugin is a true no-op**: no process is ever spawned,
 nothing is ever attached to the build, `status_contributions()` returns
 nothing, forever. Naming a command is the whole of the opt-in — there is no
@@ -119,11 +119,11 @@ uniformly, this plugin's included.
 
 ## Trust: read this before writing a command
 
-`[plugins].statusline.command` runs with **your own process privileges** —
+`[tui.status_line_command].command` runs with **your own process privileges** —
 no sandboxing, no digest check, no confirmation prompt. This is the
 identical footing `[hooks].rules[].command` and `[plugins].subprocess[]`
 already have: an operator who would not paste an unfamiliar command into
-`[hooks]` should not paste one into `[plugins].statusline.command` either.
+`[hooks]` should not paste one into `[tui.status_line_command].command` either.
 Unlike a hook (fired on an event) or a one-shot subprocess call (fired on a
 tool call), this command runs **repeatedly, unattended, on a fixed
 schedule** — see "Cadence" above for the bound.
@@ -146,7 +146,7 @@ link, and ships with **no `settings.json` field of its own** — naming the id
 is the whole of the opt-in.
 
 `conway.statusline` does not fit that shape, because there is nothing to
-*name*: naming a command in `[plugins].statusline.command` is already the
+*name*: naming a command in `[tui.status_line_command].command` is already the
 complete opt-in signal, structurally identical to `[plugins].subprocess[]`/
 `[plugins].mcp[]`/`[plugins].claude_compat[]` — "an operator names a
 command directly; that naming alone is what makes it run." It is resolved

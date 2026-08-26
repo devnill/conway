@@ -182,7 +182,7 @@ conway-plugin-names = { path = "../conway-plugin-names" }
 # for a Claude Code `statusLine.command`. Resolved through its own choke
 # point, `src/statusline_plugin.rs`, a FIFTH sibling to
 # `subprocess_plugins`/`mcp_plugins`/`claude_compat_plugins` (see that
-# module's own doc for why: naming a command in `[plugins].statusline` is
+# module's own doc for why: naming a command in `[tui.status_line_command]` is
 # already the complete opt-in signal, the identical shape those three
 # already have, rather than the closed-candidate-set-plus-`[plugins].install`
 # shape `first_party_plugins::bundle()`'s ten entries use) -- NOT installed

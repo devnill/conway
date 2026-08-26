@@ -290,10 +290,14 @@ async fn build_conway(
     // doc for why this is distinct from every tier above (no handshake, so
     // synchronous, unlike the three async siblings immediately above; no
     // closed candidate set, unlike `first_party_plugins` -- naming a
-    // command in `[plugins].statusline.command` is already the complete
+    // command in `[tui.status_line_command].command` is already the complete
     // opt-in signal). Not awaited: constructing the plugin starts its own
     // background refresh loop but never itself blocks on a spawn.
-    let builder = statusline_plugin::install(builder);
+    // Its config is a PRESENTATION section, so it comes from this crate's
+    // own layered load rather than from `builder.config()` -- the same
+    // separate `[tui]` read `App::new` performs, for the reason
+    // `crates/conway/tests/architecture_invariants.rs` T7 enforces.
+    let builder = statusline_plugin::install(builder, &crate::tui::config::load(cli)?);
     let conway = builder.build()?;
     Ok((conway, memory_store, agent_names))
 }

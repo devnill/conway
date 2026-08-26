@@ -1,5 +1,5 @@
 //! The status-line plugin's install mechanism for the CLI binary (board
-//! item `01M0X500861X9035QJEA82F94K`): the single `[plugins].statusline`
+//! item `01M0X500861X9035QJEA82F94K`): the single `[tui.status_line_command]`
 //! entry in `settings.json`, converted into a
 //! `conway_plugin_statusline::StatusLineSpec` and attached via the
 //! ordinary `ConwayBuilder::with_plugin` -- exactly the migration home
@@ -14,7 +14,7 @@
 //! every one of its ten entries ships with an opinionated default and no
 //! `settings.json` field of its own (`docs/plugins/README.md`'s own
 //! membership rule). This module has no such candidate set to match
-//! against -- naming a command in `[plugins].statusline.command` is
+//! against -- naming a command in `[tui.status_line_command].command` is
 //! ALREADY the complete opt-in signal, the identical shape
 //! `[plugins].subprocess[]`/`[plugins].mcp[]`/`[plugins].claude_compat[]`
 //! already have ("an operator names a command/directory directly; that
@@ -36,19 +36,22 @@
 //!
 //! **Trust, disclosed at the one place this binary actually spawns
 //! anything from this config, not only in the schema's own doc.** A
-//! `[plugins].statusline.command` is code THIS process executes
+//! `[tui.status_line_command].command` is code THIS process executes
 //! REPEATEDLY, with the operator's own privileges, on the identical
 //! footing `[hooks].rules[].command`/`[plugins].subprocess[].command`
 //! already have -- no sandboxing, no digest check. An operator who would
 //! not paste an unfamiliar command into `[hooks].rules[]` should not paste
-//! one into `[plugins].statusline.command` either -- see
+//! one into `[tui.status_line_command].command` either -- see
 //! `docs/plugins/statusline.md` for the full disclosure and the cadence
 //! bound this crate enforces regardless of configuration.
 
 use conway::ConwayBuilder;
 use conway_plugin_statusline::{StatusLinePlugin, StatusLineSpec};
 
-/// Reads `builder`'s own `[plugins].statusline`, and, when it names a
+/// Reads `[tui.status_line_command]` from the CLI's OWN layered config
+/// load -- not from `builder.config()`, which cannot carry a
+/// presentation-shaped section (`crates/conway/tests/
+/// architecture_invariants.rs` T7) -- and, when it names a
 /// non-empty command, constructs and attaches a `StatusLinePlugin`. A true
 /// no-op (returns `builder` unchanged, attaches nothing, starts no
 /// background task) when `command` is empty -- the default, and the state
@@ -60,8 +63,8 @@ use conway_plugin_statusline::{StatusLinePlugin, StatusLineSpec};
 /// its own cadence), so this stays a plain, synchronous
 /// `fn(ConwayBuilder) -> ConwayBuilder` rather than the fallible `async fn`
 /// its three async siblings are.
-pub fn install(builder: ConwayBuilder) -> ConwayBuilder {
-    let entry = builder.config().plugins.statusline.clone();
+pub fn install(builder: ConwayBuilder, tui: &crate::tui::config::TuiSection) -> ConwayBuilder {
+    let entry = tui.status_line_command.clone();
     if entry.command.is_empty() {
         return builder;
     }
@@ -78,14 +81,14 @@ pub fn install(builder: ConwayBuilder) -> ConwayBuilder {
 mod tests {
     //! **Wiring-only, exactly like `subprocess_plugins::tests`' own
     //! disclosure.** What is local and checkable HERE is only that an
-    //! unconfigured `[plugins].statusline` is a true no-op -- the base
+    //! unconfigured `[tui.status_line_command]` is a true no-op -- the base
     //! case every other behavior in this module builds on. This module's
     //! own liveness with a REAL configured command is
     //! `conway-plugin-statusline`'s own end-to-end coverage
     //! (`crates/conway-plugin-statusline/tests/statusline_end_to_end.rs`),
     //! which drives `ConwayBuilder::with_plugin` directly -- the identical
     //! shape this function's own single `with_plugin` call takes, minus
-    //! only the `[plugins].statusline` config-to-spec conversion this
+    //! only the `[tui.status_line_command]` config-to-spec conversion this
     //! module performs.
     use super::*;
     use conway::config::schema::ConwayConfig;
@@ -127,7 +130,7 @@ mod tests {
         }
     }
 
-    /// The base case: no `[plugins].statusline.command` at all is a
+    /// The base case: no `[tui.status_line_command].command` at all is a
     /// true no-op -- `install` returns the builder with nothing attached,
     /// provable indirectly (this module holds no reachable list of
     /// installed plugins to inspect directly, the same constraint
@@ -136,15 +139,32 @@ mod tests {
     /// every other port faked.
     #[test]
     fn an_unconfigured_statusline_entry_is_a_true_no_op() {
-        let config = minimal_config();
+        let tui = crate::tui::config::TuiSection::default();
         assert!(
-            config.plugins.statusline.command.is_empty(),
-            "sanity: the default config carries no statusline command"
+            tui.status_line_command.command.is_empty(),
+            "sanity: the default TUI section carries no status-line command"
         );
-        let builder = ConwayBuilder::from_parts(config);
+        let builder = ConwayBuilder::from_parts(minimal_config());
         // `install` must not panic on the default (empty) entry -- the
         // only property checkable at this wiring layer without duplicating
         // `conway-plugin-statusline`'s own end-to-end coverage.
-        let _builder = install(builder);
+        let _builder = install(builder, &tui);
+    }
+
+    /// The section moved out of `conway`'s own config schema after
+    /// `crates/conway/tests/architecture_invariants.rs`'s T7 rejected it
+    /// there: a status line is presentation, and the facade's schema must
+    /// not name a presentation-shaped type so a headless host never parses
+    /// terminal vocabulary it cannot render. This pins the move so a
+    /// future convenience does not quietly walk it back.
+    #[test]
+    fn the_status_line_command_is_not_reachable_from_the_facade_config() {
+        let config = minimal_config();
+        let rendered = format!("{:?}", config.plugins);
+        assert!(
+            !rendered.to_lowercase().contains("statusline")
+                && !rendered.to_lowercase().contains("status_line"),
+            "the facade's [plugins] section must carry no status-line slot: {rendered}"
+        );
     }
 }

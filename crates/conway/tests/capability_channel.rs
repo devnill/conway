@@ -29,7 +29,7 @@ use std::time::Duration;
 use conway::config::schema::{
     AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
     ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    StatusLineCommandConfig, ToolsConfig,
+    ToolsConfig,
 };
 use conway::plugin::{
     CapabilityCallError, CapabilityError, CapabilityProvider, CapabilityRegistration, ContentBlock,
@@ -116,7 +116,6 @@ fn base_config() -> ConwayConfig {
             // spelled out explicitly), so the new field is spelled out too
             // rather than silently inheriting a default this test never
             // chose.
-            statusline: StatusLineCommandConfig::default(),
         },
         hooks: HooksConfig::default(),
     }
