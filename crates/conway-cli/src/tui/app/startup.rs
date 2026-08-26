@@ -415,6 +415,21 @@ impl App {
                     source_dir: entry.dir.clone(),
                     mcp_server_count: report.mcp_servers.len(),
                     mapped_hook_count: report.mapped_hook_count(),
+                    // Board item `01M0XRD8VMWD273W0W51T8ECCM`, acceptance 4:
+                    // classifies against `conway::DENY_CAPABLE_EVENTS` --
+                    // the SAME canonical set `claude_compat_plugins::
+                    // report_hook_registrations` reads on stderr, not a
+                    // third, independently-drifting list for this row.
+                    deny_capable_hook_count: report
+                        .hooks
+                        .iter()
+                        .filter(|h| match &h.outcome {
+                            conway_plugin_claude::HookMapOutcome::Mapped {
+                                conway_event, ..
+                            } => conway::DENY_CAPABLE_EVENTS.contains(conway_event),
+                            conway_plugin_claude::HookMapOutcome::Unmapped { .. } => false,
+                        })
+                        .count(),
                     unmapped_hook_names: report
                         .hooks
                         .iter()
