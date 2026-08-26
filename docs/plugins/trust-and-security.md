@@ -305,11 +305,14 @@ Two things this bears on directly, so a reader does not have to infer them:
 - **`PluginManifest::required_host_caps` is now consumed at registration.**
   The `conway` builder consults the field (the manifest-validation seam) and
   refuses a plugin whose declared cap the host does not offer with
-  `PluginError::MissingHostCapability`. The cap set is a closed
-  `HostCapability` enum (`subagent`, `persistent_transport`), not a
-  free-form `Vec<String>` the host never validates; empty means "needs
-  nothing the host might lack." A declared cap the host lacks refuses the
-  plugin at build, before it is ever invoked -- a narrowing gate, not an
+  `PluginError::MissingHostCapability`. The `HostCapability` enum is now
+  **open**: two core-blessed bare names (`subagent`, `persistent_transport`)
+  plus a shape-checked, catch-all `Named` variant for anything else a
+  plugin declares -- not a free-form `Vec<String>` the host never
+  validates, since a malformed name still fails to parse; empty means
+  "needs nothing the host might lack." A declared cap the host lacks --
+  whether one of the two core names or an open, well-formed one -- refuses
+  the plugin at build, before it is ever invoked -- a narrowing gate, not an
   enforcement mechanism against a loaded plugin (this page's own
   "declared-but-unenforced capability is worse than no documentation" line
   still applies to anything beyond this gate: conway does not police what a
