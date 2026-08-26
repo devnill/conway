@@ -55,19 +55,26 @@
 //!
 //! **Guard rail, deliberate: deny-capable hooks are called out, by name, on
 //! stderr -- distinct from observation-only ones, and unconditionally.** A
-//! translated `pre_tool_use` rule is a real permission consequence of
-//! naming a directory in `settings.json`: it can deny a real tool call, the
-//! identical authority an operator-authored `[hooks].rules[]` entry already
-//! has. `install` reports that distinction itself, via
-//! `conway_cli::diag::warn` (unconditional stderr, "reserve this for
-//! something an operator would act on" -- that function's own doc) for
-//! every `pre_tool_use` registration, and `diag::info` (verbose-only,
+//! translated `pre_tool_use` OR `prompt_submitted` rule is a real
+//! permission consequence of naming a directory in `settings.json`: the
+//! former can deny a real tool call, the latter can deny every prompt the
+//! operator types (`conway_runtime::hook_dispatch::PROMPT_SUBMITTED`,
+//! dispatched via `HookDispatcher::dispatch_deny_only`) -- the identical
+//! authority an operator-authored `[hooks].rules[]` entry already has.
+//! `install` reports that distinction itself, via `conway_cli::diag::warn`
+//! (unconditional stderr, "reserve this for something an operator would
+//! act on" -- that function's own doc) for every registration whose event
+//! is in [`conway::DENY_CAPABLE_EVENTS`], and `diag::info` (verbose-only,
 //! routine progress) for every other, observation-only one -- never one
-//! undifferentiated "hooks registered" line. Both calls happen inside
-//! `build_conway`, before the TUI ever puts the terminal into raw/alternate-
-//! screen mode (`main.rs`'s own comment on why a stray stderr write after
-//! that point lands on top of the drawn UI), so this reaches the operator's
-//! real scrollback on every dispatch target, TUI included.
+//! undifferentiated "hooks registered" line, and never a second,
+//! independently-drifting classification of which events those are (see
+//! `report_hook_registrations`'s own doc: board item
+//! `01M0XRD8VMWD273W0W51T8ECCM` fixed exactly that drift once already).
+//! Both calls happen inside `build_conway`, before the TUI ever puts the
+//! terminal into raw/alternate-screen mode (`main.rs`'s own comment on why
+//! a stray stderr write after that point lands on top of the drawn UI), so
+//! this reaches the operator's real scrollback on every dispatch target,
+//! TUI included.
 //!
 //! **The payload-shape caveat this module does not, and must not, weaken.**
 //! `conway_plugin_claude::hooks`'s own module doc states it in full:
@@ -85,23 +92,50 @@
 //! with the operator's own privileges and no sandboxing --
 //! `conway::config::schema::PluginsConfig::claude_compat`'s own doc has the
 //! full disclosure.
+//!
+//! **Board item `01M0XRCAFD7DD7N64RNRM3P8W9`: the command half is reachable
+//! now too -- through a SEPARATE seam from `install`, not through it.**
+//! `install`, above, is `ConwayBuilder`-shaped: it attaches every MCP server
+//! and appends every mapped hook rule into the ONE `ConwayBuilder` `main.rs`
+//! carries through `build_conway`. `conway::plugin::Plugin::commands()` has
+//! no equivalent consumer inside the facade at all -- `ConwayBuilder::build`
+//! never reads it (grep `crates/conway/src/builder.rs` for `.commands()`:
+//! nothing). The ONLY reader is `conway_cli::tui::commands::
+//! CommandRegistry::build`, called from TWO places, and NEITHER one takes
+//! its `&[Arc<dyn Plugin>]` from the built `Conway`/`Runtime` (which retains
+//! no such accessor -- `first_party_plugins::installed_plugins`'s own doc
+//! states the identical constraint for the first-party bundle): both
+//! `tui::app::App::new` and `commands::plugin::run` take it as a plain
+//! parameter that `first_party_plugins::installed_plugins` RE-DERIVES from
+//! `conway.config()`, independently of whatever `ConwayBuilder::
+//! with_plugin` calls happened at build time. A `[plugins].claude_compat[]`
+//! entry's own translated commands were invisible to that re-derivation
+//! entirely -- not merely unregistered by `install` (this item's own
+//! starting defect), but unreachable by CONSTRUCTION even if `install` had
+//! called `with_plugin` for them, since `installed_plugins` never looks at
+//! `ConwayBuilder`'s attached plugins at all. [`command_plugins`], below, is
+//! this crate's other half: called from `first_party_plugins::
+//! installed_plugins` (not from `install`), it re-derives every
+//! `[plugins].claude_compat[]` entry's own `ClaudeCompatReport::
+//! command_registrations()` the SAME way `installed_plugins` already
+//! re-derives the first-party bundle -- one more source feeding the SAME
+//! list, read by the SAME two consumers, with no change to either of them.
+//! Attaching a commands-only `Plugin` to the `ConwayBuilder` inside
+//! `install` instead was considered and rejected: nothing in `build()` ever
+//! reads `Plugin::commands()` (confirmed above), so it would add a
+//! duplicate-manifest-id risk against every other installed plugin for zero
+//! behavioral effect -- the real reader lives entirely on the CLI side of
+//! `build()`, so this crate's fix lives there too.
 
 use std::sync::Arc;
 
-use conway::config::schema::HookEntry;
-use conway::{ConwayBuilder, FacadeError};
+use conway::config::schema::{ConwayConfig, HookEntry};
+use conway::plugin::{Command, Plugin, PluginManifest, Tool};
+use conway::{ConwayBuilder, FacadeError, DENY_CAPABLE_EVENTS};
 use conway_plugin_claude::HookRegistration;
 use conway_plugin_mcp::McpPlugin;
 
 use crate::diag;
-
-/// The one conway core event a translated registration can carry that is
-/// ever consulted at `PermissionBroker::decide`'s DENY tier -- mirrors
-/// `ConwayBuilder::build`'s own `rule.event == "pre_tool_use"` filter
-/// (`crates/conway/src/builder.rs`) exactly, so this module's own
-/// deny-capable/observation-only split can never drift from what `build()`
-/// actually treats as consequential.
-const DENY_CAPABLE_EVENT: &str = "pre_tool_use";
 
 /// Converts one translated [`HookRegistration`] into a real, appendable
 /// `conway::config::schema::HookEntry` -- field for field, per
@@ -122,26 +156,32 @@ fn to_hook_entry(registration: HookRegistration) -> HookEntry {
 }
 
 /// Reports, on stderr, which of `registrations` -- all already known to
-/// belong to `entry_id` -- can deny a real tool call and which are
-/// observation-only, per this module's own "distinguish, don't just say
-/// 'hooks registered'" guard rail. A true no-op when `registrations` is
-/// empty (neither call below ever fires).
+/// belong to `entry_id` -- can deny a real tool call or a submitted
+/// prompt, and which are observation-only, per this module's own
+/// "distinguish, don't just say 'hooks registered'" guard rail.
+///
+/// **Classifies against [`conway::DENY_CAPABLE_EVENTS`], not a
+/// re-declared list of its own** (board item `01M0XRD8VMWD273W0W51T8ECCM`):
+/// this module used to hardcode a single-event `DENY_CAPABLE_EVENT =
+/// "pre_tool_use"` constant, silently missing `prompt_submitted` --
+/// conway's OTHER deny-capable, fail-closed event
+/// (`conway_runtime::hook_dispatch::PROMPT_SUBMITTED`, dispatched via
+/// `HookDispatcher::dispatch_deny_only`). A translated `UserPromptSubmit`
+/// rule went unreported, on the unconditional channel, as a result. See
+/// [`conway::DENY_CAPABLE_EVENTS`]'s own doc for why that constant, not a
+/// second copy of the pair, is what every consumer of "is this event
+/// deny-capable" should read from now.
+///
+/// A true no-op when `registrations` is empty (neither call below ever
+/// fires).
 fn report_hook_registrations(entry_id: &str, registrations: &[HookRegistration]) {
-    let deny_capable: Vec<&str> = registrations
-        .iter()
-        .filter(|r| r.event == DENY_CAPABLE_EVENT)
-        .map(|r| r.id.as_str())
-        .collect();
-    let observation_only: Vec<&str> = registrations
-        .iter()
-        .filter(|r| r.event != DENY_CAPABLE_EVENT)
-        .map(|r| r.id.as_str())
-        .collect();
+    let (deny_capable, observation_only) = classify_hook_registrations(registrations);
     if !deny_capable.is_empty() {
         diag::warn(format!(
             "[plugins].claude_compat entry '{entry_id}' registered {} hook(s) that CAN DENY a \
-             real tool call ({DENY_CAPABLE_EVENT}): {}",
+             real tool call or a submitted prompt ({}): {}",
             deny_capable.len(),
+            DENY_CAPABLE_EVENTS.join(", "),
             deny_capable.join(", ")
         ));
     }
@@ -153,6 +193,26 @@ fn report_hook_registrations(entry_id: &str, registrations: &[HookRegistration])
             observation_only.join(", ")
         ));
     }
+}
+
+/// The pure split [`report_hook_registrations`] reports on -- pulled out
+/// so the classification itself (which bucket a translated event lands in,
+/// and therefore which channel, unconditional `diag::warn` or
+/// verbose-gated `diag::info`, it reaches) is checkable directly, without
+/// capturing real stderr. Order-preserving within each bucket; every id in
+/// `registrations` appears in exactly one of the two returned lists.
+fn classify_hook_registrations(registrations: &[HookRegistration]) -> (Vec<&str>, Vec<&str>) {
+    let deny_capable = registrations
+        .iter()
+        .filter(|r| DENY_CAPABLE_EVENTS.contains(&r.event))
+        .map(|r| r.id.as_str())
+        .collect();
+    let observation_only = registrations
+        .iter()
+        .filter(|r| !DENY_CAPABLE_EVENTS.contains(&r.event))
+        .map(|r| r.id.as_str())
+        .collect();
+    (deny_capable, observation_only)
 }
 
 /// Discovers and attaches every `[plugins].claude_compat[]` entry's own
@@ -210,6 +270,86 @@ pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
     Ok(builder)
 }
 
+/// A `[plugins].claude_compat[]` entry's own translated `commands/*.md`
+/// files, wrapped as a real `conway::plugin::Plugin` -- the ONLY shape
+/// that reaches `conway_cli::tui::commands::CommandRegistry::build`
+/// (`Plugin::commands()` is the one method it reads; see this module's own
+/// top doc, "the command half is reachable now too"). Carries no tools and
+/// no host-capability requirements: its single job is handing back the
+/// `Ready` translations [`command_plugins`] already resolved.
+struct ClaudeCompatCommandsPlugin {
+    /// [`conway_plugin_claude::ClaudeCompatReport::id`] -- the
+    /// manifest-derived identity, NOT the config entry's own
+    /// `ClaudeCompatPluginEntry::id` (the two are allowed to differ; see
+    /// `ClaudeCompatReport::hook_registrations`'s own doc for the identical
+    /// choice made for hook-id namespacing). `CommandRegistry::build`
+    /// prefixes every bare command name here with THIS id.
+    id: String,
+    commands: Vec<Arc<dyn Command>>,
+}
+
+impl Plugin for ClaudeCompatCommandsPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: self.id.clone(),
+            version: "0.0.0".to_string(),
+            tools: Vec::new(),
+            required_host_caps: Vec::new(),
+            optional_host_caps: Vec::new(),
+            requires: Vec::new(),
+            optional: Vec::new(),
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        Vec::new()
+    }
+
+    fn commands(&self) -> Vec<Arc<dyn Command>> {
+        self.commands.clone()
+    }
+}
+
+/// Re-derives every `[plugins].claude_compat[]` entry's own translated
+/// `commands/*.md` files as ready-to-fold-in `Arc<dyn conway::plugin::
+/// Plugin>`s -- the commands-only counterpart to [`install`]'s own MCP/hook
+/// wiring, read from a config value rather than a live `ConwayBuilder`
+/// because its ONE caller, `first_party_plugins::installed_plugins`, is
+/// itself a read-only re-derivation from `conway.config()` (see that
+/// function's own doc, and this module's own top doc for why the command
+/// surface needs a SECOND seam rather than reusing [`install`]).
+///
+/// An entry with no `Ready` command translations contributes no `Plugin` at
+/// all -- an installed `Plugin` with an empty `commands()` would be a
+/// behavioral no-op either way, so this skips constructing one rather than
+/// padding the registry with vacuous entries.
+///
+/// **Discovery failure here mirrors [`install`]'s own posture, not a softer
+/// one.** [`install`] already proved every configured entry's directory
+/// resolves, at `ConwayBuilder::build` time, before this ever runs -- a
+/// failure here (the directory changed on disk since) is the same kind of
+/// since-startup config drift `install` itself would refuse to paper over,
+/// so this returns a named [`FacadeError::Build`] identically, rather than
+/// silently dropping the entry's commands.
+pub fn command_plugins(config: &ConwayConfig) -> conway::Result<Vec<Arc<dyn Plugin>>> {
+    let mut plugins: Vec<Arc<dyn Plugin>> = Vec::new();
+    for entry in &config.plugins.claude_compat {
+        let report =
+            conway_plugin_claude::discover(&entry.dir).map_err(|err| FacadeError::Build {
+                message: format!("[plugins].claude_compat entry '{}': {err}", entry.id),
+            })?;
+        let commands = report.command_registrations();
+        if commands.is_empty() {
+            continue;
+        }
+        plugins.push(Arc::new(ClaudeCompatCommandsPlugin {
+            id: report.id.clone(),
+            commands,
+        }) as Arc<dyn Plugin>);
+    }
+    Ok(plugins)
+}
+
 #[cfg(test)]
 mod tests {
     //! **Wiring-only, exactly like `subprocess_plugins`/`mcp_plugins`'s own
@@ -220,7 +360,6 @@ mod tests {
     //! build, naming the entry -- P-13, checked directly rather than only
     //! asserted in prose.
     use super::*;
-    use conway::config::schema::ConwayConfig;
 
     fn minimal_config() -> ConwayConfig {
         use std::collections::BTreeMap;
@@ -502,5 +641,333 @@ mod tests {
         // collide even though both name the identical Claude Code event.
         assert!(rules.iter().any(|r| r.id.contains("entry-a")));
         assert!(rules.iter().any(|r| r.id.contains("entry-b")));
+    }
+
+    // ---- command wiring (board item `01M0XRCAFD7DD7N64RNRM3P8W9`) ----
+
+    fn write_command_md(dir: &std::path::Path, file_name: &str, contents: &str) {
+        std::fs::create_dir_all(dir.join("commands")).unwrap();
+        std::fs::write(dir.join("commands").join(file_name), contents).unwrap();
+    }
+
+    fn config_with_one_claude_compat_entry(dir: &std::path::Path, entry_id: &str) -> ConwayConfig {
+        let mut config = minimal_config();
+        config.plugins.claude_compat.push(ClaudeCompatPluginEntry {
+            id: entry_id.to_string(),
+            dir: dir.to_path_buf(),
+            timeout_ms: 5_000,
+        });
+        config
+    }
+
+    /// **The headline claim this item exists to prove, at the wiring
+    /// level**: a `Ready` `commands/*.md` translation produces a real
+    /// `conway::plugin::Plugin` -- namespaced by the report's own manifest
+    /// id, exactly like [`ClaudeCompatCommandsPlugin::manifest`] documents
+    /// -- and invoking the ONE command it carries submits the file's own
+    /// body, verbatim. `crates/conway-cli/tests/claude_compat_commands.rs`
+    /// is the sibling end-to-end proof that this reaches the compiled
+    /// binary's real command dispatch; this test pins the wiring step that
+    /// makes that reachable at all.
+    #[tokio::test]
+    async fn a_ready_command_translation_becomes_a_real_invokable_plugin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".claude-plugin")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude-plugin").join("plugin.json"),
+            r#"{"name":"acme-tools"}"#,
+        )
+        .unwrap();
+        write_command_md(
+            dir.path(),
+            "greet.md",
+            "---\ndescription: Greets the operator\n---\n\nSay a friendly hello.\n",
+        );
+
+        let config = config_with_one_claude_compat_entry(dir.path(), "acme-tools");
+        let plugins = command_plugins(&config).expect("command_plugins must succeed");
+        assert_eq!(plugins.len(), 1, "exactly one plugin: {:?}", plugins.len());
+
+        let manifest = plugins[0].manifest();
+        assert_eq!(
+            manifest.id, "acme-tools",
+            "namespaced by the report's own manifest id, not the config entry's id"
+        );
+        assert!(plugins[0].tools().is_empty());
+
+        let commands = plugins[0].commands();
+        assert_eq!(commands.len(), 1);
+        let spec = commands[0].spec();
+        assert_eq!(spec.name, "greet", "the command name must stay bare");
+        assert_eq!(spec.summary, "Greets the operator");
+
+        let ctx = conway::plugin::CommandCtx {
+            focused_agent: conway_core::ids::AgentId::new(),
+            root_agent: conway_core::ids::AgentId::new(),
+            session_id: conway_core::ids::SessionId::new(),
+            args: String::new(),
+        };
+        let outcome = commands[0].invoke(ctx).await;
+        assert_eq!(
+            outcome,
+            conway::plugin::CommandOutcome::SubmitPrompt {
+                text: "Say a friendly hello.".to_string()
+            }
+        );
+    }
+
+    /// The config entry's own `id` and the report's manifest-derived `id`
+    /// are allowed to differ (`ClaudeCompatPluginEntry::id`'s own doc) --
+    /// `command_plugins` namespaces by the LATTER, mirroring
+    /// `hook_registrations`'s identical choice, checked directly rather
+    /// than only asserted alongside the happy-path test above.
+    #[tokio::test]
+    async fn a_command_plugin_is_namespaced_by_the_reports_id_not_the_config_entrys_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".claude-plugin")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude-plugin").join("plugin.json"),
+            r#"{"name":"acme-tools"}"#,
+        )
+        .unwrap();
+        write_command_md(dir.path(), "greet.md", "Say hello.\n");
+
+        // The config entry's own id deliberately differs from the
+        // manifest's `name` above.
+        let config = config_with_one_claude_compat_entry(dir.path(), "config-entry-id");
+        let plugins = command_plugins(&config).expect("command_plugins must succeed");
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].manifest().id, "acme-tools");
+    }
+
+    /// An entry with no `Ready` commands (an empty body, refused) must not
+    /// contribute a vacuous `Plugin` -- an installed plugin with an empty
+    /// `commands()` would register nothing anyway, so `command_plugins`
+    /// skips constructing one rather than padding the returned list.
+    #[tokio::test]
+    async fn an_entry_with_no_ready_commands_contributes_no_plugin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_command_md(dir.path(), "blank.md", "");
+
+        let config = config_with_one_claude_compat_entry(dir.path(), "acme-tools");
+        let plugins = command_plugins(&config).expect("command_plugins must succeed");
+        assert!(
+            plugins.is_empty(),
+            "an entry with no Ready commands must contribute nothing: {}",
+            plugins.len()
+        );
+    }
+
+    /// An entry declaring no `commands/` directory at all is the same true
+    /// no-op -- mirrors `install`'s own "an empty entry list is a true
+    /// no-op" posture, one level down (a real entry with nothing to
+    /// translate, rather than no entries at all).
+    #[tokio::test]
+    async fn an_entry_with_no_commands_directory_contributes_no_plugin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = config_with_one_claude_compat_entry(dir.path(), "acme-tools");
+        let plugins = command_plugins(&config).expect("command_plugins must succeed");
+        assert!(plugins.is_empty());
+    }
+
+    /// An empty `[plugins].claude_compat[]` list is a true no-op -- the
+    /// identical property `install`'s own
+    /// `an_empty_claude_compat_list_is_a_true_no_op` pins for the MCP/hook
+    /// half.
+    #[tokio::test]
+    async fn an_empty_claude_compat_list_contributes_no_command_plugins() {
+        let config = minimal_config();
+        let plugins = command_plugins(&config).expect("command_plugins must succeed");
+        assert!(plugins.is_empty());
+    }
+
+    /// A directory that does not exist fails the whole call, naming the
+    /// offending entry -- the identical P-13 posture `install`'s own
+    /// `a_nonexistent_directory_fails_the_whole_build_naming_the_entry`
+    /// pins for the MCP/hook half, checked here for the command half.
+    #[tokio::test]
+    async fn a_nonexistent_directory_fails_command_plugins_naming_the_entry() {
+        let config = config_with_one_claude_compat_entry(
+            std::path::Path::new("/does/not/exist/at/all"),
+            "acme-tools",
+        );
+        let err = match command_plugins(&config) {
+            Ok(_) => panic!("a nonexistent claude_compat directory must fail command_plugins"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("acme-tools"),
+            "the failing entry's own id must be named: {err}"
+        );
+    }
+
+    /// Two entries, each contributing a command, produce two separately
+    /// namespaced plugins -- `command_plugins` accumulates across entries
+    /// exactly like `install`'s own hook loop does for `HooksConfig`.
+    #[tokio::test]
+    async fn two_claude_compat_entries_each_contribute_their_own_command_plugin() {
+        let dir_a = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir_a.path().join(".claude-plugin")).unwrap();
+        std::fs::write(
+            dir_a.path().join(".claude-plugin").join("plugin.json"),
+            r#"{"name":"entry-a"}"#,
+        )
+        .unwrap();
+        write_command_md(dir_a.path(), "greet.md", "Hello from a.\n");
+
+        let dir_b = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir_b.path().join(".claude-plugin")).unwrap();
+        std::fs::write(
+            dir_b.path().join(".claude-plugin").join("plugin.json"),
+            r#"{"name":"entry-b"}"#,
+        )
+        .unwrap();
+        write_command_md(dir_b.path(), "greet.md", "Hello from b.\n");
+
+        let mut config = minimal_config();
+        config.plugins.claude_compat.push(ClaudeCompatPluginEntry {
+            id: "entry-a".to_string(),
+            dir: dir_a.path().to_path_buf(),
+            timeout_ms: 5_000,
+        });
+        config.plugins.claude_compat.push(ClaudeCompatPluginEntry {
+            id: "entry-b".to_string(),
+            dir: dir_b.path().to_path_buf(),
+            timeout_ms: 5_000,
+        });
+
+        let plugins = command_plugins(&config).expect("command_plugins must succeed");
+        assert_eq!(plugins.len(), 2);
+        let ids: Vec<String> = plugins.iter().map(|p| p.manifest().id).collect();
+        assert!(ids.contains(&"entry-a".to_string()));
+        assert!(ids.contains(&"entry-b".to_string()));
+    }
+    // ---- deny-capable classification (board item `01M0XRD8VMWD273W0W51T8ECCM`) ----
+
+    /// **The regression this item exists to close.** Before this item,
+    /// `report_hook_registrations` classified only `pre_tool_use` as
+    /// deny-capable -- a translated `UserPromptSubmit` rule (mapped to
+    /// `prompt_submitted`, `conway_plugin_claude::hooks`'s own `EVENT_MAP`)
+    /// landed in the OBSERVATION-only bucket, which only ever reaches
+    /// `diag::info` (suppressed at default verbosity, `crate::diag::info`'s
+    /// own doc) -- even though `prompt_submitted` can deny every prompt the
+    /// operator types (`conway_runtime::hook_dispatch::PROMPT_SUBMITTED`,
+    /// dispatched via `HookDispatcher::dispatch_deny_only`,
+    /// `runtime.rs:984`). `classify_hook_registrations` is the exact split
+    /// `report_hook_registrations` feeds into `diag::warn` (unconditional)
+    /// vs `diag::info` (gated) -- landing here, in the FIRST list, is what
+    /// "reaches the unconditional channel" means for this function; there is
+    /// no stderr to capture beyond that split, `diag::warn`/`diag::info`'s
+    /// own gating is exercised by `diag`'s own tests, not re-tested here.
+    #[test]
+    fn a_translated_user_prompt_submit_registration_reaches_the_unconditional_channel() {
+        let registrations = vec![HookRegistration {
+            id: "claude_compat:acme-tools:prompt_submitted:0".to_string(),
+            event: "prompt_submitted",
+            match_tool: None,
+            command: vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo hi".to_string(),
+            ],
+            timeout_ms: 5_000,
+            enabled: true,
+        }];
+        let (deny_capable, observation_only) = classify_hook_registrations(&registrations);
+        assert_eq!(
+            deny_capable,
+            vec!["claude_compat:acme-tools:prompt_submitted:0"],
+            "a translated prompt_submitted rule must be classified deny-capable, not \
+             observation-only"
+        );
+        assert!(
+            observation_only.is_empty(),
+            "must not also appear in the gated bucket: {observation_only:?}"
+        );
+    }
+
+    /// Regression, the other direction: `pre_tool_use` must still classify
+    /// deny-capable after this item widened the set from one event to two --
+    /// `conway::DENY_CAPABLE_EVENTS` replacing the old single-event constant
+    /// must not silently drop the event that constant already covered.
+    #[test]
+    fn a_translated_pre_tool_use_registration_still_reaches_the_unconditional_channel() {
+        let registrations = vec![HookRegistration {
+            id: "claude_compat:acme-tools:pre_tool_use:0".to_string(),
+            event: "pre_tool_use",
+            match_tool: Some("Bash".to_string()),
+            command: vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo hi".to_string(),
+            ],
+            timeout_ms: 5_000,
+            enabled: true,
+        }];
+        let (deny_capable, observation_only) = classify_hook_registrations(&registrations);
+        assert_eq!(
+            deny_capable,
+            vec!["claude_compat:acme-tools:pre_tool_use:0"]
+        );
+        assert!(observation_only.is_empty());
+    }
+
+    /// An observation-only event (`session_starting`) is classified into
+    /// the gated bucket, never the unconditional one -- the distinction
+    /// `report_hook_registrations`'s own doc promises, checked directly
+    /// rather than only asserted in prose.
+    #[test]
+    fn a_translated_session_starting_registration_is_observation_only() {
+        let registrations = vec![HookRegistration {
+            id: "claude_compat:acme-tools:session_starting:0".to_string(),
+            event: "session_starting",
+            match_tool: None,
+            command: vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo hi".to_string(),
+            ],
+            timeout_ms: 5_000,
+            enabled: true,
+        }];
+        let (deny_capable, observation_only) = classify_hook_registrations(&registrations);
+        assert!(deny_capable.is_empty());
+        assert_eq!(
+            observation_only,
+            vec!["claude_compat:acme-tools:session_starting:0"]
+        );
+    }
+
+    /// **End-to-end wiring proof, mirroring
+    /// `a_mapped_pre_tool_use_hook_is_appended_as_a_dispatchable_rule`
+    /// exactly**: a `UserPromptSubmit` rule in a directory's own
+    /// `hooks/hooks.json` is translated to a real, dispatchable
+    /// `prompt_submitted` `[hooks].rules[]` entry -- the SAME event
+    /// `HookDispatcher::dispatch_deny_only` (`runtime.rs:984`) consults for
+    /// every submitted prompt. Before this item, this exact shape had zero
+    /// coverage in this module (spec's own
+    /// `grep -c "UserPromptSubmit\|prompt_submitted"` check).
+    #[tokio::test]
+    async fn a_mapped_user_prompt_submit_hook_is_appended_as_a_dispatchable_rule() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_hooks_json(
+            dir.path(),
+            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo prompt"}]}]}}"#,
+        );
+        let builder = ConwayBuilder::from_parts(config_with_claude_compat_entry(dir.path()));
+        let builder = install(builder).await.expect("install must succeed");
+
+        let rules = &builder.config().hooks.rules;
+        assert_eq!(rules.len(), 1, "exactly one mapped rule: {rules:?}");
+        let rule = &rules[0];
+        assert_eq!(rule.event, "prompt_submitted");
+        assert!(rule.command[2].contains("echo prompt"));
+        assert!(rule.enabled);
+        assert_eq!(
+            rule.on_failure,
+            HookOnFailure::Deny,
+            "a translated prompt_submitted rule must default to Deny too, the same fail-closed \
+             posture every other translated rule gets"
+        );
     }
 }

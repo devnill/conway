@@ -16,14 +16,21 @@ everything it cannot.
 
 ## What works, fully, end to end
 
-**MCP server declarations, and only MCP server declarations.** A
+**MCP server declarations translate and run with no fidelity caveat.** A
 directory's own `.mcp.json` (`{"mcpServers": {"<name>": {"command", "args",
 "env"}}}`) is translated into a real `conway_plugin_mcp::McpPluginSpec` and
 discovered through the identical `conway_plugin_mcp::McpPlugin::discover` ->
 `ConwayBuilder::with_plugin` path an operator-authored `[plugins].mcp[]`
 entry already uses. This is the one pairing that is a genuine structural
 match — both sides are stdio JSON-RPC with a `command`/`env` declaration —
-and it is the only kind this item wires to actually run.
+and it is the only kind translated here that needs no disclosure beyond
+this section: an MCP server declared in a Claude Code plugin behaves
+exactly as one hand-written in `[plugins].mcp[]` would. **It is not,
+however, the only kind this layer wires to actually run any more.**
+`hooks/hooks.json` and `commands/*.md` both now dispatch too — see the next
+section for exactly what each does and does not cover, including the
+payload-shape gap a dispatched hook still has against real Claude Code and
+the best-effort, non-parity ruling that governs a dispatched command.
 
 ```json
 {
@@ -46,25 +53,36 @@ naming the offending entry's own `id`, mirroring `mcp.md`'s own posture.
 This is the equally-prominent half of this page, by design (nothing here
 may claim to be reached that isn't).
 
-- **`commands/*.md` — wired, best effort (board item
-  `01M0X1G29EZSFEWB1YAG40SE69`).** Most command files translate into a
+- **`commands/*.md` — wired all the way to a running `conway` process,
+  best effort (board items `01M0X1G29EZSFEWB1YAG40SE69`,
+  `01M0XRCAFD7DD7N64RNRM3P8W9`).** Most command files translate into a
   real `conway_core::ports::Command` returning `CommandOutcome::
   SubmitPrompt` — `ClaudeCompatReport::command_registrations()` hands back
-  the ready-to-install list, proven end to end (a real `Conway`/
-  `SessionHandle::prompt_command`, no TUI in the loop — `conway-plugin-
-  claude`'s own `tests/commands_dispatch.rs`, against `beepboop`'s real
-  `commands/config.md`) through the identical `SessionHandle::
+  the ready-to-install list. **That list now actually reaches a running
+  process, not only `conway-plugin-claude`'s own library-level tests:**
+  `conway-cli`'s `first_party_plugins::installed_plugins` — the SAME
+  re-derivation the TUI's `CommandRegistry::build` and the `conway
+  <plugin-id>.<command>` external subcommand both already read for every
+  other plugin's own commands — folds in `claude_compat_plugins::
+  command_plugins`, so a translated command shows up in the slash
+  palette, dispatches through the ordinary `<plugin-id>.<name>` path,
+  cannot shadow a built-in, and — through the identical `SessionHandle::
   prompt_command` path `conway_plugin_skeleton::FilePromptCommand`
-  already proved out for an operator-authored prompt file. **Best effort,
-  not parity, by explicit operator ruling:** v1 performs no `$ARGUMENTS`/
-  argument interpolation of any kind, so a command whose body contains a
-  raw `$ARGUMENTS` placeholder is refused rather than submitted verbatim
-  — named in the operator-visible report like anything else this layer
-  cannot use. Every frontmatter key besides `description` (which becomes
-  the command's own one-line summary) is named, not silently honored,
-  even on a command that otherwise translates — `allowed-tools` above
-  all: an operator who wrote a Claude Code tool restriction and had it
-  silently ignored has a *permission* surprise, not merely a fidelity
+  already proved out for an operator-authored prompt file — submits its
+  prompt for real. Proven through the compiled binary, not the library API
+  alone: `crates/conway-cli/tests/claude_compat_commands.rs` drives a real
+  `conway` process end to end, mirroring `conway-plugin-claude`'s own
+  `tests/commands_dispatch.rs` (which proves the library-API half of the
+  identical claim, against `beepboop`'s real `commands/config.md`).
+  **Best effort, not parity, by explicit operator ruling:** v1 performs no
+  `$ARGUMENTS`/argument interpolation of any kind, so a command whose body
+  contains a raw `$ARGUMENTS` placeholder is refused rather than submitted
+  verbatim — named in the operator-visible report like anything else this
+  layer cannot use. Every frontmatter key besides `description` (which
+  becomes the command's own one-line summary) is named, not silently
+  honored, even on a command that otherwise translates — `allowed-tools`
+  above all: an operator who wrote a Claude Code tool restriction and had
+  it silently ignored has a *permission* surprise, not merely a fidelity
   gap. A translated command's own name is always bare (never
   pre-namespaced) — the host prefixes it with the declaring plugin's own
   id and validates the result with `validate_command_name`, the same
@@ -77,17 +95,23 @@ may claim to be reached that isn't).
   operator's own `.conway/skills` always shadows a plugin's on a name
   collision, and a plugin root's own malformed `SKILL.md` is skipped rather
   than failing the whole load. Reading a second directory is now possible
-  in the loader; this layer just does not yet CALL it with a plugin's own
-  `skills/` directory, so nothing changes for an operator naming a
-  `[plugins].claude_compat[]` entry today. That wiring — the translation
-  step, not the loader capability — is a separate, deferred item. Every
-  `skills/<name>/SKILL.md` directory found is still named in the report.
+  in the loader, and (board item `01M0XRE2N96ATHEXJ1617E133P`)
+  `ConwayBuilder::with_extra_skill_dir` is a real, callable seam that reaches
+  it through an actual build; this layer just does not yet CALL that seam
+  with a plugin's own `skills/` directory, so nothing changes for an
+  operator naming a `[plugins].claude_compat[]` entry today. That wiring —
+  the translation step, not the loader capability or its seam — is a
+  separate, deferred item. Every `skills/<name>/SKILL.md` directory found is
+  still named in the report.
 - **`agents/*.md` — still not imported by THIS layer,** for the identical
-  reason: `agents::load_agent_defs_from_roots` and the new
-  `AgentsConfig::extra_dirs` field (same board item) exist and an operator
-  can hand-set `extra_dirs` in their own config today, but this layer does
-  not yet populate it from a plugin's own `agents/` directory. Named in the
-  report, never read for content.
+  reason: `agents::load_agent_defs_from_roots` exists and (board item
+  `01M0XRE2N96ATHEXJ1617E133P`) `ConwayBuilder::with_extra_agent_dir` is a
+  real, callable seam onto it, but this layer does not yet call it with a
+  plugin's own `agents/` directory. Named in the report, never read for
+  content. (An earlier version of this paragraph pointed at an
+  `AgentsConfig::extra_dirs` config field; that field was retired in favor
+  of the builder method above so the agents and skills halves of this
+  capability stay symmetric — see `AgentsConfig`'s own doc.)
 - **`hooks/hooks.json` — event names are matched, and (board item
   `01M0X1FCQ80C9ET97HENXSAW2K`) a mapped rule now translates into a real,
   dispatchable `[hooks].rules[]`-shaped registration.**

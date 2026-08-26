@@ -152,13 +152,30 @@ impl App {
                         // exactly (`commands::execute`'s `Resume` arm): a
                         // full, fresh `AppState` scoped to the child's own
                         // root, with the process-lifetime plugin command
-                        // list carried across by hand (the one field that
-                        // is NOT session-scoped).
+                        // list carried across by hand (one of the fields
+                        // that is NOT session-scoped).
+                        //
+                        // The plugin status-contribution snapshot is
+                        // carried across for the identical reason (board
+                        // item `01M0XDEDBR5YDF71Q7ZRXYMT85`, found while
+                        // tracing this exact reset's OTHER call site,
+                        // `commands::execute`'s `Resume` arm, which this
+                        // comment already claimed to mirror "exactly" but
+                        // did not, until now): `AppState::
+                        // plugin_status_contributions` is the same
+                        // `Conway`-level, build-time value as
+                        // `plugin_commands`, not session-scoped state, so
+                        // leaving it at `AppState::new`'s empty default
+                        // here would silently drop it on every plugin-driven
+                        // fork/checkout the same way `/resume` used to.
                         let plugin_commands = self.state.plugin_commands.clone();
+                        let plugin_status_contributions =
+                            self.state.plugin_status_contributions.clone();
                         let child_root = handle.root();
                         self.handle = handle;
                         self.state = AppState::new(child_root);
                         self.state.plugin_commands = plugin_commands;
+                        self.state.plugin_status_contributions = plugin_status_contributions;
                         // no facade
                         // round trip needed here, unlike `Self::
                         // refresh_session_head`'s other call sites -- a
@@ -238,12 +255,19 @@ impl App {
                     .await
                 {
                     Ok(handle) => {
-                        // Mirrors the `ForkSession` arm's own reset exactly.
+                        // Mirrors the `ForkSession` arm's own reset exactly,
+                        // including the plugin status-contribution
+                        // carry-across (board item
+                        // `01M0XDEDBR5YDF71Q7ZRXYMT85`) that arm's own
+                        // comment explains.
                         let plugin_commands = self.state.plugin_commands.clone();
+                        let plugin_status_contributions =
+                            self.state.plugin_status_contributions.clone();
                         let child_root = handle.root();
                         self.handle = handle;
                         self.state = AppState::new(child_root);
                         self.state.plugin_commands = plugin_commands;
+                        self.state.plugin_status_contributions = plugin_status_contributions;
                         self.state.session_head_seq = Some(head);
                         self.state.transcript.push(Entry::Notice {
                             text: format!(
@@ -347,8 +371,10 @@ impl App {
 mod tests {
     use std::sync::Arc;
 
+    use conway_core::ids::BackendId;
+
     use super::super::fixtures::{
-        drain_and_apply, echo_conway, echo_conway_and_store, minimal_cli,
+        base_config, drain_and_apply, echo_conway, echo_conway_and_store, minimal_cli,
     };
     use super::{App, PluginCommandDone};
     use crate::tui::state::Entry;
@@ -700,6 +726,129 @@ mod tests {
             )),
             "a successful fork must be surfaced as a transcript notice: {:?}",
             app.state.transcript
+        );
+    }
+
+    /// Reuses [`RewindCommandFixture`] (the SAME `/acme.rewind` -> `ForkSession`
+    /// trigger the test above already proves) plus a `status_contributions()`
+    /// override -- this test's own fixture, not a change to
+    /// `RewindPluginFixture` itself, so every other test in this module keeps
+    /// depending on a plugin that contributes nothing, unchanged.
+    struct RewindWithStatusPluginFixture;
+
+    impl conway::plugin::Plugin for RewindWithStatusPluginFixture {
+        fn manifest(&self) -> conway::plugin::PluginManifest {
+            conway::plugin::PluginManifest {
+                id: "acme".to_string(),
+                version: "0.1.0".to_string(),
+                tools: vec![],
+                required_host_caps: vec![],
+                optional_host_caps: vec![],
+                requires: vec![],
+                optional: vec![],
+            }
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn conway::plugin::Tool>> {
+            vec![]
+        }
+
+        fn commands(&self) -> Vec<Arc<dyn conway::plugin::Command>> {
+            vec![Arc::new(RewindCommandFixture)]
+        }
+
+        fn status_contributions(&self) -> Vec<conway::plugin::PluginStatusContribution> {
+            vec![conway::plugin::PluginStatusContribution {
+                key: "guard".to_string(),
+                status: conway::ResultStatus::Completed,
+                value: "qwen2.5-3b".to_string(),
+            }]
+        }
+    }
+
+    /// Board item `01M0XDEDBR5YDF71Q7ZRXYMT85`'s own "fourth link" --
+    /// found while tracing `/resume`'s carry-across, NOT the item that
+    /// motivated it: `apply_plugin_command_done`'s `ForkSession` arm resets
+    /// `AppState` the identical way `commands::execute`'s `Resume` arm
+    /// does (both comments say so), so a plugin's status-contribution
+    /// snapshot dropped there exactly as it used to drop across `/resume`
+    /// -- an operator who reached the capability through
+    /// `/conway.history.rewind` rather than typing `/resume` directly
+    /// would still have lost it. Closed in the same commit as the `/resume`
+    /// fix rather than filed separately, per this item's own scoping rule.
+    #[tokio::test]
+    async fn plugin_status_contribution_survives_a_fork_session_outcome() {
+        // Unlike `fork_session_outcome_forks_the_calling_session_and_drives_
+        // the_child` above (`echo_conway()`, no plugin installed in
+        // `Conway` at all -- a plugin COMMAND needs no `ConwayBuilder::
+        // with_plugin` registration, only `App::new`'s own command-registry
+        // argument), this test's plugin must ALSO be installed into
+        // `Conway` itself via `with_plugin`, because
+        // `Conway::plugin_status_contributions()` is a build-time snapshot
+        // collected only from plugins registered that way (see that
+        // accessor's own doc).
+        let conway = conway::test_support::test_builder(base_config())
+            .with_backend(Arc::new(conway_testkit::FakeBackend::echo(BackendId::new(
+                "fake",
+            ))))
+            .with_plugin(Arc::new(RewindWithStatusPluginFixture))
+            .build()
+            .expect("build should succeed with a status-contributing plugin installed");
+        let mut cli = minimal_cli();
+        let tui_config_dir = tempfile::tempdir().expect("tempdir");
+        let tui_config_path = tui_config_dir.path().join("settings.json");
+        std::fs::write(
+            &tui_config_path,
+            serde_json::json!({"tui": {"status_line": {"fields": ["plugins"]}}}).to_string(),
+        )
+        .expect("write settings.json carrying [tui.status_line.fields]");
+        cli.config = Some(tui_config_path);
+
+        let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(RewindWithStatusPluginFixture);
+        let mut app = App::new(&cli, &conway, &[plugin])
+            .await
+            .expect("App::new should succeed");
+
+        let expected = vec![conway::plugin::PluginStatusContribution {
+            key: "guard".to_string(),
+            status: conway::ResultStatus::Completed,
+            value: "qwen2.5-3b".to_string(),
+        }];
+        assert_eq!(
+            app.state.plugin_status_contributions, expected,
+            "precondition: App::new must populate the contribution before any fork runs"
+        );
+
+        let outcome = app
+            .submit("/acme.rewind 0".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, super::super::SubmitOutcome::Continue));
+
+        let done = app
+            .plugin_cmd_rx
+            .as_mut()
+            .expect("plugin_cmd_rx is set by App::new")
+            .recv()
+            .await
+            .expect("the spawned command task must reply");
+        let resubscribe = app.apply_plugin_command_done(done).await;
+        assert!(
+            resubscribe,
+            "a successful ForkSession must ask the caller to resubscribe its event stream"
+        );
+
+        assert_eq!(
+            app.state.plugin_status_contributions, expected,
+            "a ForkSession outcome's AppState reset must not drop the plugin \
+             status-contribution snapshot, matching how /resume already preserves it"
+        );
+
+        let text = crate::tui::test_support::render_text(&app.state, 120, 40);
+        assert!(
+            text.contains("guard: qwen2.5-3b"),
+            "the plugin's status contribution must still reach the rendered status line after \
+             a plugin-driven fork: {text}"
         );
     }
 

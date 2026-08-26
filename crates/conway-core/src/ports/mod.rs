@@ -58,6 +58,7 @@
 
 mod artifact;
 mod backend;
+mod capability;
 mod capability_index;
 mod context_path;
 mod curator;
@@ -75,6 +76,7 @@ mod subagent;
 
 pub use artifact::*;
 pub use backend::*;
+pub use capability::*;
 pub use capability_index::*;
 pub use context_path::*;
 pub use curator::*;
@@ -118,6 +120,8 @@ mod tests {
         _: &dyn Curator,
         _: &dyn MemoryStore,
         _: &dyn ContextPathHost,
+        _: &dyn CapabilityProvider,
+        _: &dyn CapabilityHost,
     ) {
     }
 }

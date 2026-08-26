@@ -285,9 +285,24 @@ fn rows_from_claude_compat(entries: &[ClaudeCompatPluginEntry]) -> Vec<PluginRow
                 entry.mcp_server_count
             );
             if total_hooks > 0 {
+                // Board item `01M0XRD8VMWD273W0W51T8ECCM`: this used to say
+                // "(not wired)" -- true when written, false since board item
+                // `01M0XBZNBPXEESX8VNTJDKNG0J` made every mapped hook a
+                // real, dispatchable `[hooks].rules[]` entry and never
+                // touched this row. Stale in the UNDERSTATING direction,
+                // about a permission boundary -- the more dangerous one
+                // (this item's own spec). Now says it dispatches, and
+                // distinguishes deny-capable (`entry.deny_capable_hook_count`,
+                // `conway::DENY_CAPABLE_EVENTS`) from observation-only --
+                // acceptance 4.
+                let observation_only_hooks =
+                    entry.mapped_hook_count - entry.deny_capable_hook_count;
                 contributes.push_str(&format!(
-                    "; hooks {}/{} mapped by name (not wired)",
-                    entry.mapped_hook_count, total_hooks
+                    "; hooks {}/{} mapped and dispatching ({} deny-capable, {} observation-only)",
+                    entry.mapped_hook_count,
+                    total_hooks,
+                    entry.deny_capable_hook_count,
+                    observation_only_hooks
                 ));
             }
             if !entry.unmapped_hook_names.is_empty() {
@@ -810,11 +825,35 @@ mod tests {
         unmapped_hook_names: Vec<&str>,
         unsupported_names: Vec<&str>,
     ) -> crate::tui::state::ClaudeCompatPluginEntry {
+        claude_compat_with_hooks(
+            id,
+            mcp_server_count,
+            1,
+            0,
+            unmapped_hook_names,
+            unsupported_names,
+        )
+    }
+
+    /// [`claude_compat`], plus explicit control over the mapped/deny-capable
+    /// hook split -- board item `01M0XRD8VMWD273W0W51T8ECCM`, acceptance 4:
+    /// the tests below need a row where that split is actually mixed, which
+    /// [`claude_compat`]'s own fixed `mapped_hook_count: 1` cannot express.
+    #[allow(clippy::too_many_arguments)]
+    fn claude_compat_with_hooks(
+        id: &str,
+        mcp_server_count: usize,
+        mapped_hook_count: usize,
+        deny_capable_hook_count: usize,
+        unmapped_hook_names: Vec<&str>,
+        unsupported_names: Vec<&str>,
+    ) -> crate::tui::state::ClaudeCompatPluginEntry {
         crate::tui::state::ClaudeCompatPluginEntry {
             id: id.to_string(),
             source_dir: std::path::PathBuf::from(format!("/tmp/{id}")),
             mcp_server_count,
-            mapped_hook_count: 1,
+            mapped_hook_count,
+            deny_capable_hook_count,
             unmapped_hook_names: unmapped_hook_names
                 .into_iter()
                 .map(str::to_string)
@@ -889,6 +928,51 @@ mod tests {
         assert!(row.label.contains("read-only"), "{}", row.label);
         assert!(row.label.contains("Stop"), "{}", row.label);
         assert!(row.label.contains("commands/review.md"), "{}", row.label);
+    }
+
+    /// Board item `01M0XRD8VMWD273W0W51T8ECCM`, acceptance 4: the row must
+    /// say mapped hooks DISPATCH (never "not wired" -- that claim was true
+    /// when written and false since board item `01M0XBZNBPXEESX8VNTJDKNG0J`
+    /// wired real dispatch and never touched this row), and must
+    /// distinguish deny-capable from observation-only, not report one bare
+    /// count. Two mapped, one deny-capable, one observation-only.
+    #[test]
+    fn a_claude_compat_row_says_hooks_dispatch_and_distinguishes_deny_capable() {
+        let mut state = AppState::new(AgentId::new());
+        state.claude_compat_plugins = vec![claude_compat_with_hooks(
+            "acme-tools",
+            0,
+            2,
+            1,
+            vec![],
+            vec![],
+        )];
+
+        let raw_rows = all_plugin_rows(&state);
+        let raw = raw_rows
+            .iter()
+            .find(|r| r.id == "acme-tools")
+            .expect("the claude-compat row must exist");
+        assert!(
+            !raw.contributes.contains("not wired"),
+            "must never claim a real, dispatching hook is inert: {}",
+            raw.contributes
+        );
+        assert!(
+            raw.contributes.contains("dispatching"),
+            "{}",
+            raw.contributes
+        );
+        assert!(
+            raw.contributes.contains("1 deny-capable"),
+            "{}",
+            raw.contributes
+        );
+        assert!(
+            raw.contributes.contains("1 observation-only"),
+            "{}",
+            raw.contributes
+        );
     }
 
     /// A pathological directory (more unsupported items than

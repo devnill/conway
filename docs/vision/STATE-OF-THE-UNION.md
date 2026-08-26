@@ -1,49 +1,55 @@
 # State of the Union: conway
 
-**Reviewed 2026-08-24 against the working tree at `7654041`, version 0.9.0.**
+**Reviewed 2026-08-26 against the working tree at `bc2a174`, version 0.9.0.**
 
 > Written for the operator. It assumes you care about the shape of the system
-> and not about the shape of any particular trait. Everything in it was checked
-> against the code in this run; where you might want to check something
-> yourself, the file and line is given.
+> and not about the shape of any particular trait. Everything in it was
+> checked against the code in this run; where you might want to check
+> something yourself, the file and line is given.
 >
 > Snapshot document — replaced wholesale on the next run of
 > [`REVIEW-PROMPT.md`](REVIEW-PROMPT.md).
 >
-> **Note on this run.** First run of the restructured review: six reviewers in
-> parallel (adherence, surfaces, operator, evidence, sustainability ×2), a
-> shared measurement, non-overlapping territories. One reviewer ran the shipped
-> binary against a live model backend — the first review that has. The
-> coverage this bought and the coverage it cost are both stated in §6.
+> **Note on this run — narrower than the process it followed, and said
+> plainly.** `REVIEW-PROMPT.md` §2 calls for a lead dispatching 3–9 parallel
+> reviewers with named territories. This run had no fan-out: one agent did
+> the Step 1 measurement, the Step 4 board survey, and re-verified the prior
+> snapshot's six findings and this cycle's six audit findings by direct
+> citation. It did **not** re-derive an independent review of the whole
+> tree. Where the process asks a reviewer to hunt (sustainability duplication,
+> a live pty session, the security-bearing operator pages), this run instead
+> **carries forward the just-completed full audit's verdict** rather than
+> risk contradicting it with a second, weaker pass over the same ground. See
+> §6 for exactly what that leaves uncovered.
 
 ---
 
 ## 0. The verdict, in three sentences
 
-**conway now works as a tool, not only as a codebase** — this review ran the
-shipped binary against a live backend and one-shot answers, piped stdin, JSON
-output, permission modes, and session resume all worked first try, exactly as
-documented. **All five of the project's own fast gates are green at `7654041`**
-(verified in this run: fmt, design-claims, board-citations, doc build, clippy) —
-the red-gate era the last snapshot documented is over, and the board is drained
-to two open items. **The recurring defect is now small but stubborn: the tree
-keeps shipping capability faster than its own record admits** — the same commit
-that gave the context-path machinery its first production caller left three doc
-comments asserting that caller does not exist, and a built, tested plugin
-(`conway.trim`) appears in no document and is unreachable from the shipped
-binary.
+**The previous snapshot's own diagnosis had become true of the snapshot
+itself.** It reported the tree shipping capability faster than its record
+admits, then sat unregenerated through 138 commits, 256 files, and 27
+completed board items — during which its six open findings were all resolved
+and its fourteen-item plan was completed in full. **A full audit has just run
+against the current tree and returned NEEDS-REFINEMENT** (1 critical, 3
+significant, 2 minor — cycle-summary `01M0XQRS96KZNNS5CPKJPMBE4N`), and every
+one of those six findings is the same disease in a new instance: a same-day
+sibling change updated one declaration of a mechanism and left another one,
+elsewhere, still describing the old world. **The board is not drained — it
+carries 18 live items** (12 open, 6 in progress): six from today's audit,
+seven from two prior waves building plugin-declared permission modes and
+plugin-to-plugin capability sharing, and one carried over from an inherited
+chain-completion defect (§3).
 
-The first is the news: the daily-driver ladder (§7b of
-[`INTENT.md`](INTENT.md)) finally has a foot on rung one. The second means the
-honesty machinery built after the last review is working. The third is the same
-disease that made the last two snapshots, in a milder strain — details in §3.
+The last snapshot's F1–F6 are gone — verified below, not assumed. The
+document that diagnosed staleness is, this time, current with what it
+describes.
 
 ---
 
 ## 1. What is built, as blocks
 
-conway is one library consumed three ways. Everything below the facade line is
-fixed; everything to the right is optional and swappable.
+Unchanged in shape from the last snapshot; the plugin tier has grown.
 
 ```
    terminal (TUI)  ─┐
@@ -61,297 +67,242 @@ fixed; everything to the right is optional and swappable.
         └──────────────┴───────────────┴──────────────┘
                                │
                     ┌──────────┴───────────┐
-                    │   THE PLUGIN TIER    │   twelve crates, all optional
+                    │   THE PLUGIN TIER    │   sixteen crates, all optional
                     └──────────────────────┘
 
   in-process, compiled in:    routing · backends* · history · stepguard ·
                               skills · memory · skeleton · path · discover ·
-                              trim (built, currently reachable by embedders only)
+                              trim · names · claude · idiom · marketplace
   OUT of process, no rebuild: subprocess-host · mcp-client
                                            (* the only one on by default)
 ```
 
-A "port" is a socket in the core that something else plugs into: where a model
-gets called, where permission is decided, where the log is written, where
-context is curated. There are sixteen port modules
-(`crates/conway-core/src/ports/`), and this run tabulated every one: **each has
-a real implementation living outside the core, and most can be swapped by an
-embedder through a builder method.** The two that cannot are named in §2 and
-§3 — one is a genuine hole, one is a decision nobody has written down.
+**Sixteen plugin crates exist on disk today** (`ls crates | grep plugin`);
+`ARCHITECTURE.md` §2b enumerates thirteen. The three missing —
+`conway-plugin-claude` (reads an on-disk Claude Code plugin directory,
+board `01M0VR89FB1F3Q4FQ8852K2A5E`), `conway-plugin-idiom` (the
+system-prompt-fragment plugin, board `01M0VR3BKW5N3V3WS28H7FV8ZK`), and
+`conway-plugin-marketplace` (fetches and installs from a Claude Code
+marketplace, board `01M0VR96Y87FF2BVNTBSC6GEYR`) — all landed in the same
+138-commit window this snapshot catches up on. **This is a new instance of
+exactly the pattern §3 documents**, found by this run's own verification of
+§1's block diagram rather than by the full audit (whose territories did not
+include re-counting the plugin tier). It has no board item yet; flagged for
+the next refine cycle rather than filed here, since filing is outside this
+item's scope.
 
-**The plugin tier is honestly uninstallable.** Every first-party plugin
-resolves strictly against the `[plugins].install` list with no fallback when an
-id is absent (`crates/conway-cli/src/first_party_plugins.rs:64-78`). Turning a
-thing off actually removes it. This was the obvious way for the architecture to
-be decorative rather than real, and it is ruled out by the code.
+Everything else in §1 holds as last reported: plugin uninstallability is
+real and enforced by `[plugins].install`'s strict resolution
+(`crates/conway-cli/src/first_party_plugins.rs:64-78`); the sixteen port
+modules under `crates/conway-core/src/ports/` each have a real out-of-core
+implementation; the context-path machinery (`conway.path`) has its
+production caller.
 
-**What changed since the last snapshot.** The context-path machinery — the
-5,500-line block the last review found consumerless — now has a real consumer:
-`conway.path` ships a `compose_context_path` tool a model can call to assemble
-a curated context, exercised end to end
-(`crates/conway-plugin-path/tests/compose_context_path_end_to_end.rs`). The
-decision the last review put to you was made, and the answer was built.
+**What changed since the last snapshot, structurally.** Two new mechanisms
+landed and are mid-build, not finished: **Claude Code compatibility**
+(reading a Claude-format plugin directory, translating its hooks and
+commands, dispatching hooks for real) and **plugin-to-plugin dependency
+edges** (`requires`/`optional` on the manifest, an open host-capability
+vocabulary, and an as-yet-nonexistent plugin→plugin call channel, "Edge B").
+Both are why the board carries more than the six audit findings — see §3
+and §7.
 
 ---
 
 ## 2. Scored against [`INTENT.md`](INTENT.md)
 
-### §2 Weight: a small core with capability from outside. **Strong, and holding.**
+The six questions the last snapshot put to the operator (§7, 2026-08-24) were
+answered the same day and are folded into `INTENT.md` §7/§7a/§7b/§7c/§8.10.
+Re-verified this run, each still holds:
 
-The core stays agnostic and the swap test passes almost everywhere. The
-sustainability reviewers went hunting for the usual decay — duplicated policy,
-knowledge with two homes — inside core+runtime and found the one place they
-expected it (permission text vs permission enforcement) correctly separated by
-concern, and a previously-triplicated canonicalizer still consolidated to one
-definition (`crates/conway-core/src/canon.rs:21`).
+- **§7 core-owned subagent host.** `crates/conway/src/host_caps.rs:68-80`
+  now cites the ruling in prose — *"fork and spawn are mechanism with
+  exactly one implementation… INTENT.md §7."* No `with_subagent_host` exists
+  in `builder.rs`, on purpose, stated.
+- **§7a/§7b daily-driver ladder, rung one.** Still standing; not re-driven
+  live this run (§6).
+- **§7c non-Rust embedding.** `DESIGN-bindings.md` still the acceptable
+  first step; unstarted beyond it, as scoped.
+- **§8.10 cost of change.** `crates/conway/src/error.rs:29` is now
+  `FacadeError`, not a second `ConwayError` — F6 closed, verified below.
 
-### §5 Context as a tree. **Built, consumed, and one design page hasn't heard.**
-
-The path machinery has its first production caller (above). But INTENT §5e's
-answer — *a selection may name any record anywhere; the control belongs on the
-composer* — is delivered by the shipped tool, while
-[`DESIGN-context-path.md`](DESIGN-context-path.md) §10 (lines 640-644) still
-calls cross-ancestry reads "genuinely open" and waiting on you. The shipped
-behaviour matches INTENT; the design page is stale, and stale in the dangerous
-direction: a reader planning from it would believe an open question exists
-where a decision already does. Confirm-and-close is a documentation item (§3,
-F1 cluster), flagged to you because closing a "waiting on the operator" note is
-yours to do.
-
-### §6 Plugins all the way down. **Strong.** §7 Three surfaces. **Two proven, one absent.**
-
-The terminal and one-shot surfaces are the best-verified they have ever been —
-see the rung-one paragraph below. Rust embedding is real and well-covered by
-builder methods. But INTENT §7c — non-Rust hosts — is **entirely unbuilt: no
-binding crate, zero `extern "C"`, and no mention of Diplomat, UniFFI, or
-cbindgen anywhere in the tree** (verified by search this run). §7c itself
-blesses a survey as an acceptable first deliverable; even the survey does not
-exist. Three surfaces are claimed; two and a half exist for Rust speakers, two
-for everyone else.
-
-**CORRECTED 2026-08-25.** The claim that no discussion of those three tools
-existed, and the claim that the survey did not exist, are both false as
-written. They are kept verbatim above as the record of what this run asserted,
-because that record is the evidence for the process amendment they produced
-(`REVIEW-PROMPT.md` §5, 2026-08-25). `docs/vision/BINDINGS.md` — a 397-line
-survey of Diplomat, UniFFI and cbindgen against conway's async streaming API,
-ending in a recommendation — was added by commit `084736f` on 2026-08-14, ten
-days before this review and present at its own base commit. It was linked from
-no page in the tree, which is why a search that follows the documentation graph
-did not reach it. The survey has since been re-verified against the current API
-and restated at [`DESIGN-bindings.md`](DESIGN-bindings.md); `BINDINGS.md` is now
-a pointer at it. The rest of the paragraph stands: there is still no binding
-crate and no `extern "C"` anywhere in the tree.
-
-One port also has no swap point at all: the core unconditionally provides the
-subagent host — the thing that forks and spawns child agents — and there is no
-builder method to supply your own
-(`crates/conway/src/host_caps.rs:68-73`, and no `with_subagent_host` exists in
-`crates/conway/src/builder.rs`). Every other port with a production alternative
-has one. Whether that is "core-owned mechanism, correctly non-swappable" or "a
-builder method nobody wrote yet" is not stated anywhere — an intent gap, put to
-you in §7.
-
-### §7a/§7b The daily-driver ladder. **Rung one is under a foot.**
-
-This run did what no previous review did: ran the binary, live. One-shot
-text/JSON/JSONL output, stdin piping, `--model` pinning, `--permission-mode
-deny`, `routes explain`, and resume all worked on the first attempt, and the
-operator docs matched observed behaviour. That is rung-one material — usable
-alongside the incumbent for real one-shot and scripting work today. What keeps
-it from more: the three operator findings in §3 (a resume-id trap, no way to
-kill one runaway subagent, unmemorable session identity), all small, all the
-kind of thing §7b says only daily use would have found. Daily use just found
-them.
-
-### §8.10 Cost of change. **Good bones, three named debts.** — see §4.
-
-### Honesty gates (§8.1/§8.3, `CONTRIBUTING.md` §2). **Green, and this run re-verified them.**
-
-All five fast gates pass at `7654041`, run fresh for this review
-(`scripts/check-fast-gates.sh`: fmt, design-claims, board-citations, `cargo
-doc -D warnings`, clippy). All 21 machine-checked claims in
-`scripts/board-claims.md` hold. The "Where the tree is today" notes sampled
-matched the code exactly. The remaining record drift (§3) lives in the places
-no gate reads: doc comments, enumerations in prose, and a design doc's open
-question. The gates are winning; the ungated territory is where the drift went.
+**What INTENT does not yet answer, surfaced by the two programs now on the
+board:** whether an out-of-process (subprocess-host) plugin gets Edge B's
+plugin→plugin channel on the same terms as an in-process one
+(`01M0WWNHQQYN1EVTH8WPZ33EBF`'s own acceptance asks this and does not
+assume yes), and where the host/toolkit altitude boundary sits for
+`conway.ui` (`01M0WWM0ZB6BR45XJ8HMTJWZ0Z`, an explicit operator-ruling item
+already filed, not a gap this snapshot is raising new). Both are already on
+the board as the right kind of question — an item, not a silent assumption.
 
 ---
 
 ## 3. Findings
 
-Merged from six reviewers; every citation re-verified or spot-checked by the
-lead. Ordered by how much each would change what gets built next.
+**Carried forward from cycle-summary `01M0XQRS96KZNNS5CPKJPMBE4N` (full
+audit, boundary `7654041..bc2a174`), not re-derived.** Re-stating this
+cycle's verdict is deliberate: a second, single-agent pass over the same
+138 commits with a fraction of the audit's reviewer budget would be weaker
+evidence, and a snapshot that quietly produced a different answer would be
+exactly the drift this page exists to stop.
 
-**F1 — The record understates the tree, in four places (three reviewers, independently).**
-The same defect class, found separately by the adherence, evidence, and
-surfaces lenses, which is weight, not coincidence:
+**CRITICAL**
 
-- Three production doc comments say `Selector::Operator`/`write_head` have no
-  production caller — `crates/conway-core/src/path.rs:120-123`,
-  `crates/conway-core/src/log.rs:363-367`,
-  `crates/conway-runtime/src/runtime.rs:168-172` — and the caller shipped **in
-  the same commit** (`c1a69de`, the `conway.path` plugin). The enum guard built
-  specifically to catch stale variant claims does not watch `Selector`.
-- `conway.trim`: 224 lines, compiled, tested, absent from every enumeration of
-  the plugin tier (`PHILOSOPHY.md` §6, `docs/plugins/README.md`,
-  `ARCHITECTURE.md` §2b), and unreachable from the shipped binary —
-  conway-cli's own Cargo.toml comment admits naming `"conway.trim"` in
-  `[plugins].install` "reaches nothing today"
-  (`crates/conway-cli/Cargo.toml:103-105`).
-- `ARCHITECTURE.md` §2b enumerates nine plugin crates; twelve exist
-  (`discover`, `path`, `trim` missing) — a new contributor's crate map
-  undercounts the plugin surface by a quarter.
-- `DESIGN-context-path.md` §10 still lists as open the cross-ancestry question
-  INTENT §5e answers and the shipped tool implements (see §2).
+**F1 — Translated Claude Code commands are unreachable, and the docs say
+otherwise.** `command_registrations()` is never called anywhere in
+`conway-cli`; typing a translated command does nothing. `docs/plugins/
+claude-compat.md:49` calls them "wired" under a header claiming what does
+NOT run. Board `01M0XRCAFD7DD7N64RNRM3P8W9`, in progress.
 
-All are S-sized documentation fixes; the pattern is the finding. The gated
-record is honest and the ungated record is where drift now accumulates —
-worth extending the gates' reach (watch `Selector`; consider the enumeration
-pages) rather than only patching the four instances.
+**SIGNIFICANT**
 
-**F2 — The operator can start and steer subagents but cannot stop one (operator lens).**
-The model gets seven lifecycle tools (`conway_fork` … `conway_cancel`); the
-operator gets `/fork`, `/spawn`, `/ask`, `/steer` — and no `/cancel` or
-`/await` exists in the slash-command surface (verified by grep of
-`crates/conway-cli/src/tui/commands.rs`). A runaway subagent burning tokens can
-only be stopped by ending the whole session. M-sized; the sharpest daily-driver
-gap this run found.
+**F2 — One of conway's two deny-capable events is invisible to the compat
+layer.** `DENY_CAPABLE_EVENT` hardcodes `"pre_tool_use"`; a translated
+`UserPromptSubmit` hook can deny every prompt an operator types and a
+default run prints nothing about it. Board `01M0XRD8VMWD273W0W51T8ECCM`,
+open — bundled with the second half of this finding, the `/plugin` browser
+still calling live hooks "(not wired)".
 
-**F3 — The first thing a scripting user tries after the docs' own example fails (operator lens, live).**
-One-shot JSON leads with `agent_id`; `--resume` rejects it and accepts
-`transcript_ref`, which appears once in the operator docs
-(`docs/scripting.md:141`), in an example, with no prose saying it is the
-resume handle. Reproduced live in this run. One sentence of documentation, or
-an alias — S.
+**F3 — The multi-root skills loader has no caller and no config surface.**
+Built and tested; its agents-loader twin gained an operator-settable field
+and this one did not. Board `01M0XRE2N96ATHEXJ1617E133P`, in progress.
 
-**F4 — Non-Rust embedding has not started, and nothing says whether that is a queue position or an abandonment (surfaces lens).**
-See §2. The survey INTENT §7c names as the acceptable first step is S-sized
-and would convert "absent" into "decided and sequenced."
+**F4 — (folded into F2 above in the board's own filing.)** The `/plugin`
+browser understates a live permission boundary by calling wired hooks
+"not wired."
 
-**F5 — `SubagentHost` is the one port an embedder cannot supply (surfaces lens).**
-See §2. Either an M-sized builder method or one written sentence of intent;
-currently it is neither, which fails INTENT §8.1 (the open question is the
-defect).
+**MINOR**
 
-**F6 — Two enums named `ConwayError` (sustainability, core+runtime).**
-`crates/conway-core/src/error.rs:634` and `crates/conway/src/error.rs:19` —
-different variant sets, not a wrapper relationship, significant enough that the
-facade carries a 15-line comment and a `CoreConwayError` alias to manage the
-shadowing (`crates/conway/src/lib.rs:98-114`). A recurring which-one tax on
-every contributor; S-sized mechanical rename.
+**F5 — The `on_failure: Prompt` outage guarantee has no two-hook test.**
+Board `01M0XREWGA03EDQ5PK2C18KW75`, open (bundled with F6).
 
-Positives verified in passing, because a review that only lists problems is not
-a state of the union: plugin uninstallability is real (§1); every hook event
-has a production dispatch site; the `focus_agent` invariant is centralized
-behind a single wrapper rather than scattered (checked while hunting for the
-opposite); and the operator docs are written from captured output, not
-aspiration — the live run kept matching them.
+**F6 — `EventDecl::summary`'s stated discovery purpose has no CLI
+consumer.** Pre-existing, not new. Same board item as F5.
+
+**The pattern above the findings.** All six are declaration-honesty defects —
+a written claim about what a mechanism does or does not do going stale
+against the code beside it — the fifth consecutive cycle that class has
+dominated — and three
+of six were falsified by a *same-day* sibling change, not weeks of drift.
+Eight-wide parallel waves compress into one day what used to take a
+fortnight; an ownership fence that makes parallelism conflict-free is the
+same mechanism that stops a writer sweeping the sibling declarations its own
+change just falsified. Recorded in full as process finding
+`01M0XDG8VSTSY1BEGCSERW57WM` (the "chain pattern," four instances as of
+that record, a fifth added same day — the skills loader above).
+
+**F1–F6 from the 2026-08-24 snapshot are gone,** re-verified fresh this run
+rather than assumed carried-over:
+
+- The three "no production caller" doc comments now name `conway.path`'s
+  `compose_context_path` as the caller
+  (`crates/conway-core/src/path.rs:120-128`,
+  `crates/conway-core/src/log.rs:363-370`,
+  `crates/conway-runtime/src/runtime.rs:165-175`).
+- `/cancel` exists (`crates/conway-cli/src/tui/commands.rs:365,550`), tested
+  (`:2612,3813`).
+- `docs/scripting.md:154-157` and `docs/sessions.md:216-217` both now state
+  in prose that `transcript_ref`, not `agent_id`, is the resume handle.
+- `DESIGN-bindings.md` is the survey INTENT §7c asks for (already existed
+  at the last review, was linked from nothing then; now indexed in
+  `README.md`).
+- `crates/conway/src/host_caps.rs:68-80` cites the operator's ruling instead
+  of describing an unexplained absence.
+- `crates/conway/src/error.rs:29` is `FacadeError`; only one `ConwayError`
+  remains, in `conway-core`.
+
+Positives verified in passing: the `kill_group` and `canonical_json_bytes`
+consolidations from earlier cycles still hold; the CON-1/CON-2 subprocess
+timeout-and-lifecycle consolidation (§4) also verified in place this run —
+both plugin crates now implement a shared `ChildSessionError` trait rather
+than hand-rolling four failure causes each
+(`crates/conway-plugin-mcp/src/lib.rs:183-190`); the CON-4 test-support
+tier exists (`crates/conway/src/test_support.rs`,
+`crates/conway-cli/src/tui/test_support.rs`) and `build_conway` is down to
+3 hand-rolled copies from the 46 the last review counted.
 
 ---
 
 ## 4. Sustainability: where the tree is getting more expensive to change
 
-The standing question, now with its own reviewers. The headline: **core and
-runtime are disciplined; the cost is accumulating at the edges** — in the
-plugin transport pair and in the test harness.
+**Not independently re-reviewed this run** — no sustainability-lens
+territory pass was dispatched (§6). What follows is verification that last
+cycle's two named debts are closed, not a fresh hunt for new ones.
 
-**The subprocess twins.** `conway-plugin-mcp` and `conway-plugin-subprocess`
-(6,270 lines between them) independently implement the same
-child-process-lifecycle mechanism: same module shape, near-verbatim error
-taxonomies (spawn / timeout / session-died / malformed-frame), and a shared
-default written down twice — `DEFAULT_TIMEOUT_MS = 5000` declared in both
-crates, one carrying a comment that it must match the other, nothing enforcing
-it (`conway-plugin-mcp/src/lib.rs:77`,
-`conway-plugin-subprocess/src/lib.rs:130`). This pair has already produced one
-real divergence: `kill_group` drifted five ways before being consolidated, and
-that consolidation held (verified this run — both crates now wrap
-`conway_tools::process::kill_group`). The wire protocols themselves correctly
-stay separate — they change for different external reasons. The lifecycle layer
-is one piece of knowledge written twice, and its fail-closed behaviour is a
-safety property. M-sized, and it needs one shape decision from you first (§7).
+**The subprocess twins — closed.** `conway-plugin-mcp` and
+`conway-plugin-subprocess` now consume a shared `ChildSession`/
+`ChildSessionError` lifecycle layer (board `01M0TV7ZDS8X4F4TEJPRZB9P6T`,
+verified above); `DEFAULT_TIMEOUT_MS` is declared once, in
+`conway::plugin`, and re-exported (`01M0TV6E2K6QF9VXP6C7TFH06X`). The wire
+protocols correctly stayed separate.
 
-**The test harness has a missing tier.** `build_conway` is hand-rolled in 46
-test files, `text_response` in 52, `fake_router` in 36 — because
-`conway-testkit` deliberately depends only on `conway-core` and structurally
-cannot offer facade-level helpers. Any change to how a `Conway` is assembled
-for tests is a 46-file edit. This is the same shape as the slash-palette drift
-fixed in `9bbe6c6`, not yet caught only because nothing exhaustively matches
-the copies. The fix is a thin facade-level test-support tier, not stuffing
-testkit; M-sized.
+**The test harness's missing tier — closed.** A facade-level test-support
+module exists and the hand-rolled copies of `build_conway` collapsed from
+46 to 3 (`01M0TV8MSFRHHQ5BNZV3NHZCEW`).
 
-**What is *not* expensive, checked deliberately.** The context-path concept has
-high fan-out — 23 files reference it, and landing its write path touched 117 —
-but it has exactly one authoritative representation
-(`crates/conway-core/src/path.rs`), so this is a foundational abstraction
-threading every layer by design, not five copies waiting to disagree. The
-right response is budgeting for wide commits when path semantics change, not
-consolidation. Similarly the two big files people worry about (`builder.rs`,
-`tui/commands.rs`) read as flat, single-purpose aggregations — and the raw line
-counts overstate them: `commands.rs` is over half inline tests.
+**New surface not yet assessed for this concern:** the Claude-compat and
+plugin-dependency mechanisms landed in the same window (§1) have not had a
+sustainability pass — whether `conway-plugin-claude`, `-idiom`, and
+`-marketplace` duplicate policy with each other or with the native plugin
+path is an open question for the next full audit, not answered here.
 
 ---
 
 ## 5. What is good, said plainly
 
-- **It runs, live, first try.** The strongest sentence in this document and it
-  was not available to any previous review.
-- **The gates are winning.** Two reviews ago the honesty gates were red; this
-  run re-ran them fresh and all five pass. The drift that remains is in
-  ungated prose, which is exactly what the gate strategy predicts.
-- **The board is clean.** Two open items, both real, both claimable, no stale
-  claims, no umbrella rot (surveyed via the live MCP board this run).
-- **Uninstallability is real**, ruled in by code rather than claimed.
-- **The consolidations hold.** `kill_group` and `canonical_json_bytes` — the
-  two duplications previous cycles paid to fix — are still fixed.
-- **The docs tell the truth the gates can reach**, and one reviewer's live
-  session kept confirming operator docs against actual behaviour.
+- **The honesty gates keep winning.** Every drift this cycle's audit found
+  lives in prose the gates do not read (doc comments, enumerations, a
+  hardcoded constant's doc claim) — none of it is a gate regression.
+- **The chain-pattern is being tracked as a named process defect, not
+  re-discovered from scratch each time** (`01M0XDG8VSTSY1BEGCSERW57WM`), and
+  two of today's writers found the fix (drive-the-real-binary tests the
+  build lane executes) without being told to.
+- **Two prior cycles' plans both completed in full** — REC/OP/EMB/CON (14
+  items, this snapshot's own trigger) and the 27 items surveyed via the
+  board's done list. Nothing rotted silently; it rotted in the *record*,
+  which this regeneration exists to fix.
+- **The subprocess and test-harness consolidations held** — verified fresh,
+  not assumed (§3, §4).
 
 ---
 
 ## 6. What this review did not check
 
-The union of every reviewer's declared gaps, stated so this snapshot cannot
-read as more complete than it is:
+**Larger than usual, and said plainly because of it — this was a
+single-agent regeneration, not a fan-out.**
 
-- **The TUI was never driven under a real terminal** — no pty in the review
-  environment. Interactive behaviour was verified source-against-docs only.
-  The single largest gap this run.
-- Most operator doc pages (`getting-started`, `interactive`, `embedding`,
-  `permissions`, `tools`, and the `docs/plugins/*` normative pages) were index-
-  or spot-checked, not read against code. Security-bearing claims in
-  `docs/permissions.md` specifically were not verified this round.
-- `PHILOSOPHY.md` beyond its "Where the tree is today" notes; `GUIDE.md`.
-- Full reads of `ports/plugin.rs` (3,087 lines), the permission broker's
-  internals, and the routing health/breaker dispatch path.
-- Fixture duplication inside `#[cfg(test)]` modules (as opposed to `tests/`
-  directories).
-- The full workspace test suite was not re-run (the five fast gates were; the
-  last full run on record is `da9813c`: 223 suites, 3,209 passed, 0 failed).
+- **No independent reviewer territory was run this cycle.** Adherence,
+  surfaces, operator, evidence, and sustainability×N were not separately
+  dispatched; this page instead re-verified the full audit's own six
+  findings and the prior snapshot's six findings by direct citation.
+- **The TUI was not driven under a real pty this run** (last driven
+  2026-08-24; not repeated here).
+- **The full workspace test suite was not re-run in this pass** — this
+  worktree's lane runs no cargo. The reported state, carried from the
+  orchestrating context rather than re-derived: 244 suites, 3,556 passed, 0
+  failed, all 6 fast gates green, at `bc2a174`.
+- **Security-bearing operator pages** (`docs/permissions.md`,
+  `docs/tools.md`) — still unverified against code, as last cycle.
+- **The plugin-tier crate count discrepancy (§1) was found incidentally**,
+  by re-drawing the block diagram, not by a targeted sweep — there may be
+  other enumeration pages with the same gap (`PHILOSOPHY.md` §6,
+  `docs/plugins/README.md`) that this run did not check line-by-line.
+- **Sustainability beyond the two named debts** (§4) — no fresh hunt for
+  duplication in the Claude-compat or plugin-dependency mechanisms.
 
 ---
 
 ## 7. Questions for you
 
-Each is an INTENT §8.1 moment: the guidance, not the code, is what is missing.
-
-> **Answered 2026-08-24, same day.** The operator accepted all six proposed
-> sentiments; they are folded into `INTENT.md` (§7, §7a, §7b, §7c, §8.10) and
-> `DESIGN-context-path.md` §10 is closed. The list below stands as the record
-> of what this run put to the operator.
-
-1. **Is the subagent host core-owned on purpose?** (F5) One sentence settles
-   it; an M-sized builder method un-settles it the other way.
-2. **Confirm the §5e reading and close `DESIGN-context-path.md` §10** — the
-   shipped cross-ancestry behaviour matches INTENT §5e as written; the design
-   page still says the call is yours to make. Is it made?
-3. **Does every model-invocable lifecycle action owe the operator a command?**
-   (F2) A yes makes `/cancel` a rule, not a feature request.
-4. **May a session carry an operator-chosen name?** ULID-only identity is
-   either a deliberate trade or a missing convenience; INTENT does not say.
-5. **Non-Rust embedding: queued or dormant?** If queued, the §7c survey is the
-   S-sized next step; if dormant, INTENT §7c should say so rather than imply
-   progress.
-6. **When plugin-tier crates need shared code, what shape is blessed** — a new
-   shared crate, or another facade re-export like `kill_group`? The subprocess
-   consolidation (§4) is blocked on this one sentence.
+1. **The plugin-tier enumeration gap (§1) — worth a board item now, or
+   folded into the next refine cycle's own sweep?** This snapshot did not
+   file one; it is real and cited.
+2. **Edge B's parity question** (`01M0WWNHQQYN1EVTH8WPZ33EBF`'s own
+   acceptance criterion) **and the host/toolkit altitude ruling**
+   (`01M0WWM0ZB6BR45XJ8HMTJWZ0Z`) are both already filed as the operator
+   rulings they are — not new, listed here only so this page's own claim
+   that the board is current is checkable against it.
+3. **Is a sustainability-lens pass over the Claude-compat + plugin-dependency
+   surface worth dispatching before or after the current 18-item board
+   clears?** Both landed fast, in the same window a duplication would be
+   easiest to introduce and hardest to see yet (§4).

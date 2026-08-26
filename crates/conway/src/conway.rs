@@ -34,6 +34,34 @@ use crate::subagent_spec::ForkSpec;
 /// literal at both this constant's call sites.
 const PRE_TOOL_USE_EVENT: &str = "pre_tool_use";
 
+/// The complete, canonical set of DENY-CAPABLE, fail-closed events --
+/// `PRE_TOOL_USE_EVENT` and [`conway_runtime::hook_dispatch::
+/// PROMPT_SUBMITTED`], in the same order [`Conway::
+/// active_deny_capable_hook_rules`] enumerates them -- exposed so a
+/// consumer needing "is this event deny-capable" has exactly one place to
+/// read it from, rather than re-declaring the pair (board item
+/// `01M0XRD8VMWD273W0W51T8ECCM`: `conway_cli::claude_compat_plugins` used
+/// to hardcode `"pre_tool_use"` alone as that classification, silently
+/// missing `prompt_submitted` -- the exact drift this constant exists to
+/// make structurally impossible for every future reader of it, not just
+/// that one).
+///
+/// **What would falsify "this list is exhaustive":** [`Conway::
+/// active_deny_capable_hook_rules`]'s own doc scopes itself to these same
+/// two events for the identical reason -- both read directly off
+/// [`conway_core::hook::HookPermissionVerdict`], the ONLY answer shape a
+/// hook can deny through. A third deny-capable event would need to be
+/// added to `PermissionBroker`/`HookDispatcher::dispatch_deny_only`
+/// (`conway_runtime`) FIRST, and `active_deny_capable_hook_rules` updated
+/// to read it, before this constant would need a third member -- grepping
+/// this crate for `active_deny_capable_hook_rules`'s own callers of
+/// `dispatch_deny_only`/`PermissionBroker::decide` is how to check that
+/// hasn't happened silently.
+pub const DENY_CAPABLE_EVENTS: [&str; 2] = [
+    PRE_TOOL_USE_EVENT,
+    conway_runtime::hook_dispatch::PROMPT_SUBMITTED,
+];
+
 /// [`HookRuleView::origin`]'s value for every row [`Conway::
 /// active_deny_capable_hook_rules`] returns. A hook rule, unlike a pattern
 /// ALLOW/DENY/PROMPT rule, has no per-rule [`conway_core::permission_pattern

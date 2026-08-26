@@ -22,3 +22,11 @@
 .ideate.json
 .ideate-work/
 .ideate-telemetry/
+
+# Python bytecode caches. The six-gate script runs three Python checkers on
+# every invocation, which regenerates these; tracking them means every worker
+# tree reports itself dirty after running its own gates, and in a parallel
+# worktree wave a dirty tree is the signal used to tell a stuck writer from a
+# finished one. Ignore the cache, not the checkers.
+__pycache__/
+*.py[cod]

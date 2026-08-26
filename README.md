@@ -172,7 +172,7 @@ session rewind, step-guarding, skills, memory, and MCP support (plus the
 out-of-process subprocess plugin host, which the list above does not name)
 are the occupants today; compaction remains unbuilt.
 
-**The tier's shape is settled and demonstrated, with nine members shipping
+**The tier's shape is settled and demonstrated, with sixteen members shipping
 today:** `crates/conway-plugin-skeleton`, a plugin that registers a single
 `skeleton_ping` tool and does nothing else — it exists to prove the `Plugin`/
 `Tool` mechanism below, not to be useful on its own — `crates/conway-plugin-routing`,
@@ -202,7 +202,24 @@ gaining a tool the binary was never compiled with; and
 `crates/conway-plugin-mcp`, an MCP-over-stdio *client* — an external
 program named in `[plugins].mcp[]` is spawned as an MCP server, and every
 tool it declares over `tools/list` attaches the same way, without a
-bundle id of its own to name. Compaction, and `/checkout`/`ContextMask`,
+bundle id of its own to name. Seven more members ship alongside those nine:
+`crates/conway-plugin-path` (`conway.path`), the `compose_context_path` tool
+a model calls to compose what a session sends as context on its next turn;
+`crates/conway-plugin-discover` (`conway.discover`), the `search_sessions`
+tool that feeds it, finding a session or record the model does not already
+hold a reference to; `crates/conway-plugin-trim` (`conway.trim`), a
+`Curator` that omits tool call/result round-trips older than a configurable
+turn window; `crates/conway-plugin-names` (`conway.names`), operator-chosen,
+renameable agent names over a store the TUI's own `/agents` panel reads
+directly; `crates/conway-plugin-idiom` (`conway.idiom`), a short
+conway-specific instruction fragment prepended near the front of a
+session's assembled context; `crates/conway-plugin-claude`, which reads a
+Claude Code plugin directory already on disk and translates its MCP
+server declarations, commands, and hooks where a mapping exists, reporting
+by name everything it cannot use; and `crates/conway-plugin-marketplace`,
+which fetches a marketplace's manifest and a chosen plugin's declared files
+over HTTP into the same plugin store `conway-plugin-claude` reads from.
+Compaction, and `/checkout`/`ContextMask`,
 remain separate, later work; conway-plugin-routing is not
 "dynamic routing" in the learned/adaptive sense PHILOSOPHY.md describes
 elsewhere — no classifier, no embedding model, ever — it is the same purely

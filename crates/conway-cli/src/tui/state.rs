@@ -229,10 +229,22 @@ pub struct ClaudeCompatPluginEntry {
     /// -- the only kind acceptance 2 requires to actually run; each one is
     /// installed as a real plugin by `claude_compat_plugins::install`.
     pub mcp_server_count: usize,
-    /// How many `hooks/hooks.json` rules had a same-named conway event --
-    /// informational only (`conway_plugin_claude::hooks`'s own doc: not a
-    /// claim that the rule is wired to run).
+    /// How many `hooks/hooks.json` rules had a same-named conway event.
+    ///
+    /// **Not informational-only any more.** Before board item
+    /// `01M0XBZNBPXEESX8VNTJDKNG0J`, this really was "mapped by name" with
+    /// no claim about dispatch; that item made `claude_compat_plugins::
+    /// install` append every one of these as a real `[hooks].rules[]`
+    /// entry into the SAME `ConwayBuilder` this session runs, so a mapped
+    /// hook here dispatches for real -- see [`Self::deny_capable_hook_count`]
+    /// for the split an operator needs to know WHAT that means.
     pub mapped_hook_count: usize,
+    /// How many of [`Self::mapped_hook_count`] are deny-capable
+    /// (`conway::DENY_CAPABLE_EVENTS`) rather than observation-only --
+    /// board item `01M0XRD8VMWD273W0W51T8ECCM`, acceptance 4: this row must
+    /// distinguish "can refuse a tool call or a submitted prompt" from
+    /// "can only watch." Always `<= mapped_hook_count`.
+    pub deny_capable_hook_count: usize,
     /// Every unmapped hook's own Claude Code event name.
     pub unmapped_hook_names: Vec<String>,
     /// Every other unusable thing this directory named, by its own
@@ -915,7 +927,8 @@ pub struct AppState {
     /// configuration (which plugins this binary installed at startup), not
     /// session-scoped state. `commands::execute`'s `Resume` arm carries it
     /// across the `AppState::new` reset by hand, alongside
-    /// `plugin_commands`.
+    /// `plugin_commands` (and, since board item
+    /// `01M0XDEDBR5YDF71Q7ZRXYMT85`, [`Self::plugin_status_contributions`]).
     ///
     /// The trait is `conway_plugin_names`'s own, not `conway-core`'s --
     /// naming ships entirely in the plugin tier and core never learns the
@@ -936,20 +949,31 @@ pub struct AppState {
     /// same "populate once outside the render path" shape
     /// [`Self::plugin_commands`]/[`Self::agent_names`] already use.
     ///
+    /// **NOT reset by `/resume`**, for the same reason
+    /// [`Self::plugin_commands`]/[`Self::agent_names`] are not (board item
+    /// `01M0XDEDBR5YDF71Q7ZRXYMT85`, closing the gap those two items'
+    /// carry-across list left this field out of): the value is
+    /// `Conway`-level, process-lifetime data, not session-scoped state, so
+    /// `commands::execute`'s `Resume` arm carries it across the
+    /// `AppState::new` reset by hand, alongside its two siblings.
+    ///
     /// **This is a snapshot, not a live view, and it does not update
-    /// mid-session.** `Conway::plugin_status_contributions()`'s own doc
-    /// explains why: the value it returns was collected once, in
-    /// `ConwayBuilder::build`, before this session's own `status/1`
-    /// notifications (if any) had arrived -- typically empty at real
-    /// session start, and frozen at whatever it held at that moment for
-    /// the rest of the process's life. A plugin whose health changes AFTER
-    /// startup (a guard that dies mid-session, a build that finishes) will
-    /// not be reflected here; a genuinely live per-session poll is a
-    /// separate, larger piece, not built by this wiring. Tests in
-    /// `view/status.rs` still set this field directly, matching every
-    /// other `AppState` field's own test idiom in that module; the
-    /// end-to-end "does a real build actually populate it" proof lives in
-    /// `app/startup.rs`'s own test module instead.
+    /// mid-session -- carrying it across `/resume` does not change that.**
+    /// `Conway::plugin_status_contributions()`'s own doc explains why: the
+    /// value it returns was collected once, in `ConwayBuilder::build`,
+    /// before this session's own `status/1` notifications (if any) had
+    /// arrived -- typically empty at real session start, and frozen at
+    /// whatever it held at that moment for the rest of the process's life,
+    /// resumed session or not. A plugin whose health changes AFTER startup
+    /// (a guard that dies mid-session, a build that finishes) will not be
+    /// reflected here; a genuinely live per-session poll is a separate,
+    /// larger piece, not built by this wiring. Tests in `view/status.rs`
+    /// still set this field directly, matching every other `AppState`
+    /// field's own test idiom in that module; the end-to-end "does a real
+    /// build actually populate it" proof lives in `app/startup.rs`'s own
+    /// test module, and the end-to-end "does it survive `/resume`" proof
+    /// lives in `app.rs`'s own test module (board item
+    /// `01M0XDEDBR5YDF71Q7ZRXYMT85`).
     pub plugin_status_contributions: Vec<PluginStatusContribution>,
 }
 

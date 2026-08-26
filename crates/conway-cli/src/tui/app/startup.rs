@@ -127,6 +127,15 @@ impl App {
         // per-session poll, a separate and larger piece, deliberately not
         // built here. See `AppState::plugin_status_contributions`'s own
         // doc for the same caveat spelled out at the read side.
+        //
+        // This one `App::new` copy is also the ONLY place the value is
+        // ever produced -- `commands::execute`'s `Resume` arm (board item
+        // `01M0XDEDBR5YDF71Q7ZRXYMT85`) carries the already-populated field
+        // across a `/resume`'s `AppState::new` reset rather than re-reading
+        // `conway.plugin_status_contributions()` a second time, matching
+        // `plugin_commands`/`agent_names`'s own carry-across exactly: the
+        // snapshot taken here is still the one an operator sees after any
+        // number of `/resume`s in the same process.
         state.plugin_status_contributions = conway.plugin_status_contributions().to_vec();
         // Stage 2a: `[tui]` no longer lives in `conway::config::ConwayConfig`
         // at all (`conway.config()` has no `.tui` field any more) -- this
@@ -415,6 +424,21 @@ impl App {
                     source_dir: entry.dir.clone(),
                     mcp_server_count: report.mcp_servers.len(),
                     mapped_hook_count: report.mapped_hook_count(),
+                    // Board item `01M0XRD8VMWD273W0W51T8ECCM`, acceptance 4:
+                    // classifies against `conway::DENY_CAPABLE_EVENTS` --
+                    // the SAME canonical set `claude_compat_plugins::
+                    // report_hook_registrations` reads on stderr, not a
+                    // third, independently-drifting list for this row.
+                    deny_capable_hook_count: report
+                        .hooks
+                        .iter()
+                        .filter(|h| match &h.outcome {
+                            conway_plugin_claude::HookMapOutcome::Mapped {
+                                conway_event, ..
+                            } => conway::DENY_CAPABLE_EVENTS.contains(conway_event),
+                            conway_plugin_claude::HookMapOutcome::Unmapped { .. } => false,
+                        })
+                        .count(),
                     unmapped_hook_names: report
                         .hooks
                         .iter()

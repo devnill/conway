@@ -7,12 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documented
+
+- **Seven-going-on-more stale documentation claims about the plugin capability vocabulary and the plugin status render path are corrected** — board item `01M0XKP5BWCPY3BHPJZHXKR4H3`. `docs/plugins/concepts.md`, `trust-and-security.md`, `hooks.md` (two separate locations: the `required_host_caps` point and the page's own opening summary), and `subprocess-plugins.md` no longer describe `HostCapability` as a closed two-variant enum — it opened to a shape-checked `Named(String)` catch-all under board item `01M0WWKA8K1E7JPK87J6RRQMZF` — and now state precisely which failure mode still fails closed AT PARSE (a malformed tag) versus which now resolves and is refused later at the host-capability GATE (a well-formed but previously-unknown tag); `crates/conway-plugin-subprocess/src/wire.rs`'s own `required_host_caps` doc comment gets the identical, surgical correction, since a vague rewrite there would be worse than the half-truth it replaces. `hooks.md`'s `status.declare/1` row and its own opening summary no longer claim nobody renders a plugin's pushed status — the TUI render path and startup snapshot population both shipped (board item `01M0X1B7Z41J57N6YP2JFZ2AZW`) and are now cited by file — while the row's separate, still-true TTL-expiry claim (no sweep runs) is left untouched, verified independently rather than blessed by association. `docs/plugins/claude-compat.md`'s "What works, fully, end to end" section no longer claims MCP is the only kind this layer wires to run: hooks and commands both dispatch now too, without restating either bullet's own fidelity caveats (payload-shape, best-effort) that page's coverage section already states. No behaviour change: docs and one doc comment only.
+
+### Fixed
+
+- **An operator can now tell what a foreign plugin's hooks can do to them** — board item `01M0XRD8VMWD273W0W51T8ECCM`, two defects, one outcome. First: `crates/conway-cli/src/claude_compat_plugins.rs`'s deny-capable/observation-only split used to hardcode `"pre_tool_use"` as conway's ONLY deny-capable event, missing `prompt_submitted` (`conway_runtime::hook_dispatch::PROMPT_SUBMITTED`, dispatched via `HookDispatcher::dispatch_deny_only` — the event a translated `UserPromptSubmit` hook maps to) — so a foreign plugin whose only hook was `UserPromptSubmit` could deny every prompt the operator typed, reported only on the verbose-gated channel, invisible at default verbosity. Fixed by reading a new canonical `conway::DENY_CAPABLE_EVENTS` (the facade's own two-event set, already established by `Conway::active_deny_capable_hook_rules`) rather than re-declaring the pair a second time. Second: the `/plugin` browser still rendered mapped hooks as `"(not wired)"` — true when written, false since a same-day sibling item made every mapped hook a real, dispatchable `[hooks].rules[]` entry; `crates/conway-cli/src/tui/view/plugins.rs`'s claude-compat row now says hooks dispatch and names how many are deny-capable vs observation-only (`ClaudeCompatPluginEntry::deny_capable_hook_count`, `crates/conway-cli/src/tui/state.rs`), and that struct's own doc no longer claims a mapped hook is merely "informational."
+
 ### Changed
 
 - **`conway::agents::load_agent_defs` and `conway::skills::load_skill_defs` are no longer single-root** — board item `01M0X1EH2GW5DKY9XD1EZ78S3F`. Both now have a `_from_roots(dirs: &[PathBuf])` counterpart that reads an ORDERED list of roots into one merged map: `dirs[0]` (the operator's own directory) keeps the exact original strict contract — a malformed file there is still a loud, propagated build error — and always wins a name collision against any later root; every root after it is treated as third-party (e.g. a plugin's own directory), so a malformed file, or a within-root name collision, there is logged via `tracing::warn!` and skipped rather than failing the whole load. The single-root functions are now thin one-element-slice wrappers over the new ones, so every existing caller (`ConwayBuilder::build`, `crate::intent`, `conway-cli`'s `--agent` resolution, `conway_plugin_skills::SkillsPlugin::from_dir`) keeps compiling and behaving byte-for-byte identically without a single call site changing. `AgentsConfig` gains `extra_dirs: Vec<PathBuf>` (empty by default, so every existing config keeps behaving identically) — additional agent-definition roots `ConwayBuilder::build` now resolves against `cwd` and folds in alongside `dir`; nothing populates it automatically yet, an operator can hand-set it today. Skills stay configless (no new `[skills]` section — unnecessary config surface this item's own scope doesn't call for, matching this crate's existing precedent for that section). `docs/plugins/claude-compat.md`'s `skills/`/`agents/` "not imported, at all" paragraphs are corrected: the loader capability exists and is tested now, but the Claude Code compat layer does not yet call it with a plugin's own directories — that wiring is a separate, deferred item.
+  **Superseded in part by the entry immediately below** — the `AgentsConfig::extra_dirs` field this bullet describes no longer exists.
+
+- **The multi-root skills/agents split from the entry above is closed, and `AgentsConfig::extra_dirs` is retired** — board item `01M0XRE2N96ATHEXJ1617E133P`. `skills::load_skill_defs_from_roots` had shipped with zero production callers: `ConwayBuilder::build` still called the single-root `load_skill_defs`, and there was no config surface to reach the multi-root path through at all — while `agents` had a real, hand-settable `AgentsConfig::extra_dirs` field. Rather than add a matching `[skills]` config section (which would have forced every one of `ConwayConfig`'s ~40 existing hand-written struct-literal call sites across the workspace to name a new field, since `ConwayConfig` has no `#[derive(Default)]` — the same blast-radius reasoning `ConwayBuilder::with_root`'s own root field was already kept off `ConwayConfig` for), both loaders' second-root capability now lives on `ConwayBuilder` instead: `with_extra_agent_dir` and the new `with_extra_skill_dir`, each appending one additional root (call repeatedly for more than one, mirroring `with_plugin`'s own repeat-to-add shape), resolved against `cwd` and folded in after the operator's own root — `AgentsConfig::dir` for agents, the unchanged fixed `.conway/skills` default for skills — with the exact same precedence `load_*_defs_from_roots` already enforced (operator's own root wins a collision; a later root's malformed file is skipped, not fatal). `AgentsConfig::extra_dirs` is removed (no operator config today ever set it, so this is not a breaking change to any real `settings.json`); agents and skills are symmetric again — neither has a config field, both are reachable through the identical builder-level seam a Claude Code compat layer (or any other embedder) can call before `build()`. No existing single-root caller or test needed editing: `agents_dir`/`skills_dir` still resolve first, unconditionally, exactly as before.
 
 ### Added
 
+- **Edge B: a plugin -> plugin capability CALL channel** — board item
+  `01M0WWNHQQYN1EVTH8WPZ33EBF`,
+  `docs/vision/DESIGN-plugin-dependencies.md` §2. Before this item there
+  was no way for one plugin to call into another: `ToolCtx`'s handles were
+  all host services, and `PluginEventHandle` is emit-only, fire-and-forget
+  pub/sub, not call-and-return — every plugin wanting a checkbox
+  reimplemented a checkbox. New `crates/conway-core/src/ports/capability.rs`
+  adds `CapabilityProvider` (an object-safe, JSON-in/JSON-out async trait —
+  dynamic and serialisable, deliberately NOT a capability-specific Rust
+  trait, so an out-of-process plugin can implement it exactly as an
+  in-process one does), `CapabilityHost`/`CapabilityRegistry` (the runtime
+  dispatcher, refusing rather than silently picking a winner when two
+  plugins register the same capability name), and `CapabilityCallHandle`
+  (the `ToolCtx`-facing handle, `noop` by default). `Plugin` gains a new
+  zero-cost-default `capabilities()` method (the runtime registration,
+  mirroring `Plugin::tools` vs `PluginManifest::tools`'s own static/runtime
+  split — deliberately NOT a new `PluginManifest` field, which would have
+  broken every one of the three dozen existing `PluginManifest { .. }`
+  literal call sites across the workspace). `ToolCtx` gains a `capabilities:
+  CapabilityCallHandle` field, documented as the one handle on that struct
+  that reaches ANOTHER PLUGIN rather than a host service; `conway-runtime`'s
+  one production construction site (`tools::runner`) now binds it (`noop`,
+  bound to the calling plugin's own id) so the workspace keeps compiling,
+  though a live `CapabilityRegistry` built from every installed plugin's
+  registrations is not yet threaded through — a disclosed follow-up, not
+  silently done. `crates/conway/src/builder.rs`'s existing
+  `missing_required_dependency`/`missing_optional_dependencies` (the
+  `PluginManifest::requires`/`::optional` resolution pass) now ALSO treat a
+  `requires`/`optional` entry as satisfied by a provided capability name,
+  not only an installed plugin id — "one vocabulary, not two" applied to
+  the same fields rather than a second, parallel capability-only pair — so
+  a `requires` naming a capability nothing installed provides fails at
+  `build()` exactly as a `requires` naming an absent plugin id already did,
+  and an `optional` one degrades with the same two-channel announcement.
+  Every capability name (`Plugin::capabilities()`'s registrations, and every
+  name `CapabilityCallHandle::call` is asked to dispatch) is validated
+  through the SAME `conway_core::event_name::validate_event_name` shape
+  check `HostCapability` already uses — reused, not reimplemented. Tested
+  end to end with a fixture provider and consumer, INCLUDING a provider
+  that returns an error (`crates/conway-core/src/ports/capability.rs`'s own
+  test module) and a fixture provider that forwards over a REAL child
+  process (`cat`, over stdin/stdout) to check the channel reaches an
+  out-of-process-style implementor on identical terms — genuinely, at the
+  trait/channel level; `conway-plugin-subprocess`'s own wire protocol
+  (`tool.spec/1`/`tool/1`) is not yet extended to declare or forward a
+  capability through this channel, which is the disclosed next step, not
+  built here. No actual capability ships in this item (no `conway.ui`, no
+  UI) — this is the channel only.
 - **A migration guide for operators coming from Claude Code's
   `settings.json`** — board item `01M0X4Z8B8ZWCHABMQAE9KFWHF`, new page
   `docs/migrating-from-claude-code.md`. Triages every key in a real
@@ -279,6 +338,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `conway` facade). `docs/plugins/claude-compat.md`'s `commands/*.md` "not
   wired" paragraph is corrected to describe what is true now and what
   still is not.
+- **`[plugins].claude_compat[]` now reaches a `commands/*.md` file all the
+  way to a running `conway` process, not only `conway-plugin-claude`'s own
+  library-level tests** — board item `01M0XRCAFD7DD7N64RNRM3P8W9`, the
+  audit's single CRITICAL finding, closing the gap the item immediately
+  above left standing: `crates/conway-cli/src/claude_compat_plugins.rs`
+  never called `ClaudeCompatReport::command_registrations()` at all, so an
+  operator naming a directory in `settings.json` got zero working commands
+  from it. **Tracing the whole path found a SECOND, deeper joint, fixed in
+  this same item**: `conway::plugin::Plugin::commands()` has no reader
+  inside the facade whatsoever (`ConwayBuilder::build` never looks at it)
+  — the only reader is `conway_cli::tui::commands::CommandRegistry::build`,
+  fed by `first_party_plugins::installed_plugins`, which RE-DERIVES its
+  plugin list from `conway.config()` rather than reading back whatever
+  `ConwayBuilder::with_plugin` attached at build time. Merely calling
+  `command_registrations()` from `install` and attaching the result via
+  `with_plugin` would still have produced zero reachable commands.
+  `claude_compat_plugins` gains a new `command_plugins` function — called
+  from `first_party_plugins::installed_plugins` instead, the SAME
+  re-derive-from-config seam that already feeds the first-party bundle —
+  so a translated command now shows up in the slash palette, dispatches
+  through the ordinary `<plugin-id>.<name>` path (both the TUI's
+  `/`-prefixed dispatch and the `conway <plugin-id>.<command>` external
+  subcommand), cannot shadow a built-in, and submits its prompt for real.
+  Proven through the compiled binary, not the library API alone:
+  `crates/conway-cli/tests/claude_compat_commands.rs` drives a real
+  `conway <plugin-id>.<command>` invocation end to end and asserts the
+  persisted `LogRecord::UserTurn`/`Provenance::CommandPrompt` names the
+  translated command's own full name. `docs/plugins/claude-compat.md`'s
+  `commands/*.md` bullet is corrected again: it previously claimed
+  "proven end to end" while nothing in `conway-cli` ever reached this far;
+  it now states what is actually wired, with the same "best effort, not
+  parity" caveats (no `$ARGUMENTS` interpolation, `allowed-tools` named but
+  not enforced) unweakened.
 
 - **conway can now install a plugin from a Claude Code marketplace** —
   board item `01M0VR96Y87FF2BVNTBSC6GEYR`, the network-reaching half of the
@@ -608,6 +700,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the fix landed.
 
 ### Fixed
+
+- **`/resume` no longer drops a plugin's status-contribution snapshot from
+  the status line** — board item `01M0XDEDBR5YDF71Q7ZRXYMT85`, the third
+  and final link in a chain three items closed one gap at a time: a plugin's
+  `status_contributions()` were collected and exposed on the facade
+  (pre-existing), then rendered (`01M0X1B7Z41J57N6YP2JFZ2AZW`), then
+  populated into `AppState` at TUI startup (`01M0XC1GF73Z9GTE7TN65TRW4A`) —
+  and each of those items correctly left `commands::execute`'s `Resume` arm
+  alone, which already hand-carried `plugin_commands`/`agent_names` (both
+  process-lifetime, `Conway`/binary-level values) across the `AppState::new`
+  reset a `/resume` performs, but never carried
+  `AppState::plugin_status_contributions`, the same shape. `/resume` now
+  carries it across too, proven end to end (not only asserted on the
+  struct): a real `App`, a real plugin contributing a status, resumed via a
+  real `App::submit("/resume <id>")`, still shows the contribution on the
+  actually-rendered status line afterward
+  (`crates/conway-cli/src/tui/app.rs::plugin_status_contribution_survives_resume`).
+  **Still a build-time snapshot, not a live view** — carrying it across
+  `/resume` does not change that; every doc describing the field
+  (`AppState::plugin_status_contributions`, `Conway::
+  plugin_status_contributions`, `app/startup.rs`'s own `App::new` wiring)
+  says so explicitly, and a genuinely live per-session poll remains a
+  separate, larger, deliberately unbuilt piece — a guard that dies
+  mid-session still reports whatever it held (typically nothing) at build
+  time, resumed session or not. **A fourth link surfaced while tracing this
+  one and is closed in the same change**: `apply_plugin_command_done`'s
+  `ForkSession`/`Checkout` arms (`/conway.history.rewind`,
+  `/conway.history.checkout`) reset `AppState` the identical way — their own
+  comments already said "mirrors `Resume`'s reset exactly" — and had the
+  identical gap; both now carry the snapshot across too, proven the same
+  end-to-end way
+  (`crates/conway-cli/src/tui/app/plugin_cmd.rs::plugin_status_contribution_survives_a_fork_session_outcome`).
 
 - **The `/` command palette now generates itself from the same command
   table `commands.rs` parses, instead of a hand-kept second listing** —

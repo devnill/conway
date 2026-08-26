@@ -51,9 +51,12 @@ each disclosed rather than silently assumed:
   nothing here widens any of them. `PluginManifest::required_host_caps` is the
   exception: the `tool.spec/1` wire answer now CARRIES it (board item
   `01M03VJXARFHSDAGHFXGCWKJTY` -- `WireManifest::required_host_caps`,
-  `#[serde(default)]`, unknown cap tags fail closed at parse), and the
-  `conway` builder consults it at registration to refuse a plugin whose
-  declared cap the host lacks. `PluginManifest::requires`/`optional` carry
+  `#[serde(default)]`; a MALFORMED cap tag fails closed at parse, but a
+  WELL-FORMED, previously-unknown one now parses -- `HostCapability` is an
+  open vocabulary, board item `01M0WWKA8K1E7JPK87J6RRQMZF` -- and is
+  refused instead at the host-capability gate below), and the `conway`
+  builder consults it at registration to refuse a plugin whose declared cap
+  the host lacks. `PluginManifest::requires`/`optional` carry
   the same way (board item `01M0XCD3P8S3VR0T1H0KNG5TMD` --
   `WireManifest::requires`/`optional`, both `#[serde(default)]`, name-only
   plugin-id lists): a subprocess plugin can declare a dependency on another

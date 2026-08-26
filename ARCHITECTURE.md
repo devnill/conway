@@ -227,6 +227,24 @@ Members today:
   tool it declares over `tools/list` attaches as an ordinary
   `conway::plugin::Tool`. A sibling transport to the subprocess host above,
   not a layering on it — the two speak different wire protocols.
+- **`crates/conway-plugin-idiom`** (`conway.idiom`) — prepends a short,
+  conway-specific instruction fragment near the front of a session's
+  assembled context, reaching every forked or spawned child too, not just
+  the root. What makes a bare interactive session, which otherwise sends no
+  system-prompt segment at all, carry any harness orientation.
+- **`crates/conway-plugin-claude`** — reads a Claude Code plugin directory
+  already on disk (no downloading) and translates what it can: its MCP
+  server declarations become real `conway_plugin_mcp::McpPluginSpec`
+  values, `commands/*.md` become real `Command` implementations, and
+  `hooks.json` rules map onto conway's own vocabulary where one exists —
+  everything it cannot use is reported by name, never silently dropped.
+- **`crates/conway-plugin-marketplace`** — fetches a Claude Code
+  marketplace's manifest and a chosen plugin's declared files over HTTP
+  into conway's own plugin store, then writes the same
+  `[plugins].claude_compat[]` entry `conway-plugin-claude` above already
+  reads — an installed marketplace plugin is, on disk and in
+  `settings.json`, indistinguishable from a directory the operator cloned
+  or typed the path to by hand.
 
 Compaction remains separate, later work — the sole member of this list not
 yet written; see `PHILOSOPHY.md` §6's own "Where the tree is today" note.
