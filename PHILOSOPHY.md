@@ -679,7 +679,7 @@ default. Dynamic routing, context compaction, memory, skills, MCP support. You
 get them by choosing them.
 
 > **Where the tree is today.** Dynamic routing, memory (`conway.memory`), and
-> skills (`conway.skills`) are all built and installable, as are eleven
+> skills (`conway.skills`) are all built and installable, as are nine
 > members this list does not name by capability — the provider adapters, a
 > session-rewind command, repeated-step detection (`conway.stepguard`, which
 > §6 below is about), the out-of-process subprocess plugin host,
@@ -691,18 +691,20 @@ get them by choosing them.
 > (`conway.trim` — omits tool call/result pairs older than a configurable
 > turn window), operator-chosen, renameable agent names
 > (`conway.names` — three commands over a small store the TUI reads
-> directly), a prepended instruction fragment (`conway.idiom` — what makes a
-> bare interactive session carry any harness orientation at all), a reader
-> for a Claude Code plugin directory already on disk (`conway-plugin-claude`
-> — read-at-runtime, no downloading, everything it cannot translate reported
-> by name rather than silently dropped), and installing a plugin from a
-> marketplace instead of pointing at a directory by hand
-> (`conway-plugin-marketplace` — fetches over HTTP into the same plugin
-> store the reader above already uses). MCP
-> support is built too, but does not name a plugin id the way the others
-> do: an operator lists an external MCP server under `[plugins].mcp` and its
-> tools attach directly, the same shape as the subprocess host one line
-> over. Compaction is the one member of this list not written yet.
+> directly), and a prepended instruction fragment (`conway.idiom` — what
+> makes a bare interactive session carry any harness orientation at all).
+> Three more things are built but do not name a plugin id the way those
+> do. MCP support: an operator lists an external MCP server under
+> `[plugins].mcp` and its tools attach directly, the same shape as the
+> subprocess host one line over. Reading a Claude Code plugin directory
+> already on disk (`conway-plugin-claude` — read-at-runtime, no
+> downloading, everything it cannot translate reported by name rather than
+> silently dropped) and installing a plugin from a marketplace instead of
+> pointing at a directory by hand (`conway-plugin-marketplace` — fetches
+> over HTTP into the same plugin store the reader above already uses) are
+> both libraries the CLI consumes rather than plugins an operator installs;
+> the plugins they produce are the ordinary kind. Compaction is the one
+> member of this list not written yet.
 
 This tier is permanent rather than a staging area for things on their way into
 the core, for three reasons.
