@@ -32,6 +32,7 @@ a summary pointing somewhere else.
 | [`scripts.md`](scripts.md) — the script convention | How would a hook fire a script in any language, and what does that cost per invocation? | You want a hook in something other than Rust. **Describes a designed convention; no script-dispatching plugin exists yet.** |
 | [`inference-hooks.md`](inference-hooks.md) — hooks judged by a model | When should a hook call an LLM rather than express a static rule, and do I fork or spawn? | You're weighing an inference-evaluated hook. Read its "when NOT to use one" section first. |
 | [`permission-modes.md`](permission-modes.md) — plugin-declared permission modes | How does a plugin name its own mode (like `AutoAllow` filtered by a classifier) without a fourth core enum variant, why can it never be more permissive than the base it names, and what happens when its plugin is uninstalled mid-session? | You're weighing an inference-gated auto mode and want the "this is not a safer mode" framing before anything else, or you're evaluating what a declared mode can and cannot widen. **Data model and cycle logic are built and tested; the startup wiring that drives Shift+Tab through a real plugin's declared modes is not yet built.** |
+| [`statusline.md`](statusline.md) — `conway.statusline` | How do I show a shell command's output on the status line, since conway's own status line is a closed vocabulary? How often does it actually spawn, and what does a slow or failing command do to the UI? | You are migrating a Claude Code `statusLine.command`, or evaluating what naming a command in `[plugins].statusline` actually trusts and costs. |
 | [`cookbook.md`](cookbook.md) — worked examples | What does a real hook look like end to end — spilling bulky output to a file, compaction, a permission guardrail, progressive skill disclosure, a status-line observer? | You learn faster from a worked example than from a contract. Five examples, each labeled implementable-today, partially-implementable, or blocked, with two treated explicitly as the architecture's own acceptance tests. |
 
 ## Start here: a working hook, honestly scoped
@@ -160,6 +161,20 @@ with a one-line `settings.json` edit and no rebuild:
   point at instead of a description of one. Listed here for completeness
   against `bundle()`, not as a capability to install. See
   `conway-plugin-skeleton`'s own crate-level doc.
+
+## A status-line command — first-party, but not a `[plugins].install` id either
+
+[`statusline.md`](statusline.md) — runs an operator-configured command on a
+bounded refresh cadence (floored at one spawn per second regardless of
+configuration) and pushes its output as a `PluginStatusContribution` shown
+on the status line. The migration home for a Claude Code
+`statusLine.command`, which conway's own closed status-line vocabulary
+cannot express. Deliberately excluded from the "ten shipped first-party
+plugins" count above: it attaches through its own `[plugins].statusline`
+config surface, resolved by `crates/conway-cli/src/statusline_plugin.rs`,
+a fifth choke point alongside the MCP/Claude-compat/marketplace ones in
+this section — naming a command there is already the complete opt-in
+signal, the same shape those three already have.
 
 ## The MCP client — first-party, but not a `[plugins].install` id
 

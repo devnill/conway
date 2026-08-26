@@ -16,7 +16,7 @@ use conway_cli::cli::{Cli, Command};
 use conway_cli::exit::ExitCode;
 use conway_cli::{
     claude_compat_plugins, commands, diag, first_party_plugins, mcp_plugins, oneshot,
-    subprocess_plugins, tui,
+    statusline_plugin, subprocess_plugins, tui,
 };
 
 #[tokio::main]
@@ -285,6 +285,15 @@ async fn build_conway(
     // reason `mcp_plugins::install` is -- discovering a translated MCP
     // server spawns a real process.
     let builder = claude_compat_plugins::install(builder).await?;
+    // The status-line plugin tier (board item 01M0X500861X9035QJEA82F94K):
+    // a FIFTH, sibling choke point -- see `statusline_plugin`'s own module
+    // doc for why this is distinct from every tier above (no handshake, so
+    // synchronous, unlike the three async siblings immediately above; no
+    // closed candidate set, unlike `first_party_plugins` -- naming a
+    // command in `[plugins].statusline.command` is already the complete
+    // opt-in signal). Not awaited: constructing the plugin starts its own
+    // background refresh loop but never itself blocks on a spawn.
+    let builder = statusline_plugin::install(builder);
     let conway = builder.build()?;
     Ok((conway, memory_store, agent_names))
 }

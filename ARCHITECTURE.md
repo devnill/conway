@@ -245,6 +245,14 @@ Members today:
   reads — an installed marketplace plugin is, on disk and in
   `settings.json`, indistinguishable from a directory the operator cloned
   or typed the path to by hand.
+- **`crates/conway-plugin-statusline`** (`conway.statusline`) — runs an
+  operator-configured command on a refresh cadence floored at one spawn
+  per second and pushes its output as a `PluginStatusContribution`, the
+  migration home for a Claude Code `statusLine.command`. Resolved by its
+  own choke point, `crates/conway-cli/src/statusline_plugin.rs`, alongside
+  `conway-plugin-subprocess`/`conway-plugin-mcp`/`conway-plugin-claude`
+  rather than through `first_party_plugins::bundle()`'s
+  `[plugins].install` list — see `docs/plugins/statusline.md`.
 
 Compaction remains separate, later work — the sole member of this list not
 yet written; see `PHILOSOPHY.md` §6's own "Where the tree is today" note.
