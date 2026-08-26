@@ -267,6 +267,32 @@ pub struct PluginBrowserEntry {
     pub description: conway::plugin::PluginDescription,
 }
 
+/// V2c: one plugin-declared permission mode as the TUI display layer sees
+/// it -- board item `01M0X4YDNVP7TZ0PVSRJ0388SS`,
+/// `docs/plugins/permission-modes.md`.
+///
+/// **A deliberately narrower mirror, not a re-export.** The real type is
+/// `conway_runtime::permission_mode::ModeCycleEntry::Declared`, and the
+/// real cycle-order/collision/uninstall-reconciliation algorithm that
+/// consumes it is `conway_runtime::permission_mode::ModeCycle` -- ONE
+/// implementation, per steering P-14. `conway-cli` depends only on the
+/// `conway` facade crate (`Cargo.toml`), which does not yet re-export
+/// `conway_runtime::permission_mode`; wiring that re-export, gathering
+/// every installed plugin's declared modes at startup, and threading the
+/// result into `AppState::declared_modes` below is `crates/conway/src/*`
+/// facade work outside this item's file-ownership fence for this batch --
+/// see this item's own completion report for the named follow-up. This
+/// struct exists so the DATA SHAPE the TUI will eventually mirror is
+/// already in place, matching `PluginBrowserEntry`'s own precedent
+/// immediately above (a display mirror populated before this item, wired
+/// to a real build by a later one).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeclaredModeMirror {
+    pub plugin_id: String,
+    pub name: String,
+    pub base: PermissionMode,
+}
+
 /// The TUI's whole render model. Every mutation goes through [`Self::apply`]
 /// (event-driven) or the app loop's direct field writes for input-driven
 /// state (`input`, `mode`, `scroll`) -- see `input.rs`/`app.rs`.
@@ -304,6 +330,30 @@ pub struct AppState {
     /// disagree the broker wins, and the visible consequence is a stale
     /// label -- which is why `/settings` writes both together.
     pub permission_mode: PermissionMode,
+    /// V2c: every plugin-declared mode currently installed, mirrored the
+    /// same way [`Self::permission_mode`] above is -- see
+    /// [`DeclaredModeMirror`]'s own doc for why this stays a NARROW display
+    /// mirror rather than a re-exported `conway_runtime::permission_mode`
+    /// type, and for the wiring this item leaves as a follow-up. Empty
+    /// (the default, and the ONLY value any build produces today) cycles
+    /// `Action::CyclePermissionMode` through the three core modes exactly
+    /// as it always has -- byte-identical to a build with no mode-
+    /// declaring plugin installed.
+    pub declared_modes: Vec<DeclaredModeMirror>,
+    /// V2c: which entry of [`Self::declared_modes`] (if any) is the
+    /// CURRENTLY SELECTED one -- `(plugin_id, name)`, matching a
+    /// `DeclaredModeMirror`'s own two identifying fields. `None` means the
+    /// operator is in a plain core mode, which is also this field's ONLY
+    /// possible value until the facade wiring named on
+    /// [`DeclaredModeMirror`]'s own doc lands: nothing in this crate
+    /// writes it to `Some` yet. Modeled as `Option<(String, String)>`
+    /// rather than `Option<DeclaredModeMirror>` deliberately: identity (
+    /// which mode is selected) and the mode's own data (its `base`) are
+    /// separate questions -- the SAME distinction
+    /// `conway_runtime::permission_mode::DeclaredModeRef` draws one layer
+    /// down, so an uninstalled plugin's stale entry can be recognized by
+    /// identity without needing its (now possibly gone) `base` to compare.
+    pub active_declared_mode: Option<(String, String)>,
     /// V2b: where a newly-granted pattern is persisted, in precedence
     /// order (project first, then global). Resolved once at `App::new`.
     /// Empty when neither scope resolves, in which case a grant applies
@@ -975,6 +1025,8 @@ impl AppState {
             cursor: 0,
             mode: Mode::Normal,
             permission_mode: PermissionMode::default(),
+            declared_modes: Vec::new(),
+            active_declared_mode: None,
             permission_paths: Vec::new(),
             permission_grants: Vec::new(),
             structured_allow_rules: Vec::new(),
