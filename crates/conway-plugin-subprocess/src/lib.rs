@@ -920,7 +920,7 @@ impl SubprocessPlugin {
     /// path built alongside it (see `WireManifest::provides`'s own doc for
     /// the full argument).
     ///
-    /// One [`SubprocessCapabilityProvider`] per declared name, each
+    /// One `SubprocessCapabilityProvider` per declared name, each
     /// forwarding over THIS plugin's own transport -- the persistent
     /// session when one exists, otherwise a fresh one-shot spawn per call
     /// (the identical one-shot-vs-persistent dispatch

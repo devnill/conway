@@ -378,7 +378,7 @@ pub struct WireManifest {
     /// `namespace.name`) parses, `Named` included. One vocabulary, one
     /// boundary, for all three fields on this struct -- the guard rail this
     /// item's own spec states explicitly ("`provides` must not take a
-    /// different [boundary] from `required_host_caps` in the same
+    /// different boundary from `required_host_caps` in the same
     /// struct").**
     ///
     /// **Does NOT map into [`conway::plugin::PluginManifest`] -- unlike every

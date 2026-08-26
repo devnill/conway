@@ -23,9 +23,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use conway::plugin::{
-    CapabilityCallError, CapabilityProvider, ContentBlock, HostCapability, PermissionClass, Plugin,
-    PluginManifest, Tool, ToolCall, ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput,
-    ToolSpec, TruncationPolicy,
+    CapabilityCallError, ContentBlock, HostCapability, PermissionClass, Plugin, PluginManifest,
+    Tool, ToolCall, ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec,
+    TruncationPolicy,
 };
 use conway::test_support::{scripted_backend, test_builder};
 use conway::Conway;

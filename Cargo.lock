@@ -560,6 +560,7 @@ dependencies = [
  "conway-plugin-routing",
  "conway-plugin-skeleton",
  "conway-plugin-skills",
+ "conway-plugin-statusline",
  "conway-plugin-stepguard",
  "conway-plugin-subprocess",
  "conway-plugin-trim",
@@ -799,6 +800,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "conway-plugin-statusline"
+version = "0.9.0"
+dependencies = [
+ "conway",
+ "conway-core",
+ "conway-testkit",
  "tokio",
 ]
 
