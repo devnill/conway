@@ -229,10 +229,22 @@ pub struct ClaudeCompatPluginEntry {
     /// -- the only kind acceptance 2 requires to actually run; each one is
     /// installed as a real plugin by `claude_compat_plugins::install`.
     pub mcp_server_count: usize,
-    /// How many `hooks/hooks.json` rules had a same-named conway event --
-    /// informational only (`conway_plugin_claude::hooks`'s own doc: not a
-    /// claim that the rule is wired to run).
+    /// How many `hooks/hooks.json` rules had a same-named conway event.
+    ///
+    /// **Not informational-only any more.** Before board item
+    /// `01M0XBZNBPXEESX8VNTJDKNG0J`, this really was "mapped by name" with
+    /// no claim about dispatch; that item made `claude_compat_plugins::
+    /// install` append every one of these as a real `[hooks].rules[]`
+    /// entry into the SAME `ConwayBuilder` this session runs, so a mapped
+    /// hook here dispatches for real -- see [`Self::deny_capable_hook_count`]
+    /// for the split an operator needs to know WHAT that means.
     pub mapped_hook_count: usize,
+    /// How many of [`Self::mapped_hook_count`] are deny-capable
+    /// (`conway::DENY_CAPABLE_EVENTS`) rather than observation-only --
+    /// board item `01M0XRD8VMWD273W0W51T8ECCM`, acceptance 4: this row must
+    /// distinguish "can refuse a tool call or a submitted prompt" from
+    /// "can only watch." Always `<= mapped_hook_count`.
+    pub deny_capable_hook_count: usize,
     /// Every unmapped hook's own Claude Code event name.
     pub unmapped_hook_names: Vec<String>,
     /// Every other unusable thing this directory named, by its own

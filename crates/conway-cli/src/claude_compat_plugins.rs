@@ -55,19 +55,26 @@
 //!
 //! **Guard rail, deliberate: deny-capable hooks are called out, by name, on
 //! stderr -- distinct from observation-only ones, and unconditionally.** A
-//! translated `pre_tool_use` rule is a real permission consequence of
-//! naming a directory in `settings.json`: it can deny a real tool call, the
-//! identical authority an operator-authored `[hooks].rules[]` entry already
-//! has. `install` reports that distinction itself, via
-//! `conway_cli::diag::warn` (unconditional stderr, "reserve this for
-//! something an operator would act on" -- that function's own doc) for
-//! every `pre_tool_use` registration, and `diag::info` (verbose-only,
+//! translated `pre_tool_use` OR `prompt_submitted` rule is a real
+//! permission consequence of naming a directory in `settings.json`: the
+//! former can deny a real tool call, the latter can deny every prompt the
+//! operator types (`conway_runtime::hook_dispatch::PROMPT_SUBMITTED`,
+//! dispatched via `HookDispatcher::dispatch_deny_only`) -- the identical
+//! authority an operator-authored `[hooks].rules[]` entry already has.
+//! `install` reports that distinction itself, via `conway_cli::diag::warn`
+//! (unconditional stderr, "reserve this for something an operator would
+//! act on" -- that function's own doc) for every registration whose event
+//! is in [`conway::DENY_CAPABLE_EVENTS`], and `diag::info` (verbose-only,
 //! routine progress) for every other, observation-only one -- never one
-//! undifferentiated "hooks registered" line. Both calls happen inside
-//! `build_conway`, before the TUI ever puts the terminal into raw/alternate-
-//! screen mode (`main.rs`'s own comment on why a stray stderr write after
-//! that point lands on top of the drawn UI), so this reaches the operator's
-//! real scrollback on every dispatch target, TUI included.
+//! undifferentiated "hooks registered" line, and never a second,
+//! independently-drifting classification of which events those are (see
+//! `report_hook_registrations`'s own doc: board item
+//! `01M0XRD8VMWD273W0W51T8ECCM` fixed exactly that drift once already).
+//! Both calls happen inside `build_conway`, before the TUI ever puts the
+//! terminal into raw/alternate-screen mode (`main.rs`'s own comment on why
+//! a stray stderr write after that point lands on top of the drawn UI), so
+//! this reaches the operator's real scrollback on every dispatch target,
+//! TUI included.
 //!
 //! **The payload-shape caveat this module does not, and must not, weaken.**
 //! `conway_plugin_claude::hooks`'s own module doc states it in full:
@@ -124,19 +131,11 @@ use std::sync::Arc;
 
 use conway::config::schema::{ConwayConfig, HookEntry};
 use conway::plugin::{Command, Plugin, PluginManifest, Tool};
-use conway::{ConwayBuilder, FacadeError};
+use conway::{ConwayBuilder, FacadeError, DENY_CAPABLE_EVENTS};
 use conway_plugin_claude::HookRegistration;
 use conway_plugin_mcp::McpPlugin;
 
 use crate::diag;
-
-/// The one conway core event a translated registration can carry that is
-/// ever consulted at `PermissionBroker::decide`'s DENY tier -- mirrors
-/// `ConwayBuilder::build`'s own `rule.event == "pre_tool_use"` filter
-/// (`crates/conway/src/builder.rs`) exactly, so this module's own
-/// deny-capable/observation-only split can never drift from what `build()`
-/// actually treats as consequential.
-const DENY_CAPABLE_EVENT: &str = "pre_tool_use";
 
 /// Converts one translated [`HookRegistration`] into a real, appendable
 /// `conway::config::schema::HookEntry` -- field for field, per
@@ -157,26 +156,32 @@ fn to_hook_entry(registration: HookRegistration) -> HookEntry {
 }
 
 /// Reports, on stderr, which of `registrations` -- all already known to
-/// belong to `entry_id` -- can deny a real tool call and which are
-/// observation-only, per this module's own "distinguish, don't just say
-/// 'hooks registered'" guard rail. A true no-op when `registrations` is
-/// empty (neither call below ever fires).
+/// belong to `entry_id` -- can deny a real tool call or a submitted
+/// prompt, and which are observation-only, per this module's own
+/// "distinguish, don't just say 'hooks registered'" guard rail.
+///
+/// **Classifies against [`conway::DENY_CAPABLE_EVENTS`], not a
+/// re-declared list of its own** (board item `01M0XRD8VMWD273W0W51T8ECCM`):
+/// this module used to hardcode a single-event `DENY_CAPABLE_EVENT =
+/// "pre_tool_use"` constant, silently missing `prompt_submitted` --
+/// conway's OTHER deny-capable, fail-closed event
+/// (`conway_runtime::hook_dispatch::PROMPT_SUBMITTED`, dispatched via
+/// `HookDispatcher::dispatch_deny_only`). A translated `UserPromptSubmit`
+/// rule went unreported, on the unconditional channel, as a result. See
+/// [`conway::DENY_CAPABLE_EVENTS`]'s own doc for why that constant, not a
+/// second copy of the pair, is what every consumer of "is this event
+/// deny-capable" should read from now.
+///
+/// A true no-op when `registrations` is empty (neither call below ever
+/// fires).
 fn report_hook_registrations(entry_id: &str, registrations: &[HookRegistration]) {
-    let deny_capable: Vec<&str> = registrations
-        .iter()
-        .filter(|r| r.event == DENY_CAPABLE_EVENT)
-        .map(|r| r.id.as_str())
-        .collect();
-    let observation_only: Vec<&str> = registrations
-        .iter()
-        .filter(|r| r.event != DENY_CAPABLE_EVENT)
-        .map(|r| r.id.as_str())
-        .collect();
+    let (deny_capable, observation_only) = classify_hook_registrations(registrations);
     if !deny_capable.is_empty() {
         diag::warn(format!(
             "[plugins].claude_compat entry '{entry_id}' registered {} hook(s) that CAN DENY a \
-             real tool call ({DENY_CAPABLE_EVENT}): {}",
+             real tool call or a submitted prompt ({}): {}",
             deny_capable.len(),
+            DENY_CAPABLE_EVENTS.join(", "),
             deny_capable.join(", ")
         ));
     }
@@ -188,6 +193,28 @@ fn report_hook_registrations(entry_id: &str, registrations: &[HookRegistration])
             observation_only.join(", ")
         ));
     }
+}
+
+/// The pure split [`report_hook_registrations`] reports on -- pulled out
+/// so the classification itself (which bucket a translated event lands in,
+/// and therefore which channel, unconditional `diag::warn` or
+/// verbose-gated `diag::info`, it reaches) is checkable directly, without
+/// capturing real stderr. Order-preserving within each bucket; every id in
+/// `registrations` appears in exactly one of the two returned lists.
+fn classify_hook_registrations<'a>(
+    registrations: &'a [HookRegistration],
+) -> (Vec<&'a str>, Vec<&'a str>) {
+    let deny_capable = registrations
+        .iter()
+        .filter(|r| DENY_CAPABLE_EVENTS.contains(&r.event))
+        .map(|r| r.id.as_str())
+        .collect();
+    let observation_only = registrations
+        .iter()
+        .filter(|r| !DENY_CAPABLE_EVENTS.contains(&r.event))
+        .map(|r| r.id.as_str())
+        .collect();
+    (deny_capable, observation_only)
 }
 
 /// Discovers and attaches every `[plugins].claude_compat[]` entry's own
@@ -816,5 +843,133 @@ mod tests {
         let ids: Vec<String> = plugins.iter().map(|p| p.manifest().id).collect();
         assert!(ids.contains(&"entry-a".to_string()));
         assert!(ids.contains(&"entry-b".to_string()));
+    }
+    // ---- deny-capable classification (board item `01M0XRD8VMWD273W0W51T8ECCM`) ----
+
+    /// **The regression this item exists to close.** Before this item,
+    /// `report_hook_registrations` classified only `pre_tool_use` as
+    /// deny-capable -- a translated `UserPromptSubmit` rule (mapped to
+    /// `prompt_submitted`, `conway_plugin_claude::hooks`'s own `EVENT_MAP`)
+    /// landed in the OBSERVATION-only bucket, which only ever reaches
+    /// `diag::info` (suppressed at default verbosity, `crate::diag::info`'s
+    /// own doc) -- even though `prompt_submitted` can deny every prompt the
+    /// operator types (`conway_runtime::hook_dispatch::PROMPT_SUBMITTED`,
+    /// dispatched via `HookDispatcher::dispatch_deny_only`,
+    /// `runtime.rs:984`). `classify_hook_registrations` is the exact split
+    /// `report_hook_registrations` feeds into `diag::warn` (unconditional)
+    /// vs `diag::info` (gated) -- landing here, in the FIRST list, is what
+    /// "reaches the unconditional channel" means for this function; there is
+    /// no stderr to capture beyond that split, `diag::warn`/`diag::info`'s
+    /// own gating is exercised by `diag`'s own tests, not re-tested here.
+    #[test]
+    fn a_translated_user_prompt_submit_registration_reaches_the_unconditional_channel() {
+        let registrations = vec![HookRegistration {
+            id: "claude_compat:acme-tools:prompt_submitted:0".to_string(),
+            event: "prompt_submitted",
+            match_tool: None,
+            command: vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo hi".to_string(),
+            ],
+            timeout_ms: 5_000,
+            enabled: true,
+        }];
+        let (deny_capable, observation_only) = classify_hook_registrations(&registrations);
+        assert_eq!(
+            deny_capable,
+            vec!["claude_compat:acme-tools:prompt_submitted:0"],
+            "a translated prompt_submitted rule must be classified deny-capable, not \
+             observation-only"
+        );
+        assert!(
+            observation_only.is_empty(),
+            "must not also appear in the gated bucket: {observation_only:?}"
+        );
+    }
+
+    /// Regression, the other direction: `pre_tool_use` must still classify
+    /// deny-capable after this item widened the set from one event to two --
+    /// `conway::DENY_CAPABLE_EVENTS` replacing the old single-event constant
+    /// must not silently drop the event that constant already covered.
+    #[test]
+    fn a_translated_pre_tool_use_registration_still_reaches_the_unconditional_channel() {
+        let registrations = vec![HookRegistration {
+            id: "claude_compat:acme-tools:pre_tool_use:0".to_string(),
+            event: "pre_tool_use",
+            match_tool: Some("Bash".to_string()),
+            command: vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo hi".to_string(),
+            ],
+            timeout_ms: 5_000,
+            enabled: true,
+        }];
+        let (deny_capable, observation_only) = classify_hook_registrations(&registrations);
+        assert_eq!(
+            deny_capable,
+            vec!["claude_compat:acme-tools:pre_tool_use:0"]
+        );
+        assert!(observation_only.is_empty());
+    }
+
+    /// An observation-only event (`session_starting`) is classified into
+    /// the gated bucket, never the unconditional one -- the distinction
+    /// `report_hook_registrations`'s own doc promises, checked directly
+    /// rather than only asserted in prose.
+    #[test]
+    fn a_translated_session_starting_registration_is_observation_only() {
+        let registrations = vec![HookRegistration {
+            id: "claude_compat:acme-tools:session_starting:0".to_string(),
+            event: "session_starting",
+            match_tool: None,
+            command: vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo hi".to_string(),
+            ],
+            timeout_ms: 5_000,
+            enabled: true,
+        }];
+        let (deny_capable, observation_only) = classify_hook_registrations(&registrations);
+        assert!(deny_capable.is_empty());
+        assert_eq!(
+            observation_only,
+            vec!["claude_compat:acme-tools:session_starting:0"]
+        );
+    }
+
+    /// **End-to-end wiring proof, mirroring
+    /// `a_mapped_pre_tool_use_hook_is_appended_as_a_dispatchable_rule`
+    /// exactly**: a `UserPromptSubmit` rule in a directory's own
+    /// `hooks/hooks.json` is translated to a real, dispatchable
+    /// `prompt_submitted` `[hooks].rules[]` entry -- the SAME event
+    /// `HookDispatcher::dispatch_deny_only` (`runtime.rs:984`) consults for
+    /// every submitted prompt. Before this item, this exact shape had zero
+    /// coverage in this module (spec's own
+    /// `grep -c "UserPromptSubmit\|prompt_submitted"` check).
+    #[tokio::test]
+    async fn a_mapped_user_prompt_submit_hook_is_appended_as_a_dispatchable_rule() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_hooks_json(
+            dir.path(),
+            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo prompt"}]}]}}"#,
+        );
+        let builder = ConwayBuilder::from_parts(config_with_claude_compat_entry(dir.path()));
+        let builder = install(builder).await.expect("install must succeed");
+
+        let rules = &builder.config().hooks.rules;
+        assert_eq!(rules.len(), 1, "exactly one mapped rule: {rules:?}");
+        let rule = &rules[0];
+        assert_eq!(rule.event, "prompt_submitted");
+        assert!(rule.command[2].contains("echo prompt"));
+        assert!(rule.enabled);
+        assert_eq!(
+            rule.on_failure,
+            HookOnFailure::Deny,
+            "a translated prompt_submitted rule must default to Deny too, the same fail-closed \
+             posture every other translated rule gets"
+        );
     }
 }

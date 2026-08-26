@@ -50,7 +50,7 @@ mod subagent_spec;
 
 pub use builder::{ConwayBuilder, PluginSelection};
 pub use config::trust::TrustStatus;
-pub use conway::{Conway, HookRuleView};
+pub use conway::{Conway, HookRuleView, DENY_CAPABLE_EVENTS};
 pub use error::{FacadeError, Result};
 pub use event_stream::EventStream;
 pub use host_caps::HostCaps;
