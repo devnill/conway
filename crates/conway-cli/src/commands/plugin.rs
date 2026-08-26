@@ -87,7 +87,7 @@ pub async fn run(
     };
     let rest = args[1..].join(" ");
 
-    let plugins = first_party_plugins::installed_plugins(conway, memory_store, agent_names, env);
+    let plugins = first_party_plugins::installed_plugins(conway, memory_store, agent_names, env)?;
     let registry = match CommandRegistry::build(&plugins) {
         Ok(registry) => registry,
         Err(e) => {

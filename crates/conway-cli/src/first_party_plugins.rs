@@ -714,20 +714,46 @@ pub async fn install(
 /// `cwd` survives onto `ConwayConfig`), so this is NOT already in reach
 /// through `conway` alone -- every caller threads its own resolved-once map
 /// through instead of re-deriving one here.
+///
+/// **Also folds in every `[plugins].claude_compat[]` entry's own translated
+/// `commands/*.md` files** (board item `01M0XRCAFD7DD7N64RNRM3P8W9`), via
+/// [`crate::claude_compat_plugins::command_plugins`] -- the SAME
+/// re-derive-from-`conway.config()` shape this function already uses for
+/// the first-party bundle, applied to a second source feeding the identical
+/// list. This is deliberately NOT read from `bundle` (a closed, first-party-
+/// crate candidate set that a foreign, directory-read translation has no
+/// business joining) and deliberately NOT filtered by `[plugins].install`
+/// (that field names first-party PLUGIN ids; a `[plugins].claude_compat[]`
+/// entry's own presence in ITS OWN list is already the operator's opt-in,
+/// exactly like `[plugins].mcp[]`/`[plugins].subprocess[]` need no SECOND
+/// enable list). See `claude_compat_plugins`'s own module doc ("the command
+/// half is reachable now too") for why this, not `install`'s own
+/// `ConwayBuilder`-attaching loop, is the seam that makes a translated
+/// command reachable at all.
+///
+/// Now fallible: a `[plugins].claude_compat[]` entry whose directory no
+/// longer resolves (checked once already, by `install`, at
+/// `ConwayBuilder::build` time -- since-startup drift only) fails this call
+/// the same way it would fail `install` itself, rather than silently
+/// serving a caller a plugin list missing that entry's commands.
 pub fn installed_plugins(
     conway: &conway::Conway,
     memory_store: Arc<dyn MemoryStore>,
     agent_names: Arc<dyn AgentNames>,
     env: &HashMap<String, String>,
-) -> Vec<Arc<dyn Plugin>> {
+) -> conway::Result<Vec<Arc<dyn Plugin>>> {
     let install = &conway.config().plugins.install;
     let cwd = conway.config().cwd.clone();
     let idiom_plugin = resolve_idiom_plugin(&cwd, env)
         .unwrap_or_else(|_| Arc::new(conway_plugin_idiom::IdiomPlugin::new()) as Arc<dyn Plugin>);
-    bundle(&cwd, memory_store, agent_names, idiom_plugin)
+    let mut plugins: Vec<Arc<dyn Plugin>> = bundle(&cwd, memory_store, agent_names, idiom_plugin)
         .into_iter()
         .filter(|plugin| install.contains(&plugin.manifest().id))
-        .collect()
+        .collect();
+    plugins.extend(crate::claude_compat_plugins::command_plugins(
+        conway.config(),
+    )?);
+    Ok(plugins)
 }
 
 /// `install` itself is covered end-to-end in `tests/first_party_plugins.rs`,

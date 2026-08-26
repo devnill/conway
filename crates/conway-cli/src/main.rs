@@ -338,7 +338,7 @@ async fn dispatch(
                 memory_store,
                 agent_names.clone(),
                 env,
-            );
+            )?;
             tui::run(cli, conway, gate_rx, &plugins, agent_names).await
         }
     }
