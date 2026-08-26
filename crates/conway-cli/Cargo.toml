@@ -176,6 +176,18 @@ conway-plugin-trim = { path = "../conway-plugin-trim" }
 # already-existing dependency edge is what makes naming it here legal. See
 # `crates/conway-plugin-names/src/lib.rs`'s module doc.
 conway-plugin-names = { path = "../conway-plugin-names" }
+# Board item 01M0X500861X9035QJEA82F94K: `conway.statusline`, a plugin that
+# runs an operator-configured command on a bounded refresh cadence and
+# pushes its output as a `PluginStatusContribution` -- the migration home
+# for a Claude Code `statusLine.command`. Resolved through its own choke
+# point, `src/statusline_plugin.rs`, a FIFTH sibling to
+# `subprocess_plugins`/`mcp_plugins`/`claude_compat_plugins` (see that
+# module's own doc for why: naming a command in `[tui.status_line_command]` is
+# already the complete opt-in signal, the identical shape those three
+# already have, rather than the closed-candidate-set-plus-`[plugins].install`
+# shape `first_party_plugins::bundle()`'s ten entries use) -- NOT installed
+# via `[plugins].install` at all.
+conway-plugin-statusline = { path = "../conway-plugin-statusline" }
 clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }

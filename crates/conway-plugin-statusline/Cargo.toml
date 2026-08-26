@@ -1,0 +1,49 @@
+[package]
+name = "conway-plugin-statusline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin (board item 01M0X500861X9035QJEA82F94K): runs an operator-configured command on a bounded refresh interval and pushes its stdout as a PluginStatusContribution -- the migration home for a Claude Code `statusLine.command`, and the second consumer of the status-contribution seam"
+
+# Versioned WITH the workspace, the same footing every other first-party
+# plugin crate's own Cargo.toml doc comment establishes -- see
+# `conway-plugin-skeleton`'s own comment for the full argument (this tier
+# carries none of `conway-core`'s strict-semver discipline; it is just
+# another consumer of the public `conway`/`conway::plugin` surface).
+
+[dependencies]
+# The ONLY workspace crate this plugin depends on -- the public facade, the
+# exact `conway::plugin` surface a third-party plugin author gets (GP-03/
+# P-6), the identical choice `conway-plugin-skeleton`/`conway-plugin-
+# subprocess` already make. This crate reaches no privileged API: a
+# genuinely third-party status-line plugin author would write the identical
+# code against this same surface.
+conway = { path = "../conway" }
+# Runs the operator-configured command (`tokio::process::Command`) on a
+# background task (`tokio::spawn`) that sleeps between runs
+# (`tokio::time::sleep`) and bounds a single run with `tokio::time::timeout`
+# -- the same feature set `conway-plugin-subprocess` already pulls in for an
+# almost identical job (spawn an operator-named command, bound it with a
+# timeout). No `sync`/`io-util`: this crate never needs a channel (a single
+# `std::sync::Mutex`-guarded cell is enough for a "latest value" cache) and
+# never reads a child's stdout incrementally (`Command::output`/
+# `wait_with_output` already buffers it whole).
+tokio = { workspace = true, features = ["process", "time", "rt", "macros"] }
+
+[dev-dependencies]
+# Board item 01M0TV8MSFRHHQ5BNZV3NHZCEW: this crate's own end-to-end test
+# reaches `conway::test_support` (the shared `build_conway`/`test_builder`
+# wiring), behind the facade's off-by-default `test-support` feature.
+# Dev-only: nothing in `src/` may name it.
+conway = { path = "../conway", features = ["test-support"] }
+# Test-only: builds a real, in-memory `Conway` (fake backend/store/gate/
+# router) to drive this plugin's `status_contributions()` through
+# `ConwayBuilder::build`'s own real snapshot-collection code path -- the
+# same precedent `conway-plugin-skeleton`'s own
+# `tests/skeleton_end_to_end.rs` established for exercising a plugin
+# through the real facade with zero network.
+conway-core = { path = "../conway-core" }
+conway-testkit = { path = "../conway-testkit" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "process", "test-util"] }

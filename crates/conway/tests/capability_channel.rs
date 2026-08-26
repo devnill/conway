@@ -109,6 +109,13 @@ fn base_config() -> ConwayConfig {
             subprocess: vec![],
             mcp: vec![],
             claude_compat: vec![],
+            // Board item 01M0X500861X9035QJEA82F94K: `PluginsConfig` grew
+            // this field after this literal was written -- `..Default::
+            // default()` is deliberately not used here (this literal
+            // predates that field and every field above it was already
+            // spelled out explicitly), so the new field is spelled out too
+            // rather than silently inheriting a default this test never
+            // chose.
         },
         hooks: HooksConfig::default(),
     }

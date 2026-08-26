@@ -30,5 +30,6 @@ pub mod render;
 pub mod session_names;
 pub mod session_ref;
 pub mod signal;
+pub mod statusline_plugin;
 pub mod subprocess_plugins;
 pub mod tui;

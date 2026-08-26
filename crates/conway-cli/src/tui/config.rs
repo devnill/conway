@@ -60,6 +60,39 @@ pub struct TuiSection {
     /// full field list.
     #[serde(default)]
     pub status_line: StatusLineConfig,
+    /// `[tui.status_line_command]` (board item
+    /// `01M0X500861X9035QJEA82F94K`): an operator-configured command whose
+    /// stdout becomes a status-line entry, via `conway.statusline` -- the
+    /// migration home for a Claude Code `statusLine.type`/
+    /// `statusLine.command` pair, which [`StatusLineConfig`]'s own closed
+    /// ten-name vocabulary cannot express by design.
+    ///
+    /// **It lives HERE, and not in `conway`'s `[plugins]` section, because
+    /// an architecture invariant says so and caught it.** It shipped in
+    /// `conway::config::schema::PluginsConfig` first, and
+    /// `crates/conway/tests/architecture_invariants.rs`'s T7 rejected it:
+    /// the facade's config schema must not name a presentation-shaped
+    /// type, so a headless host never parses terminal vocabulary it can
+    /// never render. A status line is presentation by definition. This
+    /// module is exactly where Stage 2a put every other such slot.
+    ///
+    /// **Off by construction when [`StatusLineCommandConfig::command`] is
+    /// empty** (its own [`Default`]):
+    /// `crates/conway-cli/src/statusline_plugin.rs::install` does not
+    /// attach the plugin at all in that case, so `conway.statusline`
+    /// linked into the binary with nothing written here is a true no-op --
+    /// zero process spawns, zero contributions.
+    ///
+    /// **Trust, stated here because this is the field that grants the
+    /// capability.** The command is code THIS process executes with the
+    /// operator's own privileges, on the identical footing
+    /// `[hooks].rules[].command` and `[plugins].subprocess[].command`
+    /// already have: no sandboxing, no digest check, the operator's own
+    /// review of what they typed is the only control point.
+    /// `docs/plugins/statusline.md` states this plainly for an operator
+    /// deciding whether to configure it.
+    #[serde(default)]
+    pub status_line_command: StatusLineCommandConfig,
     /// `[tui.tool_preview_lines]` (T5): the cap on collapsed tool-preview
     /// lines in the TUI transcript. A tool entry whose stored `preview` has
     /// more physical lines than this renders the first N lines + a dim
@@ -397,4 +430,90 @@ mod tests {
              after Stage 2a moved the type here"
         );
     }
+}
+
+/// `[tui.status_line_command]`: the single operator-configured
+/// status-line command -- see [`TuiSection::status_line_command`]'s own
+/// doc for the reachability and trust disclosure this field carries, and
+/// why it is a singular struct rather than a `Vec`.
+///
+/// **Deliberately mirrors `conway::config::schema::HookEntry`/`SubprocessPluginEntry`'s own
+/// shape** (`command` as an argv vector, a `timeout_ms` sharing the same
+/// default) rather than inventing a fourth "run this command" config
+/// vocabulary -- an operator who has already configured a `[hooks].rules[]`
+/// or `[plugins].subprocess[]` entry recognizes this shape on sight.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct StatusLineCommandConfig {
+    /// The command to run, argv-shaped (program, then its arguments) --
+    /// never a single shell string, the same shape and reasoning
+    /// `conway::config::schema::HookEntry::command`'s own doc gives. An operator migrating a
+    /// Claude Code `statusLine.command` shell one-liner wraps it
+    /// explicitly, e.g. `["sh", "-c", "git branch --show-current"]` --
+    /// `docs/plugins/statusline.md` states this conversion. **Empty (the
+    /// default) means "off"** -- see [`TuiSection::status_line_command`]'s own
+    /// doc for what that turns off.
+    pub command: Vec<String>,
+    /// The `PluginStatusContribution::key` this command's result is filed
+    /// under -- distinguishes this plugin's row from another
+    /// status-contributing plugin's on the rendered status line. Defaults
+    /// to `"statusline"` (`conway_plugin_statusline::DEFAULT_KEY`).
+    #[serde(default = "default_statusline_key")]
+    pub key: String,
+    /// Milliseconds between the end of one run and the start of the next.
+    /// Floored at `conway_plugin_statusline::MIN_REFRESH_INTERVAL_MS`
+    /// (1000ms) by the plugin itself regardless of what is written here --
+    /// this crate carries the wire value verbatim and does not enforce
+    /// the floor (the same "this crate carries the wire shape and does
+    /// nothing else with it" division of labor `[plugins].subprocess`'s
+    /// own doc states), so a value below the floor round-trips through
+    /// config faithfully but never actually produces a faster cadence.
+    /// Defaults to `conway_plugin_statusline::DEFAULT_REFRESH_INTERVAL_MS`
+    /// (5000ms).
+    #[serde(default = "default_statusline_refresh_interval_ms")]
+    pub refresh_interval_ms: u64,
+    /// Milliseconds a single run is allowed before it is treated as failed.
+    /// Defaults to `conway_plugin_statusline::DEFAULT_TIMEOUT_MS` (2000ms)
+    /// -- deliberately shorter than `default_hook_timeout_ms`'s 5000ms;
+    /// see that constant's own doc and `conway_plugin_statusline::
+    /// DEFAULT_TIMEOUT_MS`'s own doc for why a background probe with no
+    /// caller waiting on it wants a tighter ceiling than a one-shot,
+    /// operator-initiated callout does.
+    #[serde(default = "default_statusline_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for StatusLineCommandConfig {
+    fn default() -> Self {
+        Self {
+            command: Vec::new(),
+            key: default_statusline_key(),
+            refresh_interval_ms: default_statusline_refresh_interval_ms(),
+            timeout_ms: default_statusline_timeout_ms(),
+        }
+    }
+}
+
+/// This module does not depend on `conway_plugin_statusline` (it carries
+/// the wire shape only, the same division of labor every other section in
+/// this file already has), so the three defaults below are plain literals
+/// kept IN SYNC BY VALUE, not by a shared constant, with that crate's own
+/// `DEFAULT_KEY`/
+/// `DEFAULT_REFRESH_INTERVAL_MS`/`DEFAULT_TIMEOUT_MS`. `crates/conway-cli/
+/// src/statusline_plugin.rs::install` is the one place both sides meet (it
+/// depends on both crates), so a future drift between these literals and
+/// the plugin crate's own constants would still resolve to
+/// WHATEVER-THIS-CONFIG-SAYS at that one conversion site -- never silently
+/// disagree at runtime -- but is worth re-checking if either default ever
+/// changes.
+fn default_statusline_key() -> String {
+    "statusline".to_string()
+}
+
+fn default_statusline_refresh_interval_ms() -> u64 {
+    5000
+}
+
+fn default_statusline_timeout_ms() -> u64 {
+    2000
 }
