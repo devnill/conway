@@ -632,7 +632,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says so explicitly, and a genuinely live per-session poll remains a
   separate, larger, deliberately unbuilt piece — a guard that dies
   mid-session still reports whatever it held (typically nothing) at build
-  time, resumed session or not.
+  time, resumed session or not. **A fourth link surfaced while tracing this
+  one and is closed in the same change**: `apply_plugin_command_done`'s
+  `ForkSession`/`Checkout` arms (`/conway.history.rewind`,
+  `/conway.history.checkout`) reset `AppState` the identical way — their own
+  comments already said "mirrors `Resume`'s reset exactly" — and had the
+  identical gap; both now carry the snapshot across too, proven the same
+  end-to-end way
+  (`crates/conway-cli/src/tui/app/plugin_cmd.rs::plugin_status_contribution_survives_a_fork_session_outcome`).
 
 - **The `/` command palette now generates itself from the same command
   table `commands.rs` parses, instead of a hand-kept second listing** —
