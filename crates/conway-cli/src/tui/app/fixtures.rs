@@ -128,3 +128,59 @@ pub(super) fn echo_conway_and_store() -> (Conway, Arc<FakeStore>) {
 pub(super) fn echo_conway_over(store: Arc<FakeStore>) -> Conway {
     build_conway_with_echo_backend(base_config(), store)
 }
+
+/// A plugin with no `status_contributions()` override contributes nothing
+/// -- the trait's own zero-cost default, and every other fixture plugin in
+/// this crate's test suites. Only a plugin that overrides it produces a
+/// contribution, which is why this fixture exists as its own type -- the
+/// SAME shape `app/startup.rs`'s own `ContributingPlugin` fixture uses (a
+/// second, independent copy rather than a shared export: the two modules'
+/// suites do not otherwise depend on each other, and six lines is cheaper
+/// than the coupling).
+pub(super) struct ContributingPlugin;
+
+impl conway::plugin::Plugin for ContributingPlugin {
+    fn manifest(&self) -> conway::plugin::PluginManifest {
+        conway::plugin::PluginManifest {
+            id: "test.guard".to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![],
+            required_host_caps: vec![],
+            optional_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn conway::plugin::Tool>> {
+        vec![]
+    }
+
+    fn status_contributions(&self) -> Vec<conway::plugin::PluginStatusContribution> {
+        vec![conway::plugin::PluginStatusContribution {
+            key: "guard".to_string(),
+            status: conway::ResultStatus::Completed,
+            value: "qwen2.5-3b".to_string(),
+        }]
+    }
+}
+
+/// Mirrors [`echo_conway_and_store`], with [`ContributingPlugin`] installed
+/// through the REAL `ConwayBuilder::with_plugin` -- board item
+/// `01M0XDEDBR5YDF71Q7ZRXYMT85`'s own end-to-end proof that a plugin's
+/// status-contribution snapshot survives `/resume` needs the shared-store
+/// "simulated restart" shape [`echo_conway_over`] already establishes,
+/// PLUS a plugin that actually contributes something for `App::new` to
+/// snapshot in the first place.
+pub(super) fn conway_with_contributing_plugin_and_store() -> (Conway, Arc<FakeStore>) {
+    let store = Arc::new(FakeStore::new());
+    let conway = conway::test_support::test_builder(base_config())
+        .with_backend(Arc::new(conway_testkit::FakeBackend::echo(
+            conway_core::ids::BackendId::new("fake"),
+        )))
+        .with_plugin(Arc::new(ContributingPlugin))
+        .with_session_store(store.clone())
+        .build()
+        .expect("build should succeed with a status-contributing plugin installed");
+    (conway, store)
+}

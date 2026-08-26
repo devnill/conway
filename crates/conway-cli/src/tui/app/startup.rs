@@ -127,6 +127,15 @@ impl App {
         // per-session poll, a separate and larger piece, deliberately not
         // built here. See `AppState::plugin_status_contributions`'s own
         // doc for the same caveat spelled out at the read side.
+        //
+        // This one `App::new` copy is also the ONLY place the value is
+        // ever produced -- `commands::execute`'s `Resume` arm (board item
+        // `01M0XDEDBR5YDF71Q7ZRXYMT85`) carries the already-populated field
+        // across a `/resume`'s `AppState::new` reset rather than re-reading
+        // `conway.plugin_status_contributions()` a second time, matching
+        // `plugin_commands`/`agent_names`'s own carry-across exactly: the
+        // snapshot taken here is still the one an operator sees after any
+        // number of `/resume`s in the same process.
         state.plugin_status_contributions = conway.plugin_status_contributions().to_vec();
         // Stage 2a: `[tui]` no longer lives in `conway::config::ConwayConfig`
         // at all (`conway.config()` has no `.tui` field any more) -- this
