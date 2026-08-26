@@ -28,7 +28,7 @@ use conway_core::hook::{HookEvent, HookInvocation, HookOnFailure, HookPermission
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{HookRunner, PathArgs, PermissionGate, RenderKind};
 
-use crate::permission_mode::DeclaredModeRef;
+use conway_core::mode_cycle::DeclaredModeRef;
 
 use crate::events::EventBus;
 
@@ -685,14 +685,14 @@ pub struct PermissionBroker {
     mode: RwLock<PermissionMode>,
     /// V2c: which plugin-declared mode (if any) the operator is CURRENTLY
     /// displaying as active -- board item `01M0X4YDNVP7TZ0PVSRJ0388SS`, see
-    /// `crate::permission_mode`'s own module doc for the full argument.
+    /// `conway_core::mode_cycle`'s own module doc for the full argument.
     ///
     /// **Pure bookkeeping, read by NOTHING in `Self::decide`.** `mode`
     /// above remains the ONLY field `decide()` consults to answer "what
     /// does the current mode allow" (steering P-14: one implementation) --
     /// this field exists solely so a display surface (the status line, the
     /// mode cycle) can show a plugin's own name instead of a bare core
-    /// label, and so `crate::permission_mode::ModeCycle::reconcile_active`
+    /// label, and so `conway_core::mode_cycle::ModeCycle::reconcile_active`
     /// has something to reconcile against when a plugin is uninstalled.
     /// Selecting a declared mode always writes BOTH fields together via
     /// [`Self::select_mode_cycle_entry`], the same "both are written here,
@@ -923,9 +923,9 @@ impl PermissionBroker {
 
     /// Sets which declared mode is displayed as active, independent of
     /// [`Self::set_mode`] -- prefer [`Self::select_mode_cycle_entry`] for
-    /// selecting a whole [`crate::permission_mode::ModeCycleEntry`], which
+    /// selecting a whole [`conway_core::mode_cycle::ModeCycleEntry`], which
     /// writes both fields together. Exposed on its own for the uninstall
-    /// path: `crate::permission_mode::ModeCycle::reconcile_active` decides
+    /// path: `conway_core::mode_cycle::ModeCycle::reconcile_active` decides
     /// whether the CURRENT value survives a plugin uninstall, and its
     /// caller writes the (possibly now-`None`) result back here without
     /// touching `Self::mode` at all -- the base mode was never anything
@@ -937,7 +937,7 @@ impl PermissionBroker {
             .expect("active declared mode poisoned") = declared;
     }
 
-    /// Selects one [`crate::permission_mode::ModeCycleEntry`] -- the ONE
+    /// Selects one [`conway_core::mode_cycle::ModeCycleEntry`] -- the ONE
     /// place selecting a cycle entry (core or declared) is meant to happen,
     /// so `Self::mode` and `Self::active_declared_mode` are always written
     /// together and can never drift apart the way an ad hoc "write mode,
@@ -950,7 +950,7 @@ impl PermissionBroker {
     /// enforcement (steering P-14) -- `entry.declared_ref()` is purely the
     /// display/bookkeeping half, `None` for a `Core` entry and `Some` for a
     /// `Declared` one.
-    pub fn select_mode_cycle_entry(&self, entry: &crate::permission_mode::ModeCycleEntry) {
+    pub fn select_mode_cycle_entry(&self, entry: &conway_core::mode_cycle::ModeCycleEntry) {
         self.set_mode(entry.base());
         self.set_active_declared_mode(entry.declared_ref());
     }
@@ -3160,7 +3160,7 @@ mod tests {
 
     // ---------------------------------------------------------------------
     // Plugin-declared permission modes (board item
-    // `01M0X4YDNVP7TZ0PVSRJ0388SS`, `crate::permission_mode`). `Self::mode`
+    // `01M0X4YDNVP7TZ0PVSRJ0388SS`, `conway_core::mode_cycle`). `Self::mode`
     // stays the ONLY field `decide()` ever reads; `active_declared_mode` is
     // pure bookkeeping. These tests pin that structurally: selecting a
     // declared mode can never change `decide()`'s own answer beyond what
@@ -3200,7 +3200,7 @@ mod tests {
         let gate = RecordingGate::new();
         let broker = PermissionBroker::new(gate, EventBus::new(64));
 
-        let declared_entry = crate::permission_mode::ModeCycleEntry::Declared {
+        let declared_entry = conway_core::mode_cycle::ModeCycleEntry::Declared {
             plugin_id: "conway.permissions".to_string(),
             name: "auto-gated".to_string(),
             base: PermissionMode::AutoAllow,
@@ -3215,7 +3215,7 @@ mod tests {
             })
         );
 
-        let core_entry = crate::permission_mode::ModeCycleEntry::Core(PermissionMode::Plan);
+        let core_entry = conway_core::mode_cycle::ModeCycleEntry::Core(PermissionMode::Plan);
         broker.select_mode_cycle_entry(&core_entry);
         assert_eq!(broker.mode(), PermissionMode::Plan);
         assert_eq!(
@@ -3239,7 +3239,7 @@ mod tests {
     async fn declared_plan_mode_denies_execute_exactly_like_bare_plan_mode() {
         let gate = RecordingGate::new();
         let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
-        broker.select_mode_cycle_entry(&crate::permission_mode::ModeCycleEntry::Declared {
+        broker.select_mode_cycle_entry(&conway_core::mode_cycle::ModeCycleEntry::Declared {
             plugin_id: "acme.strict".to_string(),
             name: "strict-plan".to_string(),
             base: PermissionMode::Plan,
@@ -3271,7 +3271,7 @@ mod tests {
     async fn declared_auto_allow_mode_allows_exactly_like_bare_auto_allow_mode() {
         let gate = RecordingGate::new();
         let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
-        broker.select_mode_cycle_entry(&crate::permission_mode::ModeCycleEntry::Declared {
+        broker.select_mode_cycle_entry(&conway_core::mode_cycle::ModeCycleEntry::Declared {
             plugin_id: "conway.permissions".to_string(),
             name: "auto-gated".to_string(),
             base: PermissionMode::AutoAllow,

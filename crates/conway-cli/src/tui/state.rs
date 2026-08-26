@@ -284,15 +284,16 @@ pub struct PluginBrowserEntry {
 /// `docs/plugins/permission-modes.md`.
 ///
 /// **A deliberately narrower mirror, not a re-export.** The real type is
-/// `conway_runtime::permission_mode::ModeCycleEntry::Declared`, and the
-/// real cycle-order/collision/uninstall-reconciliation algorithm that
-/// consumes it is `conway_runtime::permission_mode::ModeCycle` -- ONE
-/// implementation, per steering P-14. `conway-cli` depends only on the
-/// `conway` facade crate (`Cargo.toml`), which does not yet re-export
-/// `conway_runtime::permission_mode`; wiring that re-export, gathering
-/// every installed plugin's declared modes at startup, and threading the
-/// result into `AppState::declared_modes` below is `crates/conway/src/*`
-/// facade work outside this item's file-ownership fence for this batch --
+/// `conway::ModeCycleEntry::Declared`, and the real
+/// cycle-order/collision/uninstall-reconciliation algorithm that consumes
+/// it is `conway::ModeCycle` -- ONE implementation, per steering P-14.
+/// This crate could name those directly (the facade re-exports both), and
+/// deliberately does not: `AppState` is a RENDER model, and the fields it
+/// carries are the ones a frame needs. Mirroring the two identifying
+/// strings keeps the status line's dependency on the cycle vocabulary to
+/// what it actually draws, the same way `permission_mode` below mirrors
+/// the broker's mode rather than borrowing the broker.
+///
 /// Populated at TUI startup from `Conway::mode_cycle`, and kept in step
 /// by the `Action::CyclePermissionMode` handler, which mirrors whatever
 /// entry `Conway::cycle_permission_mode` moved to rather than recomputing

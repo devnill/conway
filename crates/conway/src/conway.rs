@@ -201,15 +201,15 @@ impl Conway {
     /// Rebuilt on demand rather than cached, because it is cheap and
     /// because caching it would create a second place where "what modes
     /// exist" is decided.
-    pub fn mode_cycle(&self) -> conway_runtime::permission_mode::ModeCycle {
-        conway_runtime::permission_mode::ModeCycle::build(&self.declared_permission_modes)
+    pub fn mode_cycle(&self) -> conway_core::mode_cycle::ModeCycle {
+        conway_core::mode_cycle::ModeCycle::build(&self.declared_permission_modes)
     }
 
     /// The declared mode the operator is currently in, if any -- the
     /// DISPLAY identity layered on whatever core mode is actually gating
     /// calls. `Self::permission_mode` remains the authority on what is
     /// enforced; this only names it.
-    pub fn active_declared_mode(&self) -> Option<conway_runtime::permission_mode::DeclaredModeRef> {
+    pub fn active_declared_mode(&self) -> Option<conway_core::mode_cycle::DeclaredModeRef> {
         self.rt.permission_broker().active_declared_mode()
     }
 
@@ -221,7 +221,7 @@ impl Conway {
     /// trusting the stored ref, so a declared mode whose plugin is no
     /// longer installed lands on its base core mode instead of a dangling
     /// name -- the uninstall case, and the one most easily missed.
-    pub fn current_mode_cycle_entry(&self) -> conway_runtime::permission_mode::ModeCycleEntry {
+    pub fn current_mode_cycle_entry(&self) -> conway_core::mode_cycle::ModeCycleEntry {
         let cycle = self.mode_cycle();
         let base = self.permission_mode();
         match cycle.reconcile_active(self.active_declared_mode()) {
@@ -230,8 +230,8 @@ impl Conway {
                 .iter()
                 .find(|e| e.declared_ref().as_ref() == Some(&want))
                 .cloned()
-                .unwrap_or(conway_runtime::permission_mode::ModeCycleEntry::Core(base)),
-            None => conway_runtime::permission_mode::ModeCycleEntry::Core(base),
+                .unwrap_or(conway_core::mode_cycle::ModeCycleEntry::Core(base)),
+            None => conway_core::mode_cycle::ModeCycleEntry::Core(base),
         }
     }
 
@@ -242,7 +242,7 @@ impl Conway {
     /// re-deriving it -- the status line and the broker must never
     /// disagree about which mode is active, and the way they drift is a
     /// caller computing the answer a second time.
-    pub fn cycle_permission_mode(&self) -> conway_runtime::permission_mode::ModeCycleEntry {
+    pub fn cycle_permission_mode(&self) -> conway_core::mode_cycle::ModeCycleEntry {
         let cycle = self.mode_cycle();
         let next = cycle.next(&self.current_mode_cycle_entry());
         // `select_mode_cycle_entry` writes the enforced mode and the

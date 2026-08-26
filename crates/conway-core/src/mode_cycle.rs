@@ -6,7 +6,7 @@
 //!
 //! **The core enum stays closed, and this module never adds a fourth
 //! `PermissionMode` variant.** `PermissionBroker::decide`
-//! (`crate::permission`) is untouched by anything here — it still reads
+//! (`conway_runtime::permission`) is untouched by anything here — it still reads
 //! exactly one [`PermissionMode`] (`PermissionBroker::mode`) to decide
 //! plan-mode/`AutoAllow` gating, byte-for-byte as before this module
 //! existed. A
@@ -15,17 +15,34 @@
 //! `decide()`'s own question ("what does this mode allow") gets answered —
 //! steering P-14: one implementation.
 //!
+//! ## Why this lives in `conway-core` rather than beside the broker
+//!
+//! It was written in `conway-runtime`, next to the `PermissionBroker`
+//! that consumes it, and moved here when the facade needed to hand these
+//! types to `conway-cli`. `crates/conway/tests/architecture_invariants.rs`
+//! (T6) forbids the facade from publicly re-exporting a `conway-runtime`
+//! type — that test caught the re-export, not a reviewer — and the honest
+//! fix was to move the type rather than convert it at the boundary:
+//! nothing here touches the runtime. It is `PermissionMode`,
+//! `PluginDeclaredMode`, ordering, and collision handling, all of which
+//! are `conway-core` vocabulary already.
+//!
+//! Steering P-14 is unaffected by the move: this is still ONE
+//! implementation of "which modes exist and in what order do they cycle."
+//! It is simply in the layer every consumer can already see, instead of
+//! one only the runtime can.
+//!
 //! ## Why widening is structurally impossible, not merely rejected
 //!
-//! [`conway_core::ports::PluginDeclaredMode`] carries exactly one
+//! [`crate::ports::PluginDeclaredMode`] carries exactly one
 //! field bearing on enforcement: `base: PermissionMode`, one of the closed
 //! three. There is no second field — no override list, no "extra allowed
 //! categories," nothing — for a plugin to populate with anything wider
 //! than `base` already permits, because [`ModeCycleEntry::base`] below is
 //! the ONLY question this module (or the broker) ever asks a declared
 //! mode: `decide()` never learns a mode's NAME, only its `base`. This is
-//! the same shape [`conway_core::hook::HookOnFailure`] and
-//! [`conway_core::ports::PluginPermissionVerdict`] use — a type
+//! the same shape [`crate::hook::HookOnFailure`] and
+//! [`crate::ports::PluginPermissionVerdict`] use — a type
 //! with no representable `Allow` — carried one level up: here, there is no
 //! representable "allow more than `base`" at all, because there is no
 //! field anywhere in the chain that could hold one.
@@ -33,7 +50,7 @@
 //! Any REAL narrowing a declared mode's plugin wants to add beyond its
 //! base's own semantics is not this module's job to carry: it is
 //! expressed through the SAME mechanisms every other plugin already
-//! narrows with — [`conway_core::ports::Plugin::permission_rules`]
+//! narrows with — [`crate::ports::Plugin::permission_rules`]
 //! (`PluginPermissionVerdict`, no `Allow`) today, and a plugin's own
 //! `pre_tool_use` hooks (`HookPermissionVerdict`/`HookOnFailure`, neither
 //! with an `Allow`) once `Plugin::hooks()` lands (design §6c: a SEPARATE
@@ -53,8 +70,8 @@
 //! leaves as a follow-up** (see this module's own test suite for exactly
 //! what is pinned here versus what still needs that wiring).
 
-use conway_core::permission_mode::PermissionMode;
-use conway_core::ports::PluginDeclaredMode;
+use crate::permission_mode::PermissionMode;
+use crate::ports::PluginDeclaredMode;
 
 /// One entry of the mode cycle Shift+Tab walks: one of the three closed
 /// core modes, or a plugin's own name layered on one of them.
@@ -123,7 +140,7 @@ impl ModeCycleEntry {
 }
 
 /// Identifies one declared mode for
-/// [`crate::permission::PermissionBroker`]'s bookkeeping —
+/// `conway_runtime::permission::PermissionBroker`'s bookkeeping —
 /// `(plugin_id, name)`, matching a [`ModeCycleEntry::Declared`]'s own two
 /// identifying fields.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

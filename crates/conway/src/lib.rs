@@ -74,6 +74,9 @@ pub use conway_core::config::AgentDef;
 /// `conway-core` directly, the exact shortcut the plugin tier's "facade
 /// only" discipline exists to avoid.
 pub use conway_core::config::SkillDef;
+pub use conway_core::mode_cycle::{
+    DeclaredModeCollision, DeclaredModeRef, ModeCycle, ModeCycleEntry,
+};
 pub use conway_core::permission_mode::PermissionMode;
 pub use conway_core::permission_pattern::{
     PatternOrigin, PatternRule, PermissionFile, Rule, RuleRegistrationError,
@@ -92,9 +95,6 @@ pub use conway_core::permission_pattern::{
 /// implementation there (steering P-14) rather than a rule each host
 /// surface re-derives.
 pub use conway_core::ports::PluginDeclaredMode;
-pub use conway_runtime::permission_mode::{
-    DeclaredModeCollision, DeclaredModeRef, ModeCycle, ModeCycleEntry,
-};
 /// V2b: `conway-cli` reaches `parse_rules` through here (it cannot depend
 /// on `conway-core` directly -- `no_forbidden_deps`).
 pub mod permission_pattern {

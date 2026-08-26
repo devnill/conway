@@ -21,7 +21,6 @@ pub mod events;
 pub mod hook_dispatch;
 pub mod mailbox;
 pub mod permission;
-pub mod permission_mode;
 pub mod result;
 pub mod runtime;
 pub mod subagent;
