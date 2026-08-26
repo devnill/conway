@@ -79,6 +79,22 @@ pub use conway_core::permission_pattern::{
     PatternOrigin, PatternRule, PermissionFile, Rule, RuleRegistrationError,
     RuleRegistrationReason, Select, Then, When,
 };
+/// V2c: the plugin-declared permission-mode vocabulary. `conway-cli`
+/// reaches these through here for the same reason it reaches
+/// `PatternRule` through here -- it cannot depend on `conway-core` or
+/// `conway-runtime` directly (`no_forbidden_deps`), and the mode cycle is
+/// a surface the TUI has to render.
+///
+/// [`PluginDeclaredMode`] is what a plugin author writes;
+/// [`ModeCycleEntry`] and [`ModeCycle`] are what the cycle resolves to,
+/// and they live in `conway-runtime` rather than `conway-core` because
+/// ordering, collision handling, and uninstall reconciliation are ONE
+/// implementation there (steering P-14) rather than a rule each host
+/// surface re-derives.
+pub use conway_core::ports::PluginDeclaredMode;
+pub use conway_runtime::permission_mode::{
+    DeclaredModeCollision, DeclaredModeRef, ModeCycle, ModeCycleEntry,
+};
 /// V2b: `conway-cli` reaches `parse_rules` through here (it cannot depend
 /// on `conway-core` directly -- `no_forbidden_deps`).
 pub mod permission_pattern {
@@ -369,6 +385,19 @@ pub mod plugin {
     /// declares, the SAME "declare, host attributes/checks it" shape
     /// [`EventDecl`]/[`CommandSpec`] establish immediately above and below.
     pub use conway_core::ports::InstructionFragment;
+    /// V2c: what a plugin author writes to declare a permission mode --
+    /// a name plus the closed core mode it narrows. Re-exported into the
+    /// authoring surface for the same reason `Tool`/`Command` are: an
+    /// author who cannot name the type cannot implement
+    /// `Plugin::permission_modes` without depending on `conway-core`
+    /// directly, the exact shortcut this module exists to remove.
+    ///
+    /// The cycle types the HOST resolves these into (`ModeCycle`,
+    /// `ModeCycleEntry`) are deliberately NOT here -- a plugin author
+    /// declares a mode; it is not their job to resolve the cycle, and
+    /// putting the resolution vocabulary in the authoring surface would
+    /// invite a second implementation of it.
+    pub use conway_core::ports::PluginDeclaredMode;
     /// [`Plugin::description`]'s own return type -- see that method's own
     /// doc for why this is a distinct type from [`InstructionFragment`],
     /// argued rather than assumed (two audiences, two cardinalities).

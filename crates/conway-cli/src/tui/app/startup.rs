@@ -137,6 +137,36 @@ impl App {
         // snapshot taken here is still the one an operator sees after any
         // number of `/resume`s in the same process.
         state.plugin_status_contributions = conway.plugin_status_contributions().to_vec();
+        // Unlike the status snapshot immediately above, this one does not
+        // go stale mid-session: a declared mode is a static property of an
+        // installed plugin, not a value a plugin pushes. The set changes
+        // only when the installed plugin set does, which needs a rebuild.
+        //
+        // Any name two plugins both declared is EXCLUDED from the cycle by
+        // `ModeCycle::build` rather than resolved to one of them, and is
+        // surfaced here so the operator learns why a mode they installed
+        // is missing -- silence would leave them with a plugin that
+        // declares a mode they can never reach and no way to find out.
+        let cycle = conway.mode_cycle();
+        for collision in cycle.collisions() {
+            crate::diag::warn(collision.describe());
+        }
+        state.declared_modes = cycle
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry {
+                conway::ModeCycleEntry::Core(_) => None,
+                conway::ModeCycleEntry::Declared {
+                    plugin_id,
+                    name,
+                    base,
+                } => Some(crate::tui::state::DeclaredModeMirror {
+                    plugin_id: plugin_id.clone(),
+                    name: name.clone(),
+                    base: *base,
+                }),
+            })
+            .collect();
         // Stage 2a: `[tui]` no longer lives in `conway::config::ConwayConfig`
         // at all (`conway.config()` has no `.tui` field any more) -- this
         // crate reads it back via its OWN separate, layered load, using the

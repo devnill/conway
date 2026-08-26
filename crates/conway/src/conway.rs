@@ -144,6 +144,19 @@ pub struct Conway {
     /// facade can hand back WITHOUT re-reaching the (consumed) plugins --
     /// honest about being a snapshot, not a live view.
     plugin_status_contributions: Vec<conway_core::ports::PluginStatusContribution>,
+    /// Every installed plugin's `Plugin::permission_modes()`, each paired
+    /// with its declaring plugin's manifest id, collected in
+    /// `ConwayBuilder::build` at the same point and for the same reason as
+    /// `plugin_status_contributions` above -- the plugins are moved into
+    /// `RuntimeDeps` immediately after, so this is the facade's only
+    /// reachable record of them.
+    ///
+    /// **Unlike the status snapshot, this one does not go stale**: a
+    /// declared mode is a static property of an installed plugin, not a
+    /// value the plugin pushes during a session. The set changes only when
+    /// the installed plugin set changes, which cannot happen without a
+    /// rebuild.
+    declared_permission_modes: Vec<(String, conway_core::ports::PluginDeclaredMode)>,
 }
 
 impl Conway {
@@ -164,6 +177,7 @@ impl Conway {
         model_metadata: ModelMetadata,
         root: Option<std::path::PathBuf>,
         plugin_status_contributions: Vec<conway_core::ports::PluginStatusContribution>,
+        declared_permission_modes: Vec<(String, conway_core::ports::PluginDeclaredMode)>,
     ) -> Self {
         Self {
             rt,
@@ -174,7 +188,69 @@ impl Conway {
             model_metadata: Arc::new(model_metadata),
             root,
             plugin_status_contributions,
+            declared_permission_modes,
         }
+    }
+
+    /// The mode cycle Shift+Tab walks: the three closed core modes first,
+    /// in a fixed order, then every installed plugin's declared modes
+    /// sorted by name -- so the cycle does not depend on plugin install
+    /// order. A name two plugins both declare is excluded and reported
+    /// (`ModeCycle::collisions`) rather than silently resolved to one.
+    ///
+    /// Rebuilt on demand rather than cached, because it is cheap and
+    /// because caching it would create a second place where "what modes
+    /// exist" is decided.
+    pub fn mode_cycle(&self) -> conway_runtime::permission_mode::ModeCycle {
+        conway_runtime::permission_mode::ModeCycle::build(&self.declared_permission_modes)
+    }
+
+    /// The declared mode the operator is currently in, if any -- the
+    /// DISPLAY identity layered on whatever core mode is actually gating
+    /// calls. `Self::permission_mode` remains the authority on what is
+    /// enforced; this only names it.
+    pub fn active_declared_mode(&self) -> Option<conway_runtime::permission_mode::DeclaredModeRef> {
+        self.rt.permission_broker().active_declared_mode()
+    }
+
+    /// The cycle entry the operator is currently on -- the pair
+    /// (`Self::permission_mode`, `Self::active_declared_mode`) resolved
+    /// back to the one entry that means it.
+    ///
+    /// Resolved through `ModeCycle::reconcile_active` rather than by
+    /// trusting the stored ref, so a declared mode whose plugin is no
+    /// longer installed lands on its base core mode instead of a dangling
+    /// name -- the uninstall case, and the one most easily missed.
+    pub fn current_mode_cycle_entry(&self) -> conway_runtime::permission_mode::ModeCycleEntry {
+        let cycle = self.mode_cycle();
+        let base = self.permission_mode();
+        match cycle.reconcile_active(self.active_declared_mode()) {
+            Some(want) => cycle
+                .entries()
+                .iter()
+                .find(|e| e.declared_ref().as_ref() == Some(&want))
+                .cloned()
+                .unwrap_or(conway_runtime::permission_mode::ModeCycleEntry::Core(base)),
+            None => conway_runtime::permission_mode::ModeCycleEntry::Core(base),
+        }
+    }
+
+    /// Moves to the next entry in `Self::mode_cycle`, applying its base
+    /// core mode to the broker and recording its display identity.
+    ///
+    /// Returns the entry moved to, so a caller can mirror it without
+    /// re-deriving it -- the status line and the broker must never
+    /// disagree about which mode is active, and the way they drift is a
+    /// caller computing the answer a second time.
+    pub fn cycle_permission_mode(&self) -> conway_runtime::permission_mode::ModeCycleEntry {
+        let cycle = self.mode_cycle();
+        let next = cycle.next(&self.current_mode_cycle_entry());
+        // `select_mode_cycle_entry` writes the enforced mode and the
+        // display identity TOGETHER -- deliberately not two calls here.
+        // Splitting them is exactly how the status line and the broker
+        // drift apart.
+        self.rt.permission_broker().select_mode_cycle_entry(&next);
+        next
     }
 
     /// A build-time snapshot of every installed plugin's status contributions

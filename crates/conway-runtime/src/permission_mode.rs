@@ -17,7 +17,7 @@
 //!
 //! ## Why widening is structurally impossible, not merely rejected
 //!
-//! [`conway_core::ports::plugin::PluginDeclaredMode`] carries exactly one
+//! [`conway_core::ports::PluginDeclaredMode`] carries exactly one
 //! field bearing on enforcement: `base: PermissionMode`, one of the closed
 //! three. There is no second field — no override list, no "extra allowed
 //! categories," nothing — for a plugin to populate with anything wider
@@ -25,7 +25,7 @@
 //! the ONLY question this module (or the broker) ever asks a declared
 //! mode: `decide()` never learns a mode's NAME, only its `base`. This is
 //! the same shape [`conway_core::hook::HookOnFailure`] and
-//! [`conway_core::ports::plugin::PluginPermissionVerdict`] use — a type
+//! [`conway_core::ports::PluginPermissionVerdict`] use — a type
 //! with no representable `Allow` — carried one level up: here, there is no
 //! representable "allow more than `base`" at all, because there is no
 //! field anywhere in the chain that could hold one.
@@ -33,7 +33,7 @@
 //! Any REAL narrowing a declared mode's plugin wants to add beyond its
 //! base's own semantics is not this module's job to carry: it is
 //! expressed through the SAME mechanisms every other plugin already
-//! narrows with — [`conway_core::ports::plugin::Plugin::permission_rules`]
+//! narrows with — [`conway_core::ports::Plugin::permission_rules`]
 //! (`PluginPermissionVerdict`, no `Allow`) today, and a plugin's own
 //! `pre_tool_use` hooks (`HookPermissionVerdict`/`HookOnFailure`, neither
 //! with an `Allow`) once `Plugin::hooks()` lands (design §6c: a SEPARATE

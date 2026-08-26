@@ -293,11 +293,13 @@ pub struct PluginBrowserEntry {
 /// every installed plugin's declared modes at startup, and threading the
 /// result into `AppState::declared_modes` below is `crates/conway/src/*`
 /// facade work outside this item's file-ownership fence for this batch --
-/// see this item's own completion report for the named follow-up. This
-/// struct exists so the DATA SHAPE the TUI will eventually mirror is
-/// already in place, matching `PluginBrowserEntry`'s own precedent
-/// immediately above (a display mirror populated before this item, wired
-/// to a real build by a later one).
+/// Populated at TUI startup from `Conway::mode_cycle`, and kept in step
+/// by the `Action::CyclePermissionMode` handler, which mirrors whatever
+/// entry `Conway::cycle_permission_mode` moved to rather than recomputing
+/// it -- the same "both are written here, together" discipline
+/// `permission_mode` below already follows, for the same reason: the
+/// broker is the authority, this is a display copy, and the way the two
+/// drift is a caller deriving the answer a second time.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeclaredModeMirror {
     pub plugin_id: String,
@@ -346,19 +348,14 @@ pub struct AppState {
     /// same way [`Self::permission_mode`] above is -- see
     /// [`DeclaredModeMirror`]'s own doc for why this stays a NARROW display
     /// mirror rather than a re-exported `conway_runtime::permission_mode`
-    /// type, and for the wiring this item leaves as a follow-up. Empty
-    /// (the default, and the ONLY value any build produces today) cycles
-    /// `Action::CyclePermissionMode` through the three core modes exactly
-    /// as it always has -- byte-identical to a build with no mode-
-    /// declaring plugin installed.
+    /// type. Empty -- which is what every build with no mode-declaring
+    /// plugin installed produces -- cycles `Action::CyclePermissionMode`
+    /// through the three core modes exactly as it always has.
     pub declared_modes: Vec<DeclaredModeMirror>,
     /// V2c: which entry of [`Self::declared_modes`] (if any) is the
     /// CURRENTLY SELECTED one -- `(plugin_id, name)`, matching a
     /// `DeclaredModeMirror`'s own two identifying fields. `None` means the
-    /// operator is in a plain core mode, which is also this field's ONLY
-    /// possible value until the facade wiring named on
-    /// [`DeclaredModeMirror`]'s own doc lands: nothing in this crate
-    /// writes it to `Some` yet. Modeled as `Option<(String, String)>`
+    /// operator is in a plain core mode. Modeled as `Option<(String, String)>`
     /// rather than `Option<DeclaredModeMirror>` deliberately: identity (
     /// which mode is selected) and the mode's own data (its `base`) are
     /// separate questions -- the SAME distinction
