@@ -243,6 +243,22 @@ pub struct CapabilityRegistry {
     providers: HashMap<String, Arc<dyn CapabilityProvider>>,
 }
 
+// A manual `Debug` rather than a derive: `Arc<dyn CapabilityProvider>` is a
+// trait object and cannot be `Debug` without adding that bound to the trait,
+// which would exclude out-of-process implementors that have nothing useful to
+// print. The registry's *keys* are the part a reader wants anyway, and they
+// are sorted so the output is stable across runs -- `HashMap` iteration order
+// is not.
+impl std::fmt::Debug for CapabilityRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut names: Vec<&str> = self.providers.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        f.debug_struct("CapabilityRegistry")
+            .field("capabilities", &names)
+            .finish()
+    }
+}
+
 impl CapabilityRegistry {
     /// Builds a registry from every installed plugin's capability
     /// registrations, keyed by [`HostCapability::as_wire_str`]. Refuses
