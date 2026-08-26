@@ -441,3 +441,41 @@ does not may degrade. The first draft did not cite it. §4a now derives the
 required/optional test from it rather than inventing a parallel rule, and
 §8 gains the two falsifiers that test whether the borrowing was
 legitimate.
+
+**2026-08-25 — Four "not yet built" claims above were closed by code
+landing later the same day.** Verified against the tree at the time of
+writing this entry; §2/§3/§4's prose above is left as written, since it
+correctly describes the gap as it stood when this page was drafted.
+
+- §2's *"`HostCapability` is a closed two-variant enum"* no longer holds:
+  `HostCapability` (`crates/conway-core/src/ports/plugin.rs`) is now open
+  and namespaced, gaining a `Named(String)` variant and a
+  `HostCapability::named()` constructor that validates a dotted id, with
+  `Subagent`/`PersistentTransport` kept as the two wire-level aliases.
+- §2's *"There is no `optional_host_caps`… it appears nowhere in the
+  code"* no longer holds: `PluginManifest::optional_host_caps:
+  Vec<HostCapability>` is a real, `#[serde(default)]` field, mirroring
+  `required_host_caps`'s refuse-vs-degrade split.
+- §4's `requires`/`optional` dependency tiers, described above as this
+  page's proposal, are now real fields —
+  `PluginManifest::requires: Vec<String>` and
+  `PluginManifest::optional: Vec<String>` — and are carried into
+  `conway-plugin-subprocess::wire::WireManifest` too (its own `requires`/
+  `optional` fields, `#[serde(default)]`), so an out-of-process plugin
+  declares the same two tiers over the wire rather than only an in-process
+  one going through `conway::plugin::PluginManifest` directly.
+- §3's *"toggle-*off* is the sharper defect and is unguarded today"* no
+  longer holds: `crates/conway-cli/src/tui/app/plugin_toggle.rs`'s
+  `App::apply_plugin_toggle` now refuses a toggle-off that would break an
+  enabled `requires` dependent, before the write, naming the dependent; a
+  toggle-off of a merely `optional` dependency is still allowed, and
+  annotates the browser row's own `description.you_lose` with what is
+  degraded.
+
+None of this closes §6's `[S1.5]` question or §7's open recommendations
+(host/toolkit boundary, versions-now-or-later, push/pull, host profiles) —
+only the four claims named above, and only as claims about what exists in
+the tree today. `Plugin::hooks()` still does not exist, `conway.ui` and
+`conway.permissions` still do not exist as plugins, and the embedder-only
+per-plugin config restriction (§6) is unchanged — this entry does not
+touch any of those.
