@@ -377,6 +377,57 @@ a *push* — a plugin volunteering a value continuously.
 designed for pull. Whether one capability mechanism serves both, or push
 stays a separate declarative contribution, is unresolved.
 
+**Settled 2026-08-25/26, against real code, not by argument alone (board
+item `01M0Y3A8MYKKE0GMYKZE1K0QTD`): push stays separate, and it needs no
+capability-mechanism machinery at all — not Edge B's call channel, not a
+new dedicated push channel either.** The finding that made this decidable:
+`conway.statusline` (`01M0X500861X9035QJEA82F94K`) built the push producer
+end to end and proved, structurally, that the ONLY missing piece was a host
+that reads `Plugin::status_contributions()` more than once. Building that
+missing piece surfaced the actual answer to this open question.
+
+*What Edge B's pull mechanism actually needed `RuntimeDeps` for.* Edge B's
+capability-call channel (`RuntimeDeps::capabilities`, §2's Edge B) is
+threaded through `RuntimeDeps` → `conway_runtime::agent_loop::LoopDeps` →
+`conway_runtime::tools::runner::ToolBatchCtx` because a capability CALL
+happens *synchronously inside a tool call's own dispatch*, deep in the agent
+loop — there is no shallower seam that both exists at call time and reaches
+every backend a tool call can run against. Threading anything through that
+path is expensive: a sibling item that added one unrelated field to
+`RuntimeDeps` had to update 26 `RuntimeDeps` literals, 5 `LoopDeps`
+literals, and 2 `ToolBatchCtx` literals across three crates, none of which
+has a `Default` impl.
+
+*The push case has no equivalent need.* Its only consumer is the TUI's own
+render loop, which already holds a `Conway` clone directly (`conway-cli`'s
+`App`) — the exact same facade surface the pre-existing build-time snapshot
+(`Conway::plugin_status_contributions`) already rides. So the live handle
+this item added — `Conway::poll_plugin_status_contributions`, backed by a
+`Vec<Arc<dyn Plugin>>` retained on `Conway` itself, cloned from the plugin
+set *before* `PluginRegistry::from_plugins` consumes it and drops each
+`Arc<dyn Plugin>` (it keeps only each plugin's `Tool`s and manifest id) —
+sits as a sibling field to that snapshot, at **zero cost to `RuntimeDeps`,
+`LoopDeps`, or `ToolBatchCtx` and every one of their existing construction
+sites.** No channel was built either: `Plugin::status_contributions()` is
+already a non-blocking, point-in-time read (the same contract
+`Plugin::observe_sink`'s lossy-with-notice posture establishes for the push
+side of this same trait), so a plain poll on a bounded host-side cadence —
+never faster than the fastest a contributing plugin's own background loop
+can produce a new value — is strictly cheaper than standing up a channel
+with no blocking call on either end to justify one.
+
+**The general answer this licenses:** whether a plugin-facing mechanism
+needs `RuntimeDeps`-depth plumbing is decided by *where its consumer lives*,
+not by which "kind" of mechanism it nominally is. A mechanism consumed
+synchronously inside per-call tool dispatch (Edge B's pull) has no cheaper
+home than `RuntimeDeps`/`LoopDeps`/`ToolBatchCtx`. A mechanism consumed only
+by a host-level, out-of-band reader that already holds a facade handle
+(this item's push poll) should ride the facade directly and never touch
+those three types at all. Push and pull remain different machinery for that
+reason — not because one is inherently synchronous and the other inherently
+asynchronous, but because their *consumers* sit at different depths in the
+runtime.
+
 **7d. Host profiles may not be profiles.** It is tempting to name three
 hosts — TUI, one-shot, embedder — and give each a fixed surface set. An
 embedder is really "whatever surfaces that application chose to implement,"
@@ -479,3 +530,17 @@ the tree today. `Plugin::hooks()` still does not exist, `conway.ui` and
 `conway.permissions` still do not exist as plugins, and the embedder-only
 per-plugin config restriction (§6) is unchanged — this entry does not
 touch any of those.
+
+**2026-08-26 — §7c's push/pull question is now settled; the prior entry's
+"open" listing is corrected on that one point.** Board item
+`01M0Y3A8MYKKE0GMYKZE1K0QTD` closed the concrete gap `conway.statusline`
+(previous entry) surfaced: the host now polls `Plugin::
+status_contributions()` live, per session, from `conway-cli`'s own render
+loop (`Conway::poll_plugin_status_contributions`, `App::
+refresh_plugin_status_contributions`). §7c above is edited in place (not
+merely appended-around) with the answer and its argument, matching how §4
+itself was edited in place (not just noted here) when that question was
+settled — an "open, with recommendations" item, unlike §2/§3/§4's prose
+elsewhere on this page, is not a claim to leave standing once superseded.
+Host/toolkit boundary (§7a), versions-now-or-later (§7b), and host profiles
+(§7d) remain exactly as open as before this entry.

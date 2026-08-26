@@ -47,6 +47,20 @@
 //! §7c already names as the alternative. The type did not need to grow a
 //! field; the host needs to grow a poll loop.
 //!
+//! **Addendum (board item `01M0Y3A8MYKKE0GMYKZE1K0QTD`): the host now has
+//! that poll loop.** `Conway::poll_plugin_status_contributions` re-invokes
+//! `Plugin::status_contributions()` against a live handle retained on
+//! `Conway` itself (not threaded through `RuntimeDeps` -- §7c now records
+//! the argument for why not), and `conway-cli`'s `App::run` calls it on a
+//! bounded per-session tick. A command configured through
+//! `[tui.status_line_command]` now DOES reach the rendered status line as it
+//! refreshes, not only if its first run happened to finish before
+//! `ConwayBuilder::build` returned -- the gap the paragraph above documents
+//! is closed, not merely diagnosed. The finding itself (the WIRE half
+//! working, the HOST half reading only once) is left exactly as originally
+//! written above: it is what made the fix specifiable, and rewriting it
+//! after the fact would erase the reasoning that got here.
+//!
 //! # Cadence -- the hazard this crate exists to get right
 //!
 //! A status line redraws constantly; spawning a process per redraw is
@@ -153,6 +167,14 @@
 //! evidence for the §7c finding above, not a defect this crate could fix
 //! by itself -- fixing it means adding a live poll to the TUI's own render
 //! loop (`crates/conway-cli/src/tui/`, out of this item's file ownership).
+//!
+//! **That live poll now exists** (board item `01M0Y3A8MYKKE0GMYKZE1K0QTD`,
+//! `crates/conway-cli/src/tui/app/plugin_status.rs`/`run.rs`), proven by
+//! that item's own tests against a fixture plugin -- driving the real
+//! `conway` binary interactively with a real `[tui.status_line_command]`
+//! remains the one thing no writer in this repository's lane fence can
+//! verify for itself; see this crate's own module doc for that acceptance,
+//! now reachable rather than blocked on a missing host feature.
 
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};

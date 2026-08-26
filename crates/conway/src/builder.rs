@@ -1871,10 +1871,11 @@ impl ConwayBuilder {
         // is moved into `RuntimeDeps` below (board item
         // `01M03VKQ738DTGHHK2C4RWXC0E`). The status contributions are a
         // build-time SNAPSHOT (collected at session-open, before any
-        // `status/1` notifications have arrived -- typically empty); the live
-        // surface a future render path polls is the trait method itself, but
-        // the runtime does not retain the plugins (`PluginRegistry` consumes
-        // them), so this snapshot is the facade's own reachable record. The
+        // `status/1` notifications have arrived -- typically empty); kept
+        // for `Conway::plugin_status_contributions` exactly as before. This
+        // snapshot is no longer the ONLY reachable record, though --
+        // `live_plugins` immediately below is the live one (board item
+        // `01M0Y3A8MYKKE0GMYKZE1K0QTD`, see that field's own doc). The
         // observe sinks are installed as `EventBus` subscribers: one forwarding
         // task per sink drives a `bus.subscribe()` stream and calls
         // `sink.emit(envelope.event)` for each envelope, so a persistent
@@ -1886,6 +1887,36 @@ impl ConwayBuilder {
             .iter()
             .flat_map(|p| p.status_contributions())
             .collect();
+        // Board item `01M0Y3A8MYKKE0GMYKZE1K0QTD`: a LIVE handle to every
+        // installed plugin, retained so a caller can re-invoke
+        // `Plugin::status_contributions()` after `build()` returns and see
+        // whatever a plugin's own background refresh loop has produced
+        // since -- the missing piece `DESIGN-plugin-dependencies.md` §7c
+        // was left open on (see that section's own revision entry for the
+        // argument). `Arc::clone` per element (a refcount bump, not a deep
+        // copy) -- `resolved_plugins` itself is moved into `RuntimeDeps.
+        // plugins` a few lines down and consumed there:
+        // `PluginRegistry::from_plugins` extracts each plugin's `Tool`s and
+        // manifest id but drops the `Arc<dyn Plugin>` handle itself at the
+        // end of its own construction loop, so without THIS clone, take
+        // now, there would be nothing left anywhere to poll -- the snapshot
+        // above is a `Vec<PluginStatusContribution>`, not a handle, and
+        // cannot substitute.
+        //
+        // Deliberately NOT threaded through `RuntimeDeps` the way the
+        // capability registry (`RuntimeDeps::capabilities`) is: that
+        // channel is reached from deep inside a tool call's own dispatch
+        // path (`conway_runtime::agent_loop`'s `LoopDeps`, `conway_runtime::
+        // tools::runner`'s `ToolBatchCtx`) because a capability CALL
+        // genuinely happens mid-turn, synchronously with tool execution.
+        // A status-line poll has no such need -- its only consumer is the
+        // TUI's own render loop, which already holds a `Conway` clone
+        // directly (`conway-cli`'s `App`) -- so this rides the SAME facade
+        // surface `plugin_status_contributions` above already does, as a
+        // sibling field, at zero cost to `RuntimeDeps`/`LoopDeps`/
+        // `ToolBatchCtx` and every one of their existing construction
+        // sites.
+        let live_plugins: Vec<Arc<dyn Plugin>> = resolved_plugins.clone();
         // Collected here, beside the status snapshot above, for the same
         // reason and at the same moment: `PluginRegistry` consumes
         // `resolved_plugins` a few lines down, so this is the last point at
@@ -2165,6 +2196,7 @@ impl ConwayBuilder {
             root,
             plugin_status_contributions,
             declared_permission_modes,
+            live_plugins,
         ))
     }
 }

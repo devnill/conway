@@ -157,16 +157,35 @@ pub struct Conway {
     /// the installed plugin set changes, which cannot happen without a
     /// rebuild.
     declared_permission_modes: Vec<(String, conway_core::ports::PluginDeclaredMode)>,
+    /// A LIVE handle to every installed plugin (board item
+    /// `01M0Y3A8MYKKE0GMYKZE1K0QTD`) -- an `Arc::clone` of each entry
+    /// `ConwayBuilder::build` resolved, taken BEFORE the original
+    /// `Vec<Arc<dyn Plugin>>` was moved into `RuntimeDeps.plugins` and
+    /// consumed there (`PluginRegistry::from_plugins` extracts each
+    /// plugin's `Tool`s and manifest id, then drops the `Arc<dyn Plugin>`
+    /// itself -- it does not retain the plugin object). This is what
+    /// [`Self::plugin_status_contributions`] (the frozen, build-time
+    /// snapshot) could never be turned into by itself: a value has no way
+    /// to be re-read, only a handle does.
+    ///
+    /// Read only by [`Self::poll_plugin_status_contributions`], which
+    /// re-invokes `Plugin::status_contributions()` on every entry, fresh,
+    /// on every call -- see that method's own doc for the cadence contract
+    /// its caller (the TUI's own render loop, `crates/conway-cli/src/tui/
+    /// app/run.rs`) is responsible for honoring; this field and its one
+    /// reader impose no cadence of their own.
+    live_plugins: Vec<Arc<dyn conway_core::ports::Plugin>>,
 }
 
 impl Conway {
     // `Conway::new` is a crate-internal constructor called from exactly one
-    // site (`ConwayBuilder::build`); its argument list grew to eight when the
-    // facade began carrying the plugin status contributions the
-    // `status.declare/1` wire point collects (board item
-    // `01M03VKQ738DTGHHK2C4RWXC0E`). Clippy's default ceiling of seven is a
-    // smell worth a note, not a refactor worth bundling unrelated fields into
-    // a throwaway struct that would only obscure the single call site.
+    // site (`ConwayBuilder::build`); its argument list grew to nine when the
+    // facade began carrying a live plugin handle alongside the frozen status
+    // snapshot (board item `01M0Y3A8MYKKE0GMYKZE1K0QTD`, following the same
+    // growth `01M03VKQ738DTGHHK2C4RWXC0E` made for that snapshot itself).
+    // Clippy's default ceiling of seven is a smell worth a note, not a
+    // refactor worth bundling unrelated fields into a throwaway struct that
+    // would only obscure the single call site.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         rt: Arc<Runtime>,
@@ -178,6 +197,7 @@ impl Conway {
         root: Option<std::path::PathBuf>,
         plugin_status_contributions: Vec<conway_core::ports::PluginStatusContribution>,
         declared_permission_modes: Vec<(String, conway_core::ports::PluginDeclaredMode)>,
+        live_plugins: Vec<Arc<dyn conway_core::ports::Plugin>>,
     ) -> Self {
         Self {
             rt,
@@ -189,6 +209,7 @@ impl Conway {
             root,
             plugin_status_contributions,
             declared_permission_modes,
+            live_plugins,
         }
     }
 
@@ -257,8 +278,8 @@ impl Conway {
     /// (board item `01M03VKQ738DTGHHK2C4RWXC0E`). See the field's own doc for
     /// why this is a snapshot (collected at session-open, before any
     /// `status/1` notifications arrive -- typically empty) rather than a live
-    /// view; the live surface a future poll will read is the
-    /// `Plugin::status_contributions` trait method.
+    /// view. [`Self::poll_plugin_status_contributions`] is that live view,
+    /// added by board item `01M0Y3A8MYKKE0GMYKZE1K0QTD` -- see its own doc.
     ///
     /// **No longer an unrendered accessor** (board item
     /// `01M0X1B7Z41J57N6YP2JFZ2AZW`; design
@@ -277,18 +298,78 @@ impl Conway {
     /// "populate once outside the render path" shape `AppState::
     /// plugin_commands`/`agent_names` already use.
     ///
-    /// **That wiring does not turn this into a live view.** It is still
+    /// **This accessor alone still does not give a live view** -- it is still
     /// exactly the build-time snapshot described above: typically empty at
-    /// real session start, and frozen thereafter for the life of the
-    /// process. A plugin's status changing after `ConwayBuilder::build` has
-    /// run (a guard dying mid-session, a build finishing) is invisible to
-    /// both this accessor and the `AppState` field it feeds. A genuinely
-    /// live per-session poll -- re-reading `Plugin::status_contributions`
-    /// against the actual running plugins, on some cadence, from inside the
-    /// TUI's own event loop -- is a separate and larger piece of work,
-    /// deliberately not built by this wiring.
+    /// real session start, and frozen at whatever it held at that moment for
+    /// the rest of the process's life. A plugin's status changing after
+    /// `ConwayBuilder::build` has run (a guard dying mid-session, a build
+    /// finishing) is invisible to THIS accessor. **It is no longer invisible
+    /// to the TUI as a whole, though**: `App::run`'s own event loop calls
+    /// [`Self::poll_plugin_status_contributions`] on a bounded cadence and
+    /// writes whatever it returns into `AppState::
+    /// plugin_status_contributions` in place of this accessor's one-time
+    /// copy -- see that method's own doc, and `crates/conway-cli/src/tui/
+    /// app/run.rs`'s `PLUGIN_STATUS_POLL_TICK`.
     pub fn plugin_status_contributions(&self) -> &[conway_core::ports::PluginStatusContribution] {
         &self.plugin_status_contributions
+    }
+
+    /// A LIVE poll of every installed plugin's current status contributions
+    /// (board item `01M0Y3A8MYKKE0GMYKZE1K0QTD`) -- the piece
+    /// [`Self::plugin_status_contributions`]'s own doc, and this crate's
+    /// `conway-plugin-statusline` sibling crate, both named as missing:
+    /// re-invokes `Plugin::status_contributions()` against every plugin this
+    /// `Conway` was actually built with (`Self::live_plugins`, retained at
+    /// `ConwayBuilder::build` for exactly this), fresh, on every call --
+    /// never a cached or frozen value.
+    ///
+    /// **Non-blocking by construction, transitively.** Every implementor
+    /// this codebase ships treats `Plugin::status_contributions()` as a
+    /// point-in-time read of an already-computed value (a `Mutex::lock`, a
+    /// `HashMap` snapshot) -- see `conway_core::ports::Plugin::
+    /// status_contributions`'s own trait doc ("a POINT-IN-TIME snapshot of
+    /// that store") and `conway_plugin_statusline::StatusLinePlugin`'s own
+    /// impl for the worked example this method's contract rests on. This
+    /// method therefore never spawns a process, never awaits an I/O
+    /// operation, and never blocks its caller on a plugin's own background
+    /// work in flight -- the same lossy-with-notice posture
+    /// `conway_core::ports::Plugin::observe_sink`'s own doc establishes for
+    /// the push side of this trait ("the host turn NEVER blocks on a slow
+    /// plugin read loop"), reused here for the pull side: a slow or wedged
+    /// plugin's `status_contributions()` call returning late or never would
+    /// stall every OTHER plugin's read behind it in this method's `flat_map`,
+    /// which is exactly why the contract this method depends on is
+    /// non-blocking, not merely fast.
+    ///
+    /// **Sets no cadence of its own** -- calling this in a tight loop would
+    /// re-read every plugin every time. The caller (`conway-cli`'s `App::run`)
+    /// owns the interval this is actually invoked on; see that call site's
+    /// own doc for the enforced floor.
+    ///
+    /// **Wholesale, not merged.** The returned `Vec` is a complete
+    /// replacement for whatever the caller was previously showing, not a
+    /// diff or an accumulation -- a plugin whose contribution disappears
+    /// between one poll and the next (it stops reporting, or is uninstalled
+    /// mid-process, which cannot happen today but would still be handled
+    /// correctly if it could) is simply absent from this call's result, with
+    /// nothing further this method needs to do to make that true. This is
+    /// what keeps a stale value from surviving forever without any separate
+    /// expiry/TTL mechanism: replacing the whole set every poll is a
+    /// sufficient staleness fix by construction, not a claim that TTL
+    /// enforcement (`crates/conway-plugin-subprocess/src/session.rs`'s own
+    /// disclosed gap; `docs/plugins/hooks.md` point 12) has been built --
+    /// that remains exactly as undone as it was before this method existed.
+    /// A per-key `ttl_ms` sweep is a narrower, independent thing: aging out
+    /// one key while a plugin keeps reporting others is not the same
+    /// question this method answers (whether the *plugin itself* is still
+    /// reporting anything at all), and this method does not attempt it.
+    pub fn poll_plugin_status_contributions(
+        &self,
+    ) -> Vec<conway_core::ports::PluginStatusContribution> {
+        self.live_plugins
+            .iter()
+            .flat_map(|p| p.status_contributions())
+            .collect()
     }
 
     /// Non-fatal warnings, from two sources: `config::load` (headroom-vs-
