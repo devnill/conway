@@ -61,7 +61,8 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use conway::plugin::{
-    Artifact, ContentBlock, HostCapability, PermissionClass, ResultStatus, ToolCategory, ToolError,
+    Artifact, CapabilityError, ContentBlock, HostCapability, PermissionClass, ResultStatus,
+    ToolCategory, ToolError,
 };
 
 /// The wire-protocol major version this host speaks over the persistent
@@ -119,9 +120,11 @@ pub(crate) const HOST_OBSERVE_VERSION: u32 = 1;
 pub(crate) const HOST_STATUS_VERSION: u32 = 1;
 
 /// One outgoing request this host ever sends, tagged by its own `"op"`
-/// field on the wire -- `{"op":"tool.spec/1"}` or `{"op":"tool/1", ...}`.
-/// Used by the one-shot path; the persistent path wraps the `tool/1` body
-/// in [`PersistentToolRequest`] (same fields plus a JSON-RPC `id`).
+/// field on the wire -- `{"op":"tool.spec/1"}`, `{"op":"tool/1", ...}`, or
+/// `{"op":"capability/1", ...}`. Used by the one-shot path; the persistent
+/// path wraps the `tool/1` body in [`PersistentToolRequest`] and the
+/// `capability/1` body in [`PersistentCapabilityRequest`] (same fields plus
+/// a JSON-RPC `id`).
 #[derive(Serialize)]
 #[serde(tag = "op")]
 pub(crate) enum Request {
@@ -132,6 +135,22 @@ pub(crate) enum Request {
         tool: String,
         call_id: String,
         arguments: serde_json::Value,
+    },
+    /// A capability call this host forwards to a subprocess plugin that
+    /// declared `capability` in its `WireManifest::provides` -- the
+    /// out-of-process leg of Edge B
+    /// (`docs/vision/DESIGN-plugin-dependencies.md` §2), closed by board
+    /// item `01M0XXXX3HK8914NE418P5GNRY`. `capability` is the SAME wire
+    /// string [`HostCapability::as_wire_str`] produces (never a second name
+    /// vocabulary); `payload` is opaque, whatever the calling plugin's own
+    /// `CapabilityCallHandle::call` sent, unread and unvalidated by this
+    /// host beyond ordinary JSON parsing -- the identical "this host does
+    /// not interpret the body" posture [`Self::ToolV1`]'s own `arguments`
+    /// already has for `tool/1`.
+    #[serde(rename = "capability/1")]
+    CapabilityV1 {
+        capability: String,
+        payload: serde_json::Value,
     },
 }
 
@@ -176,6 +195,50 @@ impl PersistentToolRequest {
             tool,
             call_id,
             arguments,
+        }
+    }
+}
+
+/// A `capability/1` request framed for the persistent NDJSON transport --
+/// the one-shot [`Request::CapabilityV1`] body (`op`, `capability`,
+/// `payload` -- the SAME field names, NOT a parallel vocabulary) plus a
+/// JSON-RPC `id` this host assigns for correlation. Mirrors
+/// [`PersistentToolRequest`] exactly, one level over: the SAME
+/// `tool/1`-vs-`capability/1` reuse [`Request`]'s own doc states for the
+/// one-shot forms, applied to the persistent framing too.
+#[derive(Serialize)]
+pub(crate) struct PersistentCapabilityRequest {
+    /// JSON-RPC correlation id, assigned monotonically by
+    /// `PersistentSession`. Echoed back in
+    /// [`PersistentCapabilityResponse::id`]; a response whose `id` does not
+    /// match the outstanding request is a protocol error (the session is
+    /// marked dead, fail-closed -- the SAME posture
+    /// [`PersistentToolRequest::id`]'s own doc states for `tool/1`).
+    pub id: u64,
+    /// The one-shot `capability/1` op tag, emitted verbatim
+    /// (`"capability/1"`) -- NOT a second op vocabulary, the literal value
+    /// [`Request::CapabilityV1`] serializes.
+    pub op: &'static str,
+    pub capability: String,
+    pub payload: serde_json::Value,
+}
+
+impl PersistentCapabilityRequest {
+    /// The constant op tag this host emits for a persistent `capability/1`
+    /// request -- the literal `"capability/1"`, the same value
+    /// [`Request::CapabilityV1`] serializes via its
+    /// `#[serde(rename = "capability/1")]`.
+    pub const OP: &'static str = "capability/1";
+
+    /// Builds a persistent `capability/1` request from the same fields the
+    /// one-shot path builds [`Request::CapabilityV1`] from, plus a
+    /// correlation `id`.
+    pub(crate) fn capability_v1(id: u64, capability: String, payload: serde_json::Value) -> Self {
+        Self {
+            id,
+            op: Self::OP,
+            capability,
+            payload,
         }
     }
 }
@@ -246,6 +309,114 @@ pub struct WireManifest {
     /// one-shot-only host).
     #[serde(default)]
     pub required_host_caps: Vec<HostCapability>,
+    /// Host capabilities this subprocess plugin would like to use but can
+    /// work without -- the wire projection of
+    /// [`conway::plugin::PluginManifest::optional_host_caps`] (board item
+    /// `01M0WWKA8K1E7JPK87J6RRQMZF`), closed for the out-of-process tier by
+    /// THIS item (`01M0XXXX3HK8914NE418P5GNRY`): until now `WireManifest`
+    /// had no field to carry it, so `crate::SubprocessPlugin::discover`
+    /// mapped it as an unconditional empty `Vec` regardless of what a
+    /// subprocess plugin declared -- a real gap between the two plugin
+    /// tiers this field closes, not a new capability.
+    ///
+    /// **Deserializes as [`HostCapability`], the SAME type
+    /// [`Self::required_host_caps`] uses, on the SAME fail-closed
+    /// boundary -- deliberately, not a lighter check for the optional
+    /// case.** A MALFORMED tag still fails `WireManifest` parsing outright
+    /// (`SubprocessPluginError::UnparseableAnswer`); a WELL-FORMED but
+    /// previously-unknown tag still parses to `HostCapability::Named` (the
+    /// sharpened boundary board item `01M0XKP5BWCPY3BHPJZHXKR4H3` put in
+    /// [`Self::required_host_caps`]'s own doc, reused verbatim here rather
+    /// than re-litigated). Only what happens with a WELL-FORMED name AFTER
+    /// parsing differs from the required field: a required cap the host
+    /// does not offer refuses the plugin at the host-capability gate
+    /// (`PluginError::MissingHostCapability`); an optional one loads the
+    /// plugin degraded, and the degradation is announced -- see
+    /// [`conway::plugin::PluginManifest::optional_host_caps`]'s own doc for
+    /// the two-channel announcement (`tracing::warn!` plus a
+    /// `ConfigWarning { code: WarningCode::OptionalHostCapabilityMissing }`).
+    /// That announce-vs-refuse split is `crates/conway/src/builder.rs`'s
+    /// job, applied uniformly to every `PluginManifest::optional_host_caps`
+    /// regardless of which plugin tier produced it -- `crate::
+    /// SubprocessPlugin::discover` maps this field into that SAME
+    /// `PluginManifest` field verbatim, never a parallel degrade path built
+    /// for the out-of-process tier alone.
+    ///
+    /// `#[serde(default)]`, the same reason [`Self::required_host_caps`]
+    /// has it: a manifest that predates this field (or simply omits it)
+    /// parses as empty -- "nothing about this plugin degrades based on a
+    /// host capability's absence" -- never a deserialization error. Test
+    /// both directions: `crate::wire::tests::wire_manifest_without_
+    /// optional_host_caps_key_defaults_to_empty` (an existing manifest
+    /// parses unchanged) and
+    /// `crate::wire::tests::wire_manifest_optional_host_caps_round_trips`
+    /// (a declared one is carried through).
+    #[serde(default)]
+    pub optional_host_caps: Vec<HostCapability>,
+    /// Capability NAMES this subprocess plugin registers a live provider
+    /// for -- the wire declaration half of Edge B
+    /// (`docs/vision/DESIGN-plugin-dependencies.md` §2,
+    /// `crate::ports::capability`'s own module doc) for the out-of-process
+    /// tier, closed by THIS item (`01M0XXXX3HK8914NE418P5GNRY`). Before this
+    /// field existed, `WireManifest` had no way for a subprocess plugin to
+    /// say "I answer capability calls for this name" at all -- Edge B's own
+    /// channel (`CapabilityProvider`/`CapabilityRegistry`) is JSON-in/
+    /// JSON-out and object-safe specifically so an out-of-process provider
+    /// could implement it (see that module's own doc), but nothing carried
+    /// a subprocess plugin's declaration onto the wire until now, which is
+    /// the exact gap this item's own title names: "a plugin written in
+    /// Python is quietly less capable than the identical plugin written in
+    /// Rust."
+    ///
+    /// **Deserializes as [`HostCapability`] -- the SAME open, namespaced
+    /// vocabulary [`Self::required_host_caps`]/[`Self::optional_host_caps`]
+    /// already validate through [`HostCapability::named`] /
+    /// `conway_core::event_name::validate_event_name`'s shared shape check
+    /// (reused via `conway_core`, not reimplemented) -- on the SAME
+    /// fail-closed boundary those two fields use: a MALFORMED name fails
+    /// `WireManifest` parsing outright; a WELL-FORMED name (bare or
+    /// `namespace.name`) parses, `Named` included. One vocabulary, one
+    /// boundary, for all three fields on this struct -- the guard rail this
+    /// item's own spec states explicitly ("`provides` must not take a
+    /// different [boundary] from `required_host_caps` in the same
+    /// struct").**
+    ///
+    /// **Does NOT map into [`conway::plugin::PluginManifest`] -- unlike every
+    /// other field on this struct.** `PluginManifest` carries no `provides`
+    /// field at all: `Plugin::capabilities() -> Vec<CapabilityRegistration>`
+    /// is a TRAIT method returning live `Arc<dyn CapabilityProvider>`
+    /// objects, not static manifest data (see that trait method's own doc,
+    /// "Deliberately a trait method, not a `PluginManifest` field" --
+    /// `PluginManifest` is a plain struct literal at three dozen call sites
+    /// across the workspace, and a required field there breaks every one at
+    /// once). `crate::SubprocessPlugin::discover` therefore reads this field
+    /// to build `CapabilityRegistration`s directly (each wrapping a
+    /// `SubprocessCapabilityProvider` that forwards a call across this
+    /// plugin's own transport -- one-shot exec or the persistent session,
+    /// whichever this plugin's `SubprocessPluginSpec::transport` selected),
+    /// returned from `SubprocessPlugin`'s own `Plugin::capabilities` impl --
+    /// never routed through `PluginManifest` at all. This is an
+    /// IMPLEMENTATION of [`conway::plugin::CapabilityProvider`], the same
+    /// existing trait an in-process provider implements, not a second,
+    /// parallel registration path invented for the out-of-process tier (see
+    /// this item's own spec: "this should be an implementation of an
+    /// existing trait, not a new parallel path").
+    ///
+    /// A capability name repeated within ONE manifest is refused at
+    /// `crate::SubprocessPlugin::discover`
+    /// (`SubprocessPluginError::InvalidManifest`), fail-closed, mirroring
+    /// this struct's own duplicate-tool-name check exactly (`discover`'s own
+    /// doc): letting a self-duplicate slide would surface later as a
+    /// same-plugin-vs-itself `DuplicateCapabilityProvider` at
+    /// `CapabilityRegistry::from_registrations`, indistinguishable from a
+    /// genuine cross-plugin conflict -- a confusing failure mode for a bug
+    /// that is entirely local to this one manifest.
+    ///
+    /// `#[serde(default)]`: a manifest that predates this field (or simply
+    /// omits it, the common case) parses as empty -- "provides nothing
+    /// callable" -- never a deserialization error.
+    #[serde(default)]
+    pub provides: Vec<HostCapability>,
     /// Plugin ids this subprocess plugin's stated function cannot perform
     /// at all without -- the wire projection of
     /// [`conway::plugin::PluginManifest::requires`], carried verbatim
@@ -634,6 +805,138 @@ pub(crate) fn parse_persistent_tool_response(
     bytes: &[u8],
 ) -> Result<(u64, WireToolResult), String> {
     let resp: PersistentToolResponse =
+        serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
+    Ok((resp.id, resp.raw.classify()?))
+}
+
+// ----- capability/1: the plugin-to-plugin capability CALL a subprocess
+//       plugin answers when its own `WireManifest::provides` names a
+//       capability another (in-process or out-of-process) plugin invokes
+//       through `CapabilityCallHandle::call` -- the out-of-process leg of
+//       Edge B, closed by board item `01M0XXXX3HK8914NE418P5GNRY`. Deliberately
+//       the SAME two-shape discipline `tool/1` already established just above
+//       (a REQUIRED `ok` boolean tells success and failure apart, never an
+//       untagged guess; `RawCapabilityResult::classify` is the identical
+//       "parse once, classify by `ok`" split `RawToolResult::classify` uses),
+//       reused rather than reinvented for this second call kind:
+//
+// Success response (one-shot stdout, or a persistent NDJSON line):
+//   {"ok": true, "result": <any JSON value, default null>}
+// Declared-failure response:
+//   {"ok": false, "error": {"message": "...", "detail": <any JSON value>}}
+//
+// `error` deserializes as [`CapabilityError`] directly -- the SAME
+// `Serialize`/`Deserialize` type `crate::ports::capability`'s own module doc
+// says a provider "constructs...from whatever its own wire answer carries"
+// (that type's own doc, describing exactly this scenario), not a
+// subprocess-only error shape invented in parallel. `ok:false` with no
+// `error` object is a CONTRACT VIOLATION -- structural malformation, fails
+// closed, mirroring `RawToolResult::classify`'s identical line for `tool/1`
+// verbatim (this module's own doc states the line once: "a missing or
+// structurally-invalid FIELD...fails closed").
+
+/// The unclassified `capability/1` answer, deserialized once before
+/// [`RawCapabilityResult::classify`] decides which of [`WireCapabilityResult`]'s
+/// two meanings it carries -- mirrors [`RawToolResult`]'s own two-step shape
+/// (struct first, classify second), one level over for the second call kind.
+#[derive(Deserialize)]
+struct RawCapabilityResult {
+    ok: bool,
+    /// The provider's successful answer -- opaque JSON, unread and
+    /// unvalidated by this host: whatever shape THIS capability's own
+    /// request/response contract defines, per
+    /// `conway_core::ports::capability::CapabilityProvider::call`'s own
+    /// doc ("undefined by this module; a future capability's own doc
+    /// states its own request/response shape"). `#[serde(default)]` so an
+    /// `ok:true` answer that omits `result`
+    /// parses as `Value::Null` -- a provider with nothing to return (a
+    /// void-shaped capability) still answers SOMETHING typed, rather than
+    /// this host inventing a value, mirroring [`CapabilityError::detail`]'s
+    /// own `Value::Null`-via-default precedent one type over.
+    #[serde(default)]
+    result: serde_json::Value,
+    /// `Some` only on a declared failure (`ok:false`); deserializes as
+    /// [`CapabilityError`] directly -- see this section's own doc.
+    #[serde(default)]
+    error: Option<CapabilityError>,
+}
+
+impl RawCapabilityResult {
+    /// Classifies this unclassified answer into a [`WireCapabilityResult`] --
+    /// the IDENTICAL split [`RawToolResult::classify`] runs for `tool/1`,
+    /// reused for this second call kind rather than a parallel rule: `ok:true`
+    /// succeeds with whatever `result` carries (default `Value::Null`);
+    /// `ok:false` WITH an `error` object succeeds as the declared
+    /// [`CapabilityError`]; `ok:false` with NO `error` object is a contract
+    /// violation and fails closed.
+    fn classify(self) -> Result<WireCapabilityResult, String> {
+        if self.ok {
+            Ok(WireCapabilityResult::Ok(self.result))
+        } else {
+            match self.error {
+                Some(err) => Ok(WireCapabilityResult::Err(err)),
+                None => Err("\"ok\": false was returned with no \"error\" object".to_string()),
+            }
+        }
+    }
+}
+
+/// A `capability/1` response framed for the persistent NDJSON transport --
+/// the one-shot [`RawCapabilityResult`] body (`ok`, `result`, `error` -- the
+/// SAME fields, NOT a parallel vocabulary) plus the echoed JSON-RPC `id`.
+/// Mirrors [`PersistentToolResponse`] exactly, one level over.
+#[derive(Deserialize)]
+pub(crate) struct PersistentCapabilityResponse {
+    /// The echoed correlation id; must match the outstanding request's
+    /// [`PersistentCapabilityRequest::id`] -- a mismatch is a protocol
+    /// error, not silently re-routed (mirrors
+    /// [`PersistentToolResponse::id`]'s own doc).
+    pub id: u64,
+    /// The one-shot `capability/1` answer body, flattened in so `ok`/
+    /// `result`/`error` sit alongside `id` on the same JSON object.
+    #[serde(flatten)]
+    raw: RawCapabilityResult,
+}
+
+/// A `capability/1` call's classified answer -- either the provider's
+/// successful `result` value, or its declared [`CapabilityError`]. Mirrors
+/// [`WireToolResult`]'s own two-variant shape, one level over: this is the
+/// wire projection `crate::SubprocessCapabilityProvider::call` classifies
+/// into the `Result<serde_json::Value, CapabilityError>`
+/// [`conway::plugin::CapabilityProvider::call`]'s own trait signature
+/// requires.
+pub(crate) enum WireCapabilityResult {
+    Ok(serde_json::Value),
+    Err(CapabilityError),
+}
+
+/// Deserializes and classifies one `capability/1` answer (one-shot path).
+/// `Err(String)` covers both "not valid JSON" and "valid JSON, `ok: false`,
+/// but no `error` object" -- mirrors [`parse_tool_result`]'s own identical
+/// two-cause `Err(String)`, reused rather than distinguished further here
+/// either (the caller, `SubprocessCapabilityProvider::call`, maps both onto
+/// one `CapabilityError`, the same way `SubprocessTool::invoke` maps
+/// `parse_tool_result`'s onto one `ToolError::Internal`).
+pub(crate) fn parse_capability_result(bytes: &[u8]) -> Result<WireCapabilityResult, String> {
+    let raw: RawCapabilityResult = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
+    raw.classify()
+}
+
+/// Deserializes and classifies one persistent NDJSON `capability/1` response
+/// line -- the one-shot [`parse_capability_result`] shape plus a JSON-RPC
+/// `id`. Returns the echoed `id` (for correlation against the outstanding
+/// request) and the classified [`WireCapabilityResult`]. Mirrors
+/// [`parse_persistent_tool_response`]'s own discipline exactly, one level
+/// over: `Err(String)` covers "not valid JSON", "missing `id`", and
+/// "`ok: false` with no `error` object" -- a malformed frame is a typed parse
+/// error at the call site (`session::PersistentSession::capability_round_trip`
+/// marks the session dead and reports `SubprocessPluginError::
+/// MalformedFrame`, projected onto [`CapabilityError`] -- see that method's
+/// own doc for which existing posture this reuses), never a deadlock.
+pub(crate) fn parse_persistent_capability_response(
+    bytes: &[u8],
+) -> Result<(u64, WireCapabilityResult), String> {
+    let resp: PersistentCapabilityResponse =
         serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
     Ok((resp.id, resp.raw.classify()?))
 }
@@ -1979,5 +2282,205 @@ mod tests {
             "lagged tag present: {s}"
         );
         assert!(s.contains("\"skipped\":3"), "skipped field present: {s}");
+    }
+
+    // ----- `WireManifest::optional_host_caps`/`::provides` parser tests
+    //       (board item `01M0XXXX3HK8914NE418P5GNRY`, acceptance criterion 1).
+    //       Mirrors `required_host_caps`' own untested-but-established
+    //       discipline: `#[serde(default)]` so an existing manifest parses
+    //       unchanged, and the SAME `HostCapability` fail-closed-malformed /
+    //       accept-well-formed-unknown boundary applies to both new fields.
+
+    /// A manifest predating `optional_host_caps` (no such key in the JSON)
+    /// parses unchanged, with the field defaulting to empty -- acceptance
+    /// criterion 1's first half.
+    #[test]
+    fn wire_manifest_without_optional_host_caps_key_defaults_to_empty() {
+        let json = r#"{
+            "id": "acme.greet",
+            "version": "0.1.0",
+            "tools": []
+        }"#;
+        let manifest: WireManifest = serde_json::from_str(json).expect("predates the field");
+        assert_eq!(manifest.optional_host_caps, Vec::new());
+        assert_eq!(
+            manifest.provides,
+            Vec::new(),
+            "provides also defaults to empty for a manifest predating it"
+        );
+    }
+
+    /// A manifest that DOES declare `optional_host_caps` carries the
+    /// declared caps through -- acceptance criterion 1's second half ("Test
+    /// both").
+    #[test]
+    fn wire_manifest_optional_host_caps_round_trips() {
+        let json = r#"{
+            "id": "acme.greet",
+            "version": "0.1.0",
+            "tools": [],
+            "optional_host_caps": ["persistent_transport", "acme.greet.extra"]
+        }"#;
+        let manifest: WireManifest = serde_json::from_str(json).expect("well-formed caps parse");
+        assert_eq!(
+            manifest.optional_host_caps,
+            vec![
+                HostCapability::PersistentTransport,
+                HostCapability::named("acme.greet.extra").unwrap(),
+            ]
+        );
+    }
+
+    /// A manifest declaring `provides` carries the declared capability names
+    /// through, normalizing a core-blessed bare name and preserving a
+    /// namespaced one -- acceptance criterion 3's parsing half.
+    #[test]
+    fn wire_manifest_provides_parses_declared_capability_names() {
+        let json = r#"{
+            "id": "acme.greet",
+            "version": "0.1.0",
+            "tools": [],
+            "provides": ["acme.greet.checkbox", "subagent"]
+        }"#;
+        let manifest: WireManifest =
+            serde_json::from_str(json).expect("well-formed provides parse");
+        assert_eq!(
+            manifest.provides,
+            vec![
+                HostCapability::named("acme.greet.checkbox").unwrap(),
+                HostCapability::Subagent,
+            ]
+        );
+    }
+
+    /// A MALFORMED capability name in `provides` fails `WireManifest`
+    /// parsing outright -- the SAME fail-closed boundary
+    /// `required_host_caps`/`optional_host_caps` already enforce, not a
+    /// different one for `provides` (this item's own guard rail).
+    #[test]
+    fn wire_manifest_provides_malformed_name_fails_closed() {
+        let json = r#"{
+            "id": "acme.greet",
+            "version": "0.1.0",
+            "tools": [],
+            "provides": [".bad"]
+        }"#;
+        let err = serde_json::from_str::<WireManifest>(json)
+            .expect_err("a malformed capability name must fail WireManifest parsing");
+        assert!(
+            err.to_string().to_lowercase().contains("host capability")
+                || err.to_string().to_lowercase().contains("malformed"),
+            "the parse error should name the shape violation: {err}"
+        );
+    }
+
+    /// A WELL-FORMED but previously-unknown `provides` name PARSES (resolving
+    /// to `HostCapability::Named`) -- the sharpened fail-closed boundary board
+    /// item `01M0XKP5BWCPY3BHPJZHXKR4H3` put in `required_host_caps`' own
+    /// doc, reused verbatim for `provides` rather than re-litigated: opening
+    /// the vocabulary means a third party's own capability name is not
+    /// rejected merely for being unrecognized.
+    #[test]
+    fn wire_manifest_provides_well_formed_unknown_name_parses_as_named() {
+        let json = r#"{
+            "id": "acme.greet",
+            "version": "0.1.0",
+            "tools": [],
+            "provides": ["acme.greet.brand_new_capability"]
+        }"#;
+        let manifest: WireManifest =
+            serde_json::from_str(json).expect("a well-formed but unknown name still parses");
+        assert_eq!(
+            manifest.provides,
+            vec![HostCapability::Named(
+                "acme.greet.brand_new_capability".to_string()
+            )]
+        );
+    }
+
+    // ----- capability/1 parser tests (board item `01M0XXXX3HK8914NE418P5GNRY`).
+    //       Mirrors the tool/1 parser test discipline directly above:
+    //       ok:true succeeds (default `result` when omitted); ok:false WITH
+    //       an `error` object succeeds as the declared `CapabilityError`;
+    //       ok:false with NO `error` object fails closed.
+
+    /// A well-formed `ok:true` answer classifies as `Ok`, carrying whatever
+    /// `result` the provider sent.
+    #[test]
+    fn capability_result_ok_true_parses_result_value() {
+        let bytes = br#"{"ok": true, "result": {"echoed": 42}}"#;
+        let result = parse_capability_result(bytes).expect("well-formed success answer");
+        match result {
+            WireCapabilityResult::Ok(value) => {
+                assert_eq!(value, serde_json::json!({"echoed": 42}));
+            }
+            WireCapabilityResult::Err(err) => panic!("expected Ok, got Err({err:?})"),
+        }
+    }
+
+    /// An `ok:true` answer that OMITS `result` defaults to `Value::Null` --
+    /// a provider with nothing to return still answers successfully, never a
+    /// parse error.
+    #[test]
+    fn capability_result_ok_true_missing_result_defaults_to_null() {
+        let bytes = br#"{"ok": true}"#;
+        let result = parse_capability_result(bytes).expect("omitted result defaults, not errors");
+        match result {
+            WireCapabilityResult::Ok(value) => assert_eq!(value, serde_json::Value::Null),
+            WireCapabilityResult::Err(err) => panic!("expected Ok, got Err({err:?})"),
+        }
+    }
+
+    /// An `ok:false` answer WITH an `error` object classifies as `Err`,
+    /// carrying the provider's own [`CapabilityError`] verbatim.
+    #[test]
+    fn capability_result_ok_false_with_error_parses_capability_error() {
+        let bytes =
+            br#"{"ok": false, "error": {"message": "acme.greet.checkbox denied", "detail": {"code": "denied"}}}"#;
+        let result = parse_capability_result(bytes).expect("a declared failure still parses");
+        match result {
+            WireCapabilityResult::Err(err) => {
+                assert_eq!(err.message, "acme.greet.checkbox denied");
+                assert_eq!(err.detail, serde_json::json!({"code": "denied"}));
+            }
+            WireCapabilityResult::Ok(value) => panic!("expected Err, got Ok({value:?})"),
+        }
+    }
+
+    /// An `ok:false` answer with NO `error` object is a contract violation --
+    /// fails closed, the SAME line `RawToolResult::classify` draws for
+    /// `tool/1` verbatim.
+    #[test]
+    fn capability_result_ok_false_without_error_fails_closed() {
+        let bytes = br#"{"ok": false}"#;
+        let err = parse_capability_result(bytes)
+            .expect_err("ok:false with no error object must fail closed");
+        assert!(
+            err.contains("error"),
+            "the parse error names the missing error object: {err}"
+        );
+    }
+
+    /// A non-boolean/missing `ok` is structural malformation -- fails closed
+    /// at the JSON-shape level (the `ok` field is required, not defaulted).
+    #[test]
+    fn capability_result_missing_ok_fails_closed() {
+        let bytes = br#"{"result": 1}"#;
+        parse_capability_result(bytes).expect_err("a missing ok field must fail closed");
+    }
+
+    /// The persistent `capability/1` response parser returns the echoed `id`
+    /// alongside the classified result -- the same correlation shape
+    /// `parse_persistent_tool_response` proves for `tool/1`.
+    #[test]
+    fn persistent_capability_response_correlates_id_and_classifies() {
+        let bytes = br#"{"id": 7, "ok": true, "result": "hello"}"#;
+        let (id, result) =
+            parse_persistent_capability_response(bytes).expect("well-formed persistent answer");
+        assert_eq!(id, 7);
+        match result {
+            WireCapabilityResult::Ok(value) => assert_eq!(value, serde_json::json!("hello")),
+            WireCapabilityResult::Err(err) => panic!("expected Ok, got Err({err:?})"),
+        }
     }
 }

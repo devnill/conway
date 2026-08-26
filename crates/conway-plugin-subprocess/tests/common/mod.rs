@@ -1496,3 +1496,172 @@ for line in sys.stdin:
         sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
     sys.stdout.flush()
 "#;
+
+// ----- capability/1 fixtures (board item `01M0XXXX3HK8914NE418P5GNRY`) -----
+
+/// A one-shot fixture that declares one (unused) tool AND registers a
+/// capability provider via `provides` -- `crates/conway-plugin-subprocess/
+/// tests/capability_channel.rs`'s own load-bearing fixture for acceptance
+/// criteria 3/4/5. `capability/1` echoes `payload` wrapped in
+/// `{"echoed": payload}`, UNLESS `payload` is exactly `{"boom": true}`, which
+/// answers a declared failure instead -- the identical single-fixture
+/// success/failure split [`GREET_PLUGIN`] already uses for `tool/1`, one
+/// call kind over.
+pub const PROVIDES_ECHO_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+req = json.loads(sys.stdin.read())
+op = req.get("op")
+
+if op == "tool.spec/1":
+    print(json.dumps({
+        "id": "acme.provider",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "unused",
+            "description": "declared only so tool.spec/1 is non-empty; not called by this fixture's own tests",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+        "provides": ["acme.provider.echo"],
+    }))
+elif op == "capability/1":
+    payload = req.get("payload")
+    if payload == {"boom": True}:
+        print(json.dumps({
+            "ok": False,
+            "error": {"message": "acme.provider.echo declined", "detail": {"code": "boom"}},
+        }))
+    else:
+        print(json.dumps({"ok": True, "result": {"echoed": payload}}))
+else:
+    print(json.dumps({
+        "ok": False,
+        "error": {"kind": "internal", "detail": f"unknown op {op}"},
+    }))
+"#;
+
+/// A one-shot fixture that declares one (unused) tool AND an
+/// `optional_host_caps` entry the test harness's own `ConwayBuilder` never
+/// offers (`persistent_transport` -- the harness config carries no
+/// `[plugins].subprocess[]` entries at all, so `HostCaps::from_config` never
+/// offers it regardless of which transport THIS fixture's own
+/// `SubprocessPluginSpec` happens to use) -- acceptance criterion 2's own
+/// fixture: the plugin must still LOAD, degraded, with the SAME
+/// `WarningCode::OptionalHostCapabilityMissing` announcement an in-process
+/// plugin's identical field already produces.
+pub const OPTIONAL_HOST_CAP_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+req = json.loads(sys.stdin.read())
+op = req.get("op")
+
+if op == "tool.spec/1":
+    print(json.dumps({
+        "id": "acme.optional-cap",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "unused",
+            "description": "declared only so tool.spec/1 is non-empty",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+        "optional_host_caps": ["persistent_transport"],
+    }))
+else:
+    print(json.dumps({
+        "ok": False,
+        "error": {"kind": "internal", "detail": f"unknown op {op}"},
+    }))
+"#;
+
+/// A persistent-transport fixture that declares `provides` and answers the
+/// FIRST `capability/1` call, then exits nonzero before answering a second --
+/// acceptance criterion 6's own "dead child mid-call" fixture, the
+/// `capability/1` counterpart of [`PERSISTENT_DIE_AFTER_ONE_PLUGIN`].
+pub const PERSISTENT_PROVIDES_DIE_AFTER_ONE_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+def manifest():
+    return {
+        "id": "acme.provider-die",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "unused",
+            "description": "declared only so tool.spec/1 is non-empty",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+        "provides": ["acme.provider-die.echo"],
+    }
+
+count = 0
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    rid = req.get("id")
+    if op == "initialize/1":
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}]}) + "\n")
+        sys.stdout.flush()
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+        sys.stdout.flush()
+    elif op == "capability/1":
+        count += 1
+        if count == 1:
+            sys.stdout.write(json.dumps({"id": rid, "ok": True, "result": {"echoed": req.get("payload")}}) + "\n")
+            sys.stdout.flush()
+            sys.exit(1)
+        else:
+            # unreachable: exited above after the first call
+            sys.exit(1)
+    else:
+        sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": {"kind": "internal", "detail": f"unknown op {op}"}}) + "\n")
+        sys.stdout.flush()
+"#;
+
+/// A persistent-transport fixture that declares `provides` and writes a
+/// COMPLETE line of invalid JSON in answer to a `capability/1` call, then
+/// exits -- acceptance criterion 6's own "malformed response" fixture, the
+/// `capability/1` counterpart of [`PERSISTENT_BAD_JSON_PLUGIN`].
+pub const PERSISTENT_PROVIDES_BAD_JSON_PLUGIN: &str = r#"#!/usr/bin/env python3
+import sys, json
+
+def manifest():
+    return {
+        "id": "acme.provider-badjson",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "unused",
+            "description": "declared only so tool.spec/1 is non-empty",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+        "provides": ["acme.provider-badjson.echo"],
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    op = req.get("op")
+    if op == "initialize/1":
+        rid = req.get("id")
+        sys.stdout.write(json.dumps({"id": rid, "ok": True, "major": 1, "minor_min": 1, "points": [{"name": "tool/1", "version": 1}]}) + "\n")
+        sys.stdout.flush()
+    elif op == "tool.spec/1":
+        sys.stdout.write(json.dumps(manifest()) + "\n")
+        sys.stdout.flush()
+    elif op == "capability/1":
+        sys.stdout.write("this is not valid json\n")
+        sys.stdout.flush()
+        sys.exit(0)
+"#;

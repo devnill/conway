@@ -17,13 +17,24 @@
 //! `permission.policy/1` declaration, the one-way `observe/1` observer sink
 //! (board item `01M03VKQ738DTGHHK2C4RWXC0E`), and the `status.declare/1` /
 //! `status/1` status push (same item): no `context.hook/1`,
-//! no capability handshake beyond the `PluginManifest::required_host_caps`
-//! the wire now CARRIES (board item `01M03VJXARFHSDAGHFXGCWKJTY`: a
-//! subprocess plugin declares its required host caps in
-//! `WireManifest::required_host_caps`, mapped into
-//! `PluginManifest::required_host_caps` here and consulted by the `conway`
-//! builder at registration -- a cap the host lacks refuses the plugin; an
-//! unknown cap tag fails closed at parse). The persistent transport DOES
+//! no capability handshake beyond the `PluginManifest::required_host_caps`/
+//! `::optional_host_caps` the wire now CARRIES (board item
+//! `01M03VJXARFHSDAGHFXGCWKJTY` for `required_host_caps`; `optional_host_caps`
+//! closed for THIS tier by board item `01M0XXXX3HK8914NE418P5GNRY`, which
+//! also added the `capability/1` call kind below -- a subprocess plugin
+//! declares its required/optional host caps in
+//! `WireManifest::required_host_caps`/`::optional_host_caps`, mapped into
+//! the matching `PluginManifest` fields here and consulted by the `conway`
+//! builder at registration -- a missing required cap refuses the plugin, a
+//! missing optional one loads it degraded and announced; an unknown cap tag
+//! fails closed at parse either way). The SAME item added `WireManifest::
+//! provides` and the `capability/1` call kind: a subprocess plugin
+//! declaring a capability name there gets a REAL `CapabilityProvider`
+//! registered through `Plugin::capabilities`, forwarding calls over
+//! whichever transport (one-shot or persistent) this plugin already uses
+//! for `tool/1` -- Edge B (`docs/vision/DESIGN-plugin-dependencies.md` §2),
+//! now reachable by the out-of-process tier on the same terms as an
+//! in-process plugin. The persistent transport DOES
 //! now run an `initialize/1` version-negotiation handshake at session open
 //! (board item `01M03VK7MRPSAVWMW7YNYPRPGT`): `PersistentSession::
 //! initialize` exchanges one `initialize/1` request/response with the
@@ -110,7 +121,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use conway::plugin::{
-    async_trait, kill_group, ChildSessionError, EventSinkHandle, PathArgs, Plugin, PluginManifest,
+    async_trait, kill_group, CapabilityError, CapabilityProvider, CapabilityRegistration,
+    ChildSessionError, EventSinkHandle, HostCapability, PathArgs, Plugin, PluginManifest,
     PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution, RenderKind, Tool,
     ToolCall, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
@@ -373,6 +385,29 @@ impl SubprocessPluginError {
             },
         }
     }
+
+    /// Maps this host-level error onto the [`CapabilityError`] a
+    /// [`CapabilityProvider::call`] implementor returns -- the capability
+    /// channel's OWN failure signature has no `ToolError` in it at all
+    /// (`crates/conway-core/src/ports/capability.rs`'s
+    /// `CapabilityProvider::call` returns
+    /// `Result<serde_json::Value, CapabilityError>`, never `ToolError`), so
+    /// [`Self::into_tool_error`]'s target type does not fit here. This is
+    /// the SAME `SubprocessPluginError` taxonomy that method projects onto
+    /// `ToolError` -- dead session (`SessionDied`), timeout (`TimedOut`), a
+    /// malformed frame (`MalformedFrame`), the same causes `crate::session::
+    /// PersistentSession::tool_round_trip` already surfaces on the `tool/1`
+    /// path -- projected here onto `CapabilityError` instead, for
+    /// `PersistentSession::capability_round_trip` (this crate's own
+    /// `capability/1` counterpart). Reuses this error's own `Display`
+    /// (unchanged, the identical text a tool caller would see) as
+    /// `message`, `detail: Value::Null` -- a capability caller sees the
+    /// exact same dead-session/timeout/malformed-frame wording a tool
+    /// caller would, on the SAME failures, just carried through this
+    /// crate's second trait implementation rather than a distinct one.
+    pub(crate) fn into_capability_error(self) -> CapabilityError {
+        CapabilityError::new(self.to_string())
+    }
 }
 
 // `crate::unix` (this crate's own hand-copied `kill_group`) used to live
@@ -532,6 +567,20 @@ pub struct SubprocessPlugin {
     /// the same child process); this is a second `Arc` clone, not a second
     /// session.
     session: Option<Arc<PersistentSession>>,
+    /// The capabilities this plugin declared via `WireManifest::provides`
+    /// (board item `01M0XXXX3HK8914NE418P5GNRY`) -- the source
+    /// [`Plugin::capabilities`] builds a fresh [`CapabilityRegistration`]
+    /// per name from, each wrapping a [`SubprocessCapabilityProvider`] that
+    /// shares this plugin's own `process_spec`/`session`. Empty for a
+    /// plugin that declares no `provides` (the common case, unchanged from
+    /// before this item).
+    provides: Vec<HostCapability>,
+    /// This plugin's own spec, kept here (in addition to each
+    /// `SubprocessTool`'s own clone) so [`Plugin::capabilities`] can build a
+    /// [`SubprocessCapabilityProvider`] for the one-shot transport without a
+    /// tool object to borrow it from -- a capability call is answered
+    /// independently of any declared tool.
+    process_spec: Arc<SubprocessPluginSpec>,
 }
 
 impl std::fmt::Debug for SubprocessPlugin {
@@ -544,6 +593,7 @@ impl std::fmt::Debug for SubprocessPlugin {
             .field("manifest", &self.manifest)
             .field("tool_count", &self.tools.len())
             .field("persistent", &self.session.is_some())
+            .field("provides", &self.provides)
             .finish()
     }
 }
@@ -635,21 +685,43 @@ impl SubprocessPlugin {
             });
         }
 
+        // A capability name repeated within THIS manifest is refused here,
+        // fail-closed -- mirrors the duplicate-tool-name check just above
+        // (`WireManifest::provides`'s own doc): letting a self-duplicate
+        // slide would surface later as a same-plugin-vs-itself
+        // `DuplicateCapabilityProvider` at `CapabilityRegistry::
+        // from_registrations`, indistinguishable from a genuine
+        // cross-plugin conflict.
+        let mut provided_cap_names = std::collections::HashSet::new();
+        for cap in &manifest.provides {
+            if !provided_cap_names.insert(cap.as_wire_str().to_string()) {
+                return Err(SubprocessPluginError::InvalidManifest {
+                    config_id: spec.config_id.clone(),
+                    detail: format!(
+                        "declared capability '{}' is duplicated in `provides`",
+                        cap.as_wire_str()
+                    ),
+                });
+            }
+        }
+
         let plugin_manifest = PluginManifest {
             id: manifest.id.clone(),
             version: manifest.version.clone(),
             tools: specs.iter().map(|s| s.name.clone()).collect(),
             required_host_caps: manifest.required_host_caps.clone(),
             // `optional_host_caps` (board item `01M0WWKA8K1E7JPK87J6RRQMZF`)
-            // is EMPTY for a subprocess plugin, deliberately and for now:
-            // `WireManifest` has no field to carry it, so there is nothing
-            // to map. An out-of-process plugin can therefore declare a
-            // REQUIRED host capability but not an optional one -- the same
-            // in-process/out-of-process asymmetry `WireManifest::requires`/
-            // `optional` (the two lines below) was added to close, one
-            // field later. Filed rather than papered over; see this
-            // construction site's own board item trail.
-            optional_host_caps: Vec::new(),
+            // carried verbatim from `WireManifest::optional_host_caps`
+            // (board item `01M0XXXX3HK8914NE418P5GNRY`, that field's own
+            // doc) into the SAME `PluginManifest` field an in-process
+            // `Plugin` populates -- consulted by the SAME
+            // `ConwayBuilder::build` degrade-and-announce loop that field's
+            // own doc describes, over the resolved set, not a subprocess-
+            // only variant of it. Used to be an unconditional `Vec::new()`
+            // here (`WireManifest` had no field to carry it) -- this is the
+            // gap that construction site's own comment named rather than
+            // papered over, now closed.
+            optional_host_caps: manifest.optional_host_caps.clone(),
             // `WireManifest::requires`/`optional` (board item
             // `01M0XCD3P8S3VR0T1H0KNG5TMD`) carried verbatim into the same
             // `PluginManifest` fields an in-process `Plugin` populates --
@@ -744,6 +816,8 @@ impl SubprocessPlugin {
             manifest: plugin_manifest,
             tools,
             session,
+            provides: manifest.provides,
+            process_spec: spec,
         })
     }
 
@@ -834,6 +908,42 @@ impl SubprocessPlugin {
             })
             .collect()
     }
+
+    /// The capability providers this plugin registers over `provides`
+    /// (board item `01M0XXXX3HK8914NE418P5GNRY`) -- the out-of-process leg
+    /// of Edge B (`docs/vision/DESIGN-plugin-dependencies.md` §2), closing
+    /// this item's own title defect: a subprocess plugin declaring
+    /// `WireManifest::provides` now registers a REAL
+    /// [`CapabilityProvider`], reachable through
+    /// [`Plugin::capabilities`] exactly like an in-process one -- an
+    /// IMPLEMENTATION of that existing trait, never a second registration
+    /// path built alongside it (see `WireManifest::provides`'s own doc for
+    /// the full argument).
+    ///
+    /// One [`SubprocessCapabilityProvider`] per declared name, each
+    /// forwarding over THIS plugin's own transport -- the persistent
+    /// session when one exists, otherwise a fresh one-shot spawn per call
+    /// (the identical one-shot-vs-persistent dispatch
+    /// `SubprocessTool::invoke` already makes for `tool/1`, mirrored here
+    /// for `capability/1`). Cheap to rebuild per call: `process_spec`/
+    /// `session` are both `Arc` clones, and [`CapabilityRegistration`]
+    /// carries no `Clone` bound of its own (mirroring
+    /// `Plugin::capabilities`' own "no initialization hook" contract --
+    /// each call to this method is free to reconstruct its answer). Empty
+    /// when `provides` was empty (the common, unchanged case).
+    pub fn capabilities(&self) -> Vec<CapabilityRegistration> {
+        self.provides
+            .iter()
+            .map(|cap| CapabilityRegistration {
+                capability: cap.clone(),
+                provider: Arc::new(SubprocessCapabilityProvider {
+                    capability: cap.as_wire_str().to_string(),
+                    process_spec: self.process_spec.clone(),
+                    session: self.session.clone(),
+                }) as Arc<dyn CapabilityProvider>,
+            })
+            .collect()
+    }
 }
 
 impl Plugin for SubprocessPlugin {
@@ -873,6 +983,14 @@ impl Plugin for SubprocessPlugin {
     /// empty `Vec` is what every other `Plugin` implementor still returns.
     fn status_contributions(&self) -> Vec<PluginStatusContribution> {
         SubprocessPlugin::status_contributions(self)
+    }
+
+    /// The capability providers this plugin registers over
+    /// `WireManifest::provides` (board item `01M0XXXX3HK8914NE418P5GNRY`).
+    /// See [`Self::capabilities`]'s own doc. The default `Vec::new()` is
+    /// what every other `Plugin` implementor still returns.
+    fn capabilities(&self) -> Vec<CapabilityRegistration> {
+        SubprocessPlugin::capabilities(self)
     }
 }
 
@@ -1008,5 +1126,95 @@ impl Tool for SubprocessTool {
     /// (`Tool::render_kind`'s own doc).
     fn render_kind(&self) -> RenderKind {
         RenderKind::default()
+    }
+}
+
+/// One capability a [`SubprocessPlugin`] registers via
+/// `WireManifest::provides` (board item `01M0XXXX3HK8914NE418P5GNRY`) --
+/// an IMPLEMENTATION of the existing [`CapabilityProvider`] trait
+/// (`crates/conway-core/src/ports/capability.rs`), never a second,
+/// parallel registration mechanism. `capability` is baked in (the wire
+/// string this provider answers for) since one `SubprocessPlugin` may
+/// `provides` more than one name over the SAME transport, and the child
+/// needs to be told WHICH capability a given `capability/1` request is
+/// for -- mirroring `SubprocessTool::spec.name` doing the identical job
+/// for `tool/1`.
+///
+/// **Dispatch mirrors `SubprocessTool::invoke` exactly, one call kind
+/// over:** the persistent session's `capability_round_trip` when one
+/// exists, otherwise a fresh one-shot spawn per call, over the SAME
+/// [`SubprocessPluginSpec`] a declared tool on this same plugin would use.
+/// A capability call is answered independently of any declared tool --
+/// this provider does not borrow one.
+struct SubprocessCapabilityProvider {
+    capability: String,
+    process_spec: Arc<SubprocessPluginSpec>,
+    session: Option<Arc<PersistentSession>>,
+}
+
+#[async_trait]
+impl CapabilityProvider for SubprocessCapabilityProvider {
+    /// **Dead-child and malformed-response outcomes, stated (this item's
+    /// own hard rule: "a capability declared but unservable is worse than
+    /// one not declared").** Both transports reuse an EXISTING posture,
+    /// never a new one invented for this call kind:
+    ///
+    /// - **Persistent transport:** dispatches through
+    ///   `session::PersistentSession::capability_round_trip`, which reuses
+    ///   the SAME `ChildSession::framed_round_trip` fail-closed machinery
+    ///   `tool_round_trip` already uses for `tool/1` -- a dead session
+    ///   (`SubprocessPluginError::SessionDied`), a per-call timeout
+    ///   (`TimedOut`), and an unterminated/malformed frame
+    ///   (`MalformedFrame`, which also marks the session dead) all surface
+    ///   through [`SubprocessPluginError::into_capability_error`] (this
+    ///   crate's own alternate projection of the SAME error taxonomy
+    ///   `into_tool_error` already projects onto `ToolError` -- see that
+    ///   method's own doc), never a hang.
+    /// - **One-shot transport:** dispatches through [`spawn_one_shot`], the
+    ///   SAME per-call spawn `SubprocessTool::invoke`'s one-shot branch
+    ///   uses for `tool/1` -- a spawn failure, a `timeout_ms` deadline
+    ///   (process-group kill), and a nonzero exit are every one of
+    ///   [`SubprocessPluginError`]'s existing one-shot variants, again
+    ///   projected through `into_capability_error`. A malformed
+    ///   `capability/1` answer (`wire::parse_capability_result` failing, or
+    ///   `ok:false` with no `error` object -- see `wire`'s own module doc
+    ///   for the fail-closed line) is [`CapabilityError::new`] naming the
+    ///   plugin's `config_id` and the parse detail, mirroring
+    ///   `SubprocessTool::invoke`'s identical `ToolError::Internal` mapping
+    ///   for an unparseable `tool/1` answer.
+    ///
+    /// Neither transport can hang: every branch below either returns
+    /// promptly or is already bounded by `SubprocessPluginSpec::timeout_ms`
+    /// (a per-call deadline on both the one-shot spawn and the persistent
+    /// framed read) -- the identical "never a hang" guarantee
+    /// `SubprocessTool::invoke`'s own doc states for `tool/1`, extended to
+    /// this second call kind rather than re-argued from scratch.
+    async fn call(&self, payload: serde_json::Value) -> Result<serde_json::Value, CapabilityError> {
+        if let Some(session) = &self.session {
+            return session
+                .capability_round_trip(self.capability.clone(), payload)
+                .await;
+        }
+
+        let request = wire::Request::CapabilityV1 {
+            capability: self.capability.clone(),
+            payload,
+        };
+        let bytes = serde_json::to_vec(&request).map_err(|err| {
+            CapabilityError::new(format!("failed to serialize capability/1 request: {err}"))
+        })?;
+
+        let stdout = spawn_one_shot(&self.process_spec, &bytes)
+            .await
+            .map_err(SubprocessPluginError::into_capability_error)?;
+
+        match wire::parse_capability_result(stdout.trim_ascii()) {
+            Ok(wire::WireCapabilityResult::Ok(value)) => Ok(value),
+            Ok(wire::WireCapabilityResult::Err(err)) => Err(err),
+            Err(detail) => Err(CapabilityError::new(format!(
+                "plugin '{}' produced an unparseable capability/1 answer: {detail}",
+                self.process_spec.config_id
+            ))),
+        }
     }
 }
