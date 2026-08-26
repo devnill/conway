@@ -382,6 +382,40 @@ contribution still answers that; the reasoning behind it is now honest.
 **Also closed: §6b's remaining question.** The badge goes in the status line,
 beside the mode.
 
+**2026-08-25 — Four items above, described as designed but not built,
+shipped in code the same day.** Verified against the tree at the time of
+writing this entry; the prose above is left as written, since it correctly
+describes the gap as it stood when this page was drafted.
+
+- §2d's *"`BackTab` (Shift+Tab) is entirely unbound — grep returns
+  nothing"* no longer holds: `crates/conway-cli/src/tui/input.rs`'s
+  `handle_key` now binds `KeyCode::BackTab` to `Action::CyclePermissionMode`.
+- §3c's proposed `on_failure: Deny | Prompt` (declared per hook
+  registration, defaulting to `Deny`, never `Allow`) is built:
+  `conway_core::hook::HookOnFailure` is exactly that two-variant enum with
+  no `Allow` case, `HookEntry::on_failure`/`PreToolUseHookSpec::on_failure`
+  carry it from config into the runtime, and
+  `PermissionBroker::pre_tool_use_hook_denial` resolves a hook-runner
+  outage through it precisely as this section describes.
+- §3d's named blocker — *"the TUI status view never reads
+  [`plugin_status_contributions`]"* — is closed:
+  `crates/conway-cli/src/tui/app/startup.rs`'s `App::new` now copies
+  `Conway::plugin_status_contributions()` into `AppState`, and
+  `crates/conway-cli/src/tui/view/status.rs` renders the collected
+  contributions in the status line.
+- §4's recommendation — *"backends declare locality"* — is built:
+  `BackendEntry::local: bool` (`crates/conway/src/config/schema.rs`) is a
+  typed, `#[serde(default)]` field, declared by the operator rather than
+  inferred from `base_url`, defaulting to `false`.
+
+**§5's description of `conway.permissions` is still entirely prospective —
+the plugin itself does not exist.** Only the mechanisms it would depend on
+(the keybinding, `on_failure`, the status contribution, backend locality)
+have landed; `Plugin::hooks()` (§2a, §5's own "dependency ordering is
+real") still does not exist, so a plugin still cannot register the
+`pre_tool_use` hook this design's whole premise needs. §6's open questions
+(6a's override direction, 6c, 6d) are untouched by this entry.
+
 ---
 
 ## 9. Standing rulings recorded elsewhere

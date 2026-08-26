@@ -317,32 +317,32 @@ leaving it to be rediscovered.
 
 **Rung.** Two, and one of the two hardest items on this page.
 
-### 9. The plugin-reachable status-line surface
+### 9. The plugin-reachable status-line surface — DONE, not a candidate
 
-**What it is.** `docs/plugins/hooks.md` point 12
+**What it was.** `docs/plugins/hooks.md` point 12
 (`status.declare/1`/`status/1`) — letting a plugin (not just an embedder)
 contribute a field to the status line.
 
-**Surface.** Terminal app only; this is purely a TUI concern.
-
-**Cost.** Core-adjacent plugin-API work, not a plugin itself. Medium.
-Currently **designed-not-built** and untracked by any other item
-(`hooks.md` point 12's own status line).
-
-**Why it's here at all.** It isn't user-visible value on its own — it's
-infrastructure the memory and skill plugins above want (a small
-"3 facts recalled" or "skill: git-commit active" status fragment is the
-kind of ambient legibility that makes a quality-of-life feature feel
-trustworthy rather than invisible, and `DESIGN-context-path.md` §4.5 —
-"a person has to be able to see it" — is exactly this argument one layer
-up from curation). Sequence it just ahead of memory/skills if those get
-built, not after.
+**Status.** Shipped. Both halves of this entry's old framing were wrong by
+the time a reader would act on it: it was not untracked (built to close
+`DESIGN-permission-modes.md` §3d, itself driven by the same-day
+`DESIGN-plugin-dependencies.md` §1 finding), and it is not designed-not-built
+— `Conway::plugin_status_contributions()` is collected, populated at
+startup (`crates/conway-cli/src/tui/app/startup.rs`), and rendered in the
+status line (`crates/conway-cli/src/tui/view/status.rs`). Left here, marked
+done, only so the memory/skill entries above that named it as a dependency
+still resolve; it is no longer a gap to sequence work against.
 
 ### 10. Out-of-process (non-Rust) plugin transport
 
 **What it is.** The wire protocol for running a plugin as a separate
 process, `docs/plugins/README.md`'s "Everything not in this set" item one:
-"designed and never built."
+"designed and never built." **That quote is now stale on its own terms:**
+`docs/plugins/README.md` itself documents a thin, disclosed slice that
+shipped (`subprocess-plugins.md`'s `tool.spec/1`/`tool/1`), so this
+candidate is narrower than the header above states — what remains
+undelivered is the persistent connection and every point beyond those two,
+not the whole transport.
 
 **Surface.** All three, indirectly — this is what would let an MCP
 ecosystem-style third-party plugin market exist without everyone writing
