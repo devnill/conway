@@ -1,0 +1,77 @@
+{
+  "name": "marketplace",
+  "owner": {
+    "name": "Dan Singer"
+  },
+  "metadata": {
+    "description": "A Claude Code plugin marketplace",
+    "version": "3.0.11"
+  },
+  "plugins": [
+    {
+      "name": "beepboop",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/devnill/beepboop",
+        "path": "plugin"
+      },
+      "description": "Plays sounds on Claude Code hook events and sends desktop notifications",
+      "version": "1.4.0"
+    },
+    {
+      "name": "moodring",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/devnill/moodring",
+        "path": "plugin"
+      },
+      "description": "Sonifies an AI model's self-reported internal state by playing mood-mapped synthesized sounds",
+      "version": "1.0.0"
+    },
+    {
+      "name": "ideate",
+      "source": {
+        "source": "github",
+        "repo": "ideate-ai/ideate"
+      },
+      "description": "ideate — a composable process framework for Claude Code: an append-only process record, a dependency-ordered work board, and gated steering, with skills, agents, hooks, and CLIs that drive an autopilot loop from idea to verified work.",
+      "version": "3.0.0"
+    },
+    {
+      "name": "outpost",
+      "source": {
+        "source": "github",
+        "repo": "devnill/outpost"
+      },
+      "description": "MCP orchestration infrastructure for delegating work to separate Claude Code instances, supporting both local subprocess and remote process execution.",
+      "version": "0.2.0"
+    },
+    {
+      "name": "cyberbrain",
+      "source": {
+        "source": "github",
+        "repo": "devnill/cyberbrain"
+      },
+      "description": "Knowledge capture and retrieval for Claude Code sessions. Extracts durable knowledge beats from conversations and files them into an Obsidian vault for future retrieval.",
+      "version": "1.2.1"
+    },
+    {
+      "name": "hamlet",
+      "source": {
+        "source": "github",
+        "repo": "devnill/hamlet"
+      },
+      "description": "Visualize Claude Code agent activity as a roguelike idle game.",
+      "version": "0.7.3"
+    },
+    {
+      "name": "guardrail",
+      "source": {
+        "source": "github",
+        "repo": "devnill/guardrail"
+      },
+      "description": "Automates permission allowlists and sandbox configuration for Claude Code projects",
+      "version": "1.0.0"
+    }
+  ]
+}

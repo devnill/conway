@@ -51,6 +51,34 @@ pub enum MarketplaceError {
     /// different failure an operator needs a different explanation for.
     #[error("{url} did not return a valid marketplace manifest: {message}")]
     MalformedManifest { url: String, message: String },
+    /// The URL answered with a 2xx and a body that is not JSON at all but
+    /// markup -- overwhelmingly, an operator who passed a *repository page*
+    /// where this crate wants a URL pointing directly at a manifest
+    /// document.
+    ///
+    /// **Why this is a separate variant from [`Self::MalformedManifest`]**
+    /// (board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`, layer 1). The first
+    /// operator to run `/plugin install` against a real Claude Code
+    /// marketplace passed `https://github.com/<owner>/<repo>` and got back
+    /// *"expected value at line 7 column 1"* -- a `serde_json` column
+    /// reference to a `<head>` tag in GitHub's HTML. That message is
+    /// accurate and completely useless: it describes the shape of a
+    /// document the operator never knew was being parsed, and says nothing
+    /// about what conway actually wanted. A parse error about someone
+    /// else's markup is not a diagnosis.
+    ///
+    /// Claude Code treats a marketplace as a git repository and reads
+    /// `.claude-plugin/marketplace.json` from inside it; this crate wants
+    /// the manifest document itself. That difference is the whole bug, and
+    /// naming it in the error is what lets an operator act. `hint` carries
+    /// a concrete suggested URL when one can be derived from the input
+    /// (see `crate::manifest::manifest_url_hint`), and is empty when it
+    /// cannot -- never a guess presented as fact.
+    #[error(
+        "{url} returned a web page, not a marketplace manifest -- conway needs a URL that points \
+         directly at the manifest document itself, not at a repository page{hint}"
+    )]
+    NotAManifestUrl { url: String, hint: String },
     /// The marketplace manifest itself parsed, but named no plugin with
     /// this id -- distinct from every error above because the manifest is
     /// well-formed; the id the caller (or the operator, mistyping it) asked
@@ -122,6 +150,7 @@ impl MarketplaceError {
             Self::Http { .. } => "http",
             Self::ResponseTooLarge { .. } => "response_too_large",
             Self::MalformedManifest { .. } => "malformed_manifest",
+            Self::NotAManifestUrl { .. } => "not_a_manifest_url",
             Self::PluginNotFound { .. } => "plugin_not_found",
             Self::UnsafePluginId { .. } => "unsafe_plugin_id",
             Self::UnsafeFilePath { .. } => "unsafe_file_path",

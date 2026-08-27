@@ -271,8 +271,11 @@ ruling 2 — bundled liberally, enabled never):
   conway's own inference (needs §2b), against a configured guard role
   constrained to local backends (§4).
 - **Ships a rigid default prompt, operator-overridable** — which needs
-  per-plugin operator configuration, blocked on `[S1.5]`, already gated in
-  `DESIGN-plugin-dependencies.md` §6.
+  per-plugin operator configuration. This was blocked on `[S1.5]`;
+  **`[S1.5]` was ruled on 2026-08-26** (`DESIGN-plugin-dependencies.md` §6
+  and §9): the first slice is over and per-plugin config opens as
+  `[plugins.config.<id>]` with a plugin-declared schema. The dependency is
+  now on that work landing, not on a ruling.
 - **Declares an `optional` dependency on `conway.ui`** for interactive mode
   selection — optional under §4a's criterion, because without a UI the
   classifier still runs and the gate still narrows; only the picker is lost.
@@ -280,7 +283,9 @@ ruling 2 — bundled liberally, enabled never):
 
 **The dependency ordering is real, not ceremonial**: this plugin cannot be
 built as a plugin at all until `Plugin::hooks()` exists, and cannot be
-configured until `[S1.5]` is ruled.
+configured until `[S1.5]`'s per-plugin config surface is built. `[S1.5]`
+itself is no longer the blocker — it was ruled on 2026-08-26 (see above);
+what remains is implementation.
 
 ---
 

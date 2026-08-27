@@ -163,10 +163,14 @@ Report, as part of the item's own acceptance, whether an out-of-process
 plugin reaches this on the same terms as an in-process one — the surfaces
 lens's open question from §2 of the state of the union, not assumed here.
 
-**`01M0WWM0ZB6BR45XJ8HMTJWZ0Z`** — *(S, open; depends: none — can run in
-parallel with the item above, both block the one after)* Two operator
+**`01M0WWM0ZB6BR45XJ8HMTJWZ0Z`** — *(S, **DONE 2026-08-26**)* Two operator
 rulings, not an agent's to make: the host/toolkit altitude for `conway.ui`,
-and whether `[S1.5]`'s "first slice" scope is over. No code change.
+and whether `[S1.5]`'s "first slice" scope is over. No code change. **Both
+ruled** — the extensible declarative widget tree, built narrow first
+(§7a), and the first slice is over, per-plugin config opens with a declared
+schema (§6). Recorded in `DESIGN-plugin-dependencies.md` §9; §7a and §6 are
+edited in place. §7b (versions on capability edges) was raised alongside
+and deliberately left unruled.
 
 **`01M0WWPA70E8YAAN981EK10D3D`** — *(L, open; depends: both items above)*
 `conway.ui` — the first bundled provider, and the proof that a

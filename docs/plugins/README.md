@@ -92,7 +92,15 @@ tree via `Plugin::narrowable_keys`, `conway.fs`'s `root` key its one
 production consumer today), but it is reachable only from embedding code,
 deliberately, for this first slice — `[S1.5]`, cited at
 `crates/conway-tools/src/subagent/tools.rs` and across
-`crates/conway/src/subagent_spec.rs`. `first_party_plugins::bundle()`'s own
+`crates/conway/src/subagent_spec.rs`. **That first slice was ruled over on
+2026-08-26** (`docs/vision/DESIGN-plugin-dependencies.md` §6 and §9, board
+item `01M0WWM0ZB6BR45XJ8HMTJWZ0Z`): per-plugin configuration is to open as a
+`[plugins.config.<id>]` settings surface driven by a schema each plugin
+declares. **The paragraph above still describes the tree as it is today** —
+no code has changed yet, `deny_unknown_fields` still refuses the key, and
+the implementing work is not written at the time of this sentence. What has
+changed is that the absence is now a scheduled change rather than an open
+question, so do not read it as settled policy. `first_party_plugins::bundle()`'s own
 module doc makes the matching claim from the install side: it is "a worked
 example, not a commitment to any of its members individually" — the list
 below decides which plugins ship, not what an operator may tune about any

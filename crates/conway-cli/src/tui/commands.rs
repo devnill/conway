@@ -347,9 +347,21 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
         },
         SlashCommand::Plugins { .. } => CommandSpec {
             name: "/plugin",
-            usage: "/plugin [install <marketplace-url> <plugin-id> | uninstall <plugin-id>]",
-            description: "list every plugin conway can run today, or install/uninstall a \
-                          Claude Code marketplace one",
+            usage: "/plugin [install <manifest-url> <plugin-id> | uninstall <plugin-id>]",
+            // Board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`, layer 5: this line
+            // used to promise "install/uninstall a Claude Code marketplace
+            // one", which is false -- conway's manifest format is its own
+            // (`conway_plugin_marketplace::manifest`), and no Claude Code
+            // marketplace can be installed from today. That sentence is
+            // what led the first operator to run the command against a real
+            // marketplace and hit a JSON parse error about GitHub's HTML.
+            // Whether conway grows the ability to read a Claude Code
+            // marketplace is that item's open ruling; until it is ruled,
+            // this description states only what the command can actually
+            // do. Do not re-add the Claude Code claim without the fetcher
+            // that makes it true.
+            description: "list every plugin conway can run today, or install/uninstall one from \
+                          a conway marketplace manifest URL",
         },
         SlashCommand::Trust => CommandSpec {
             name: "/trust",
@@ -616,7 +628,7 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
         "/plugin" => {
             let action = parse_plugins_action(
                 rest,
-                "/plugin [install <marketplace-url> <plugin-id> | uninstall <plugin-id>]",
+                "/plugin [install <manifest-url> <plugin-id> | uninstall <plugin-id>]",
             )?;
             Ok(SlashCommand::Plugins { action })
         }

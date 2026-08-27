@@ -324,23 +324,65 @@ embedder can read JSON off `PluginConfig`, and a one-shot run can take
 declared defaults — no per-host authoring, and the "compatible shape with
 additional parameters for in-app configuration" this work set out to reach.
 
-This is currently blocked by a ruling with an undefined expiry. `[S1.5]`
-holds per-plugin configuration to an **embedder-only** surface *"for this
-first slice"*; `PluginsConfig` is `#[serde(deny_unknown_fields)]` and
-actively refuses a `[plugins.config.<id>]` key. Board item
+This was blocked by a ruling with an undefined expiry. `[S1.5]` held
+per-plugin configuration to an **embedder-only** surface *"for this first
+slice"*; `PluginsConfig` is `#[serde(deny_unknown_fields)]` and actively
+refuses a `[plugins.config.<id>]` key. Board item
 `01M0V501HZBMWNC6AE45JJXAFK` documented the rule and stopped deliberately,
 recording that whether the slice is over is an operator question.
 
-**It is now forced rather than optional.** A bundled, opt-in toolkit whose
-consumers configure themselves through it cannot function under an
-embedder-only config surface. This page does not decide `[S1.5]`; it records
-that the first design requiring the answer has arrived.
+**SETTLED 2026-08-26 — the first slice is over. Per-plugin configuration
+opens, with a declared schema (the "Full" shape).** Operator ruling; see §9.
+`[plugins.config.<id>]` becomes a real settings surface, a plugin declares
+its config schema once, and that one declaration renders three ways: a TUI
+editor, an embedder's JSON off `PluginConfig`, and declared defaults for a
+one-shot run.
+
+The decisive argument is the **cost ladder**, and it is INTENT §6's, not
+this page's. §6 orders extension by deliberate cost — instruction, then
+hook, then out-of-process plugin, then compiled-in — and requires that *"the
+cheapest one should cover the most ground."* An embedder-only config surface
+**inverts that ladder completely**: the single most expensive tier (write
+Rust, link conway, recompile) is the only way to set a plugin's knob, while
+the cheapest (open a file and edit a line) is actively refused. That is not
+a slice that had not finished; it is the ladder upside down.
+
+The two rejected shapes, kept:
+
+- *Flat file only* — open `[plugins.config.<id>]` as untyped values now and
+  retrofit a declared schema later onto keys already shipped. Rejected on
+  §6's own defect list: an untyped key cannot be validated, so a typo is
+  silently inert, which is **"a configuration option that does nothing"** —
+  named in §6 as needing the same kind of gate as an instruction that
+  references an unreachable capability. INTENT §8.3 compounds it: conway
+  must refuse and name what changed when it cannot honour a reference
+  exactly, *explicitly including "a referenced configuration that has
+  drifted"* — and a declaration is what makes that refusal possible at all.
+- *Stays closed* — opinionated plugins put their knobs in bespoke top-level
+  config sections. Rejected because that is precisely what the plugin tier
+  exists to avoid, and because it leaves the ladder inverted.
+
+**Why §8.5 does not object to building this now.** "Build a seam when there
+is a consumer for it, not in anticipation of one" is the standing objection
+to a declared-schema system, and it is already satisfied: `conway.ui` (§7a)
+and `conway.permissions` both need it, and `conway.trim`'s
+`DEFAULT_KEEP_TURNS` was filed as reachable-to-an-embedder and
+invisible-to-an-operator in board item `01M0TX5ZKQSYRBWP2HVHJ659YE` before
+either existed. Three consumers, one of them already recorded as a defect.
+
+**And the undefined expiry was itself the bug.** INTENT §8.1: *"An open
+question is a failure of the spec, not a gap in the code."* A ruling whose
+scope is "this first slice" with no stated end condition is that failure in
+miniature — `01M0V501HZBMWNC6AE45JJXAFK` was right to stop and say so, and
+right that it was not an agent's to close.
 
 ---
 
 ## 7. Open, with recommendations
 
-**7a. Where the host/toolkit boundary sits.** Three altitudes:
+**7a. Where the host/toolkit boundary sits. SETTLED 2026-08-26 — the
+extensible widget tree, built narrow first.** Operator ruling; see §9. The
+three altitudes were:
 
 - *Fixed form schema owned by the host.* Simplest and safest; the toolkit
   becomes a helper library rather than a plugin. Every new widget is a core
@@ -355,11 +397,51 @@ that the first design requiring the answer has arrived.
   out every out-of-process plugin, and lets a misbehaving plugin corrupt the
   screen.
 
-**Recommendation: the widget tree**, on the serialisation argument in §2.
-Its risk is that "composable primitives plus focus and input routing" is
-hand-waving until someone specifies focus, input routing, and modal
-stacking — which is where this recommendation is most likely to be wrong,
-and the first thing an implementer should attack.
+**Ruled: the widget tree** — and the ruling rests on
+[`INTENT.md`](INTENT.md) §8.2 rather than on this page's own preference,
+which matters because it means the boundary was derived, not chosen.
+
+§8.2's test for what may live in the core at all: *"does this encode a
+judgment that two reasonable people, doing the same work, could answer
+differently? If yes it is policy, and it belongs in a plugin. If no it is
+mechanism, and the core may hold it"* — with the worked example *"the
+ability to bind a name to something is mechanism… which names exist and
+what they mean is policy."* Applied to UI, that partitions in exactly one
+place: **focus, input routing, modal stacking and compositing are
+mechanism** (two implementers produce the same thing), and **which widgets
+exist and what they mean is policy**. That line is the widget tree's line.
+The serialisation argument in §2 is now the *second* reason, not the first.
+
+The two rejected altitudes are kept above rather than deleted, because a
+decision that discards its alternatives cannot be re-examined. Each fails a
+different INTENT rule, in INTENT's own words:
+
+- *Fixed form schema* makes every new widget a core release. §6: **"If
+  there is a level where the answer is 'you would have to fork conway,'
+  that level is a defect."** §8.5, from the other end: "if the cheapest way
+  to change behaviour is to fork the repo, that is a bug report against the
+  extension surface."
+- *Raw drawing surface* locks out every out-of-process plugin. §6 funds
+  that tier explicitly — "a plugin in another language, running as its own
+  program… the right price for someone who wants to add a capability
+  without learning Rust or rebuilding the binary" — and §7c forbids the
+  result outright: **"No second API, no divergence in capability."**
+
+**The sequencing constraint, which is the operative half of this ruling.**
+This page's own risk note was right: "composable primitives plus focus and
+input routing" is hand-waving until someone specifies focus, input routing
+and modal stacking. The ruling does **not** resolve that by specifying the
+general widget tree up front. INTENT §8.5 forbids exactly that: *"build a
+seam when there is a consumer for it, not in anticipation of one… nothing
+is built on theory. A feature lands with a well-defined use case someone
+can exercise on the day it ships."*
+
+So the first cut ships **only the primitives `conway.ui`'s first real form
+actually needs**, and focus behaviour, input routing and modal stacking are
+specified by that consumer rather than ahead of it. An implementer who
+finds themselves designing a widget vocabulary no shipped form exercises
+has left the ruling. §8's first falsifier — "`conway.ui` needs to draw, not
+declare" — is unchanged and is still the thing that would overturn this.
 
 **7b. Versions now or name-only first.** Name-only is much cheaper and
 covers everything currently on the table. But `ui.form/1` gaining a widget
@@ -544,3 +626,63 @@ settled — an "open, with recommendations" item, unlike §2/§3/§4's prose
 elsewhere on this page, is not a claim to leave standing once superseded.
 Host/toolkit boundary (§7a), versions-now-or-later (§7b), and host profiles
 (§7d) remain exactly as open as before this entry.
+
+**2026-08-26 — §7a and §6 are ruled by the operator; both sections are
+edited in place.** Board item `01M0WWM0ZB6BR45XJ8HMTJWZ0Z`. Recorded here
+because §7c's entry above established the rule for this page: an "open,
+with recommendations" item is not a claim to leave standing once settled,
+so the section itself carries the answer and this entry carries the date
+and the reasoning.
+
+Both rulings went the way this page recommended. That is worth stating
+plainly, because it is also the reason to be careful: a recommendation
+confirmed by the person it was written for is weak evidence, and neither
+ruling rests on it. Each was re-derived from [`INTENT.md`](INTENT.md),
+which is the page that outranks this one, and in both cases INTENT turned
+out to constrain the answer more tightly than this page had noticed.
+
+**Ruling 1 (§7a) — the extensible declarative widget tree, built narrow
+first.** The boundary is derived from INTENT §8.2's mechanism-versus-policy
+test, not from §2's serialisation argument: focus, input routing, modal
+stacking and compositing are mechanism and may live in the host; which
+widgets exist and what they mean is policy and belongs in a plugin. The
+serialisation argument is now the second reason rather than the first. The
+rejected altitudes each fail a specific INTENT rule — the fixed form schema
+makes every widget a core release, which §6 calls a defect in those words;
+the raw drawing surface locks out the out-of-process tier §6 explicitly
+funds and produces the capability divergence §7c forbids.
+
+*The operative half of this ruling is the sequencing constraint, and it is
+new — this page did not recommend it.* This page's stated risk (that
+"composable primitives plus focus and input routing" is hand-waving) is not
+resolved by specifying the widget tree up front, because INTENT §8.5
+forbids that: "build a seam when there is a consumer for it, not in
+anticipation of one… nothing is built on theory." The first cut ships only
+the primitives `conway.ui`'s first real form exercises. An implementer
+designing a widget vocabulary no shipped form uses has left the ruling.
+
+**Ruling 2 (§6) — the `[S1.5]` first slice is over; per-plugin
+configuration opens with a declared schema.** The decisive argument is
+INTENT §6's cost ladder ("the cheapest one should cover the most ground"),
+which an embedder-only config surface inverts: the most expensive tier is
+the only way to set a knob and the cheapest is refused outright. Flat
+untyped values were rejected because an unvalidatable key is §6's own "a
+configuration option that does nothing," and because INTENT §8.3 requires
+conway to refuse and name a drifted configuration reference — impossible
+without a declaration. §8.5 raises no objection here: three consumers exist
+already (`conway.ui`, `conway.permissions`, and `conway.trim`'s
+`DEFAULT_KEEP_TURNS`, recorded as an operator-invisible defect in
+`01M0TX5ZKQSYRBWP2HVHJ659YE`).
+
+**Still open, and deliberately not ruled in this entry:** §7b
+(versions-now-or-later on capability edges) and §7d (host profiles). §7b
+was put to the operator alongside these two and not answered; this page's
+weak recommendation — name-only first, on the condition the limitation is
+documented at the manifest field — therefore still stands as a
+recommendation and not a ruling, including its own note that the
+counter-argument is strong enough to overrule it. **An implementer must not
+read this entry as having settled it**, and retrofitting semver onto edges
+already in the wild is the cost of getting it wrong, so it should be ruled
+before `ui.form/1` has a second consumer.
+
+No code changed in this item.

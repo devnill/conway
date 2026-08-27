@@ -1,5 +1,27 @@
 # Installing a plugin from a marketplace
 
+> **⚠ This installs from a *conway* marketplace manifest, and a Claude Code
+> marketplace is not one.** The format documented below is conway's own. A
+> real published Claude Code marketplace — the kind
+> `https://github.com/<owner>/<repo>` points at — **cannot be installed from
+> today**: its entries identify plugins by `name` (not `id`) and fetch them
+> by `source` (a git repository or subdirectory), where this page's format
+> requires an `id` and an explicit `files` map of individual URLs. There are
+> also two top-level fields (`owner`, `metadata`) that conway's strict
+> parser refuses outright.
+>
+> This is a real limitation with an open ruling, not an oversight to work
+> around: board item `01M0Y6RYZA94BK6YXJ7X8TNEGR` carries the decision about
+> whether conway adopts the Claude Code schema and grows a git fetcher,
+> keeps this format and says so plainly, or narrows to a plain `git clone`.
+> `crates/conway-plugin-marketplace/tests/claude_code_manifest.rs` asserts
+> the incompatibility against a real published manifest, so this warning
+> cannot quietly go stale.
+>
+> **Passing a repository URL** is the common way to meet this: conway needs
+> a URL pointing directly at a manifest *document*, and answers a repository
+> page with a `not_a_manifest_url` error that suggests the raw URL.
+
 The network-reaching half of the plugin feature (board item
 `01M0VR96Y87FF2BVNTBSC6GEYR`), shipped by `crates/conway-plugin-marketplace`
 and wired at `crates/conway-cli/src/tui/app/marketplace.rs`. Depends on
@@ -131,7 +153,7 @@ listing item (`01M0VR5RCCB8NDGG2JEQW8X7XR`) had scoped out: `/plugin` still
 opens the read-only listing bare, and now also takes an action —
 
 ```
-/plugin install <marketplace-url> <plugin-id>
+/plugin install <manifest-url> <plugin-id>
 /plugin uninstall <plugin-id>
 ```
 
