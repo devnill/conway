@@ -38,6 +38,89 @@ You need a working provider config — see
 `ideate-record` on `PATH` (they ship with the ideate plugin; if a command
 below says one is missing, that plugin is not loaded in this session).
 
+## Isolated config dirs start empty
+
+You can point conway at a throwaway settings directory instead of your real
+`~/.conway/` — set `CONWAY_CONFIG_DIR` to any directory and, per board item
+`01M0VV6CVSZM4XH8J4G6EBV5E3`, conway treats it as the user-scope config
+location *and* stops a project directory under your real `$HOME` from
+reaching your real `~/.conway/settings.json` instead (see
+[`embedding.md`'s "Loading config without the ambient user
+layer"](embedding.md#loading-config-without-the-ambient-user-layer) for the
+full precedence mechanics). This is the right way to dogfood a change you
+don't fully trust yet — it's cheap, and it can't touch your real setup.
+
+**Nothing carries over from your real config.** A brand-new
+`CONWAY_CONFIG_DIR` has no `settings.json` at all, so conway falls back to
+its own built-in defaults. Those defaults do cover housekeeping — session
+limits, permissions, headroom — but they give you no `[backends]` at all,
+and only an empty `default` role whose chain names no model. So nothing can
+route, and you write a complete-enough config from scratch. At minimum
+that's three keys, in one file:
+
+```json
+// $CONWAY_CONFIG_DIR/settings.json
+{
+  "default_role": "coder",
+  "backends": {
+    "anthropic": {
+      "kind": "anthropic",
+      "api_key_env": "ANTHROPIC_API_KEY"
+    }
+  },
+  "roles": {
+    "coder": { "chain": ["anthropic/claude-sonnet-4-6"] }
+  }
+}
+```
+
+`api_key_env` names an environment variable to read the key from — export
+it before running conway; never put a literal key in this file. (No
+Anthropic key handy? Swap the `backends`/`roles` entry for a local server
+the same way
+[`getting-started.md`'s Ollama example](getting-started.md#an-openai-compatible-endpoint-ollama-llamacpp-vllm-and-others)
+does — no key needed. Copy that example's backend block whole rather than
+editing `kind` and `base_url` in the one above: `openai-compat` also
+requires a `dialect` naming your server, and refuses to build without it
+(`backend 'x': kind 'openai-compat' requires 'dialect'`).)
+
+Miss this step and conway fails loud and fast: `no backends configured: add
+a [backends.<id>] entry to config`. Annoying, but instantly diagnosable —
+this is the **good failure**.
+
+**The tools list is the trap, because it fails quiet.** conway's `fs`
+(read/write/edit/glob/grep/cd), `subagent`, and `report` built-ins are
+registered by default — `tools.builtin_plugins` defaults to `["conway.fs",
+"conway.subagent", "conway.report"]`, every built-in except bash — so
+leaving `[tools]` out of the file above entirely is *not* the problem; a
+bare isolated config already gets those three for free, same as a real one.
+The problem starts the moment you add a `[tools]` block yourself (to opt
+into bash for the TUI, say) and don't restate the full list:
+`builtin_plugins` is a whole-array *replacement*, not something that adds to
+the default the way you'd expect from an opt-in field — see
+[`getting-started.md`'s "Enabling bash (shell
+commands)"](getting-started.md#enabling-bash-shell-commands) for the
+canonical statement of that gotcha. Write only `{"tools": {"builtin_plugins":
+["conway.shell"]}}` because bash is what you wanted, and you've just taken
+`fs`/`subagent`/`report` away too. This gate only applies to the interactive
+TUI, for what it's worth — one-shot (`-p`) always registers every built-in
+regardless of `[tools]`, gating them instead with
+`--permission-mode`/`--allowed-tools`.
+
+**The symptom to search for is "the agent replies but never acts."** An
+agent with no registered tools can still talk — asked to edit a file or run
+a command, it answers by describing what it would have done, in prose that
+reads exactly like a real result. At a glance that is indistinguishable from
+a genuinely broken feature (a slash command whose translation silently drops
+the underlying tool call, say), and chasing the wrong one costs real time —
+that's exactly what happened staging a dogfooding session on
+`01M0X3AMASEJGHZ6ZDMDFWCHSE`: a `/beepboop:config` command that appeared to
+do nothing was diagnosed as a broken translation path before the real cause
+(no tools) was found. If a session in an isolated config dir seems to "do
+nothing" — no file changed, no command ran, but the model's own narration
+sounds like it did — check `[tools]` in that dir's `settings.json` before
+you go looking anywhere else.
+
 ## The loop
 
 1. **Use conway for something real.** A change to conway itself is ideal —
