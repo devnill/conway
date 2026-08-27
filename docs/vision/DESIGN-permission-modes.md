@@ -8,6 +8,23 @@
 > document says what a feature *predicts* it will need. §7 names what would
 > falsify this one.
 
+> **STATUS: ABANDONED, 2026-08-27.** §7's second falsifier fired
+> (2026-08-26, recorded in §8) and the operator ruled on it the next day
+> (decision record `01M128AP39WXE01BBZV4RENC4M`): `conway.permissions`, the
+> plugin §5 describes, **is cancelled outright**. A local model judging
+> arbitrary tool calls is not good enough to be an `AutoAllow` deny-gate.
+> **This is not a model-size finding, and must not be re-opened on the
+> theory that a bigger model would work:** the case that decided it —
+> telling a scratch `git reset --hard` from a real one using `cwd`, the
+> entire reason to ask a model instead of writing a pattern rule — failed
+> 100% of the time at both tested sizes, 8B and 14.8B. §5's plugin will not
+> be built; it is kept below exactly as drafted, as the record of what was
+> designed and why. §0–§4's analysis and its rejected alternatives are kept
+> too. A differently-scoped follow-up (pattern rules as the actual gate, a
+> model consulted only as optional extra narrowing) remains open and is
+> **explicitly not recommended**. See §8's 2026-08-27 entry for the full
+> ruling, what it does and does not decide, and what stays unanswered.
+
 ---
 
 ## 0. The finding that reframes the whole thing
@@ -263,6 +280,11 @@ paths — which is exactly the material the operator wants kept local.
 
 ## 5. What the plugin is, given all of the above
 
+**CANCELLED, 2026-08-27 — see §8.** The plugin below will not be built. It
+is kept in place, unmodified from the draft, as the historical record of
+what was designed and why — matching this page's own append-only
+convention for corrections, which does not delete superseded prose.
+
 `conway.permissions`, an opinionated first-party bundled plugin
 ([`DESIGN-plugin-dependencies.md`](DESIGN-plugin-dependencies.md) §0's
 ruling 2 — bundled liberally, enabled never):
@@ -311,6 +333,12 @@ is how this tree gets built-but-unreachable capability. **They should be one
 item's design and two items' delivery**, with the general seam landing first
 and the plugin as its first caller.
 
+**RESOLVED, 2026-08-27 — half right, half wrong; see §8.** The general seam
+is landing separately, as recommended. But its first real caller is
+`claude-compat` (board item `01M129QW0GV90QTQS6B3BY3DAR`), not this plugin
+— `conway.permissions` never became `Plugin::hooks()`'s first caller,
+because it was cancelled before it was ever built.
+
 **6d. Prompt rigidity.** The operator's stated want is a *fairly rigid*
 default prompt that is nonetheless configurable. Rigid how — a fixed
 scaffold with an operator-supplied policy paragraph slotted in, or a wholly
@@ -349,6 +377,74 @@ own machine. Unresolved.
 
 Corrections are appended here dated, never absorbed upward.
 
+**2026-08-27 — DESIGN ABANDONED. Operator ruling, on the evidence the
+falsifier below already recorded.** Decision record
+`01M128AP39WXE01BBZV4RENC4M`: *"The inference-gated permission guard is
+abandoned: a local model judging arbitrary tool calls is not good enough to
+be an AUTO-ALLOW deny-gate, so conway.permissions is cancelled and
+Plugin::hooks() is cancelled with it for want of a consumer."*
+`conway.permissions` (`01M0WX6ZW84A1G0RV20GBY93J1`) is cancelled outright.
+§5 describes a plugin that will not be built; it is kept below exactly as
+drafted, as the historical record of the design.
+
+**What actually decided it, in the decision record's own words:** *"The
+whole justification for asking a model instead of writing a pattern rule is
+that a model can use cwd and context to tell a scratch git reset --hard from
+a real one. Both models failed that exact case, on the same command string,
+100% of the time, at both sizes … So the finding is not 'the model was too
+small'. Scaling does not fix this, and a future reader should not re-open
+this on the theory that a bigger model would."* Numbers, from the falsifier
+entry below: `gemma4:e4b` (8.0B) 27.3% false-allow, `qwen2.5:14b` (14.8B)
+12.1% false-allow, both against a curated, non-adversarial 48-case corpus.
+
+**`Plugin::hooks()` (`01M0WX3WSXWYF6N3G6SWN0DSHP`) was cancelled alongside
+it "for want of a consumer" — and that half of the same ruling was itself
+partly wrong, corrected the same day** (process finding
+`01M129RRA6394T6JP2WQ30A9R3`): *"Cancelling Plugin::hooks() for want of a
+consumer was partly wrong: the claude-compat translation is an existing
+shipped consumer of its registration half, currently served by a
+whole-config escape hatch."* Board item `01M129QW0GV90QTQS6B3BY3DAR` now
+builds that registration surface, with that consumer, independently of this
+page. **So `Plugin::hooks()` itself is not dead. What is dead, for want of
+any consumer at all, is a hook that reaches conway's own inference to
+produce its verdict** — `run_ephemeral_turn`, gated by a `hook.fork`
+capability, the machinery `docs/plugins/inference-hooks.md` describes in
+full and §2b/§5 above assumed `conway.permissions` would be the first user
+of.
+
+**Also corrects the 2026-08-26 entry immediately below, in place rather
+than silently** — see the correction inserted into that entry directly.
+Its claim that `Plugin::hooks()`'s registration surface had "shipped" was
+wrong when written.
+
+**§6c's prediction was half right.** The general seam is landing separately
+from this plugin, as recommended — but its first real caller is
+`claude-compat`, not `conway.permissions`, because this plugin never got
+built at all.
+
+**What this ruling explicitly does NOT decide, in the decision record's own
+words:**
+
+- *"The evidence leaves open a differently-scoped design: pattern rules as
+  the actual gate, with a model consulted only as an ADDITIONAL narrowing
+  check for residual cases pattern rules cannot express. Its own words: a
+  materially different proposal, 'not a tuning knob on the one tested
+  here', noted as a follow-up and NOT a recommendation. This decision does
+  not authorise it and does not refuse it."* Recorded here as open, and it
+  is **not** this page's recommendation.
+- *"Spec questions 3 and 4 are unanswered. They need a live TUI, and the
+  evidence says explicitly they must not be marked resolved on its basis.
+  They may be moot for THIS design; they are not answered."* These are
+  §3a/§6a (what fail-closed feels like live, with the model server killed
+  mid-session) and §3b/§6b (whether `AUTO-ALLOW` misleads while a guard
+  runs, or has silently died). The *type-level* mechanism for both was
+  resolved in place by the 2026-08-25 entries below; the *experiential*
+  question was never put in front of an operator at a live TUI, and stays
+  unanswered.
+
+Evidence: `experiments/local-classifier-premise/evidence.md`, merged to
+`main` at `b8b5c6d`.
+
 **2026-08-26 — §7's second falsifier FIRED. The premise this design rests
 on does not hold.** Board item `01M0WX32AKGA9W3S0KCVZHAGED`, evidence on
 branch `w/localmodel` at `experiments/local-classifier-premise/`.
@@ -376,12 +472,18 @@ a restatement rather than a fix. §7 said the honest answer would then be
 pattern rules. It is.
 
 **What this does NOT invalidate.** Everything §2 and §5 describe about the
-*mechanism* still stands and has shipped: `Plugin::hooks()`'s registration
-surface, plugin-declared modes, the cycle, the status-line reporting, the
-fail-closed hook path. A mode-and-guard mechanism is correct independently
-of what any particular guard decides. What is in question is
-`conway.permissions` itself — the one guard this design was written to
-carry.
+*mechanism* still stands: plugin-declared modes, the cycle, the status-line
+reporting, the fail-closed hook path — all shipped, per the 2026-08-25
+entries below. **Correction, added 2026-08-27, to this entry's own claim
+in place rather than silently: `Plugin::hooks()`'s registration surface was
+NOT among those shipped things, and this sentence was wrong to list it as
+such.** It did not exist in the tree when this entry was written and still
+does not (the 2026-08-25 entry further below, dated a day earlier, has this
+right: *"`Plugin::hooks()` … still does not exist"*) — see the 2026-08-27
+entry above this one for what became of it. A mode-and-guard mechanism is
+correct independently of what any particular guard decides. What is in
+question is `conway.permissions` itself — the one guard this design was
+written to carry.
 
 **A hybrid is a different proposal, not a rescue.** Pattern rules as the
 gate with the model as an additional deny-only narrowing layer may well be
