@@ -205,3 +205,11 @@ claim: every crates/conway-plugin-* directory is named somewhere in ARCHITECTURE
 paths: ARCHITECTURE.md
 glob: crates/conway-plugin-*
 -->
+
+<!-- claim-check
+why: docs/plugins/hooks.md point 14 and docs/plugins/inference-hooks.md both now say an inference-evaluated hook modality was abandoned for want of a consumer, not merely unbuilt; if `subagent_mode`/`hook.fork` ever land anyway, both pages' abandonment framing (and DESIGN-permission-modes.md's §8 entry) need re-reading before anyone trusts them, and nothing else here would notice the seam landing
+note: added 2026-08-27 (board item 01M128C6X9SBJNP2DBF5V8JRMF), alongside the abandonment of conway.permissions (decision record 01M128AP39WXE01BBZV4RENC4M). Deliberately NOT pinned to `Plugin::hooks()` itself: that registration method is being built in parallel, for an unrelated shipped consumer (claude-compat, board item 01M129QW0GV90QTQS6B3BY3DAR), so a predicate over `hooks()`'s existence would fail for a reason having nothing to do with this claim. Pinned instead to the two fields specific to an inference-evaluated hook, which that item does not touch.
+claim: no inference-evaluated hook modality exists in the tree -- no subagent_mode field and no hook.fork capability anywhere in HookEntry or conway_core::hook
+paths: crates/conway/src/config/schema.rs crates/conway-core/src/hook.rs
+absent: (subagent_mode|hook\.fork)
+-->

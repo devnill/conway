@@ -160,10 +160,21 @@ startup and drives Shift+Tab through them.** That needs a
 collecting `Plugin::permission_modes()` across every installed plugin at
 `ConwayBuilder::build`) and a TUI-side change to resolve
 `Action::CyclePermissionMode` against the real cycle instead of the fixed
-three-way switch it resolves against today. Also not yet built:
-`Plugin::hooks()` itself ([`hooks.md`](hooks.md) point 13) — a declared
-mode's own classifier hook needs that registration surface, and it is
-deliberately a separate item's job rather than being built only for this
-one consumer (design §6c). Until both land, `conway.permissions` (the
-first-party plugin this capability exists for) has nothing to attach a
-declared mode to, and every build cycles exactly the three core modes.
+three-way switch it resolves against today.
+
+**`conway.permissions`, the first-party plugin this whole capability was
+designed for, is cancelled, 2026-08-27** (decision record
+`01M128AP39WXE01BBZV4RENC4M`; see `DESIGN-permission-modes.md` §8): a local
+model was not reliable enough to gate tool calls, and the failure was shown
+not to be a model-size problem — it does not scale away with a bigger one.
+`Plugin::hooks()` itself ([`hooks.md`](hooks.md) point 13) is being built
+now, but for an unrelated, already-shipped consumer (claude-compat, board
+item `01M129QW0GV90QTQS6B3BY3DAR`) — not for a declared mode's own
+classifier hook, and not for the reason design §6c gave. This page's own
+mechanism — `Plugin::permission_modes()`, the cycle, the
+collision/uninstall reconciliation — is unaffected by the cancellation and
+remains available to any other plugin that wants to declare a mode; it
+currently has **no first-party consumer lined up**, and every build still
+cycles exactly the three core modes. Whether the remaining startup-wiring
+work is still worth finishing without one is an open question this page
+does not decide.

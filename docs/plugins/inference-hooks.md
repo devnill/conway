@@ -1,16 +1,72 @@
-# Inference-evaluated hooks: judging with a model instead of code
+# Inference-evaluated hooks: judging with a model instead of code (ABANDONED)
 
-**This page documents a designed, decided capability with no code behind it
-yet.** No hook registration surface exists at all in the tree today
-(`hooks.md` point 13's status row: `Plugin` has no `hooks()` method), so
-there is nowhere for anything this page describes to attach. It's still
-worth writing now rather than after the fact — per an earlier decision, an inference-evaluated hook is a **first-class
-supported shape**, not a workaround, and the four open questions it left
-(how fork-vs-spawn is declared, cost and attribution, determinism, mask
-production) were settled by a later decision before this
-set was written. What follows states those settled decisions, sourced from
-the decision record and the extension design, never
-invented for this page.
+**STATUS: ABANDONED, 2026-08-27. This page is a retired design record, not
+a plan** — nothing in the tree is being built against it, and nothing is
+scheduled to be. It is kept, rather than deleted, because a materially
+different follow-up may one day want the fork/spawn, cost, and recursion
+reasoning below and should read it before re-deriving it from nothing. Do
+not read anything past this notice as forthcoming work.
+
+**Why.** The one concrete use this page was written for —
+`docs/vision/DESIGN-permission-modes.md`'s `conway.permissions`, a
+`pre_tool_use` hook that judges a tool call by calling a local model — was
+tested against a 48-case corpus and failed: false-allow rates of 27.3%
+(`gemma4:e4b`, 8.0B) and 12.1% (`qwen2.5:14b`, 14.8B), including the exact
+case the whole design existed to catch (telling a scratch `git reset
+--hard` from a real one via `cwd`), missed 100% of the time at **both**
+sizes. Operator ruling, decision record `01M128AP39WXE01BBZV4RENC4M`:
+*"The inference-gated permission guard is abandoned: a local model judging
+arbitrary tool calls is not good enough to be an AUTO-ALLOW deny-gate, so
+conway.permissions is cancelled and Plugin::hooks() is cancelled with it
+for want of a consumer."* **This is not a model-size finding.** The
+decision record is explicit: *"the finding is not 'the model was too
+small'. Scaling does not fix this, and a future reader should not re-open
+this on the theory that a bigger model would."* Do not read anything below
+as awaiting a bigger model, more parameters, or a better prompt — the
+failure mode this page's whole premise rests on was shown to persist
+across the one variable the experiment controlled for.
+
+**What this does, and does not, say about `Plugin::hooks()`.** The
+cancellation above named `Plugin::hooks()` too, "for want of a consumer" —
+and that half of the ruling was itself corrected the same day (process
+finding `01M129RRA6394T6JP2WQ30A9R3`): the hook *registration* method has a
+real, already-shipped consumer independent of this page —
+`ConwayBuilder::config_mut`'s claude-compat translation
+(`crates/conway-cli/src/claude_compat_plugins.rs`), currently served by a
+whole-config escape hatch for want of a narrower seam. Board item
+`01M129QW0GV90QTQS6B3BY3DAR` builds that registration surface, with that
+consumer — entirely unrelated to anything on this page. **`Plugin::hooks()`
+is not dead. What is dead, for want of any consumer at all, is a hook that
+reaches conway's own inference to produce its verdict** —
+`run_ephemeral_turn`, a `subagent_mode` declaration, and a `hook.fork`
+capability, which is everything this page describes below. See
+`hooks.md` point 13 and point 14 for the normative status of each half.
+
+**What remains genuinely open, and is not this page's business to close.**
+The evidence explicitly leaves room for a *differently-scoped* proposal:
+pattern rules as the actual permission gate, with a model consulted only
+as an **additional** narrowing check for the residual cases pattern rules
+cannot express. In the decision record's own words, that is "a materially
+different proposal … not a tuning knob on the one tested here," recorded
+as a follow-up and **not** a recommendation — this decision neither
+authorises nor refuses it. Two spec questions also remain unanswered:
+what conway's fail-closed posture actually feels like from the operator's
+seat with the model server stopped mid-session, and whether the emphatic
+`AUTO-ALLOW` status label misleads while a guard is silently running or has
+silently died. Both need a human at a live TUI, not a corpus replay, and
+the evidence says explicitly they must not be marked resolved on its
+basis. They may be moot for the cancelled design; they are not answered.
+
+---
+
+## What this page recorded, kept for history
+
+Everything below is the design as it stood before abandonment, unedited
+except for this notice. It described a **first-class supported shape**
+(per an earlier decision), not a workaround, and settled four open
+questions the shape had left (how fork-vs-spawn is declared, cost and
+attribution, determinism, mask production). None of it is sourced from
+this abandonment — it predates the corpus test entirely.
 
 ## What they are
 
