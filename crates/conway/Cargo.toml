@@ -64,7 +64,11 @@ schemars = { workspace = true }
 jsonschema = { workspace = true }
 thiserror = { workspace = true }
 directories = { workspace = true }
-tokio = { workspace = true }
+# `net` is needed by `config::backend_usability`'s bounded TCP probe
+# (TcpStream). A feature on a dependency this crate already carries --
+# not a new dependency, so C-04 (dependency minimalism) is satisfied;
+# `conway-cli` already enables it for its own test harness.
+tokio = { workspace = true, features = ["net"] }
 async-trait = { workspace = true }
 futures-core = { workspace = true }
 tokio-stream = { workspace = true }

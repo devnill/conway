@@ -30,6 +30,7 @@
 //! `SessionHandle` wrappers added by later work items.
 
 pub mod agents;
+pub mod backend_usability;
 mod builder;
 pub mod config;
 mod conway;
