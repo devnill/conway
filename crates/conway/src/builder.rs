@@ -1841,12 +1841,20 @@ impl ConwayBuilder {
         // load for `[hooks].rules[]` alone.
         let mut seen_hook_ids: HashSet<String> =
             config.hooks.rules.iter().map(|r| r.id.clone()).collect();
-        let mut effective_hook_rules: Vec<(HookOrigin, HookEntry)> = config
+        // The third element is `PluginHookRule::spawn_only` (board item
+        // `01M129Y98V4C1050QBPPMY37X0`) -- carried BESIDE `HookEntry` rather
+        // than folded into it: that field has no `HookEntry` counterpart on
+        // purpose (see its own doc), so `HookEntry` itself, and every
+        // operator-facing surface built on it (`[hooks].rules[]` TOML,
+        // `config::merge::validate`), stays exactly as it was. Every
+        // `[hooks].rules[]` entry gets `false` here -- an operator has no
+        // way to set this field at all, unchanged from before it existed.
+        let mut effective_hook_rules: Vec<(HookOrigin, HookEntry, bool)> = config
             .hooks
             .rules
             .iter()
             .cloned()
-            .map(|rule| (HookOrigin::Operator, rule))
+            .map(|rule| (HookOrigin::Operator, rule, false))
             .collect();
         for (plugin_id, rule) in plugin_hook_rules {
             if rule.id.is_empty() {
@@ -1867,6 +1875,7 @@ impl ConwayBuilder {
                     ),
                 });
             }
+            let spawn_only = rule.spawn_only;
             effective_hook_rules.push((
                 HookOrigin::Plugin(plugin_id),
                 HookEntry {
@@ -1878,6 +1887,7 @@ impl ConwayBuilder {
                     enabled: rule.enabled,
                     on_failure: rule.on_failure,
                 },
+                spawn_only,
             ));
         }
         // Collect each installed plugin's own `Plugin::instructions()`
@@ -2132,8 +2142,8 @@ impl ConwayBuilder {
         // acceptance 2).
         let pre_tool_use_specs: Vec<PreToolUseHookSpec> = effective_hook_rules
             .iter()
-            .filter(|(_, rule)| rule.enabled && rule.event == "pre_tool_use")
-            .map(|(origin, rule)| PreToolUseHookSpec {
+            .filter(|(_, rule, _)| rule.enabled && rule.event == "pre_tool_use")
+            .map(|(origin, rule, _)| PreToolUseHookSpec {
                 id: rule.id.clone(),
                 command: rule.command.clone(),
                 timeout_ms: rule.timeout_ms,
@@ -2167,7 +2177,8 @@ impl ConwayBuilder {
         // immediately above -- one classification pass over one combined
         // list, not a second copy of this loop for plugin-declared rules.
         let mut observation_specs: BTreeMap<String, Vec<HookSpec>> = BTreeMap::new();
-        for (origin, rule) in effective_hook_rules.iter().filter(|(_, r)| r.enabled) {
+        for (origin, rule, spawn_only) in effective_hook_rules.iter().filter(|(_, r, _)| r.enabled)
+        {
             let plugin_decl = plugin_events.get(&rule.event);
             if !DISPATCHED_EVENTS.contains(&rule.event.as_str()) && plugin_decl.is_none() {
                 continue;
@@ -2207,6 +2218,12 @@ impl ConwayBuilder {
                     // any toolless event, core or plugin.
                     matcher: rule.match_tool.clone(),
                     origin: origin.clone(),
+                    // `PluginHookRule::spawn_only`, carried through
+                    // `effective_hook_rules`'s own third element (that
+                    // field's own doc: no `HookEntry` counterpart) --
+                    // `false` for every `[hooks].rules[]` entry, an
+                    // operator has no way to set it.
+                    spawn_only: *spawn_only,
                 });
         }
 

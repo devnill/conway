@@ -1005,7 +1005,16 @@ impl SubagentHost for Runtime {
         // `child_spawned`, fired after
         // the child exists and is attached, for BOTH modes -- this method is
         // the single entry point for fork and spawn alike, which is why the
-        // event is wired here rather than at either caller.
+        // event is wired here rather than at either caller. This firing
+        // site does not discriminate by mode, and board item
+        // `01M129Y98V4C1050QBPPMY37X0` does not change that -- what changed
+        // is subscriber-side: a hook whose own `HookSpec::spawn_only` is set
+        // (`crate::hook_dispatch`'s own doc; a translated Claude Code
+        // `SubagentStart` rule is the one production setter today,
+        // `crates/conway-cli/src/claude_compat_plugins.rs`) only ever SEES
+        // the `Spawn` occurrences of this same, unchanged dispatch. The
+        // `"mode": spec.mode` field immediately below is what makes that
+        // filter possible at all -- do not strip, ignore, or flatten it.
         //
         // STRICTLY OBSERVE-ONLY, AND WHETHER IT MAY EVER DENY IS AN OPEN
         // QUESTION, DELIBERATELY DEFERRED. Unlike `post_tool_use` -- where the

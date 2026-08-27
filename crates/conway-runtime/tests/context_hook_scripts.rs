@@ -228,6 +228,7 @@ fn hook_spec(id: &str) -> HookSpec {
         timeout_ms: 1_000,
         matcher: None,
         origin: HookOrigin::Operator,
+        spawn_only: false,
     }
 }
 

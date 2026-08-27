@@ -16,6 +16,16 @@
 //! because a hook that only sees the happy path is misleading about what "a
 //! child reporting" means.
 //!
+//! `child_spawned` itself is dispatched (`crate::subagent::SubagentHost::
+//! start`) for BOTH `SubagentMode::Fork` and `SubagentMode::Spawn`,
+//! unconditionally and unchanged -- that firing site does not discriminate.
+//! [`HookSpec::spawn_only`] is a PER-HOOK, subscriber-side narrowing on top
+//! of that (board item `01M129Y98V4C1050QBPPMY37X0`): a hook that sets it
+//! only ever sees the `Spawn` occurrences. The default (`false`, every
+//! hook before this field existed) is unaffected -- an operator-authored
+//! `[hooks].rules[]` entry, or any OTHER plugin's own `child_spawned`
+//! subscription, still sees every child, fork included, exactly as before.
+//!
 //! **Context-editing**: `request_assembled`/`context_overflow` (board item
 //! `01KZRZZP6A4A27R3EN0HQAENBS`). [`HookDispatcher::dispatch_context`]
 //! serves them: like `dispatch`, a broken hook cannot fail the turn (fails
@@ -196,16 +206,53 @@ pub struct HookSpec {
     /// construction site that predates this field keeps reporting exactly
     /// what it always implicitly was.
     pub origin: HookOrigin,
+    /// Narrows this hook to fire only when [`CHILD_SPAWNED`]'s own payload
+    /// names a [`conway_core::agent::SubagentMode::Spawn`] child -- the
+    /// SAME field, carried straight through, as
+    /// `conway_core::ports::PluginHookRule::spawn_only`; see that field's
+    /// own doc for the full rationale (board item
+    /// `01M129Y98V4C1050QBPPMY37X0`). `false` (the default every
+    /// construction site that predates this field keeps) fires for every
+    /// mode, unchanged. Meaningless for every event OTHER than
+    /// [`CHILD_SPAWNED`] (no other dispatched event's payload carries a
+    /// `"mode"` field): `HookSpec::applies_to` (private) treats a payload
+    /// with no parseable `"mode"` as never matching, the identical
+    /// defensive fallback [`HookSpec::matcher`] already has for a toolless
+    /// payload.
+    pub spawn_only: bool,
 }
 
 impl HookSpec {
-    /// Whether this hook should run for `payload`: `true` when no matcher
-    /// is set, or when one is set and `payload`'s `"tool"` string field
-    /// satisfies it (`conway_core::hook::tool_matcher_matches`). A matcher
-    /// set on a payload with no `"tool"` field at all (every dispatched
-    /// event except [`POST_TOOL_USE`]) never matches -- see this field's
-    /// own doc for why that state should not occur past config load.
+    /// Whether this hook should run for `payload`: `true` when
+    /// [`Self::spawn_only`] is unset or satisfied AND [`Self::matcher`] is
+    /// unset or satisfied -- both narrowing dimensions must agree; either
+    /// one can veto.
+    ///
+    /// **`spawn_only`**: `false` always passes (the default, unconditional
+    /// fire). `true` requires `payload`'s own `"mode"` field to parse as
+    /// [`conway_core::agent::SubagentMode`] and equal `Spawn` exactly --
+    /// sourced from the real enum, never a re-typed `"spawn"` string
+    /// literal, so a future third `SubagentMode` variant cannot silently
+    /// mismatch here (P-14). A payload with no `"mode"` field, or one that
+    /// fails to parse, never matches -- fails closed on the FILTER (this
+    /// hook simply does not run), not on the spawn itself: `dispatch`'s own
+    /// observation-only posture is untouched.
+    ///
+    /// **`matcher`**: `None` always passes. `Some(pattern)` requires
+    /// `payload`'s `"tool"` string field to satisfy it
+    /// (`conway_core::hook::tool_matcher_matches`) -- a matcher set on a
+    /// payload with no `"tool"` field at all (every dispatched event except
+    /// [`POST_TOOL_USE`]) never matches -- see this field's own doc for why
+    /// that state should not occur past config load.
     fn applies_to(&self, payload: &serde_json::Value) -> bool {
+        if self.spawn_only {
+            let mode = payload.get("mode").and_then(|v| {
+                serde_json::from_value::<conway_core::agent::SubagentMode>(v.clone()).ok()
+            });
+            if mode != Some(conway_core::agent::SubagentMode::Spawn) {
+                return false;
+            }
+        }
         match &self.matcher {
             None => true,
             Some(pattern) => payload
@@ -768,6 +815,7 @@ mod tests {
             timeout_ms: 1_000,
             matcher: None,
             origin: HookOrigin::Operator,
+            spawn_only: false,
         }
     }
 
@@ -1073,6 +1121,95 @@ mod tests {
         )]));
 
         d.dispatch(SESSION_STARTING, serde_json::json!({})).await;
+        assert!(runner.seen.lock().expect("seen lock poisoned").is_empty());
+    }
+
+    // -------------------------------------------------------- spawn_only --
+    // Board item `01M129Y98V4C1050QBPPMY37X0`: `HookSpec::spawn_only`'s own
+    // dispatcher-level unit coverage, the sibling of the matcher section
+    // immediately above. `crates/conway-plugin-claude/tests/hooks_dispatch.rs`
+    // is the end-to-end proof that a REAL translated `SubagentStart` hook,
+    // driven through a REAL `SubagentHost::start` fork/spawn, obeys this --
+    // this section only pins the dispatcher's own filtering logic in
+    // isolation, exactly like `a_matcher_fires_only_for_its_own_tool` does
+    // for `matcher`.
+
+    fn spec_spawn_only(id: &str) -> HookSpec {
+        HookSpec {
+            spawn_only: true,
+            ..spec(id)
+        }
+    }
+
+    /// **The discriminating pair, in one fixture** (P-15: a test asserting
+    /// only the negative -- a fork never fires -- would pass just as
+    /// happily against a hook that never registered, a runner never
+    /// injected, or a typo'd event name; the positive case in the SAME
+    /// fixture rules all three out). One `spawn_only` hook, one dispatcher:
+    /// a `mode: "fork"` payload never reaches it, a `mode: "spawn"` payload
+    /// does.
+    #[tokio::test]
+    async fn spawn_only_fires_for_a_spawn_mode_payload_and_not_for_a_fork() {
+        let runner = Arc::new(RecordingRunner::default());
+        let d = HookDispatcher::new();
+        d.set_runner(Some(runner.clone()));
+        d.set_hooks(BTreeMap::from([(
+            CHILD_SPAWNED.to_string(),
+            vec![spec_spawn_only("subagent-start")],
+        )]));
+
+        d.dispatch(CHILD_SPAWNED, serde_json::json!({"mode": "fork"}))
+            .await;
+        assert!(
+            runner.seen.lock().expect("seen lock poisoned").is_empty(),
+            "a spawn_only hook must not fire for a fork"
+        );
+
+        d.dispatch(CHILD_SPAWNED, serde_json::json!({"mode": "spawn"}))
+            .await;
+        let seen = runner.seen.lock().expect("seen lock poisoned").clone();
+        assert_eq!(
+            seen.len(),
+            1,
+            "a spawn_only hook must fire for a spawn: {seen:?}"
+        );
+        assert_eq!(seen[0].1["mode"], "spawn");
+    }
+
+    /// The default, pre-existing behavior is unchanged: `spawn_only: false`
+    /// (every `HookSpec` before this field existed) fires for both modes --
+    /// regression coverage for the "an operator-authored `child_spawned`
+    /// rule still sees every child" guarantee this field's own doc makes.
+    #[tokio::test]
+    async fn an_unset_spawn_only_still_fires_for_both_modes() {
+        let (d, runner) = wired(false);
+        d.set_hooks(BTreeMap::from([(
+            CHILD_SPAWNED.to_string(),
+            vec![spec("native-subscriber")],
+        )]));
+
+        d.dispatch(CHILD_SPAWNED, serde_json::json!({"mode": "fork"}))
+            .await;
+        d.dispatch(CHILD_SPAWNED, serde_json::json!({"mode": "spawn"}))
+            .await;
+
+        assert_eq!(runner.seen.lock().expect("seen lock poisoned").len(), 2);
+    }
+
+    /// A `spawn_only` hook set on a payload with no parseable `"mode"` field
+    /// never fires -- the same defensive-fallback posture
+    /// `a_matcher_on_a_toolless_payload_never_fires` pins for `matcher`.
+    #[tokio::test]
+    async fn spawn_only_never_fires_for_a_payload_with_no_mode_field() {
+        let runner = Arc::new(RecordingRunner::default());
+        let d = HookDispatcher::new();
+        d.set_runner(Some(runner.clone()));
+        d.set_hooks(BTreeMap::from([(
+            CHILD_SPAWNED.to_string(),
+            vec![spec_spawn_only("stray")],
+        )]));
+
+        d.dispatch(CHILD_SPAWNED, serde_json::json!({})).await;
         assert!(runner.seen.lock().expect("seen lock poisoned").is_empty());
     }
 

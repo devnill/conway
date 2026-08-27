@@ -173,7 +173,7 @@ authoritative per-event disclosure).
 | `UserPromptSubmit` | maps | `prompt_submitted` | closed (may deny) |
 | `PreToolUse` | maps | `pre_tool_use` | closed (may deny) |
 | `PostToolUse` | maps | `post_tool_use` | open |
-| `SubagentStart` | **approximate** | `child_spawned` | open |
+| `SubagentStart` | maps — narrowed to `Spawn`-mode children only, see below | `child_spawned` | open |
 | `SubagentStop` | **approximate** | `child_reported` | open — see below |
 | `PermissionRequest` | declined | — | — |
 | `Notification` | declined | — | — |
@@ -195,14 +195,54 @@ authoritative per-event disclosure).
 | `Elicitation` | declined | — | — |
 | `ElicitationResult` | declined | — | — |
 
-**The approximate pair's own known divergence:** conway's `child_reported`
-fires once per agent that has a parent, for both an ordinary completion
-*and* a supervisor-synthesized terminal result (a panic, or a task still
-unresponsive past its grace window) — whether Claude Code's own
-`SubagentStop` fires for that second, synthesized case the same way is
-unverified. Mapped, labelled, not chased further, per the operator ruling's
-own best-effort-and-disclosed appetite; a beepboop smoke test is what
-surfaces whether it actually bites in practice.
+**`SubagentStart` used to be the second approximate pair — fixed, not just
+disclosed (board item `01M129Y98V4C1050QBPPMY37X0`).** Conway creates a
+child agent in one of two modes: `Spawn` (a clean child with no ancestry —
+the shape Claude Code's own Task tool creates, and the shape a plugin
+author writing a `SubagentStart` hook is picturing) and `Fork` (the current
+conversation continues in a child that inherits its context — the shape
+`/ask`, both the modal command and the `conway_ask` tool, use). Before this
+item, a translated `SubagentStart` rule fired for BOTH: a plugin's hook
+reacted to every `/ask`, a thing its author never had in mind — for
+`beepboop` specifically, an audible sound on a keystroke that is not
+"starting a subagent" to the operator at all. Fixed using data already
+being sent to the hook and previously discarded: `child_spawned`'s own
+payload always carried `"mode"` (`Fork`/`Spawn`), and a translated
+`SubagentStart` rule now sets `spawn_only`, a per-hook filter
+(`conway_core::ports::PluginHookRule::spawn_only`,
+`conway_runtime::hook_dispatch::HookSpec::spawn_only`) that only lets it
+see the `Spawn` occurrences. **conway's `child_spawned` event ITSELF is
+unchanged** — it still fires for both modes, unconditionally, at the same
+single `SubagentHost::start` call site; an operator-authored
+`[hooks].rules[]` entry (or any other plugin's own `child_spawned`
+subscription) still sees every child, fork included, exactly as before.
+Only the ONE translated `SubagentStart` rule narrows.
+**Considered and rejected: leaving this approximate and only improving the
+disclosure wording.** That would have kept the operator-visible bug (every
+`/ask` still triggering the hook) in exchange for a clearer label — a
+worse outcome than actually fixing it, given the data needed to fix it
+was already in hand.
+
+**The one divergence still known and NOT fixed here, for `child_reported`
+specifically:** conway's `child_reported` fires once per agent that has a
+parent, for both an ordinary completion *and* a supervisor-synthesized
+terminal result (a panic, or a task still unresponsive past its grace
+window) — whether Claude Code's own `SubagentStop` fires for that second,
+synthesized case the same way is unverified. **Considered and rejected:
+narrowing `child_reported` to fire only for an ordinary completion.**
+Unlike `SubagentStart`'s divergence, there is no field in `child_reported`'s
+own payload (`{agent_id, parent, session, result}`) that tells the two
+cases apart — an ordinary completion can ALSO carry a `Failed`/
+`Cancelled`/`BudgetExceeded` result, the identical shapes a synthesized
+panic/timeout produces — so narrowing here would need a NEW payload field
+invented for this alone, not a fix using data already in hand. And the
+cost would land exactly where visibility matters most: a plugin watching
+`child_reported` to know when a child is done would silently stop hearing
+about the crashes and timeouts — the cases most worth surfacing — while
+still hearing about ordinary success. Kept firing for both, mapped,
+labelled, not chased further, per the operator ruling's own
+best-effort-and-disclosed appetite; a beepboop smoke test is what surfaces
+whether it actually bites in practice.
 
 Every `declined` row above is also named individually, with its own reason,
 in `ClaudeCompatReport::unsupported` (`UnsupportedKind::Hook`) — never

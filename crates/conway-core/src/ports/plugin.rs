@@ -667,7 +667,7 @@ pub trait Plugin: Send + Sync + 'static {
     }
 }
 
-/// One hook rule a plugin registers via [`Plugin::hooks`] -- the SAME six
+/// One hook rule a plugin registers via [`Plugin::hooks`] -- the SAME seven
 /// fields `crate::config::schema::HookEntry` (owned by the `conway` facade,
 /// which this crate does not depend on) carries for an operator-authored
 /// `[hooks].rules[]` entry, mirrored here as the narrow shape
@@ -675,7 +675,11 @@ pub trait Plugin: Send + Sync + 'static {
 /// `conway_runtime::permission::PreToolUseHookSpec`/`conway_runtime::
 /// hook_dispatch::HookSpec` already have to `HookEntry` one crate over
 /// (that type's own doc: "this crate has no dependency on `conway`'s
-/// config schema").
+/// config schema"), **plus one field with no `HookEntry` counterpart**:
+/// [`Self::spawn_only`] (board item `01M129Y98V4C1050QBPPMY37X0`), deliberately
+/// NOT added to the TOML-facing `HookEntry` -- see that field's own doc for
+/// why. `ConwayBuilder::build` threads it through its own internal fold
+/// alongside, never through `HookEntry` itself.
 ///
 /// `id` is BARE, not yet namespaced -- see [`Plugin::hooks`]'s own doc for
 /// why the host, not this type or the plugin returning it, performs that
@@ -717,6 +721,34 @@ pub struct PluginHookRule {
     /// a plugin author registering its OWN hook here IS the author of that
     /// posture.
     pub on_failure: crate::hook::HookOnFailure,
+    /// Narrows this rule to fire only when the event's own payload names a
+    /// [`crate::agent::SubagentMode::Spawn`] child -- meaningful ONLY for
+    /// `child_spawned` (`conway_runtime::hook_dispatch::CHILD_SPAWNED`), the
+    /// one dispatched event whose payload carries a `"mode"` field at all
+    /// (`conway_runtime::subagent::SubagentHost::start`'s own `"mode":
+    /// spec.mode` dispatch). `false` (the default every pre-existing
+    /// `Plugin::hooks()` implementor keeps, since this field did not exist
+    /// before board item `01M129Y98V4C1050QBPPMY37X0`) fires for EVERY
+    /// mode, `Fork` included -- unchanged from `child_spawned`'s own
+    /// long-standing "fires for both modes" contract
+    /// (`crate::agent::SubagentMode`'s own doc, "fork vs spawn: the only
+    /// two subagent modes, never blurred into one").
+    ///
+    /// **Why this exists**: `crates/conway-cli/src/claude_compat_plugins.rs`
+    /// sets this `true` for exactly one translated rule -- a Claude Code
+    /// `SubagentStart` hooks.json entry (mapped to `child_spawned` by
+    /// `conway_plugin_claude::hooks::EVENT_MAP`). Claude Code's own
+    /// `SubagentStart` models a clean, ancestry-free child (the shape its
+    /// Task tool creates); conway's `child_spawned` fires for that AND for
+    /// a `Fork` (the shape `/ask` and `conway_ask` use, where the current
+    /// conversation continues in a child that inherits its context) --
+    /// before this field existed, a plugin author's `SubagentStart` hook
+    /// fired on every `/ask`, a thing its author never had in mind (board
+    /// item `01M129Y98V4C1050QBPPMY37X0`'s own finding). Set on any OTHER
+    /// event (one whose payload carries no `"mode"` field), it is
+    /// harmlessly inert -- never matches, mirroring `match_tool`'s own
+    /// toolless-event fallback -- rather than panicking.
+    pub spawn_only: bool,
 }
 
 /// One status contribution a plugin pushes via `status/1` notifications --

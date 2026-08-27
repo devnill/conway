@@ -94,14 +94,20 @@ pub enum HookMapOutcome {
     /// real, dispatchable `[hooks].rules[]`-shaped registration via
     /// [`HookTranslation::registration`].
     ///
-    /// `approximate` is true for the two pairs whose semantics are known to
-    /// diverge from Claude Code's own firing conditions in at least one
-    /// way (`SubagentStart`->`child_spawned`, `SubagentStop`->
-    /// `child_reported`) rather than merely being unverified against every
-    /// firing condition -- see `APPROXIMATE_CLAUDE_EVENTS`'s own doc for
-    /// the one divergence this module already knows about for
-    /// `child_reported`, and `docs/plugins/claude-compat.md`'s own coverage
-    /// table for the operator-visible label.
+    /// `approximate` is true for the one pair whose semantics are known to
+    /// diverge from Claude Code's own firing conditions in at least one way
+    /// (`SubagentStop`->`child_reported`) rather than merely being
+    /// unverified against every firing condition -- see
+    /// `APPROXIMATE_CLAUDE_EVENTS`'s own doc for the one divergence this
+    /// module already knows about, and `docs/plugins/claude-compat.md`'s
+    /// own coverage table for the operator-visible label.
+    ///
+    /// **`SubagentStart`->`child_spawned` used to be the SECOND approximate
+    /// pair, and no longer is** (board item `01M129Y98V4C1050QBPPMY37X0`):
+    /// its own divergence (conway's `child_spawned` conflating a `Fork` --
+    /// `/ask`'s own shape -- with a `Spawn` -- Claude Code's own Task-tool
+    /// shape, the one a `SubagentStart` hook author is picturing) is now
+    /// CLOSED, not merely disclosed -- see [`HookRegistration::spawn_only`].
     Mapped {
         conway_event: &'static str,
         approximate: bool,
@@ -114,8 +120,10 @@ pub enum HookMapOutcome {
 /// The six Claude Code events with a same-named conway counterpart -- board
 /// item `01M0X1FCQ80C9ET97HENXSAW2K`'s own measured table, checked against
 /// both real plugins' `hooks.json` this module has been run against
-/// (`beepboop` 1.4.0, `ideate` 3.2.2). Four are exact by name
-/// (`PreToolUse`/`PostToolUse`/`UserPromptSubmit`/`SessionStart`); two are
+/// (`beepboop` 1.4.0, `ideate` 3.2.2). Five are exact by name
+/// (`PreToolUse`/`PostToolUse`/`UserPromptSubmit`/`SessionStart`/
+/// `SubagentStart`, the last made exact by board item
+/// `01M129Y98V4C1050QBPPMY37X0`'s [`HookRegistration::spawn_only`]); one is
 /// `APPROXIMATE_CLAUDE_EVENTS`.
 const EVENT_MAP: &[(&str, &str)] = &[
     ("PreToolUse", "pre_tool_use"),
@@ -131,7 +139,7 @@ const EVENT_MAP: &[(&str, &str)] = &[
 /// disclosed" appetite -- mapped and USABLE, but not verified against every
 /// one of Claude Code's own firing conditions.
 ///
-/// **The one divergence already known, for `child_reported` specifically**
+/// **The one divergence still known, for `child_reported` specifically**
 /// (`crates/conway/src/config/schema.rs`'s own `HooksConfig` doc): conway's
 /// `child_reported` fires once per agent that HAS a parent, for both a
 /// normal completion AND a supervisor-synthesized terminal result (a panic,
@@ -140,7 +148,26 @@ const EVENT_MAP: &[(&str, &str)] = &[
 /// same way. Per the operator ruling: mapped, labelled, and not chased
 /// further here -- a beepboop smoke test is what surfaces whether it
 /// actually bites.
-const APPROXIMATE_CLAUDE_EVENTS: &[&str] = &["SubagentStart", "SubagentStop"];
+///
+/// **Considered and rejected for this event (board item
+/// `01M129Y98V4C1050QBPPMY37X0`): narrowing `child_reported` to fire ONLY
+/// for a normal completion, dropping the supervisor-synthesized case.**
+/// Unlike `SubagentStart`'s own divergence, there is no field in THIS
+/// event's payload (`{agent_id, parent, session, result}`,
+/// `crates/conway-runtime/src/agent_loop.rs`/`supervisor.rs`) that tells the
+/// two cases apart -- a normal completion can ALSO carry
+/// `ResultStatus::Failed`/`Cancelled`/`BudgetExceeded`, the exact same
+/// variants a synthesized panic/timeout produces, so narrowing here would
+/// need a NEW payload field invented for this item alone, not (unlike
+/// `SubagentStart`) a fix using data already in hand. And the cost of
+/// narrowing would fall exactly where visibility matters most: a plugin
+/// watching `child_reported` to know when a child is done -- e.g. to log or
+/// alert on it -- would silently stop hearing about the crashes and
+/// timeouts, the cases most worth surfacing, while continuing to hear about
+/// ordinary success. Kept firing for both, unchanged; still `approximate`,
+/// still disclosed, per the operator ruling's own appetite -- not
+/// re-litigated further by this item.
+const APPROXIMATE_CLAUDE_EVENTS: &[&str] = &["SubagentStop"];
 
 /// conway core events that carry a tool name in their payload -- the only
 /// two a `match`/`matcher` can ever apply to
@@ -304,6 +331,23 @@ pub struct HookRegistration {
     pub command: Vec<String>,
     pub timeout_ms: u64,
     pub enabled: bool,
+    /// `true` only for the ONE translated rule that needs it: a Claude Code
+    /// `SubagentStart` rule (`event == "child_spawned"`) -- board item
+    /// `01M129Y98V4C1050QBPPMY37X0`'s own decision on the `SubagentStart`->
+    /// `child_spawned` mapping. Claude Code's own `SubagentStart` models a
+    /// clean, ancestry-free child (its Task tool's own shape); conway's
+    /// `child_spawned` fires for that AND for a `Fork` (`/ask`, `conway_ask`
+    /// -- the current conversation continuing in a child that inherits its
+    /// context), which is not what a `SubagentStart` hook author had in
+    /// mind. Every OTHER `HookRegistration` this crate produces sets this
+    /// `false` -- see [`conway_core::ports::PluginHookRule::spawn_only`]
+    /// (this field's caller-facing counterpart) for the full mechanism this
+    /// flag ultimately reaches: a caller (`conway-cli`'s
+    /// `claude_compat_plugins.rs`) carries it through unchanged into a real
+    /// `PluginHookRule`, which `ConwayBuilder::build` threads into
+    /// `conway_runtime::hook_dispatch::HookSpec::spawn_only`, read by
+    /// `HookDispatcher::dispatch`'s own per-hook filter.
+    pub spawn_only: bool,
 }
 
 impl HookTranslation {
@@ -333,7 +377,13 @@ impl HookTranslation {
     /// `timeout_ms` falls back to `DEFAULT_TIMEOUT_MS` when the source
     /// entry set none. `enabled` is always `true` -- a translated rule that
     /// should not run yet is simply not translated at all (there is no
-    /// Claude Code counterpart to a disabled rule).
+    /// Claude Code counterpart to a disabled rule). [`HookRegistration::
+    /// spawn_only`] is set `true` exactly when [`Self::claude_event`] is
+    /// `"SubagentStart"` -- the ONE translated event that needs it (that
+    /// field's own doc) -- gated on the CLAUDE-side event name, not on
+    /// `conway_event` (`"child_spawned"` alone would not distinguish this
+    /// rule from a hypothetical future second mapping onto the same conway
+    /// event).
     pub fn registration(
         &self,
         id: impl Into<String>,
@@ -352,6 +402,7 @@ impl HookTranslation {
             command: vec!["/bin/sh".to_string(), "-c".to_string(), resolved],
             timeout_ms: self.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS),
             enabled: true,
+            spawn_only: self.claude_event == "SubagentStart",
         })
     }
 }
@@ -402,9 +453,62 @@ mod tests {
             Some(("prompt_submitted", false))
         );
         assert_eq!(mapped_to("SessionStart"), Some(("session_starting", false)));
-        // The approximate pair: mapped and usable, but flagged.
-        assert_eq!(mapped_to("SubagentStart"), Some(("child_spawned", true)));
+        // `SubagentStart` is exact now (board item
+        // `01M129Y98V4C1050QBPPMY37X0`'s own `spawn_only` fix, pinned
+        // directly below via `.registration()`); `SubagentStop` remains the
+        // one approximate pair.
+        assert_eq!(mapped_to("SubagentStart"), Some(("child_spawned", false)));
         assert_eq!(mapped_to("SubagentStop"), Some(("child_reported", true)));
+    }
+
+    /// **The discriminating check board item `01M129Y98V4C1050QBPPMY37X0`
+    /// exists to add**: a translated `SubagentStart` rule's own
+    /// `.registration()` carries `spawn_only: true` -- checking
+    /// `HookMapOutcome::approximate` alone (the test above) would pass just
+    /// as happily if `spawn_only` were never set at all, or set on the
+    /// wrong rule; only reading the actual `HookRegistration` proves the
+    /// mechanism the decision depends on is really there. `SubagentStop`
+    /// (mapped to a DIFFERENT conway event, `child_reported`, which has no
+    /// `"mode"` field at all) gets `false`, unchanged.
+    #[test]
+    fn a_translated_subagent_start_registration_carries_spawn_only_and_subagent_stop_does_not() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_hooks_json(
+            dir.path(),
+            r#"{"hooks":{
+                "SubagentStart": [{"hooks":[{"type":"command","command":"echo sub-start"}]}],
+                "SubagentStop": [{"hooks":[{"type":"command","command":"echo sub-stop"}]}]
+            }}"#,
+        );
+        let mut unsupported = Vec::new();
+        let translations = read_hooks(dir.path(), &mut unsupported).unwrap();
+        assert_eq!(translations.len(), 2);
+
+        let start = translations
+            .iter()
+            .find(|t| t.claude_event == "SubagentStart")
+            .expect("SubagentStart translation");
+        let start_registration = start
+            .registration("start-1", dir.path())
+            .expect("SubagentStart maps to child_spawned");
+        assert_eq!(start_registration.event, "child_spawned");
+        assert!(
+            start_registration.spawn_only,
+            "a translated SubagentStart rule must narrow to Spawn-mode children only"
+        );
+
+        let stop = translations
+            .iter()
+            .find(|t| t.claude_event == "SubagentStop")
+            .expect("SubagentStop translation");
+        let stop_registration = stop
+            .registration("stop-1", dir.path())
+            .expect("SubagentStop maps to child_reported");
+        assert_eq!(stop_registration.event, "child_reported");
+        assert!(
+            !stop_registration.spawn_only,
+            "child_reported has no \"mode\" field -- spawn_only must stay false"
+        );
     }
 
     /// The spec's own named list, checked one by one: these four Claude

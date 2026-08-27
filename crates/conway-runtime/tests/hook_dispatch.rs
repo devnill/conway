@@ -89,6 +89,7 @@ fn spec(id: &str) -> HookSpec {
         timeout_ms: 1_000,
         matcher: None,
         origin: HookOrigin::Operator,
+        spawn_only: false,
     }
 }
 
@@ -299,6 +300,7 @@ async fn a_post_tool_use_matcher_fires_only_for_its_own_tool_through_run_batch()
                 timeout_ms: 1_000,
                 matcher: Some("read".to_string()),
                 origin: HookOrigin::Operator,
+                spawn_only: false,
             },
             HookSpec {
                 id: "edit-watcher".into(),
@@ -306,6 +308,7 @@ async fn a_post_tool_use_matcher_fires_only_for_its_own_tool_through_run_batch()
                 timeout_ms: 1_000,
                 matcher: Some("edit".to_string()),
                 origin: HookOrigin::Operator,
+                spawn_only: false,
             },
         ],
     )]));

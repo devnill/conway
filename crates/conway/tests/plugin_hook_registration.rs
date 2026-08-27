@@ -115,6 +115,7 @@ impl Plugin for DenyingHookPlugin {
             timeout_ms: 5_000,
             enabled: true,
             on_failure: Default::default(),
+            spawn_only: false,
         }]
     }
 }
@@ -159,6 +160,7 @@ impl Plugin for ConfigurableHookPlugin {
             timeout_ms: 5_000,
             enabled: true,
             on_failure: Default::default(),
+            spawn_only: false,
         }]
     }
 }

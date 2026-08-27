@@ -185,6 +185,11 @@ fn to_plugin_hook_rule(registration: HookRegistration) -> PluginHookRule {
         timeout_ms: registration.timeout_ms,
         enabled: registration.enabled,
         on_failure: Default::default(),
+        // Carried straight through -- `HookRegistration::spawn_only`'s own
+        // doc: `true` for exactly the one translated event that needs it
+        // (`SubagentStart` -> `child_spawned`), `false` for every other
+        // mapped event, unchanged from before this field existed.
+        spawn_only: registration.spawn_only,
     }
 }
 
@@ -639,6 +644,58 @@ mod tests {
         assert_eq!(rules[0].event, "session_starting");
     }
 
+    /// Board item `01M129Y98V4C1050QBPPMY37X0`: `to_plugin_hook_rule` carries
+    /// `HookRegistration::spawn_only` through to the real, dispatchable
+    /// `PluginHookRule` unchanged -- `true` for a translated `SubagentStart`
+    /// rule, `false` for a translated `SubagentStop` one (checked in the
+    /// SAME fixture, not two separate tests, so this cannot pass against a
+    /// version of `to_plugin_hook_rule` that hardcodes one value for every
+    /// rule regardless of what it translated). The dispatch-level proof that
+    /// a `spawn_only: true` rule actually narrows to a real `Spawn` (not
+    /// merely that the bit survives this wiring step) is
+    /// `crates/conway-plugin-claude/tests/hooks_dispatch.rs`'s own
+    /// `a_translated_subagent_start_hooks_json_rule_fires_for_a_spawn_but_not_for_a_fork`
+    /// -- this test is wiring-only, mirroring this module's own stated
+    /// scope (see this module's `tests` doc comment).
+    #[tokio::test]
+    async fn a_translated_subagent_start_hook_carries_spawn_only_and_subagent_stop_does_not() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_hooks_json(
+            dir.path(),
+            r#"{"hooks":{
+                "SubagentStart":[{"hooks":[{"type":"command","command":"echo start"}]}],
+                "SubagentStop":[{"hooks":[{"type":"command","command":"echo stop"}]}]
+            }}"#,
+        );
+        let builder = ConwayBuilder::from_parts(config_with_claude_compat_entry(dir.path()));
+        let builder = install(builder).await.expect("install must succeed");
+
+        let rules = hook_rules(&builder);
+        assert_eq!(
+            rules.len(),
+            2,
+            "both mapped rules must be appended: {rules:?}"
+        );
+
+        let start_rule = rules
+            .iter()
+            .find(|r| r.event == "child_spawned")
+            .expect("SubagentStart maps to child_spawned");
+        assert!(
+            start_rule.spawn_only,
+            "a translated SubagentStart rule must narrow to Spawn-mode children only"
+        );
+
+        let stop_rule = rules
+            .iter()
+            .find(|r| r.event == "child_reported")
+            .expect("SubagentStop maps to child_reported");
+        assert!(
+            !stop_rule.spawn_only,
+            "child_reported has no \"mode\" field -- spawn_only must stay false"
+        );
+    }
+
     /// An `Unmapped` rule (no conway counterpart -- `Stop` here) contributes
     /// no [`PluginHookRule`] at all, and therefore no attached plugin --
     /// `hook_registrations()` already filters these out (they are named in
@@ -986,6 +1043,7 @@ mod tests {
             ],
             timeout_ms: 5_000,
             enabled: true,
+            spawn_only: false,
         }];
         let (deny_capable, observation_only) = classify_hook_registrations(&registrations);
         assert_eq!(
@@ -1017,6 +1075,7 @@ mod tests {
             ],
             timeout_ms: 5_000,
             enabled: true,
+            spawn_only: false,
         }];
         let (deny_capable, observation_only) = classify_hook_registrations(&registrations);
         assert_eq!(
@@ -1043,6 +1102,7 @@ mod tests {
             ],
             timeout_ms: 5_000,
             enabled: true,
+            spawn_only: false,
         }];
         let (deny_capable, observation_only) = classify_hook_registrations(&registrations);
         assert!(deny_capable.is_empty());
