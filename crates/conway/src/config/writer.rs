@@ -1,12 +1,16 @@
 //! A config **writer** -- the missing half `crate::config::merge`'s own
 //! module doc names ("a layered read with no writer outside test
-//! fixtures"). [`set_plugin_installed`] is the first (and, as of this
-//! item, only) mutation this crate performs against a real
-//! `settings.json`: adding or removing one id from the top-level
-//! `plugins.install` array, decision `01M0K8BAXJ6THVJAPK0JZ17VV6`'s
-//! resolved user layer (`~/.conway/settings.json`, or
-//! `$CONWAY_CONFIG_DIR/settings.json` -- see [`super::discovery::user_config_path`],
-//! this module's own caller).
+//! fixtures"). Three public writers, all against a real `settings.json`,
+//! resolved to decision `01M0K8BAXJ6THVJAPK0JZ17VV6`'s user layer
+//! (`~/.conway/settings.json`, or `$CONWAY_CONFIG_DIR/settings.json` --
+//! see [`super::discovery::user_config_path`], this module's own caller),
+//! and each a materially different SHAPE of the one thing being edited:
+//! [`set_plugin_installed`] edits `plugins.install`, an array of strings;
+//! [`set_claude_compat_entry`] edits `plugins.claude_compat`, an array of
+//! objects, matched by an `id` member; [`set_backend_provider`] (board item
+//! `01M11XTB238YHXV01FWF8SFZH2`) edits `backends`, a **map** from provider
+//! id to an open-ended entry -- a named table (`[backends.<id>]` in the
+//! operator-facing notation `docs/providers.md` uses), not an array at all.
 //!
 //! # Why this is a hand-rolled text patch, not a parse/mutate/reserialize
 //!
@@ -50,14 +54,32 @@
 //! its represented character -- a JSON key/string element this module
 //! compares against a known ASCII literal (`"plugins"`, `"install"`, a
 //! plugin id such as `"conway.memory"`) is compared against its RAW,
-//! still-escaped source text. Every id this module is ever asked to
-//! toggle is a bare dotted-lowercase manifest id
+//! still-escaped source text. Both sides of every such comparison are
+//! produced by `serde_json`, so they agree on one canonical spelling.
+//!
+//! WHAT THAT DOES AND DOES NOT GUARANTEE, restated when
+//! [`set_backend_provider`] joined this module and widened the input
+//! domain. The two plugin writers only ever toggle a bare
+//! dotted-lowercase manifest id
 //! (`conway_core::ports::plugin::PluginManifest::id`) with no JSON
-//! metacharacter in it, so raw comparison and decoded comparison always
-//! agree for the inputs this module actually receives; a key or element
-//! that legitimately needed escaping to hold `"plugins"`/`"install"`/a
-//! plugin id verbatim is not a case any settings.json this codebase
-//! produces or expects to see.
+//! metacharacter in it, so for them raw and decoded comparison cannot
+//! disagree. A BACKEND id has no such guarantee: it reaches
+//! [`set_backend_provider`] from an operator typing into a form, and may
+//! legitimately carry a quote, a backslash, or a non-ASCII character.
+//!
+//! That is still safe for every file conway itself writes, because the id
+//! is escaped through `json_string_literal` on the way in and compared in
+//! that same escaped form on the way out -- one spelling on both sides.
+//! The residual gap, named rather than left to be discovered: a
+//! settings.json written by a DIFFERENT tool may spell the same key
+//! another equally-valid way (Python's `json.dumps` escapes non-ASCII to
+//! `\uXXXX` by default, so `café` where `serde_json` writes `café`).
+//! Raw comparison then misses a member that is logically present, and an
+//! add appends a second member with the same decoded key instead of being
+//! the no-op it reports. No id conway ships or documents is affected --
+//! every backend id in `docs/providers.md` is ASCII -- and closing it
+//! means decoding both sides before comparing, which is a real parser and
+//! is what this module deliberately is not.
 //!
 //! # Safety posture: refuse rather than guess
 //!
@@ -169,17 +191,36 @@ pub fn set_plugin_installed(path: &Path, plugin_id: &str, installed: bool) -> Re
         current
     };
 
+    write_atomically(path, &new_text)?;
+    Ok(true)
+}
+
+/// Create `path`'s parent directories if needed, then write `contents`
+/// durably: to a sibling `.json.tmp` first, then `rename` over `path`, so
+/// a reader (including this crate's own five-source `load`) can never
+/// observe a partially-written settings.json.
+///
+/// **The single implementation of this file's durability step, per P-14.**
+/// All three public writers call it rather than restating it. That rule
+/// exists because a restatement drifts and the duplicate silently drops a
+/// guard -- a defect this tree has already paid for more than once -- and
+/// because the next change here (an `fsync` before the rename, a mode fix,
+/// a check for a `tmp` left by a crashed prior run) must land in one place
+/// rather than being applied to two of three copies.
+///
+/// SCOPE, stated rather than left to be discovered: this consolidates the
+/// three copies inside THIS module only. `crate::permissions` restates the
+/// same five lines twice more and `super::trust` once, and folding those in
+/// reaches past this module's ownership -- board item
+/// `01M12ERK9WSJ10AT87WCJ9ZME9` carries that.
+fn write_atomically(path: &Path, contents: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    // tmp-then-rename -- the same durability shape
-    // `crate::permissions::rewrite_permission_file_removing` already uses,
-    // so a reader (including this crate's own five-source `load`) can
-    // never observe a partially-written settings.json.
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &new_text)?;
+    std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, path)?;
-    Ok(true)
+    Ok(())
 }
 
 /// A fresh, minimal document for the "no existing settings.json" case --
@@ -272,12 +313,7 @@ pub fn set_claude_compat_entry(
         }
     };
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &new_text)?;
-    std::fs::rename(&tmp, path)?;
+    write_atomically(path, &new_text)?;
     Ok(true)
 }
 
@@ -529,12 +565,17 @@ fn json_string_literal(s: &str) -> String {
 
 /// One member of a scanned JSON object -- `key` is the RAW (still-escaped)
 /// text between the quotes, not decoded (see this module's own doc for
-/// why that is safe for every comparison this module performs).
+/// why that is safe for every comparison this module performs). `value_end`
+/// (the byte offset right after the member's own value, before any
+/// subsequent whitespace or comma) exists solely for
+/// [`remove_object_member`] -- every other user of this struct only ever
+/// needed `value_start`.
 struct Member<'a> {
     key: &'a str,
     key_start: usize,
     colon_pos: usize,
     value_start: usize,
+    value_end: usize,
 }
 
 /// One element of a scanned JSON array. `raw_string` is `Some(raw inner
@@ -683,11 +724,13 @@ fn scan_object_members(
         pos = skip_ws(bytes, pos + 1);
         let value_start = pos;
         pos = skip_value(bytes, pos)?;
+        let value_end = pos;
         members.push(Member {
             key,
             key_start,
             colon_pos,
             value_start,
+            value_end,
         });
         pos = skip_ws(bytes, pos);
         match bytes.get(pos) {
@@ -866,6 +909,290 @@ fn remove_array_element(
             &text[..elements[idx - 1].end],
             &text[elements[idx].end..]
         )
+    }
+}
+
+/// Whether a scanned object `member`'s own RAW (still-escaped) key text is
+/// the same JSON string as `key` -- compares the escaped forms
+/// (`json_string_literal(key)`, quotes stripped), exactly the same
+/// raw-vs-raw comparison [`patch_install_array`]'s own doc already argues is
+/// safe for every id this module receives (no first-party id ever contains
+/// a character that needs escaping, so raw and decoded comparison always
+/// agree).
+fn member_key_matches(member: &Member<'_>, key: &str) -> bool {
+    let escaped = json_string_literal(key);
+    // `escaped` is `"..."` (leading and trailing quote included); `key`'s
+    // raw source form never contains those two bytes, so stripping exactly
+    // one byte off each end recovers the same raw text `scan_object_members`
+    // stored in `Member::key`.
+    member.key == &escaped[1..escaped.len() - 1]
+}
+
+/// The object-member sibling of [`remove_array_element`]: removes
+/// `members[idx]` from the object spanning `open_brace..=close_brace`,
+/// along with exactly the one separating comma that becomes dangling -- the
+/// comma AFTER it when it is the first of several members, the comma
+/// BEFORE it otherwise. The sole remaining member case collapses the whole
+/// object to a compact `{}`. Every OTHER member's own span -- including a
+/// comment-shaped one (`"//": ...`, `"_comment_...": ...`) sitting
+/// immediately before or after the removed one -- is untouched byte-for-
+/// byte.
+///
+/// **The chosen rule for a comment sitting next to the removed section:
+/// leave it, always.** `settings.json`'s comment convention (this module's
+/// own top doc, "comments-as-keys") is an ORDINARY object member with no
+/// structural link to what follows it -- JSON itself does not attach a
+/// comment to a subsequent key the way a `//` line comment attaches to the
+/// line below it. So there is no reliable way to tell, from the text alone,
+/// whether a comment-shaped member sitting right above `backends.<id>` was
+/// written ABOUT that one provider, about the whole `backends` map, or
+/// about something else the operator happened to type nearby. Guessing --
+/// and deleting a note that was not actually about the provider being
+/// removed -- is a strictly worse outcome than leaving a now-stale comment
+/// behind, so this function never inspects neighbouring members' content at
+/// all: it deletes exactly the matched member's own key/value text and its
+/// own dangling separating comma, nothing else. This is the identical
+/// contract [`remove_array_element`] already carries for the array case,
+/// applied to an object member instead of an array element.
+fn remove_object_member(
+    text: &str,
+    open_brace: usize,
+    close_brace: usize,
+    members: &[Member<'_>],
+    idx: usize,
+) -> String {
+    if members.len() == 1 {
+        format!("{}{{}}{}", &text[..open_brace], &text[close_brace + 1..])
+    } else if idx == 0 {
+        format!(
+            "{}{}",
+            &text[..members[0].key_start],
+            &text[members[1].key_start..]
+        )
+    } else {
+        format!(
+            "{}{}",
+            &text[..members[idx - 1].value_end],
+            &text[members[idx].value_end..]
+        )
+    }
+}
+
+/// Validates that `entry_json` (once trimmed of leading/trailing
+/// whitespace) is a syntactically valid, standalone JSON **object**
+/// literal -- refused otherwise, before anything is spliced into the real
+/// document, so [`set_backend_provider`] can never write a malformed
+/// `settings.json` just because its caller handed it malformed text (this
+/// module's own "Safety posture: refuse rather than guess" doc, applied to
+/// caller input rather than to the file on disk -- P-10's boundary check,
+/// since a provider entry ultimately traces back to a human typing into a
+/// form).
+fn validate_backend_entry_json(entry_json: &str) -> std::result::Result<(), String> {
+    match serde_json::from_str::<serde_json::Value>(entry_json.trim()) {
+        Ok(serde_json::Value::Object(_)) => Ok(()),
+        Ok(_) => Err("a backend provider entry must be a JSON object".to_string()),
+        Err(e) => Err(format!("backend provider entry is not valid JSON: {e}")),
+    }
+}
+
+/// Adds (`present: true`) or removes (`present: false`) the
+/// `"<id>": entry_json` member of the top-level `backends` object of the
+/// JSON document at `path` -- the third writer shape this module has, and
+/// the harder one: [`set_plugin_installed`] edits an array of strings,
+/// [`set_claude_compat_entry`] edits an array of objects, and `backends` is
+/// neither an array nor a fixed-shape object -- it is a **map** from
+/// provider id to an open-ended [`super::schema::BackendEntry`] (`kind` is
+/// an open vocabulary; see that struct's own doc), so each provider is one
+/// named member of that map, `[backends.<id>]` in the operator-facing
+/// notation `docs/providers.md` already uses for it.
+///
+/// `entry_json` is the caller-supplied JSON object literal for the
+/// provider's own value (e.g.
+/// `r#"{"kind": "anthropic", "api_key_env": "ANTHROPIC_API_KEY"}"#`,
+/// typically built by serialising a [`super::schema::BackendEntry`], or by
+/// hand for a third-party `kind` carrying its own extra keys) -- this
+/// module never enumerates a provider's own fields itself, matching
+/// `BackendEntry`'s own doc's rejection of a "built-ins are first-class,
+/// everyone else is a guest" shape: it is validated as a standalone JSON
+/// object (`validate_backend_entry_json`, private to this module) and otherwise spliced in
+/// verbatim, never decoded or re-rendered. Ignored (never even parsed) when
+/// `present` is `false`, exactly as `set_claude_compat_entry`'s own `dir`
+/// argument is ignored on removal.
+///
+/// **Every safety property [`set_plugin_installed`] and
+/// [`set_claude_compat_entry`] have, this has too, by construction: it is
+/// built from the exact same primitives** -- `scan_object_members`,
+/// `insert_member` (reused verbatim for the insert side; a `backends`
+/// member is an ordinary object member, exactly like `plugins.install`
+/// itself), and the new `remove_object_member` (private to this module; its
+/// own doc states the comment/whitespace rule this writer follows on
+/// removal). A file that does not parse as strict JSON is refused before
+/// anything is touched; a byte outside the touched span is never re-emitted
+/// from a parsed representation, only copied verbatim; the write is
+/// tmp-then-rename; a goal state already holding (the SAME `id` already
+/// present when adding, or already absent when removing) performs no write
+/// at all.
+///
+/// **Matching an existing provider is by `id` ALONE** -- the top-level
+/// `backends` object's own member key, compared via `member_key_matches`
+/// (private to this module). Adding an id that is already present is
+/// therefore a no-op even if `entry_json` differs; a caller wanting to
+/// change an existing provider's fields removes then re-adds, the same
+/// two-step `set_claude_compat_entry`'s own doc already names for its
+/// analogous case.
+///
+/// Returns `Ok(true)` if a write happened, `Ok(false)` if the goal state
+/// already held. A missing file is created (parent directories included)
+/// when `present` is `true`; when `present` is `false` and the file does
+/// not exist, there is nothing to remove, so this returns `Ok(false)` with
+/// no filesystem write at all -- matching `set_plugin_installed`'s own
+/// no-op contract for a removal against an absent file.
+///
+/// **User scope only.** This function takes a caller-supplied `path`
+/// exactly like its two siblings and never resolves one itself; the
+/// project-scoped config file is deliberately never a valid target for a
+/// provider credential (a project-scoped write invites committing a secret
+/// into a repository) -- so every caller of this function is expected to
+/// resolve `path` via the user-scope resolution
+/// (`super::discovery::user_config_path`), never the project one.
+pub fn set_backend_provider(
+    path: &Path,
+    id: &str,
+    entry_json: &str,
+    present: bool,
+) -> Result<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(FacadeError::Io(e)),
+    };
+
+    let new_text = if text.trim().is_empty() {
+        // Same reasoning as `set_plugin_installed`'s identical branch: a
+        // missing/whitespace-only file has no existing document to
+        // preserve, so a no-op removal never creates one.
+        if !present {
+            return Ok(false);
+        }
+        if let Err(msg) = validate_backend_entry_json(entry_json) {
+            return Err(FacadeError::Config {
+                path: Some(path.to_path_buf()),
+                message: format!("{}: {msg}", path.display()),
+            });
+        }
+        fresh_backend_document(id, entry_json.trim())
+    } else {
+        if let Err(e) = serde_json::from_str::<serde_json::Value>(&text) {
+            return Err(FacadeError::Config {
+                path: Some(path.to_path_buf()),
+                message: format!(
+                    "{} is not valid JSON, refusing to rewrite it blindly: {e}",
+                    path.display()
+                ),
+            });
+        }
+        if present {
+            if let Err(msg) = validate_backend_entry_json(entry_json) {
+                return Err(FacadeError::Config {
+                    path: Some(path.to_path_buf()),
+                    message: format!("{}: {msg}", path.display()),
+                });
+            }
+        }
+        match patch_backends_object(&text, id, entry_json.trim(), present) {
+            Ok(Some(patched)) => patched,
+            Ok(None) => return Ok(false),
+            Err(msg) => {
+                return Err(FacadeError::Config {
+                    path: Some(path.to_path_buf()),
+                    message: format!("{}: {msg}", path.display()),
+                })
+            }
+        }
+    };
+
+    write_atomically(path, &new_text)?;
+    Ok(true)
+}
+
+/// The `backends` sibling of [`fresh_document`]/[`fresh_claude_compat_document`].
+fn fresh_backend_document(id: &str, entry_json: &str) -> String {
+    format!(
+        "{{\n  \"backends\": {{\n    {}: {}\n  }}\n}}\n",
+        json_string_literal(id),
+        entry_json
+    )
+}
+
+/// The `backends`-object sibling of [`patch_install_array`]/
+/// [`patch_claude_compat_array`] -- same locate-the-top-level-key,
+/// insert-or-remove shape, over an already-validated-as-JSON `text` and an
+/// already-validated-as-a-JSON-object `entry_json`, differing in the one
+/// way `backends` itself differs: it is a **map**, so the id is a member
+/// KEY at this level, never an array element or a nested `"id"` field.
+fn patch_backends_object(
+    text: &str,
+    id: &str,
+    entry_json: &str,
+    present: bool,
+) -> std::result::Result<Option<String>, String> {
+    let bytes = text.as_bytes();
+    let root_open = skip_ws(bytes, 0);
+    if bytes.get(root_open) != Some(&b'{') {
+        return Err("the top-level JSON value must be an object".to_string());
+    }
+    let (root_members, root_close) = scan_object_members(text, root_open)?;
+
+    // LAST match, not first -- same last-wins reasoning as
+    // `patch_install_array`'s own doc: a duplicate top-level `"backends"`
+    // key resolves last-wins under `serde_json`, the real loader, so
+    // editing an earlier one would change bytes the loader never reads.
+    let Some(backends_member) = root_members.iter().rev().find(|m| m.key == "backends") else {
+        if !present {
+            return Ok(None);
+        }
+        let value = format!("{{{}: {}}}", json_string_literal(id), entry_json);
+        return Ok(Some(insert_member(
+            text,
+            root_open,
+            &root_members,
+            root_close,
+            "backends",
+            &value,
+        )));
+    };
+
+    if bytes.get(backends_member.value_start) != Some(&b'{') {
+        return Err("\"backends\" must be a JSON object".to_string());
+    }
+    let (backend_members, backends_close) = scan_object_members(text, backends_member.value_start)?;
+
+    // `rposition`, not `position`: the LAST member with this key is the one
+    // `serde_json` actually resolves an operator-duplicated provider id to,
+    // for the same last-wins reason as the top-level `"backends"` key
+    // above.
+    let found_index = backend_members
+        .iter()
+        .rposition(|m| member_key_matches(m, id));
+
+    match (present, found_index) {
+        (true, Some(_)) => Ok(None),
+        (false, None) => Ok(None),
+        (true, None) => Ok(Some(insert_member(
+            text,
+            backends_member.value_start,
+            &backend_members,
+            backends_close,
+            id,
+            entry_json,
+        ))),
+        (false, Some(idx)) => Ok(Some(remove_object_member(
+            text,
+            backends_member.value_start,
+            backends_close,
+            &backend_members,
+            idx,
+        ))),
     }
 }
 
@@ -1574,6 +1901,609 @@ mod tests {
         assert_eq!(
             value["plugins"]["claude_compat"],
             serde_json::json!(["not-an-object"])
+        );
+    }
+
+    // ---- `set_backend_provider`: the MAP writer (board item
+    // 01M11XTB238YHXV01FWF8SFZH2) -- `backends` is a table keyed by
+    // provider id, the third shape this module writes, distinct from both
+    // the array-of-strings and array-of-objects cases above.
+
+    fn anthropic_entry_json() -> &'static str {
+        r#"{"kind": "anthropic", "api_key_env": "ANTHROPIC_API_KEY", "base_url": "https://api.anthropic.com", "local": false}"#
+    }
+
+    fn openai_compat_entry_json() -> &'static str {
+        r#"{"kind": "openai-compat", "base_url": "http://localhost:11434/v1", "local": true}"#
+    }
+
+    #[test]
+    fn backend_provider_creates_a_fresh_file_with_parent_dirs_when_adding() {
+        let dir = tempfile_dir();
+        let path = dir.join("nested").join("settings.json");
+        let wrote =
+            set_backend_provider(&path, "anthropic", anthropic_entry_json(), true).expect("write");
+        assert!(wrote);
+        let text = std::fs::read_to_string(&path).expect("read back");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+        assert_eq!(
+            value["backends"]["anthropic"],
+            serde_json::json!({
+                "kind": "anthropic",
+                "api_key_env": "ANTHROPIC_API_KEY",
+                "base_url": "https://api.anthropic.com",
+                "local": false
+            })
+        );
+    }
+
+    #[test]
+    fn backend_provider_removing_from_a_nonexistent_file_is_a_no_op() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let wrote =
+            set_backend_provider(&path, "anthropic", anthropic_entry_json(), false).expect("write");
+        assert!(!wrote);
+        assert!(!path.exists(), "a no-op removal must never create a file");
+    }
+
+    #[test]
+    fn backend_provider_refuses_to_touch_a_file_that_is_not_valid_json() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let original = "{ this is not json";
+        std::fs::write(&path, original).unwrap();
+        let err =
+            set_backend_provider(&path, "anthropic", anthropic_entry_json(), true).unwrap_err();
+        assert!(err.to_string().contains("not valid JSON"), "got: {err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "an invalid file must be left byte-for-byte untouched"
+        );
+    }
+
+    /// P-10 boundary check: a caller-supplied `entry_json` that is not
+    /// itself valid JSON must never be spliced into a real document --
+    /// refused before anything is touched, exactly like an invalid whole
+    /// document is.
+    #[test]
+    fn backend_provider_refuses_malformed_entry_json_and_leaves_the_file_untouched() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let original = r#"{"default_role": "coder"}"#;
+        std::fs::write(&path, original).unwrap();
+        let err = set_backend_provider(&path, "anthropic", "{ not json at all", true).unwrap_err();
+        assert!(err.to_string().contains("not valid JSON"), "got: {err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// The same boundary check, but against the OTHER branch of
+    /// `set_backend_provider` -- a missing file, which takes the
+    /// `fresh_backend_document` path rather than `patch_backends_object`.
+    /// Malformed `entry_json` must be refused there too, before any file is
+    /// even created.
+    #[test]
+    fn backend_provider_refuses_malformed_entry_json_when_the_file_does_not_exist_yet() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let err = set_backend_provider(&path, "anthropic", "{ not json at all", true).unwrap_err();
+        assert!(err.to_string().contains("not valid JSON"), "got: {err}");
+        assert!(
+            !path.exists(),
+            "a refused write must never create the file at all"
+        );
+    }
+
+    /// P-10 boundary check, second half: `entry_json` that parses as JSON
+    /// but is not an OBJECT (a provider entry must be a table, never a bare
+    /// array/string/number) is refused the same way.
+    #[test]
+    fn backend_provider_refuses_a_non_object_entry_json_and_leaves_the_file_untouched() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let original = r#"{"default_role": "coder"}"#;
+        std::fs::write(&path, original).unwrap();
+        let err = set_backend_provider(&path, "anthropic", r#"["not", "an", "object"]"#, true)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("must be a JSON object"),
+            "got: {err}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// Acceptance 1: adding a provider to a file with no `backends` section
+    /// at all produces a valid `[backends.<id>]` table that conway then
+    /// loads back -- proven by deserializing the WHOLE resulting document
+    /// into the real `ConwayConfig` schema type (`super::schema::
+    /// ConwayConfig`), the exact struct `config::load` deserializes every
+    /// JSON layer against, not a bespoke ad hoc shape check.
+    #[test]
+    fn backend_provider_inserts_a_fresh_backends_section_that_conway_loads_back_as_conwayconfig() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            "{\n  \"default_role\": \"coder\",\n  \"limits\": { \"max_steps\": 40 }\n}\n",
+        )
+        .unwrap();
+        let wrote =
+            set_backend_provider(&path, "anthropic", anthropic_entry_json(), true).expect("write");
+        assert!(wrote);
+        let new_text = std::fs::read_to_string(&path).unwrap();
+
+        let config: super::super::schema::ConwayConfig =
+            serde_json::from_str(&new_text).expect("the real schema type must deserialize this");
+        let entry = config.backends.get("anthropic").expect("provider present");
+        assert_eq!(entry.kind, "anthropic");
+        assert_eq!(entry.api_key_env, "ANTHROPIC_API_KEY");
+        assert_eq!(entry.base_url, "https://api.anthropic.com");
+        assert!(!entry.local);
+
+        // The pre-existing, unrelated keys survived.
+        assert!(new_text.contains("\"default_role\": \"coder\""));
+        assert!(new_text.contains("\"max_steps\": 40"));
+    }
+
+    /// Acceptance 2: adding a SECOND provider leaves the first
+    /// byte-identical -- not merely semantically equal after a re-parse.
+    #[test]
+    fn backend_provider_adding_a_second_provider_leaves_the_first_byte_identical() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"default_role": "coder"}"#).unwrap();
+
+        set_backend_provider(&path, "mercury", anthropic_entry_json(), true).expect("add first");
+        let after_first = std::fs::read_to_string(&path).unwrap();
+
+        set_backend_provider(&path, "venus", openai_compat_entry_json(), true).expect("add second");
+        let after_second = std::fs::read_to_string(&path).unwrap();
+
+        // The exact byte span written for "mercury" the first time must
+        // appear, unchanged, in the file after "venus" is added.
+        let mercury_span = format!(
+            "{}: {}",
+            serde_json::to_string("mercury").unwrap(),
+            anthropic_entry_json()
+        );
+        assert!(
+            after_first.contains(&mercury_span),
+            "sanity: the first write must itself contain this span"
+        );
+        assert!(
+            after_second.contains(&mercury_span),
+            "the first provider's own bytes must survive the second add unchanged:\n{after_second}"
+        );
+
+        let value: serde_json::Value = serde_json::from_str(&after_second).unwrap();
+        assert_eq!(
+            value["backends"]["mercury"],
+            serde_json::from_str::<serde_json::Value>(anthropic_entry_json()).unwrap()
+        );
+        assert_eq!(
+            value["backends"]["venus"],
+            serde_json::from_str::<serde_json::Value>(openai_compat_entry_json()).unwrap()
+        );
+    }
+
+    /// Acceptance 3, 6 and 7's shared fixture: operator comments (both the
+    /// top-level `"//"` convention and a `backends`-local comment-shaped
+    /// sibling key), an unrelated top-level section, non-alphabetical key
+    /// order, and -- specifically for the `backends` object -- a comment
+    /// key sitting immediately BEFORE the provider this suite adds/removes,
+    /// so a removal that mishandled the "comment above a removed section"
+    /// case would be caught here.
+    ///
+    /// Deliberately 2-space pretty-printed throughout (including inside
+    /// `backends`) -- this is not incidental: [`insert_member`]'s own
+    /// indentation choice (`outer_indent + "  "`) matches an operator who
+    /// already writes 2-space-indented JSON, which is what makes the
+    /// add-then-remove round trip in
+    /// `backend_provider_round_trip_add_then_remove_restores_original_bytes`
+    /// land back on IDENTICAL bytes rather than merely equivalent ones.
+    fn hand_edited_backends_fixture() -> &'static str {
+        r#"{
+  "//": "operator note: do not touch the backends section by hand",
+  "zebra_first_key": "kept exactly as-is",
+  "default_role": "coder",
+  "backends": {
+    "_comment_backends": "operator note about backends specifically",
+    "anthropic": { "kind": "anthropic", "api_key_env": "ANTHROPIC_API_KEY" },
+    "ollama-local": { "kind": "openai-compat", "base_url": "http://localhost:11434/v1", "local": true }
+  },
+  "plugins": {
+    "install": ["conway.skills"]
+  },
+  "apple_last_key": 42
+}
+"#
+    }
+
+    #[test]
+    fn backend_provider_adding_to_a_hand_edited_file_preserves_comments_ordering_and_unrelated_keys(
+    ) {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, hand_edited_backends_fixture()).unwrap();
+
+        let wrote =
+            set_backend_provider(&path, "mercury", anthropic_entry_json(), true).expect("write");
+        assert!(wrote);
+
+        let new_text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&new_text).expect("still valid json");
+
+        // The one thing that changed.
+        assert!(value["backends"]["mercury"].is_object());
+        assert_eq!(
+            value["backends"].as_object().unwrap().len(),
+            4,
+            "the comment key, the two original providers, and the new one"
+        );
+
+        // Byte-for-byte substring survival, not semantic equality.
+        assert!(new_text
+            .contains("\"//\": \"operator note: do not touch the backends section by hand\""));
+        assert!(new_text.contains("\"zebra_first_key\": \"kept exactly as-is\""));
+        assert!(new_text.contains("\"apple_last_key\": 42"));
+        assert!(new_text
+            .contains("\"_comment_backends\": \"operator note about backends specifically\""));
+        assert!(new_text.contains(
+            "\"anthropic\": { \"kind\": \"anthropic\", \"api_key_env\": \"ANTHROPIC_API_KEY\" }"
+        ));
+        assert!(new_text.contains(
+            "\"ollama-local\": { \"kind\": \"openai-compat\", \"base_url\": \"http://localhost:11434/v1\", \"local\": true }"
+        ));
+
+        // Top-level key order is unchanged.
+        let pos = |needle: &str| new_text.find(needle).expect(needle);
+        assert!(pos("\"//\"") < pos("\"zebra_first_key\""));
+        assert!(pos("\"zebra_first_key\"") < pos("\"default_role\""));
+        assert!(pos("\"default_role\"") < pos("\"backends\""));
+        assert!(pos("\"backends\"") < pos("\"plugins\""));
+        assert!(pos("\"plugins\"") < pos("\"apple_last_key\""));
+
+        // Inside `backends`: the new member lands FIRST (this module's own
+        // documented insertion rule), and the two pre-existing members --
+        // including the comment sibling -- keep their own relative order.
+        // (Needles are the actual MEMBER keys, `"key": {`, not the bare
+        // string -- `anthropic_entry_json()`'s own `"kind": "anthropic"`
+        // value would otherwise make `"anthropic"` match too early, inside
+        // the newly-inserted `mercury` entry itself.)
+        assert!(pos("\"mercury\": {") < pos("\"_comment_backends\": \""));
+        assert!(pos("\"_comment_backends\": \"") < pos("\"anthropic\": {"));
+        assert!(pos("\"anthropic\": {") < pos("\"ollama-local\": {"));
+    }
+
+    /// Acceptance 3 and 6: removing a provider that sits BETWEEN a
+    /// comment-shaped sibling and another provider must leave both
+    /// neighbours -- and everything else in the file -- byte-for-byte
+    /// intact. This is [`remove_object_member`]'s "comma before" branch
+    /// (idx > 0), pinning the doc comment's own stated rule: a comment
+    /// sitting next to the removed section is NEVER touched.
+    #[test]
+    fn backend_provider_removing_from_a_hand_edited_file_preserves_everything_else() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, hand_edited_backends_fixture()).unwrap();
+
+        let wrote = set_backend_provider(&path, "anthropic", "ignored", false).expect("write");
+        assert!(wrote);
+
+        let new_text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&new_text).expect("still valid json");
+        assert!(value["backends"].get("anthropic").is_none());
+        assert_eq!(value["backends"].as_object().unwrap().len(), 2);
+
+        assert!(new_text
+            .contains("\"//\": \"operator note: do not touch the backends section by hand\""));
+        assert!(new_text.contains("\"zebra_first_key\": \"kept exactly as-is\""));
+        assert!(new_text.contains("\"apple_last_key\": 42"));
+        // The comment sitting immediately above the removed provider
+        // survives untouched -- the whole point of acceptance 6.
+        assert!(new_text
+            .contains("\"_comment_backends\": \"operator note about backends specifically\""));
+        // The provider sitting immediately AFTER the removed one survives
+        // untouched too.
+        assert!(new_text.contains(
+            "\"ollama-local\": { \"kind\": \"openai-compat\", \"base_url\": \"http://localhost:11434/v1\", \"local\": true }"
+        ));
+    }
+
+    /// Acceptance 7: round-tripping add -> remove returns the file to its
+    /// ORIGINAL BYTES, not merely to equivalent JSON.
+    #[test]
+    fn backend_provider_round_trip_add_then_remove_restores_original_bytes() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let original = hand_edited_backends_fixture();
+        std::fs::write(&path, original).unwrap();
+
+        set_backend_provider(&path, "mercury", anthropic_entry_json(), true).expect("add");
+        set_backend_provider(&path, "mercury", "ignored", false).expect("remove");
+
+        let new_text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            new_text, original,
+            "round-tripping add-then-remove must land back on the ORIGINAL BYTES, \
+             not just equivalent JSON"
+        );
+    }
+
+    /// Acceptance 4: removing a provider that is not present is a reported
+    /// no-op, never an error -- matching `set_plugin_installed`'s and
+    /// `set_claude_compat_entry`'s own existing no-op contract.
+    #[test]
+    fn backend_provider_removing_an_already_absent_provider_is_a_no_op() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let original = r#"{"backends": {"anthropic": {"kind": "anthropic"}}}"#;
+        std::fs::write(&path, original).unwrap();
+        let wrote = set_backend_provider(&path, "does-not-exist", "ignored", false).expect("write");
+        assert!(!wrote);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// Adding an already-present id is a no-op (matched by id alone), even
+    /// when `entry_json` differs -- mirrors `set_claude_compat_entry`'s own
+    /// "matches only by id" contract for its analogous case.
+    #[test]
+    fn backend_provider_adding_an_already_present_id_is_a_no_op_and_leaves_the_file_untouched() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let original = format!(
+            r#"{{"backends": {{"anthropic": {}}}}}"#,
+            anthropic_entry_json()
+        );
+        std::fs::write(&path, &original).unwrap();
+        let mtime_before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let wrote = set_backend_provider(&path, "anthropic", openai_compat_entry_json(), true)
+            .expect("write");
+        assert!(!wrote);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let mtime_after = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(
+            mtime_before, mtime_after,
+            "a no-op must never touch the file at all"
+        );
+    }
+
+    /// Hostile fixture: a provider id that is a byte-for-byte PREFIX of
+    /// another provider id. Matching must be exact-key, never
+    /// prefix/substring, or removing "acme" would also (wrongly) match
+    /// "acme-tools".
+    #[test]
+    fn backend_provider_id_that_is_a_prefix_of_another_id_is_never_confused_with_it() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        // Deliberately added in this order (the PREFIX id second, so it
+        // scans as the RIGHTMOST/most-recent member): `rposition` searches
+        // right-to-left, so a matcher that (wrongly) accepted a prefix
+        // rather than requiring an exact key would hit "acme-tools" before
+        // ever reaching "acme" and delete the wrong one.
+        set_backend_provider(&path, "acme-tools", openai_compat_entry_json(), true)
+            .expect("add acme-tools");
+        set_backend_provider(&path, "acme", anthropic_entry_json(), true).expect("add acme");
+
+        let removed = set_backend_provider(&path, "acme", "ignored", false).expect("remove acme");
+        assert!(removed);
+
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(value["backends"].get("acme").is_none(), "acme must be gone");
+        assert!(
+            value["backends"].get("acme-tools").is_some(),
+            "acme-tools must survive removing acme -- a prefix match would have deleted it too"
+        );
+    }
+
+    /// Hostile fixture: an unrelated key whose VALUE (not key) contains the
+    /// literal text "backends" must never be mistaken for the `backends`
+    /// object itself -- this module matches JSON KEYS structurally
+    /// (`scan_object_members`), never raw substring search over the text.
+    #[test]
+    fn backend_provider_a_value_containing_the_literal_text_backends_is_not_confused_with_the_key()
+    {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"notes": "see backends for details", "default_role": "coder"}"#,
+        )
+        .unwrap();
+        let wrote =
+            set_backend_provider(&path, "anthropic", anthropic_entry_json(), true).expect("write");
+        assert!(wrote);
+        let new_text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&new_text).unwrap();
+        assert_eq!(value["notes"], "see backends for details");
+        assert!(value["backends"]["anthropic"].is_object());
+    }
+
+    /// Hostile fixture: an `entry_json` carrying arbitrarily nested objects
+    /// (a third-party `kind`'s own `extra` catch-all, per `BackendEntry`'s
+    /// own doc) must survive verbatim -- this module's scanner treats a
+    /// nested `{...}`/`[...]` as an opaque, depth-counted span, never
+    /// recursing into it.
+    #[test]
+    fn backend_provider_nested_objects_in_entry_json_survive_verbatim() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let nested_entry =
+            r#"{"kind": "custom", "extra": {"nested": {"deep": [1, 2, {"three": 3}]}}}"#;
+        let wrote = set_backend_provider(&path, "third-party", nested_entry, true).expect("write");
+        assert!(wrote);
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            value["backends"]["third-party"]["extra"]["nested"]["deep"],
+            serde_json::json!([1, 2, {"three": 3}])
+        );
+    }
+
+    /// Hostile fixture: a provider id containing a quote, a backslash, and
+    /// a newline -- exactly the characters a naive splicer would mishandle.
+    /// `json_string_literal` (this module's existing, already-tested
+    /// escaping helper) is reused for the key here exactly as it already is
+    /// for a plugin id, so this is a regression guard, not new escaping
+    /// logic.
+    #[test]
+    fn backend_provider_id_with_quote_backslash_and_newline_round_trips() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let hostile_id = "weird\"id\\with\nnewline";
+        let wrote =
+            set_backend_provider(&path, hostile_id, anthropic_entry_json(), true).expect("add");
+        assert!(wrote);
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(value["backends"].get(hostile_id).is_some());
+
+        let removed = set_backend_provider(&path, hostile_id, "ignored", false).expect("remove");
+        assert!(removed);
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["backends"].as_object().unwrap().len(), 0);
+    }
+
+    /// Hostile fixture, documented as a KNOWN LIMITATION rather than
+    /// silently assumed to work: a CRLF-terminated file. This module's
+    /// insertion helpers always emit a bare `\n`, inherited unchanged from
+    /// `insert_member`/`insert_array_element` (pre-existing behaviour, not
+    /// introduced by this writer) -- so a CRLF file gains one mixed-
+    /// line-ending line where a provider is inserted. What this test pins
+    /// is the property that DOES hold despite that: the result is still
+    /// valid, parseable JSON with the addition and removal both taking
+    /// effect correctly, never a corrupted file.
+    #[test]
+    fn backend_provider_crlf_file_stays_valid_json_though_the_inserted_line_is_lf_only() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let crlf_fixture = "{\r\n  \"default_role\": \"coder\",\r\n  \"backends\": {\r\n    \"anthropic\": { \"kind\": \"anthropic\" }\r\n  }\r\n}\r\n";
+        std::fs::write(&path, crlf_fixture).unwrap();
+
+        let wrote =
+            set_backend_provider(&path, "mercury", anthropic_entry_json(), true).expect("add");
+        assert!(wrote);
+        let new_text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&new_text).expect("still valid json despite CRLF");
+        assert!(value["backends"]["mercury"].is_object());
+        assert!(value["backends"]["anthropic"].is_object());
+
+        let removed = set_backend_provider(&path, "mercury", "ignored", false).expect("remove");
+        assert!(removed);
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(value["backends"].get("mercury").is_none());
+        assert!(value["backends"]["anthropic"].is_object());
+    }
+
+    /// A trailing comma is not valid JSON at all -- the whole-document
+    /// `serde_json::from_str` validation this function performs before
+    /// touching anything already refuses it, the same as any other invalid
+    /// document. Named here so "does this writer tolerate a trailing
+    /// comma" has an explicit, checked answer: no, and it fails closed
+    /// (refuses, leaves the file untouched) rather than guessing at a
+    /// non-standard dialect.
+    #[test]
+    fn backend_provider_a_trailing_comma_is_refused_like_any_other_invalid_json() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let original = r#"{"backends": {"anthropic": {"kind": "anthropic",}}}"#;
+        std::fs::write(&path, original).unwrap();
+        let err =
+            set_backend_provider(&path, "venus", openai_compat_entry_json(), true).unwrap_err();
+        assert!(err.to_string().contains("not valid JSON"), "got: {err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// The writer never resolves its own path -- same structural contract
+    /// as `set_plugin_installed`'s own identically-named test.
+    #[test]
+    fn set_backend_provider_takes_a_caller_supplied_path_and_never_resolves_one_itself() {
+        let _env: HashMap<String, String> = HashMap::new();
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        set_backend_provider(&path, "anthropic", anthropic_entry_json(), true).expect("write");
+        assert!(path.exists());
+    }
+
+    /// P-10: a backend id is operator-typed, so a multi-byte UTF-8 id must
+    /// not panic. Every byte-offset slice in this module sits immediately
+    /// beside an ASCII quote or brace, which is always a char boundary
+    /// whatever sits between them -- but that was an argument from reading
+    /// and nothing exercised it, so this pins it. Round-trips add then
+    /// remove, which also exercises the sole-member collapse branch with a
+    /// non-ASCII key.
+    #[test]
+    fn backend_provider_a_multibyte_utf8_id_round_trips_without_panicking() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let original = r#"{"backends": {}}"#;
+        std::fs::write(&path, original).unwrap();
+
+        let id = "café-日本語";
+        assert!(set_backend_provider(&path, id, anthropic_entry_json(), true).expect("add"));
+        let after_add = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&after_add).expect("valid JSON");
+        assert!(
+            parsed["backends"].get(id).is_some(),
+            "the multi-byte id must be present under its decoded key: {after_add}"
+        );
+
+        assert!(set_backend_provider(&path, id, "", false).expect("remove"));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "add then remove must restore the original bytes for a multi-byte id too"
+        );
+    }
+
+    /// `Member::value_end` is computed by `skip_value`'s generic dispatch,
+    /// but every other removal test here neighbours only string- or
+    /// object-valued members. A number, a bool, a null and an array are
+    /// the shapes with no coverage, and a wrong `value_end` on any of them
+    /// would eat or strand a neighbour's bytes. Removes a provider sitting
+    /// between them and asserts the whole file byte-for-byte.
+    #[test]
+    fn backend_provider_removal_preserves_scalar_and_array_valued_siblings_byte_for_byte() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        let original = concat!(
+            "{\n",
+            "  \"backends\": {\n",
+            "    \"_retries\": 3,\n",
+            "    \"_enabled\": true,\n",
+            "    \"_fallback\": null,\n",
+            "    \"doomed\": {\"kind\": \"anthropic\", \"api_key_env\": \"K\"},\n",
+            "    \"_order\": [1, 2, {\"nested\": \"brace}\"}],\n",
+            "    \"_note\": \"keep me\"\n",
+            "  }\n",
+            "}\n"
+        );
+        std::fs::write(&path, original).unwrap();
+
+        assert!(set_backend_provider(&path, "doomed", "", false).expect("remove"));
+        let after = std::fs::read_to_string(&path).unwrap();
+
+        let expected = concat!(
+            "{\n",
+            "  \"backends\": {\n",
+            "    \"_retries\": 3,\n",
+            "    \"_enabled\": true,\n",
+            "    \"_fallback\": null,\n",
+            "    \"_order\": [1, 2, {\"nested\": \"brace}\"}],\n",
+            "    \"_note\": \"keep me\"\n",
+            "  }\n",
+            "}\n"
+        );
+        assert_eq!(
+            after, expected,
+            "every scalar-, array- and string-valued sibling must survive byte-for-byte"
         );
     }
 }

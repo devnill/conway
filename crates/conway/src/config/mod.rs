@@ -23,7 +23,7 @@ pub use merge::{
 };
 pub use model_metadata::ModelMetadata;
 pub use schema::ConwayConfig;
-pub use writer::{set_claude_compat_entry, set_plugin_installed};
+pub use writer::{set_backend_provider, set_claude_compat_entry, set_plugin_installed};
 
 /// The result of [`load`]: the validated config plus any non-fatal
 /// warnings (headroom-vs-context-window, and -- Stage 2a -- a `[tui]`
