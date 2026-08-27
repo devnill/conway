@@ -14,8 +14,8 @@
 //! all resolve independently from the same `ConwayBuilder`, in
 //! `main.rs::build_conway`.
 //!
-//! **Board item `01M0XBZNBPXEESX8VNTJDKNG0J`: the hook half is wired here
-//! too, now.** Until this item, only the MCP half of what a Claude Code
+//! **Board item `01M0XBZNBPXEESX8VNTJDKNG0J`: the hook half was wired here
+//! too.** Until that item, only the MCP half of what a Claude Code
 //! plugin directory can declare was ever appended into the `ConwayBuilder`
 //! this module hands `build()` -- `conway_plugin_claude::
 //! ClaudeCompatReport::hook_registrations()` (board item
@@ -25,25 +25,44 @@
 //! in `[plugins].claude_compat[]` got its MCP servers running and its
 //! hooks reported, never dispatching -- the built-but-unreachable defect
 //! `DESIGN-plugin-dependencies.md` §1 names as this tree's recurring
-//! disease. `install`'s loop below now does both halves, per entry: attach
-//! every `.mcp.json` server (unchanged), then append every mapped
-//! `hooks/hooks.json` rule's own `HookRegistration` into
-//! `builder.config_mut().hooks.rules` via `ConwayBuilder::config_mut`
-//! (added by this item -- see that method's own doc for why no narrower
-//! seam already existed). `conway_plugin_claude::ClaudeCompatReport::
-//! unsupported` is still read separately, by `tui::app::startup` (for the
-//! `/plugin` listing's own honesty requirement -- acceptance 5) -- this
-//! module's job stays "make a translated declaration real," not
-//! "report on everything found."
+//! disease. That item's own fix, though, forged the wiring rather than
+//! using a real seam: no dedicated builder-level injection existed for a
+//! discovered `[hooks].rules[]`-shaped entry the way `with_plugin` already
+//! existed for an MCP server, so it added `ConwayBuilder::config_mut` -- a
+//! caller-side write into the WHOLE config -- and spliced the translated
+//! rules into `hooks.rules` through it, indistinguishable from an entry the
+//! operator had typed into `settings.json` themselves.
+//!
+//! **Board item `01M129QW0GV90QTQS6B3BY3DAR` closes that gap for real.**
+//! `conway_core::ports::Plugin::hooks()` is the seam that should have
+//! existed instead: a plugin declares its hooks the SAME way it declares
+//! its tools, on the SAME `with_plugin` surface an MCP server already uses
+//! (immediately below, in the SAME loop) -- no second, config-shaped
+//! channel. `install`'s loop below now does both halves through ONE
+//! mechanism: attach every `.mcp.json` server via `McpPlugin::discover` ->
+//! `with_plugin` (unchanged), then wrap every mapped `hooks/hooks.json`
+//! rule's own `HookRegistration` as a `ClaudeCompatHooksPlugin` and
+//! attach THAT via the identical `with_plugin` call (`hooks_plugin`).
+//! `ConwayBuilder::config_mut` is REMOVED (its one caller was this branch);
+//! see `ConwayBuilder::build`'s own doc for how a plugin's `hooks()`
+//! reaches `PermissionBroker::decide` at the same tier a config-declared
+//! rule always has, and for the namespacing that now makes a
+//! plugin-registered hook's id distinguishable from an operator-authored
+//! one (this item's own provenance decision). `conway_plugin_claude::
+//! ClaudeCompatReport::unsupported` is still read separately, by
+//! `tui::app::startup` (for the `/plugin` listing's own honesty requirement
+//! -- acceptance 5) -- this module's job stays "make a translated
+//! declaration real," not "report on everything found."
 //!
 //! **Guard rail, deliberate: a translated hook's `on_failure` is left at
 //! `conway_core::hook::HookOnFailure`'s own default, `Deny`, never set
 //! explicitly by this module.** `conway_plugin_claude::HookRegistration`
 //! carries no `on_failure` field of its own (that policy is
-//! `conway::config::schema::HookEntry`-only, and this crate never depends
-//! on `conway` -- see that crate's own module doc), so `to_hook_entry`
-//! constructs every appended `conway::config::schema::HookEntry` via
-//! `..Default::default()` for exactly that one field. This is the SAME
+//! `PluginHookRule`/`conway::config::schema::HookEntry`-only, and
+//! `conway_plugin_claude` never depends on `conway` -- see that crate's own
+//! module doc), so `to_plugin_hook_rule` constructs every attached
+//! [`PluginHookRule`] via `Default::default()` for exactly that one field.
+//! This is the SAME
 //! posture every existing `[hooks].rules[]` entry with no explicit
 //! `on_failure` already has (board item `01M0X1AH44SNMK5TZ507K30QNP`): this
 //! layer must not silently pick a foreign plugin's own failure posture on
@@ -129,30 +148,94 @@
 
 use std::sync::Arc;
 
-use conway::config::schema::{ConwayConfig, HookEntry};
-use conway::plugin::{Command, Plugin, PluginManifest, Tool};
+use conway::config::schema::ConwayConfig;
+use conway::plugin::{Command, Plugin, PluginHookRule, PluginManifest, Tool};
 use conway::{ConwayBuilder, FacadeError, DENY_CAPABLE_EVENTS};
 use conway_plugin_claude::HookRegistration;
 use conway_plugin_mcp::McpPlugin;
 
 use crate::diag;
 
-/// Converts one translated [`HookRegistration`] into a real, appendable
-/// `conway::config::schema::HookEntry` -- field for field, per
-/// `HookRegistration`'s own doc ("mirrors `HookEntry`'s five fields
-/// exactly, deliberately NOT that literal type"). `on_failure` is left at
-/// `HookEntry::default`'s own value (`HookOnFailure::Deny`) -- see this
-/// module's own top doc for why that is deliberate, not an oversight.
-fn to_hook_entry(registration: HookRegistration) -> HookEntry {
-    HookEntry {
+/// Converts one translated [`HookRegistration`] into a real
+/// [`PluginHookRule`] -- field for field, per `HookRegistration`'s own doc
+/// ("mirrors `HookEntry`'s five fields exactly, deliberately NOT that
+/// literal type"). `on_failure` is left at `PluginHookRule::on_failure`'s
+/// field type's own default (`HookOnFailure::Deny`) -- see this module's
+/// own top doc for why that is deliberate, not an oversight: this is a
+/// TRANSLATION layer for a foreign format that carries no such field at
+/// all, unlike a plugin authoring its own hook directly (see
+/// `PluginHookRule::on_failure`'s own doc for that distinction).
+///
+/// `id` is left BARE -- `Plugin::hooks`'s own doc: the host, not this
+/// translation, namespaces it with the declaring plugin's manifest id
+/// before it ever reaches dispatch. `HookRegistration::id` already carries
+/// ITS OWN `claude_compat:<report_id>:<event>:<index>` namespacing (see
+/// that field's own doc on `ClaudeCompatReport::hook_registrations`), so
+/// the id that ultimately dispatches is namespaced twice over -- once by
+/// this crate's own translation (to keep two rules from the SAME directory
+/// from colliding), once by the generic `Plugin::hooks()` seam (to keep two
+/// DIFFERENT plugins, or a plugin and an operator, from colliding) --
+/// harmless, and each layer solves a different collision.
+fn to_plugin_hook_rule(registration: HookRegistration) -> PluginHookRule {
+    PluginHookRule {
         id: registration.id,
         event: registration.event.to_string(),
         match_tool: registration.match_tool,
         command: registration.command,
         timeout_ms: registration.timeout_ms,
         enabled: registration.enabled,
-        ..Default::default()
+        on_failure: Default::default(),
     }
+}
+
+/// A `[plugins].claude_compat[]` entry's own translated `hooks/hooks.json`
+/// rules, wrapped as a real `conway::plugin::Plugin` -- the seam
+/// `Plugin::hooks()` (board item `01M129QW0GV90QTQS6B3BY3DAR`) gives
+/// [`install`], below, instead of the removed `ConwayBuilder::config_mut`
+/// escape hatch. Mirrors `ClaudeCompatCommandsPlugin`'s own shape exactly:
+/// carries no tools and no host-capability requirements, its only job is
+/// handing back the translations [`hooks_plugin`] already resolved.
+struct ClaudeCompatHooksPlugin {
+    /// [`conway_plugin_claude::ClaudeCompatReport::id`] -- the SAME
+    /// manifest-derived identity `ClaudeCompatCommandsPlugin::id` uses for
+    /// the command half, NOT the config entry's own
+    /// `ClaudeCompatPluginEntry::id` (the two are allowed to differ). This
+    /// is what `ConwayBuilder::build` namespaces every rule in
+    /// [`Self::hooks`] with.
+    id: String,
+    hooks: Vec<PluginHookRule>,
+}
+
+impl Plugin for ClaudeCompatHooksPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: self.id.clone(),
+            version: "0.0.0".to_string(),
+            tools: Vec::new(),
+            required_host_caps: Vec::new(),
+            optional_host_caps: Vec::new(),
+            requires: Vec::new(),
+            optional: Vec::new(),
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        Vec::new()
+    }
+
+    fn hooks(&self) -> Vec<PluginHookRule> {
+        self.hooks.clone()
+    }
+}
+
+/// Builds this entry's own translated `hooks/hooks.json` rules as a real,
+/// installable [`ClaudeCompatHooksPlugin`] -- separated from [`install`]'s
+/// own loop so it is directly testable, the same "wiring-only, translation
+/// tested at its own crate" split [`command_plugins`] already establishes
+/// for the command half.
+fn hooks_plugin(id: String, registrations: Vec<HookRegistration>) -> Arc<dyn Plugin> {
+    let hooks: Vec<PluginHookRule> = registrations.into_iter().map(to_plugin_hook_rule).collect();
+    Arc::new(ClaudeCompatHooksPlugin { id, hooks }) as Arc<dyn Plugin>
 }
 
 /// Reports, on stderr, which of `registrations` -- all already known to
@@ -217,24 +300,26 @@ fn classify_hook_registrations(registrations: &[HookRegistration]) -> (Vec<&str>
 
 /// Discovers and attaches every `[plugins].claude_compat[]` entry's own
 /// `.mcp.json` server declarations, in list order, then per-server order
-/// within a directory -- then appends every mapped `hooks/hooks.json`
-/// rule's own [`HookRegistration`] into the SAME builder's `HooksConfig`
-/// (this module's own top doc). A discovery failure -- the directory itself
-/// missing, a malformed `.claude-plugin/plugin.json`/`.mcp.json`
-/// (`conway_plugin_claude::ClaudeCompatError`), or the translated MCP
-/// server itself failing discovery (`conway_plugin_mcp::McpPluginError`) --
-/// fails the WHOLE call as [`FacadeError::Build`], naming the offending
-/// entry's own `id`, mirroring `subprocess_plugins::install`/
-/// `mcp_plugins::install`'s own "an unresolvable entry fails the whole
-/// build" posture for the same reason: an operator who named a directory in
-/// `settings.json` and got nothing for it, silently, is exactly the rung-1
-/// lie CONTRIBUTING's declaration rule exists to prevent. Appending
-/// translated hook rules never itself fails this call -- `HookRegistration`
-/// construction is infallible (`conway_plugin_claude::hooks::
-/// HookTranslation::registration`'s own doc); any defect in the RESULT
-/// (a duplicate id, an invalid `match`) surfaces later, at `build()`'s own
-/// re-validation, exactly like an operator-authored `[hooks].rules[]` entry
-/// with the same defect would.
+/// within a directory -- then attaches every mapped `hooks/hooks.json`
+/// rule's own [`HookRegistration`], wrapped as a `ClaudeCompatHooksPlugin`
+/// (`hooks_plugin`), into the SAME builder via [`ConwayBuilder::
+/// with_plugin`] (this module's own top doc). A discovery failure -- the
+/// directory itself missing, a malformed `.claude-plugin/plugin.json`/
+/// `.mcp.json` (`conway_plugin_claude::ClaudeCompatError`), or the
+/// translated MCP server itself failing discovery
+/// (`conway_plugin_mcp::McpPluginError`) -- fails the WHOLE call as
+/// [`FacadeError::Build`], naming the offending entry's own `id`, mirroring
+/// `subprocess_plugins::install`/`mcp_plugins::install`'s own "an
+/// unresolvable entry fails the whole build" posture for the same reason:
+/// an operator who named a directory in `settings.json` and got nothing for
+/// it, silently, is exactly the rung-1 lie CONTRIBUTING's declaration rule
+/// exists to prevent. Attaching translated hook rules never itself fails
+/// this call -- `HookRegistration` construction is infallible
+/// (`conway_plugin_claude::hooks::HookTranslation::registration`'s own
+/// doc); any defect in the RESULT (an empty bare id, a namespaced id
+/// collision, an invalid `match`) surfaces later, at `ConwayBuilder::
+/// build`'s own re-validation, exactly like an operator-authored
+/// `[hooks].rules[]` entry with the same defect would.
 pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
     let entries = builder.config().plugins.claude_compat.clone();
     let mut builder = builder;
@@ -263,8 +348,7 @@ pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
 
         if !registrations.is_empty() {
             report_hook_registrations(&entry.id, &registrations);
-            let rules = registrations.into_iter().map(to_hook_entry);
-            builder.config_mut().hooks.rules.extend(rules);
+            builder = builder.with_plugin(hooks_plugin(report.id.clone(), registrations));
         }
     }
     Ok(builder)
@@ -434,10 +518,12 @@ mod tests {
         );
     }
 
-    // ---- hook-dispatch wiring (board item `01M0XBZNBPXEESX8VNTJDKNG0J`) ----
+    // ---- hook-dispatch wiring (board item `01M0XBZNBPXEESX8VNTJDKNG0J`,
+    //      re-wired onto `Plugin::hooks()` by board item
+    //      `01M129QW0GV90QTQS6B3BY3DAR`) ----
 
     use conway::config::schema::ClaudeCompatPluginEntry;
-    use conway_core::hook::HookOnFailure;
+    use conway::plugin::HookOnFailure;
 
     /// Writes `<dir>/hooks/hooks.json` with the given raw JSON contents --
     /// the identical fixture shape `conway_plugin_claude::hooks`'s own tests
@@ -457,14 +543,28 @@ mod tests {
         config
     }
 
+    /// Every [`PluginHookRule`] every plugin `install` attached returns,
+    /// flattened -- the post-`install`, pre-`build()` inspection point this
+    /// module's own tests now use instead of the removed
+    /// `builder.config().hooks.rules` (that field no longer receives a
+    /// plugin-registered hook at all -- see [`ConwayBuilder::plugins`]'s own
+    /// doc). `ConwayBuilder::build`'s own namespacing (host-prefixing each
+    /// `id` with its declaring plugin's manifest id) has NOT run yet at this
+    /// point -- these are the BARE ids `install` handed to `with_plugin`,
+    /// exactly the ones asserted below.
+    fn hook_rules(builder: &ConwayBuilder) -> Vec<PluginHookRule> {
+        builder.plugins().iter().flat_map(|p| p.hooks()).collect()
+    }
+
     /// **The headline claim this item exists to prove**: a `PreToolUse`
     /// rule in a directory's own `hooks/hooks.json` is not merely reported
-    /// -- it is appended, real and dispatchable, into the SAME builder's
-    /// `HooksConfig` `install` hands back, ready for `ConwayBuilder::build`
-    /// to read. `crates/conway-cli/tests/hook_runner_wiring.rs` is the
-    /// sibling end-to-end proof that an appended `pre_tool_use` rule
-    /// actually denies a real tool call through the compiled binary; this
-    /// test pins the wiring step that makes that reachable at all.
+    /// -- it is attached, real and dispatchable, as a
+    /// [`ClaudeCompatHooksPlugin`] on the SAME builder `install` hands back,
+    /// ready for `ConwayBuilder::build` to fold into its own dispatch lists.
+    /// `crates/conway-cli/tests/hook_runner_wiring.rs` is the sibling
+    /// end-to-end proof that an appended `pre_tool_use` rule actually denies
+    /// a real tool call through the compiled binary; this test pins the
+    /// wiring step that makes that reachable at all.
     #[tokio::test]
     async fn a_mapped_pre_tool_use_hook_is_appended_as_a_dispatchable_rule() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -475,7 +575,7 @@ mod tests {
         let builder = ConwayBuilder::from_parts(config_with_claude_compat_entry(dir.path()));
         let builder = install(builder).await.expect("install must succeed");
 
-        let rules = &builder.config().hooks.rules;
+        let rules = hook_rules(&builder);
         assert_eq!(rules.len(), 1, "exactly one mapped rule: {rules:?}");
         let rule = &rules[0];
         assert_eq!(rule.event, "pre_tool_use");
@@ -485,18 +585,21 @@ mod tests {
         assert!(rule.command[2].contains("echo pre"));
         assert!(rule.enabled);
         assert!(
-            rule.id.starts_with("claude_compat:"),
-            "a translated rule's id must be namespaced: {}",
+            rule.id.contains("claude_compat:"),
+            "a translated rule's OWN id must still carry its own \
+             conway_plugin_claude-assigned namespacing (ConwayBuilder::build applies a SECOND, \
+             host-level namespace on top of this one): {}",
             rule.id
         );
     }
 
     /// **Guard rail, pinned directly**: a translated hook never sets
-    /// `on_failure` itself -- it is left at [`HookEntry::default`]'s own
-    /// `HookOnFailure::Deny`, the same fail-closed posture every existing
-    /// `[hooks].rules[]` entry with no explicit `on_failure` already has.
-    /// This module must never silently choose a foreign plugin's own
-    /// failure posture on the operator's behalf.
+    /// `on_failure` itself -- it is left at [`PluginHookRule::on_failure`]'s
+    /// field type's own default, `HookOnFailure::Deny`, the same
+    /// fail-closed posture every existing `[hooks].rules[]` entry with no
+    /// explicit `on_failure` already has. This module must never silently
+    /// choose a foreign plugin's own failure posture on the operator's
+    /// behalf.
     #[tokio::test]
     async fn a_translated_pre_tool_use_hook_carries_on_failure_deny() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -507,7 +610,7 @@ mod tests {
         let builder = ConwayBuilder::from_parts(config_with_claude_compat_entry(dir.path()));
         let builder = install(builder).await.expect("install must succeed");
 
-        let rules = &builder.config().hooks.rules;
+        let rules = hook_rules(&builder);
         assert_eq!(rules.len(), 1);
         assert_eq!(
             rules[0].on_failure,
@@ -531,15 +634,16 @@ mod tests {
         let builder = ConwayBuilder::from_parts(config_with_claude_compat_entry(dir.path()));
         let builder = install(builder).await.expect("install must succeed");
 
-        let rules = &builder.config().hooks.rules;
+        let rules = hook_rules(&builder);
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].event, "session_starting");
     }
 
     /// An `Unmapped` rule (no conway counterpart -- `Stop` here) contributes
-    /// no `HookEntry` at all: `hook_registrations()` already filters these
-    /// out (they are named in `ClaudeCompatReport::unsupported` instead,
-    /// read by a different module, per this file's own top doc).
+    /// no [`PluginHookRule`] at all, and therefore no attached plugin --
+    /// `hook_registrations()` already filters these out (they are named in
+    /// `ClaudeCompatReport::unsupported` instead, read by a different
+    /// module, per this file's own top doc).
     #[tokio::test]
     async fn an_unmapped_hook_appends_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -551,9 +655,9 @@ mod tests {
         let builder = install(builder).await.expect("install must succeed");
 
         assert!(
-            builder.config().hooks.rules.is_empty(),
-            "an unmapped event must append nothing: {:?}",
-            builder.config().hooks.rules
+            builder.plugins().is_empty(),
+            "an unmapped event must attach nothing: {}",
+            builder.plugins().len()
         );
     }
 
@@ -575,7 +679,7 @@ mod tests {
         let builder = ConwayBuilder::from_parts(config_with_claude_compat_entry(dir.path()));
         let builder = install(builder).await.expect("install must succeed");
 
-        let rules = &builder.config().hooks.rules;
+        let rules = hook_rules(&builder);
         assert_eq!(
             rules.len(),
             2,
@@ -586,9 +690,10 @@ mod tests {
     }
 
     /// Two `[plugins].claude_compat[]` entries, each declaring its own
-    /// mapped hook, both land in the SAME `HooksConfig` -- `install`'s loop
-    /// accumulates across entries rather than each entry silently
-    /// overwriting the last (`Vec::extend`, never a re-assignment).
+    /// mapped hook, each attach their OWN [`ClaudeCompatHooksPlugin`] --
+    /// `install`'s loop accumulates across entries (two separate
+    /// `with_plugin` calls) rather than each entry silently overwriting the
+    /// last.
     #[tokio::test]
     async fn two_claude_compat_entries_accumulate_into_the_same_hooks_config() {
         // Each directory gets its OWN `.claude-plugin/plugin.json` `name` --
@@ -635,7 +740,16 @@ mod tests {
         let builder = ConwayBuilder::from_parts(config);
         let builder = install(builder).await.expect("install must succeed");
 
-        let rules = &builder.config().hooks.rules;
+        assert_eq!(
+            builder.plugins().len(),
+            2,
+            "one attached hooks-plugin from each entry"
+        );
+        let manifest_ids: Vec<String> = builder.plugins().iter().map(|p| p.manifest().id).collect();
+        assert!(manifest_ids.contains(&"entry-a".to_string()));
+        assert!(manifest_ids.contains(&"entry-b".to_string()));
+
+        let rules = hook_rules(&builder);
         assert_eq!(rules.len(), 2, "one rule from each entry: {rules:?}");
         // Namespaced by each entry's own report id, so the two never
         // collide even though both name the identical Claude Code event.
@@ -957,7 +1071,7 @@ mod tests {
         let builder = ConwayBuilder::from_parts(config_with_claude_compat_entry(dir.path()));
         let builder = install(builder).await.expect("install must succeed");
 
-        let rules = &builder.config().hooks.rules;
+        let rules = hook_rules(&builder);
         assert_eq!(rules.len(), 1, "exactly one mapped rule: {rules:?}");
         let rule = &rules[0];
         assert_eq!(rule.event, "prompt_submitted");

@@ -166,6 +166,60 @@ pub enum HookOnFailure {
     Prompt,
 }
 
+/// Where a dispatched hook rule came from -- an operator's own merged
+/// `[hooks].rules[]` entry, or an installed plugin's own
+/// `Plugin::hooks()` declaration (board item
+/// `01M129QW0GV90QTQS6B3BY3DAR`).
+///
+/// **Why this exists at all: a plugin's hooks reach dispatch at the SAME
+/// tier a config-declared one does (GP-03 -- no privileged, no
+/// second-class surface), but that means a downloaded plugin's hook can
+/// now deny a real tool call or a submitted prompt exactly as an
+/// operator-authored rule can, with nothing distinguishing the two once
+/// they are both just entries in a dispatch list.** Before this type
+/// existed, `crates/conway/src/conway.rs`'s `HookRuleView::origin` had
+/// exactly one honest value to report (`"settings.json (merged config)"`)
+/// because `[hooks].rules[]` really was the only place a hook rule could
+/// come from -- see that constant's own doc for the reasoning this type's
+/// addition supersedes. Once a plugin can register a hook directly, that
+/// claim would silently become false for a plugin-contributed rule unless
+/// something threads the real source through to the same review surface;
+/// this is that something. P-12 -- "an operator must be able to inspect
+/// every active rule, including one contributed by an untrusted repo" --
+/// is the reason this is a real field carried on every dispatched hook
+/// spec, not a comment.
+///
+/// **No variant here can ever be more permissive than another** -- this
+/// type carries provenance only, never a verdict; `HookPermissionVerdict`/
+/// `HookOnFailure` (both above) are what a hook or its outage may narrow,
+/// and this type is orthogonal to both.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HookOrigin {
+    /// This rule reached dispatch from the operator's own merged
+    /// `[hooks].rules[]` config -- unchanged from every hook rule that
+    /// existed before this type did.
+    Operator,
+    /// This rule reached dispatch because an installed plugin declared it
+    /// via `Plugin::hooks()`. Carries that plugin's own
+    /// `PluginManifest::id`, so an operator inspecting the review list sees
+    /// WHICH plugin contributed it, not merely that some hook did --
+    /// mirroring the "an author never picks their own namespace, but the
+    /// host still names them" attribution `declared_plugin_events`/
+    /// `CommandRegistry::build` already perform for event/command names.
+    Plugin(String),
+}
+
+impl Default for HookOrigin {
+    /// `Operator` -- every hook rule that reached dispatch before this type
+    /// existed came from `[hooks].rules[]`, so a caller that never sets
+    /// this explicitly (every construction site that predates board item
+    /// `01M129QW0GV90QTQS6B3BY3DAR`) keeps reporting exactly that,
+    /// byte-for-byte.
+    fn default() -> Self {
+        HookOrigin::Operator
+    }
+}
+
 /// An append-only edit to computed context: items to append, and
 /// identifiers to exclude. **There is no "replace" variant anywhere in this
 /// type** -- see [`HookAnswer`]'s own doc for why that omission is the

@@ -17,7 +17,7 @@ use chrono::Utc;
 use conway_core::agent::{AgentResult, AgentStatus, Budget, ResultStatus, SubagentMode};
 use conway_core::error::{HookFailure, RuntimeError};
 use conway_core::event::{Envelope, Event};
-use conway_core::hook::{HookAnswer, HookInvocation};
+use conway_core::hook::{HookAnswer, HookInvocation, HookOrigin};
 use conway_core::ids::{AgentId, RoleAlias, SessionId};
 use conway_core::ports::HookRunner;
 use conway_runtime::events::EventBus;
@@ -77,6 +77,7 @@ fn child_reported_hooks(runner: Arc<RecordingRunner>) -> Arc<HookDispatcher> {
             command: vec!["/bin/true".to_string()],
             timeout_ms: 1_000,
             matcher: None,
+            origin: HookOrigin::Operator,
         }],
     )]));
     hooks

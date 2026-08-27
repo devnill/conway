@@ -371,8 +371,15 @@ pub mod plugin {
     /// is the argument, `HookEvent` is its `event` field, and
     /// `HookAnswer`/`HookPermissionVerdict` together are what a
     /// `pre_tool_use` implementor returns (see `HookPermissionVerdict`'s
-    /// own doc for why it has no `Allow` variant).
-    pub use conway_core::hook::{HookAnswer, HookEvent, HookInvocation, HookPermissionVerdict};
+    /// own doc for why it has no `Allow` variant). `HookOnFailure` is
+    /// [`PluginHookRule::on_failure`]'s own field type -- re-exported here
+    /// (board item `01M129QW0GV90QTQS6B3BY3DAR`) so a plugin author
+    /// implementing `Plugin::hooks()` can name an explicit outage posture
+    /// without depending on `conway-core` directly, the SAME reason every
+    /// other type in this module is re-exported.
+    pub use conway_core::hook::{
+        HookAnswer, HookEvent, HookInvocation, HookOnFailure, HookPermissionVerdict,
+    };
     pub use conway_core::ids::SeqRange;
     pub use conway_core::ids::ToolName;
     /// [`Plugin::events`]'s own
@@ -408,8 +415,8 @@ pub mod plugin {
         CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, CurateCtx,
         CurateOutcome, Curator, EventSink, EventSinkHandle, HookRunner, HostCapability, Memory,
         MemoryProvenance, MemoryStore, ObservedCall, ObserverAnswer, ObserverCtx, ObserverNote,
-        OverflowInfo, PathArgs, Plugin, PluginConfig, PluginEventHandle, PluginManifest,
-        PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution,
+        OverflowInfo, PathArgs, Plugin, PluginConfig, PluginEventHandle, PluginHookRule,
+        PluginManifest, PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution,
         RegisteredObserver, RenderKind, Tool, ToolCtx, ToolObserver, ToolOutput,
     };
     /// Edge B's plugin -> plugin capability CALL channel (board item

@@ -35,7 +35,7 @@ use conway_core::agent::{Budget, PermissionDecision, SubagentSpec};
 use conway_core::capabilities::HeadroomPolicy;
 use conway_core::content::{ContentBlock, PermissionClass, ToolCall, ToolCategory, ToolSpec};
 use conway_core::error::{HookFailure, ToolError};
-use conway_core::hook::{HookAnswer, HookInvocation};
+use conway_core::hook::{HookAnswer, HookInvocation, HookOrigin};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
 use conway_core::ports::{
     Backend, HookRunner, Plugin, PluginConfig, PluginManifest, Router, SessionStore, SubagentHost,
@@ -88,6 +88,7 @@ fn spec(id: &str) -> HookSpec {
         command: vec!["/bin/true".to_string()],
         timeout_ms: 1_000,
         matcher: None,
+        origin: HookOrigin::Operator,
     }
 }
 
@@ -297,12 +298,14 @@ async fn a_post_tool_use_matcher_fires_only_for_its_own_tool_through_run_batch()
                 command: vec!["/bin/true".to_string()],
                 timeout_ms: 1_000,
                 matcher: Some("read".to_string()),
+                origin: HookOrigin::Operator,
             },
             HookSpec {
                 id: "edit-watcher".into(),
                 command: vec!["/bin/true".to_string()],
                 timeout_ms: 1_000,
                 matcher: Some("edit".to_string()),
+                origin: HookOrigin::Operator,
             },
         ],
     )]));
@@ -482,6 +485,44 @@ async fn child_spawned_hook_failure_does_not_fail_the_spawn() {
         hook.count(CHILD_SPAWNED),
         1,
         "child_spawned did not dispatch for a spawn"
+    );
+}
+
+/// ACCEPTANCE (board item `01M129QW0GV90QTQS6B3BY3DAR`, acceptance 8):
+/// `child_spawned`'s payload still carries `spec.mode` unchanged, and a
+/// subagent hook can still tell a fork from a spawn by reading it --
+/// `subagent.rs:1033`'s `"mode": spec.mode` is unrelated to this item's own
+/// registration-surface work (`Plugin::hooks()`), and this item must not
+/// strip, ignore, or flatten it. `RecordingRunner` (unlike
+/// `FailingRunner`, which only counts names) is what makes the PAYLOAD
+/// CONTENT checkable, not merely that dispatch happened.
+#[tokio::test]
+async fn child_spawned_payload_still_carries_the_real_subagent_mode() {
+    let rt = build_runtime();
+    let hook = Arc::new(RecordingRunner::default());
+    rt.set_observation_hook_runner(Some(hook.clone()));
+    rt.set_observation_hooks(hooks_for(CHILD_SPAWNED));
+
+    let parent = rt.start_root(root_spec()).await.expect("root started");
+
+    // Fork first...
+    rt.start(
+        parent,
+        parent,
+        SubagentSpec::fork("do a thing", Budget::default()),
+    )
+    .await
+    .expect("fork must start");
+
+    let seen = hook.seen.lock().expect("seen lock poisoned").clone();
+    let fork_payload = seen
+        .iter()
+        .find(|(name, _)| name == CHILD_SPAWNED)
+        .map(|(_, payload)| payload.clone())
+        .expect("child_spawned must have dispatched for the fork");
+    assert_eq!(
+        fork_payload["mode"], "fork",
+        "a fork's child_spawned payload must name its own mode, unchanged: {fork_payload:?}"
     );
 }
 

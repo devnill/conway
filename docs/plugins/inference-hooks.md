@@ -30,14 +30,16 @@ across the one variable the experiment controlled for.
 cancellation above named `Plugin::hooks()` too, "for want of a consumer" —
 and that half of the ruling was itself corrected the same day (process
 finding `01M129RRA6394T6JP2WQ30A9R3`): the hook *registration* method has a
-real, already-shipped consumer independent of this page —
-`ConwayBuilder::config_mut`'s claude-compat translation
-(`crates/conway-cli/src/claude_compat_plugins.rs`), currently served by a
-whole-config escape hatch for want of a narrower seam. Board item
-`01M129QW0GV90QTQS6B3BY3DAR` builds that registration surface, with that
-consumer — entirely unrelated to anything on this page. **`Plugin::hooks()`
-is not dead. What is dead, for want of any consumer at all, is a hook that
-reaches conway's own inference to produce its verdict** —
+real, already-shipped consumer independent of this page — the claude-compat
+translation (`crates/conway-cli/src/claude_compat_plugins.rs`), which used to
+be served by `ConwayBuilder::config_mut`, a whole-config escape hatch, for
+want of a narrower seam. Board item `01M129QW0GV90QTQS6B3BY3DAR` built
+`Plugin::hooks()` as that narrower registration surface, moved the
+claude-compat translation onto it, and removed `config_mut` entirely — that
+consumer is entirely unrelated to anything on this page. **`Plugin::hooks()`
+is not dead — it exists and is wired.** What is dead, for want of any
+consumer at all, is a hook that reaches conway's own inference to produce
+its verdict —
 `run_ephemeral_turn`, a `subagent_mode` declaration, and a `hook.fork`
 capability, which is everything this page describes below. See
 `hooks.md` point 13 and point 14 for the normative status of each half.

@@ -125,13 +125,15 @@ use std::sync::Arc;
 
 use conway_core::capabilities::{HeadroomPolicy, ReliabilityTier};
 use conway_core::error::PluginError;
+use conway_core::event_name::EVENT_NAMESPACE_SEPARATOR;
+use conway_core::hook::HookOrigin;
 use conway_core::ids::{BackendId, ModelRef};
 use conway_core::permission_pattern::{PatternOrigin, Rule, Select, Then, When};
 use conway_core::ports::CapabilityIndex;
 use conway_core::ports::{
     Backend, BackendBuildContext, BackendFactory, CapabilityRegistration, CapabilityRegistry,
     ContextHook, CurateOutcome, Curator, HealthRegistry, HookRunner, PathStore, PermissionGate,
-    Plugin, PluginManifest, PluginPermissionRule, PluginPermissionVerdict,
+    Plugin, PluginHookRule, PluginManifest, PluginPermissionRule, PluginPermissionVerdict,
     PluginStatusContribution, Router, RouterBuildContext, RouterBundle, RouterFactory,
     RoutingExplainer, SessionStore,
 };
@@ -143,7 +145,7 @@ use conway_runtime::permission::PreToolUseHookSpec;
 use conway_runtime::runtime::{Runtime, RuntimeDeps};
 
 use crate::agents;
-use crate::config::schema::{BackendEntry, ConwayConfig};
+use crate::config::schema::{BackendEntry, ConwayConfig, HookEntry};
 use crate::config::{self, CliOverrides, ConfigWarning, LoadOptions, WarningCode};
 use crate::conway::Conway;
 use crate::discovery_host;
@@ -462,44 +464,6 @@ impl ConwayBuilder {
         &self.config
     }
 
-    /// Mutable access to the config this builder currently holds --
-    /// [`Self::config`]'s write counterpart, added for a caller that needs
-    /// to APPEND to a config-owned collection rather than replace it via a
-    /// whole-value setter (`with_cli_overrides`'s "whole value, not
-    /// additive" contract, and every other `with_*` method's single-field
-    /// replace).
-    ///
-    /// **Board item `01M0XBZNBPXEESX8VNTJDKNG0J`: the wiring gap this
-    /// method closes.** `[hooks].rules[]` has no dedicated builder-level
-    /// injection method the way `Plugin`/`Backend`/`Router` each do
-    /// (`with_plugin`/`with_backend`/`with_router`) -- `build()`'s hook
-    /// step (below) reads `config.hooks.rules` directly, with no
-    /// intervening builder field to push an extra rule onto. A caller that
-    /// discovers additional `[hooks].rules[]`-shaped entries AFTER loading
-    /// (`crates/conway-cli/src/claude_compat_plugins.rs`'s translated
-    /// Claude Code hook registrations is the one caller this method exists
-    /// for) has no other seam to make them real, dispatchable rules: not
-    /// `with_hook_runner` (that injects the DISPATCHER, not a rule), and
-    /// not `from_parts` (reconstructing a builder from a patched config
-    /// would drop every plugin/gate/router/etc. already attached on
-    /// `self`). `builder.config_mut().hooks.rules.extend(...)` is the
-    /// narrowest fix: it reaches exactly the one field that needed a write
-    /// path, on the SAME already-owned `self.config` every other builder
-    /// step reads, so nothing else about `build()`'s hook-step doc
-    /// (`config.hooks.rules.iter().filter(...)`, immediately below) has to
-    /// change to pick appended rules up.
-    ///
-    /// Reflects the loaded/`from_parts` config, exactly like [`Self::config`]
-    /// -- a mutation here is still subject to `build()`'s own step 1
-    /// (`config::merge::apply_cli`) re-validating the WHOLE resulting
-    /// config, appended rules included: a bad id, a duplicate, or an
-    /// invalid `match` on a toolless event fails `build()` the identical
-    /// way an operator-authored `[hooks].rules[]` entry with the same
-    /// defect would.
-    pub fn config_mut(&mut self) -> &mut ConwayConfig {
-        &mut self.config
-    }
-
     /// Injects a backend. Takes precedence over any `[backends.<id>]`
     /// entry's factory-built backend with the same `Backend::id()` -- see
     /// [`Self::with_backend_factory`]'s own doc for the full precedence
@@ -638,6 +602,23 @@ impl ConwayBuilder {
     pub fn with_plugin(mut self, plugin: Arc<dyn Plugin>) -> Self {
         self.plugins.push(plugin);
         self
+    }
+
+    /// Read-only access to every plugin injected via [`Self::with_plugin`]
+    /// (or [`Self::install_selected`], which calls it internally) SO FAR --
+    /// [`Self::config`]'s plugin-side counterpart, added so a caller
+    /// composing a `ConwayBuilder` across several steps (as
+    /// `crates/conway-cli/src/claude_compat_plugins.rs`'s `install` does,
+    /// one `[plugins].claude_compat[]` entry at a time) can inspect what it
+    /// has already attached without re-deriving it independently.
+    ///
+    /// **Does NOT include built-ins.** Those are resolved later, inside
+    /// [`Self::build`] itself (`presets::builtin_plugins()`, filtered by
+    /// [`PluginSelection`]) -- there is no built-in candidate list to see
+    /// before that point, so this can only ever report what a caller
+    /// explicitly injected, never conway's own bundled tools.
+    pub fn plugins(&self) -> &[Arc<dyn Plugin>] {
+        &self.plugins
     }
 
     /// Overrides `permissions.mode`-derived gate selection entirely.
@@ -1813,6 +1794,92 @@ impl ConwayBuilder {
             .iter()
             .flat_map(|p| p.permission_rules())
             .collect();
+        // Collect each installed plugin's own `Plugin::hooks()` contributions
+        // BEFORE `resolved_plugins` is moved into `RuntimeDeps` below (board
+        // item `01M129QW0GV90QTQS6B3BY3DAR` -- the seam `ConwayBuilder::
+        // config_mut`'s own doc named as missing: a plugin registers a hook
+        // rule the SAME way it registers a tool, rather than reaching for a
+        // whole-config escape hatch). The SAME collect-before-move shape
+        // `plugin_permission_rules` immediately above establishes -- paired
+        // with its declaring plugin's own manifest id, both for the
+        // namespacing and for the provenance attribution below.
+        let plugin_hook_rules: Vec<(String, PluginHookRule)> = resolved_plugins
+            .iter()
+            .flat_map(|p| {
+                let plugin_id = p.manifest().id;
+                p.hooks()
+                    .into_iter()
+                    .map(move |rule| (plugin_id.clone(), rule))
+            })
+            .collect();
+        // Fold `plugin_hook_rules` in beside `config.hooks.rules` into ONE
+        // combined, ORIGIN-TAGGED list -- the single source both the
+        // `pre_tool_use_specs` and `observation_specs` steps below read,
+        // rather than each re-implementing its own "config rules plus
+        // plugin rules" merge (P-14: one implementation of the classification
+        // logic, not two that could drift). Every config-declared rule is
+        // tagged [`HookOrigin::Operator`], unchanged from every hook rule
+        // that existed before this item; every plugin-declared rule is
+        // tagged [`HookOrigin::Plugin`] naming its declaring plugin, and its
+        // bare `id` is host-prefixed with that plugin's own manifest id --
+        // this item's own decided answer to "should provenance be
+        // structural": an author never picks their own namespace, the SAME
+        // rule `declared_plugin_events`/`CommandRegistry::build` already
+        // enforce for event/command names -- so a plugin can never claim an
+        // id an operator might also have written, and the resulting id is
+        // what makes a plugin-registered hook distinguishable from an
+        // operator-authored one wherever `id` is later read (a denial
+        // message, `Conway::active_deny_capable_hook_rules`'s review list).
+        //
+        // A collision -- an empty bare id, or a namespaced id already taken
+        // by a `[hooks].rules[]` entry or another plugin's own hook -- is a
+        // hard `FacadeError::Build` naming the offender, mirroring the
+        // duplicate-plugin-id / duplicate-instruction-fragment-name checks
+        // above: an ambiguous hook id is not a cosmetic problem, it is
+        // exactly the "which rule does 'foo' refer to" ambiguity check 9 of
+        // `config::merge::validate`'s own hooks check already refuses to
+        // load for `[hooks].rules[]` alone.
+        let mut seen_hook_ids: HashSet<String> =
+            config.hooks.rules.iter().map(|r| r.id.clone()).collect();
+        let mut effective_hook_rules: Vec<(HookOrigin, HookEntry)> = config
+            .hooks
+            .rules
+            .iter()
+            .cloned()
+            .map(|rule| (HookOrigin::Operator, rule))
+            .collect();
+        for (plugin_id, rule) in plugin_hook_rules {
+            if rule.id.is_empty() {
+                return Err(FacadeError::Build {
+                    message: format!(
+                        "plugin '{plugin_id}' registered a Plugin::hooks() rule with an empty \
+                         id; every hook rule must have a non-empty id"
+                    ),
+                });
+            }
+            let namespaced_id = format!("{plugin_id}{EVENT_NAMESPACE_SEPARATOR}{}", rule.id);
+            if !seen_hook_ids.insert(namespaced_id.clone()) {
+                return Err(FacadeError::Build {
+                    message: format!(
+                        "duplicate hook id '{namespaced_id}': plugin '{plugin_id}' registered a \
+                         Plugin::hooks() rule whose namespaced id collides with an existing \
+                         [hooks].rules[] entry or another plugin's own hook -- rename one of them"
+                    ),
+                });
+            }
+            effective_hook_rules.push((
+                HookOrigin::Plugin(plugin_id),
+                HookEntry {
+                    id: namespaced_id,
+                    event: rule.event,
+                    match_tool: rule.match_tool,
+                    command: rule.command,
+                    timeout_ms: rule.timeout_ms,
+                    enabled: rule.enabled,
+                    on_failure: rule.on_failure,
+                },
+            ));
+        }
         // Collect each installed plugin's own `Plugin::instructions()`
         // contributions BEFORE `resolved_plugins` is moved into `RuntimeDeps`
         // below (board item `01M0K5MD59YZRSHE31JKZKFRMY`) -- the SAME
@@ -2053,15 +2120,20 @@ impl ConwayBuilder {
         // `pre_tool_use_specs` is computed unconditionally either way (an
         // empty `hook_runner` makes it inert regardless of what it
         // contains -- `PermissionBroker::pre_tool_use_hook_denial`'s own
-        // doc), filtering `[hooks].rules[]` to exactly the entries this
-        // item's own `HooksConfig` doc names as dispatched: `event ==
-        // "pre_tool_use"` and `enabled`.
-        let pre_tool_use_specs: Vec<PreToolUseHookSpec> = config
-            .hooks
-            .rules
+        // doc), filtering `effective_hook_rules` (`[hooks].rules[]` PLUS
+        // every plugin-declared rule folded in above) to exactly the
+        // entries this item's own `HooksConfig` doc names as dispatched:
+        // `event == "pre_tool_use"` and `enabled`. A plugin-registered
+        // `pre_tool_use` rule lands in this SAME `Vec` a config-declared one
+        // does, so it reaches `PermissionBroker::decide`'s hook-check step
+        // at the IDENTICAL tier -- before the mode gate, the cache, pattern
+        // allows, and `AutoAllow` -- by construction, not by a second,
+        // parallel dispatch path (board item `01M129QW0GV90QTQS6B3BY3DAR`
+        // acceptance 2).
+        let pre_tool_use_specs: Vec<PreToolUseHookSpec> = effective_hook_rules
             .iter()
-            .filter(|rule| rule.enabled && rule.event == "pre_tool_use")
-            .map(|rule| PreToolUseHookSpec {
+            .filter(|(_, rule)| rule.enabled && rule.event == "pre_tool_use")
+            .map(|(origin, rule)| PreToolUseHookSpec {
                 id: rule.id.clone(),
                 command: rule.command.clone(),
                 timeout_ms: rule.timeout_ms,
@@ -2074,6 +2146,7 @@ impl ConwayBuilder {
                 // rule that never sets it keeps denying on outage
                 // byte-for-byte (board item `01M0X1AH44SNMK5TZ507K30QNP`).
                 on_failure: rule.on_failure,
+                origin: origin.clone(),
             })
             .collect();
         // The observation and deny-only events, and: the
@@ -2090,8 +2163,11 @@ impl ConwayBuilder {
         //
         // The SAME runner feeds both tiers, so an embedder that injects one
         // gets every dispatched event rather than having to opt in twice.
+        // Reads `effective_hook_rules`, exactly like `pre_tool_use_specs`
+        // immediately above -- one classification pass over one combined
+        // list, not a second copy of this loop for plugin-declared rules.
         let mut observation_specs: BTreeMap<String, Vec<HookSpec>> = BTreeMap::new();
-        for rule in config.hooks.rules.iter().filter(|r| r.enabled) {
+        for (origin, rule) in effective_hook_rules.iter().filter(|(_, r)| r.enabled) {
             let plugin_decl = plugin_events.get(&rule.event);
             if !DISPATCHED_EVENTS.contains(&rule.event.as_str()) && plugin_decl.is_none() {
                 continue;
@@ -2130,6 +2206,7 @@ impl ConwayBuilder {
                     // refuse to load/build a config pairing `match` with
                     // any toolless event, core or plugin.
                     matcher: rule.match_tool.clone(),
+                    origin: origin.clone(),
                 });
         }
 

@@ -596,6 +596,127 @@ pub trait Plugin: Send + Sync + 'static {
     fn permission_modes(&self) -> Vec<PluginDeclaredMode> {
         Vec::new()
     }
+
+    /// Zero or more hook rules this plugin registers directly -- the
+    /// registration surface board item `01M129QW0GV90QTQS6B3BY3DAR` builds,
+    /// closing the gap `ConwayBuilder::config_mut`'s own doc named: before
+    /// this method, the ONLY way a caller could turn a discovered
+    /// hook-shaped registration (`crates/conway-cli/src/
+    /// claude_compat_plugins.rs`'s translated Claude Code hooks were the
+    /// one real consumer) into a dispatchable `[hooks].rules[]`-shaped
+    /// entry was reaching into the WHOLE config through `config_mut()` and
+    /// splicing it in as though the operator had typed it there. This
+    /// method is the narrower seam that should have existed instead: a
+    /// plugin declares its hooks the SAME way it declares its tools
+    /// (`Self::tools`), its permission rules (`Self::permission_rules`), or
+    /// its context hooks (`Self::context_hooks`) -- through `Plugin`
+    /// itself, on the SAME `with_plugin`/`install_selected` surface a
+    /// third party and a built-in share identically (GP-03).
+    ///
+    /// **Reaches the SAME tier a config-declared rule does, by
+    /// construction, not by a parallel dispatch path.**
+    /// `ConwayBuilder::build` folds every returned [`PluginHookRule`] into
+    /// the IDENTICAL `PreToolUseHookSpec`/`HookSpec` lists it already
+    /// builds from `config.hooks.rules` -- for a `"pre_tool_use"` rule,
+    /// that means `PermissionBroker::decide`'s hook-check step, checked
+    /// BEFORE the mode gate, the cache, pattern allows, and `AutoAllow`
+    /// (the SAME tier `deny_matches` and an operator's own `[hooks].
+    /// rules[]` entry are checked at) -- there is no separate, weaker tier
+    /// for a plugin-contributed hook to land on instead.
+    ///
+    /// **Registration only -- this is not an inference seam.** A hook
+    /// registered here still answers its verdict the SAME way any
+    /// `[hooks].rules[]`-backed hook does: spawn `command`, read a
+    /// [`crate::hook::HookAnswer`] back. Board item
+    /// `01M0WX3WSXWYF6N3G6SWN0DSHP` (the other half of an earlier,
+    /// broader-scoped `Plugin::hooks()` proposal -- an in-process
+    /// inference path letting a hook call a model to REACH its verdict)
+    /// was cancelled because its only consumer's premise failed
+    /// (decision `01M128AP39WXE01BBZV4RENC4M`); nothing here reopens it.
+    ///
+    /// **Provenance, made structural, not merely a comment an operator may
+    /// scroll past** (this item's own design question, decided): every
+    /// rule this method returns is folded in carrying
+    /// [`crate::hook::HookOrigin::Plugin`] (this plugin's own
+    /// [`PluginManifest::id`]), never [`crate::hook::HookOrigin::
+    /// Operator`] -- `ConwayBuilder::build` sets that field, not this
+    /// method (a plugin has no way to claim the operator's own
+    /// provenance for itself). See that field's own doc, and
+    /// `crate::hook::HookOrigin`'s module-level doc, for why a downloaded
+    /// plugin's deny-capable hook being indistinguishable from one the
+    /// operator wrote is a real permission consequence worth making
+    /// structural rather than leaving to a stderr warning alone.
+    ///
+    /// **Namespacing, the same "an author never picks their own
+    /// namespace" rule [`Self::events`]/[`Self::commands`] already
+    /// establish.** This method's own `id` fields are BARE -- `Self::id`
+    /// on [`PluginHookRule`] is not what ultimately reaches dispatch or a
+    /// denial message; `ConwayBuilder::build` prefixes each with this
+    /// plugin's own [`PluginManifest::id`] before folding it in, so a
+    /// plugin can never claim an unprefixed id an operator might also
+    /// have written, and two plugins declaring the identical bare id never
+    /// collide.
+    ///
+    /// The default returns none, the SAME zero-cost-default precedent
+    /// every other method on this trait establishes: every existing
+    /// `Plugin` implementor -- every built-in, every first-party plugin,
+    /// every third party's -- keeps compiling unmodified, and a build with
+    /// no hook-registering plugin installed dispatches nothing new.
+    fn hooks(&self) -> Vec<PluginHookRule> {
+        Vec::new()
+    }
+}
+
+/// One hook rule a plugin registers via [`Plugin::hooks`] -- the SAME six
+/// fields `crate::config::schema::HookEntry` (owned by the `conway` facade,
+/// which this crate does not depend on) carries for an operator-authored
+/// `[hooks].rules[]` entry, mirrored here as the narrow shape
+/// `ConwayBuilder::build` actually needs -- the identical relationship
+/// `conway_runtime::permission::PreToolUseHookSpec`/`conway_runtime::
+/// hook_dispatch::HookSpec` already have to `HookEntry` one crate over
+/// (that type's own doc: "this crate has no dependency on `conway`'s
+/// config schema").
+///
+/// `id` is BARE, not yet namespaced -- see [`Plugin::hooks`]'s own doc for
+/// why the host, not this type or the plugin returning it, performs that
+/// prefixing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginHookRule {
+    /// This rule's own bare identity, namespaced by the host before it
+    /// ever reaches dispatch or a denial message -- see [`Plugin::hooks`]'s
+    /// own doc.
+    pub id: String,
+    /// The event this rule fires on -- the identical vocabulary
+    /// `HookEntry::event` accepts: a bare core event (e.g.
+    /// `"pre_tool_use"`) or a plugin-namespaced `"plugin_id.event_name"`.
+    pub event: String,
+    /// The tool-name matcher this rule fires for -- `HookEntry::match_tool`'s
+    /// identical contract: `None` fires for every call this event
+    /// dispatches; `Some(pattern)` only ever narrows.
+    pub match_tool: Option<String>,
+    /// The command to run, as an argv vector -- `HookEntry::command`'s
+    /// identical shape (never a single shell string).
+    pub command: Vec<String>,
+    /// Milliseconds this hook's runner will allow the command before
+    /// killing it -- `HookEntry::timeout_ms`'s identical contract.
+    pub timeout_ms: u64,
+    /// Whether this rule is active. A plugin declaring a disabled hook is
+    /// legitimate (e.g. a capability gated on something the plugin itself
+    /// decided not to enable yet) -- `HookEntry::enabled`'s identical
+    /// contract: `ConwayBuilder::build` drops a disabled rule before it
+    /// ever reaches dispatch, exactly like an operator-authored one.
+    pub enabled: bool,
+    /// This rule's own policy for what happens when its runner cannot be
+    /// consulted at all -- `HookEntry::on_failure`'s identical contract
+    /// and identical fail-closed default ([`crate::hook::HookOnFailure::
+    /// Deny`]). A plugin authoring its OWN hook directly (as opposed to a
+    /// translation layer like `claude_compat_plugins.rs`'s, translating a
+    /// foreign format that carries no such field at all) may set this
+    /// explicitly -- unlike that translation layer, which must never
+    /// choose a foreign plugin's failure posture on the operator's behalf,
+    /// a plugin author registering its OWN hook here IS the author of that
+    /// posture.
+    pub on_failure: crate::hook::HookOnFailure,
 }
 
 /// One status contribution a plugin pushes via `status/1` notifications --

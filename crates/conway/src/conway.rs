@@ -62,20 +62,41 @@ pub const DENY_CAPABLE_EVENTS: [&str; 2] = [
     conway_runtime::hook_dispatch::PROMPT_SUBMITTED,
 ];
 
-/// [`HookRuleView::origin`]'s value for every row [`Conway::
-/// active_deny_capable_hook_rules`] returns. A hook rule, unlike a pattern
-/// ALLOW/DENY/PROMPT rule, has no per-rule [`conway_core::permission_pattern
-/// ::PatternOrigin`] to report: `[hooks].rules` is a single array that
+/// [`HookRuleView::origin`]'s value for every OPERATOR-AUTHORED row
+/// [`Conway::active_deny_capable_hook_rules`] returns.
+///
+/// **No longer the only value this field can carry** (board item
+/// `01M129QW0GV90QTQS6B3BY3DAR`): before a plugin could register a hook
+/// directly (`conway_core::ports::Plugin::hooks`), `[hooks].rules[]` really
+/// was the ONLY place a hook rule could come from -- a single array that
 /// replaces WHOLESALE per config layer (`crate::config::merge`'s own module
 /// doc, "arrays and scalars replace wholesale"), never a union of several
 /// files' entries the way a `permissions.json` grant's provenance is -- so
-/// there is exactly one place every hook rule can ever have come from: the
-/// final merged config. Reporting a specific layer name (default/user/
-/// project/env/CLI) would need knowing which layer's `[hooks]` table
-/// actually won, which nothing downstream of `config::merge::load` still
-/// tracks once the merge is done; this label says what IS known, honestly,
-/// rather than fabricating a per-rule path no mechanism here can attribute.
+/// there was exactly one honest label to report. That claim would now be
+/// FALSE for a plugin-contributed rule if this constant were still applied
+/// unconditionally: `active_deny_capable_hook_rules`, below, reads each
+/// row's own `conway_core::hook::HookOrigin` (threaded through
+/// `ConwayBuilder::build`'s `PreToolUseHookSpec`/`HookSpec`) and reports
+/// THIS label only for [`conway_core::hook::HookOrigin::Operator`] rows --
+/// see [`hook_origin_label`] for the `HookOrigin::Plugin` case. Reporting a
+/// specific FILE layer (default/user/project/env/CLI) for an
+/// operator-authored rule remains out of reach for the same reason as
+/// before: nothing downstream of `config::merge::load` still tracks which
+/// layer's `[hooks]` table won once the merge is done.
 const HOOK_ORIGIN_LABEL: &str = "settings.json (merged config)";
+
+/// [`HookRuleView::origin`]'s value for a row whose [`conway_core::hook::
+/// HookOrigin`] is `Plugin` -- names the declaring plugin's own
+/// `PluginManifest::id` (the SAME id `ConwayBuilder::build` namespaces the
+/// rule's dispatched `id` with), so an operator inspecting the review list
+/// sees WHICH plugin can deny their calls, not merely that some
+/// non-`settings.json` source can.
+fn hook_origin_label(origin: &conway_core::hook::HookOrigin) -> String {
+    match origin {
+        conway_core::hook::HookOrigin::Operator => HOOK_ORIGIN_LABEL.to_string(),
+        conway_core::hook::HookOrigin::Plugin(plugin_id) => format!("plugin '{plugin_id}'"),
+    }
+}
 
 /// One row [`Conway::active_deny_capable_hook_rules`] hands the `/settings`
 /// review surface -- a hook-backed
@@ -83,7 +104,11 @@ const HOOK_ORIGIN_LABEL: &str = "settings.json (merged config)";
 /// `(event, id)` pair via [`Conway::revoke_hook_rule`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HookRuleView {
-    /// The rule's operator-chosen `HookEntry::id`.
+    /// The rule's own dispatched id -- `HookEntry::id` verbatim for an
+    /// operator-authored rule, or that same id host-NAMESPACED with the
+    /// declaring plugin's own manifest id for a plugin-contributed one
+    /// (`conway_core::ports::Plugin::hooks`'s own doc) -- never a bare id a
+    /// plugin chose for itself.
     pub id: String,
     /// The event this rule fires on -- always `PRE_TOOL_USE_EVENT` or
     /// [`conway_runtime::hook_dispatch::PROMPT_SUBMITTED`], the only two
@@ -97,8 +122,9 @@ pub struct HookRuleView {
     /// no tool name at all, so `merge::validate` refuses to load a config
     /// pairing `match` with it in the first place).
     pub match_tool: Option<String>,
-    /// Always `HOOK_ORIGIN_LABEL` today -- see that constant's own doc
-    /// for why a hook rule has no finer-grained provenance to report.
+    /// `"settings.json (merged config)"` for an operator-authored rule;
+    /// `"plugin '<id>'"` for one an installed plugin registered directly
+    /// (board item `01M129QW0GV90QTQS6B3BY3DAR`).
     pub origin: String,
 }
 
@@ -683,7 +709,7 @@ impl Conway {
                 id: hook.id,
                 event: PRE_TOOL_USE_EVENT.to_string(),
                 match_tool: hook.matcher,
-                origin: HOOK_ORIGIN_LABEL.to_string(),
+                origin: hook_origin_label(&hook.origin),
             })
             .collect();
         rows.extend(
@@ -696,7 +722,7 @@ impl Conway {
                     id: hook.id,
                     event: conway_runtime::hook_dispatch::PROMPT_SUBMITTED.to_string(),
                     match_tool: hook.matcher,
-                    origin: HOOK_ORIGIN_LABEL.to_string(),
+                    origin: hook_origin_label(&hook.origin),
                 }),
         );
         rows

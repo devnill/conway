@@ -151,7 +151,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use conway_core::event_name::{validate_event_name, EVENT_NAMESPACE_SEPARATOR};
-use conway_core::hook::{tool_matcher_matches, HookEvent, HookInvocation, HookPermissionVerdict};
+use conway_core::hook::{
+    tool_matcher_matches, HookEvent, HookInvocation, HookOrigin, HookPermissionVerdict,
+};
 use conway_core::ports::{EventDecl, HookRunner, Plugin, PluginEventEmitter};
 
 /// One configured observation hook: the operator's own id for it, plus what
@@ -187,6 +189,13 @@ pub struct HookSpec {
     /// for any caller that constructs a `HookSpec` directly rather than
     /// through the loader (e.g. this module's own tests).
     pub matcher: Option<String>,
+    /// Where this rule came from -- see `conway_core::hook::HookOrigin`'s
+    /// own doc (board item `01M129QW0GV90QTQS6B3BY3DAR`), and
+    /// `crate::permission::PreToolUseHookSpec::origin`'s identical field
+    /// for the sibling tier. Defaults to [`HookOrigin::Operator`], so every
+    /// construction site that predates this field keeps reporting exactly
+    /// what it always implicitly was.
+    pub origin: HookOrigin,
 }
 
 impl HookSpec {
@@ -758,6 +767,7 @@ mod tests {
             command: vec!["/bin/true".to_string()],
             timeout_ms: 1_000,
             matcher: None,
+            origin: HookOrigin::Operator,
         }
     }
 

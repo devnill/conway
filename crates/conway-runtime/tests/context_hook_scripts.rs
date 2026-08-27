@@ -30,7 +30,7 @@ use conway_core::capabilities::{
 };
 use conway_core::content::{ContentBlock, SamplingParams};
 use conway_core::error::{HookFailure, RoutingError};
-use conway_core::hook::{ContextDelta, HookAnswer, HookInvocation};
+use conway_core::hook::{ContextDelta, HookAnswer, HookInvocation, HookOrigin};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{LogRecord, SessionMeta};
 use conway_core::ports::{
@@ -227,6 +227,7 @@ fn hook_spec(id: &str) -> HookSpec {
         command: vec!["/bin/true".to_string()],
         timeout_ms: 1_000,
         matcher: None,
+        origin: HookOrigin::Operator,
     }
 }
 

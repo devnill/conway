@@ -24,7 +24,9 @@ use conway_core::canon::canonical_json_bytes;
 use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::content::ToolCategory;
 use conway_core::event::Event;
-use conway_core::hook::{HookEvent, HookInvocation, HookOnFailure, HookPermissionVerdict};
+use conway_core::hook::{
+    HookEvent, HookInvocation, HookOnFailure, HookOrigin, HookPermissionVerdict,
+};
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{HookRunner, PathArgs, PermissionGate, RenderKind};
 
@@ -204,6 +206,20 @@ pub struct PreToolUseHookSpec {
     /// `#[serde(default)]`, so an existing `[hooks].rules[]` entry that
     /// never sets `on_failure` denies on outage exactly as it always did.
     pub on_failure: HookOnFailure,
+    /// Where this rule came from -- an operator's own merged
+    /// `[hooks].rules[]` entry, or an installed plugin's own
+    /// `conway_core::ports::Plugin::hooks()` declaration (board item
+    /// `01M129QW0GV90QTQS6B3BY3DAR`). Defaults to [`HookOrigin::Operator`]
+    /// (`HookOrigin`'s own `Default` impl), so every construction site
+    /// that predates this field and never sets it explicitly keeps
+    /// reporting exactly what it always implicitly was. Read by
+    /// `crates/conway/src/conway.rs`'s
+    /// `Conway::active_deny_capable_hook_rules` to report a plugin-
+    /// contributed rule's real source rather than the blanket
+    /// "settings.json (merged config)" label every rule used to get
+    /// unconditionally -- see [`HookOrigin`]'s own doc for the full
+    /// argument.
+    pub origin: HookOrigin,
 }
 
 /// This agent's confinement root (S3's `SessionMeta.root`/`SubagentSpec.
@@ -2244,6 +2260,10 @@ mod tests {
             // helper keeps exercising the exact same outage behavior as
             // before `on_failure` existed.
             on_failure: HookOnFailure::default(),
+            // Every existing test through this helper predates plugin-
+            // registered hooks -- `Operator` is what these fixtures always
+            // implicitly were.
+            origin: HookOrigin::Operator,
         }
     }
 
