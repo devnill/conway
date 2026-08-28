@@ -506,6 +506,31 @@ impl Tool for CapabilityCallingTool {
     }
 }
 
+/// A provider whose `call` panics -- board item `01M12XRY8MZRG8Q88E0WMSGBF4`'s
+/// own fixture. Proves a panic inside an IN-PROCESS provider, invoked from a
+/// DIFFERENT plugin's tool, is contained by `conway_runtime::tools::runner`'s
+/// `catch_unwind` (`runner.rs:265`, wrapping `execute_one` -- the same
+/// future a capability call runs inside) and reported as THIS TOOL's
+/// (`acme_call_capability`'s) own error, never a silent `NotProvided` and
+/// never an aborted process. The subprocess tier's equivalent case (a
+/// provider PROCESS dying mid-call, as opposed to an in-process panic) is
+/// already covered by
+/// `conway-plugin-subprocess/tests/capability_channel.rs`'s own
+/// `a_dead_child_mid_capability_call_produces_a_typed_error_not_a_hang` --
+/// that transport's dead-session path, not `catch_unwind`, is what contains
+/// it, so it is a distinct guard and out of scope here.
+struct PanickingProvider;
+
+#[async_trait::async_trait]
+impl CapabilityProvider for PanickingProvider {
+    async fn call(
+        &self,
+        _payload: serde_json::Value,
+    ) -> Result<serde_json::Value, CapabilityError> {
+        panic!("acme.fixture.panic always panics");
+    }
+}
+
 /// A `Plugin` whose sole tool is [`CapabilityCallingTool`] -- mirrors
 /// `ProvidingPlugin`/`ProviderPlugin` one edge over: this one CALLS a
 /// capability rather than providing one.
@@ -579,6 +604,28 @@ fn capability_call_result_text(records: &[LogRecord]) -> Option<String> {
                 ContentBlock::Text { text } => Some(text.clone()),
                 _ => None,
             })
+        }
+        _ => None,
+    })
+}
+
+/// Like [`capability_call_result_text`], but also returns the record's own
+/// `is_error` -- needed to distinguish a contained panic (reported through
+/// `ToolOutcome::error`, which always sets `is_error: true`) from every
+/// outcome [`CapabilityCallingTool::invoke`] can produce on its own
+/// (`ok:`/`not_provided:`/`provider_error:`/`malformed:`, all of which it
+/// returns with `is_error: false` -- see its own `Ok(ToolOutput { is_error:
+/// false, .. })`).
+fn capability_call_result(records: &[LogRecord]) -> Option<(String, bool)> {
+    records.iter().find_map(|r| match r {
+        LogRecord::ToolResultRecord { result, .. }
+            if result.tool.as_str() == "acme_call_capability" =>
+        {
+            let text = result.blocks.iter().find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })?;
+            Some((text, result.is_error))
         }
         _ => None,
     })
@@ -768,5 +815,87 @@ async fn caller_plugin_id_is_the_calling_tools_declaring_plugin() {
         text.starts_with("ok:"),
         "the provider must see caller_plugin_id == 'acme.consumer', not the registry's own \
          owner 'acme.ui' or anything else: {text}"
+    );
+}
+
+// ---- board item 01M12XRY8MZRG8Q88E0WMSGBF4: an IN-PROCESS provider panic
+// crossing the plugin boundary ----
+//
+// Edge B lets a capability call reach a DIFFERENT plugin's own code. Before
+// that channel existed, a plugin's panic surfaced inside its own call stack;
+// now it surfaces inside a caller who never chose that code. The general
+// `catch_unwind` at `conway_runtime::tools::runner.rs:265` (wrapping
+// `execute_one`, the same future a capability call runs inside) is
+// pre-existing machinery built for a different purpose -- this test proves
+// it actually holds across THIS boundary rather than inheriting the claim
+// by reading the source.
+
+/// A panic inside an IN-PROCESS provider, invoked from a DIFFERENT plugin's
+/// tool through the REAL runner, is contained and reported as the CALLING
+/// tool's own error -- distinguishable both from a clean answer and from a
+/// silently-swallowed `NotProvided` (the shape a call that never reached the
+/// provider, or a guard that ate the panic without reporting it, would
+/// produce). Per P-15, this test is required to FAIL if `catch_unwind` at
+/// `runner.rs:265` is neutralised -- verified manually for this item (see
+/// its own worker report) rather than automated in-tree, since disabling
+/// production containment from a test would defeat the guard for every
+/// OTHER test in the same binary.
+#[tokio::test]
+async fn a_panicking_provider_is_contained_and_reported_as_the_calling_tools_own_error() {
+    let conway = build_calling_conway(
+        vec![
+            Arc::new(ProviderPlugin {
+                id: "acme.ui",
+                capability: "acme.ui.checkbox",
+                make_provider: || Arc::new(PanickingProvider) as Arc<dyn CapabilityProvider>,
+            }) as Arc<dyn Plugin>,
+            Arc::new(CallingPlugin {
+                id: "acme.consumer",
+                capability: "acme.ui.checkbox",
+            }) as Arc<dyn Plugin>,
+        ],
+        vec!["acme.ui", "acme.consumer"],
+    );
+
+    let records = run_one_turn(&conway).await;
+    let (text, is_error) = capability_call_result(&records).expect(
+        "a ToolResultRecord for acme_call_capability must exist -- a call that never reached \
+         the provider, or a batch that never finished, would leave no record at all, which is \
+         a DIFFERENT failure than a contained-and-reported panic",
+    );
+
+    // The discriminating observable, named before this assertion was
+    // written: `CapabilityCallingTool::invoke` (this file's own fixture)
+    // never sets `is_error` itself -- every outcome it can produce on its
+    // own (`ok:`/`not_provided:`/`provider_error:`/`malformed:`) comes back
+    // as `is_error: false`. So `is_error: true` here can only have been
+    // synthesized by the runner's OWN panic path (`ToolOutcome::error` at
+    // `runner.rs:269`), never by the tool's own logic and never by a
+    // swallowed call reported as an ordinary answer.
+    assert!(
+        is_error,
+        "a contained panic must surface as an ERROR on the calling tool's own result, not as \
+         one of its ordinary (is_error: false) outcomes: {text}"
+    );
+    assert!(
+        text.contains("panicked"),
+        "the outcome must name the failure as a panic -- an empty or default answer would not: \
+         {text}"
+    );
+    assert!(
+        text.contains("acme_call_capability"),
+        "the panic must be reported against the CALLING tool itself, not swallowed or \
+         misattributed to some other name: {text}"
+    );
+    assert!(
+        text.contains("acme.fixture.panic always panics"),
+        "the provider's own panic message must reach the caller -- this is what separates a \
+         contained-and-reported panic from a silent no-answer, both of which leave the process \
+         alive: {text}"
+    );
+    assert_ne!(
+        text, "not_provided:acme.ui.checkbox",
+        "a call that never reached the panicking provider (or a guard that swallowed it) must \
+         not be mistaken for a contained-and-reported panic: {text}"
     );
 }
