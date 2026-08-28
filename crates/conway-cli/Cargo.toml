@@ -243,6 +243,17 @@ chrono = { workspace = true }
 # `conway-runtime` all depend on it; C-04, not a new one), just not
 # previously named directly by this crate.
 schemars = { workspace = true }
+# Board item 01M11XVEHNMYY942JE63F7MAFH (the first-run guided-setup flow):
+# `src/first_run.rs`'s local-provider detection asks a running Ollama
+# server which model it actually has loaded (`GET {base}/models`) before
+# offering it -- guessing a model tag would make the "no key, no signup"
+# local path fail for almost everyone. Already a pinned workspace
+# dependency (`conway-plugin-backends`'s own `HttpClient`,
+# `conway-plugin-marketplace`'s fetch/install/uninstall all build a client
+# from it already) -- C-04, not a new one; just not previously named
+# directly by this crate. Scoped to one small, unauthenticated GET against
+# `http://127.0.0.1` only -- see `first_run.rs`'s own doc.
+reqwest = { workspace = true }
 
 [dev-dependencies]
 # Board item 01M0TV8MSFRHHQ5BNZV3NHZCEW: this crate's tests reach

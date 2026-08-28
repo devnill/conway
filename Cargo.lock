@@ -571,6 +571,7 @@ dependencies = [
  "nix",
  "predicates",
  "ratatui",
+ "reqwest",
  "schemars",
  "serde",
  "serde_json",

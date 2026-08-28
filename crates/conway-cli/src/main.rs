@@ -15,7 +15,7 @@ use conway::{Conway, ConwayBuilder, PermissionGate};
 use conway_cli::cli::{Cli, Command};
 use conway_cli::exit::ExitCode;
 use conway_cli::{
-    claude_compat_plugins, commands, diag, first_party_plugins, mcp_plugins, oneshot,
+    claude_compat_plugins, commands, diag, first_party_plugins, first_run, mcp_plugins, oneshot,
     statusline_plugin, subprocess_plugins, tui,
 };
 
@@ -76,6 +76,18 @@ async fn main() -> std::process::ExitCode {
     // byte-for-byte unchanged (`gate_override`/`tui_gate_rx` are both
     // `None`).
     let is_tui = cli.command.is_none() && cli.print.is_none();
+    // Board item 01M11XVEHNMYY942JE63F7MAFH: whether the first-run guided-
+    // setup flow may actually prompt. `-p`/`--print` is ALWAYS treated as
+    // non-interactive regardless of whether stdin happens to be a real
+    // terminal (`is_tui` already excludes it) -- a one-shot invocation is a
+    // script-friendly contract by design (`docs/getting-started.md`
+    // "Running non-interactively"), and this flow must not turn a `-p` call
+    // in a terminal into an unexpected prompt. Both stdin AND stdout are
+    // checked: reading a keypress needs the former, and every prompt this
+    // flow prints needs somewhere a human can actually see it land.
+    let interactive = is_tui
+        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::io::IsTerminal::is_terminal(&std::io::stdout());
     let (gate_override, tui_gate_rx): (
         Option<Arc<dyn PermissionGate>>,
         Option<tui::gate::GateReceiver>,
@@ -104,7 +116,7 @@ async fn main() -> std::process::ExitCode {
     };
 
     let (conway, memory_store, agent_names) =
-        match build_conway(&cli, gate_override, is_tui, &env).await {
+        match build_conway(&cli, gate_override, is_tui, interactive, &env).await {
             Ok(built) => built,
             Err(e) => {
                 diag::error(e.to_string());
@@ -212,6 +224,7 @@ async fn build_conway(
     cli: &Cli,
     gate: Option<Arc<dyn PermissionGate>>,
     is_tui: bool,
+    interactive: bool,
     env: &HashMap<String, String>,
 ) -> conway::Result<(
     Conway,
@@ -222,6 +235,67 @@ async fn build_conway(
         Some(path) => ConwayBuilder::from_config(path)?,
         None => ConwayBuilder::discover()?,
     };
+
+    // Board item 01M11XVEHNMYY942JE63F7MAFH: the first-run guided-setup
+    // trigger, one single choke point reached by every dispatch target
+    // (TUI, one-shot `-p`, `sessions`, `routes`) the same way `build_conway`
+    // already is. Calls `FleetUsability::should_offer_guided_setup()`
+    // directly -- NEVER restates its condition (P-14; grep-checked by
+    // `conway_cli::first_run`'s own
+    // `main_rs_calls_should_offer_guided_setup_rather_than_restating_its_condition`
+    // test). `ProbePolicy::LocalOnly`/`DEFAULT_PROBE_TIMEOUT` is the exact
+    // startup policy `backend_usability`'s own doc names: only endpoints
+    // declared `local = true` are ever probed, so an ordinary fleet of
+    // hosted, credentialed backends (the common case for anyone already
+    // configured) pays no network cost here at all -- acceptance 6, "no
+    // added startup delay" for a working provider.
+    let (_, fleet_usability) = conway::backend_usability::classify_fleet(
+        builder.config(),
+        env,
+        conway::backend_usability::ProbePolicy::LocalOnly,
+        conway::backend_usability::DEFAULT_PROBE_TIMEOUT,
+    )
+    .await;
+    let builder = if fleet_usability.should_offer_guided_setup() {
+        if interactive {
+            match first_run::run_guided_setup(env).await {
+                // A backend was just written to the user-scope
+                // settings.json -- reload from scratch (same discovery/
+                // `--config` choice as the original load, immediately
+                // above) so `build()` below sees it, rather than trying to
+                // splice one entry into the already-loaded, in-memory
+                // `ConwayConfig`.
+                first_run::GuidedSetupOutcome::Configured => match &cli.config {
+                    Some(path) => ConwayBuilder::from_config(path)?,
+                    None => ConwayBuilder::discover()?,
+                },
+                // The operator declined: proceed with the fleet exactly as
+                // it was. When it held at least one (broken) backend
+                // entry (`AllUnusable`), `build()` below still succeeds --
+                // "usable but unconfigured", acceptance 4 -- and every
+                // turn will fail with the same per-entry reasons
+                // `backend_usability::Unusable`'s own `Display` already
+                // names. When the fleet was genuinely empty
+                // (`NoBackendsConfigured`), `build()`'s own long-standing
+                // hard gate (`backend_map.is_empty()`) still applies --
+                // this item does not relax that invariant -- so the
+                // process still exits, but with a warning already printed
+                // by `first_run::run_guided_setup`'s own decline path
+                // naming what will not work, rather than a bare hard
+                // error with no context.
+                first_run::GuidedSetupOutcome::Declined => builder,
+            }
+        } else {
+            let path = conway::config::discovery::user_config_path(env)
+                .unwrap_or_else(|| std::path::PathBuf::from("~/.conway/settings.json"));
+            return Err(conway::FacadeError::Build {
+                message: first_run::non_interactive_guidance(&path),
+            });
+        }
+    } else {
+        builder
+    };
+
     // unconditional, not gated on
     // whether the loaded config's `[hooks].rules` is non-empty -- injecting
     // a runner that never gets consulted (no `pre_tool_use` rules present)

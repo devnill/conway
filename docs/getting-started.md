@@ -19,6 +19,27 @@ it's on your `PATH`, or that you invoke it by that full path.
 
 ## Configure a provider
 
+**The fastest path: just run `conway`.** If no configured provider can
+actually serve a turn (nothing configured at all, or every configured one
+is broken), an interactive terminal gets a short guided-setup flow instead
+of an error: it looks for a local model server already running (Ollama on
+its default port), offers it in one keypress if found, otherwise offers
+Anthropic or OpenAI and asks for a key, saves it, and proves it works with
+one real request before dropping you into a session — no hand-editing
+`settings.json` required. A key you paste is never echoed to the terminal,
+written into a transcript, or captured in a session log; if it has to be
+stored in plain text, the flow says so, and where, before writing it.
+Declining leaves conway usable but unconfigured, with a clear statement of
+what will not work. Under `-p`/`--print`, a pipe, or CI — anywhere an
+interactive prompt is impossible — this degrades instead to printing the
+exact file to edit and the exact JSON to add, and never blocks waiting for
+input nobody can give.
+
+The rest of this section describes what that flow (or a non-interactive
+run) is actually setting up, for anyone editing `settings.json` by hand —
+to add a second provider, change the model, or just skip the flow
+entirely.
+
 conway reads its configuration from `.conway/settings.json`, discovered by
 walking up from your current directory (so a project-local `.conway/`
 takes precedence over `~/.conway/settings.json`, which takes precedence
