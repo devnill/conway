@@ -119,6 +119,11 @@ uniformly, this plugin's included.
 
 ## Trust: read this before writing a command
 
+See [`trust-and-security.md`](trust-and-security.md#conwaystatusline-an-unattended-command-on-the-identical-footing-as-a-hook)
+for this page named alongside every other extension point conway ships;
+this section is the fuller statement the trust page cites rather than
+restates.
+
 `[tui.status_line_command].command` runs with **your own process privileges** —
 no sandboxing, no digest check, no confirmation prompt. This is the
 identical footing `[hooks].rules[].command` and `[plugins].subprocess[]`

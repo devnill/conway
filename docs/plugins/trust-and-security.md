@@ -565,6 +565,112 @@ came from) and structural reachability (the text ships and leaves with
 inspecting what is installed, not new restrictions on what an installed
 plugin's text may say.
 
+## Plugin-to-plugin capability calls: a name is trusted, not an implementation
+
+See [`hooks.md` point 21](hooks.md#21-plugin-to-plugin-capability-calls--plugincapabilities--capabilityprovider-conway_coreportscapability)
+for the full mechanical contract; this section is its trust posture.
+
+`conway_core::ports::capability` (board item `01M0WWNHQQYN1EVTH8WPZ33EBF`) is
+a new extension point, and it is the first thing on this page that is not a
+tool call, a command, or static text — it is one installed plugin calling
+directly into another. `Plugin::capabilities()` lets a plugin register a
+live `CapabilityProvider` under a namespaced `HostCapability` name; any
+OTHER installed plugin reaches it through `ToolCtx::capabilities:
+CapabilityCallHandle`, present on every dispatched `Tool::invoke`, and calls
+it by that name.
+
+**This is a genuinely different trust shape from every gated `Tool` call
+described above, not a variant of one.** A `Tool` call is proposed by the
+model and passes through `PermissionGate`/`PermissionBroker` before it
+runs — an operator gate sits between the caller and the code that executes.
+A capability call has neither: no model proposal step, no permission check,
+nothing an operator sees before or after it runs. And unlike a `Tool` call,
+which the model proposes by name but which the harness still resolves
+through one fixed, build-time-registered tool registry the operator can
+audit, **the calling plugin here names only a capability — a string — never
+an implementation.** `CapabilityRegistry::call` matches that string against
+whichever plugin registered a provider for it (`CapabilityRegistry::
+from_registrations` refuses to build at all if two plugins claim the same
+name — fail-closed, never "first wins"); the calling plugin has no way to
+know or choose which plugin's code answers, only that something did.
+
+**Installing one plugin can therefore cause a second, unrelated plugin's
+code to run**, purely because the first named a capability the second
+happens to provide. Nothing about the mechanism requires the two to be
+authored by the same party, to know about each other, or to have been
+reviewed together — an operator who has reasoned carefully about what
+installing plugin A exposes them to now also has to reason about every
+OTHER plugin installed alongside it, because A can reach into any of them
+by name at any time A's own code runs.
+
+**No built-in privilege — everything installed is a plugin, and a compiled-in
+one holds no more standing than a downloaded one.** A `CapabilityProvider` registered by a
+first-party, compiled-in plugin sits on the identical footing as one
+registered by a downloaded third party — nothing about being linked into
+the binary rather than installed from a marketplace changes who can call it
+or what it is trusted with.
+
+**What the harness hands a provider that it did not have to ask for:
+nothing beyond the call itself.** `CapabilityProvider::call` receives
+exactly the `serde_json::Value` payload the calling plugin sent — no
+credential, no `ToolCtx`, no session identity threaded through by the host.
+The exposure here is not an extra grant from the harness; it is that ANY
+installed plugin, not merely the one the operator meant to authorize for a
+given action, can trigger another's code, with the operator having approved
+only "install this plugin," never "let this plugin be called by that one."
+`CapabilityCallHandle::caller_plugin_id` is carried through for tracing and
+audit only — it is never consulted to decide whether a call is allowed.
+
+**No first-party built-in registers a capability by default today.** The
+one shipped consumer is generic, not a specific grant: `conway-plugin-
+subprocess` forwards `Plugin::capabilities()` for a configured subprocess
+plugin that declares `provides` (`docs/plugins/subprocess-plugins.md`'s
+"Providing a capability" section). This module registers no capability of
+its own — it is the channel, exactly as its own module doc states.
+
+## Plugin-registered hooks: a downloaded plugin's deny rule, at the operator's own tier, with structural provenance
+
+See [`hooks.md` point 13](hooks.md#13-declarative-script-fired-hooks--the-hooks-configuration-block)
+for the full mechanical contract; this section is its trust posture for the
+`Plugin::hooks()` registration surface specifically (board item
+`01M129QW0GV90QTQS6B3BY3DAR`).
+
+Before this method existed, the only rules dispatched against a real tool
+call or a submitted prompt came from `[hooks].rules[]` — something the
+operator typed, or approved by trusting a project's `permissions.json`.
+`Plugin::hooks() -> Vec<PluginHookRule>` changes that: a plugin, downloaded
+and installed like any other, can now register its OWN `pre_tool_use` or
+`prompt_submitted` rule directly, through the same `with_plugin` surface its
+tools already use.
+
+**It reaches the identical tier an operator-authored deny reaches — not a
+softer one.** `ConwayBuilder::build` folds a plugin's returned
+`PluginHookRule`s into the SAME `PreToolUseHookSpec` list a config-declared
+`[hooks].rules[]` entry populates. For `pre_tool_use`, that means
+`PermissionBroker::decide`'s hook-check step, checked BEFORE the mode gate,
+the cache, pattern-allow grants, and the `AutoAllow` shortcut. **A plugin
+you installed can therefore deny a tool call or refuse a prompt you typed,
+under every permission mode including `AutoAllow` — the one mode with no
+human in the loop to catch what it denied.** A hook can only narrow, never
+widen: `HookPermissionVerdict` has no `allow` variant at all, by
+construction, so nothing here lets a plugin grant a call the gate would
+otherwise refuse.
+
+**Provenance is structural — an active rule an operator cannot attribute or
+revoke on its own is a trap, not a policy — not merely a comment an
+operator may scroll past.** Every rule `Plugin::hooks()` returns is folded in carrying
+`HookOrigin::Plugin(plugin_id)` — never `HookOrigin::Operator`, which
+`ConwayBuilder::build` alone may set — so `Conway::
+active_deny_capable_hook_rules`'s review list reports it as `"plugin
+'<id>'"` rather than the operator-authored `"settings.json (merged
+config)"` label. An operator inspecting active rules can tell which plugin
+contributed a given deny, and — because it is a distinct, labeled entry —
+revoke it independently of every other rule, rather than discovering only
+that "some hook denied this" with no way to attribute or remove it on its
+own. Before `HookOrigin` existed, every dispatched hook rule really did come
+from `[hooks].rules[]`, so this field is what keeps that no-longer-true
+claim from becoming a silent trap.
+
 ## Backends and routers: the same install pass, and one hands over more
 
 Everything above states the plugin case by name. It applies unmodified to
@@ -638,6 +744,27 @@ adapter"](../providers.md#writing-your-own-adapter) is the authoring
 surface — the crate boundary, publishing a kind id, a complete worked
 example, and the obligations conway cannot check because no test in this
 tree can verify a third party's own code.
+
+## `conway.statusline`: an unattended command, on the identical footing as a hook
+
+[`docs/plugins/statusline.md`](statusline.md) is `conway.statusline`'s own
+page (`StatusLinePlugin`, `crates/conway-plugin-statusline`) and states its
+trust posture directly — read it, not a summary of it. This entry exists
+only so this page names the surface too, in both directions, the way every
+other extension point above does.
+
+Naming a command in `[tui.status_line_command].command` runs it with the
+operator's own process privileges — no sandboxing, no digest check, no
+confirmation prompt, the identical footing `[hooks].rules[].command` and
+`[plugins].subprocess[].command` already have on this page. What is
+different about this one, worth stating here rather than left for the
+reader to notice on their own: it is the first surface on this page that
+runs **repeatedly and unattended, on a fixed schedule**, not once per event
+or once per call — up to 60 process spawns a minute, for the life of the
+process, with no per-run confirmation of any kind. An operator who would
+not paste an unfamiliar command into `[hooks]` should not paste one into
+`[tui.status_line_command].command` either, and should additionally weigh
+that this one keeps running whether or not anything is watching it.
 
 ## What conway DOES ship
 

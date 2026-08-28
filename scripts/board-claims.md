@@ -213,3 +213,24 @@ claim: no inference-evaluated hook modality exists in the tree -- no subagent_mo
 paths: crates/conway/src/config/schema.rs crates/conway-core/src/hook.rs
 absent: (subagent_mode|hook\.fork)
 -->
+
+<!-- claim-check
+why: P-11's extension-point clause requires a new extension surface's trust-page entry to name the privilege it runs with; the plugin-to-plugin capability channel (conway_core::ports::capability, board 01M0WWNHQQYN1EVTH8WPZ33EBF) shipped and was fully tested with zero mentions on docs/plugins/trust-and-security.md, discovered by finding 01M12WKMKJVE26EA6SYGB0PNZQ. Pinned to CapabilityProvider -- the trait a registered provider implements -- rather than the bare word "capability", which this same page already used, in an unrelated sense, for required_host_caps/HostCapability before this item; a predicate on "capability" alone would have passed vacuously.
+claim: the trust page documents the plugin-to-plugin capability channel by name, naming CapabilityProvider specifically, not merely the pre-existing unrelated discussion of HostCapability/required_host_caps
+paths: docs/plugins/trust-and-security.md
+present: CapabilityProvider
+-->
+
+<!-- claim-check
+why: P-11's extension-point clause, same finding (01M12WKMKJVE26EA6SYGB0PNZQ). Plugin::hooks() (board 01M129QW0GV90QTQS6B3BY3DAR) lets a downloaded plugin register a deny-capable pre_tool_use/prompt_submitted rule at the identical tier an operator-authored rule sits at; the trust page already discusses `[hooks].rules[].command` extensively, so a predicate on the word "hook" would pass whether or not this specific registration surface was ever mentioned -- exactly the vacuous-guard failure mode P-11's amendment names. Pinned to HookOrigin instead: the provenance type built alongside Plugin::hooks() specifically so a plugin-registered rule is distinguishable from an operator-authored one on the review surface (P-12), and a name this page never had reason to use before this surface existed.
+claim: the trust page documents Plugin::hooks()'s provenance mechanism (HookOrigin::Plugin) by name, not merely the pre-existing generic discussion of `[hooks].rules[].command`
+paths: docs/plugins/trust-and-security.md
+present: HookOrigin
+-->
+
+<!-- claim-check
+why: P-11's extension-point clause, same finding (01M12WKMKJVE26EA6SYGB0PNZQ). conway.statusline (board 01M0X500861X9035QJEA82F94K) runs an operator-configured command unattended, on a timer, with no sandboxing, digest check, or confirmation prompt; its own page said so honestly but neither linked to nor was linked from the trust page. Pinned to StatusLinePlugin -- the plugin's own Rust type (crates/conway-plugin-statusline) -- rather than the page's filename "statusline.md" or a config key, per this item's own instruction not to key on a filename: a filename predicate cannot distinguish "this doc happens to exist" from "the trust page names this surface".
+claim: the trust page names conway.statusline by its own type, StatusLinePlugin, and links to its dedicated page rather than leaving the cross-reference one-directional
+paths: docs/plugins/trust-and-security.md
+present: StatusLinePlugin
+-->
