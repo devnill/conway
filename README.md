@@ -172,7 +172,7 @@ session rewind, step-guarding, skills, memory, and MCP support (plus the
 out-of-process subprocess plugin host, which the list above does not name)
 are the occupants today; compaction remains unbuilt.
 
-**The tier's shape is settled and demonstrated, with sixteen members shipping
+**The tier's shape is settled and demonstrated, with seventeen members shipping
 today:** `crates/conway-plugin-skeleton`, a plugin that registers a single
 `skeleton_ping` tool and does nothing else — it exists to prove the `Plugin`/
 `Tool` mechanism below, not to be useful on its own — `crates/conway-plugin-routing`,
@@ -189,7 +189,7 @@ command ever holding a live handle onto any session); and
 `crates/conway-plugin-stepguard`, repeated-tool-call detection, which the
 agent loop used to carry unconditionally — `PHILOSOPHY.md` §6 leaves loop
 intervention to the operator "including writing none", which is only a real
-option once declining it is possible. Four more members ship alongside
+option once declining it is possible. Five more members ship alongside
 those five: `crates/conway-plugin-skills` (`conway.skills`), progressive
 skill disclosure — a `ContextHook` narrows full-body skill segments to a
 one-line index, with a companion `read_skill` tool for the full body on
@@ -198,11 +198,16 @@ demand; `crates/conway-plugin-memory` (`conway.memory`), a mutable
 context by a `ContextHook`; `crates/conway-plugin-subprocess`, the
 out-of-process plugin host — an external program named in
 `[plugins].subprocess[]` is spawned and speaks conway's own wire protocol,
-gaining a tool the binary was never compiled with; and
+gaining a tool the binary was never compiled with;
 `crates/conway-plugin-mcp`, an MCP-over-stdio *client* — an external
 program named in `[plugins].mcp[]` is spawned as an MCP server, and every
 tool it declares over `tools/list` attaches the same way, without a
-bundle id of its own to name. Seven more members ship alongside those nine:
+bundle id of its own to name; and `crates/conway-plugin-statusline`
+(`conway.statusline`), which runs an operator-configured command on a
+refresh cadence floored at one spawn per second and pushes its output as a
+`PluginStatusContribution` — the migration home for a Claude Code
+`statusLine.command`, resolved by its own choke point rather than through
+`[plugins].install`. Seven more members ship alongside those ten:
 `crates/conway-plugin-path` (`conway.path`), the `compose_context_path` tool
 a model calls to compose what a session sends as context on its next turn;
 `crates/conway-plugin-discover` (`conway.discover`), the `search_sessions`

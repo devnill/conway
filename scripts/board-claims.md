@@ -200,9 +200,9 @@ present: p\.observe_sink\(\)
 -->
 
 <!-- claim-check
-why: board item 01M0XVAMA0N0TH8CX324EC9593 -- this enumeration went stale by hand twice (nine of twelve, then twelve of sixteen), and each fix corrected the prose without adding a check, so the next crate landed unmentioned again. A `glob` predicate re-derives the crate set from the filesystem on every run instead of trusting the last person who counted, so it is the one shape of this check that does not need editing when crate seventeen lands
-claim: every crates/conway-plugin-* directory is named somewhere in ARCHITECTURE.md
-paths: ARCHITECTURE.md
+why: board item 01M0XVAMA0N0TH8CX324EC9593 -- this enumeration went stale by hand twice (nine of twelve, then twelve of sixteen), and each fix corrected the prose without adding a check, so the next crate landed unmentioned again. A `glob` predicate re-derives the crate set from the filesystem on every run instead of trusting the last person who counted, so it is the one shape of this check that does not need editing when crate seventeen lands. Widened to all three hub files after board item 01M12X66TSV7VSNJZNM7MWFSA8 found the same hand enumeration had rotted in README.md (sixteen of seventeen, missing conway-plugin-statusline) and docs/plugins/README.md while this claim watched ARCHITECTURE.md alone -- a `paths:` list is itself a hand-remembered enumeration of where the fact lives, so the fix widens it and the checker's own partial-enumeration audit (see check-design-claims.py's module doc) now watches for a fourth copy nobody declared
+claim: every crates/conway-plugin-* directory is named somewhere in ARCHITECTURE.md, README.md, or docs/plugins/README.md
+paths: ARCHITECTURE.md README.md docs/plugins/README.md
 glob: crates/conway-plugin-*
 -->
 
