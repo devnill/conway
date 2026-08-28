@@ -145,36 +145,43 @@ asked — without matching Claude Code's names or its semantics.
 
 ## Status: what is built, what is not
 
-**The data model and cycle logic are built and unit-tested**:
-`Plugin::permission_modes()` (`conway-core`), and the cycle-order/
+**Everything described on this page is built, unit-tested, and wired
+end to end** — there is no remaining gap between the data model and the
+keystroke. `Plugin::permission_modes()` (`conway-core`), the cycle-order/
 collision/uninstall-reconciliation logic
-(`conway_runtime::permission_mode::ModeCycle`), plus the broker-side
-bookkeeping (`PermissionBroker::active_declared_mode`/
-`select_mode_cycle_entry`) that keeps a selected declared mode's display
-identity separate from — and never able to influence — the one enforcement
-field `PermissionBroker::decide` actually reads.
-
-**Not yet built: the wiring that gathers a real plugin's declared modes at
-startup and drives Shift+Tab through them.** That needs a
-`crates/conway/src/*` facade change (re-exporting the cycle type, and
-collecting `Plugin::permission_modes()` across every installed plugin at
-`ConwayBuilder::build`) and a TUI-side change to resolve
-`Action::CyclePermissionMode` against the real cycle instead of the fixed
-three-way switch it resolves against today.
+(`conway_runtime::permission_mode::ModeCycle`), the broker-side bookkeeping
+(`PermissionBroker::active_declared_mode`/`select_mode_cycle_entry`) that
+keeps a selected declared mode's display identity separate from — and
+never able to influence — the one enforcement field `PermissionBroker::
+decide` actually reads, **and the startup wiring that gathers a real
+plugin's declared modes and drives Shift+Tab through them**: `ConwayBuilder
+::build` collects `Plugin::permission_modes()` across every installed
+plugin at the last point they are reachable before `PluginRegistry`
+consumes them (`crates/conway/src/builder.rs`), and
+`Action::CyclePermissionMode` in the TUI resolves against that real cycle
+— `Conway::cycle_permission_mode` — instead of a fixed three-way switch
+(`crates/conway-cli/src/tui/app/run.rs`). Built by commit `db23a65`,
+2026-08-25 ("Wire plugin-declared permission modes through to Shift+Tab
+and the status line"). **2026-08-27 correction: this page previously said
+the startup wiring was not yet built and that every build cycled exactly
+the three core modes; both sentences were already false when read, having
+gone stale the moment `db23a65` landed.**
 
 **`conway.permissions`, the first-party plugin this whole capability was
 designed for, is cancelled, 2026-08-27** (decision record
 `01M128AP39WXE01BBZV4RENC4M`; see `DESIGN-permission-modes.md` §8): a local
 model was not reliable enough to gate tool calls, and the failure was shown
 not to be a model-size problem — it does not scale away with a bigger one.
-`Plugin::hooks()` itself ([`hooks.md`](hooks.md) point 13) is being built
-now, but for an unrelated, already-shipped consumer (claude-compat, board
-item `01M129QW0GV90QTQS6B3BY3DAR`) — not for a declared mode's own
-classifier hook, and not for the reason design §6c gave. This page's own
-mechanism — `Plugin::permission_modes()`, the cycle, the
+`Plugin::hooks()` itself ([`hooks.md`](hooks.md) point 13) is now built
+(commit `0a2fa76`, 2026-08-27), for an unrelated consumer (claude-compat,
+board item `01M129QW0GV90QTQS6B3BY3DAR`, done) — not for a declared mode's
+own classifier hook, and not for the reason design §6c gave. This page's
+own mechanism — `Plugin::permission_modes()`, the cycle, the
 collision/uninstall reconciliation — is unaffected by the cancellation and
-remains available to any other plugin that wants to declare a mode; it
-currently has **no first-party consumer lined up**, and every build still
-cycles exactly the three core modes. Whether the remaining startup-wiring
-work is still worth finishing without one is an open question this page
-does not decide.
+remains fully available to any other plugin that wants to declare a mode.
+It has no first-party plugin exercising it: with the designed-for consumer
+cancelled and no replacement planned, a build with only stock plugins
+installed cycles exactly the three core modes today — not because
+anything is unbuilt, but because nothing has yet declared a fourth. This
+is a statement about which plugins happen to be installed, not an open
+implementation gap, so it names no board item.

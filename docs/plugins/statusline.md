@@ -165,16 +165,36 @@ both?
 The concrete answer, found while building this plugin rather than assumed
 going in: `PluginStatusContribution` the *type* needed nothing new — it
 already carries a value, a success/failure verdict, and a legible failure
-reason, everything a status-line command produces. What is missing is
-entirely on the host side. `Conway::plugin_status_contributions()` is a
+reason, everything a status-line command produces. What was missing was
+entirely on the host side. `Conway::plugin_status_contributions()` was a
 **build-time snapshot, read exactly once**, at `ConwayBuilder::build` —
-before this plugin's own background loop has any reliable chance to have
-produced a value. A plugin that refreshes every five seconds is invisible
+before this plugin's own background loop had any reliable chance to have
+produced a value. A plugin that refreshed every five seconds was invisible
 to the TUI after that one read, for the life of the process. Proven, not
 merely argued, by this crate's own `tests/statusline_end_to_end.rs`: the
-identical plugin and command reach the real facade's snapshot when given a
-head start before `build()` runs, and produce nothing in that same snapshot
-with no head start — while the plugin's own live state shows the value
-arriving moments later. The gap is a missing live poll on the host side (or
-the pull half §7c already names as the alternative), not a type that needs
-another field.
+identical plugin and command reached the real facade's snapshot when given a
+head start before `build()` ran, and produced nothing in that same snapshot
+with no head start — while the plugin's own live state showed the value
+arriving moments later. The gap was a missing live poll on the host side —
+not a type that needed another field — and answers §7c's open question in
+the push direction: the pull half remains untouched by this finding.
+
+**2026-08-27 addendum (board item `01M0Y3A8MYKKE0GMYKZE1K0QTD`): the host
+now has that poll loop, and the paragraph above describes a gap that is
+closed, not a live one.** `Conway::poll_plugin_status_contributions`
+re-invokes `Plugin::status_contributions()` against a live plugin handle
+retained on `Conway` itself (cloned before `PluginRegistry::from_plugins`
+consumes the original set, deliberately not threaded through
+`RuntimeDeps`/`LoopDeps`/`ToolBatchCtx` — that channel is reached
+synchronously from paths this poll has no business blocking), and
+`conway-cli`'s `App::run` polls it on a bounded per-session tick
+(`PLUGIN_STATUS_POLL_TICK`, floored at 1000ms — matching this plugin's own
+`refresh_interval_ms` floor, see "Cadence" above), overwriting
+`AppState::plugin_status_contributions` wholesale each time. A
+contribution that only becomes available after `build()` now reaches the
+rendered status line on the next tick, and one that disappears (a plugin
+stops reporting) drops out on the very next poll, with no separate
+TTL/expiry step needed. This closes the "read exactly once" gap this
+section documents above; the finding itself is left as originally written
+because it is what made the fix specifiable, not because it is still
+true.
