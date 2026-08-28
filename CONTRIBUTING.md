@@ -252,10 +252,31 @@ The tree cites board items by id in roughly 920 places. Two rules:
   `01K…`", "the prober was retired (`01K…`)" — these say why the code is the
   shape it is, and closing the item is what makes them true. Do not "fix" these.
 
-`scripts/check-board-citations.py` enforces the distinction. It resolves every
-cited id against **both** id namespaces — the work board and the record store —
-because they share an id shape and a resolver that checked only one would report
-half the tree as dangling.
+**A third rule, for the specific sentence shape that has bitten this tree
+twice in one review window:** when you write a *gap disclosure* — prose
+saying a mechanism is "not yet built", "not yet wired", "has no consumer",
+"deliberately unbuilt", or that it "remains a separate, larger piece" — name
+the exact open board item that closes that gap, right next to the
+disclosure. `docs/plugins/permission-modes.md` said the Shift+Tab mode-cycle
+wiring was "not yet built" with no id anywhere nearby; `docs/plugins/
+statusline.md` said the same of a live status poll. Both were built the same
+day, under items nobody had named in the sentence, so nothing was left to
+resolve and nothing flagged either sentence going false. The same page that
+got this wrong also got it right two paragraphs later, citing an open item
+correctly — the habit already exists, it just needs to reach the sentence
+that needs it most.
+
+Bind the citation *tightly*: "not yet built (`01K…`)" or "`01K…` is not yet
+built", not "not yet built — see the tracker, e.g. `01K…`" three clauses
+later. A gap phrase and an id that merely share a paragraph is invisible to
+the check below by design, the same way an unrelated `01K…` elsewhere in a
+paragraph about "tracked under" work is invisible to it — loosening that
+binding is what turns a useful check into noise that gets switched off.
+
+`scripts/check-board-citations.py` enforces all three rules above. It resolves
+every cited id against **both** id namespaces — the work board and the record
+store — because they share an id shape and a resolver that checked only one
+would report half the tree as dangling.
 
 **It is not a CI job, and that is a limitation rather than a design choice.**
 Both stores are local-only tooling state excluded by `.gitignore`, so CI and a
