@@ -29,6 +29,22 @@ flagged every done-item citation would report hundreds of false positives and
 be switched off within a week, so the pending-sense cue must sit next to the
 citation and govern it, not merely appear in the same paragraph.
 
+A GAP-DISCLOSURE VARIANT of the same defect: prose that says a mechanism is
+*unbuilt* rather than *scheduled* -- "not yet built", "not yet wired", "has no
+consumer", "deliberately unbuilt", "remains a separate, larger piece" -- is the
+same dangling-promise shape as "tracked under" once it names an id, and it is
+the phrasing this tree's authors actually reach for (permission-modes.md and
+statusline.md each disclosed an unbuilt mechanism this way with no id in
+reach at all, and both were built the same review window under a
+differently-named item -- nothing existed to notice the sentence go stale).
+`PENDING_BEFORE`/`PENDING_AFTER` recognise this family too, bound exactly as
+tightly as every other pending-sense phrase: the gap phrase and the id must
+sit within the same short, punctuation-only span, not merely the same
+sentence or paragraph. "Not yet built (01K...)" binds; "not yet built. See
+the tracker for details, e.g. 01K..." does not, on purpose -- the loose form
+is exactly the ordinary-prose shape ("not yet" with no citation in reach)
+this check must not fire on.
+
 TWO ID NAMESPACES. Work items and record entries (decisions among them) are
 separate stores sharing one id shape. docs/plugins/hooks.md cites two record
 entries as *decisions*; both resolve in the record store and return nothing
@@ -63,9 +79,15 @@ the defect one level up:
     half runs there. Run on a checkout with both stores present before
     trusting a citation's pending/done status.
   * **The pending-sense phrase list (`PENDING_BEFORE`/`PENDING_AFTER`) is a
-    fixed vocabulary, not language understanding.** A citation phrased a way
-    neither regex anticipates is invisible to this check even naming a
-    `done` item in a clearly pending sense.
+    fixed vocabulary, not language understanding.** It covers two phrase
+    families -- "will happen" (tracked under, deferred to, blocked on, ...)
+    and "hasn't happened" (not yet built, not yet wired, has no consumer,
+    deliberately unbuilt, remains a separate larger piece) -- each bound
+    tightly to a nearby id. A citation phrased a way neither regex
+    anticipates is invisible to this check even naming a `done` item in a
+    clearly pending sense, and a gap disclosure with no id within reach at
+    all (the shape that motivated the second family) is invisible by
+    construction: there is nothing to resolve.
   * **`crates/*/src/` is not rescanned for steering shorthand.** That surface
     has its own regression guard for invariant
     ("S0c") -- deliberately kept separate, not widened into this one.
@@ -117,13 +139,23 @@ PENDING_BEFORE = re.compile(
     r"\b(?:tracked\s+(?:under|by|in)|deferred\s+(?:to|into)|blocked\s+on"
     r"|see\s+(?:the\s+)?open\s+item|pending\s+(?:in|under)|filed\s+as\s+the\s+open"
     r"|awaiting|owned\s+by\s+the\s+open"
-    r"|will\s+be\s+(?:done|built|wired|closed|added)\s+(?:under|in|by))"
+    r"|will\s+be\s+(?:done|built|wired|closed|added)\s+(?:under|in|by)"
+    # Gap-disclosure family: the mechanism is stated UNBUILT rather than
+    # scheduled. Same tight \W{0,24} binding as every phrase above -- this
+    # matches "not yet built (01K...)" and not "not yet built. Tracked
+    # somewhere, e.g. 01K...", which is the ordinary-prose shape this must
+    # tolerate. See CONTRIBUTING.md's "Citing a board item" section.
+    r"|not\s+yet\s+built|not\s+yet\s+wired|has\s+no\s+consumer"
+    r"|deliberately\s+unbuilt|remains\s+a\s+separate,?\s+larger\s+piece)"
     r"\W{0,24}" + _ID,
     re.IGNORECASE)
 PENDING_AFTER = re.compile(
     _ID + r'[`")\]]*\s*(?:\([^)]{0,60}\)\s*)?'
     r"(?:tracks\b|is\s+tracking\b|remains?\s+open\b|is\s+still\s+open\b"
-    r"|will\s+(?:wire|build|close|land|add|resolve|fix|track)\b)",
+    r"|will\s+(?:wire|build|close|land|add|resolve|fix|track)\b"
+    # Gap-disclosure family, id-first order: "01K... is not yet built".
+    r"|is\s+not\s+yet\s+built\b|is\s+not\s+yet\s+wired\b|has\s+no\s+consumer\b"
+    r"|is\s+deliberately\s+unbuilt\b|remains\s+a\s+separate,?\s+larger\s+piece\b)",
     re.IGNORECASE)
 
 # ULIDs that appear in a comment or in prose but are NOT board citations. Each
