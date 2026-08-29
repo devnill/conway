@@ -330,18 +330,31 @@ impl BackendFactory for AnthropicBackendFactory {
     /// Builds an [`crate::anthropic::AnthropicBackend`] from `ctx` -- exactly
     /// what `crates/conway/src/builder.rs`'s own (now-removed)
     /// `build_anthropic` assembled directly, plus: an empty `ctx.base_url`
-    /// falls back to Anthropic's own hosted endpoint, and `ctx.api_key`
-    /// (empty when `None`) is validated by [`AnthropicConfig::validate`]
-    /// before construction, so a missing key is a named
-    /// [`ConwayError::Config`], never a panic or a silent empty credential
-    /// reaching the wire. Since S4b: `ctx.dialect`, when set, resolves a
-    /// named [`ProfileBundle`] (`Self::resolve_profile`); its fields are
-    /// merged with `ctx.extra` by the ONE precedence rule
+    /// falls back to Anthropic's own hosted endpoint. Since S4b: `ctx.dialect`,
+    /// when set, resolves a named [`ProfileBundle`] (`Self::resolve_profile`);
+    /// its fields are merged with `ctx.extra` by the ONE precedence rule
     /// (`profile_store::apply_precedence`: explicit `extra` wins key-for-key)
     /// and the merged result is resolved through `Self::resolve_fields`
     /// (crate-private) BEFORE any of the above -- an unrecognized key, or an
     /// unknown profile name, fails the build before `base_url`/`api_key` are
     /// even inspected.
+    ///
+    /// **`ctx.api_key` (empty when `None`) is no longer validated here**
+    /// (board item `01M163T1KGX3HTCC2YMDPT655J`): this call used to run
+    /// [`AnthropicConfig::validate`] and hard-fail the whole `ConwayBuilder::
+    /// build()` over `ConfigError::MissingApiKey`, a SECOND, independent gate
+    /// that reproduced the identical "declining first-run setup still exits"
+    /// symptom the empty-backend-map check produced, for a different reason
+    /// (`crates/conway/src/builder.rs`'s own `resolve_api_key`, whose unset-
+    /// `api_key_env` hard error was the first). A missing credential now
+    /// registers the backend anyway, symmetric with `OpenAiCompatBackendFactory`
+    /// below (which never validated `ctx.api_key` at all), and fails loud
+    /// the first time a turn actually reaches it: Anthropic's own 401/403
+    /// classifies as `BackendError::Auth` (`crate::error::classify`), a
+    /// named, typed error -- never a panic, never a silent empty response.
+    /// [`AnthropicConfig::validate`] itself is UNCHANGED and still enforced
+    /// by that type's own `Deserialize`/`TryFrom` impl (`crate::config`'s own
+    /// tests) -- this call site is the only place that stopped invoking it.
     fn build(&self, ctx: BackendBuildContext) -> Result<Arc<dyn Backend>, ConwayError> {
         use crate::anthropic::AnthropicBackend;
 
@@ -372,9 +385,6 @@ impl BackendFactory for AnthropicBackendFactory {
             timeout: None,
             models: ctx.models,
         };
-        cfg.validate().map_err(|e| ConwayError::Config {
-            detail: format!("backend '{}': {e}", ctx.id),
-        })?;
 
         let backend = AnthropicBackend::with_extra_headers(cfg, extra.headers).map_err(|e| {
             ConwayError::Config {
@@ -632,19 +642,25 @@ mod tests {
         assert_eq!(backend.id(), BackendId::new("anthropic"));
     }
 
-    /// `Arc<dyn Backend>` (the `Ok` type) is not `Debug`, so `expect_err`
-    /// (which requires `T: Debug`) cannot be used on this `Result` -- match
-    /// directly instead, the same workaround `crates/conway/tests/
-    /// builder.rs`'s own `expect_build_err` documents for the identical
-    /// reason on `Conway`.
+    /// Board item `01M163T1KGX3HTCC2YMDPT655J` flipped this from "a missing
+    /// `api_key` is a hard `ConwayError::Config`" to this: `build()` no
+    /// longer inspects credential presence at all, symmetric with
+    /// `openai_compat_build_requires_a_dialect`'s sibling below (which has
+    /// never validated `api_key`) -- the missing key is now the same kind
+    /// of "registered but unusable" state a dead local endpoint already
+    /// was before this item, discovered at the wire on first use
+    /// (`crate::error::classify` maps a 401/403 to `BackendError::Auth`,
+    /// asserted end-to-end, over a real loopback mock server standing in
+    /// for Anthropic's API, by `conway`'s own `crates/conway/tests/
+    /// builder.rs::a_missing_credential_registers_the_backend_and_fails_
+    /// loud_at_the_wire`) rather than at `build()` time.
     #[test]
-    fn anthropic_build_rejects_a_missing_api_key() {
+    fn anthropic_build_no_longer_rejects_a_missing_api_key() {
         let c = ctx("anthropic", "", None);
-        let err = match AnthropicBackendFactory.build(c) {
-            Err(err) => err,
-            Ok(_) => panic!("an empty api_key must be rejected"),
-        };
-        assert!(matches!(err, ConwayError::Config { .. }));
+        let backend = AnthropicBackendFactory
+            .build(c)
+            .expect("a missing api_key must no longer be rejected at build() time");
+        assert_eq!(backend.id(), BackendId::new("anthropic"));
     }
 
     #[test]

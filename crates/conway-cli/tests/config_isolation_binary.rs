@@ -22,23 +22,44 @@
 //! **No real `$HOME`, no live network, ever.** "Simulated home" below is an
 //! ordinary [`tempfile::TempDir`] this process created and owns, standing
 //! in for the operator's real home directory -- never the real one, never
-//! read or written to. `[backends]` is never populated in either fixture
-//! config (the empty-object baked-in default, `default_document`'s own
-//! `"backends": {}`, plus an empty `roles.default.chain`, both already
-//! satisfy `merge::validate`'s checks 1-2 with nothing further to declare),
-//! so `sessions list` -- the read-only subcommand this test drives -- never
-//! dials anything: no backend id is ever named in a role chain for it to
-//! resolve, let alone connect to.
+//! read or written to. Every fixture in this file declares exactly one
+//! `[backends]` entry, pointed at a dead/guarded local port, per
+//! [`backend_json`]'s own doc for why that entry stays even though board
+//! item `01M163T1KGX3HTCC2YMDPT655J` removed the `ConwayBuilder::build`
+//! gate this file's own history once cited as its reason. `roles.default
+//! .chain` stays empty regardless, so `sessions list` -- the read-only
+//! subcommand every test here drives -- never dials anything: no backend
+//! id is ever named in a role chain for it to resolve, let alone connect
+//! to.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Declares exactly one `[backends]` entry, pointed at `port` on
-/// `127.0.0.1` -- see [`IsolatedConfigDir::write`]'s own doc for why one is
-/// required at all and why it is never actually dialed. Shared by both
-/// fixture writers below so the two settings.json bodies differ ONLY in the
-/// field this test's assertions key off of (`session.root`), not in
-/// unrelated shape.
+/// `127.0.0.1`.
+///
+/// **Not required by `ConwayBuilder::build` any more** (board item
+/// `01M163T1KGX3HTCC2YMDPT655J` removed that hard-error, and this file
+/// used to cite it as the only reason a backend was declared here at
+/// all) -- **but still required**, for a completely different, previously
+/// undocumented reason this item's own investigation surfaced: an
+/// EMPTY `[backends]` table makes `conway::backend_usability::
+/// classify_fleet` report `FleetUsability::NoBackendsConfigured`, which
+/// `should_offer_guided_setup()` answers `true` for, which makes `main.rs`'s
+/// first-run trigger (board item `01M11XVEHNMYY942JE63F7MAFH`) intercept
+/// EVERY subcommand -- including this file's own read-only `sessions
+/// list` -- before `ConwayBuilder::build` ever runs, and hard-refuse with
+/// `first_run::non_interactive_guidance` (there is no pty here to answer
+/// an interactive prompt). Declaring one backend entry with no credential
+/// and `local` left `false` (the default) classifies as
+/// `Usability::Undetermined(NoCredentialDeclared)` instead, which rolls
+/// up to `FleetUsability::Undetermined` -- NOT one of the two verdicts
+/// `should_offer_guided_setup()` answers `true` for -- so the trigger
+/// never fires and this file's actual subject (config-directory
+/// precedence) is what runs. Confirmed by observation: switching every
+/// fixture in this file to a truly empty `{}` document made both of the
+/// first two tests below fail with exactly that non-interactive-guidance
+/// message instead of exercising `sessions list` at all.
 fn backend_json(port: u16) -> String {
     format!(
         r#"{{
@@ -63,21 +84,12 @@ struct IsolatedConfigDir {
 }
 
 impl IsolatedConfigDir {
-    /// Writes a minimal `settings.json` at this directory's root:
-    /// `default_document`'s own baked-in defaults (`roles.default.chain:
-    /// []`, `default_role: "default"`) already pass every hard-error
-    /// validation check with nothing added, EXCEPT `ConwayBuilder::build`'s
-    /// own separate "at least one backend configured" check (unrelated to
-    /// `[roles]`/routing -- it fires on an empty `[backends]` table
-    /// regardless of whether any role's chain would ever reference one), so
-    /// this fixture declares exactly one backend entry, pointed at a dead
-    /// local port (`http://127.0.0.1:9`) per this file's own safety
-    /// constraint: nothing here is ever dialed anyway, since `roles.default
-    /// .chain` stays empty and `sessions list` never dispatches a turn.
-    fn write(port: u16) -> Self {
+    /// Writes `body` (always [`backend_json`], see that function's own doc
+    /// for why every fixture in this file still declares one) verbatim as
+    /// `settings.json` at this directory's root.
+    fn write(body: &str) -> Self {
         let dir = tempfile::tempdir().expect("tempdir for isolated CONWAY_CONFIG_DIR");
-        std::fs::write(dir.path().join("settings.json"), backend_json(port))
-            .expect("write settings.json");
+        std::fs::write(dir.path().join("settings.json"), body).expect("write settings.json");
         Self { dir }
     }
 
@@ -99,13 +111,14 @@ struct SimulatedHome {
 }
 
 impl SimulatedHome {
-    fn write(port: u16) -> Self {
+    /// `body` is always [`backend_json`] -- see [`IsolatedConfigDir::
+    /// write`]'s identical parameter.
+    fn write(body: &str) -> Self {
         let dir = tempfile::tempdir().expect("tempdir for simulated $HOME");
         let conf_dir = dir.path().join(".conway");
         std::fs::create_dir_all(&conf_dir).expect("create simulated $HOME/.conway");
         let poisoned_root = dir.path().join("POISONED-SESSIONS");
-        let mut body: serde_json::Value =
-            serde_json::from_str(&backend_json(port)).expect("parse backend_json");
+        let mut body: serde_json::Value = serde_json::from_str(body).expect("parse fixture body");
         body["session"] = serde_json::json!({ "root": poisoned_root.to_string_lossy() });
         std::fs::write(
             conf_dir.join("settings.json"),
@@ -177,8 +190,8 @@ fn run_sessions_list(isolated: &IsolatedConfigDir, home: &SimulatedHome) -> std:
 /// instead, and the poisoned directory is never created.
 #[test]
 fn cli_with_conway_config_dir_set_never_reads_a_settings_json_discovered_under_a_simulated_home() {
-    let isolated = IsolatedConfigDir::write(DEAD_PORT);
-    let home = SimulatedHome::write(DEAD_PORT);
+    let isolated = IsolatedConfigDir::write(&backend_json(DEAD_PORT));
+    let home = SimulatedHome::write(&backend_json(DEAD_PORT));
 
     let out = run_sessions_list(&isolated, &home);
     assert!(
@@ -207,8 +220,8 @@ fn cli_with_conway_config_dir_set_never_reads_a_settings_json_discovered_under_a
 /// assertion above pass for the wrong reason).
 #[test]
 fn cli_with_conway_config_dir_set_resolves_the_session_root_inside_the_isolated_dir() {
-    let isolated = IsolatedConfigDir::write(DEAD_PORT);
-    let home = SimulatedHome::write(DEAD_PORT);
+    let isolated = IsolatedConfigDir::write(&backend_json(DEAD_PORT));
+    let home = SimulatedHome::write(&backend_json(DEAD_PORT));
 
     let out = run_sessions_list(&isolated, &home);
     assert!(
@@ -265,8 +278,8 @@ fn cli_run_never_attempts_a_connection_to_the_fixtures_own_backend_address() {
         .expect("guard listener local addr")
         .port();
 
-    let isolated = IsolatedConfigDir::write(port);
-    let home = SimulatedHome::write(port);
+    let isolated = IsolatedConfigDir::write(&backend_json(port));
+    let home = SimulatedHome::write(&backend_json(port));
 
     let out = run_sessions_list(&isolated, &home);
     assert!(

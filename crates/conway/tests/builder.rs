@@ -19,7 +19,7 @@ use conway::{Conway, ConwayBuilder, FacadeError, SessionSpec};
 use conway::test_support::test_builder_without_router;
 #[cfg(feature = "builtin-tools")]
 use conway::PluginSelection;
-use conway_core::agent::PermissionDecision;
+use conway_core::agent::{PermissionDecision, ResultStatus};
 use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
@@ -302,23 +302,60 @@ async fn new_session_with_default_spec_resolves_role_and_cwd_from_config() {
     assert_eq!(meta.cwd, std::path::PathBuf::from("."));
 }
 
-#[test]
-fn build_fails_with_no_backends_configured() {
+/// Board item `01M163T1KGX3HTCC2YMDPT655J` flipped this from "`build()`
+/// refuses an empty backend map" (this test's own predecessor, which
+/// pinned exactly that) to this: zero backends -- no `[backends.<id>]`
+/// entry, no `with_backend` injection -- builds a working `Conway` whose
+/// first turn fails with the SAME typed `RoutingError::NoCandidate` an
+/// empty role chain already produced before this item
+/// (`crates/conway/tests/discover_getting_started_example_smoke.rs`'s own
+/// `unmodified_default_role_still_fails_to_route_with_a_named_no_candidate_
+/// error`, which no longer needs a dummy backend to reach it either -- see
+/// that file). No router is injected here on purpose: the real
+/// `MinimalRouter` `build()` compiles from `cfg.roles` (this file's
+/// `base_config()`'s own empty `default` chain) is what actually produces
+/// `NoCandidate`, not a test double standing in for it -- proving the
+/// gate removal reaches all the way to a real turn, not merely that
+/// `build()` no longer returns `Err`.
+#[tokio::test]
+async fn build_succeeds_with_no_backends_configured_and_a_turn_names_no_candidate() {
     let cfg = base_config();
     let store = Arc::new(FakeStore::new());
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
 
-    let result = ConwayBuilder::from_parts(cfg)
+    let conway = ConwayBuilder::from_parts(cfg)
         .with_session_store(store)
         .with_permission_gate(gate)
-        .build();
-    let err = expect_build_err(result, "no backend injected and none configured must fail");
+        .build()
+        .expect("zero backends must no longer refuse the build");
 
-    match err {
-        FacadeError::Build { message } => {
-            assert!(message.contains("no backends"), "{message}");
+    let session = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+    let turn = session
+        .prompt("hello")
+        .await
+        .expect("prompt should succeed -- the turn fails later, inside the agent loop");
+    let result = turn
+        .result()
+        .await
+        .expect("result() itself must not error -- the turn ends Failed, not the stream");
+
+    match &result.status {
+        ResultStatus::Failed { error } => {
+            assert!(
+                error.contains("no candidate for role"),
+                "must name the role, not route silently: {error}"
+            );
+            assert!(
+                error.contains("(0 considered)"),
+                "zero backends means zero candidates to consider: {error}"
+            );
         }
-        other => panic!("expected Build error, got {other:?}"),
+        other => {
+            panic!("expected ResultStatus::Failed (a named no-candidate error), got {other:?}")
+        }
     }
 }
 
@@ -1436,12 +1473,26 @@ fn explain_routing_reports_the_configured_chain_for_the_role() {
 }
 
 /// The first thing a new Kimi user hits if they follow the docs but forget
-/// to export the key. `api_key_env` is resolved from the live process
-/// environment at `build()` time, so a missing variable must fail loudly
-/// and name the variable -- not panic, and (since `d27b5c0`) not misdirect
-/// the user to another vendor's console.
+/// to export the key. Board item `01M163T1KGX3HTCC2YMDPT655J` flipped this
+/// from "a hard `build()`-time error" (this test's own predecessor, which
+/// asserted exactly that and is the reason this scenario is pinned here at
+/// all) to this: `build()` now succeeds anyway, registering `kimi` with no
+/// credential, so "no thanks, I'll configure it later" is a real option
+/// instead of a bounce back to the shell. This was TWO independent gates
+/// refusing for the identical reason, not one -- `resolve_api_key`
+/// (`crates/conway/src/builder.rs`) and `AnthropicBackendFactory::build`'s
+/// own `cfg.validate()` call (`crates/conway-plugin-backends/src/
+/// factory.rs`, itself sitting on top of a THIRD, `AnthropicBackend::
+/// with_extra_headers`'s own `config.validate()` -- see that fn's own doc)
+/// -- both relaxed together, verified by this test alone going green (it
+/// still failed with only the first relaxed: `factory for kind 'anthropic'
+/// failed to build: ... missing API key`, observed directly while making
+/// this change). `a_missing_credential_registers_the_backend_and_fails_
+/// loud_at_the_wire` below is this test's turn-time sibling: registering
+/// the backend is only correct if a real turn against it still fails
+/// loud, naming the problem, rather than silently succeeding or panicking.
 #[test]
-fn unset_api_key_env_fails_naming_the_variable() {
+fn an_unset_api_key_env_no_longer_fails_the_build_and_registers_the_backend_anyway() {
     let mut cfg = base_config();
     cfg.backends.insert(
         "kimi".to_string(),
@@ -1460,18 +1511,88 @@ fn unset_api_key_env_fails_naming_the_variable() {
         .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
         .build();
 
-    let err = result
-        .err()
-        .expect("an unset api_key_env must be a hard error")
-        .to_string();
-    assert!(
-        err.contains("CONWAY_TEST_DEFINITELY_UNSET_KEY_VAR"),
-        "the error must name the missing variable: {err}"
+    if let Err(e) = result {
+        panic!("an unset api_key_env must no longer refuse the whole build: {e}");
+    }
+}
+
+/// Acceptance 2's own proof, and the sibling the test above names: a turn
+/// actually routed to the credential-less `kimi` backend must fail with a
+/// typed, legible error naming the problem -- never an empty response,
+/// never a panic (`conway_runtime::attempt::AttemptEngine::backend_for`
+/// would panic outright if this backend had been excluded from the built
+/// `backend_map` instead of registered into it with an empty key, which is
+/// why registering it -- not silently dropping it -- is the design this
+/// item chose). No real network involved: a loopback `wiremock` server
+/// stands in for Anthropic's own API and returns the exact 401 shape a real
+/// unauthorized request gets, which `conway_plugin_backends::error::
+/// classify` already maps to `BackendError::Auth` (tested there), and
+/// which `conway_runtime::attempt`'s own T-2 classification already treats
+/// as `Fatal` (tested there too) -- this test drives that EXISTING,
+/// already-tested taxonomy end to end through a real `ConwayBuilder::build`
+/// rather than inventing a new failure shape for "no usable backend".
+#[tokio::test]
+async fn a_missing_credential_registers_the_backend_and_fails_loud_at_the_wire() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/messages"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "type": "error",
+                "error": { "type": "authentication_error", "message": "invalid x-api-key" }
+            })),
+        )
+        .mount(&server)
+        .await;
+
+    let mut cfg = base_config();
+    cfg.roles.insert(
+        "default".to_string(),
+        RoleEntry {
+            chain: vec!["kimi/claude-sonnet-4-6".to_string()],
+            headroom_tokens: None,
+            ..Default::default()
+        },
     );
-    assert!(
-        !err.contains("console.anthropic.com"),
-        "must not misdirect a third-party-endpoint user to Anthropic's console: {err}"
+    cfg.backends.insert(
+        "kimi".to_string(),
+        BackendEntry {
+            kind: "anthropic".to_string(),
+            api_key_env: "CONWAY_TEST_DEFINITELY_UNSET_KEY_VAR".to_string(),
+            base_url: server.uri(),
+            ..BackendEntry::default()
+        },
     );
+
+    let conway = ConwayBuilder::from_parts(cfg)
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
+        .build()
+        .expect("build must succeed: a missing credential no longer refuses it");
+
+    let session = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+    let turn = session
+        .prompt("hello")
+        .await
+        .expect("prompt should succeed -- the turn fails later, inside the agent loop");
+    let result = turn
+        .result()
+        .await
+        .expect("result() itself must not error -- the turn ends Failed, not the stream");
+
+    match &result.status {
+        ResultStatus::Failed { error } => {
+            assert!(
+                error.contains("authentication failed"),
+                "must name the auth failure, not a generic or empty one: {error}"
+            );
+        }
+        other => panic!("expected ResultStatus::Failed (a named auth failure), got {other:?}"),
+    }
 }
 
 /// A `[backends.<id>].kind` no

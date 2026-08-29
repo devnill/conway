@@ -90,10 +90,15 @@
 //! id set (`[plugins].install`), it is simply never attached, and `conway`
 //! keeps working with whatever it does have (no extra tool, `MinimalRouter`
 //! instead of `DeclarativeRouter`). A `[backends.<id>]` entry with no
-//! matching `BackendFactory` has no such fallback -- `ConwayBuilder::build`
-//! hard-errors ("no backends configured") when the backend map ends up
-//! empty, and even a single unresolvable entry fails the whole build. So
-//! the id set `ConwayBuilder::install_selected` resolves against is not
+//! matching `BackendFactory` has no such fallback: `ConwayBuilder::build`
+//! no longer hard-errors merely because the backend map ends up empty
+//! (board item `01M163T1KGX3HTCC2YMDPT655J` removed that check), but an
+//! entry naming a `kind` no registered factory claims is still a hard,
+//! named error -- `resolve_backend_factory`'s own unknown/declined-kind
+//! diagnosis, unrelated to and unaffected by that removal -- and it still
+//! fails the whole build, even for a single unresolvable entry among
+//! several resolvable ones. So the id set `ConwayBuilder::install_selected`
+//! resolves against is not
 //! `[plugins].install` alone: it is `[plugins].install` UNIONED with
 //! `[plugins].default_backends` (`conway::config::schema::PluginsConfig`'s
 //! own doc -- default `["anthropic", "openai-compat"]`, owner decision

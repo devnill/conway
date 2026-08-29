@@ -84,9 +84,17 @@ editing `kind` and `base_url` in the one above: `openai-compat` also
 requires a `dialect` naming your server, and refuses to build without it
 (`backend 'x': kind 'openai-compat' requires 'dialect'`).)
 
-Miss this step and conway fails loud and fast: `no backends configured: add
-a [backends.<id>] entry to config`. Annoying, but instantly diagnosable —
-this is the **good failure**.
+Miss this step and conway no longer refuses to start over it at all: an
+interactive terminal gets the guided-setup flow instead (see
+[`getting-started.md`'s "Configure a provider"](getting-started.md#configure-a-provider)),
+and declining it leaves conway open rather than exiting — the first prompt
+you send just fails, loud and specific (`no candidate for role coder (0
+considered)` for a genuinely empty config), which is still instantly
+diagnosable, just one step later than before. Piped/non-interactive
+invocations (the shape most dogfooding sessions actually are) still get an
+immediate, non-blocking refusal naming the exact file and JSON to add —
+`conway can't reach a working model provider yet, and this isn't an
+interactive terminal...` — before anything runs.
 
 **The tools list is the trap, because it fails quiet.** conway's `fs`
 (read/write/edit/glob/grep/cd), `subagent`, and `report` built-ins are

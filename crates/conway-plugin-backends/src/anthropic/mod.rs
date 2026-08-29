@@ -98,11 +98,29 @@ impl AnthropicBackend {
     /// already depends on) — `crate::factory::AnthropicBackendFactory::
     /// build` is this constructor's only caller, feeding it the `headers`
     /// key it already validated out of `[backends.<id>].extra`.
+    ///
+    /// **No longer calls [`AnthropicConfig::validate`]** (board item
+    /// `01M163T1KGX3HTCC2YMDPT655J`): this was the THIRD, deepest of three
+    /// stacked gates that all hard-rejected an empty `api_key` for the
+    /// identical reason (`crates/conway/src/builder.rs`'s `resolve_api_key`
+    /// and `crate::factory::AnthropicBackendFactory::build`'s own
+    /// now-removed `cfg.validate()` call were the other two) -- discovered
+    /// only once the first two were relaxed and this suite's own
+    /// `anthropic_build_no_longer_rejects_a_missing_api_key` still failed
+    /// against it. Grep-confirmed to be untested at THIS layer directly
+    /// (every other caller of `new`/`with_extra_headers` in this crate's
+    /// and `conway`'s own test suites always supplies a real key; the only
+    /// coverage of a missing one ran through the factory, one layer up),
+    /// so nothing else depended on this specific call rejecting. The
+    /// `Result` return type is kept (never `Err` via this path today) for
+    /// API stability -- `ConfigError` is `#[non_exhaustive]`, and every
+    /// existing caller already handles a `Result` here. `AnthropicConfig::
+    /// validate` itself is UNCHANGED; only this call site stopped invoking
+    /// it, same as `factory.rs`'s.
     pub(crate) fn with_extra_headers(
         config: AnthropicConfig,
         extra_headers: BTreeMap<String, String>,
     ) -> Result<Self, ConfigError> {
-        config.validate()?;
         let timeout = config.effective_timeout();
         let http =
             HttpClient::with_timeout(timeout).expect("reqwest client with rustls TLS must build");

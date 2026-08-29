@@ -945,9 +945,11 @@ impl ConwayBuilder {
     /// kinds` call above, with none of the three bundles consulted further
     /// (an empty `[plugins].install` and an operator-emptied
     /// `[plugins].default_backends` together are a legitimate, if unusual,
-    /// configuration). Whether `build()` later fails with "no backends
-    /// configured" depends on `backend_factories`/`with_backend`/
-    /// `[backends.<id>]` alone, unrelated to this method's own return.
+    /// configuration). `build()` itself no longer fails on an empty backend
+    /// map at all (board item `01M163T1KGX3HTCC2YMDPT655J`) -- a
+    /// `[backends.<id>]` entry naming a kind this call's own resolved id set
+    /// does not cover is still a hard, named error (the declined/unknown
+    /// split above), unrelated to this method's own return.
     ///
     /// **Also validates the `PluginManifest::requires` graph among what
     /// this call can see** (every plugin already on `self`, plus every
@@ -1273,7 +1275,7 @@ impl ConwayBuilder {
         for (id, entry) in &config.backends {
             let factory =
                 resolve_backend_factory(id, entry, &factories_by_kind, &declined_backend_kinds)?;
-            let ctx = build_backend_context(id, entry, &metadata, &profile_file_paths)?;
+            let ctx = build_backend_context(id, entry, &metadata, &profile_file_paths);
             if config.models.probe_on_startup {
                 probe_targets.push((id.clone(), factory.clone(), ctx.clone()));
             }
@@ -1288,13 +1290,26 @@ impl ConwayBuilder {
         for backend in backends {
             backend_map.insert(backend.id(), backend);
         }
-        if backend_map.is_empty() {
-            return Err(FacadeError::Build {
-                message: "no backends configured: add a [backends.<id>] entry to config or call \
-                          ConwayBuilder::with_backend"
-                    .to_string(),
-            });
-        }
+        // Board item `01M163T1KGX3HTCC2YMDPT655J`: an empty `backend_map`
+        // here -- no `[backends.<id>]` entry at all, and no `with_backend`
+        // injection -- is no longer a hard error. Everything downstream
+        // already tolerates it: `CapabilityIndex::from_backends` is
+        // `.get()`-based over an empty map, `MinimalRouter`/
+        // `DeclarativeRouter` both return a typed `RoutingError::
+        // NoCandidate`/`UnknownRole` rather than panicking when a role's
+        // chain has nothing to offer, and `AttemptEngine::execute` already
+        // has a dedicated (previously unreachable in production, per its
+        // own comment) `NoCandidate` arm for exactly an empty `req.routes`.
+        // The built-in default config's own `roles.default.chain = []`
+        // means an unmodified default with zero configured backends now
+        // reaches that same named, typed failure the moment a turn is
+        // attempted, instead of refusing to start at all -- see
+        // `crates/conway-cli/src/first_run.rs`'s guided-setup decline path
+        // for why leaving the app open is the point: "no thanks, I'll
+        // configure it later" must be a real option. `ConwayBuilder::
+        // with_backend`/`.with_backend_factory` remain exactly as useful as
+        // before for a caller that DOES want one wired in; this removal
+        // only stops `build()` from insisting on it.
 
         // 5. CapabilityIndex, read directly from each constructed backend's
         //    own `Backend::capabilities()` (the single accessor this
@@ -3484,29 +3499,47 @@ mod compose_curators_tests {
 
 /// Resolves a backend's effective API key: the literal `api_key` if set,
 /// else the value named by `api_key_env` read from the live process
-/// environment (a named-but-unset var is a `FacadeError::Config`), else an
-/// empty string (no key configured). `merge::validate` already established
-/// the two are mutually exclusive.
+/// environment, else an empty string (no key configured). `merge::validate`
+/// already established the two are mutually exclusive.
 ///
-/// The key's *shape* is never inspected. An `api_key_env` that names an
-/// unset variable is a configuration mistake conway can describe exactly,
-/// so that stays a hard error; what the resolved value looks like is the
-/// provider's judgment to make, not conway's.
-fn resolve_api_key(id: &str, entry: &BackendEntry) -> Result<String> {
+/// **An `api_key_env` naming an unset variable no longer fails `build()`**
+/// (board item `01M163T1KGX3HTCC2YMDPT655J`, correcting `01M163TZTM9BF
+/// 40769FRRVXJ33`'s finding that this was a SECOND gate producing the same
+/// operator-visible "declining first-run setup still exits" outcome as the
+/// empty-backend-map check this function's sibling used to enforce): it
+/// resolves to an empty string, exactly as an entry declaring no credential
+/// at all already does, and a `tracing::warn!` names the unset variable so
+/// the gap is never silent. `crate::backend_usability::classify_entry` is
+/// the pre-flight surface an operator actually sees this same condition
+/// through (the first-run flow's own trigger, checked BEFORE `build()` ever
+/// runs); this function's job is only to stop `build()` itself from
+/// refusing over it, so a backend that is not finished being configured
+/// still takes its place in a working app rather than taking the whole
+/// process down with it. The resulting backend is registered, not silently
+/// treated as working: the missing credential fails loud the moment a turn
+/// actually reaches it (an ordinary `BackendError::Auth` from the wire, or
+/// an equivalent provider-specific rejection -- never a panic, never a
+/// silently empty response).
+///
+/// The key's *shape* is never inspected, same as before.
+fn resolve_api_key(id: &str, entry: &BackendEntry) -> String {
     if !entry.api_key.is_empty() {
-        return Ok(entry.api_key.clone());
+        return entry.api_key.clone();
     }
     if !entry.api_key_env.is_empty() {
-        let resolved = std::env::var(&entry.api_key_env).map_err(|_| FacadeError::Config {
-            path: None,
-            message: format!(
-                "backend '{id}': api_key_env '{}' is not set in the environment",
-                entry.api_key_env
-            ),
-        })?;
-        return Ok(resolved);
+        return std::env::var(&entry.api_key_env).unwrap_or_else(|_| {
+            tracing::warn!(
+                backend = %id,
+                variable = %entry.api_key_env,
+                "backend '{id}': api_key_env '{}' is not set in the environment; \
+                 registering the backend anyway with no credential -- it will fail \
+                 at the wire, naming the failure, the first time a turn reaches it",
+                entry.api_key_env,
+            );
+            String::new()
+        });
     }
-    Ok(String::new())
+    String::new()
 }
 
 /// Resolves one `[backends.<id>]` entry's `kind` against every registered
@@ -3606,9 +3639,9 @@ fn build_backend_context(
     entry: &BackendEntry,
     metadata: &config::model_metadata::ModelMetadata,
     profile_file_paths: &[PathBuf],
-) -> Result<BackendBuildContext> {
-    let api_key = resolve_api_key(id, entry)?;
-    Ok(BackendBuildContext {
+) -> BackendBuildContext {
+    let api_key = resolve_api_key(id, entry);
+    BackendBuildContext {
         id: BackendId::new(id),
         base_url: entry.base_url.clone(),
         api_key: if api_key.is_empty() {
@@ -3620,7 +3653,7 @@ fn build_backend_context(
         models: models_overrides_for(id, metadata),
         profile_file_paths: profile_file_paths.to_vec(),
         extra: entry.extra.clone(),
-    })
+    }
 }
 
 /// Per-model capability overrides for backend `id`, projected from the

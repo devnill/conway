@@ -270,19 +270,31 @@ async fn build_conway(
                     None => ConwayBuilder::discover()?,
                 },
                 // The operator declined: proceed with the fleet exactly as
-                // it was. When it held at least one (broken) backend
-                // entry (`AllUnusable`), `build()` below still succeeds --
-                // "usable but unconfigured", acceptance 4 -- and every
-                // turn will fail with the same per-entry reasons
-                // `backend_usability::Unusable`'s own `Display` already
-                // names. When the fleet was genuinely empty
-                // (`NoBackendsConfigured`), `build()`'s own long-standing
-                // hard gate (`backend_map.is_empty()`) still applies --
-                // this item does not relax that invariant -- so the
-                // process still exits, but with a warning already printed
-                // by `first_run::run_guided_setup`'s own decline path
-                // naming what will not work, rather than a bare hard
-                // error with no context.
+                // it was, and `build()` below now succeeds regardless of
+                // WHY the fleet was unusable (board item
+                // `01M163T1KGX3HTCC2YMDPT655J`, closing the gap
+                // `01M163TZTM9BF40769FRRVXJ33`'s own investigation
+                // measured: a genuinely empty fleet used to still hit
+                // `build()`'s own separate `backend_map.is_empty()` hard
+                // gate even after this decline path started printing a
+                // warning, and a fleet whose every entry named an unset
+                // `api_key_env` hit a SECOND, independent hard gate three
+                // layers deep in `conway_plugin_backends`'s own factory --
+                // both removed. Every turn now fails loud instead: the
+                // empty-fleet case reaches the existing, already-tested
+                // `RoutingError::NoCandidate` (an unmodified default's own
+                // `roles.default.chain = []` guarantees a route is never
+                // even offered), and the every-entry-broken case reaches
+                // the existing, already-tested `BackendError` taxonomy the
+                // first real turn's wire call produces -- see
+                // `crates/conway/tests/builder.rs`'s
+                // `build_succeeds_with_no_backends_configured_and_a_turn_
+                // names_no_candidate` and
+                // `a_missing_credential_registers_the_backend_and_fails_
+                // loud_at_the_wire` for both, end to end. Neither is a
+                // silent success: `first_run::run_guided_setup`'s own
+                // decline path still prints its warning naming what will
+                // not work before returning here.
                 first_run::GuidedSetupOutcome::Declined => builder,
             }
         } else {

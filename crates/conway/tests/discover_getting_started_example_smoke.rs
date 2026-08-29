@@ -30,7 +30,7 @@ use conway::backend::{BackendId, ModelId};
 use conway::config::{load, CliOverrides, LoadOptions};
 use conway::{ConwayBuilder, ModelRef, PluginSelection, SessionSpec};
 use conway_core::agent::ResultStatus;
-use conway_testkit::{FakeBackend, FakeRouter, FakeStore, ScriptedBackend};
+use conway_testkit::{FakeBackend, FakeRouter, FakeStore};
 
 const T: Duration = Duration::from_secs(5);
 
@@ -123,16 +123,19 @@ async fn unmodified_default_role_still_fails_to_route_with_a_named_no_candidate_
     .expect("load with no user/project layer must still succeed via built-in defaults");
     assert_eq!(outcome.config.default_role.as_str(), "default");
 
-    // `build()` requires at least one backend registered even though an
-    // empty chain means it is never called (`RoutingError::NoCandidate`
-    // fires inside `Router::resolve`, before any `AttemptEngine`/backend
-    // involvement) -- see `crates/conway/tests/builder.rs`'s
-    // `build_fails_with_no_backends_configured` for the check this
-    // satisfies. `ScriptedBackend` (not `FakeBackend`), specifically so
-    // `.calls()` below can prove the backend really was never reached, not
-    // just that the turn ended in `Failed`.
-    let backend = Arc::new(ScriptedBackend::new(vec![]).with_id(BackendId::new("fake")));
-
+    // Board item `01M163T1KGX3HTCC2YMDPT655J`: `build()` used to require at
+    // least one backend registered even though an empty chain means it is
+    // never called (`RoutingError::NoCandidate` fires inside `Router::
+    // resolve`, before any `AttemptEngine`/backend involvement) -- a
+    // `ScriptedBackend` used to sit here purely to satisfy that gate, with
+    // `.calls()` asserted empty afterward to prove it was never reached.
+    // That gate is gone (see `crates/conway/tests/builder.rs`'s
+    // `build_succeeds_with_no_backends_configured_and_a_turn_names_no_
+    // candidate`, this test's sibling for the fully-empty-config case), so
+    // this test now registers NO backend at all -- a strictly stronger
+    // proof than "a registered one was never called": there is nothing
+    // here a routing regression could accidentally reach.
+    //
     // No `.with_router(..)` override -- `build()` falls through to
     // `conway_core::routing::MinimalRouter`, compiled from `outcome.config`
     // exactly as a real embedder who called `discover()` unmodified would
@@ -143,10 +146,11 @@ async fn unmodified_default_role_still_fails_to_route_with_a_named_no_candidate_
             ..CliOverrides::default()
         })
         .with_builtin_plugins(PluginSelection::None)
-        .with_backend(backend.clone())
         .with_session_store(Arc::new(FakeStore::new()))
         .build()
-        .expect("build should succeed: an empty chain is a valid, if useless, config");
+        .expect(
+            "build should succeed: an empty chain and zero backends is a valid, if useless, config",
+        );
 
     let session = tokio::time::timeout(T, conway.new_session(SessionSpec::default()))
         .await
@@ -160,16 +164,6 @@ async fn unmodified_default_role_still_fails_to_route_with_a_named_no_candidate_
         .await
         .expect("result must not hang")
         .expect("result() itself must not error -- the turn ends Failed, not the stream");
-
-    // The backend was never reached: `NoCandidate` fires inside
-    // `Router::resolve`, before any attempt is made -- a rename that
-    // accidentally gave the default role a working chain would show up
-    // here as a real call.
-    assert!(
-        backend.calls().is_empty(),
-        "an empty-chain default role must never reach the backend; calls: {:?}",
-        backend.calls()
-    );
 
     match &result.status {
         ResultStatus::Failed { error } => {

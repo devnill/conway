@@ -225,11 +225,14 @@ fn expect_build_err(result: Result<Conway, FacadeError>, msg: &str) -> FacadeErr
 /// a `[backends.<id>].kind` entry IS invoked, and the backend it builds
 /// actually serves a turn. Discriminating because `config_naming_kind`'s one
 /// `[backends.<id>]` entry is the ONLY backend source (no `with_backend`
-/// call either) -- `build()`'s own "no backends configured" guard means a
-/// success here, producing a turn whose text is the factory's OWN canned
-/// response, can only be explained by the registered factory's `build()`
-/// having actually run (selected by the config entry naming its kind) and
-/// its backend having actually served the request.
+/// call either, and no OTHER `[backends.<id>]` entry either -- board item
+/// `01M163T1KGX3HTCC2YMDPT655J` removed `build()`'s separate "no backends
+/// configured" guard, so it is this config's single named entry, not that
+/// now-gone guard, doing the work here) -- a success here, producing a
+/// turn whose text is the factory's OWN canned response, can only be
+/// explained by the registered factory's `build()` having actually run
+/// (selected by the config entry naming its kind) and its backend having
+/// actually served the request.
 #[tokio::test]
 async fn factory_built_backend_serves_a_turn() {
     let cfg = config_naming_kind("stub", "stub-kind");

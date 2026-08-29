@@ -107,16 +107,14 @@ async fn a_translated_session_start_rule_actually_dispatches_and_resolves_plugin
     };
 
     let cwd = tempfile::tempdir().expect("cwd");
-    // `build()` requires at least one backend even though `new_session`
-    // alone never calls it -- an unused `ScriptedBackend` satisfies that
-    // without pulling a scripted-turn setup into a test that is not about
-    // routing at all.
-    let backend = std::sync::Arc::new(
-        conway_testkit::ScriptedBackend::new(Default::default())
-            .with_id(conway_core::ids::BackendId::new("fake")),
-    );
+    // Board item `01M163T1KGX3HTCC2YMDPT655J`: `build()` used to require at
+    // least one backend even though `new_session` alone never calls it --
+    // an unused `ScriptedBackend` used to sit here purely to satisfy that
+    // gate. That gate is gone (`crates/conway/tests/builder.rs`'s
+    // `build_succeeds_with_no_backends_configured_and_a_turn_names_no_
+    // candidate`), so this test registers no backend at all now, which is
+    // one fewer thing to explain in a test that is not about routing.
     let conway = test_builder(minimal_config(cwd.path(), hooks))
-        .with_backend(backend)
         .with_default_hook_runner()
         .build()
         .expect("build should succeed with the real translated rule and hook runner");
@@ -342,12 +340,11 @@ async fn a_translated_subagent_start_hooks_json_rule_fires_for_a_spawn_but_not_f
         registrations.into_iter().map(to_plugin_hook_rule).collect();
 
     let cwd = tempfile::tempdir().expect("cwd");
-    let backend = std::sync::Arc::new(
-        conway_testkit::ScriptedBackend::new(Default::default())
-            .with_id(conway_core::ids::BackendId::new("fake")),
-    );
+    // Board item `01M163T1KGX3HTCC2YMDPT655J`: as above, no backend needed
+    // to satisfy `build()` any more -- neither `fork` nor `spawn` below
+    // ever prompts a model, so registering one here was always only about
+    // the now-removed empty-backend-map gate.
     let conway = test_builder(minimal_config(cwd.path(), HooksConfig::default()))
-        .with_backend(backend)
         .with_default_hook_runner()
         .with_plugin(Arc::new(TranslatedHooksPlugin(plugin_rules)))
         .build()
