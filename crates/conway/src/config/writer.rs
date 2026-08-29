@@ -230,10 +230,13 @@ pub fn set_plugin_installed(path: &Path, plugin_id: &str, installed: bool) -> Re
 /// (`settings.json`, `permissions.json`, `trust.json`), so `config` is
 /// where they all already are; the crate's structural guard on this
 /// directory (`config::mod`'s `config_module_never_names_a_network_client_
-/// identifier` test) only forbids naming a network-client identifier
-/// (`reqwest`/`hyper`/`TcpStream`) in a production file under `config/` --
-/// this function performs no network I/O at all, so it does not implicate
-/// that guard in either direction. That rule exists because a restatement
+/// identifier` test) only forbids naming an HTTP-client or socket type in
+/// a production file under `config/` -- this function performs no network
+/// I/O at all, so it does not implicate that guard in either direction.
+/// The forbidden names are deliberately not spelled out here: that guard
+/// matches on file CONTENT, so a doc comment listing the identifiers trips
+/// it exactly as a real import would. This paragraph did, on its first
+/// draft, and the guard was right to fail it. That rule exists because a restatement
 /// drifts and the duplicate silently drops a guard -- a defect this tree
 /// has already paid for more than once -- and because the next change here
 /// (the `fsync` named above, a mode fix, a check for a `.json.tmp` left by
