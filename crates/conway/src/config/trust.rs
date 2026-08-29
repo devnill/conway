@@ -286,9 +286,12 @@ impl TrustStore {
     }
 
     /// Records an explicit trust decision for `abs_path`'s CURRENT bytes
-    /// on disk, then writes the store back out (tmp-then-rename,
-    /// mirroring `tui/history.rs`'s and `tui/app.rs::persist_permission_rule`'s
-    /// own precedent so a crash mid-write cannot corrupt the file).
+    /// on disk, then writes the store back out via
+    /// `super::writer::write_atomically` (tmp-then-rename, the same
+    /// durability step `tui/history.rs`'s and
+    /// `tui/app.rs::persist_permission_rule`'s own precedent already uses,
+    /// so a crash mid-write cannot corrupt the file -- see that function's
+    /// own doc for exactly what this does and does not guarantee).
     ///
     /// Returns an error rather than silently no-op-ing: unlike a
     /// permission-RULE write (which is best-effort because the live
@@ -314,12 +317,7 @@ impl TrustStore {
         );
         let serialized = serde_json::to_string_pretty(&store.file)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serialized)?;
-        std::fs::rename(&tmp, &path)?;
+        super::writer::write_atomically(&path, &serialized)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
