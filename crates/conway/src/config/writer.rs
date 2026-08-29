@@ -196,24 +196,56 @@ pub fn set_plugin_installed(path: &Path, plugin_id: &str, installed: bool) -> Re
 }
 
 /// Create `path`'s parent directories if needed, then write `contents`
-/// durably: to a sibling `.json.tmp` first, then `rename` over `path`, so
-/// a reader (including this crate's own five-source `load`) can never
-/// observe a partially-written settings.json.
+/// durably: to a sibling `path.json.tmp` first, then `rename` over `path`.
+/// `rename` replaces the target as a single filesystem operation on every
+/// platform this crate targets, so a reader (including this crate's own
+/// five-source `load`) can never observe a partially-written file **across
+/// a process crash** -- it either still sees the old bytes or already sees
+/// the new ones in full, never a mix.
 ///
-/// **The single implementation of this file's durability step, per P-14.**
-/// All three public writers call it rather than restating it. That rule
-/// exists because a restatement drifts and the duplicate silently drops a
-/// guard -- a defect this tree has already paid for more than once -- and
-/// because the next change here (an `fsync` before the rename, a mode fix,
-/// a check for a `tmp` left by a crashed prior run) must land in one place
-/// rather than being applied to two of three copies.
+/// **Not a power-loss guarantee.** Neither the tmp file's contents nor the
+/// directory entry `rename` updates are `fsync`ed before this function
+/// returns, so a host that loses power (rather than just the writing
+/// process crashing) can still lose the write, or -- on some filesystems --
+/// observe the rename applied without the new content durably behind it on
+/// disk. Closing that gap means an `fsync` of the tmp file before the
+/// rename and of the containing directory after it, which is a genuine
+/// durability upgrade this consolidation deliberately leaves for its own
+/// decision rather than folding in unannounced -- see board item
+/// `01M12ERK9WSJ10AT87WCJ9ZME9`'s report. This paragraph is the named limit
+/// that future decision starts from, not a promise that no such gap exists.
 ///
-/// SCOPE, stated rather than left to be discovered: this consolidates the
-/// three copies inside THIS module only. `crate::permissions` restates the
-/// same five lines twice more and `super::trust` once, and folding those in
-/// reaches past this module's ownership -- board item
-/// `01M12ERK9WSJ10AT87WCJ9ZME9` carries that.
-fn write_atomically(path: &Path, contents: &str) -> Result<()> {
+/// **The single implementation of the tmp-then-rename step for every
+/// operator-config file this crate writes, per P-14.** `pub(crate)` rather
+/// than private to this module: besides this module's own three public
+/// writers, `crate::permissions::rewrite_permission_file_removing`/
+/// `crate::permissions::rewrite_permission_file_removing_structured` and
+/// `crate::config::trust::TrustStore::trust` call this too, rather than
+/// restating it -- six call sites in total, consolidated here across two
+/// board items (`01M11XTB238YHXV01FWF8SFZH2` folded in this module's own
+/// three; `01M12ERK9WSJ10AT87WCJ9ZME9` folded in the remaining three,
+/// reaching into `permissions` and `trust`). Kept in `config::writer`
+/// rather than moved to a new, more neutral home: every one of the six
+/// current callers already writes a file under the operator's config tree
+/// (`settings.json`, `permissions.json`, `trust.json`), so `config` is
+/// where they all already are; the crate's structural guard on this
+/// directory (`config::mod`'s `config_module_never_names_a_network_client_
+/// identifier` test) only forbids naming a network-client identifier
+/// (`reqwest`/`hyper`/`TcpStream`) in a production file under `config/` --
+/// this function performs no network I/O at all, so it does not implicate
+/// that guard in either direction. That rule exists because a restatement
+/// drifts and the duplicate silently drops a guard -- a defect this tree
+/// has already paid for more than once -- and because the next change here
+/// (the `fsync` named above, a mode fix, a check for a `.json.tmp` left by
+/// a crashed prior run) must land in one place rather than being applied
+/// to some fraction of six copies.
+///
+/// `.json.tmp` is hardcoded, not derived from `path`'s own extension:
+/// every current caller writes a `.json` file, so one literal extension is
+/// a description of that fact, not an accidental restriction -- a future
+/// caller writing a non-JSON file is the moment to reconsider this, not
+/// something to silently paper over with a wrong extension today.
+pub(crate) fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

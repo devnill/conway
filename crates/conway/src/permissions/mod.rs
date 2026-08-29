@@ -812,12 +812,7 @@ pub(crate) fn rewrite_permission_file_removing(
 
     let serialized = serde_json::to_string_pretty(&file)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serialized)?;
-    std::fs::rename(&tmp, path)?;
+    crate::config::writer::write_atomically(path, &serialized)?;
     Ok(())
 }
 
@@ -865,12 +860,7 @@ pub(crate) fn rewrite_permission_file_removing_structured(
 
     let serialized = serde_json::to_string_pretty(&file)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serialized)?;
-    std::fs::rename(&tmp, path)?;
+    crate::config::writer::write_atomically(path, &serialized)?;
     Ok(())
 }
 
