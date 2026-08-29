@@ -69,7 +69,8 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::state::{
-    AppState, AskModal, EditingPatternState, IntentConfirm, Mode, TrustPreviewCard,
+    AddProviderCredentialState, AppState, AskModal, EditingPatternState, IntentConfirm, Mode,
+    TrustPreviewCard,
 };
 pub use theme::Theme;
 
@@ -173,6 +174,16 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
             state.modal_scroll,
             theme,
         );
+    }
+
+    // Board item `01M11XWB4T8ZADNDB4M8R482MA`: the settings providers
+    // section's credential prompt -- ungated by `settings_open` for the
+    // same reason `Mode::EditingPattern` is just above (the `Mode` variant
+    // IS the gate: `settings::draw`, below, already stops drawing the menu
+    // itself the instant `mode` leaves `Normal`, so this card simply
+    // replaces it on screen, never stacks on top of it).
+    if let Mode::AddProviderCredential(cred) = &state.mode {
+        draw_add_provider_credential(frame, areas.transcript, cred, theme);
     }
 
     // T7: the `/help` keybinding overlay is NOT a `Mode` variant (see
@@ -914,6 +925,68 @@ fn draw_editing_pattern(
         "[↑↓/tab] move  [space] pin/wildcard  [enter] grant  [s] scope  [esc] cancel"
     };
     let footer_lines = vec![Line::from(hint), Line::from("")];
+    let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, frame_areas.footer_area);
+}
+
+/// Fixed footer rows for [`draw_add_provider_credential`] -- the key hint
+/// and a blank spacer, mirroring [`EDITING_PATTERN_FOOTER_ROWS`]'s own
+/// shape.
+const ADD_PROVIDER_CREDENTIAL_FOOTER_ROWS: u16 = 2;
+
+/// Board item `01M11XWB4T8ZADNDB4M8R482MA`: the settings providers
+/// section's one-line credential prompt (`Mode::AddProviderCredential`).
+/// **Never renders `cred.input` in the clear** -- one `*` per character, the
+/// same masking `first_run.rs::read_secret_line`'s own terminal-level
+/// echo-suppression already promises for the pre-TUI flow; P-10's own "a
+/// credential comes from a human typing" boundary is what this masking (and
+/// `AddProviderCredentialState`'s own doc on why it is not `AppState::
+/// input`) exists to keep. Renders `cred.error`, when set, as its own
+/// styled line -- mirroring [`draw_ask_modal`]'s "error" line -- so a
+/// rejected paste (empty, or implausibly long -- `crate::first_run::
+/// validate_credential_input`) is shown rather than silently re-prompting.
+fn draw_add_provider_credential(
+    frame: &mut Frame,
+    transcript_area: Rect,
+    cred: &AddProviderCredentialState,
+    theme: &Theme,
+) {
+    let masked: String = "*".repeat(cred.input.chars().count());
+    let mut body_lines = vec![
+        Line::from(Span::styled(
+            format!(
+                "add {} -- paste or type the API key (env var: {})",
+                cred.label, cred.credential_env
+            ),
+            theme.emphasized,
+        )),
+        Line::from(""),
+        Line::from(masked),
+    ];
+    if let Some(err) = &cred.error {
+        body_lines.push(Line::from(""));
+        body_lines.push(Line::from(Span::styled(format!("error: {err}"), theme.dim)));
+    }
+    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
+
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        ADD_PROVIDER_CREDENTIAL_FOOTER_ROWS,
+        modal::DEFAULT_CAP_DENOMINATOR,
+        " ADD PROVIDER ",
+        theme.border_accent,
+    );
+    frame.render_widget(body, frame_areas.body_area);
+
+    let footer_lines = vec![
+        Line::from("[enter] add  [esc] cancel -- never echoed or logged"),
+        Line::from(""),
+    ];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
     frame.render_widget(footer, frame_areas.footer_area);
 }

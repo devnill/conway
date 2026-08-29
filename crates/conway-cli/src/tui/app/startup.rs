@@ -498,6 +498,7 @@ impl App {
             .collect();
         let (modal_ask_tx, modal_ask_rx) = mpsc::unbounded_channel();
         let (plugin_cmd_tx, plugin_cmd_rx) = mpsc::unbounded_channel();
+        let (provider_status_tx, provider_status_rx) = mpsc::unbounded_channel();
         Ok(Self {
             handle,
             state,
@@ -508,6 +509,8 @@ impl App {
             command_registry,
             plugin_cmd_tx,
             plugin_cmd_rx: Some(plugin_cmd_rx),
+            provider_status_tx,
+            provider_status_rx: Some(provider_status_rx),
             history_path,
             env: env_vars,
             cwd,

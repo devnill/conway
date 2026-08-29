@@ -692,6 +692,9 @@ fn mode_label(mode: &Mode) -> String {
         Mode::TrustPreview(_) => "trust".to_string(),
         // The `[p]` field editor owns the screen.
         Mode::EditingPattern(_) => "pattern".to_string(),
+        // Board item `01M11XWB4T8ZADNDB4M8R482MA`: the settings providers
+        // section's credential prompt owns the screen.
+        Mode::AddProviderCredential(_) => "add provider".to_string(),
     }
 }
 

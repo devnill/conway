@@ -115,7 +115,18 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         // mirror that write against, and a test asserting on the
         // ACTION alone (never on a filesystem side effect this helper
         // never performs) is the right boundary.
-        | Action::TogglePlugin(_, _) => {}
+        | Action::TogglePlugin(_, _)
+        // Board item `01M11XWB4T8ZADNDB4M8R482MA`: mirrors `TogglePlugin`
+        // immediately above for the identical reason -- writing
+        // settings.json (add/remove) needs a real facade/filesystem
+        // context this terminal-free harness does not have, so these are
+        // applied in `app.rs`'s run loop only. `SubmitProviderCredential`
+        // additionally needs the choice table (`crate::first_run::
+        // HOSTED_CHOICES`) resolved against real state this harness has no
+        // reason to duplicate.
+        | Action::AddProviderChoice(_)
+        | Action::SubmitProviderCredential(_, _)
+        | Action::RemoveProvider(_) => {}
         Action::ScrollLineUp => apply_line_scroll(state, area, true),
         Action::ScrollLineDown => apply_line_scroll(state, area, false),
         Action::JumpToTop => {

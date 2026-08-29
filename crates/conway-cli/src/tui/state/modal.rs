@@ -100,6 +100,52 @@ pub enum TrustDecision {
     Cancel,
 }
 
+/// Board item `01M11XWB4T8ZADNDB4M8R482MA`: the settings providers
+/// section's own one-line credential prompt -- opened when the operator
+/// picks a hosted provider shape (`view/settings.rs`'s `add_provider:<id>`
+/// leaf) whose own `credential_env` is NOT already set in the process
+/// environment (`crate::first_run::resolve_credential_plan`'s
+/// `PromptForLiteral` case; `ReuseEnvVar` never opens this at all -- the add
+/// happens in one keystroke, see `App::apply_add_provider_choice`'s own
+/// doc). A small, SELF-CONTAINED single-line editor (`input`/`cursor`,
+/// mirroring `AppState::input`/`cursor`'s own char-index convention) rather
+/// than reusing the main input box: the credential must never be echoed
+/// into the transcript/history/palette the main box feeds (P-10's own "a
+/// credential comes from a human typing" boundary, and the exact promise
+/// `first_run.rs::read_secret_line`'s doc already makes for the pre-TUI
+/// flow), and this state's own doc is where that promise is kept for the
+/// TUI surface instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddProviderCredentialState {
+    /// The chosen [`crate::first_run::ProviderChoice::id`] this credential
+    /// is for -- resolved back against `crate::first_run::HOSTED_CHOICES` by
+    /// `App::apply_add_provider_credential` once `Enter` validates.
+    pub choice_id: String,
+    /// The choice's own display label (`crate::first_run::ProviderChoice::
+    /// label`), for the card's own header -- captured at open time so the
+    /// card never has to re-resolve `choice_id` against the choice table
+    /// just to render its own title.
+    pub label: String,
+    /// The choice's own `credential_env` name, shown in the card so the
+    /// operator can tell which variable a `Ctrl-C`-free `Esc` would have let
+    /// them set instead.
+    pub credential_env: String,
+    /// The typed-so-far secret. Never rendered in the clear -- `view/
+    /// settings.rs::draw_add_provider_credential` renders one `*` per
+    /// character, exactly like `first_run.rs::read_secret_line`'s own
+    /// terminal-level masking.
+    pub input: String,
+    /// Cursor position within `input`, as a *char* index -- same convention
+    /// as [`super::AppState::cursor`].
+    pub cursor: usize,
+    /// Set by `input::handle_add_provider_credential_key`'s `Enter` arm when
+    /// `crate::first_run::validate_credential_input` rejects the current
+    /// `input` (empty, or implausibly long) -- the card stays open with the
+    /// reason shown, mirroring [`AskModal::error`]/[`TrustPreviewCard::
+    /// error`]'s own "a failed attempt never silently vanishes" contract.
+    pub error: Option<String>,
+}
+
 /// `Normal` (the input line submits a prompt or a `/command`) or
 /// `AwaitingPermission` (the input line is inert; `y`/`a`/`n`/`Esc` resolve
 /// the pending prompt -- see `input.rs`). Only one prompt is shown at a
@@ -157,6 +203,24 @@ pub enum Mode {
     /// `AwaitingPermission`, and cancel returns there, submit restores
     /// there (the dispatch arm then resolves the prompt).
     EditingPattern(EditingPatternState),
+    /// Board item `01M11XWB4T8ZADNDB4M8R482MA`: the settings providers
+    /// section's one-line credential prompt (see
+    /// [`AddProviderCredentialState`]'s own doc for why this exists and why
+    /// it is not the main input box). While this is the mode, the input
+    /// line is inert and `input::handle_add_provider_credential_key`
+    /// swallows every key except ordinary character/`Backspace`/`Left`/
+    /// `Right` editing, `Enter` (validate and add), `Esc` (cancel -- no
+    /// write, matching `EditingPattern`'s own "nothing was created or
+    /// written yet" cancel posture), and the quit keys. Reachable only from
+    /// `Mode::Normal` with `AppState::settings_open` -- there is no other
+    /// entry point -- so, like `EditingPattern`, it never needs to consider
+    /// parking behind another of the four modal-bearing surfaces on OPEN; a
+    /// permission prompt arriving WHILE this card is open still queues in
+    /// `queued_prompts` exactly as it would behind any other mode, and
+    /// `Enter`/`Esc` both restore `Mode::Normal` via
+    /// `AppState::promote_next_surface` so a prompt queued in the
+    /// meantime is not stranded.
+    AddProviderCredential(AddProviderCredentialState),
 }
 
 impl std::fmt::Debug for Mode {
@@ -175,6 +239,9 @@ impl std::fmt::Debug for Mode {
             }
             Mode::EditingPattern(ed) => {
                 write!(f, "EditingPattern(tool={})", ed.tool)
+            }
+            Mode::AddProviderCredential(cred) => {
+                write!(f, "AddProviderCredential(choice_id={})", cred.choice_id)
             }
         }
     }
@@ -535,6 +602,49 @@ impl AppState {
     /// was left" behaviour.
     pub fn close_plugins(&mut self) {
         self.plugins_open = false;
+    }
+
+    /// Opens the settings providers section's credential prompt (board item
+    /// `01M11XWB4T8ZADNDB4M8R482MA`) -- only from `Mode::Normal`, mirroring
+    /// [`Self::offer_ask_modal`]'s own guard, though in practice the ONE
+    /// caller (`App::apply_add_provider_choice`) only ever reaches this
+    /// while `mode` is already `Normal` (the settings menu itself is only
+    /// reachable there). A no-op otherwise, rather than clobbering whatever
+    /// modal-bearing surface currently owns `mode` -- an operator's typed
+    /// keystroke pattern-matched as an add-provider choice must never
+    /// silently steal the floor from an unrelated pending decision.
+    pub fn begin_add_provider_credential(
+        &mut self,
+        choice_id: &str,
+        label: &str,
+        credential_env: &str,
+    ) {
+        if !matches!(self.mode, Mode::Normal) {
+            return;
+        }
+        self.mode = Mode::AddProviderCredential(AddProviderCredentialState {
+            choice_id: choice_id.to_string(),
+            label: label.to_string(),
+            credential_env: credential_env.to_string(),
+            input: String::new(),
+            cursor: 0,
+            error: None,
+        });
+        self.modal_scroll = 0;
+    }
+
+    /// Closes the credential prompt with NO write -- `Esc`, or after a
+    /// successful `Enter` has already extracted the validated secret (the
+    /// caller, `input::handle_add_provider_credential_key`, reads `input`
+    /// out before calling this). Promotes the next parked/queued surface
+    /// exactly like every other modal-bearing surface's close path. A no-op
+    /// when the mode is something else.
+    pub fn close_add_provider_credential(&mut self) {
+        if !matches!(self.mode, Mode::AddProviderCredential(_)) {
+            return;
+        }
+        self.mode = Mode::Normal;
+        self.promote_next_surface();
     }
 }
 

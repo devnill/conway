@@ -79,6 +79,62 @@
 //! subgroups), there is no per-plugin entry in `AppState::
 //! settings_collapsed_groups` to key correctly in the first place.
 //!
+//! ## Providers: add/remove owned here (board item `01M11XWB4T8ZADNDB4M8R482MA`)
+//!
+//! Unlike plugins, providers get NO separate `/provider` command to
+//! shortcut into -- this section IS the one implementation of provider
+//! management, and it is the surface named in "whichever surface does not
+//! own provider management delegates to the one that does" (this item's own
+//! acceptance 8). There is no drift risk analogous to plugins' pre-existing
+//! `/plugin` browser to duplicate: no other surface in this crate lists,
+//! adds, or removes a `backends.<id>` entry today. **The precedent this
+//! choice sets, flagged for the surface-coherence session this item's own
+//! spec names as not-yet-held:** plugins concluded "one home, not two" by
+//! MOVING ownership out of `/settings` into a dedicated `/plugin` view;
+//! this item concludes the opposite -- `/settings` IS the dedicated view,
+//! with no `/provider` sibling at all. Both are defensible under P-14 (one
+//! implementation, wherever it lives); which one is the house style for a
+//! THIRD future settings category is exactly the question that session
+//! should rule on, not something this item decides for it.
+//!
+//! Every provider currently in [`AppState::provider_entries`] (a config
+//! snapshot refreshed on open and after every add/remove -- see that
+//! field's own doc for why it is NOT `Conway::config()`, the stale
+//! build-time snapshot every other section reads) renders as its own
+//! selectable, revocable leaf -- `{id} ({kind}) -- {status} (Enter to
+//! remove)`, the SAME "selectable because a real per-row action exists"
+//! shape the allow-grant/hook rows already established, mirrored by
+//! [`provider_status_label`] for the one part that differs: `{status}`
+//! reads [`AppState::provider_status`] (a LIVE classification, probed under
+//! `ProbePolicy::All` -- see that field's own doc for why this screen
+//! passes a different policy than startup) rather than anything
+//! `build_tree`'s other rows read, and renders one of three, never
+//! collapsed to two: `working`, `not working: <the Unusable Display,
+//! verbatim -- never reworded>`, or `undetermined: <the Undetermined
+//! Display, verbatim>` -- visibly distinct wording is this item's own
+//! acceptance 3, and reusing `Display` verbatim rather than inventing new
+//! phrasing is P-14 applied to `conway::backend_usability` specifically
+//! (that module's own doc calls out "a classification vocabulary restated
+//! at a second call site" as the exact hazard). A row absent from
+//! `provider_status` entirely (not yet classified) reads `checking...` --
+//! a FOURTH, honest state distinct from all three of `Usability`'s own
+//! variants, for the window between opening this section and the
+//! background probe's reply arriving.
+//!
+//! One leaf per `crate::first_run::HOSTED_CHOICES` entry follows --
+//! `add {label} (Enter)` -- reusing that table verbatim rather than
+//! restating which provider shapes exist (this item's own acceptance 8/
+//! P-14 again: `first_run.rs`'s own module doc names exactly this reuse as
+//! the intended one). Local-server auto-detection (the third option
+//! `first_run.rs`'s interactive flow offers before falling back to
+//! `HOSTED_CHOICES`) is NOT reproduced here -- a disclosed scope
+//! narrowing, not an oversight: detecting a local Ollama server is itself
+//! an async network probe, and offering it here would need the same
+//! spawn-and-poll machinery `App::refresh_provider_entries_and_kick_off_status`
+//! already uses for the LISTING half, a second time, for a convenience an
+//! operator can still reach by hand-editing `settings.json` exactly as
+//! `first_run.rs::non_interactive_guidance` already documents.
+//!
 //! ## Interaction
 //!
 //! `Up`/`Down` navigate, `Enter` toggles a boolean leaf or expands/collapses
@@ -113,6 +169,8 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
+
+use conway::backend_usability::Usability;
 
 use super::menu::{self, MenuNode, MenuState};
 use super::modal;
@@ -160,6 +218,20 @@ pub(crate) const LEAF_REVOKE_HOOK_PREFIX: &str = "revoke_hook:";
 /// open_plugins`, `view/plugins.rs`) rather than toggling anything
 /// in-place. See this module's own doc, "Plugins: one home, not two".
 pub(crate) const LEAF_OPEN_PLUGINS: &str = "open_plugins";
+/// Board item `01M11XWB4T8ZADNDB4M8R482MA`: prefix for one configured
+/// provider's own leaf id, `"{LEAF_REMOVE_PROVIDER_PREFIX}{id}"` where `id`
+/// is the LITERAL `backends.<id>` map key (never an index -- `AppState::
+/// provider_entries` is a `BTreeMap`, so there is nothing to drift the way a
+/// `Vec`-indexed row could; matches `set_backend_provider`'s own "matching
+/// an existing provider is by id alone" contract). See [`Action::
+/// RemoveProvider`]'s own doc.
+pub(crate) const LEAF_REMOVE_PROVIDER_PREFIX: &str = "remove_provider:";
+/// Prefix for one add-a-provider leaf, one per
+/// `crate::first_run::HOSTED_CHOICES` entry -- `"{LEAF_ADD_PROVIDER_PREFIX}{choice.id}"`.
+/// The same two shapes the first-run flow offers, reused verbatim (never a
+/// second, independent list of "which provider kinds conway supports" --
+/// P-14; see this module's own doc, "Providers: add/remove owned here").
+pub(crate) const LEAF_ADD_PROVIDER_PREFIX: &str = "add_provider:";
 
 /// The two top-level group labels (see this module's own doc, "Grouping").
 /// `pub(crate)` for the same reason the leaf ids are -- `input.rs` and this
@@ -196,6 +268,15 @@ const HOOKS_GROUP: &str = "hooks";
 /// The counts render instead as the section's own first, non-selectable
 /// row -- see [`build_tree`]'s own doc.
 const PLUGINS_GROUP: &str = "plugins";
+/// Board item `01M11XWB4T8ZADNDB4M8R482MA`: the providers section's own
+/// top-level group label. Unlike `PLUGINS_GROUP` this section owns its data
+/// directly rather than shortcutting into a second surface -- see this
+/// module's own doc, "Providers: add/remove owned here" -- so, unlike the
+/// plugins header row, nothing here needs to avoid encoding live counts in
+/// the label text itself; the label stays a fixed string for the identical
+/// `settings_collapsed_groups`-keying reason `PLUGINS_GROUP`'s own doc
+/// gives.
+const PROVIDERS_GROUP: &str = "providers";
 
 /// The footer's session-only disclosure for the display/tool-output/
 /// permissions sections. Shown on every render, regardless of which row is
@@ -399,6 +480,34 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
             ];
             rows
         }),
+        // Board item `01M11XWB4T8ZADNDB4M8R482MA`: the providers section --
+        // see this module's own doc, "Providers: add/remove owned here",
+        // for why this OWNS its data directly rather than shortcutting into
+        // a second surface the way the plugins section below does.
+        group_node(PROVIDERS_GROUP, state, {
+            let mut rows: Vec<MenuNode> = Vec::new();
+            if state.provider_entries.is_empty() {
+                rows.push(MenuNode::static_row("no providers configured"));
+            } else {
+                for (id, entry) in &state.provider_entries {
+                    let status = provider_status_label(
+                        state.provider_status.get(id),
+                        state.provider_status_loading,
+                    );
+                    rows.push(MenuNode::leaf(
+                        format!("{id} ({}) -- {status} (Enter to remove)", entry.kind),
+                        format!("{LEAF_REMOVE_PROVIDER_PREFIX}{id}"),
+                    ));
+                }
+            }
+            for choice in crate::first_run::HOSTED_CHOICES {
+                rows.push(MenuNode::leaf(
+                    format!("add {} (Enter)", choice.label),
+                    format!("{LEAF_ADD_PROVIDER_PREFIX}{}", choice.id),
+                ));
+            }
+            rows
+        }),
         // Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: the plugins section is
         // now a single shortcut into `/plugin` (`view/plugins.rs`), not a
         // second listing -- see this module's own doc, "Plugins: one home,
@@ -452,6 +561,33 @@ fn group_node(label: &str, state: &AppState, children: Vec<MenuNode>) -> MenuNod
 /// not invented per-section. The trailing `-- on`/`-- off` text is kept
 /// alongside the box rather than replaced by it, so a value is never
 /// conveyed by the box glyph alone.
+/// One provider row's own status fragment -- acceptance 2's own "names the
+/// variable" and acceptance 3's own "visibly distinct wording" both live
+/// here. Renders the underlying `Usability::Unusable`/`Undetermined`
+/// payload's own `Display` VERBATIM (never a re-phrasing -- see this
+/// module's own doc, "Providers: add/remove owned here"): `Display` already
+/// names the actionable cause (`CredentialVariableUnset` carries the
+/// variable, `EndpointRefused` carries the URL), and re-wording it here is
+/// exactly the drift P-14 exists to prevent.
+///
+/// `status: None` (an id in [`AppState::provider_entries`] with no entry yet
+/// in [`AppState::provider_status`]) is `"checking..."` -- a FOURTH state,
+/// distinct from all three of [`Usability`]'s own variants, for the window
+/// before the background probe's first reply arrives. `loading` is
+/// currently unused by the rendered text itself (every not-yet-classified
+/// row already says "checking..." on its own merits) but is threaded
+/// through so a future need to distinguish "never classified" from
+/// "re-classifying after a stale value" has somewhere to read from without
+/// a signature change.
+fn provider_status_label(status: Option<&Usability>, _loading: bool) -> String {
+    match status {
+        None => "checking...".to_string(),
+        Some(Usability::Usable) => "working".to_string(),
+        Some(Usability::Unusable(reason)) => format!("not working: {reason}"),
+        Some(Usability::Undetermined(reason)) => format!("undetermined: {reason}"),
+    }
+}
+
 fn bool_label(name: &str, value: bool) -> String {
     let box_glyph = if value { "x" } else { " " };
     format!(
@@ -1229,6 +1365,230 @@ mod tests {
             id: "acme.review".to_string(),
             command: vec!["acme-review".to_string()],
         }];
+        for (w, h) in [(80u16, 1u16), (80, 2), (1, 24), (0, 0)] {
+            let backend = TestBackend::new(w.max(1), h.max(1));
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+                .unwrap_or_else(|e| panic!("panicked/errored at {w}x{h}: {e}"));
+        }
+    }
+
+    // ---- Providers section: board item `01M11XWB4T8ZADNDB4M8R482MA` ----
+
+    fn a_backend_entry(kind: &str) -> conway::config::schema::BackendEntry {
+        conway::config::schema::BackendEntry {
+            kind: kind.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Acceptance 1: every configured provider is listed, naming its id and
+    /// kind.
+    #[test]
+    fn the_providers_group_lists_every_configured_provider() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.provider_entries = std::collections::BTreeMap::from([
+            ("kimi".to_string(), a_backend_entry("openai-compat")),
+            ("anthropic".to_string(), a_backend_entry("anthropic")),
+        ]);
+
+        let text = plain_rows(&state);
+        assert!(text.contains("providers"), "{text}");
+        assert!(text.contains("kimi (openai-compat)"), "{text}");
+        assert!(text.contains("anthropic (anthropic)"), "{text}");
+    }
+
+    /// An empty fleet says so honestly rather than rendering nothing,
+    /// mirroring the deny/prompt/hooks sections' own empty-state idiom.
+    #[test]
+    fn an_empty_provider_fleet_has_an_honest_empty_state() {
+        let state = AppState::new(AgentId::new());
+        let text = plain_rows(&state);
+        assert!(text.contains("no providers configured"), "{text}");
+    }
+
+    /// Acceptance 2: a provider whose environment variable is unset is
+    /// shown as not working, and the reason names the VARIABLE -- straight
+    /// from `Unusable`'s own `Display`, never a re-phrasing.
+    #[test]
+    fn an_unset_credential_variable_is_shown_as_not_working_and_names_the_variable() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.provider_entries = std::collections::BTreeMap::from([(
+            "kimi".to_string(),
+            a_backend_entry("openai-compat"),
+        )]);
+        state.provider_status = std::collections::BTreeMap::from([(
+            "kimi".to_string(),
+            Usability::Unusable(
+                conway::backend_usability::Unusable::CredentialVariableUnset {
+                    variable: "KIMI_API_KEY".to_string(),
+                },
+            ),
+        )]);
+
+        let text = plain_rows(&state);
+        assert!(text.contains("not working"), "{text}");
+        assert!(
+            text.contains("KIMI_API_KEY"),
+            "the reason must name the variable, straight from Unusable::Display: {text}"
+        );
+    }
+
+    /// Acceptance 3, and the trap this item's own spec names explicitly: an
+    /// `Undetermined` provider must render VISIBLY DIFFERENTLY from an
+    /// `Unusable` one -- never collapsed to a single "broken" wording. A
+    /// test asserting only "not shown as working" would pass against that
+    /// collapse; this asserts the two renderings are actually distinct
+    /// strings.
+    #[test]
+    fn undetermined_and_unusable_render_visibly_differently() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.provider_entries = std::collections::BTreeMap::from([
+            ("broken".to_string(), a_backend_entry("openai-compat")),
+            ("unsure".to_string(), a_backend_entry("openai-compat")),
+        ]);
+        state.provider_status = std::collections::BTreeMap::from([
+            (
+                "broken".to_string(),
+                Usability::Unusable(conway::backend_usability::Unusable::EndpointRefused {
+                    base_url: "http://localhost:11434/v1".to_string(),
+                }),
+            ),
+            (
+                "unsure".to_string(),
+                Usability::Undetermined(conway::backend_usability::Undetermined::NotProbed),
+            ),
+        ]);
+
+        let rows = build_tree(&state).rows();
+        let broken_row = rows
+            .iter()
+            .find(|r| r.label.starts_with("broken ("))
+            .expect("the broken row must render")
+            .label
+            .clone();
+        let unsure_row = rows
+            .iter()
+            .find(|r| r.label.starts_with("unsure ("))
+            .expect("the unsure row must render")
+            .label
+            .clone();
+
+        assert!(broken_row.contains("not working"), "{broken_row}");
+        assert!(unsure_row.contains("undetermined"), "{unsure_row}");
+        assert_ne!(
+            broken_row, unsure_row,
+            "an Unusable and an Undetermined row must never render identically"
+        );
+        assert!(
+            !unsure_row.contains("not working"),
+            "an Undetermined provider must not read as a failure: {unsure_row}"
+        );
+    }
+
+    /// A provider present in the fleet but not yet classified (the window
+    /// before the background probe's reply arrives) renders its own fourth,
+    /// honest "checking..." state -- never silently defaulting to looking
+    /// like either `Usable` or a failure.
+    #[test]
+    fn an_unclassified_provider_renders_as_checking_not_as_broken_or_working() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.provider_entries = std::collections::BTreeMap::from([(
+            "kimi".to_string(),
+            a_backend_entry("openai-compat"),
+        )]);
+        // provider_status deliberately left empty -- classification has not
+        // returned yet.
+
+        let text = plain_rows(&state);
+        assert!(text.contains("checking..."), "{text}");
+        assert!(!text.contains("not working"), "{text}");
+        assert!(!text.contains("undetermined"), "{text}");
+    }
+
+    /// Acceptance 8/P-14: this section reuses `crate::first_run::
+    /// HOSTED_CHOICES` verbatim rather than restating which provider shapes
+    /// exist -- a line-anchored source check (not a bare substring), the
+    /// same shape `first_run.rs`'s own `main_rs_calls_should_offer_guided_
+    /// setup_rather_than_restating_its_condition` test uses for the
+    /// analogous P-14 claim one item over.
+    #[test]
+    fn the_add_provider_leaves_reuse_first_run_hosted_choices_verbatim() {
+        let this_file = include_str!("settings.rs");
+        assert!(
+            this_file.contains("for choice in crate::first_run::HOSTED_CHOICES {"),
+            "the add-provider leaves must iterate the SAME table `first_run.rs` uses, not a \
+             second, independent list of provider shapes"
+        );
+    }
+
+    /// Each `add {label}` leaf renders and is keyed by its own choice id,
+    /// resolvable back to an `Action::AddProviderChoice`.
+    #[test]
+    fn add_provider_leaves_render_one_per_hosted_choice() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+
+        let rows = build_tree(&state).rows();
+        for choice in crate::first_run::HOSTED_CHOICES {
+            let expected_id = format!("{LEAF_ADD_PROVIDER_PREFIX}{}", choice.id);
+            assert!(
+                rows.iter().any(|r| matches!(
+                    &r.kind,
+                    menu::MenuRowKind::Leaf { id } if id == &expected_id
+                )),
+                "missing an add-provider leaf for {}: {rows:?}",
+                choice.id
+            );
+        }
+    }
+
+    /// A configured provider's own row is a selectable, revocable leaf --
+    /// `Enter` removes it -- keyed by the map key itself (never an index).
+    #[test]
+    fn a_configured_provider_row_is_a_selectable_remove_leaf_keyed_by_id() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.provider_entries = std::collections::BTreeMap::from([(
+            "kimi".to_string(),
+            a_backend_entry("openai-compat"),
+        )]);
+
+        let rows = build_tree(&state).rows();
+        let row = rows
+            .iter()
+            .find(|r| r.label.starts_with("kimi ("))
+            .expect("the kimi row must render");
+        assert_eq!(
+            row.kind,
+            menu::MenuRowKind::Leaf {
+                id: format!("{LEAF_REMOVE_PROVIDER_PREFIX}kimi")
+            }
+        );
+        assert!(row.label.contains("(Enter to remove)"), "{}", row.label);
+    }
+
+    #[test]
+    fn draw_never_panics_with_providers_configured() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.provider_entries = std::collections::BTreeMap::from([(
+            "kimi".to_string(),
+            a_backend_entry("openai-compat"),
+        )]);
+        state.provider_status = std::collections::BTreeMap::from([(
+            "kimi".to_string(),
+            Usability::Unusable(
+                conway::backend_usability::Unusable::CredentialVariableUnset {
+                    variable: "KIMI_API_KEY".to_string(),
+                },
+            ),
+        )]);
         for (w, h) in [(80u16, 1u16), (80, 2), (1, 24), (0, 0)] {
             let backend = TestBackend::new(w.max(1), h.max(1));
             let mut terminal = Terminal::new(backend).expect("terminal");

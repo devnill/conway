@@ -157,6 +157,40 @@ pub enum Action {
     /// `commands::apply_trust_decision`; this module only reports which
     /// decision was made.
     TrustDecision(TrustDecision),
+    /// Board item `01M11XWB4T8ZADNDB4M8R482MA`: `Enter` on the settings
+    /// providers section's own `add_provider:<id>` leaf -- carries the
+    /// chosen [`crate::first_run::ProviderChoice::id`] (never the whole
+    /// choice; `crate::first_run::HOSTED_CHOICES` is the one table naming
+    /// what a choice IS, per P-14 -- see `App::apply_add_provider_choice`'s
+    /// own doc). The app loop decides -- with the REAL process environment,
+    /// which this module never reads -- whether the choice's own credential
+    /// env var is already usable (`crate::first_run::
+    /// resolve_credential_plan`): if so, the write happens in one
+    /// keystroke; otherwise it opens [`AppState::begin_add_provider_credential`]
+    /// instead. That decision deliberately does not live in this module
+    /// (`activate_settings_selection` has no access to a real environment
+    /// map, only `AppState`), mirroring `Action::TogglePlugin`'s own split
+    /// between "which row was it" (here) and "what does adding/removing
+    /// actually require" (`App::apply_plugin_toggle`).
+    AddProviderChoice(String),
+    /// The credential prompt's `Enter` (`Mode::AddProviderCredential`,
+    /// already validated by `crate::first_run::validate_credential_input` --
+    /// an invalid attempt keeps the card open with its own error shown and
+    /// never reaches this variant at all). Carries `(choice_id, secret)`;
+    /// the app loop resolves `choice_id` back against
+    /// `crate::first_run::HOSTED_CHOICES`, builds the entry the same way
+    /// `crate::first_run::backend_entry_json` already does for the pre-TUI
+    /// flow, and writes it via `conway::config::set_backend_provider`.
+    SubmitProviderCredential(String, String),
+    /// `Enter` on a provider's own `remove_provider:<id>` leaf -- carries
+    /// the provider's `backends.<id>` map key exactly, addressed by id
+    /// (never an index: `AppState::provider_entries` is itself a
+    /// `BTreeMap`, so there is no positional index to drift the way a
+    /// `Vec`-backed row could). The app loop
+    /// (`App::apply_remove_provider`) checks for a role whose `chain` still
+    /// names this provider BEFORE writing anything, mirroring
+    /// `app/plugin_toggle.rs`'s own toggle-off refusal.
+    RemoveProvider(String),
 }
 
 /// Routes a keypress based on `state.mode`, mutating `state.input`/`cursor`
@@ -219,6 +253,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
         Mode::IntentConfirm(_) => handle_intent_confirm_key(state, key),
         Mode::TrustPreview(_) => handle_trust_preview_key(state, key),
         Mode::EditingPattern(_) => handle_editing_pattern_key(state, key),
+        Mode::AddProviderCredential(_) => handle_add_provider_credential_key(state, key),
         Mode::Normal => handle_normal_key(state, key),
     }
 }
@@ -411,6 +446,22 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                 // `AppState` flip, so `None` (no `Action` to carry) is
                 // correct here, mirroring the group-toggle arm above.
                 state.open_plugins();
+            } else if let Some(provider_id) =
+                id.strip_prefix(super::view::settings::LEAF_REMOVE_PROVIDER_PREFIX)
+            {
+                // Addressed by the `backends.<id>` map key itself, never an
+                // index -- `AppState::provider_entries` is a `BTreeMap`, so
+                // there is no positional row to drift (see
+                // `Action::RemoveProvider`'s own doc).
+                return Some(Action::RemoveProvider(provider_id.to_string()));
+            } else if let Some(choice_id) =
+                id.strip_prefix(super::view::settings::LEAF_ADD_PROVIDER_PREFIX)
+            {
+                // The app loop, not this function, decides whether the
+                // choice's credential env var is already usable -- see
+                // `Action::AddProviderChoice`'s own doc for why that
+                // decision cannot live here.
+                return Some(Action::AddProviderChoice(choice_id.to_string()));
             }
             // `LEAF_TOOL_PREVIEW_LINES`: Enter has nothing to activate on
             // the numeric leaf -- it is adjusted with Left/Right instead
@@ -734,6 +785,75 @@ fn handle_editing_pattern_key(state: &mut AppState, key: KeyEvent) -> Action {
         }
     } else {
         Action::None
+    }
+}
+
+/// The settings providers section's credential prompt
+/// (`Mode::AddProviderCredential`, board item `01M11XWB4T8ZADNDB4M8R482MA`):
+/// a minimal, self-contained single-line editor -- `Char`/`Backspace`/
+/// `Left`/`Right` edit `AddProviderCredentialState::input`/`cursor`
+/// directly, deliberately never touching `AppState::input` (see that
+/// state's own doc for why the credential must never reach the field the
+/// main box/history/palette all read from). `Enter` validates via
+/// `crate::first_run::validate_credential_input` -- on success the card
+/// closes (`AppState::close_add_provider_credential`, no write yet: this
+/// module never touches the filesystem) and the validated secret rides out
+/// on [`Action::SubmitProviderCredential`] for the app loop to actually
+/// write; on failure the card stays open with the reason shown, mirroring
+/// [`handle_trust_preview_key`]'s own "a failed attempt never silently
+/// vanishes" contract. `Esc` cancels with no write at all, exactly like
+/// [`handle_editing_pattern_key`]'s own cancel arm.
+fn handle_add_provider_credential_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    let Mode::AddProviderCredential(cred) = &mut state.mode else {
+        return Action::None;
+    };
+    match key.code {
+        KeyCode::Esc => {
+            state.close_add_provider_credential();
+            Action::None
+        }
+        KeyCode::Enter => match crate::first_run::validate_credential_input(&cred.input) {
+            Ok(secret) => {
+                let choice_id = cred.choice_id.clone();
+                state.close_add_provider_credential();
+                Action::SubmitProviderCredential(choice_id, secret)
+            }
+            Err(msg) => {
+                cred.error = Some(msg.to_string());
+                Action::None
+            }
+        },
+        KeyCode::Backspace => {
+            if cred.cursor > 0 {
+                let end = byte_index(&cred.input, cred.cursor);
+                let start = byte_index(&cred.input, cred.cursor - 1);
+                cred.input.replace_range(start..end, "");
+                cred.cursor -= 1;
+            }
+            Action::None
+        }
+        KeyCode::Left => {
+            cred.cursor = cred.cursor.saturating_sub(1);
+            Action::None
+        }
+        KeyCode::Right => {
+            cred.cursor = (cred.cursor + 1).min(char_count(&cred.input));
+            Action::None
+        }
+        KeyCode::Char(c) => {
+            let idx = byte_index(&cred.input, cred.cursor);
+            cred.input.insert(idx, c);
+            cred.cursor += 1;
+            Action::None
+        }
+        _ => Action::None,
     }
 }
 

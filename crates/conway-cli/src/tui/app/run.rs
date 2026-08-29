@@ -113,6 +113,13 @@ impl App {
             .plugin_cmd_rx
             .take()
             .expect("plugin_cmd_rx is set in App::new and taken exactly once, here");
+        // Board item `01M11XWB4T8ZADNDB4M8R482MA`: mirrors `plugin_cmd_rx`
+        // exactly, same reasoning -- see `provider_status.rs`'s own module
+        // doc.
+        let mut provider_status_rx = self
+            .provider_status_rx
+            .take()
+            .expect("provider_status_rx is set in App::new and taken exactly once, here");
 
         loop {
             tokio::select! {
@@ -318,6 +325,19 @@ impl App {
                         if self.apply_plugin_command_done(done).await {
                             events = self.handle.events();
                         }
+                        dirty = true;
+                    }
+                }
+                // Board item `01M11XWB4T8ZADNDB4M8R482MA`: the reply side of
+                // `App::refresh_provider_entries_and_kick_off_status`'s
+                // spawned probe task -- mirrors `plugin_cmd_rx.recv()`
+                // immediately above in every structural respect (a spawned
+                // task's eventual reply, never awaited directly here), which
+                // is what keeps a real network probe under `ProbePolicy::All`
+                // from ever freezing this loop.
+                maybe_provider_status = provider_status_rx.recv() => {
+                    if let Some(done) = maybe_provider_status {
+                        self.apply_provider_status_done(done);
                         dirty = true;
                     }
                 }
@@ -664,6 +684,45 @@ impl App {
                                     self.apply_plugin_toggle(
                                         plugin_id,
                                         installed,
+                                        &env_vars,
+                                        &std::env::current_dir()
+                                            .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                                    );
+                                }
+                                // Board item `01M11XWB4T8ZADNDB4M8R482MA`:
+                                // mirrors `Action::TogglePlugin` immediately
+                                // above in every respect -- the decision and
+                                // write live in `app/provider_manage.rs`,
+                                // factored out for the same testability
+                                // reason, and `env_vars`/`cwd` are collected
+                                // HERE for the identical hermetic-testing
+                                // reason.
+                                Action::AddProviderChoice(choice_id) => {
+                                    let env_vars: std::collections::HashMap<String, String> =
+                                        std::env::vars().collect();
+                                    self.apply_add_provider_choice(
+                                        &choice_id,
+                                        &env_vars,
+                                        &std::env::current_dir()
+                                            .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                                    );
+                                }
+                                Action::SubmitProviderCredential(choice_id, secret) => {
+                                    let env_vars: std::collections::HashMap<String, String> =
+                                        std::env::vars().collect();
+                                    self.apply_add_provider_credential(
+                                        &choice_id,
+                                        secret,
+                                        &env_vars,
+                                        &std::env::current_dir()
+                                            .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                                    );
+                                }
+                                Action::RemoveProvider(provider_id) => {
+                                    let env_vars: std::collections::HashMap<String, String> =
+                                        std::env::vars().collect();
+                                    self.apply_remove_provider(
+                                        &provider_id,
                                         &env_vars,
                                         &std::env::current_dir()
                                             .unwrap_or_else(|_| std::path::PathBuf::from(".")),

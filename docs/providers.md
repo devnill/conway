@@ -297,6 +297,38 @@ backend is a config error naming the backend. An `api_key_env` naming a
 variable that isn't set at startup is also a named, fail-loud error;
 conway never silently falls back to "no credential."
 
+## Managing providers from the TUI
+
+Everything above is a `settings.json` edit. The interactive TUI's
+`/settings` menu also has its own **providers** section — the same data,
+a second way to reach it, not a second implementation of it:
+
+- **Every configured provider is listed**, by id and `kind`, with its
+  current status: `working`, `not working: <reason>` (the reason names
+  the actionable cause — an unset `api_key_env` variable by name, or the
+  URL that refused a connection), `undetermined: <reason>` (conway
+  genuinely cannot tell — a local server that needs no credential, or a
+  probe that hasn't answered yet — and this is deliberately never shown
+  as a failure), or `checking...` while the very first classification is
+  still in flight. Opening this section probes every endpoint live
+  (including remote ones, unlike the quieter check conway runs at
+  startup), on the understanding that you opened it because you wanted
+  to know right now.
+- **Adding a provider** offers the same two shapes the first-run flow
+  offers when conway starts with nothing configured (Anthropic, or an
+  OpenAI-compatible endpoint) — reusing your already-set credential
+  environment variable in one keystroke if it's there, or prompting for
+  the key (never echoed, never logged) if it isn't. It writes the same
+  `backends.<id>` entry a hand-edit would, to your user-scope
+  `settings.json`.
+- **Removing a provider** checks whether any `roles.*.chain` entry still
+  names it first. If one does, the removal is refused and the affected
+  role(s) are named — nothing is written — rather than silently leaving a
+  role pointing at a provider that no longer exists.
+
+This section doesn't do model pinning or fallback-chain editing — see
+[`routing.md`](routing.md) for that.
+
 ## Locality
 
 `backends.<id>.local` (bool, default `false`) declares whether a backend's

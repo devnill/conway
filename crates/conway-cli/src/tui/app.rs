@@ -49,6 +49,8 @@ mod marketplace;
 mod plugin_cmd;
 mod plugin_status;
 mod plugin_toggle;
+mod provider_manage;
+mod provider_status;
 mod run;
 mod shutdown;
 mod startup;
@@ -102,6 +104,13 @@ pub struct App {
     /// criterion.
     plugin_cmd_tx: mpsc::UnboundedSender<PluginCommandDone>,
     plugin_cmd_rx: Option<mpsc::UnboundedReceiver<PluginCommandDone>>,
+    /// Board item `01M11XWB4T8ZADNDB4M8R482MA`: mirrors `plugin_cmd_tx`/
+    /// `plugin_cmd_rx` exactly, same reasoning, for the providers section's
+    /// own background classification -- see `provider_status.rs`'s own
+    /// module doc for why `classify_fleet` is spawned off this loop rather
+    /// than awaited inline.
+    provider_status_tx: mpsc::UnboundedSender<provider_status::ProviderStatusDone>,
+    provider_status_rx: Option<mpsc::UnboundedReceiver<provider_status::ProviderStatusDone>>,
     /// T8: where [`Self::submit`] persists `state.history` to after every push
     /// -- `~/.conway/history` (or `$CONWAY_CONFIG_DIR/history` when set),
     /// resolved once at `App::new` via
@@ -289,6 +298,22 @@ impl App {
                         // why the refresh lives here rather than anywhere
                         // else.
                         self.state.hook_rules = self.conway.active_deny_capable_hook_rules();
+                        // Board item `01M11XWB4T8ZADNDB4M8R482MA`: the
+                        // providers section's own listing, refreshed on the
+                        // SAME seam as the five mirrors above, for the same
+                        // reason -- `view/settings.rs::build_tree` stays a
+                        // pure function of `AppState`. `env` is collected
+                        // HERE (never inside the method itself) for the
+                        // hermetic-testing idiom this file's own doc already
+                        // establishes for every other `env`-needing call
+                        // site.
+                        let env_vars: std::collections::HashMap<String, String> =
+                            std::env::vars().collect();
+                        self.refresh_provider_entries_and_kick_off_status(
+                            &env_vars,
+                            &std::env::current_dir()
+                                .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                        );
                     }
                     let host = commands::LiveHost {
                         handle: &self.handle,

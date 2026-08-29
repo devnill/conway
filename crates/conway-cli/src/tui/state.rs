@@ -25,6 +25,8 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
+use conway::backend_usability::Usability;
+use conway::config::schema::BackendEntry;
 use conway::plugin::PluginStatusContribution;
 use conway::{
     AgentId, AgentIntent, AgentResult, Envelope, Event, LogSeq, PermissionMode, ResultStatus,
@@ -46,7 +48,9 @@ mod turn_summary;
 pub use agent_panel::AgentVisibility;
 pub use agent_tree::{AgentTreeView, NodeStatus, TreeNode};
 pub use input_line::{clamp_history_size, DEFAULT_HISTORY_SIZE};
-pub use modal::{AskFate, AskModal, Mode, TrustDecision, TrustPreviewCard};
+pub use modal::{
+    AddProviderCredentialState, AskFate, AskModal, Mode, TrustDecision, TrustPreviewCard,
+};
 pub use status::{should_animate, Activity, SPINNER_FRAMES};
 pub use transcript::{clamp_tool_preview_lines, Entry, ToolStatus};
 
@@ -948,6 +952,39 @@ pub struct AppState {
     /// entry in `view/settings.rs::build_tree`'s root list. Toggled by
     /// `input::handle_settings_key`'s `Enter` arm on a group row.
     pub settings_collapsed_groups: HashSet<String>,
+    /// Board item `01M11XWB4T8ZADNDB4M8R482MA`: the settings menu's own
+    /// providers section -- every `backends.<id>` entry the CURRENT merged
+    /// config declares, refreshed (never merged into) each time `/settings`
+    /// is opened and after any add/remove from this section, via
+    /// `App::refresh_provider_entries_and_kick_off_status` (`app/
+    /// provider_status.rs`) -- the same "re-run the real merge, don't
+    /// enumerate layers by hand" idiom `app/plugin_toggle.rs`'s own
+    /// project-layer-override check already uses. This is what makes
+    /// acceptance 5 ("appears as working without a restart") possible at
+    /// all: `self.conway.config()` is the STALE, build-time snapshot
+    /// (restart-to-apply, exactly as `/plugin`'s own doc establishes), so a
+    /// provider added THIS session would never appear here if this field
+    /// mirrored that instead of a fresh `conway::config::load`.
+    pub provider_entries: BTreeMap<String, BackendEntry>,
+    /// The most recent live classification of [`Self::provider_entries`],
+    /// keyed identically -- `conway::backend_usability::classify_fleet`'s
+    /// own per-entry map, called with `ProbePolicy::All` (never `LocalOnly`:
+    /// this screen is the operator looking at the list with live status
+    /// implicitly requested by opening it, not a startup path -- see that
+    /// module's own doc). An id present in [`Self::provider_entries`] but
+    /// ABSENT here means "not yet classified" (the initial state, and the
+    /// window between opening the section and the spawned probe task's
+    /// reply arriving via `App`'s `provider_status_rx`) -- rendered as its
+    /// own "checking..." row, distinct from both `Usable` and `Unusable`,
+    /// so a slow probe can never be misread as a broken provider.
+    pub provider_status: BTreeMap<String, Usability>,
+    /// Whether a background classification is currently in flight -- set by
+    /// `App::refresh_provider_entries_and_kick_off_status` the instant the
+    /// probe task is spawned, cleared by `App::apply_provider_status_done`
+    /// once its reply arrives. Read only by the row-rendering helper (`view/
+    /// settings.rs`) to decide whether an id absent from
+    /// [`Self::provider_status`] is "checking..." or a genuine gap.
+    pub provider_status_loading: bool,
     /// The installed plugin commands, for `/help`'s pointer to the palette
     /// and `view::palette`'s own live-filtered listing. **NOT reset by `/resume`** despite
     /// `AppState::new` seeding it empty by default -- this is
@@ -1126,6 +1163,9 @@ impl AppState {
             settings_open: false,
             settings_selected: 0,
             settings_collapsed_groups: HashSet::new(),
+            provider_entries: BTreeMap::new(),
+            provider_status: BTreeMap::new(),
+            provider_status_loading: false,
             // empty here by default
             // (mirrors every other collection field's construction-time
             // default) -- `App::new` overwrites this immediately after
