@@ -114,6 +114,36 @@ gate_orphan_docs() {
   python3 scripts/check-orphan-docs.py
 }
 
+# Board item 01M12CHKAC21BP6H5GCYCTZ984. An ideate record append that
+# resolved its path against the invoking shell's cwd instead of the project
+# root created a `record/` tree wherever the shell happened to be standing
+# -- `.ideate/work-items/.ideate/record/`, and three more. Twenty-five
+# records landed there, invisible to every reader of the canonical store,
+# and stayed invisible for over a month: they were found by accident during
+# unrelated work. The append path is already fixed upstream (the installed
+# plugin walks upward for an enclosing project root before computing a
+# record path, and no stray has appeared since 2026-08-07), so this gate is
+# a net against a regression or a rolled-back plugin version, not a live
+# defect.
+#
+# LOCAL-ONLY, like `orphan docs` above but more so: `.ideate/` is gitignored
+# and absent in CI, so this passes vacuously there and only has teeth on a
+# machine with a real checkout. Stated rather than left to be discovered --
+# a gate whose name implies more coverage than it has is the defect P-15
+# calls auditing the guard's scope against its name.
+gate_ideate_record_layout() {
+  local strays
+  strays="$(find .ideate -type d -name record ! -path '.ideate/record' 2>/dev/null)"
+  if [[ -n "$strays" ]]; then
+    echo "stray '.ideate/record' tree(s) outside the canonical .ideate/record:" >&2
+    echo "$strays" >&2
+    echo "records written there are invisible to the record store -- move them to" >&2
+    echo ".ideate/record/<YYYY>/<MM>/<id>.md and remove the stray tree" >&2
+    return 1
+  fi
+  return 0
+}
+
 gate_doc() {
   RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 }
@@ -129,6 +159,7 @@ GATE_NAMES=(
   "cargo doc (-D warnings)"
   "cargo clippy (-D warnings)"
   "orphan docs (docs/vision index + reachability)"
+  "ideate record layout (no stray record/ trees)"
 )
 GATE_FUNCS=(
   gate_fmt
@@ -137,6 +168,7 @@ GATE_FUNCS=(
   gate_doc
   gate_clippy
   gate_orphan_docs
+  gate_ideate_record_layout
 )
 
 usage() {
