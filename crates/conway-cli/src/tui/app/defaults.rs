@@ -44,7 +44,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use conway::config::schema::ConwayConfig;
-use conway::config::{discovery, merged_document, set_default_role, LoadOptions};
+use conway::config::{
+    discovery, is_baked_in_role_floor, merged_document, set_default_role, LoadOptions,
+};
 use conway::RoleAlias;
 
 use super::provider_manage::load_roles_lax;
@@ -108,7 +110,23 @@ impl App {
         self.state.default_model_snapshot =
             ConwayConfig::model_for(&roles, role.as_str()).map(|s| s.to_string());
         self.state.default_role_snapshot = role.as_str().to_string();
-        self.state.known_role_names = roles.keys().cloned().collect();
+        // `roles` came from the full five-source merge (`load_roles_lax`),
+        // whose lowest layer always bakes in an untouched `"default"` role
+        // floor (`conway::config::merge::default_document`'s own doc) so a
+        // config with no `[roles]`/`default_role` of its own still
+        // validates. That floor is a validation safety net, never a role
+        // an operator declared, so it must not appear in the list a human
+        // cycles through here -- see `is_baked_in_role_floor`'s own doc.
+        self.state.known_role_names = roles
+            .iter()
+            .filter_map(|(name, entry)| {
+                if is_baked_in_role_floor(name, entry) {
+                    None
+                } else {
+                    Some(name.clone())
+                }
+            })
+            .collect();
     }
 
     /// `Enter` on the "defaults" section's `default role` leaf
