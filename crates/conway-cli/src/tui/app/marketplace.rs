@@ -60,11 +60,13 @@
 //! round trip here. [`App::apply_marketplace_install`] instead fetches the
 //! marketplace's own entry for `plugin_id` FIRST (a read, nothing written
 //! yet), and folds everything an operator needs to judge the install --
-//! name, description, version, every file it will write and the URL each
-//! comes from, the destination directory, and the unsandboxed-privilege
-//! caveat every other plugin-install surface in this codebase already
-//! states -- into the SAME transcript entry the install's own outcome is
-//! reported in, before performing the write. A two-step modal (typed a URL
+//! name, description, version, and either every file it will write and the
+//! URL each comes from (a conway-native entry) or where it was cloned from
+//! (a real Claude Code entry's `source` -- board item
+//! `01M0Y6RYZA94BK6YXJ7X8TNEGR`), the destination directory, and the
+//! unsandboxed-privilege caveat every other plugin-install surface in this
+//! codebase already states -- into the SAME transcript entry the install's
+//! own outcome is reported in, before performing the write. A two-step modal (typed a URL
 //! and id, see a preview, confirm separately) is a reasonable follow-up,
 //! not built here -- named explicitly rather than silently short of the
 //! spec's own bar.
@@ -82,7 +84,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use conway_plugin_marketplace::MarketplaceError;
+use conway_plugin_marketplace::{MarketplaceError, PluginSource};
 
 use super::App;
 use crate::tui::state::Entry;
@@ -114,11 +116,14 @@ impl App {
     ///
     /// **Dependency enforcement (board item `01M0WWMQZN5WK1AADKW4WKTQQZ`,
     /// this trigger's own scope fence): a resolved `MarketplacePluginEntry`
-    /// carries no dependency field of any kind today** --
-    /// `conway_plugin_marketplace::manifest::MarketplacePluginEntry` is
-    /// `id`/`name`/`description`/`version`/`files` only, `#[serde(deny_
-    /// unknown_fields)]`, so there is no wire shape through which a
-    /// marketplace manifest could even express "depends on plugin X" yet.
+    /// carries no dependency field of any kind today** -- board item
+    /// `01M0Y6RYZA94BK6YXJ7X8TNEGR` widened this type's own field set
+    /// (`id`/`name`/`description`/`version`/`files`/`source`, no longer
+    /// `#[serde(deny_unknown_fields)]` -- a real Claude Code entry and a
+    /// conway-native one are two different shapes sharing one Rust type
+    /// now, see `manifest.rs`'s own doc) but added nothing shaped like a
+    /// dependency either, so there is STILL no wire shape through which a
+    /// marketplace manifest could express "depends on plugin X".
     /// This method therefore has nothing to check here, and checking
     /// nothing is the CORRECT behavior, not a gap: there is no case in
     /// which this trigger could silently fetch past an unsatisfied
@@ -254,14 +259,36 @@ impl App {
 
         // Informed consent (this module's own doc): everything an operator
         // needs to judge what just happened, in the one Notice this action
-        // produces.
-        let mut files: Vec<&String> = entry.files.keys().collect();
-        files.sort();
-        let file_list = files
-            .iter()
-            .map(|f| f.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
+        // produces. Board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`: a real Claude
+        // Code entry declares no `files` map at all (`entry.source` names a
+        // git remote instead), so the disclosure names WHERE it came from
+        // rather than an empty, misleading "files: " for that shape.
+        let source_note = match &entry.source {
+            Some(PluginSource::GitSubdir { url, path }) => {
+                format!("fetched via git from {url} (subdirectory '{path}')")
+            }
+            Some(PluginSource::Github { repo }) => {
+                format!("fetched via git from https://github.com/{repo}")
+            }
+            // Unreachable in practice: `install_entry` already refused an
+            // `Unsupported` source before ever returning `Ok`, so
+            // `apply_marketplace_install` never reaches this call with one
+            // -- named explicitly so this match stays exhaustive rather
+            // than silently defaulting if `PluginSource` grows a variant.
+            Some(PluginSource::Unsupported { kind }) => {
+                format!("(unexpected: an unsupported source kind '{kind}' was installed)")
+            }
+            None => {
+                let mut files: Vec<&String> = entry.files.keys().collect();
+                files.sort();
+                let file_list = files
+                    .iter()
+                    .map(|f| f.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("files: {file_list}")
+            }
+        };
         let description = if entry.description.is_empty() {
             String::new()
         } else {
@@ -308,7 +335,7 @@ impl App {
                 self.state.transcript.push(Entry::Notice {
                     text: format!(
                         "installed '{}'{description} (version {}) from {marketplace_url} into {} \
-                         -- files: {file_list} -- runs with your own privileges, unsandboxed \
+                         -- {source_note} -- runs with your own privileges, unsandboxed \
                          (same trust footing as any other [plugins].claude_compat entry; nothing \
                          checks a fetched artifact against a digest or an allow-list) -- applies \
                          on next restart",

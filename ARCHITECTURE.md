@@ -238,13 +238,15 @@ Members today:
   values, `commands/*.md` become real `Command` implementations, and
   `hooks.json` rules map onto conway's own vocabulary where one exists —
   everything it cannot use is reported by name, never silently dropped.
-- **`crates/conway-plugin-marketplace`** — fetches a Claude Code
-  marketplace's manifest and a chosen plugin's declared files over HTTP
-  into conway's own plugin store, then writes the same
-  `[plugins].claude_compat[]` entry `conway-plugin-claude` above already
-  reads — an installed marketplace plugin is, on disk and in
-  `settings.json`, indistinguishable from a directory the operator cloned
-  or typed the path to by hand.
+- **`crates/conway-plugin-marketplace`** — fetches a marketplace's manifest
+  over HTTP (a conway-native one, or a real, published Claude Code
+  marketplace) and a chosen plugin's files — over HTTP for a conway-native
+  entry's declared `files` map, or by invoking the system `git` binary for
+  a real Claude Code entry's `git-subdir`/`github` source — into conway's
+  own plugin store, then writes the same `[plugins].claude_compat[]` entry
+  `conway-plugin-claude` above already reads — an installed marketplace
+  plugin is, on disk and in `settings.json`, indistinguishable from a
+  directory the operator cloned or typed the path to by hand.
 - **`crates/conway-plugin-statusline`** (`conway.statusline`) — runs an
   operator-configured command on a refresh cadence floored at one spawn
   per second and pushes its output as a `PluginStatusContribution`, the

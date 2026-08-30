@@ -1,35 +1,43 @@
 # Installing a plugin from a marketplace
 
-> **⚠ This installs from a *conway* marketplace manifest, and a Claude Code
-> marketplace is not one.** The format documented below is conway's own. A
-> real published Claude Code marketplace — the kind
-> `https://github.com/<owner>/<repo>` points at — **cannot be installed from
-> today**: its entries identify plugins by `name` (not `id`) and fetch them
-> by `source` (a git repository or subdirectory), where this page's format
-> requires an `id` and an explicit `files` map of individual URLs. There are
-> also two top-level fields (`owner`, `metadata`) that conway's strict
-> parser refuses outright.
->
-> This is a real limitation with an open ruling, not an oversight to work
-> around: board item `01M0Y6RYZA94BK6YXJ7X8TNEGR` carries the decision about
-> whether conway adopts the Claude Code schema and grows a git fetcher,
-> keeps this format and says so plainly, or narrows to a plain `git clone`.
-> `crates/conway-plugin-marketplace/tests/claude_code_manifest.rs` asserts
-> the incompatibility against a real published manifest, so this warning
-> cannot quietly go stale.
->
-> **Passing a repository URL** is the common way to meet this: conway needs
-> a URL pointing directly at a manifest *document*, and answers a repository
-> page with a `not_a_manifest_url` error that suggests the raw URL.
+**Two manifest shapes are understood: conway's own, and a real, published
+Claude Code marketplace.** Board item `01M0Y6RYZA94BK6YXJ7X8TNEGR` (ruling
+2026-08-29) closed the gap this page used to carry as a warning: an
+operator who passed a real `https://github.com/<owner>/<repo>` Claude Code
+marketplace got a `serde_json` parse error about GitHub's own HTML, because
+conway's manifest reader understood only its own format and never resolved
+a repository URL to the document Claude Code actually keeps
+(`.claude-plugin/marketplace.json`). Both gaps are closed:
 
-The network-reaching half of the plugin feature (board item
-`01M0VR96Y87FF2BVNTBSC6GEYR`), shipped by `crates/conway-plugin-marketplace`
-and wired at `crates/conway-cli/src/tui/app/marketplace.rs`. Depends on
+- A repository URL is resolved: `/plugin install
+  https://github.com/<owner>/<repo> <plugin>` reads
+  `.claude-plugin/marketplace.json` from inside it (see "Passing a
+  repository URL", below, for the mechanics conway uses without needing a
+  git clone just to LOCATE the manifest).
+- The real schema parses: `owner`/`metadata` top-level objects are
+  tolerated, and a `plugins[]` entry identified by `name` (rather than
+  `id`) naming a `source` (rather than a `files` map) is accepted
+  alongside conway's own shape -- see "The two manifest formats", below.
+- A `git-subdir`/`github` source actually FETCHES, by invoking the system
+  `git` binary (never a git library -- see "Fetching a git-sourced entry",
+  below).
+
+`crates/conway-plugin-marketplace/tests/claude_code_manifest.rs` asserts
+acceptance against the identical real, published manifest that used to be
+this page's characterization-test-for-a-refusal, so this claim cannot
+quietly go stale the way the old warning eventually would have.
+
+The network-reaching half of the plugin feature (board items
+`01M0VR96Y87FF2BVNTBSC6GEYR` and `01M0Y6RYZA94BK6YXJ7X8TNEGR`), shipped by
+`crates/conway-plugin-marketplace` and wired at
+`crates/conway-cli/src/tui/app/marketplace.rs`. Depends on
 [`claude-compat.md`](claude-compat.md) — an installed marketplace plugin is,
 on disk and in `settings.json`, an ordinary
 `[plugins].claude_compat[]` entry, nothing more — and on
 [`trust-and-security.md`](trust-and-security.md) for the trust ruling this
-page does not re-argue.
+page does not re-argue, including the git-cloning-specific note that
+page's "Fetching a git-sourced entry is still a network trust boundary"
+section adds.
 
 ## What this is, in one sentence
 
@@ -41,7 +49,9 @@ NOT have ("No downloading, ever" / "No config writer"): this page's item is
 where both now exist, layered on top of that read-at-runtime translation
 rather than replacing it.
 
-## The manifest format
+## The two manifest formats
+
+**Conway's own — a files-map entry, identified by `id`:**
 
 ```json
 {
@@ -64,18 +74,110 @@ rather than replacing it.
 
 `files` maps a relative path inside the installed plugin directory to the
 URL its bytes are fetched from — **deliberately not a single archive URL**.
-No git clone, no `.tar.gz`/`.zip` extraction: either would be a genuinely new
-dependency (`git2`/`tar`/`zip`, none of which are in this workspace's lock),
-and a symlink inside an extracted archive pointing outside the extraction
-root is a real safety surface a first cut should not take on casually.
-Fetching each file individually means
-there is no archive-extraction step, and therefore no symlink-in-an-archive
-class of attack to defend against at all — see
+This shape never extracts an archive (`.tar.gz`/`.zip`): that would be a
+genuinely new dependency (`tar`/`zip`, neither of which is in this
+workspace's lock), and a symlink inside an extracted archive pointing
+outside the extraction root is a real safety surface a first cut should
+not take on casually. Fetching each file individually means there is no
+archive-extraction step, and therefore no symlink-in-an-archive class of
+attack to defend against at all for this shape — see
 `conway-plugin-marketplace/Cargo.toml`'s own doc for the full argument.
-`#[serde(deny_unknown_fields)]` throughout: a marketplace response is
-untrusted network input, and this is a format conway itself defines the
-shape of (unlike `claude-compat.md`'s own deliberately permissive parsing of
-a FOREIGN file format).
+This is **kept, not the only shape understood**: it is what lets a
+conway-native marketplace exist with no git remote of its own.
+
+**A real, published Claude Code marketplace — identified by `name`,
+naming a `source` instead of `files`:**
+
+```json
+{
+  "name": "marketplace",
+  "owner": { "name": "Dan Singer" },
+  "metadata": { "description": "A Claude Code plugin marketplace", "version": "3.0.11" },
+  "plugins": [
+    {
+      "name": "beepboop",
+      "source": { "source": "git-subdir", "url": "https://github.com/devnill/beepboop", "path": "plugin" },
+      "description": "Plays sounds on Claude Code hook events",
+      "version": "1.4.0"
+    },
+    {
+      "name": "ideate",
+      "source": { "source": "github", "repo": "ideate-ai/ideate" },
+      "description": "a composable process framework for Claude Code",
+      "version": "3.0.0"
+    }
+  ]
+}
+```
+
+(Verbatim, real bytes: `crates/conway-plugin-marketplace/tests/fixtures/
+claude-code-marketplace.json`, fetched from `devnill/claude-marketplace`
+2026-08-26.) `owner`/`metadata` are read but not required, and neither
+object is `#[serde(deny_unknown_fields)]` — any field of either beyond what
+conway reads is simply ignored, the same "foreign format, read
+permissively" posture [`claude-compat.md`](claude-compat.md) already uses
+for every file IT reads. A `plugins[]` entry's own `#[serde(deny_unknown_
+fields)]` is dropped too, for the identical reason: this is Claude Code's
+schema, not conway's, so an unrecognized field is never looked at rather
+than refused. Only conway's own top-level container fields
+(`name`/`description`/`owner`/`metadata`/`plugins`) stay strict, since a
+typo there is far more likely a conway-native marketplace author's mistake
+than an unmodeled corner of Claude Code's schema.
+
+`source` is a tagged family. Two kinds fetch, both git-based:
+
+- **`git-subdir`** — a repository URL plus the subdirectory inside it that
+  is this plugin's own root.
+- **`github`** — an `owner/repo` pair; the whole repository is this
+  plugin's own root. conway builds `https://github.com/<repo>.git` itself
+  — the `repo` string is never passed to `git` as a URL directly.
+
+**Any other `source` kind parses (so browsing a marketplace that lists one
+still works) but refuses BY NAME the moment an install is attempted** —
+most plausibly one requiring archive extraction, which this crate still
+never adds (`Cargo.toml`'s own doc has the up-to-date argument).
+
+## Fetching a git-sourced entry
+
+`git-subdir`/`github` sources are fetched by invoking the **system `git`
+binary** — never a git library: `git2` never entered this workspace's
+lock, matching the ruling's own words, "invoke the system git (no crate
+enters the lock; refuse legibly if git is absent)". If `git` cannot be
+run at all, the install is refused by name (`git_unavailable`), never a
+confusing failure partway through a clone.
+
+**A git checkout is untrusted content too, closed the same way as a
+files-map entry's paths:**
+
+- The clone runs bounded by a timeout (120s), so an unreachable remote is
+  an ordinary reported failure, never a hang.
+- A `git-subdir` URL that is not `http://`/`https://` is refused before
+  `git` is ever invoked (`unsafe_git_url`) — git's OTHER transports
+  (`ext::<command>`, `fd::<n>`, a bare local path) can run an arbitrary
+  command or read an arbitrary local file, and the URL comes directly from
+  the marketplace's own response, untrusted network input.
+- Every entry in the checked-out plugin root is walked before a single
+  byte is copied into conway's own plugin store; a symlink ANYWHERE in
+  that tree refuses the whole install. A git checkout cannot be
+  archive-traversed (there is no archive-extraction step for it either),
+  but it is a narrower version of the same hazard class, not an absent
+  one — see "Path safety", below, and
+  [`trust-and-security.md`](trust-and-security.md)'s own note on this.
+
+## Passing a repository URL
+
+Claude Code treats a marketplace as a git repository and reads
+`.claude-plugin/marketplace.json` from inside it. conway needs a URL
+pointing directly at the manifest DOCUMENT — passing
+`https://github.com/<owner>/<repo>` itself answers 200 with GitHub's own
+HTML, which conway recognizes (a body that begins `<` rather than `{`) and
+refuses as `not_a_manifest_url`, naming what it wanted rather than a
+`serde_json` parse error about someone else's markup — the error also
+suggests the raw manifest URL
+(`https://raw.githubusercontent.com/<owner>/<repo>/HEAD/.claude-plugin/marketplace.json`)
+when the input is recognizably a bare GitHub repository URL. This does not
+fetch the suggested URL to confirm it exists — a wrong suggestion is worse
+than none, so it is offered as a guess, never a claim.
 
 Every failure this crate can hit is a named, typed error, never a panic and
 never an unbounded read: offline (DNS failure, connection refused, or a
@@ -83,14 +185,17 @@ request that would otherwise hang — bounded by a 20-second client timeout so
 "no network" is an ordinary reported failure, never a hang), a non-2xx HTTP
 status, a response over a byte-size cap (checked against `Content-Length`
 before any byte is read, and against the actual length either way, so a
-server that lies about or omits its own length cannot bypass the cap), and a
-malformed manifest (invalid JSON, or missing a required field) are each
-their own `MarketplaceError` variant.
+server that lies about or omits its own length cannot bypass the cap), a
+repository page mistaken for a manifest, and a malformed manifest (invalid
+JSON, or missing a required field) are each their own `MarketplaceError`
+variant.
 
 ## Where a fetched artifact lives, and what installing writes
 
-A plugin installed from id `acme-tools` lands at
-`<config dir>/plugins/marketplace/acme-tools` — alongside the
+A plugin installed from **identity** `acme-tools` — its own `id` for a
+conway-native entry, its own `name` for a real Claude Code entry (there is
+no `id` on that shape) — lands at
+`<config dir>/plugins/marketplace/acme-tools`, alongside the
 `settings.json` the matching entry is written into (`~/.conway/`, or
 `$CONWAY_CONFIG_DIR`) — and `settings.json` gains:
 
@@ -126,14 +231,21 @@ rather than left as an orphan nothing tracks.
 
 ## Path safety
 
-`plugin_id` and every relative path a plugin declares in `files` are
-validated before anything is written: a plugin id must be a single, ordinary
-path component (non-empty, no `/`/`\`, no `..`, not itself `.` or hidden);
-a declared file's own relative path is refused outright — never partially
-accepted — unless every one of its components is an ordinary path segment
-(no absolute path, no `..`, no bare `.`, no Windows drive/prefix component).
-This is the "path traversal in a plugin name (`../../etc`)" hazard, closed
-at the boundary, not inferred past.
+The resolved identity and every relative path a plugin declares — in
+`files`, or `git-subdir`'s own `path` — are validated before anything is
+written: it must be a single, ordinary path component (non-empty, no
+`/`/`\`, no `..`, not itself `.` or hidden); a declared file's own relative
+path is refused outright — never partially accepted — unless every one of
+its components is an ordinary path segment (no absolute path, no `..`, no
+bare `.`, no Windows drive/prefix component). This is the "path traversal
+in a plugin name (`../../etc`)" hazard, closed at the boundary, not
+inferred past — the SAME check, one implementation, for both a files-map
+entry's declared path and a git-subdir entry's own subdirectory.
+
+**A git checkout adds one more check a files-map entry never needed**: a
+symlink anywhere in the checked-out plugin root refuses the whole install,
+before a single byte is copied out of the checkout. See "Fetching a
+git-sourced entry", above.
 
 ## Uninstalling
 
@@ -198,9 +310,24 @@ marketplace-sourced artifact is not safer than a command path the operator
 typed by hand" is the ruling's own wording. **The operator's decision to
 install IS the control point** — which is why installing discloses, in the
 one transcript entry the action produces, the plugin's name, description,
-version, every file it writes and the URL each comes from, the destination
-directory, and the unsandboxed-privilege caveat, all before anything an
-operator would need to walk back is already running.
+version, and either every file it writes and the URL each comes from (a
+files-map entry) or where it was cloned from (a git-sourced entry), plus
+the destination directory and the unsandboxed-privilege caveat, all before
+anything an operator would need to walk back is already running.
+
+**Cloning a git repository is a network trust boundary too, stated
+explicitly rather than left implicit** — `docs/plugins/trust-and-security.md`'s
+own "Fetching a git-sourced entry is still a network trust boundary"
+section is the fuller statement, cross-referenced back here: conway now
+runs the system `git` binary against a URL a marketplace's own response
+names, on the operator's own machine, with the operator's own credentials
+and network access. This is not a NEW class of trust decision — it sits on
+the identical footing the paragraph above already states for a files-map
+fetch — but "conway now clones arbitrary third-party git repositories on
+operator command" is a materially different-SOUNDING sentence from "conway
+fetches a JSON file," and P-11 requires stating a new trust surface
+explicitly rather than letting a reader infer it from an unrelated
+paragraph.
 
 ## What this does NOT do
 
@@ -210,8 +337,13 @@ operator would need to walk back is already running.
   See "Triggering it", above.
 - **No digest check, no allow-list, no trust prompt**, and none is coming
   from this mechanism — see "Trust", above.
-- **No git clone, no archive extraction** — see "The manifest format",
-  above.
+- **No archive extraction, ever** — a `.tar.gz`/`.zip`-requiring source
+  kind refuses by name rather than being fetched. **Git cloning IS now
+  built** (`git-subdir`/`github` sources, via the system `git` binary) —
+  see "The two manifest formats" and "Fetching a git-sourced entry",
+  above; this bullet is corrected from an earlier "no git clone, no
+  archive extraction" claim that named both, which stopped being true
+  for the first half.
 - **No non-interactive (`conway <plugin-id>.<command>`-style) trigger.**
   `/plugin install`/`uninstall` are TUI-only, like every other `/plugin`
   action — a non-interactive trigger was considered and rejected here: the

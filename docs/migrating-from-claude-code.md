@@ -82,7 +82,7 @@ Everything else in the spec's table checked out.
 | --- | --- | --- |
 | `permissions.allow` (7 rules) | Maps — **but see above** | `~/.conway/permissions.json` (or the project one), not `settings.json`. Worked example below; only 1 of the 7 real rules actually survives the trip. |
 | `model` | Maps | `default_role` + `roles.<alias>.chain`. Worked example below. |
-| `enabledPlugins` (6) | Maps, per-entry (uneven) | `[plugins].claude_compat[]` for a directory-sourced one; no clean equivalent for the two GitHub-marketplace-sourced ones or the Claude-Code-official one. See "Plugins and marketplaces" below — this is the entry the spec's table most oversimplified. |
+| `enabledPlugins` (6) | Maps, per-entry (uneven) | `[plugins].claude_compat[]` for a directory-sourced one; `/plugin install <marketplace-repo-url> <plugin-name>` now installs the two GitHub-marketplace-sourced ones for real (board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`, 2026-08-29); no equivalent for the Claude-Code-official one. See "Plugins and marketplaces" below — this is the entry the spec's table most oversimplified. |
 | `extraKnownMarketplaces` (3) | Maps, imperfectly | conway has no persistent "known marketplaces" registry at all — `/plugin install <url> <plugin-id>` names a manifest URL directly, every time (`docs/plugins/marketplace.md`, "Smallest honest v1: a URL argument, not a browsable catalogue"). A named, reusable marketplace alias is a Claude Code concept with no conway counterpart; see below. |
 | `statusLine.command` | Plugin | Board item `01M0X500861X9035QJEA82F94K` — "A command-driven status line as a plugin." Conway's own `StatusLineConfig` is `{ fields: Vec<String> }` over a closed ten-variant vocabulary; a shell-command status line is opinionated output-formatting logic that belongs outside the core. |
 | `permissions.defaultMode` ("auto") | Plugin | Board item `01M0X4YDNVP7TZ0PVSRJ0388SS` — "Plugin-declared permission modes." Conway ships exactly three modes (`Prompt`/`Plan`/`AutoAllow`, cycled with `/settings`); a fourth, "prompt me only in edge cases," is the item that would add a mode beyond those three, and it's explicitly a plugin's job, not the core's. |
@@ -279,19 +279,41 @@ Claude Code does:
 
 - **A marketplace fetch** → `/plugin install <manifest-url> <plugin-id>`,
   which then writes its own `[plugins].claude_compat[]` entry for you
-  (`docs/plugins/marketplace.md`). **This is not what
-  `extraKnownMarketplaces` gives you.** Claude Code's `marketplace` and
-  `ideate-marketplace` entries are GitHub *repos*
-  (`devnill/claude-marketplace`, `ideate-ai/ideate`), resolved by Claude
-  Code's own marketplace-discovery convention. conway's `/plugin install`
-  takes a direct URL to a JSON manifest in **conway's own** manifest shape
-  (`{name, description, plugins: [{id, name, files: {path -> url}}]}`) —
-  a format this page has not verified either GitHub repo actually
-  publishes. `beepboop@marketplace`, `cyberbrain@marketplace`, and
-  `ideate@ideate-marketplace` do not translate on the strength of the
-  settings file alone; each would need someone to locate (or stand up) a
-  conway-shaped manifest URL for that plugin before `/plugin install`
-  could reach it.
+  (`docs/plugins/marketplace.md`). **This section used to say conway could
+  not reach `beepboop@marketplace`, `cyberbrain@marketplace`, or
+  `ideate@ideate-marketplace` at all without someone standing up a
+  conway-shaped manifest URL first. Board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`
+  (2026-08-29) corrected that**: conway's manifest reader now understands
+  a real, published Claude Code marketplace directly — `owner`/`metadata`
+  tolerated, a `name`+`source`-identified entry accepted, and a
+  `git-subdir`/`github` source fetched by invoking the operator's own
+  `git` binary. `extraKnownMarketplaces.marketplace` names
+  `devnill/claude-marketplace` as a GitHub repo; conway resolves that
+  SAME repo URL to `.claude-plugin/marketplace.json` (the document Claude
+  Code itself reads), so:
+
+  ```
+  /plugin install https://github.com/devnill/claude-marketplace beepboop
+  /plugin install https://github.com/devnill/claude-marketplace cyberbrain
+  ```
+
+  install `beepboop`/`cyberbrain` for real, identified by `name` (there is
+  no conway-native `id` on a real Claude Code entry) and fetched via git,
+  not a conway-authored `files` map. `ideate@ideate-marketplace` is the
+  same shape one level removed: `extraKnownMarketplaces.ideate-marketplace`
+  names `ideate-ai/ideate` itself as the marketplace repo, so
+  `/plugin install https://github.com/ideate-ai/ideate ideate` is the
+  equivalent lookup against THAT repo's own manifest.
+
+  **What is still a real gap, stated precisely rather than implied
+  away**: `git` must actually be on the operator's own `PATH` (refused by
+  name, `git_unavailable`, if not); a source kind requiring archive
+  extraction still refuses by name rather than installing (not a
+  limitation either of the two marketplaces above hits, since both
+  publish only `git-subdir`/`github` sources); and there is still no
+  persistent "known marketplaces" registry or alias — the full repository
+  URL is typed every time, exactly as `extraKnownMarketplaces` (3) above
+  already notes.
 
 - **`rust-analyzer-lsp@claude-plugins-official`** — sourced from Claude
   Code's own built-in official marketplace, with no directory or URL

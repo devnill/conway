@@ -20,9 +20,11 @@
 //!
 //! # Path safety (P-10): no archive, so no archive-traversal class of bug
 //!
-//! `validate_relative_path` (private to this module) is the ONLY thing standing between a
-//! marketplace-controlled `files` map and an arbitrary filesystem write.
-//! It accepts a relative path only when EVERY component is
+//! `validate_relative_path` (private to this module, also used by
+//! `crate::git_source` to validate a `git-subdir` entry's own `path` field)
+//! is the ONLY thing standing between a marketplace-controlled `files` map
+//! (or `git-subdir` subdirectory) and an arbitrary filesystem write. It
+//! accepts a relative path only when EVERY component is
 //! [`std::path::Component::Normal`] -- an absolute path, a `..`, a bare
 //! `.`, or (on Windows) a drive/prefix component is refused outright, never
 //! "sanitized" by stripping the dangerous part and proceeding (this
@@ -33,9 +35,16 @@
 //! created (never extracted from an archive whose own entries might
 //! contain symlinks pointing outside the extraction root), the
 //! symlink-in-an-extracted-archive hazard P-10 names does not apply here at
-//! all -- there is no archive-extraction step for it to attach to. See
-//! `Cargo.toml`'s own doc for why an archive format was scoped out rather
-//! than defended against.
+//! all -- there is no archive-extraction step for it to attach to, and this
+//! remains true even now that a git-sourced entry is also supported: this
+//! crate still never extracts an archive of any kind (`Cargo.toml`'s own
+//! doc, and board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`'s ruling, both state
+//! this deliberately rather than incidentally). A GIT CHECKOUT is a
+//! narrower version of the same hazard class, not an absent one -- it
+//! cannot be extracted-archive-traversed, but it can still contain a
+//! symlink, which `crate::git_source::validate_checkout_tree` refuses
+//! outright before this module ever copies a byte of it into a staging
+//! directory. See `crate::git_source`'s own doc for that half.
 //!
 //! # Never a partial install (P-13)
 //!
@@ -189,39 +198,59 @@ async fn stage_files(
 /// install is only removed once the NEW one has fully, successfully
 /// staged, so a failed re-install leaves the previous, working install
 /// untouched rather than half-overwritten.
+///
+/// **Two fetch paths, chosen by which `entry` actually declared** (board
+/// item `01M0Y6RYZA94BK6YXJ7X8TNEGR`): `entry.source` present routes to
+/// `crate::git_source::fetch_git_source` (a real Claude Code entry);
+/// `entry.files` non-empty routes to this module's own `stage_files` (a
+/// conway-native entry). Both land in the identical `staging_dir`, so
+/// everything below this branch -- the atomic rename, the `InstalledPlugin`
+/// this returns -- is unchanged by which path ran. An entry declaring
+/// neither is [`MarketplaceError::NoFiles`], exactly as before.
 pub async fn install_entry(
     marketplace_url: &str,
     entry: &MarketplacePluginEntry,
     store_root: &Path,
 ) -> Result<InstalledPlugin, MarketplaceError> {
-    validate_plugin_id(&entry.id)?;
-    if entry.files.is_empty() {
-        return Err(MarketplaceError::NoFiles {
-            id: entry.id.clone(),
-        });
-    }
-    if entry.files.len() > MAX_FILES_PER_PLUGIN {
-        return Err(MarketplaceError::TooManyFiles {
-            id: entry.id.clone(),
-            count: entry.files.len(),
-            limit: MAX_FILES_PER_PLUGIN,
-        });
+    let id = entry
+        .identity()
+        .ok_or(MarketplaceError::MissingIdentity)?
+        .to_string();
+    validate_plugin_id(&id)?;
+    if entry.source.is_none() {
+        if entry.files.is_empty() {
+            return Err(MarketplaceError::NoFiles { id });
+        }
+        if entry.files.len() > MAX_FILES_PER_PLUGIN {
+            return Err(MarketplaceError::TooManyFiles {
+                id,
+                count: entry.files.len(),
+                limit: MAX_FILES_PER_PLUGIN,
+            });
+        }
     }
 
-    let http = client().map_err(|source| MarketplaceError::Network {
-        url: marketplace_url.to_string(),
-        source,
-    })?;
-
-    let dest_dir = plugin_dir(&entry.id, store_root);
-    let staging_dir = store_root.join(format!(".{}.install-tmp", entry.id));
+    let dest_dir = plugin_dir(&id, store_root);
+    let staging_dir = store_root.join(format!(".{id}.install-tmp"));
     // Best-effort cleanup of a staging directory left behind by a prior
     // crashed/killed run -- never a hard error if it is not there, or
     // cannot be removed for some other reason (the fresh staging attempt
     // below will surface any real problem writing into it).
     let _ = std::fs::remove_dir_all(&staging_dir);
 
-    if let Err(err) = stage_files(&http, entry, &staging_dir).await {
+    let stage_result = if let Some(source) = &entry.source {
+        crate::git_source::fetch_git_source(&id, source, store_root, &staging_dir).await
+    } else {
+        match client().map_err(|source| MarketplaceError::Network {
+            url: marketplace_url.to_string(),
+            source,
+        }) {
+            Ok(http) => stage_files(&http, entry, &staging_dir).await,
+            Err(err) => Err(err),
+        }
+    };
+
+    if let Err(err) = stage_result {
         let _ = std::fs::remove_dir_all(&staging_dir);
         return Err(err);
     }
@@ -230,21 +259,18 @@ pub async fn install_entry(
         tokio::fs::remove_dir_all(&dest_dir)
             .await
             .map_err(|source| MarketplaceError::Io {
-                id: entry.id.clone(),
+                id: id.clone(),
                 source,
             })?;
     }
     tokio::fs::rename(&staging_dir, &dest_dir)
         .await
         .map_err(|source| MarketplaceError::Io {
-            id: entry.id.clone(),
+            id: id.clone(),
             source,
         })?;
 
-    Ok(InstalledPlugin {
-        id: entry.id.clone(),
-        dir: dest_dir,
-    })
+    Ok(InstalledPlugin { id, dir: dest_dir })
 }
 
 /// Fetches `marketplace_url`'s manifest, finds `plugin_id` in it, and
@@ -299,6 +325,7 @@ mod tests {
             name: id.to_string(),
             description: String::new(),
             version: "1.0.0".to_string(),
+            source: None,
             files: files
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -442,6 +469,7 @@ mod tests {
             name: String::new(),
             description: String::new(),
             version: String::new(),
+            source: None,
             files: files.into_iter().collect(),
         };
         let result = tokio::time::timeout(
@@ -462,6 +490,193 @@ mod tests {
             .await
             .expect_err("no files");
         assert_eq!(err.kind(), "no_files");
+    }
+
+    /// Board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`, acceptance 4: an archive-
+    /// requiring source kind is refused BY NAME before anything is written
+    /// -- no stub `git` needed, since [`crate::git_source::fetch_git_source`]
+    /// refuses before ever invoking a subprocess (this module's own updated
+    /// doc: two fetch paths, chosen by what `entry` declares).
+    #[tokio::test]
+    async fn a_source_entry_naming_an_unsupported_kind_is_refused_and_writes_nothing() {
+        let store = tempfile::tempdir().expect("store tempdir");
+        let e = MarketplacePluginEntry {
+            id: String::new(),
+            name: "archived-thing".to_string(),
+            description: String::new(),
+            version: String::new(),
+            source: Some(crate::manifest::PluginSource::Unsupported {
+                kind: "url".to_string(),
+            }),
+            files: BTreeMap::new(),
+        };
+        let err = install_entry("http://marketplace.example/mp.json", &e, store.path())
+            .await
+            .expect_err("archive-requiring source kinds are refused");
+        assert_eq!(err.kind(), "unsupported_source_kind");
+        assert!(
+            std::fs::read_dir(store.path()).unwrap().next().is_none(),
+            "nothing may be written for a source kind conway cannot fetch"
+        );
+    }
+
+    /// An entry with neither `id` nor `name` is refused before anything is
+    /// written -- [`MarketplacePluginEntry::identity`]'s own `None` case.
+    #[tokio::test]
+    async fn an_entry_with_no_identity_is_refused() {
+        let store = tempfile::tempdir().expect("store tempdir");
+        let e = MarketplacePluginEntry {
+            id: String::new(),
+            name: String::new(),
+            description: String::new(),
+            version: String::new(),
+            source: None,
+            files: BTreeMap::new(),
+        };
+        let err = install_entry("http://marketplace.example/mp.json", &e, store.path())
+            .await
+            .expect_err("no identity");
+        assert_eq!(err.kind(), "missing_identity");
+    }
+
+    // -----------------------------------------------------------------
+    // Board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`, layer 4: a `source` entry
+    // actually fetched -- via a STUB `git` (a plain shell script, written
+    // fresh into a temp dir, the same fixture-script technique
+    // `conway-plugin-mcp`/`conway-plugin-subprocess`'s own `tests/common/
+    // mod.rs::write_script` already use), never a real network host or a
+    // dependency on whether THIS machine has real `git` at all (P-15). The
+    // stub ignores the URL it is given entirely -- it exists to prove this
+    // module's own orchestration (subdir resolution, the checkout-to-
+    // staging copy, cleanup), not `git` itself, which this crate does not
+    // own and will never re-test.
+    // -----------------------------------------------------------------
+
+    /// Writes a stub `git` that answers `--version` and `clone ... <url>
+    /// <dest>` by ignoring every argument except the LAST one (`<dest>`,
+    /// always the final positional argument in `crate::git_source::
+    /// run_git_clone`'s own invocation) -- populating a fixed tree rather
+    /// than actually cloning anything.
+    #[cfg(unix)]
+    fn write_stub_git(dir: &std::path::Path) -> std::path::PathBuf {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join("git");
+        let mut f = std::fs::File::create(&path).expect("create stub git");
+        f.write_all(
+            br#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "git version 2.99.0 (stub)"
+  exit 0
+fi
+if [ "$1" = "clone" ]; then
+  last=""
+  for a in "$@"; do
+    last="$a"
+  done
+  dest="$last"
+  mkdir -p "$dest/plugin/.claude-plugin"
+  echo '{"name":"stub"}' > "$dest/plugin/.claude-plugin/plugin.json"
+  echo 'root' > "$dest/root-file.txt"
+  exit 0
+fi
+exit 1
+"#,
+        )
+        .expect("write stub git");
+        drop(f);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x stub git");
+        path
+    }
+
+    /// Points [`crate::git_source::GIT_PROGRAM_ENV`] at `program` for the
+    /// duration of `body` -- a thin, path-typed wrapper over
+    /// [`crate::git_source::test_support::with_program`], which is what
+    /// actually serializes this against `git_source.rs`'s OWN test doing
+    /// the identical thing to the identical process-global env var (that
+    /// module's own doc has the full argument for why this cannot be a
+    /// bare save/restore).
+    #[cfg(unix)]
+    async fn with_stub_git<F, Fut, T>(program: &std::path::Path, body: F) -> T
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        crate::git_source::test_support::with_program(program.as_os_str(), body).await
+    }
+
+    /// A `git-subdir` entry installs ONLY its own declared subdirectory --
+    /// `root-file.txt`, which the stub also writes at the checkout root but
+    /// outside `plugin/`, must never appear in the installed directory.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_git_subdir_entry_installs_only_its_own_subdirectory() {
+        let bin_dir = tempfile::tempdir().expect("bin tempdir");
+        let git = write_stub_git(bin_dir.path());
+        let store = tempfile::tempdir().expect("store tempdir");
+
+        let e = MarketplacePluginEntry {
+            id: String::new(),
+            name: "beepboop".to_string(),
+            description: "plays sounds".to_string(),
+            version: "1.4.0".to_string(),
+            source: Some(crate::manifest::PluginSource::GitSubdir {
+                url: "https://github.com/devnill/beepboop".to_string(),
+                path: "plugin".to_string(),
+            }),
+            files: BTreeMap::new(),
+        };
+
+        let installed = with_stub_git(&git, || {
+            install_entry("https://example.com/marketplace.json", &e, store.path())
+        })
+        .await
+        .expect("install via stub git");
+
+        assert_eq!(installed.id, "beepboop");
+        assert!(installed.dir.join(".claude-plugin/plugin.json").is_file());
+        assert!(
+            !installed.dir.join("root-file.txt").exists(),
+            "content outside the declared subdirectory must never be installed"
+        );
+        // No leftover checkout or staging directory.
+        assert!(!store.path().join(".beepboop.git-checkout-tmp").exists());
+        assert!(!store.path().join(".beepboop.install-tmp").exists());
+    }
+
+    /// A `github` entry (no subdirectory) installs the WHOLE checkout root.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_github_entry_with_no_subdirectory_installs_the_whole_checkout() {
+        let bin_dir = tempfile::tempdir().expect("bin tempdir");
+        let git = write_stub_git(bin_dir.path());
+        let store = tempfile::tempdir().expect("store tempdir");
+
+        let e = MarketplacePluginEntry {
+            id: String::new(),
+            name: "outpost".to_string(),
+            description: String::new(),
+            version: "0.2.0".to_string(),
+            source: Some(crate::manifest::PluginSource::Github {
+                repo: "devnill/outpost".to_string(),
+            }),
+            files: BTreeMap::new(),
+        };
+
+        let installed = with_stub_git(&git, || {
+            install_entry("https://example.com/marketplace.json", &e, store.path())
+        })
+        .await
+        .expect("install via stub git");
+
+        assert_eq!(installed.id, "outpost");
+        assert!(installed.dir.join("plugin/.claude-plugin/plugin.json").is_file());
+        assert!(
+            installed.dir.join("root-file.txt").is_file(),
+            "a `github` source has no subdirectory -- the whole checkout root installs"
+        );
     }
 
     #[tokio::test]
