@@ -182,9 +182,9 @@ result for each even when it is "nothing visible."
 | --- | --- | --- | --- |
 | `01M10HSEN` tilde | Covered by 3.3/3.4 | As above | As above |
 | `01M0Y6RYZ` marketplace | `/plugin install https://github.com/devnill/claude-marketplace beepboop` — the exact command the defect was reported from | Installs, or fails with an error naming what conway expected | A JSON parse error about HTML means layer 1 regressed |
-| `01M1895V6B` semver edges | Nothing consumes `ui.form` visibly yet | No spurious version-mismatch error anywhere | A version mismatch surfaces during normal use |
+| `01M1895V6B` semver edges | `ui.form` now has a visible consumer — see 6b.9 (`/model` bare opens a menu when `conway.ui` is installed) | No spurious version-mismatch error anywhere | A version mismatch surfaces during normal use |
 | `01M11XYAD` surface coherence | **Sit in the app and judge it.** Six rules in [`vision/DESIGN-surface-coherence.md`](vision/DESIGN-surface-coherence.md) | It reads as one tool; each thing has one obvious home | Anything feels scattered — **this is the subjective half and it is the point**; the page was written from a complaint about feel |
-| `01M0WWPA7` conway.ui | Enable `conway.ui`; check `/plugin` and its docs | Behaviour matches what the docs say about it | The docs claim something you cannot observe |
+| `01M0WWPA7` conway.ui | Enable `conway.ui`; check `/plugin` and its docs. Then exercise it for real via 6b.9 — it is no longer a capability with nothing calling it | Behaviour matches what the docs say about it, and the `/model` menu actually renders and returns your pick | The docs claim something you cannot observe |
 | `01M18Q7P25` default model | Open `/settings` → defaults | Default role and default model both shown, **both labelled as defaults**; default model is read-only; the role cycle offers **only roles you declared** | A `default` role you never wrote appears — that was a real defect, fixed; its return is a regression |
 | `01M18Q8YWW` citations gate | Nothing operator-visible | — | Skip unless something surprises you |
 
@@ -202,6 +202,8 @@ minutes. ideate is the opposite kind of test and takes real sessions.
 | 5.2 | Drive a session and listen | Cues fire at sensible moments | A cue on `/ask` would mean the fork/spawn narrowing regressed |
 | 5.3 | Run `/beepboop:config` | The command completes | **Note:** beepboop's own body names a stale cache path (`.../cache/beepboop` vs `.../cache/marketplace/beepboop/1.4.0`). If it fails **there**, that is beepboop's bug, not conway's — report the distinction rather than scoring it against the tilde fix |
 | 5.4 | Install ideate via `claude_compat` | Loads | — |
+| 5.4a | `/plugin install https://github.com/ideate-ai/ideate ideate` — **the exact command that failed on the walk**, and the one you would type in Claude Code | Installs. ideate's manifest uses `"source": "./"` (a plain string meaning *this repo is the plugin*), which board item `01M1A9J9C9YRH3YPTGD335HZPZ` taught the parser to read | `missing field \`source\`` means the string form regressed — the field is present, it just is not an object. A message about a web page rather than a manifest means repo-URL resolution regressed |
+| 5.4b | Try the two other forms the walk tried: `ideate-ai/ideate ideate`, and the `raw.githubusercontent.com/.../marketplace.json` URL | Each either installs or fails naming what conway accepts | Any error containing `builder error` — that is internal HTTP-client text leaking to the operator |
 | 5.5 | MCP tools | Confirm rather than assume they work | — |
 | 5.6 | Skills — `/ideate:refine`, `/ideate:execute` | Load, appear, run; cross-references to each other and `shared/` survive translation | A skill that loads but cannot reach its siblings |
 | 5.7 | Agents — does `ideate:worker` resolve and run? | Its declared tool restrictions survive | **A dropped restriction is a permission change you did not ask for — flag it loudly** |
@@ -226,6 +228,30 @@ The point of the whole plan: not "does it start" but "can you work in it."
 
 ---
 
+## Part 6b — TUI interaction fixes (board items `01M1A9M2EVJNR0HBN86A8E40EA`,
+`01M1A35S609TZ613GAECPEHX8D`)
+
+Its own section, not folded into Part 6's existing rows — the
+operator found these three defects and one gap on a virgin install,
+2026-08-30, and this addendum is how a later walk re-checks the fix rather
+than the symptom. **UNWALKED**, same caveat as the rest of this plan: written
+from the code and its own tests, not from a completed manual pass.
+
+| Step | Do | Pass | Fail |
+| --- | --- | --- | --- |
+| A.1 | Trigger a permission prompt (e.g. ask the agent to run a shell command outside an allowed pattern), then press `Esc` | A text entry opens (`DENY WITH FEEDBACK`), not an immediate decision | The call is denied instantly with no chance to type anything |
+| A.2 | Type a reason (e.g. "try the read-only tool instead") and press `Enter` | The model's next turn reflects that exact reason, not a generic canned message | The model sees "user declined; try another approach" regardless of what you typed |
+| A.3 | Repeat A.1, but press `Enter` immediately with nothing typed | The model sees the same generic "user declined; try another approach" wording as before this item | The call hangs, or the text entry has no fallback |
+| A.4 | Repeat A.1, then press `Esc` a second time (inside the text entry) | The permission prompt returns, undecided — you can still press `y`/`a`/`n`/`p` | The call is denied with no feedback, or the prompt is lost |
+| A.5 | Open `/settings`, then trigger an error on a DIFFERENT agent (e.g. let a background tool call fail) while the menu is still open | The error is fully readable, pushed above the menu | The error is invisible until you close the menu and scroll back |
+| A.6 | Type a few lines of a multi-line draft (`Shift-Enter` between them), then press `Up`/`Down` | The cursor moves within the draft first; once at the top/bottom line, `Up`/`Down` scroll the transcript one line instead | History recalls at any cursor position (see A.7 for where history actually lives) |
+| A.7 | Press `Ctrl-P`/`Ctrl-N` | Your previous/next input history entry appears | Nothing happens, or `Up`/`Down` alone recall history (a scroll then silently misfires as history recall for anyone whose terminal does two-finger alternate scroll — see `docs/interactive.md`'s own "Why `Up`/`Down` scroll, not recall history") |
+| A.8 | Type `/model` with no argument, `conway.ui` NOT installed (the default) | A text listing of configured `backend/model` pairs appears, with the currently active one marked | `/model` errors, naming a usage form |
+| A.9 | Install `conway.ui` (`[plugins].install`), restart, then type `/model` with no argument | A menu opens (`Up`/`Down` choose, `Enter` picks) instead of plain text | The text listing still appears with `conway.ui` installed |
+| A.10 | Pick (or type) one of the pairs the listing/menu showed, verbatim, as `/model <pair>` | The switch succeeds — the SAME string the listing showed is accepted | The exact string the listing/menu just showed is rejected |
+
+---
+
 ## Part 7 — the verdict
 
 **Rung one: is conway usable for this class of work alongside the incumbent
@@ -246,26 +272,3 @@ Then:
 3. Correct **this plan** where the walk showed it wrong, and change its status
    line from UNWALKED.
 
----
-
-## Addendum — TUI interaction fixes (board items `01M1A9M2EVJNR0HBN86A8E40EA`,
-`01M1A35S609TZ613GAECPEHX8D`)
-
-Appended as its own section, not folded into Part 6/7's existing rows — the
-operator found these three defects and one gap on a virgin install,
-2026-08-30, and this addendum is how a later walk re-checks the fix rather
-than the symptom. **UNWALKED**, same caveat as the rest of this plan: written
-from the code and its own tests, not from a completed manual pass.
-
-| Step | Do | Pass | Fail |
-| --- | --- | --- | --- |
-| A.1 | Trigger a permission prompt (e.g. ask the agent to run a shell command outside an allowed pattern), then press `Esc` | A text entry opens (`DENY WITH FEEDBACK`), not an immediate decision | The call is denied instantly with no chance to type anything |
-| A.2 | Type a reason (e.g. "try the read-only tool instead") and press `Enter` | The model's next turn reflects that exact reason, not a generic canned message | The model sees "user declined; try another approach" regardless of what you typed |
-| A.3 | Repeat A.1, but press `Enter` immediately with nothing typed | The model sees the same generic "user declined; try another approach" wording as before this item | The call hangs, or the text entry has no fallback |
-| A.4 | Repeat A.1, then press `Esc` a second time (inside the text entry) | The permission prompt returns, undecided — you can still press `y`/`a`/`n`/`p` | The call is denied with no feedback, or the prompt is lost |
-| A.5 | Open `/settings`, then trigger an error on a DIFFERENT agent (e.g. let a background tool call fail) while the menu is still open | The error is fully readable, pushed above the menu | The error is invisible until you close the menu and scroll back |
-| A.6 | Type a few lines of a multi-line draft (`Shift-Enter` between them), then press `Up`/`Down` | The cursor moves within the draft first; once at the top/bottom line, `Up`/`Down` scroll the transcript one line instead | History recalls at any cursor position (see A.7 for where history actually lives) |
-| A.7 | Press `Ctrl-P`/`Ctrl-N` | Your previous/next input history entry appears | Nothing happens, or `Up`/`Down` alone recall history (a scroll then silently misfires as history recall for anyone whose terminal does two-finger alternate scroll — see `docs/interactive.md`'s own "Why `Up`/`Down` scroll, not recall history") |
-| A.8 | Type `/model` with no argument, `conway.ui` NOT installed (the default) | A text listing of configured `backend/model` pairs appears, with the currently active one marked | `/model` errors, naming a usage form |
-| A.9 | Install `conway.ui` (`[plugins].install`), restart, then type `/model` with no argument | A menu opens (`Up`/`Down` choose, `Enter` picks) instead of plain text | The text listing still appears with `conway.ui` installed |
-| A.10 | Pick (or type) one of the pairs the listing/menu showed, verbatim, as `/model <pair>` | The switch succeeds — the SAME string the listing showed is accepted | The exact string the listing/menu just showed is rejected |
