@@ -110,6 +110,18 @@ fn read_tool_result(records: &[LogRecord]) -> (bool, String) {
 /// real `read` tool inside the real compiled binary, reaches the simulated
 /// home directory's file -- not a literal `<cwd>/~/target.txt` (which would
 /// not exist, and would surface as the pre-fix "file not found").
+///
+/// `#[cfg(unix)]` only: this test overrides `HOME`/`USERPROFILE` on the
+/// SPAWNED CHILD, but on Windows `directories::BaseDirs::home_dir()` does
+/// not read `%USERPROFILE%` at all -- it goes through the Windows Known
+/// Folder API (`SHGetKnownFolderPath` / `FOLDERID_Profile`), which the env
+/// override has zero effect on (see `home_dir`'s doc comment in
+/// `conway-core/src/containment.rs`). On Windows the child would expand
+/// `~/target.txt` against the real machine profile directory instead of
+/// `simulated_home`, the marker file would not be there, and this test
+/// would fail for a reason unrelated to the expansion logic under test.
+/// Gated here with a stated reason rather than left to fail unexplained.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_leading_tilde_slash_argument_resolves_against_the_real_home_directory() {
     let simulated_home = tempfile::tempdir().expect("tempdir for simulated $HOME");
