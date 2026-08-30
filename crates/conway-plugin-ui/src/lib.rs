@@ -44,7 +44,7 @@
 //! exactly the "designing on theory" INTENT §8.5 forbids). Either way, this
 //! plugin ALWAYS installs -- the manifest declares no host capability at
 //! all -- and the degrade/refuse decision happens per CALL, inside
-//! [`FormProvider::call`], never at `ConwayBuilder::build` time. This is
+//! `FormProvider::call`, never at `ConwayBuilder::build` time. This is
 //! what lets `conway.permissions`-shaped consumer degrade rather than fail
 //! the whole run under `-p` (acceptance 3): the capability is always
 //! reachable, and a call against it fails cleanly and namelessly-once
@@ -117,7 +117,7 @@ pub const FORM_CAPABILITY_VERSION: &str = "1.0.0";
 pub struct AskSelectRequest {
     /// The question text, shown verbatim.
     pub prompt: String,
-    /// The choices offered, in display order. [`FormProvider::call`]
+    /// The choices offered, in display order. `FormProvider::call`
     /// refuses ([`CapabilityError`]) a request whose `options` is empty --
     /// P-10: a caller-supplied shape is untrusted input, range-checked at
     /// the boundary, never a panic.
