@@ -269,27 +269,77 @@ impl CanonicalRoot {
     }
 }
 
+/// Why [`resolve_candidate`] could not turn `raw` into a usable `PathBuf`.
+///
+/// Deliberately typed rather than folded into a single `None` (as this
+/// function used to return): [`Self::UnresolvableTilde`] is a case the
+/// **operator-facing** message must name explicitly (INTENT.md §8.3 --
+/// "when conway cannot honour a reference exactly, it refuses and names
+/// what changed"), and a bare `Option` cannot distinguish it from a NUL
+/// byte at the call site that builds that message. `#[non_exhaustive]`: a
+/// caller that only cares "could this be resolved at all" should still
+/// have to write a wildcard arm, not enumerate every reason.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ResolveError {
+    /// `raw` contains a NUL byte the OS path APIs cannot represent
+    /// (`CString::new` fails on an interior NUL), so any resolution that
+    /// returned `Ok` here would hand the caller a candidate no later
+    /// filesystem call could act on either.
+    #[error("path contains a NUL byte: {raw:?}")]
+    NulByte { raw: String },
+    /// `raw` begins with `~` -- the one prefix this function expands
+    /// (exactly `~`, or a leading `~/`; see [`resolve_candidate`]'s own
+    /// doc) -- but conway could not honour it: either no home directory
+    /// could be determined for this process, or `raw` uses a tilde form
+    /// this function does not expand (e.g. `~user/...`). `raw` is the
+    /// original, unexpanded string, so the message can show the operator
+    /// exactly what they wrote.
+    #[error("path {raw:?} begins with `~` but could not be expanded: {reason}")]
+    UnresolvableTilde { raw: String, reason: String },
+}
+
 /// Resolves a possibly-untrusted, model- or config-supplied path string
 /// against `cwd`, exactly as the tool call or root check that ultimately
-/// acts on it needs it resolved: an absolute `raw` passes through
-/// unchanged; a relative `raw` joins onto `cwd`. Returns `None` for a `raw`
-/// containing a NUL byte — the OS path APIs cannot represent one
-/// (`CString::new` fails on an interior NUL), so any resolution that
-/// returned `Some` here would hand the caller a candidate no later
-/// filesystem call could act on either.
+/// acts on it needs it resolved: `raw` beginning with exactly `~` or a
+/// leading `~/` expands against the process's home directory (see below);
+/// any other absolute `raw` passes through unchanged; a relative `raw`
+/// joins onto `cwd`. Fails with [`ResolveError::NulByte`] for a `raw`
+/// containing a NUL byte, or [`ResolveError::UnresolvableTilde`] for a
+/// `raw` that begins with `~` but cannot be expanded.
 ///
-/// **The one implementation every root-enforcement site in this tree
-/// shares —.** This exact operation
-/// (join-or-pass-through, NUL rejected) was independently restated at least
-/// three times in this tree before it was collapsed here: two inlined
-/// copies in `conway-runtime` (`subagent.rs`'s spawn-time confinement-root
-/// resolution and `runtime.rs`'s root-agent resolution) each independently
-/// **dropped the NUL guard** — the defect
+/// # Tilde expansion is anchored, never a substring replace
+///
+/// Only the WHOLE of `raw` is inspected for a leading `~`: exactly `~`
+/// (the bare home directory) or a leading `~/` (home-relative). A `~`
+/// appearing anywhere else in `raw` -- as an ordinary filename character,
+/// mid-path (`sub/~name`), or even as the very first character of a form
+/// this function does not expand (`~user/docs`) -- is never rewritten by
+/// substring replacement; the last of those instead fails with
+/// [`ResolveError::UnresolvableTilde`] rather than being silently passed
+/// through as a literal, so a caller cannot mistake "conway didn't
+/// recognise this" for "conway resolved this to the literal path
+/// `~user/docs`".
+///
+/// # The one implementation every root-enforcement site in this tree
+/// shares
+///
+/// This exact operation (join-or-pass-through, NUL rejected, and now tilde
+/// expansion) was independently restated at least three times in this tree
+/// before it was collapsed here: two inlined copies in `conway-runtime`
+/// (`subagent.rs`'s spawn-time confinement-root resolution and
+/// `runtime.rs`'s root-agent resolution) each independently **dropped the
+/// NUL guard** — the defect
 /// fixed by pointing both at `conway_runtime::permission::
 /// resolve_like_the_tool_will` — and a third, `conway_tools::common::
 /// resolve_path`, carried the guard but as a byte-for-byte separate
 /// function, kept in sync only by a doc comment demanding lockstep edits,
-/// not by the compiler.
+/// not by the compiler. Landing tilde expansion here, rather than at either
+/// wrapper, is what keeps a `paths_under` permission-rule prefix and the
+/// tool argument it is meant to bound expanding identically -- the two
+/// `~`-prefixed strings hit the SAME code, so they cannot silently diverge
+/// (P-13: a rule and the call it bounds must never resolve a shared prefix
+/// two different ways).
 ///
 /// `conway-runtime`'s `resolve_like_the_tool_will` and `conway-tools`'
 /// `resolve_path` each keep their own thin, same-signature, same-crate
@@ -299,16 +349,61 @@ impl CanonicalRoot {
 /// wrapper directly, and neither may gain a new cross-crate dependency just
 /// for this) — but the wrapper's BODY is now this one call, never a
 /// restatement, so the two can no longer independently drop the guard.
-pub fn resolve_candidate(cwd: &Path, raw: &str) -> Option<PathBuf> {
+pub fn resolve_candidate(cwd: &Path, raw: &str) -> Result<PathBuf, ResolveError> {
     if raw.contains('\0') {
-        return None;
+        return Err(ResolveError::NulByte { raw: raw.to_string() });
+    }
+    if let Some(expanded) = expand_tilde(raw)? {
+        return Ok(expanded);
     }
     let candidate = Path::new(raw);
     if candidate.is_absolute() {
-        Some(candidate.to_path_buf())
+        Ok(candidate.to_path_buf())
     } else {
-        Some(cwd.join(candidate))
+        Ok(cwd.join(candidate))
     }
+}
+
+/// The tilde half of [`resolve_candidate`], split out so the anchoring
+/// rule (whole-string prefix, never a substring search) is exercised by one
+/// piece of code with one job. `Ok(None)` means `raw` does not begin with
+/// `~` at all -- [`resolve_candidate`] falls through to its ordinary
+/// absolute/relative handling in that case, so a `~` anywhere else in
+/// `raw` is untouched.
+fn expand_tilde(raw: &str) -> Result<Option<PathBuf>, ResolveError> {
+    if raw == "~" {
+        return home_dir().map(Some).ok_or_else(|| ResolveError::UnresolvableTilde {
+            raw: raw.to_string(),
+            reason: "no home directory could be determined for this process".to_string(),
+        });
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return home_dir()
+            .map(|home| Some(home.join(rest.trim_start_matches('/'))))
+            .ok_or_else(|| ResolveError::UnresolvableTilde {
+                raw: raw.to_string(),
+                reason: "no home directory could be determined for this process".to_string(),
+            });
+    }
+    if raw.starts_with('~') {
+        return Err(ResolveError::UnresolvableTilde {
+            raw: raw.to_string(),
+            reason: "conway only expands a bare `~` or a leading `~/`, not `~user`-style forms"
+                .to_string(),
+        });
+    }
+    Ok(None)
+}
+
+/// The process's home directory, if one can be determined -- the same
+/// lookup `conway::config::discovery::home_settings_path` already uses for
+/// `~/.conway/settings.json`, via the same `directories::BaseDirs`
+/// (env-var-driven: `HOME` on Unix, `USERPROFILE` on Windows), so a test
+/// that overrides those env vars to simulate a home directory observes ONE
+/// home-directory answer across the whole tree, not two
+/// independently-resolved ones.
+fn home_dir() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
 }
 
 /// Finds the deepest ancestor of `candidate` that exists on the real
@@ -567,7 +662,7 @@ mod tests {
         let cwd = Path::new("/tmp/x");
         assert_eq!(
             resolve_candidate(cwd, "a/b"),
-            Some(PathBuf::from("/tmp/x/a/b"))
+            Ok(PathBuf::from("/tmp/x/a/b"))
         );
     }
 
@@ -576,20 +671,125 @@ mod tests {
         let cwd = Path::new("/tmp/x");
         assert_eq!(
             resolve_candidate(cwd, "/etc/hosts"),
-            Some(PathBuf::from("/etc/hosts"))
+            Ok(PathBuf::from("/etc/hosts"))
         );
     }
 
     #[test]
     fn resolve_candidate_rejects_nul_byte_in_relative_input() {
         let cwd = Path::new("/tmp/x");
-        assert_eq!(resolve_candidate(cwd, "a\0b"), None);
+        assert_eq!(
+            resolve_candidate(cwd, "a\0b"),
+            Err(ResolveError::NulByte {
+                raw: "a\0b".to_string()
+            })
+        );
     }
 
     #[test]
     fn resolve_candidate_rejects_nul_byte_in_absolute_input() {
         let cwd = Path::new("/tmp/x");
-        assert_eq!(resolve_candidate(cwd, "/a\0b"), None);
+        assert_eq!(
+            resolve_candidate(cwd, "/a\0b"),
+            Err(ResolveError::NulByte {
+                raw: "/a\0b".to_string()
+            })
+        );
+    }
+
+    // ---- tilde expansion (board item 01M10HSENWKTEE4G691XJXBH6T) ----
+
+    /// Success cases compare against the REAL environment's home directory
+    /// (via the same `directories::BaseDirs` lookup `home_dir` uses)
+    /// rather than mutating `HOME`/`USERPROFILE` in-process: this test file
+    /// runs alongside every other `conway-core` unit test in one binary,
+    /// and mutating a process-global env var here could race a concurrently
+    /// running test. Reading the CURRENT value is safe (no mutation); every
+    /// dev machine and CI runner has a discoverable home directory.
+    #[test]
+    fn resolve_candidate_expands_a_bare_tilde_to_the_home_directory() {
+        let home = directories::BaseDirs::new()
+            .expect("test environment must have a discoverable home directory")
+            .home_dir()
+            .to_path_buf();
+        let cwd = Path::new("/tmp/x");
+        assert_eq!(resolve_candidate(cwd, "~"), Ok(home));
+    }
+
+    #[test]
+    fn resolve_candidate_expands_a_leading_tilde_slash_onto_the_home_directory() {
+        let home = directories::BaseDirs::new()
+            .expect("test environment must have a discoverable home directory")
+            .home_dir()
+            .to_path_buf();
+        let cwd = Path::new("/tmp/x");
+        assert_eq!(
+            resolve_candidate(cwd, "~/docs/file.txt"),
+            Ok(home.join("docs/file.txt"))
+        );
+    }
+
+    /// **P-15's discriminating observable for "anchored, never a substring
+    /// replace."** A `~` that is not the leading character of the whole
+    /// argument -- here, the middle of the SECOND component -- must be
+    /// carried through byte-for-byte. Asserted by exact `PathBuf` equality,
+    /// not merely "resolves to something under cwd": a naive
+    /// `raw.replace('~', home_str)` implementation would ALSO resolve to
+    /// something under `/tmp/x` (it would just be wrong about what), so a
+    /// looser assertion would not fail against that regression.
+    #[test]
+    fn resolve_candidate_does_not_expand_a_tilde_that_is_not_a_leading_component() {
+        let cwd = Path::new("/tmp/x");
+        assert_eq!(
+            resolve_candidate(cwd, "sub/~name/file.txt"),
+            Ok(PathBuf::from("/tmp/x/sub/~name/file.txt"))
+        );
+    }
+
+    /// `~` as an ordinary filename character, not even at a component
+    /// boundary -- the plainest form of "`~` is not a substring replace".
+    #[test]
+    fn resolve_candidate_does_not_expand_a_tilde_embedded_in_a_filename() {
+        let cwd = Path::new("/tmp/x");
+        assert_eq!(
+            resolve_candidate(cwd, "foo~bar.txt"),
+            Ok(PathBuf::from("/tmp/x/foo~bar.txt"))
+        );
+    }
+
+    /// The ruling's other named failure mode: a tilde form this function
+    /// does not expand (`~user/...`) fails with a NAMED error rather than
+    /// being silently passed through as a literal (which would be
+    /// indistinguishable from "conway resolved `~bob` to a real path") or
+    /// silently guessed at.
+    #[test]
+    fn resolve_candidate_rejects_a_user_relative_tilde_form_it_does_not_expand() {
+        let cwd = Path::new("/tmp/x");
+        let err = resolve_candidate(cwd, "~bob/docs").unwrap_err();
+        match err {
+            ResolveError::UnresolvableTilde { raw, reason } => {
+                assert_eq!(raw, "~bob/docs");
+                assert!(
+                    reason.contains("~user"),
+                    "reason should name the unsupported form: {reason:?}"
+                );
+            }
+            other => panic!("expected UnresolvableTilde, got {other:?}"),
+        }
+    }
+
+    /// A NUL byte anywhere in a `~`-prefixed argument is still caught by
+    /// the NUL guard, which runs before tilde expansion is even attempted
+    /// -- the two guards must not shadow each other in either direction.
+    #[test]
+    fn resolve_candidate_nul_guard_still_applies_to_a_tilde_prefixed_argument() {
+        let cwd = Path::new("/tmp/x");
+        assert_eq!(
+            resolve_candidate(cwd, "~/a\0b"),
+            Err(ResolveError::NulByte {
+                raw: "~/a\0b".to_string()
+            })
+        );
     }
 
     #[test]

@@ -281,24 +281,38 @@ impl SubagentHost for Runtime {
             Some(requested) => {
                 // Min-1: resolve via the SHARED rule, the single implementation
                 // every root check calls (absolute -> as-is, relative -> join
-                // base, NUL -> None) instead of inlining two-thirds of it and
-                // silently dropping the NUL guard. A relative root resolves
-                // against the parent's cwd, exactly as before. A non-UTF-8 or
-                // NUL-carrying root is a typed config rejection -- untrusted
-                // input, never a panic.
+                // base, NUL -> Err) instead of inlining two-thirds of it and
+                // silently dropping the NUL guard; also expands a leading `~`
+                // (board item 01M10HSENWKTEE4G691XJXBH6T) since a subagent
+                // root is written by an operator the same way a tool path
+                // argument is. A relative root resolves against the parent's
+                // cwd, exactly as before. A non-UTF-8, NUL-carrying, or
+                // unresolvably-`~`-prefixed root is a typed config rejection
+                // -- untrusted input, never a panic.
                 let requested_str = requested.to_str().ok_or_else(|| {
                     invalid_spec(ConwayError::Config {
                         detail: format!("subagent root {} is not valid UTF-8", requested.display()),
                     })
                 })?;
-                let resolved =
-                    crate::permission::resolve_like_the_tool_will(&parent_meta.cwd, requested_str)
-                        .ok_or_else(|| {
-                            invalid_spec(ConwayError::Config {
-                                detail: "subagent root contains a NUL byte the OS cannot resolve"
-                                    .to_string(),
-                            })
-                        })?;
+                let resolved = crate::permission::resolve_like_the_tool_will(
+                    &parent_meta.cwd,
+                    requested_str,
+                )
+                .map_err(|err| {
+                    invalid_spec(ConwayError::Config {
+                        detail: match &err {
+                            conway_core::containment::ResolveError::NulByte { .. } => {
+                                "subagent root contains a NUL byte the OS cannot resolve"
+                                    .to_string()
+                            }
+                            // `#[non_exhaustive]`: any other/future reason
+                            // still names itself, via `ResolveError`'s own
+                            // `Display`, rather than falling back to the
+                            // NUL-specific wording above.
+                            _ => format!("subagent root {requested_str:?} could not be resolved: {err}"),
+                        },
+                    })
+                })?;
                 let canonical_requested = CanonicalRoot::new(&resolved).map_err(|err| {
                     invalid_spec(ConwayError::Config {
                         detail: format!(

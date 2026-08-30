@@ -203,7 +203,11 @@ decision (see Trust, below), exactly like a flat `allow` entry.
 **`paths_under` reads arguments, not the rendering.** The path a rule gates
 on is read from the call's declared path arguments and resolved the way the
 tool will resolve it (relative to the agent's cwd, absolute paths passed
-through, `..` components resolved away by canonicalization). It never looks
+through, a leading `~`/`~/` expanded against the home directory — see
+[Tilde expansion](tools.md#tilde-expansion) — `..` components resolved away by
+canonicalization). The rule's own `paths_under` prefix is resolved by that
+identical rule, so a prefix and an argument spelled the same way (e.g. both
+`~/notes`) always agree on where the boundary sits. It never looks
 at the sanitized, lossy display rendering — a path like
 `/repo/../outside/secret` whose rendered string *contains* the rule's
 prefix resolves *outside* it, and the rule correctly refuses to match. A

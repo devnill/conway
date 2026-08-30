@@ -19,9 +19,13 @@ use conway_core::ports::{ToolCtx, ToolOutput};
 
 /// Resolves a tool-supplied path argument against `ctx.cwd`.
 ///
-/// Relative inputs are joined onto `ctx.cwd`; absolute inputs are returned
-/// unchanged. A path containing a NUL byte is rejected as a host-level
-/// `InvalidArguments` error (the OS path APIs cannot represent it).
+/// `path` beginning with exactly `~` or a leading `~/` expands against the
+/// process's home directory; any other absolute input is returned
+/// unchanged; a relative input is joined onto `ctx.cwd`. A path containing
+/// a NUL byte, or one beginning with `~` in a form this crate does not
+/// expand (e.g. `~user/...`), is rejected as a host-level
+/// `InvalidArguments` error naming the specific reason -- see
+/// [`conway_core::containment::ResolveError`]'s own doc.
 ///
 /// Performs **no** containment or escape checks (no sandboxing in
 /// this layer) and does **not** canonicalize (canonicalizing would fail for
@@ -34,15 +38,18 @@ use conway_core::ports::{ToolCtx, ToolOutput};
 /// -- kept in sync with `conway_runtime::permission::
 /// resolve_like_the_tool_will`'s identical copy only by a doc comment
 /// demanding lockstep edits, never enforced by the compiler. It is now a
-/// direct call into the shared core function, only translating `None` into
-/// this crate's own `ToolError`, so the two crates' wrappers can no longer
-/// independently drift (two inlined copies of this exact rule already
-/// dropped the NUL guard once, in `conway-runtime`
-///).
+/// direct call into the shared core function, only translating its typed
+/// `Err` into this crate's own `ToolError` (never re-deriving the message),
+/// so the two crates' wrappers can no longer independently drift (two
+/// inlined copies of this exact rule already dropped the NUL guard once, in
+/// `conway-runtime`
+///) -- and tilde expansion, landed
+/// in that same shared function, cannot drift between them either (board
+/// item `01M10HSENWKTEE4G691XJXBH6T`).
 pub fn resolve_path(ctx: &ToolCtx, path: &str) -> Result<PathBuf, ToolError> {
-    conway_core::containment::resolve_candidate(&ctx.cwd, path).ok_or_else(|| {
+    conway_core::containment::resolve_candidate(&ctx.cwd, path).map_err(|err| {
         ToolError::InvalidArguments {
-            detail: format!("path contains a NUL byte: {path:?}"),
+            detail: err.to_string(),
         }
     })
 }
@@ -122,6 +129,66 @@ mod tests {
         let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
         let err = resolve_path(&ctx, "a\0b").unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments { .. }));
+    }
+
+    /// A leading `~/` expands against the home directory rather than being
+    /// joined under `ctx.cwd` the way an ordinary relative path is -- this
+    /// is what makes the assertion below discriminating: if `~` were still
+    /// passed through untouched (this item's own defect), the result would
+    /// equal `ctx.cwd.join("~/target.txt")` and would carry a literal `~`
+    /// path component, which this test explicitly rules out without
+    /// depending on what the real home directory happens to be (so it needs
+    /// no `HOME`/`USERPROFILE` override, and cannot race any other test
+    /// mutating those).
+    #[test]
+    fn resolve_path_expands_a_leading_tilde_slash_rather_than_joining_it_under_cwd() {
+        let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+        let resolved = resolve_path(&ctx, "~/target.txt").unwrap();
+        assert!(resolved.is_absolute());
+        assert!(
+            !resolved.components().any(|c| c.as_os_str() == "~"),
+            "a leading `~/` must be expanded to the home directory, never carried through as a \
+             literal path component: {resolved:?}"
+        );
+        assert_ne!(
+            resolved,
+            PathBuf::from("/tmp/x/~/target.txt"),
+            "must not be joined under cwd the way an ordinary relative path would be: {resolved:?}"
+        );
+    }
+
+    /// P-15: the discriminating observable for "anchored, never a substring
+    /// replace" -- a `~` that is NOT the first character of the whole
+    /// argument (here, mid-path) must resolve to the exact literal path a
+    /// naive `raw.replace('~', home)` would NOT produce (that would splice
+    /// the home directory in the middle of `sub/`). Exact-path equality,
+    /// not merely "no panic" or "still under cwd", so a substring-replace
+    /// regression fails this test even though it, too, "resolves to
+    /// something under `/tmp/x`".
+    #[test]
+    fn resolve_path_treats_a_non_leading_tilde_as_a_literal_filename_character() {
+        let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+        let resolved = resolve_path(&ctx, "sub/~name/file.txt").unwrap();
+        assert_eq!(resolved, PathBuf::from("/tmp/x/sub/~name/file.txt"));
+    }
+
+    /// The ruling's other named case: `~user/...` is a tilde FORM this
+    /// crate does not expand, and must be a named refusal (INTENT.md §8.3),
+    /// not a silent literal pass-through and not a generic "not found" once
+    /// something downstream tries to use it.
+    #[test]
+    fn resolve_path_rejects_a_tilde_user_form_it_does_not_expand_naming_tilde() {
+        let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+        let err = resolve_path(&ctx, "~bob/secret.txt").unwrap_err();
+        match err {
+            ToolError::InvalidArguments { detail } => {
+                assert!(
+                    detail.contains('~'),
+                    "the denial must name tilde explicitly: {detail:?}"
+                );
+            }
+            other => panic!("expected InvalidArguments, got {other:?}"),
+        }
     }
 
     #[derive(Debug, serde::Deserialize)]

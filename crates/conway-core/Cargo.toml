@@ -29,6 +29,15 @@ lru = { workspace = true }
 # via `rustc_version` transitively -- promoting it to a direct dependency
 # here adds no new lock entry.
 semver = { workspace = true }
+# `containment::resolve_candidate`'s tilde-expansion home-directory lookup
+# (board item 01M10HSENWKTEE4G691XJXBH6T): already a `Cargo.lock` entry via
+# `conway`'s own `directories::BaseDirs` use for `~/.conway/settings.json`
+# (`crates/conway/src/config/discovery.rs`); reusing it here, rather than
+# hand-rolling `$HOME`/`%USERPROFILE%` lookup a second time, is what lets a
+# test that overrides those env vars observe ONE home-directory answer
+# everywhere in the tree. An external, non-workspace crate, so it does not
+# touch the T1 no-workspace-dependency invariant this crate otherwise holds.
+directories = { workspace = true }
 
 [dev-dependencies]
 static_assertions = { workspace = true }

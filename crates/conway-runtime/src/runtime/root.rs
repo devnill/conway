@@ -472,11 +472,13 @@ impl Runtime {
             Some(requested) => {
                 // Min-1: resolve via the SHARED rule -- one implementation,
                 // never restated (absolute -> as-is, relative -> join base, NUL
-                // -> None) instead of inlining two-thirds of it and silently
+                // -> Err) instead of inlining two-thirds of it and silently
                 // dropping the NUL guard -- the same call `subagent.rs`'s
-                // spawn-time root resolution now makes. A relative root
-                // resolves against `spec.cwd`, exactly as before. A non-UTF-8
-                // or NUL-carrying root is a typed config rejection -- untrusted
+                // spawn-time root resolution now makes; also expands a
+                // leading `~` (board item 01M10HSENWKTEE4G691XJXBH6T). A
+                // relative root resolves against `spec.cwd`, exactly as
+                // before. A non-UTF-8, NUL-carrying, or unresolvably-`~`-
+                // prefixed root is a typed config rejection -- untrusted
                 // input -- never a panic.
                 let requested_str = requested.to_str().ok_or_else(|| {
                     crate::subagent::invalid_spec(ConwayError::Config {
@@ -488,11 +490,19 @@ impl Runtime {
                 })?;
                 let resolved =
                     crate::permission::resolve_like_the_tool_will(&spec.cwd, requested_str)
-                        .ok_or_else(|| {
+                        .map_err(|err| {
                             crate::subagent::invalid_spec(ConwayError::Config {
-                                detail:
-                                    "root agent's root contains a NUL byte the OS cannot resolve"
-                                        .to_string(),
+                                detail: match &err {
+                                    conway_core::containment::ResolveError::NulByte { .. } => {
+                                        "root agent's root contains a NUL byte the OS cannot \
+                                         resolve"
+                                            .to_string()
+                                    }
+                                    _ => format!(
+                                        "root agent's root {requested_str:?} could not be \
+                                         resolved: {err}"
+                                    ),
+                                },
                             })
                         })?;
                 let canonical_root = CanonicalRoot::new(&resolved).map_err(|err| {
