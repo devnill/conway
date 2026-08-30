@@ -117,12 +117,20 @@ fn skeleton_ask_result_text(records: &[LogRecord]) -> (bool, String) {
         })
 }
 
-#[tokio::test]
+// Multi-thread flavour is REQUIRED, not stylistic: `run_conway` blocks on
+// `std::process::Command::output()`, so on the single-threaded flavour the
+// `MockBackend` task can never be polled while the binary is running and
+// every request it makes is refused. `durable_memory.rs` is the precedent --
+// it drives the real binary against this same mock and uses this flavour.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conway_ui_is_not_reachable_when_absent_from_plugins_install() {
     let mock = MockBackend::start(one_skeleton_ask_call_script()).await;
     let fixture = write_fixture_with_only_skeleton_installed(&mock);
 
-    let output = run_conway(&["-p", "please ask"], &fixture);
+    let output = run_conway(
+        &["-p", "please ask", "--allowed-tools", "skeleton_ask"],
+        &fixture,
+    );
 
     assert!(
         output.status.success(),
@@ -132,7 +140,10 @@ async fn conway_ui_is_not_reachable_when_absent_from_plugins_install() {
 
     let records = only_session_records(&fixture);
     let (is_error, text) = skeleton_ask_result_text(&records);
-    assert!(!is_error);
+    assert!(
+        !is_error,
+        "skeleton_ask must degrade, not error: is_error={is_error}, text={text}"
+    );
     assert!(
         text.starts_with("skeleton ask: no answer available"),
         "conway.ui must not be reachable when it is not named in [plugins].install, got: {text}"

@@ -124,12 +124,20 @@ fn skeleton_ask_result_text(records: &[LogRecord]) -> (bool, String) {
         })
 }
 
-#[tokio::test]
+// Multi-thread flavour is REQUIRED, not stylistic: `run_conway` blocks on
+// `std::process::Command::output()`, so on the single-threaded flavour the
+// `MockBackend` task can never be polled while the binary is running and
+// every request it makes is refused. `durable_memory.rs` is the precedent --
+// it drives the real binary against this same mock and uses this flavour.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skeleton_ask_degrades_under_a_real_one_shot_run_with_no_drawing_surface() {
     let mock = MockBackend::start(one_skeleton_ask_call_script()).await;
     let fixture = write_fixture_with_ui_and_skeleton_installed(&mock);
 
-    let output = run_conway(&["-p", "please ask"], &fixture);
+    let output = run_conway(
+        &["-p", "please ask", "--allowed-tools", "skeleton_ask"],
+        &fixture,
+    );
 
     assert!(
         output.status.success(),
