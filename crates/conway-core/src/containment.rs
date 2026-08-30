@@ -370,6 +370,12 @@ pub fn resolve_candidate(cwd: &Path, raw: &str) -> Result<PathBuf, ResolveError>
 /// `~` at all -- [`resolve_candidate`] falls through to its ordinary
 /// absolute/relative handling in that case, so a `~` anywhere else in
 /// `raw` is untouched.
+///
+/// Known limit: only a literal forward-slash `~/` is recognized, never a
+/// native Windows `~\`. Forward slashes work fine as path separators on
+/// Windows, so `~/Documents/file.txt` still expands there; a Windows user
+/// who types `~\Documents\file.txt` instead gets `UnresolvableTilde` rather
+/// than expansion. Left as-is rather than special-cased.
 fn expand_tilde(raw: &str) -> Result<Option<PathBuf>, ResolveError> {
     if raw == "~" {
         return home_dir().map(Some).ok_or_else(|| ResolveError::UnresolvableTilde {
@@ -397,11 +403,19 @@ fn expand_tilde(raw: &str) -> Result<Option<PathBuf>, ResolveError> {
 
 /// The process's home directory, if one can be determined -- the same
 /// lookup `conway::config::discovery::home_settings_path` already uses for
-/// `~/.conway/settings.json`, via the same `directories::BaseDirs`
-/// (env-var-driven: `HOME` on Unix, `USERPROFILE` on Windows), so a test
-/// that overrides those env vars to simulate a home directory observes ONE
-/// home-directory answer across the whole tree, not two
-/// independently-resolved ones.
+/// `~/.conway/settings.json`, via the same `directories::BaseDirs`, so a
+/// test that overrides `HOME`/`USERPROFILE` to simulate a home directory
+/// observes ONE home-directory answer across the whole tree, not two
+/// independently-resolved ones (on Unix, at least -- see below).
+///
+/// The lookup is env-var-driven on Unix (`HOME`), but on Windows
+/// `directories::BaseDirs::new()` does NOT read `%USERPROFILE%` -- it goes
+/// through the Windows Known Folder API
+/// (`known_folder(Shell::FOLDERID_Profile)`, i.e. `SHGetKnownFolderPath`).
+/// A test that sets `USERPROFILE` on a spawned child process has no effect
+/// on what this function returns there; see the `#[cfg(unix)]` gate on
+/// `tilde_expansion.rs`'s binary-level home-directory test for the
+/// consequence.
 fn home_dir() -> Option<PathBuf> {
     directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
 }
