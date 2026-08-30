@@ -64,6 +64,29 @@ impl PendingFormAsk {
         let (reply, rx) = oneshot::channel();
         (PendingFormAsk { request, reply }, rx)
     }
+
+    /// Builds a `PendingFormAsk` for a LOCALLY-raised question -- the TUI
+    /// itself asking, not a model-called tool blocked on `FormSurface::
+    /// ask_select` (board item `01M1A35S609TZ613GAECPEHX8D`: `/model`
+    /// bare's own menu, when `conway.ui` is installed -- `commands::
+    /// execute`'s `SlashCommand::Model { model: None }` arm is the only
+    /// caller today). The mechanics stay IDENTICAL either way: this is
+    /// still `Mode::UiForm`, still rendered by `draw_ui_form`, still
+    /// answered through `handle_ui_form_key` -- `AskSelectRequest`'s SECOND
+    /// real consumer, not a second implementation of the modal.
+    ///
+    /// The reply channel's receiver half is discarded (`_rx`, dropped
+    /// immediately): nothing needs to `.await` it, because the caller reads
+    /// the chosen option straight off `AppState` BEFORE `AppState::
+    /// resolve_ui_form` consumes `mode` (`run.rs`'s own `Action::
+    /// UiFormDecision` arm, gated on `AppState::model_picker_active`) --
+    /// `resolve_ui_form`'s unconditional `ask.resolve(..)` send is a no-op
+    /// once the matching receiver is gone, exactly like any other
+    /// already-abandoned question (this struct's own `resolve` doc).
+    pub(crate) fn new_local(request: AskSelectRequest) -> PendingFormAsk {
+        let (reply, _rx) = oneshot::channel();
+        PendingFormAsk { request, reply }
+    }
 }
 
 /// The app loop's half of a [`TuiFormSurface`] channel -- selected on

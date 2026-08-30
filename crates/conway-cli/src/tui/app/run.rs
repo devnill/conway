@@ -872,13 +872,119 @@ impl App {
                                 // `ask_question` modal's decision (`up`/`down`
                                 // choose, `enter` answer, `esc` cancel).
                                 // Unlike `Action::AskFate`/`TrustDecision`,
-                                // this needs no facade call at all -- the
-                                // answer travels back over the SAME
-                                // `oneshot` channel the blocked tool call is
-                                // awaiting, entirely inside `AppState` (see
-                                // `AppState::resolve_ui_form`'s own doc).
+                                // a REAL model-raised question needs no
+                                // facade call at all -- the answer travels
+                                // back over the SAME `oneshot` channel the
+                                // blocked tool call is awaiting, entirely
+                                // inside `AppState` (see `AppState::
+                                // resolve_ui_form`'s own doc).
+                                //
+                                // Board item `01M1A35S609TZ613GAECPEHX8D`:
+                                // `/model` bare's own menu reuses this exact
+                                // surface (`commands::execute`'s `Model
+                                // { model: None }` arm, `conway.ui`
+                                // installed) but DOES need a facade call once
+                                // answered -- `AppState::model_picker_active`
+                                // is what tells the two apart, read and
+                                // cleared BEFORE the generic resolve (which
+                                // consumes `mode`), so a real `ask_question`
+                                // (which never touches that flag) is
+                                // completely unaffected by the branch below.
                                 Action::UiFormDecision(decision) => {
-                                    self.state.resolve_ui_form(decision);
+                                    let is_model_picker = self.state.model_picker_active;
+                                    self.state.model_picker_active = false;
+                                    let chosen = self.state.resolve_ui_form(decision);
+                                    if let (true, Some(model)) = (is_model_picker, chosen) {
+                                        let host = commands::LiveHost {
+                                            handle: &self.handle,
+                                            conway: &self.conway,
+                                            commands: &self.command_registry,
+                                        };
+                                        match commands::apply_model_switch(
+                                            model,
+                                            &mut self.state,
+                                            &host,
+                                        )
+                                        .await
+                                        {
+                                            Effect::None => {}
+                                            Effect::FocusNewSession {
+                                                child,
+                                                parent,
+                                                first_message,
+                                            } => {
+                                                // Same seed-then-focus-then-
+                                                // deliver sequence as a bare
+                                                // /fork//spawn -- see the
+                                                // `Action::Submit` arm's own
+                                                // `FocusNewSession` handling
+                                                // for the rationale.
+                                                self.state.ensure_agent_tracked(child, parent);
+                                                let on_fail_extra =
+                                                    first_message.is_some().then_some(
+                                                        "; your message was not sent",
+                                                    );
+                                                if let Some(stream) = self
+                                                    .try_focus_agent(child, on_fail_extra)
+                                                    .await
+                                                {
+                                                    events = stream;
+                                                    if let Some(text) = first_message {
+                                                        self.deliver_first_message(child, text)
+                                                            .await;
+                                                    }
+                                                }
+                                            }
+                                            // Structurally unreachable from
+                                            // `apply_model_switch` today (it
+                                            // only ever returns `None`/
+                                            // `FocusNewSession` -- the same
+                                            // two outcomes `switch_session`,
+                                            // the one function it delegates
+                                            // to, ever produces). Handled
+                                            // anyway, correctly, rather than
+                                            // with a wildcard drop -- `Effect`
+                                            // is one enum shared by every
+                                            // dispatch site, and a silently
+                                            // dropped case here is exactly
+                                            // the "silent loss" this item's
+                                            // own acceptance forbids, should
+                                            // a future change ever route one
+                                            // through this call site.
+                                            Effect::Quit => return Ok(ExitCode::Completed),
+                                            Effect::Resumed(handle) => {
+                                                self.handle = handle;
+                                                events = self.handle.events();
+                                            }
+                                            Effect::RunPluginCommand(invocation) => {
+                                                self.spawn_plugin_command(invocation);
+                                            }
+                                            Effect::RunModalAsk { question } => {
+                                                self.spawn_modal_ask(question);
+                                            }
+                                            Effect::RunMarketplaceInstall {
+                                                marketplace_url,
+                                                plugin_id,
+                                            } => {
+                                                let env = self.env.clone();
+                                                let cwd = self.cwd.clone();
+                                                self.apply_marketplace_install(
+                                                    marketplace_url,
+                                                    plugin_id,
+                                                    &env,
+                                                    &cwd,
+                                                )
+                                                .await;
+                                            }
+                                            Effect::RunMarketplaceUninstall { plugin_id } => {
+                                                let env = self.env.clone();
+                                                let cwd = self.cwd.clone();
+                                                self.apply_marketplace_uninstall(
+                                                    plugin_id, &env, &cwd,
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                                 Action::IntentConfirm(choice) => {
                                     // C2: the confirmation card's trust

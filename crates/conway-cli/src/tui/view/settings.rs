@@ -682,6 +682,26 @@ const FOOTER_ROWS: u16 = 2;
 /// screen than the `2`-denominator decision-owed surfaces.
 const CAP_DENOMINATOR: u16 = 1;
 
+/// The `/settings` menu's own bottom-anchored, content-sized `Rect`,
+/// computed against `transcript_area` -- exactly what [`draw`] itself now
+/// asks for via this same function, never a second, independent
+/// computation (steering P-14).
+///
+/// **Board item `01M1A9M2EVJNR0HBN86A8E40EA`.** Factored out so
+/// `view::mod::layout` can learn how tall the menu will render BEFORE
+/// `transcript::draw` runs, and shrink the transcript pane by exactly that
+/// height -- pushing its content up rather than letting the menu draw over
+/// already-rendered lines (an error appended while `/settings` is open used
+/// to render behind the menu, invisible until the menu closed). `draw`
+/// passes the SAME `transcript_area` it was itself given straight through
+/// here, so the reservation `layout` computed and the `Rect` `draw` actually
+/// paints into can never disagree.
+pub(crate) fn modal_rect(state: &AppState, transcript_area: Rect) -> Rect {
+    let tree = build_tree(state);
+    let content_rows = tree.rows().len().min(u16::MAX as usize) as u16;
+    modal::modal_area(transcript_area, content_rows, FOOTER_ROWS, CAP_DENOMINATOR)
+}
+
 /// Draws the `/settings` menu over `transcript_area` via the shared
 /// [`modal`] primitive (bottom-anchored, content-sized, capped) with
 /// [`menu::draw`] rendering the tree itself into the modal's own
@@ -692,17 +712,10 @@ const CAP_DENOMINATOR: u16 = 1;
 /// screen at once needing visually distinct borders.
 pub fn draw(frame: &mut Frame, transcript_area: Rect, state: &AppState, theme: &Theme) {
     let tree = build_tree(state);
-    let content_rows = tree.rows().len().min(u16::MAX as usize) as u16;
+    let area = modal_rect(state, transcript_area);
 
-    let frame_areas = modal::draw_modal_frame(
-        frame,
-        transcript_area,
-        content_rows,
-        FOOTER_ROWS,
-        CAP_DENOMINATOR,
-        " SETTINGS ",
-        theme.help_border,
-    );
+    let frame_areas =
+        modal::draw_modal_frame_in(frame, area, FOOTER_ROWS, " SETTINGS ", theme.help_border);
 
     menu::draw(frame, frame_areas.body_area, &tree, theme);
 

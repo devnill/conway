@@ -50,8 +50,8 @@ pub use agent_panel::AgentVisibility;
 pub use agent_tree::{AgentTreeView, NodeStatus, TreeNode};
 pub use input_line::{clamp_history_size, DEFAULT_HISTORY_SIZE};
 pub use modal::{
-    AddProviderCredentialState, AskFate, AskModal, Mode, TrustDecision, TrustPreviewCard,
-    UiFormDecision, UiFormState,
+    AddProviderCredentialState, AskFate, AskModal, DenyFeedbackState, Mode, TrustDecision,
+    TrustPreviewCard, UiFormDecision, UiFormState, DEFAULT_DENY_FEEDBACK,
 };
 pub use status::{should_animate, Activity, SPINNER_FRAMES};
 pub use transcript::{clamp_tool_preview_lines, Entry, ToolStatus};
@@ -1027,6 +1027,30 @@ pub struct AppState {
     /// human cycle the session default onto a role with an intentionally
     /// empty chain.
     pub known_role_names: Vec<String>,
+    /// Board item `01M1A35S609TZ613GAECPEHX8D`: every `"backend/model"` pair
+    /// any OPERATOR-configured role's `chain` names, sorted and deduped --
+    /// what bare `/model` lists (`commands::execute`'s `Model { model: None
+    /// }` arm) rather than a remote roster (a live provider API call), so
+    /// this is "what is configured", not "what could be configured".
+    /// Refreshed on the SAME seam as [`Self::known_role_names`] (`App::
+    /// refresh_default_entries`), read fresh right before `/model` bare
+    /// runs (`App::submit`'s own `/model`-bare branch, mirroring how it
+    /// already refreshes this seam ahead of `/settings`). Excludes the same
+    /// baked-in `"default"` role floor [`Self::known_role_names`] excludes,
+    /// for the identical reason: an unconfigured floor role is a validation
+    /// safety net, never something an operator actually set up to route to.
+    pub configured_models: Vec<String>,
+    /// Set by `commands::execute`'s `Model { model: None }` arm the instant
+    /// it opens `Mode::UiForm` as `/model`'s own picker (`conway.ui`
+    /// installed) -- read and cleared by `run.rs`'s `Action::
+    /// UiFormDecision` dispatch arm BEFORE the generic `AppState::
+    /// resolve_ui_form` call, so that arm can tell "the form the operator
+    /// just answered was `/model`'s own menu" apart from a real model-called
+    /// `ask_question` (which never touches this flag). `false` otherwise --
+    /// in particular, always `false` again once that one resolution has
+    /// been read, so a LATER, unrelated `ask_question` is never mistaken for
+    /// a pending model switch.
+    pub model_picker_active: bool,
     /// The installed plugin commands, for `/help`'s pointer to the palette
     /// and `view::palette`'s own live-filtered listing. **NOT reset by `/resume`** despite
     /// `AppState::new` seeding it empty by default -- this is
@@ -1212,6 +1236,8 @@ impl AppState {
             default_role_snapshot: String::new(),
             default_model_snapshot: None,
             known_role_names: Vec::new(),
+            configured_models: Vec::new(),
+            model_picker_active: false,
             // empty here by default
             // (mirrors every other collection field's construction-time
             // default) -- `App::new` overwrites this immediately after

@@ -271,6 +271,8 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
         Mode::EditingPattern(_) => handle_editing_pattern_key(state, key),
         Mode::AddProviderCredential(_) => handle_add_provider_credential_key(state, key),
         Mode::UiForm(_) => handle_ui_form_key(state, key),
+        // Board item `01M1A9M2EVJNR0HBN86A8E40EA`.
+        Mode::EditingDenyFeedback(_) => handle_deny_feedback_key(state, key),
         Mode::Normal => handle_normal_key(state, key),
     }
 }
@@ -1037,9 +1039,86 @@ fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
                 reason: "user denied".to_string(),
             })
         }
-        KeyCode::Esc => Action::PermissionDecision(PermissionDecision::DenyWithFeedback {
-            message: "user declined; try another approach".to_string(),
-        }),
+        // Board item `01M1A9M2EVJNR0HBN86A8E40EA`: `Esc` no longer decides
+        // immediately -- it OPENS the feedback text entry
+        // (`Mode::EditingDenyFeedback`, `AppState::offer_deny_feedback`) so
+        // the operator can actually type something before the call is
+        // denied. Before this item, `Esc` sent
+        // `PermissionDecision::DenyWithFeedback` with a single hardcoded
+        // message and no way to say anything of its own -- the overlay's own
+        // footer read "[Esc] deny with feedback", a control that claimed to
+        // collect feedback but never asked for it. See
+        // `DenyFeedbackState`'s own doc for the full story and the channel
+        // this now actually uses.
+        KeyCode::Esc => {
+            state.offer_deny_feedback();
+            Action::None
+        }
+        _ => Action::None,
+    }
+}
+
+/// The "deny with feedback" text entry's key handling (board item
+/// `01M1A9M2EVJNR0HBN86A8E40EA`): a minimal single-line editor, mirroring
+/// [`handle_add_provider_credential_key`]'s shape exactly (`Char`/
+/// `Backspace`/`Left`/`Right` edit `DenyFeedbackState::input`/`cursor`
+/// directly -- deliberately never touching `AppState::input`, the
+/// same "never leak into the main box/history/palette" boundary that state's
+/// own doc keeps for the credential prompt). `Enter` submits
+/// (`AppState::submit_deny_feedback`, which falls back to the old generic
+/// wording when nothing was typed) as `Action::PermissionDecision(
+/// DenyWithFeedback { message })` -- the app loop's EXISTING arm for that
+/// variant (`self.state.resolve_current_prompt(decision)`) is what actually
+/// resolves the call; this item adds no new `Action` variant and no new app
+/// loop wiring. `Esc` cancels with NO decision at all, returning the prompt
+/// to the screen exactly as the `[p]` field editor's own `Esc` does
+/// (`cancel_editing_pattern`) -- the operator can still press
+/// `y`/`a`/`n`/`p`/`Esc` again.
+fn handle_deny_feedback_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    let Mode::EditingDenyFeedback(fb) = &mut state.mode else {
+        return Action::None;
+    };
+    match key.code {
+        KeyCode::Esc => {
+            state.cancel_deny_feedback();
+            Action::None
+        }
+        KeyCode::Enter => match state.submit_deny_feedback() {
+            Some(message) => {
+                Action::PermissionDecision(PermissionDecision::DenyWithFeedback { message })
+            }
+            None => Action::None,
+        },
+        KeyCode::Backspace => {
+            if fb.cursor > 0 {
+                let end = byte_index(&fb.input, fb.cursor);
+                let start = byte_index(&fb.input, fb.cursor - 1);
+                fb.input.replace_range(start..end, "");
+                fb.cursor -= 1;
+            }
+            Action::None
+        }
+        KeyCode::Left => {
+            fb.cursor = fb.cursor.saturating_sub(1);
+            Action::None
+        }
+        KeyCode::Right => {
+            fb.cursor = (fb.cursor + 1).min(char_count(&fb.input));
+            Action::None
+        }
+        KeyCode::Char(c) => {
+            let idx = byte_index(&fb.input, fb.cursor);
+            fb.input.insert(idx, c);
+            fb.cursor += 1;
+            Action::None
+        }
         _ => Action::None,
     }
 }
@@ -2279,6 +2358,27 @@ mod tests {
         }
     }
 
+    /// A minimal `bash` `AwaitingPermission` fixture, mirroring every other
+    /// inline `PermissionRequest` literal in this module -- factored out
+    /// only because the three `deny_with_feedback_*` tests just below all
+    /// need the identical fixture.
+    fn bash_awaiting_permission() -> AppState {
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({}),
+                rendered: "bash(ls)".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
+        state.mode = Mode::AwaitingPermission(prompt);
+        state
+    }
+
     #[test]
     fn permission_mode_keys_map_to_decisions() {
         // Exercised directly (mode-independent of how `Mode::AwaitingPermission`
@@ -2300,11 +2400,101 @@ mod tests {
                 reason: "user denied".to_string()
             })
         );
+    }
+
+    /// Board item `01M1A9M2EVJNR0HBN86A8E40EA`: `Esc` no longer decides
+    /// immediately -- it OPENS the feedback text entry (`Action::None`, the
+    /// editor itself is the modal, mirroring `p`'s own open-not-decide
+    /// shape). Unlike the three keys in `permission_mode_keys_map_to_
+    /// decisions` above (whose `Action` does not depend on `state.mode` at
+    /// all), `offer_deny_feedback` is a no-op unless `mode` is genuinely
+    /// `AwaitingPermission` -- so this test, unlike that one, needs the real
+    /// fixture.
+    #[test]
+    fn esc_on_a_real_prompt_opens_the_feedback_entry_not_a_decision() {
+        let mut state = bash_awaiting_permission();
+
         assert_eq!(
             handle_permission_key(&mut state, key(KeyCode::Esc)),
+            Action::None,
+            "Esc must open the feedback entry, not decide immediately"
+        );
+        assert!(matches!(state.mode, Mode::EditingDenyFeedback(_)));
+    }
+
+    /// **VERIFICATION ANCHOR, board item `01M1A9M2EVJNR0HBN86A8E40EA`
+    /// acceptance 1.** `Esc` opens the feedback entry; typing populates it;
+    /// `Enter` delivers the OPERATOR'S OWN text, not the old canned string --
+    /// the discriminating proof that the control now collects feedback
+    /// rather than merely claiming to.
+    #[test]
+    fn deny_with_feedback_collects_and_delivers_typed_text() {
+        let mut state = bash_awaiting_permission();
+
+        assert_eq!(handle_key(&mut state, key(KeyCode::Esc)), Action::None);
+        assert!(matches!(state.mode, Mode::EditingDenyFeedback(_)));
+
+        for c in "not now, try grep instead".chars() {
+            assert_eq!(handle_key(&mut state, key(KeyCode::Char(c))), Action::None);
+        }
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Action::PermissionDecision(PermissionDecision::DenyWithFeedback {
+                message: "not now, try grep instead".to_string()
+            }),
+            "the operator's own typed text must be what gets delivered"
+        );
+        // Submitting restores `AwaitingPermission` so the app loop's
+        // existing `Action::PermissionDecision` arm can resolve the SAME
+        // call -- mirroring `submit_editing_pattern`'s own "restore, then
+        // let the dispatch arm resolve" shape.
+        assert!(matches!(state.mode, Mode::AwaitingPermission(_)));
+    }
+
+    /// A bare `Esc`-then-`Enter` (no typing at all) must reproduce exactly
+    /// the old one-keystroke wording -- the fallback that keeps "just deny,
+    /// I have nothing to add" a real, still-fast path.
+    #[test]
+    fn deny_with_feedback_falls_back_to_the_old_wording_when_empty() {
+        let mut state = bash_awaiting_permission();
+
+        handle_key(&mut state, key(KeyCode::Esc));
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+
+        assert_eq!(
+            action,
             Action::PermissionDecision(PermissionDecision::DenyWithFeedback {
                 message: "user declined; try another approach".to_string()
             })
+        );
+    }
+
+    /// `Esc` from INSIDE the feedback entry cancels with no decision at all
+    /// -- the prompt returns to the screen unresolved, exactly like the
+    /// `[p]` field editor's own cancel (`cancel_editing_pattern`), so the
+    /// operator can still press `y`/`a`/`n`/`p`/`Esc` again.
+    #[test]
+    fn deny_with_feedback_esc_cancels_with_no_decision() {
+        let mut state = bash_awaiting_permission();
+
+        handle_key(&mut state, key(KeyCode::Esc));
+        assert!(matches!(state.mode, Mode::EditingDenyFeedback(_)));
+        for c in "half typed".chars() {
+            handle_key(&mut state, key(KeyCode::Char(c)));
+        }
+
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+
+        assert_eq!(
+            action,
+            Action::None,
+            "cancelling the feedback entry must make no decision at all"
+        );
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "the prompt must return to the screen, unresolved"
         );
     }
 

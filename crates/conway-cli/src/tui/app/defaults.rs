@@ -127,6 +127,21 @@ impl App {
                 }
             })
             .collect();
+        // Board item `01M1A35S609TZ613GAECPEHX8D`: `/model` bare's own
+        // listing -- every `"backend/model"` pair an OPERATOR-configured
+        // role's `chain` names, sorted and deduped (a `BTreeSet` gives both
+        // for free), from the SAME `roles` this function already loaded --
+        // no second config read. Excludes the identical baked-in `"default"`
+        // floor `known_role_names` just above excludes, for the identical
+        // reason (see that field's own doc): a floor role's chain is a
+        // validation safety net, never something to offer switching to.
+        self.state.configured_models = roles
+            .iter()
+            .filter(|(name, entry)| !is_baked_in_role_floor(name, entry))
+            .flat_map(|(_, entry)| entry.chain.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
     }
 
     /// `Enter` on the "defaults" section's `default role` leaf

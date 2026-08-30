@@ -229,3 +229,27 @@ Then:
    than implying one that does).
 3. Correct **this plan** where the walk showed it wrong, and change its status
    line from UNWALKED.
+
+---
+
+## Addendum — TUI interaction fixes (board items `01M1A9M2EVJNR0HBN86A8E40EA`,
+`01M1A35S609TZ613GAECPEHX8D`)
+
+Appended as its own section, not folded into Part 6/7's existing rows — the
+operator found these three defects and one gap on a virgin install,
+2026-08-30, and this addendum is how a later walk re-checks the fix rather
+than the symptom. **UNWALKED**, same caveat as the rest of this plan: written
+from the code and its own tests, not from a completed manual pass.
+
+| Step | Do | Pass | Fail |
+| --- | --- | --- | --- |
+| A.1 | Trigger a permission prompt (e.g. ask the agent to run a shell command outside an allowed pattern), then press `Esc` | A text entry opens (`DENY WITH FEEDBACK`), not an immediate decision | The call is denied instantly with no chance to type anything |
+| A.2 | Type a reason (e.g. "try the read-only tool instead") and press `Enter` | The model's next turn reflects that exact reason, not a generic canned message | The model sees "user declined; try another approach" regardless of what you typed |
+| A.3 | Repeat A.1, but press `Enter` immediately with nothing typed | The model sees the same generic "user declined; try another approach" wording as before this item | The call hangs, or the text entry has no fallback |
+| A.4 | Repeat A.1, then press `Esc` a second time (inside the text entry) | The permission prompt returns, undecided — you can still press `y`/`a`/`n`/`p` | The call is denied with no feedback, or the prompt is lost |
+| A.5 | Open `/settings`, then trigger an error on a DIFFERENT agent (e.g. let a background tool call fail) while the menu is still open | The error is fully readable, pushed above the menu | The error is invisible until you close the menu and scroll back |
+| A.6 | Type a few lines of a multi-line draft (`Shift-Enter` between them), then press `Up`/`Down` | The cursor moves within the draft first; once at the top/bottom line, `Up`/`Down` scroll the transcript one line instead | History recalls at any cursor position (see A.7 for where history actually lives) |
+| A.7 | Press `Ctrl-P`/`Ctrl-N` | Your previous/next input history entry appears | Nothing happens, or `Up`/`Down` alone recall history (a scroll then silently misfires as history recall for anyone whose terminal does two-finger alternate scroll — see `docs/interactive.md`'s own "Why `Up`/`Down` scroll, not recall history") |
+| A.8 | Type `/model` with no argument, `conway.ui` NOT installed (the default) | A text listing of configured `backend/model` pairs appears, with the currently active one marked | `/model` errors, naming a usage form |
+| A.9 | Install `conway.ui` (`[plugins].install`), restart, then type `/model` with no argument | A menu opens (`Up`/`Down` choose, `Enter` picks) instead of plain text | The text listing still appears with `conway.ui` installed |
+| A.10 | Pick (or type) one of the pairs the listing/menu showed, verbatim, as `/model <pair>` | The switch succeeds — the SAME string the listing showed is accepted | The exact string the listing/menu just showed is rejected |
