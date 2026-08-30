@@ -5,23 +5,36 @@
 //! `"no backends configured"` error with a short, interactive fix: detect a
 //! local provider already running, offer it in one keypress, otherwise ask
 //! for one of the [`HOSTED_CHOICES`] and a credential, save it
-//! (`conway::config::set_backend_provider`), prove it with one real
-//! completion, and get out of the way.
+//! (`conway::config::set_backend_provider`) AND give it a place in the
+//! `default_role` routing chain (`conway::config::ensure_default_role` +
+//! `set_role_chain` -- see [`finish_setup`]'s own doc for why a backend
+//! entry alone left every guided run unable to route, board item
+//! `01M1A2HKMDGNK961ZFV1EGZDQ0`), prove it with one real completion, offer
+//! to add another, and get out of the way.
 //!
 //! # Appetite, restated here because it is easy to over-build this
 //!
 //! **Detect, offer, verify, get out of the way.** No model-pinning
-//! question, no roles/fallback-chain question -- exactly the local-or-
-//! hosted-choices menu below, one credential prompt at most, one verify.
-//! [`ProviderChoice`]'s own doc states which choices are admissible here,
-//! and why that is a lower bar than "closed at two forever".
+//! question, no roles/fallback-chain QUESTION -- exactly the local-or-
+//! hosted-choices menu below, one credential prompt at most, one verify,
+//! one "add another?" prompt after each success. The flow still never asks
+//! an operator to design a chain: order added IS the chain order, decided
+//! by what was just done, not by a fourth question put to them. Writing a
+//! chain that actually routes is not new scope this appetite forbids -- it
+//! is the ONE thing "verify, get out of the way" already promised and
+//! board item `01M1A2HKMDGNK961ZFV1EGZDQ0` found this module failing to
+//! deliver: the verify step proved a chain shaped exactly like this works,
+//! then nothing preserved that shape on disk. [`ProviderChoice`]'s own doc
+//! states which hosted choices are admissible here, and why that is a
+//! lower bar than "closed at two forever".
 //!
 //! # How this is structured for testability without a terminal
 //!
 //! Everything a test can assert on without driving a real TTY lives in pure
 //! functions in the first half of this file: [`resolve_credential_plan`],
 //! [`validate_credential_input`], [`backend_entry_json`],
-//! [`local_offer_entry_json`], [`non_interactive_guidance`]. Only the very
+//! [`local_offer_entry_json`], [`non_interactive_guidance`], [`chain_entry`],
+//! [`decline_or_keep`]. Only the very
 //! last function, [`run_guided_setup`], touches a real terminal (via
 //! `crossterm` raw-mode reads) -- it is a thin imperative shell over the
 //! pure functions above and is not, and cannot be, exercised by this crate's
@@ -31,6 +44,17 @@
 //! covered by ordinary `#[tokio::test]`s against a real mock HTTP server
 //! (`crates/conway-cli/tests/first_run.rs`), the same shape
 //! `tests/common/mock_backend.rs` already provides for the one-shot suite.
+//! [`finish_setup`] belongs in that same bucket -- it touches disk (via
+//! `conway::config`'s writers) and, on success, the network (via
+//! [`verify_backend`]), but reads the terminal only on its OWN failure
+//! path (a raw-mode "retry?" keypress) -- so a test driving its SUCCESS
+//! path never touches a pty either. It is `pub` for exactly this reason:
+//! board item `01M1A2HKMDGNK961ZFV1EGZDQ0`'s own acceptance 1 requires a
+//! test that builds a real [`conway::ConwayBuilder`] from the exact file
+//! `finish_setup` wrote and completes a real turn from it -- a
+//! [`verify_backend`] call alone proves only that ITS OWN throwaway
+//! in-memory config routes, which is precisely the gap this board item
+//! closes.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -62,6 +86,27 @@ pub const LOCAL_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/v1";
 
 /// The `backends.<id>` key this flow writes for the local-detected case.
 pub const LOCAL_OLLAMA_ID: &str = "local";
+
+/// The `roles.<role>` this flow writes a real chain into, and the
+/// `default_role` value it points there -- board item
+/// `01M1A2HKMDGNK961ZFV1EGZDQ0`'s own writer half. Deliberately the SAME
+/// name `conway::config::merge`'s baked-in validation floor already uses
+/// (`is_baked_in_role_floor`'s own doc calls it `BASELINE_ROLE_NAME`,
+/// private to that module, not reused here across the crate boundary --
+/// this is a plain chosen string, not shared resolution logic, so P-14
+/// does not apply to keeping the literal in sync, only to the chain-entry
+/// FORMAT itself, see [`chain_entry`]). Reusing that name rather than
+/// inventing a second one is deliberate: guided setup only ever runs when
+/// nothing usable is configured (`FleetUsability::should_offer_guided_setup`),
+/// so whatever `default_role` an operator's file already names is already
+/// proven unusable -- writing into a role literally called `"default"` and
+/// re-pointing `default_role` there converges on the one thing that is
+/// GUARANTEED to work afterward, rather than layering a second, possibly
+/// also-broken role next to whatever was there. The moment this role
+/// carries a real chain, `is_baked_in_role_floor` no longer matches it
+/// (that predicate compares the VALUE too, not just the name -- see its
+/// own doc), so nothing downstream mistakes it for the floor.
+pub const GUIDED_SETUP_ROLE: &str = "default";
 
 /// One of the hosted provider shapes offered when no local server answered.
 ///
@@ -328,6 +373,19 @@ async fn first_available_model(base_url: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// The `roles.<role>.chain` entry format ("backend/model" --
+/// `conway::config::schema`'s own module doc, `chain: Vec<String>`) built
+/// ONCE and reused by [`verify_backend`]'s own throwaway one-entry probe
+/// chain AND by [`finish_setup`]'s real, persisted chain -- board item
+/// `01M1A2HKMDGNK961ZFV1EGZDQ0` was exactly this format constructed twice
+/// (once here, inline, for verification; never at all for the write) and
+/// the two silently diverging: verification proved a shape the file on
+/// disk never had. One function, called from both places, makes that
+/// divergence impossible rather than merely unlikely (P-14).
+pub fn chain_entry(id: &str, model: &str) -> String {
+    format!("{id}/{model}")
+}
+
 /// Proves a just-saved backend entry can serve a real turn -- one real
 /// completion, never a reachability ping (`backend_usability` deliberately
 /// never performs inference; this is the step that closes that gap).
@@ -345,7 +403,7 @@ pub async fn verify_backend(id: &str, entry_json: &str, model: &str) -> Result<(
     let role = "first_run_verify";
     let config_value = serde_json::json!({
         "default_role": role,
-        "roles": { role: { "chain": [format!("{id}/{model}")] } },
+        "roles": { role: { "chain": [chain_entry(id, model)] } },
         "backends": { id: entry_value },
     });
     let mut config: conway::config::ConwayConfig = serde_json::from_value(config_value)
@@ -476,11 +534,12 @@ fn read_secret_line() -> Option<String> {
     outcome
 }
 
-/// The interactive flow itself: detect, offer, verify, get out of the way.
-/// Only reachable when the caller has already confirmed a real, writable
-/// terminal is attached (`main.rs`'s own `interactive` computation) --
-/// see this module's own doc for why this function is the one part of the
-/// module no automated test drives directly.
+/// The interactive flow itself: detect, offer, verify, offer to add
+/// another, get out of the way. Only reachable when the caller has already
+/// confirmed a real, writable terminal is attached (`main.rs`'s own
+/// `interactive` computation) -- see this module's own doc for why this
+/// function is the one part of the module no automated test drives
+/// directly.
 pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutcome {
     let Some(path) = conway::config::discovery::user_config_path(env) else {
         println!(
@@ -493,19 +552,54 @@ pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutco
     println!();
     println!("{GUIDED_SETUP_MARKER}.");
     println!("Let's fix that. Press Esc at any point to skip and continue without one.");
+
+    // Order added = chain order (acceptance 3): every backend this RUN
+    // configures, in the order it was configured, is exactly what
+    // `finish_setup`/`persist_chain` write to
+    // `roles.<GUIDED_SETUP_ROLE>.chain`.
+    let mut chain: Vec<String> = Vec::new();
+
     println!();
     print!("Looking for a local model server (Ollama on 127.0.0.1:11434)... ");
     let _ = std::io::stdout().flush();
 
+    // The local probe/offer happens at most ONCE per run, win or lose --
+    // "add another" (below) only ever loops back into the hosted menu, not
+    // back to this probe. Re-probing on every loop iteration would either
+    // re-offer the identical server (harmless but pointless once already
+    // accepted) or re-print "none found" forever for an operator who is
+    // clearly going the hosted route -- neither is the fourth question the
+    // appetite ruling forbids, but both are noise this flow's own "get out
+    // of the way" already argues against.
     if let Some(offer) = detect_local_provider(env).await {
         println!("found one, model \"{}\".", offer.model);
-        println!("Press Enter to use it, or any other key to see other providers.");
+        // Accurate about all three outcomes, not just two of them: `Enter`
+        // accepts, `Esc` abandons the WHOLE flow (matching every other
+        // `Esc` in this module), and anything else moves on to the hosted
+        // menu without configuring this one. The old wording ("or any
+        // other key to see other providers") lumped `Esc` in with "any
+        // other key", which reads as "just another way to browse" but
+        // actually means "give up entirely" -- exactly the model just
+        // offered, abandoned by a key someone pressed expecting to keep
+        // looking.
+        println!(
+            "Press Enter to use it, any other key to see other providers, or Esc to skip setup."
+        );
         match read_single_key() {
             Some(KeyCode::Enter) => {
                 let entry_json = local_offer_entry_json(&offer);
-                return finish_setup(&path, LOCAL_OLLAMA_ID, &entry_json, &offer.model).await;
+                match finish_setup(&path, LOCAL_OLLAMA_ID, &entry_json, &offer.model, &mut chain)
+                    .await
+                {
+                    GuidedSetupOutcome::Configured => {
+                        if !prompt_add_another() {
+                            return GuidedSetupOutcome::Configured;
+                        }
+                    }
+                    GuidedSetupOutcome::Declined => return decline_or_keep(&chain),
+                }
             }
-            Some(KeyCode::Esc) => return decline(),
+            Some(KeyCode::Esc) => return decline_or_keep(&chain),
             _ => {}
         }
     } else {
@@ -521,10 +615,10 @@ pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutco
         println!("  [Esc] skip setup for now");
 
         let Some(key) = read_single_key() else {
-            return decline();
+            return decline_or_keep(&chain);
         };
         let choice = match key {
-            KeyCode::Esc => return decline(),
+            KeyCode::Esc => return decline_or_keep(&chain),
             KeyCode::Char(c) => c
                 .to_digit(10)
                 .and_then(|n| (n as usize).checked_sub(1))
@@ -548,7 +642,7 @@ pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutco
                 print!("Paste your {} key: ", choice.label);
                 let _ = std::io::stdout().flush();
                 let Some(raw) = read_secret_line() else {
-                    return decline();
+                    return decline_or_keep(&chain);
                 };
                 match validate_credential_input(&raw) {
                     Ok(key) => CredentialSource::Literal(key),
@@ -561,8 +655,44 @@ pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutco
         };
 
         let entry_json = backend_entry_json(choice, &credential);
-        return finish_setup(&path, choice.id, &entry_json, choice.default_model).await;
+        match finish_setup(&path, choice.id, &entry_json, choice.default_model, &mut chain).await
+        {
+            GuidedSetupOutcome::Configured => {
+                if !prompt_add_another() {
+                    return GuidedSetupOutcome::Configured;
+                }
+                // Loop back to the hosted menu -- see the comment above
+                // the local probe for why "add another" never re-offers
+                // it.
+            }
+            GuidedSetupOutcome::Declined => return decline_or_keep(&chain),
+        }
     }
+}
+
+/// Asked once after EVERY successful [`finish_setup`], never before or
+/// instead of it -- **the appetite ruling's own accounting for this
+/// question, stated here because a reader who only sees a one-line prompt
+/// under a loop could otherwise assume the ruling was simply forgotten.**
+/// [`ProviderChoice`]'s own doc records "detect, offer, verify, get out of
+/// the way" with "one credential prompt at most"; this is the ONE new
+/// prompt this board item adds to that budget, and it costs an operator
+/// who wants exactly one provider precisely nothing extra in the failure
+/// mode that matters: declining (anything other than `y`/`Y`, including a
+/// terminal error) reproduces today's single-provider outcome byte-for-
+/// byte in every way except the one this whole item exists to fix -- the
+/// resulting config now actually routes. The question only exists at all
+/// because a SECOND provider changes what gets written (a longer chain,
+/// acceptance 3) in a way nothing else in this flow could infer -- there
+/// is no way to build that chain without asking, once, whether there is
+/// another entry to put in it.
+fn prompt_add_another() -> bool {
+    println!();
+    println!("Add another provider? [y/N]");
+    matches!(
+        read_single_key(),
+        Some(KeyCode::Char('y')) | Some(KeyCode::Char('Y'))
+    )
 }
 
 fn decline() -> GuidedSetupOutcome {
@@ -574,15 +704,61 @@ fn decline() -> GuidedSetupOutcome {
     GuidedSetupOutcome::Declined
 }
 
-/// Saves `entry_json` under `id`, verifies it with one real turn, and
-/// offers a retry loop on failure (acceptance 3: "the single most likely
-/// failure in this entire flow"). A failed literal-credential attempt is
-/// rolled back (the bad entry removed) before re-prompting, so a decline
-/// mid-retry leaves the fleet exactly as it started.
-async fn finish_setup(path: &Path, id: &str, entry_json: &str, model: &str) -> GuidedSetupOutcome {
+/// [`decline`]'s sibling for a decline reached AFTER at least one provider
+/// was already configured and persisted earlier in this same run
+/// (acceptance 4: declining the "add another?" loop leaves a WORKING
+/// single- or multi-provider config, never a discarded one). `decline()`'s
+/// own "no model provider is configured" is only ever true when `chain` is
+/// still empty -- printing it over a file that already routes somewhere
+/// would be a plain false statement, exactly the kind GP-14 forbids.
+fn decline_or_keep(chain: &[String]) -> GuidedSetupOutcome {
+    if chain.is_empty() {
+        return decline();
+    }
+    println!();
+    println!(
+        "Continuing with what's already configured ({} provider{}).",
+        chain.len(),
+        if chain.len() == 1 { "" } else { "s" }
+    );
+    GuidedSetupOutcome::Configured
+}
+
+/// Saves `entry_json` under `id`, verifies it with one real turn, and --
+/// only once verification succeeds -- gives it a place in the persisted
+/// `default_role` chain ([`persist_chain`]). Board item
+/// `01M1A2HKMDGNK961ZFV1EGZDQ0`: writing `backends.<id>` alone left every
+/// guided run with nothing to route to ("no candidate for role default (0
+/// considered)"), even though the [`verify_backend`] call right above had
+/// just proven a chain shaped exactly like the one that needed to be
+/// written actually works. Also offers a retry loop on verification
+/// failure (acceptance 3 of the ORIGINAL board item this module shipped
+/// under, `01M11XVEHNMYY942JE63F7MAFH`: "the single most likely failure in
+/// this entire flow"). A failed literal-credential attempt is rolled back
+/// (the bad entry removed) before re-prompting, so a decline mid-retry
+/// leaves the fleet exactly as it started.
+///
+/// `chain_so_far` is [`run_guided_setup`]'s own ordered accumulator of
+/// every `"id/model"` entry this RUN has already configured successfully,
+/// threaded through by mutable reference so two providers added in one run
+/// land in the persisted chain in the order they were added (acceptance
+/// 3). Only extended on an actual, persisted success -- a verification
+/// failure, or a persist failure, leaves it untouched.
+///
+/// `pub`: see this module's own top doc, "How this is structured for
+/// testability without a terminal" -- this function reads the terminal
+/// only on ITS OWN failure path, so a test driving the success path (the
+/// one acceptance 1 needs) never touches a pty.
+pub async fn finish_setup(
+    path: &Path,
+    id: &str,
+    entry_json: &str,
+    model: &str,
+    chain_so_far: &mut Vec<String>,
+) -> GuidedSetupOutcome {
     if let Err(e) = conway::config::set_backend_provider(path, id, entry_json, true) {
         println!("Could not save this provider to {}: {e}", path.display());
-        return decline();
+        return decline_or_keep(chain_so_far.as_slice());
     }
     println!("Saved to {}.", path.display());
     print!("Verifying with a real request... ");
@@ -590,8 +766,19 @@ async fn finish_setup(path: &Path, id: &str, entry_json: &str, model: &str) -> G
 
     match verify_backend(id, entry_json, model).await {
         Ok(()) => {
-            println!("it works.");
-            GuidedSetupOutcome::Configured
+            let mut candidate_chain = chain_so_far.clone();
+            candidate_chain.push(chain_entry(id, model));
+            match persist_chain(path, &candidate_chain) {
+                Ok(()) => {
+                    *chain_so_far = candidate_chain;
+                    println!("it works.");
+                    GuidedSetupOutcome::Configured
+                }
+                Err(e) => {
+                    println!("it works, but the routing config could not be saved: {e}");
+                    decline_or_keep(chain_so_far.as_slice())
+                }
+            }
         }
         Err(msg) => {
             println!("that didn't work:");
@@ -600,15 +787,32 @@ async fn finish_setup(path: &Path, id: &str, entry_json: &str, model: &str) -> G
             match read_single_key() {
                 Some(KeyCode::Char('y')) | Some(KeyCode::Char('Y')) => {
                     let _ = conway::config::set_backend_provider(path, id, entry_json, false);
-                    retry_credential_and_finish(path, id).await
+                    retry_credential_and_finish(path, id, chain_so_far).await
                 }
                 _ => {
                     let _ = conway::config::set_backend_provider(path, id, entry_json, false);
-                    decline()
+                    decline_or_keep(chain_so_far.as_slice())
                 }
             }
         }
     }
+}
+
+/// The two writes [`finish_setup`] must make together once a backend is
+/// verified: `default_role` naming [`GUIDED_SETUP_ROLE`] -- inventing the
+/// key when this is the very first provider this file has ever had, see
+/// `conway::config::ensure_default_role`'s own doc for why the narrower
+/// `set_default_role` cannot be used here -- and the FULL ordered `chain`
+/// (`conway::config::set_role_chain`, which replaces the whole array each
+/// call rather than appending -- see that function's own doc for why
+/// replacing the whole thing, built from `chain_so_far` fresh every call,
+/// is simpler and no less correct than an in-place append). Both calls
+/// target the SAME file `set_backend_provider` (just above, in
+/// [`finish_setup`]) already guaranteed exists by the time this runs.
+fn persist_chain(path: &Path, chain: &[String]) -> Result<(), String> {
+    conway::config::ensure_default_role(path, GUIDED_SETUP_ROLE).map_err(|e| e.to_string())?;
+    conway::config::set_role_chain(path, GUIDED_SETUP_ROLE, chain).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// The retry half of [`finish_setup`]: only reachable for a `settings.json`
@@ -617,28 +821,39 @@ async fn finish_setup(path: &Path, id: &str, entry_json: &str, model: &str) -> G
 /// `api_key_env` retry has nothing new to try without restarting the whole
 /// process -- see `resolve_credential_plan`'s own doc for why that path is
 /// declined outright by [`finish_setup`] instead of looping here).
-async fn retry_credential_and_finish(path: &Path, id: &str) -> GuidedSetupOutcome {
+async fn retry_credential_and_finish(
+    path: &Path,
+    id: &str,
+    chain_so_far: &mut Vec<String>,
+) -> GuidedSetupOutcome {
     let Some(choice) = HOSTED_CHOICES.iter().find(|c| c.id == id) else {
         // The local-Ollama offer has no credential to retry at all -- a
         // verification failure there is never a "wrong key" (there is no
         // key), so retrying can only mean "pick a different provider",
         // which is the ordinary decline-and-rerun path.
-        return decline();
+        return decline_or_keep(chain_so_far.as_slice());
     };
     print!("Paste your {} key: ", choice.label);
     let _ = std::io::stdout().flush();
     let Some(raw) = read_secret_line() else {
-        return decline();
+        return decline_or_keep(chain_so_far.as_slice());
     };
     let key = match validate_credential_input(&raw) {
         Ok(key) => key,
         Err(msg) => {
             println!("{msg}");
-            return decline();
+            return decline_or_keep(chain_so_far.as_slice());
         }
     };
     let entry_json = backend_entry_json(choice, &CredentialSource::Literal(key));
-    Box::pin(finish_setup(path, id, &entry_json, choice.default_model)).await
+    Box::pin(finish_setup(
+        path,
+        id,
+        &entry_json,
+        choice.default_model,
+        chain_so_far,
+    ))
+    .await
 }
 
 #[cfg(test)]
@@ -650,6 +865,39 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    // ---- chain_entry: the ONE construction verify_backend and the real ----
+    // ---- written chain both use (P-14) ----
+
+    #[test]
+    fn chain_entry_formats_backend_slash_model() {
+        assert_eq!(chain_entry("local", "qwen3:4b"), "local/qwen3:4b");
+        assert_eq!(chain_entry("anthropic", "claude-sonnet-4-6"), "anthropic/claude-sonnet-4-6");
+    }
+
+    // ---- decline_or_keep: acceptance 4's own discriminating message ----
+
+    #[test]
+    fn decline_or_keep_declines_outright_when_nothing_was_ever_configured() {
+        assert_eq!(decline_or_keep(&[]), GuidedSetupOutcome::Declined);
+    }
+
+    /// Acceptance 4: declining the "add another?" loop after at least one
+    /// provider already succeeded must report `Configured`, never
+    /// `Declined` -- printing `decline()`'s own "no model provider is
+    /// configured" over a file that already routes somewhere would be a
+    /// straightforward lie (GP-14).
+    #[test]
+    fn decline_or_keep_reports_configured_when_a_provider_already_succeeded() {
+        assert_eq!(
+            decline_or_keep(&["local/qwen3:4b".to_string()]),
+            GuidedSetupOutcome::Configured
+        );
+        assert_eq!(
+            decline_or_keep(&["local/qwen3:4b".to_string(), "ollama_cloud/glm-5.2".to_string()]),
+            GuidedSetupOutcome::Configured
+        );
     }
 
     // ---- resolve_credential_plan ----

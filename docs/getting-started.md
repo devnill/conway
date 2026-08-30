@@ -24,15 +24,20 @@ actually serve a turn (nothing configured at all, or every configured one
 is broken), an interactive terminal gets a short guided-setup flow instead
 of an error: it looks for a local model server already running (Ollama on
 its default port), offers it in one keypress if found, otherwise offers
-Anthropic, OpenAI, or Ollama Cloud and asks for a key, saves it, and proves
-it works with one real request before dropping you into a session — no
-hand-editing `settings.json` required. A key you paste is never echoed to
-the terminal, written into a transcript, or captured in a session log; if
-it has to be stored in plain text, the flow says so, and where, before
-writing it.
-Declining leaves conway usable but unconfigured, with a clear statement of
-what will not work. Under `-p`/`--print`, a pipe, or CI — anywhere an
-interactive prompt is impossible — this degrades instead to printing the
+Anthropic, OpenAI, or Ollama Cloud and asks for a key, saves it, gives it a
+place in your default routing chain, and proves it works with one real
+request. After each provider succeeds, it asks whether to add another —
+say no (the default) and you land straight in a working session with that
+one provider; say yes and pick another, and the chain becomes both, in the
+order you added them, so the second is tried if the first ever fails. No
+hand-editing `settings.json` required either way. A key you paste is never
+echoed to the terminal, written into a transcript, or captured in a
+session log; if it has to be stored in plain text, the flow says so, and
+where, before writing it.
+Declining before configuring anything leaves conway usable but
+unconfigured, with a clear statement of what will not work. Under
+`-p`/`--print`, a pipe, or CI — anywhere an interactive prompt is
+impossible — this degrades instead to printing the
 exact file to edit and the exact JSON to add, and never blocks waiting for
 input nobody can give.
 

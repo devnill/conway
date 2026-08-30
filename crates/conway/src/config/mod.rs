@@ -24,7 +24,8 @@ pub use merge::{
 pub use model_metadata::ModelMetadata;
 pub use schema::ConwayConfig;
 pub use writer::{
-    set_backend_provider, set_claude_compat_entry, set_default_role, set_plugin_installed,
+    ensure_default_role, set_backend_provider, set_claude_compat_entry, set_default_role,
+    set_plugin_installed, set_role_chain,
 };
 
 /// The result of [`load`]: the validated config plus any non-fatal
