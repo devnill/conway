@@ -44,6 +44,7 @@ use crate::tui::state::{AppState, Entry};
 use crate::tui::view::Theme;
 
 mod ask;
+mod defaults;
 mod focus;
 mod marketplace;
 mod plugin_cmd;
@@ -309,11 +310,16 @@ impl App {
                         // site.
                         let env_vars: std::collections::HashMap<String, String> =
                             std::env::vars().collect();
-                        self.refresh_provider_entries_and_kick_off_status(
-                            &env_vars,
-                            &std::env::current_dir()
-                                .unwrap_or_else(|_| std::path::PathBuf::from(".")),
-                        );
+                        let cwd = std::env::current_dir()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                        self.refresh_provider_entries_and_kick_off_status(&env_vars, &cwd);
+                        // Board item `01M18Q7P25DTSKQJDJJCC3E800`: the
+                        // "defaults" section's own listing (default role +
+                        // the derived default model), refreshed on the
+                        // SAME seam as the providers section immediately
+                        // above, for the same reason -- `view/settings.rs::
+                        // build_tree` stays a pure function of `AppState`.
+                        self.refresh_default_entries(&env_vars, &cwd);
                     }
                     let host = commands::LiveHost {
                         handle: &self.handle,

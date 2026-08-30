@@ -728,6 +728,23 @@ impl App {
                                             .unwrap_or_else(|_| std::path::PathBuf::from(".")),
                                     );
                                 }
+                                // Board item `01M18Q7P25DTSKQJDJJCC3E800`:
+                                // mirrors `Action::RemoveProvider` and its
+                                // siblings immediately above in every
+                                // respect -- the decision and write live in
+                                // `app/defaults.rs`, factored out for the
+                                // same testability reason, and
+                                // `env_vars`/`cwd` are collected HERE for
+                                // the identical hermetic-testing reason.
+                                Action::CycleDefaultRole => {
+                                    let env_vars: std::collections::HashMap<String, String> =
+                                        std::env::vars().collect();
+                                    self.apply_cycle_default_role(
+                                        &env_vars,
+                                        &std::env::current_dir()
+                                            .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                                    );
+                                }
                                 Action::GrantPermissionPattern(rule, scope) => {
                                     // The granting agent is the one whose
                                     // call is being decided -- NOT

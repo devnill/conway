@@ -1,6 +1,6 @@
 //! A config **writer** -- the missing half `crate::config::merge`'s own
 //! module doc names ("a layered read with no writer outside test
-//! fixtures"). Three public writers, all against a real `settings.json`,
+//! fixtures"). Four public writers, all against a real `settings.json`,
 //! resolved to decision `01M0K8BAXJ6THVJAPK0JZ17VV6`'s user layer
 //! (`~/.conway/settings.json`, or `$CONWAY_CONFIG_DIR/settings.json` --
 //! see [`super::discovery::user_config_path`], this module's own caller),
@@ -10,7 +10,11 @@
 //! objects, matched by an `id` member; [`set_backend_provider`] (board item
 //! `01M11XTB238YHXV01FWF8SFZH2`) edits `backends`, a **map** from provider
 //! id to an open-ended entry -- a named table (`[backends.<id>]` in the
-//! operator-facing notation `docs/providers.md` uses), not an array at all.
+//! operator-facing notation `docs/providers.md` uses), not an array at
+//! all; [`set_default_role`] (board item `01M18Q7P25DTSKQJDJJCC3E800`)
+//! edits `default_role`, a bare top-level **scalar** -- the one shape none
+//! of the other three cover, and the only writer here that refuses a
+//! missing key rather than inventing one (see its own doc for why).
 //!
 //! # Why this is a hand-rolled text patch, not a parse/mutate/reserialize
 //!
@@ -1229,6 +1233,115 @@ fn patch_backends_object(
             idx,
         ))),
     }
+}
+
+/// Sets the top-level `default_role` scalar to `role`, splicing only that
+/// member's own value span -- see the module doc's "why a splice, not a
+/// reserialize" for why this never touches anything else in the document.
+/// Board item `01M18Q7P25DTSKQJDJJCC3E800`: `/settings`' "defaults"
+/// section's own writer for the one persistent scalar that section can set
+/// directly (`default_model` is a DERIVED read over `roles`, not a stored
+/// value -- see `conway::config::schema::ConwayConfig::default_model`'s own
+/// doc for that decision and its rejected alternative).
+///
+/// **Unlike the three siblings above, this never invents a missing key.**
+/// `default_role` is REQUIRED wire schema -- `ConwayConfig::default_role`
+/// carries no `#[serde(default)]` (see its own doc: "the binding config
+/// always sets it explicitly") -- and every user `settings.json` this
+/// writer's caller ever produces already has one (`first_run.rs`'s
+/// onboarding flow always writes `"default_role": role`). Refusing a
+/// missing key here, rather than picking one for the operator, matches
+/// this crate's fail-loud design elsewhere in this module: a key nobody
+/// asked this writer to create is exactly the kind of silent invention
+/// [`set_plugin_installed`]'s own "goal state already holding" posture
+/// exists to avoid in the other direction.
+///
+/// Returns `Ok(true)` if a write happened, `Ok(false)` if `role` already
+/// matched the current value (no-op, matching the other writers' "a goal
+/// state already holding never touches the file" posture).
+///
+/// See this module's own doc for the safety posture on a file that is not
+/// valid JSON, and [`set_backend_provider`]'s own doc for why a missing
+/// FILE (as opposed to a missing key inside an existing one) is still
+/// refused rather than papered over: an operator's `settings.json` not
+/// existing at all is a materially different problem than a key missing
+/// from one that does, and this writer -- unlike the other three -- has no
+/// "fresh document" shape to fall back to, since it never invents
+/// `default_role`'s value.
+pub fn set_default_role(path: &Path, role: &str) -> Result<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(FacadeError::Config {
+                path: Some(path.to_path_buf()),
+                message: format!(
+                    "{} does not exist; this writer never invents a `default_role` -- run \
+                     first-run setup, or create the file with one set, first",
+                    path.display()
+                ),
+            });
+        }
+        Err(e) => return Err(FacadeError::Io(e)),
+    };
+    if let Err(e) = serde_json::from_str::<serde_json::Value>(&text) {
+        return Err(FacadeError::Config {
+            path: Some(path.to_path_buf()),
+            message: format!(
+                "{} is not valid JSON, refusing to rewrite it blindly: {e}",
+                path.display()
+            ),
+        });
+    }
+    match patch_default_role(&text, role) {
+        Ok(Some(patched)) => {
+            write_atomically(path, &patched)?;
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(msg) => Err(FacadeError::Config {
+            path: Some(path.to_path_buf()),
+            message: format!("{}: {msg}", path.display()),
+        }),
+    }
+}
+
+/// The scalar-member sibling of [`patch_backends_object`]/
+/// [`patch_install_array`]: locates the top-level `"default_role"` member
+/// and replaces its own value span with `role`'s JSON string literal.
+/// Never inserts one -- see [`set_default_role`]'s own doc for why a
+/// missing key is refused rather than invented.
+fn patch_default_role(text: &str, role: &str) -> std::result::Result<Option<String>, String> {
+    let bytes = text.as_bytes();
+    let root_open = skip_ws(bytes, 0);
+    if bytes.get(root_open) != Some(&b'{') {
+        return Err("the top-level JSON value must be an object".to_string());
+    }
+    let (root_members, _root_close) = scan_object_members(text, root_open)?;
+
+    // LAST match, not first -- same last-wins reasoning as
+    // `patch_install_array`'s own doc: a duplicate top-level
+    // `"default_role"` key resolves last-wins under `serde_json`, the real
+    // loader, so editing an earlier one would change bytes the loader
+    // never reads.
+    let Some(member) = root_members.iter().rev().find(|m| m.key == "default_role") else {
+        return Err(
+            "\"default_role\" is missing from the document; this writer never invents one \
+             -- see its own doc"
+                .to_string(),
+        );
+    };
+
+    let current_raw = &text[member.value_start..member.value_end];
+    let new_raw = json_string_literal(role);
+    if current_raw == new_raw {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "{}{}{}",
+        &text[..member.value_start],
+        new_raw,
+        &text[member.value_end..]
+    )))
 }
 
 #[cfg(test)]
@@ -2540,5 +2653,121 @@ mod tests {
             after, expected,
             "every scalar-, array- and string-valued sibling must survive byte-for-byte"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // `set_default_role` (board item `01M18Q7P25DTSKQJDJJCC3E800`).
+    // -----------------------------------------------------------------
+
+    /// ACCEPTANCE 3 ("setting either persists and is read back"): a write
+    /// changes the on-disk value, and re-reading the file back shows it.
+    /// The discriminating observable: `value["default_role"]` reads back
+    /// the NEW role, not the one the fixture started with.
+    #[test]
+    fn set_default_role_writes_and_reads_back() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"default_role": "coder"}"#).unwrap();
+
+        let wrote = set_default_role(&path, "reviewer").expect("write");
+        assert!(wrote, "changing the value must report a write happened");
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["default_role"], "reviewer", "{text}");
+    }
+
+    /// The "goal state already holding" posture every other writer in this
+    /// module follows: setting the CURRENT value performs no write at all.
+    #[test]
+    fn set_default_role_is_a_no_op_when_the_value_already_matches() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"default_role": "coder"}"#).unwrap();
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        let wrote = set_default_role(&path, "coder").expect("no-op");
+        assert!(!wrote, "an unchanged value must never touch the file");
+
+        let after = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(before, after);
+    }
+
+    /// Unlike the other three writers, a missing `default_role` key is
+    /// refused, never invented -- see [`set_default_role`]'s own doc.
+    #[test]
+    fn set_default_role_refuses_a_document_with_no_default_role_key() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"backends": {}}"#).unwrap();
+
+        let err = set_default_role(&path, "reviewer")
+            .expect_err("a missing default_role key must be refused, not invented");
+        assert!(
+            err.to_string().contains("default_role"),
+            "error must name the missing key: {err}"
+        );
+        // Refused, so nothing was written.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text, r#"{"backends": {}}"#);
+    }
+
+    /// A missing FILE is refused too -- this writer has no "fresh
+    /// document" fallback, since it never invents the value it would need
+    /// to seed one with.
+    #[test]
+    fn set_default_role_refuses_a_missing_file() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        assert!(!path.exists());
+
+        let err = set_default_role(&path, "reviewer")
+            .expect_err("a missing file must be refused, not silently created");
+        assert!(err.to_string().contains("default_role"), "{err}");
+        assert!(!path.exists(), "refusing must never create the file");
+    }
+
+    /// A document that is not valid JSON at all is never touched, matching
+    /// every other writer's safety posture (this module's own doc,
+    /// "Safety posture: refuse rather than guess").
+    #[test]
+    fn set_default_role_refuses_invalid_json() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        let err = set_default_role(&path, "reviewer")
+            .expect_err("invalid JSON must be refused, not blindly rewritten");
+        assert!(err.to_string().contains("not valid JSON"), "{err}");
+    }
+
+    /// Acceptance 7's own "hand-edited files survive byte-for-byte" bar,
+    /// applied to the fourth writer: an operator's own comment key, an
+    /// unrelated top-level scalar, and a nested `backends`/`plugins`
+    /// section all survive a `default_role` change untouched.
+    #[test]
+    fn set_default_role_preserves_comments_and_unrelated_sections_byte_for_byte() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, hand_edited_fixture()).unwrap();
+
+        let wrote = set_default_role(&path, "reviewer").expect("write");
+        assert!(wrote);
+
+        let new_text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&new_text).expect("still valid json");
+        assert_eq!(value["default_role"], "reviewer");
+
+        assert!(new_text
+            .contains("\"//\": \"operator note: do not touch the backends section by hand\""));
+        assert!(new_text.contains("\"zebra_first_key\": \"kept exactly as-is\""));
+        assert!(new_text.contains("\"apple_last_key\": 42"));
+        assert!(new_text
+            .contains("\"anthropic\": { \"kind\": \"anthropic\", \"api_key\": \"sk-unused\" }"));
+        assert!(new_text.contains("\"_comment_plugins\": \"toggle plugins here\""));
+        let pos = |needle: &str| new_text.find(needle).expect(needle);
+        assert!(pos("\"//\"") < pos("\"zebra_first_key\""));
+        assert!(pos("\"zebra_first_key\"") < pos("\"default_role\""));
+        assert!(pos("\"default_role\"") < pos("\"backends\""));
     }
 }

@@ -354,23 +354,39 @@ again) closes it. The status markers:
 
 ## The `/settings` menu
 
-`/settings` opens a menu of four groups: **display** (show reasoning
-traces, show timestamps), **tool output** (how many lines a folded tool
-call shows before `Ctrl-E` is needed), **permissions** (cycle the
-permission mode; review or revoke individual grants under **allow** —
-flat and structured alike; read-only **deny** and **prompt** sections
-listing every rule — flat or structured — that any permissions file,
-trusted or not, has put in force, each with the file it came from; and
-**hooks**, a fourth, revocable review list), and **plugins** — a single
-shortcut row that opens `/plugin` (below); this menu itself no longer
-lists plugins directly. `Up`/`Down` navigate, `Enter` toggles a boolean,
-expands/collapses a group, revokes a selected grant/hook row, or opens
-`/plugin`, `Left`/`Right` step the numeric tool-preview setting, `Esc`
-closes. The two display toggles, the permission-mode cycle, and every
-revoke action apply to this session only; the tool-preview line count
-persists to `[tui.tool_preview_lines]` in `settings.json` when you step
-it. Permission-mode and grant details are covered in
+`/settings` opens a menu of six groups: **defaults** (the default role and
+the default model — see below), **display** (show reasoning traces, show
+timestamps), **tool output** (how many lines a folded tool call shows
+before `Ctrl-E` is needed), **permissions** (cycle the permission mode;
+review or revoke individual grants under **allow** — flat and structured
+alike; read-only **deny** and **prompt** sections listing every rule —
+flat or structured — that any permissions file, trusted or not, has put in
+force, each with the file it came from; and **hooks**, a fourth, revocable
+review list), **providers** (add or remove a `backends.<id>` entry — see
+[`providers.md`](providers.md#managing-providers-from-the-tui)), and
+**plugins** — a single shortcut row that opens `/plugin` (below); this
+menu itself no longer lists plugins directly. `Up`/`Down` navigate,
+`Enter` toggles a boolean, cycles the default role, expands/collapses a
+group, revokes a selected grant/hook row, or opens `/plugin`,
+`Left`/`Right` step the numeric tool-preview setting, `Esc` closes. The
+two display toggles, the permission-mode cycle, and every revoke action
+apply to this session only; the tool-preview line count persists to
+`[tui.tool_preview_lines]` in `settings.json` when you step it.
+Permission-mode and grant details are covered in
 [`permissions.md`](permissions.md).
+
+**Defaults, not session state — `/model` and `/role` stay top-level
+commands for exactly that reason.** The `default role -- <role> (default)`
+row is settable: `Enter` cycles it through every role your `[roles]`
+config declares, wrapping, and writes `default_role` in your global
+`settings.json` immediately — this is the role a *new* session starts on,
+not the current one (change that with `/role` instead, which never
+touches a file). The `default model -- <model> (default; ...)` row right
+below it is read-only: it shows the head of the default role's own
+`chain` — see [`routing.md`](routing.md#roles-and-fallback-chains) — and
+there is no separate "default model" setting to change independently;
+changing which model a fresh session starts on means changing the default
+role above, or that role's `chain` in `settings.json` by hand.
 
 ## The `/plugin` command
 

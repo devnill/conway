@@ -43,16 +43,50 @@
 //!
 //! ## Grouping
 //!
-//! Four top-level [`MenuNode::Group`]s -- "display" (the two booleans),
-//! "tool output" (the one numeric setting), "permissions" (the mode,
-//! plus allow/deny/prompt/hooks rule review as FOUR SUB-groups -- see
+//! **Restated in full here, not appended to, because it had already drifted
+//! once before this item touched it: this doc used to say "four top-level
+//! groups" naming only display/tool-output/permissions/plugins, while
+//! "providers" (board item `01M11XWB4T8ZADNDB4M8R482MA`) had already
+//! shipped a fifth without this paragraph being updated for it. Corrected
+//! here alongside this item's own sixth, "defaults", per GP-14 -- a
+//! declaration site is one artifact, not an append log.**
+//!
+//! Six top-level [`MenuNode::Group`]s -- "defaults" (the default role, a
+//! cyclable leaf; the derived default model, a static row -- see
+//! "Defaults: role settable, model derived" below), "display" (the two
+//! booleans), "tool output" (the one numeric setting), "permissions" (the
+//! mode, plus allow/deny/prompt/hooks rule review as FOUR SUB-groups -- see
 //! [`build_tree`]'s own doc for why they are separate sections, why
 //! deny/prompt rows are read-only [`MenuNode::Static`] rows, and why hooks
-//! get a fourth section rather than folding into allow), and "plugins" (see
+//! get a fourth section rather than folding into allow), "providers" (see
+//! "Providers: add/remove owned here" below), and "plugins" (see
 //! "Plugins: one home, not two" below) -- rather than one flat group or
 //! several separate ones: this is genuinely the shape a further settings
 //! category (say, session history) would extend later, not artificial
 //! nesting invented only to exercise the primitive.
+//!
+//! ## Defaults: role settable, model derived
+//!
+//! Board item `01M18Q7P25DTSKQJDJJCC3E800`, closing
+//! `docs/vision/DESIGN-surface-coherence.md`'s corrected rule 1: `/model`
+//! and `/role` stay top-level commands (session-scoped state), and the
+//! *default* model and *default* role live here instead, each labelled as
+//! a default. `default role` is an ordinary settable leaf -- `Enter`
+//! advances `AppState::default_role_snapshot` through every configured
+//! `[roles]` entry, wrapping, and persists via `conway::config::
+//! set_default_role` (`app/defaults.rs`).
+//!
+//! `default model` is deliberately NOT a leaf -- it renders as
+//! [`MenuNode::Static`], with no `Enter` behavior at all. This is the
+//! decision `conway::config::schema::ConwayConfig::default_model`'s own
+//! doc records in full (rejected alternative and its cost included): the
+//! default model is a DERIVED READ over `roles.<default_role>.chain`, not
+//! a second, independently-settable value, because model selection already
+//! has exactly one source of truth in this schema and a parallel
+//! `default_model` field would be a second one (P-14). Changing it means
+//! changing the default role (the leaf above) or that role's own `chain`
+//! in `settings.json` by hand -- there is no third way, and this row does
+//! not pretend there is one.
 //!
 //! ## Plugins: one home, not two
 //!
@@ -181,6 +215,13 @@ use crate::tui::state::AppState;
 /// by `input::handle_settings_key` (the only two places that need to agree
 /// on their meaning). `pub(crate)` so `input.rs` can match on them without
 /// this module needing to expose its whole tree-building internals.
+/// Board item `01M18Q7P25DTSKQJDJJCC3E800`: `Enter` cycles the default role
+/// through every configured `[roles]` entry, wrapping -- see
+/// `input::Action::CycleDefaultRole`'s own doc. There is no equivalent leaf
+/// id for "default model": that row is `MenuNode::Static`, a DERIVED
+/// display, not something `Enter` sets -- see this module's own doc,
+/// "Defaults: role settable, model derived".
+pub(crate) const LEAF_DEFAULT_ROLE: &str = "default_role";
 pub(crate) const LEAF_SHOW_REASONING: &str = "show_reasoning";
 pub(crate) const LEAF_SHOW_TIMESTAMPS: &str = "show_timestamps";
 pub(crate) const LEAF_TOOL_PREVIEW_LINES: &str = "tool_preview_lines";
@@ -233,10 +274,16 @@ pub(crate) const LEAF_REMOVE_PROVIDER_PREFIX: &str = "remove_provider:";
 /// P-14; see this module's own doc, "Providers: add/remove owned here").
 pub(crate) const LEAF_ADD_PROVIDER_PREFIX: &str = "add_provider:";
 
-/// The two top-level group labels (see this module's own doc, "Grouping").
+/// The top-level group labels (see this module's own doc, "Grouping").
 /// `pub(crate)` for the same reason the leaf ids are -- `input.rs` and this
 /// module must agree on the SAME strings, since [`crate::tui::state::
 /// AppState::settings_collapsed_groups`] is keyed by them.
+///
+/// Board item `01M18Q7P25DTSKQJDJJCC3E800`: the "defaults" section's own
+/// top-level group label -- default role (a leaf, cyclable) and the
+/// derived default model (a static row) -- see this module's own doc,
+/// "Defaults: role settable, model derived".
+const DEFAULTS_GROUP: &str = "defaults";
 const DISPLAY_GROUP: &str = "display";
 const TOOL_OUTPUT_GROUP: &str = "tool output";
 const PERMISSIONS_GROUP: &str = "permissions";
@@ -291,6 +338,32 @@ const SESSION_NOTE: &str = "display/permission changes apply to this session onl
 /// drift apart.
 pub(crate) fn build_tree(state: &AppState) -> MenuState {
     let roots = vec![
+        // Board item `01M18Q7P25DTSKQJDJJCC3E800`: see this module's own
+        // doc, "Defaults: role settable, model derived", for why the first
+        // row is a settable leaf (`Enter` cycles) and the second is
+        // `MenuNode::Static` (a derived display, never a leaf).
+        group_node(
+            DEFAULTS_GROUP,
+            state,
+            vec![
+                MenuNode::leaf(
+                    format!(
+                        "default role -- {} (default) (Enter to cycle)",
+                        state.default_role_snapshot
+                    ),
+                    LEAF_DEFAULT_ROLE,
+                ),
+                MenuNode::static_row(format!(
+                    "default model -- {} (default; the head of the default \
+                     role's routing chain -- change the default role above, \
+                     or that role's own chain, to change this)",
+                    state
+                        .default_model_snapshot
+                        .as_deref()
+                        .unwrap_or("not configured")
+                )),
+            ],
+        ),
         group_node(
             DISPLAY_GROUP,
             state,
@@ -1589,6 +1662,151 @@ mod tests {
                 },
             ),
         )]);
+        for (w, h) in [(80u16, 1u16), (80, 2), (1, 24), (0, 0)] {
+            let backend = TestBackend::new(w.max(1), h.max(1));
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+                .unwrap_or_else(|e| panic!("panicked/errored at {w}x{h}: {e}"));
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Board item `01M18Q7P25DTSKQJDJJCC3E800`: the "defaults" section.
+    // ---------------------------------------------------------------
+
+    /// ACCEPTANCE 2: `/settings` shows a default model and a default role,
+    /// each labelled as a default. The discriminating observable: both
+    /// labels contain the CURRENT snapshot value AND the literal word
+    /// "default" -- a row showing the value without that word would not
+    /// satisfy the design page's "labelled as defaults" requirement, and
+    /// this fails the moment either goes missing.
+    #[test]
+    fn build_tree_shows_default_role_and_default_model_each_labelled_as_a_default() {
+        let mut state = AppState::new(AgentId::new());
+        state.default_role_snapshot = "coder".to_string();
+        state.default_model_snapshot = Some("anthropic/claude-sonnet-4-6".to_string());
+
+        let rows = build_tree(&state).rows();
+        let labels: Vec<String> = rows.iter().map(|r| r.label.clone()).collect();
+
+        let role_label = labels
+            .iter()
+            .find(|l| l.contains("default role"))
+            .unwrap_or_else(|| panic!("no default-role row: {labels:?}"));
+        assert!(role_label.contains("coder"), "{role_label}");
+        assert!(role_label.contains("(default)"), "{role_label}");
+
+        let model_label = labels
+            .iter()
+            .find(|l| l.contains("default model"))
+            .unwrap_or_else(|| panic!("no default-model row: {labels:?}"));
+        assert!(
+            model_label.contains("anthropic/claude-sonnet-4-6"),
+            "{model_label}"
+        );
+        assert!(model_label.contains("default"), "{model_label}");
+    }
+
+    /// A default model of `None` (the default role has no chain yet) reads
+    /// "not configured", never a blank or a synthesized guess.
+    #[test]
+    fn default_model_row_reads_not_configured_when_none() {
+        let mut state = AppState::new(AgentId::new());
+        state.default_role_snapshot = "coder".to_string();
+        state.default_model_snapshot = None;
+
+        let rows = build_tree(&state).rows();
+        let model_label = rows
+            .iter()
+            .find(|r| r.label.contains("default model"))
+            .expect("default-model row must exist")
+            .label
+            .clone();
+        assert!(model_label.contains("not configured"), "{model_label}");
+    }
+
+    /// ACCEPTANCE 4 ("no second source of truth for model selection"),
+    /// enforced structurally: the default-model row is `MenuNode::Static`,
+    /// never a `Leaf` -- there is no `Enter` action that could write a
+    /// second, independent value for it. The discriminating observable:
+    /// if a future edit turned this into a settable leaf (reintroducing
+    /// the rejected `default_model` scalar this item's own decision
+    /// record argues against), this assertion is exactly what would catch
+    /// it.
+    #[test]
+    fn default_model_row_is_static_never_a_settable_leaf() {
+        let mut state = AppState::new(AgentId::new());
+        state.default_role_snapshot = "coder".to_string();
+        state.default_model_snapshot = Some("anthropic/claude-sonnet-4-6".to_string());
+
+        let rows = build_tree(&state).rows();
+        let model_row = rows
+            .iter()
+            .find(|r| r.label.contains("default model"))
+            .expect("default-model row must exist");
+        assert_eq!(model_row.kind, menu::MenuRowKind::Static, "{model_row:?}");
+    }
+
+    /// The default-role row IS a settable leaf, addressed by
+    /// `LEAF_DEFAULT_ROLE` -- `input::activate_settings_selection`
+    /// resolves `Enter` on it to `Action::CycleDefaultRole`.
+    #[test]
+    fn default_role_row_is_a_leaf_addressed_by_its_stable_id() {
+        let mut state = AppState::new(AgentId::new());
+        state.default_role_snapshot = "coder".to_string();
+
+        let rows = build_tree(&state).rows();
+        let role_row = rows
+            .iter()
+            .find(|r| r.label.contains("default role"))
+            .expect("default-role row must exist");
+        assert_eq!(
+            role_row.kind,
+            menu::MenuRowKind::Leaf {
+                id: LEAF_DEFAULT_ROLE.to_string()
+            },
+            "{role_row:?}"
+        );
+    }
+
+    /// The freshly-built tree reflects the CURRENT snapshot, not a stale
+    /// one -- same "fresh tree every call" contract every other row in
+    /// this menu already follows.
+    #[test]
+    fn defaults_rows_reflect_a_changed_snapshot_on_the_next_build() {
+        let mut state = AppState::new(AgentId::new());
+        state.default_role_snapshot = "coder".to_string();
+        state.default_model_snapshot = Some("anthropic/claude-sonnet-4-6".to_string());
+        let before = build_tree(&state).rows();
+        assert!(before
+            .iter()
+            .any(|r| r.label.contains("coder") && r.label.contains("default role")));
+
+        state.default_role_snapshot = "reviewer".to_string();
+        state.default_model_snapshot = Some("kimi/k3".to_string());
+        let after = build_tree(&state).rows();
+        assert!(
+            after
+                .iter()
+                .any(|r| r.label.contains("reviewer") && r.label.contains("default role")),
+            "{after:?}"
+        );
+        assert!(
+            after
+                .iter()
+                .any(|r| r.label.contains("kimi/k3") && r.label.contains("default model")),
+            "{after:?}"
+        );
+    }
+
+    #[test]
+    fn draw_never_panics_with_defaults_populated() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.default_role_snapshot = "coder".to_string();
+        state.default_model_snapshot = Some("anthropic/claude-sonnet-4-6".to_string());
+        state.known_role_names = vec!["coder".to_string(), "reviewer".to_string()];
         for (w, h) in [(80u16, 1u16), (80, 2), (1, 24), (0, 0)] {
             let backend = TestBackend::new(w.max(1), h.max(1));
             let mut terminal = Terminal::new(backend).expect("terminal");

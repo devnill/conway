@@ -74,6 +74,21 @@ Two flags override chain resolution for a single run:
 | `--role-override <role>` | Use this role instead of `default_role`. |
 | `--model <backend/model>` | Pin a specific model, bypassing the chain entirely (`RoutingReason::PinnedByApi`). |
 
+### Viewing and changing the default from the TUI
+
+The interactive TUI's `/settings` menu has a **defaults** section showing
+`default_role` and, beside it, the **default model** — the head of that
+role's own `chain`, labelled as a default. The default model is a
+computed display, not a separate setting: there is no `default_model` key
+anywhere in `settings.json`, on purpose (one source of truth for "which
+model" — this page's own `chain`). Changing which model a *new* session
+starts on means changing `default_role` (the settings menu's `default
+role` row cycles through your configured roles and writes it) or that
+role's own `chain` (a `settings.json` edit, same as any other role
+config). `/model` and `/role` are unrelated commands, both top-level and
+both session-scoped: they change what the *current* session is using
+right now, never `settings.json`.
+
 ## Installing a different router
 
 **Absent, by default: `conway_core::routing::MinimalRouter`.** `build()`

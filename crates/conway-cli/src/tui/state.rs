@@ -985,6 +985,30 @@ pub struct AppState {
     /// settings.rs`) to decide whether an id absent from
     /// [`Self::provider_status`] is "checking..." or a genuine gap.
     pub provider_status_loading: bool,
+    /// Board item `01M18Q7P25DTSKQJDJJCC3E800`: the settings menu's own
+    /// "defaults" section -- a fresh (never `Conway::config()`'s stale
+    /// build-time snapshot) read of the CURRENT merged `default_role`,
+    /// refreshed on the same "reopen `/settings`" seam
+    /// [`Self::provider_entries`] already uses, via
+    /// `App::refresh_default_entries` (`app/defaults.rs`). Empty only
+    /// before the first refresh has ever run.
+    pub default_role_snapshot: String,
+    /// The default model: `conway::config::schema::ConwayConfig::model_for`
+    /// applied to [`Self::default_role_snapshot`] and
+    /// [`Self::known_role_names`]' own chains -- a DERIVED display, never a
+    /// second stored value (see `ConwayConfig::default_model`'s own doc for
+    /// why). `None` when the default role has no `[roles]` entry, or one
+    /// with an empty `chain` -- rendered as "not configured", never a
+    /// synthesized guess.
+    pub default_model_snapshot: Option<String>,
+    /// Every role name the current merged config's `[roles]` declares,
+    /// sorted (mirrors `BTreeMap`'s own iteration order, since
+    /// `app/defaults.rs` reads the same lax `roles` map
+    /// `app/provider_manage.rs::load_roles_lax` already uses) --
+    /// `input::activate_settings_selection`'s `LEAF_DEFAULT_ROLE` arm
+    /// cycles [`Self::default_role_snapshot`] through this list, wrapping.
+    /// Refreshed on the identical seam as the two fields above.
+    pub known_role_names: Vec<String>,
     /// The installed plugin commands, for `/help`'s pointer to the palette
     /// and `view::palette`'s own live-filtered listing. **NOT reset by `/resume`** despite
     /// `AppState::new` seeding it empty by default -- this is
@@ -1166,6 +1190,9 @@ impl AppState {
             provider_entries: BTreeMap::new(),
             provider_status: BTreeMap::new(),
             provider_status_loading: false,
+            default_role_snapshot: String::new(),
+            default_model_snapshot: None,
+            known_role_names: Vec::new(),
             // empty here by default
             // (mirrors every other collection field's construction-time
             // default) -- `App::new` overwrites this immediately after
