@@ -211,8 +211,10 @@ choke point neither `first_party_plugins::bundle()` nor
 ## Installing from a marketplace — first-party, but not a `[plugins].install` id either
 
 [`marketplace.md`](marketplace.md) — fetches a marketplace's manifest over
-HTTP and a chosen plugin's declared files into conway's own plugin store,
-then writes the exact `[plugins].claude_compat[]` entry the section above
+HTTP (a conway-native one, or a real, published Claude Code marketplace)
+and a chosen plugin's declared files (over HTTP, or via the system `git`
+binary for a real Claude Code entry) into conway's own plugin store, then
+writes the exact `[plugins].claude_compat[]` entry the section above
 describes, pointing at where it landed. Not a fourth import mechanism: an
 installed marketplace plugin is, on disk and in `settings.json`,
 indistinguishable from a directory the operator cloned or typed the path to

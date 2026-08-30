@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
-description = "Fetches a marketplace manifest and a plugin's declared files over HTTP into conway's plugin store (board item 01M0VR96Y87FF2BVNTBSC6GEYR) -- the ONE crate in this workspace besides conway-plugin-backends that touches the network, so that conway-cli itself never gains a direct reqwest dependency (dependency minimalism: the network edge lives behind one narrow, purpose-built facade, not scattered across every crate that eventually wants it)"
+description = "Fetches a marketplace manifest and installs a plugin from it into conway's plugin store, over HTTP (a conway-native files-map entry) or via the system git binary (a real Claude Code git-subdir/github entry) -- board items 01M0VR96Y87FF2BVNTBSC6GEYR and 01M0Y6RYZA94BK6YXJ7X8TNEGR -- the ONE crate in this workspace besides conway-plugin-backends that touches the network, so that conway-cli itself never gains a direct reqwest dependency (dependency minimalism: the network edge lives behind one narrow, purpose-built facade, not scattered across every crate that eventually wants it)"
 
 # **Why this crate exists instead of a network call inside conway-cli
 # directly.** `crates/conway-cli/Cargo.toml` has no HTTP client today, and
@@ -28,26 +28,36 @@ description = "Fetches a marketplace manifest and a plugin's declared files over
 # plugin crate owns it" boundary `conway-plugin-backends` already
 # establishes for provider calls, drawn here for plugin distribution.
 #
-# **What this crate does NOT do, disclosed rather than silently assumed.**
-# It does not clone a git repository and it does not extract a compressed
-# archive (`.tar.gz`/`.zip`) -- either would be a genuinely NEW dependency
-# (`git2`/`tar`/`zip`, none of which are in this workspace's lock today),
-# and P-10's symlink-in-an-extracted-archive hazard is a real, nontrivial
-# safety surface a first cut should not take on casually. A marketplace
-# manifest instead lists each plugin's files as an explicit `{relative
-# path -> URL}` map -- every file is fetched and validated individually, so
-# there is no archive-extraction step and therefore no symlink-in-an-archive
-# class of attack to defend against at all (see `install.rs`'s own doc for
-# the full path-safety argument). This is a scoping decision, not an
-# oversight -- see the board item's own completion report for the
-# discussion.
+# **What this crate does NOT do, disclosed rather than silently assumed --
+# amended by board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`, partially reversed
+# from the paragraph this replaces, not left contradicting the code.** It
+# still does not extract a compressed archive (`.tar.gz`/`.zip`) -- that
+# would be a genuinely NEW dependency (`tar`/`zip`, neither of which is in
+# this workspace's lock today), and P-10's symlink-in-an-extracted-archive
+# hazard is a real, nontrivial safety surface this crate still declines. A
+# files-map marketplace entry keeps listing each file as an explicit
+# `{relative path -> URL}` map, fetched and validated individually, for
+# exactly that reason (`install.rs`'s own doc has the full path-safety
+# argument). **It now DOES fetch a git-sourced entry** (`git-subdir`/
+# `github`, `crate::git_source`) -- ruled bounded, not opened wide: no git
+# LIBRARY entered this lock (`git2` is still absent), because the ruling's
+# own words are "invoke the system `git`" -- this crate shells out to
+# whatever `git` binary is already on the operator's own `PATH`, refusing
+# legibly (`MarketplaceError::GitUnavailable`) if there is none, so the
+# dependency graph gains nothing new for this either. A git CHECKOUT is a
+# narrower version of the archive-traversal hazard, not an absent one --
+# `crate::git_source`'s own doc states how it is validated.
 
 [dependencies]
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "rt", "macros"] }
+# "process"/"time": `crate::git_source` invokes the system `git` binary as
+# a child process (board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`) and bounds it
+# with `tokio::time::timeout`, exactly the shape this crate's own HTTP
+# fetches already bound with `reqwest`'s client-level timeout.
+tokio = { workspace = true, features = ["fs", "rt", "macros", "process", "time"] }
 
 [dev-dependencies]
 # The public facade, for this crate's own end-to-end test (board item
@@ -63,5 +73,10 @@ conway-plugin-claude = { path = "../conway-plugin-claude" }
 conway-plugin-mcp = { path = "../conway-plugin-mcp" }
 conway-testkit = { path = "../conway-testkit" }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "process"] }
+# "sync": a stub-`git`-driven test (`install.rs`, `git_source.rs`) mutates
+# the process-wide `CONWAY_MARKETPLACE_GIT_PROGRAM` env var this crate's
+# own `git_source::GIT_PROGRAM_ENV` reads; a `tokio::sync::Mutex` held
+# across the `.await` this involves is what serializes those tests against
+# each other rather than racing on that one process-global value.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "process", "sync"] }
 wiremock = { workspace = true }

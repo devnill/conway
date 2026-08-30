@@ -161,6 +161,51 @@ ship", below) all still apply, unmodified, to whatever a fetched plugin
 does once it is running. The harness operating as safely as it can remains
 a live constraint on everything except this one mechanism.
 
+**Fetching a git-sourced entry is still a network trust boundary, stated
+explicitly.** Board item `01M0Y6RYZA94BK6YXJ7X8TNEGR` (2026-08-29) gave
+[`marketplace.md`](marketplace.md) a second fetch path alongside its
+original per-file HTTP one: a real Claude Code marketplace's `git-subdir`/
+`github` source is now fetched by invoking the SYSTEM `git` binary against
+a URL the marketplace's own response names. The ARTIFACT trust question
+this section already settled is unchanged by that — a git-cloned artifact
+sits on the identical "checked against nothing, the operator's decision to
+install is the control point" footing as an HTTP-fetched one, and this
+paragraph does not reopen that. What is worth stating on its own, because
+"conway now clones arbitrary third-party git repositories on operator
+command" is a materially different-sounding sentence from "conway fetches
+a JSON file" even though the underlying trust posture is identical:
+
+- **conway shells out to the operator's own `git`, never a git library**
+  (`git2` is not a dependency) — the child process runs with the
+  operator's own credentials, SSH agent, and `.gitconfig`, exactly as if
+  the operator had typed the clone by hand.
+- **The URL a `git-subdir` source names is untrusted, network-supplied
+  input**, and git's transport model has real teeth beyond "fetch a
+  repository": `ext::<command>` and `fd::<n>` remote helpers can run an
+  arbitrary command or open an arbitrary file descriptor rather than talk
+  to a network remote at all. `conway-plugin-marketplace` refuses any
+  `git-subdir` URL that is not `http://`/`https://` before `git` is ever
+  invoked (an ALLOW-by-prefix, the inverse of this page's own
+  "deny-by-prefix is a seatbelt, not a boundary" lesson below, applied
+  correctly in that direction: everything not on the allow-list is
+  refused, nothing is inferred past it) — this is the one place in this
+  crate where refusing a whole CLASS of otherwise-syntactically-valid
+  input is load-bearing, not merely tidy.
+- **A git checkout can contain a symlink**, the one hazard class a
+  files-map entry's own "no archive, so no archive-traversal" argument
+  does not cover (a checkout is not an archive, so it needed its own
+  check): the checked-out plugin root is walked and refused outright if
+  it contains a symlink anywhere, before a single byte is copied into
+  conway's own plugin store. A narrower version of P-10's
+  symlink-in-an-extracted-archive hazard, not an absent one.
+
+No new trust MECHANISM is created by any of this — no digest, no
+allow-list, no prompt beyond the one install action's own disclosure,
+unchanged from the ruling above. What changed is the SURFACE a
+network-supplied value can reach (a subprocess argument, not only an HTTP
+request path), and the three bullets above are what closes each concrete
+way that surface could otherwise be abused, at the boundary, per P-10.
+
 **A persistent subprocess plugin (board item `01M03VJHG1WFECFJB4ZH3CKWDX`,
 `"transport": "persistent"`) is a larger exposure, not a larger capability
 grant.** A persistent subprocess plugin holds a long-lived, unsandboxed

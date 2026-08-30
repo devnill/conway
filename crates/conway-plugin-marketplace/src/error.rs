@@ -137,6 +137,58 @@ pub enum MarketplaceError {
         #[source]
         source: std::io::Error,
     },
+    /// A `plugins[]` entry has neither `id` nor `name` set, so
+    /// [`crate::manifest::MarketplacePluginEntry::identity`] has nothing to
+    /// return -- board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`, the post-parse
+    /// check `#[serde(deny_unknown_fields)]` cannot express for a type that
+    /// now accepts two different entry shapes (`manifest.rs`'s own doc).
+    #[error("a marketplace entry has neither an `id` nor a `name` -- conway cannot identify it")]
+    MissingIdentity,
+    /// `plugin_id`'s [`crate::manifest::PluginSource`] names a kind other
+    /// than `git-subdir`/`github` -- board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`,
+    /// layer 4/acceptance 4: most plausibly one requiring archive
+    /// extraction, which this crate deliberately never adds (`Cargo.toml`'s
+    /// own doc). Browsing a marketplace listing this kind still succeeds
+    /// (`manifest.rs`'s own `PluginSource::Unsupported`); only an actual
+    /// install attempt reaches this refusal.
+    #[error(
+        "plugin '{id}' names a source kind conway does not support: '{kind}' -- conway can \
+         fetch git-based sources (git-subdir, github) but not one requiring archive extraction"
+    )]
+    UnsupportedSourceKind { id: String, kind: String },
+    /// `plugin_id`'s `git-subdir` source names a URL whose scheme is not
+    /// `http`/`https` -- P-10: the URL is network-supplied, untrusted input,
+    /// and git's OTHER transports (`ext::`, `fd::`, a bare local path) can
+    /// run an arbitrary command or open an arbitrary file descriptor rather
+    /// than merely fetch a repository. Refused outright, never inferred
+    /// down to "the part that looks like a URL" -- this project's own
+    /// "deny-by-prefix is a seatbelt, not a boundary" lesson
+    /// (`docs/plugins/trust-and-security.md`), applied here as an ALLOW-by-
+    /// prefix: only `http(s)://` is accepted, everything else is refused.
+    #[error(
+        "plugin '{id}' names a git URL conway refuses to run git against: '{url}' -- only \
+         http(s):// git remotes are supported (git's other transports, like ext:: or a local \
+         path, can run an arbitrary command or read an arbitrary local file)"
+    )]
+    UnsafeGitUrl { id: String, url: String },
+    /// The system `git` binary could not be invoked at all -- board item
+    /// `01M0Y6RYZA94BK6YXJ7X8TNEGR`, acceptance 5: refused by name, never a
+    /// confusing failure partway through a clone attempt.
+    #[error(
+        "could not run `{program} --version` ({detail}) -- conway needs a working `git` on PATH \
+         to install a git-sourced marketplace plugin"
+    )]
+    GitUnavailable { program: String, detail: String },
+    /// The system `git` binary ran but the clone/checkout itself failed --
+    /// a bad URL, an unreachable remote, a nonexistent subdirectory, or the
+    /// bounded timeout this crate applies to a git invocation
+    /// (`crate::git_source::GIT_TIMEOUT`) being exceeded.
+    #[error("could not fetch plugin '{id}' from {url}: {detail}")]
+    GitFailed {
+        id: String,
+        url: String,
+        detail: String,
+    },
 }
 
 impl MarketplaceError {
@@ -157,6 +209,11 @@ impl MarketplaceError {
             Self::TooManyFiles { .. } => "too_many_files",
             Self::NoFiles { .. } => "no_files",
             Self::Io { .. } => "io",
+            Self::MissingIdentity => "missing_identity",
+            Self::UnsupportedSourceKind { .. } => "unsupported_source_kind",
+            Self::UnsafeGitUrl { .. } => "unsafe_git_url",
+            Self::GitUnavailable { .. } => "git_unavailable",
+            Self::GitFailed { .. } => "git_failed",
         }
     }
 }

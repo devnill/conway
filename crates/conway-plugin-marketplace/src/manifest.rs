@@ -1,12 +1,29 @@
 //! The marketplace wire shape and [`fetch_marketplace`], the "browse" half
 //! of this crate's acceptance criterion 1.
 //!
-//! # The manifest format, and why it names files rather than an archive
+//! # Two manifest shapes, not one -- board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`
+//!
+//! **This module's own doc used to claim "a marketplace manifest is a
+//! format THIS item defines, so the ordinary strict rule applies." That
+//! premise was false, and it is the reason the first operator to run
+//! `/plugin install` against a real, published marketplace got a
+//! confusing refusal instead of an install.** A marketplace manifest is
+//! Claude Code's format, not conway's -- conway reads it, exactly the
+//! relationship `conway_plugin_claude` already has with `.claude-plugin/
+//! plugin.json`/`.mcp.json`/`commands/*.md`, and that crate's own module
+//! doc states the correct rule plainly: a file this project does not
+//! define the schema of is parsed permissively, an unrecognized field is
+//! simply never looked at, and a `#[serde(deny_unknown_fields)]` struct is
+//! reserved for a format conway itself owns. This module now follows that
+//! rule instead of arguing against it.
+//!
+//! A `plugins[]` entry comes in two shapes, both accepted:
 //!
 //! ```json
 //! {
 //!   "name": "acme-marketplace",
-//!   "description": "Acme's internal conway plugins",
+//!   "owner": { "name": "Acme Corp" },
+//!   "metadata": { "description": "Acme's plugins", "version": "1.0.0" },
 //!   "plugins": [
 //!     {
 //!       "id": "acme-tools",
@@ -17,28 +34,66 @@
 //!         ".claude-plugin/plugin.json": "https://example.com/acme-tools/plugin.json",
 //!         ".mcp.json": "https://example.com/acme-tools/mcp.json"
 //!       }
+//!     },
+//!     {
+//!       "name": "beepboop",
+//!       "source": { "source": "git-subdir", "url": "https://github.com/devnill/beepboop", "path": "plugin" },
+//!       "description": "Plays sounds on hook events",
+//!       "version": "1.4.0"
 //!     }
 //!   ]
 //! }
 //! ```
 //!
-//! `files` maps a relative path INSIDE the installed plugin directory to
-//! the URL this crate fetches its bytes from -- deliberately not a single
-//! archive URL. See `Cargo.toml`'s own doc for the full argument (no
-//! archive-extraction dependency, and no symlink-in-an-archive class of
-//! attack to defend against because there is no archive-extraction step at
-//! all); this is what an installed plugin's own `files` map lets an
-//! operator's browse view show honestly before consenting: every path that
-//! will be written and every URL it comes from, not an opaque blob.
+//! The first entry is conway's own **files-map** shape: a per-file
+//! `{relpath -> URL}` map this crate fetches over HTTP one file at a time
+//! (see this module's own "no archive" argument, below, and
+//! `install.rs`'s own doc for the path-safety mechanics). It is identified
+//! by `id`, and is **kept** -- not the only shape understood, never
+//! deleted -- because it is what lets a conway-native marketplace exist at
+//! all without a git remote of its own.
 //!
-//! `#[serde(deny_unknown_fields)]` throughout: a marketplace response is
-//! untrusted network input (P-10), and a field this crate does not
-//! recognize is exactly the kind of typo/version-skew this project's own
-//! `.conway/skills`/`.conway/agents` loaders already refuse to guess past
-//! (`conway_plugin_claude`'s own manifest parsing is the one deliberate
-//! exception, for FOREIGN Claude Code files this project does not own the
-//! schema of -- see that crate's own doc; a marketplace manifest is a
-//! format THIS item defines, so the ordinary strict rule applies).
+//! The second is the **real, published Claude Code marketplace** shape
+//! (verified against `https://raw.githubusercontent.com/devnill/
+//! claude-marketplace/HEAD/.claude-plugin/marketplace.json`, fetched
+//! 2026-08-26; the exact bytes are the committed fixture
+//! `tests/fixtures/claude-code-marketplace.json`). It is identified by
+//! `name` (there is no `id`), and instead of `files` names a [`PluginSource`]
+//! -- `git-subdir` (a repository URL plus a subdirectory) or `github` (an
+//! `owner/repo` pair) -- fetched by invoking the SYSTEM `git` binary
+//! (`crate::git_source`), never a git library: see `Cargo.toml`'s own doc
+//! for why a crate never entered this workspace's lock for this. The
+//! top-level `owner`/`metadata` objects are read (`MarketplaceOwner`/
+//! `MarketplaceMetadata`) but not required, and neither is
+//! `#[serde(deny_unknown_fields)]` -- any field of either object beyond
+//! what this crate reads is simply ignored, matching the same posture.
+//!
+//! [`MarketplacePluginEntry::identity`] resolves either shape to the one
+//! string an operator names when installing/uninstalling: `id` when
+//! present, `name` otherwise. An entry with neither is a manifest this
+//! crate cannot use at all (`MarketplaceError::MissingIdentity`).
+//!
+//! # No archive support -- a narrower surface, not an absent one
+//!
+//! Neither shape can name a single archive URL (a `.tar.gz`/`.zip`). This
+//! is unchanged by adding a git fetcher: `git2`/`tar`/`zip` are still none
+//! of them in this workspace's lock (`Cargo.toml`'s own doc, amended for
+//! this item's ruling, has the full argument), and a symlink inside an
+//! extracted archive pointing outside the extraction root is a real safety
+//! surface a first cut should not take on casually. A [`PluginSource`]
+//! naming any kind other than `git-subdir`/`github` parses successfully
+//! (so browsing a marketplace that lists one still works) but refuses BY
+//! NAME the moment an install is attempted (`MarketplaceError::
+//! UnsupportedSourceKind`) -- `crate::git_source`'s own doc has the fetch
+//! side of this.
+//!
+//! `files`-shaped entries keep their own "no archive, one file at a time"
+//! argument unchanged: fetching each declared file individually means
+//! there is no archive-extraction step for that shape either, and
+//! therefore no symlink-in-an-archive class of attack to defend against at
+//! all for it. A git checkout is a DIFFERENT surface with its own hazard
+//! (a checkout can itself contain a symlink) -- `crate::git_source`'s own
+//! doc states how that is validated before anything is installed.
 
 use std::collections::BTreeMap;
 
@@ -52,23 +107,37 @@ use crate::error::MarketplaceError;
 /// cannot make this crate buffer an unbounded response into memory (P-10).
 pub const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 
-/// One marketplace: a name, an optional description, and every plugin it
-/// lists.
+/// One marketplace: a name, an optional description, every plugin it
+/// lists, and (real Claude Code manifests only) an `owner`/`metadata`
+/// object this crate reads but does not require -- see this module's own
+/// doc for why `owner`/`metadata` are modeled explicitly while everything
+/// INSIDE either is read permissively.
+///
+/// Still `#[serde(deny_unknown_fields)]` at this one level, deliberately:
+/// every top-level field a real, published Claude Code manifest carries
+/// (`name`, `description`, `owner`, `metadata`, `plugins`) now has a home,
+/// so a field still unrecognized here is far more likely a typo in a
+/// conway-native marketplace author's own document than an unmodeled
+/// corner of Claude Code's schema -- catching that typo is worth keeping.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MarketplaceManifest {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub owner: Option<MarketplaceOwner>,
+    #[serde(default)]
+    pub metadata: Option<MarketplaceMetadata>,
     pub plugins: Vec<MarketplacePluginEntry>,
 }
 
 impl MarketplaceManifest {
-    /// Looks up one plugin by id -- the "install" half's first step, after
-    /// "browse" (fetching the manifest) has already happened. Returns a
-    /// typed, named error rather than `None`, since every caller of this
-    /// method already knows the marketplace's own URL to name in the
-    /// message.
+    /// Looks up one plugin by its [`MarketplacePluginEntry::identity`] --
+    /// the "install" half's first step, after "browse" (fetching the
+    /// manifest) has already happened. Returns a typed, named error rather
+    /// than `None`, since every caller of this method already knows the
+    /// marketplace's own URL to name in the message.
     pub fn find<'a>(
         &'a self,
         marketplace_url: &str,
@@ -76,7 +145,7 @@ impl MarketplaceManifest {
     ) -> Result<&'a MarketplacePluginEntry, MarketplaceError> {
         self.plugins
             .iter()
-            .find(|p| p.id == plugin_id)
+            .find(|p| p.identity() == Some(plugin_id))
             .ok_or_else(|| MarketplaceError::PluginNotFound {
                 marketplace_url: marketplace_url.to_string(),
                 plugin_id: plugin_id.to_string(),
@@ -84,12 +153,51 @@ impl MarketplaceManifest {
     }
 }
 
+/// A real Claude Code marketplace's top-level `owner` object. `name` is the
+/// only field this crate has ever observed or reads; any other field an
+/// owner object carries is simply never looked at -- this struct is NOT
+/// `#[serde(deny_unknown_fields)]` (this module's own doc: foreign input,
+/// read permissively).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct MarketplaceOwner {
+    #[serde(default)]
+    pub name: String,
+}
+
+/// A real Claude Code marketplace's top-level `metadata` object -- same
+/// posture as [`MarketplaceOwner`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct MarketplaceMetadata {
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub version: String,
+}
+
 /// One `plugins[]` entry -- everything an operator sees before consenting
 /// to install (determine-first Q2: what conway shows before the write),
-/// plus the `files` map [`crate::install::install_plugin`] actually fetches.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// plus either the `files` map or the [`PluginSource`] [`crate::install::
+/// install_plugin`] actually fetches from.
+///
+/// **Deliberately NOT `#[serde(deny_unknown_fields)]`**, unlike every other
+/// struct in this module -- this is the one place this module's "foreign
+/// format, read permissively" rule (this module's own doc) actually bites,
+/// because a real Claude Code entry and a conway-native entry are two
+/// different shapes sharing one Rust type. Every field is `#[serde(default)]`
+/// so either shape parses; [`Self::identity`]/[`crate::install::
+/// install_entry`] enforce, AFTER parsing, that an entry actually has
+/// enough to be identified and installed -- serde alone cannot express "an
+/// `id`+`files` XOR a `name`+`source`" constraint declaratively, and a typed
+/// post-parse check reads more honestly than a hand-rolled `Deserialize`
+/// impl would for a plain field-presence rule. The traded-off typo
+/// protection this loses for a conway-native marketplace author's own
+/// entry (a misspelled `files` key would now be silently ignored rather
+/// than refused) is accepted deliberately: the alternative is two
+/// completely separate entry types with no shared handling anywhere this
+/// crate or its callers already have.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct MarketplacePluginEntry {
+    #[serde(default)]
     pub id: String,
     #[serde(default)]
     pub name: String,
@@ -97,10 +205,102 @@ pub struct MarketplacePluginEntry {
     pub description: String,
     #[serde(default)]
     pub version: String,
+    /// A real Claude Code entry's fetch instructions -- `git-subdir`/
+    /// `github` fetched via `crate::git_source`, anything else refused BY
+    /// NAME at install time (`MarketplaceError::UnsupportedSourceKind`).
+    /// `None` for a conway-native, files-map entry.
+    #[serde(default)]
+    pub source: Option<PluginSource>,
     /// Relative path inside the installed plugin directory -> the URL this
     /// crate fetches its bytes from. See this module's own doc for why a
-    /// per-file map, not a single archive URL.
+    /// per-file map, not a single archive URL. Empty for a real Claude Code
+    /// entry, which names [`Self::source`] instead.
+    #[serde(default)]
     pub files: BTreeMap<String, String>,
+}
+
+impl MarketplacePluginEntry {
+    /// The one string an operator names to install/uninstall this entry:
+    /// `id` when a conway-native marketplace set one, `name` otherwise (the
+    /// only identity a real Claude Code entry has). `None` when an entry
+    /// carries neither -- a manifest this crate cannot use at all, however
+    /// it otherwise parsed.
+    pub fn identity(&self) -> Option<&str> {
+        if !self.id.is_empty() {
+            Some(self.id.as_str())
+        } else if !self.name.is_empty() {
+            Some(self.name.as_str())
+        } else {
+            None
+        }
+    }
+}
+
+/// A real Claude Code `plugins[].source` object -- board item
+/// `01M0Y6RYZA94BK6YXJ7X8TNEGR`, layer 4. Custom [`Deserialize`] rather than
+/// `#[derive]` with `#[serde(tag = "source")]`: a derive-tagged enum's
+/// "unknown variant" case is a hard parse error, which would make browsing a
+/// marketplace fail outright the moment it lists ANY source kind this crate
+/// does not fetch (an archive-requiring kind, or one published after this
+/// was written) -- exactly the layer-4/layer-5 "refuse by name, but only
+/// when actually asked to install it" split this item's ruling draws.
+/// [`Self::Unsupported`] instead carries the kind's own name forward so
+/// this crate's own `git_source` module can name it in a refusal, without
+/// ever failing the PARSE.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginSource {
+    /// `{"source": "git-subdir", "url": "...", "path": "..."}` -- a git
+    /// repository plus the subdirectory inside it that is this plugin's own
+    /// root.
+    GitSubdir { url: String, path: String },
+    /// `{"source": "github", "repo": "owner/repo"}` -- a whole GitHub
+    /// repository is this plugin's own root.
+    Github { repo: String },
+    /// Any other declared `source` value -- most plausibly one of the
+    /// archive-requiring kinds this item's ruling explicitly scopes out
+    /// (`Cargo.toml`'s own doc: no `tar`/`zip` extraction dependency).
+    /// Carries the kind's own name, verbatim, so a refusal can name it.
+    Unsupported { kind: String },
+}
+
+impl<'de> Deserialize<'de> for PluginSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let kind = value
+            .get("source")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| serde::de::Error::missing_field("source"))?
+            .to_string();
+        match kind.as_str() {
+            "git-subdir" => Ok(PluginSource::GitSubdir {
+                url: required_str_field(&value, "url")?,
+                path: required_str_field(&value, "path")?,
+            }),
+            "github" => Ok(PluginSource::Github {
+                repo: required_str_field(&value, "repo")?,
+            }),
+            _ => Ok(PluginSource::Unsupported { kind }),
+        }
+    }
+}
+
+/// Pulls a required string field out of an already-decoded `source` object
+/// -- shared by every known [`PluginSource`] variant above. A missing or
+/// non-string field is a normal `serde` `missing_field` error, so a
+/// `git-subdir` entry that forgot its own `path` is reported exactly like
+/// any other malformed manifest, not a panic.
+fn required_str_field<E: serde::de::Error>(
+    value: &serde_json::Value,
+    field: &'static str,
+) -> Result<String, E> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| serde::de::Error::missing_field(field))
 }
 
 /// Builds the one `reqwest::Client` this crate's public functions each use
@@ -181,11 +381,13 @@ fn looks_like_markup(bytes: &[u8]) -> bool {
 ///
 /// The suggested path is `.claude-plugin/marketplace.json` — where Claude
 /// Code keeps a marketplace manifest, and therefore where an operator who
-/// typed a repository URL most likely has one. **Note this is a suggestion
-/// about a URL, not a claim that the document there will parse**: whether
-/// conway can read a Claude Code manifest at all is board item
-/// `01M0Y6RYZA94BK6YXJ7X8TNEGR`'s open ruling (layers 2-4), and today it
-/// cannot. This function deliberately does not promise otherwise.
+/// typed a repository URL most likely has one. Board item
+/// `01M0Y6RYZA94BK6YXJ7X8TNEGR` ruled layers 2-4: a real Claude Code
+/// manifest now parses (this module's own doc) and its `git-subdir`/
+/// `github` sources now fetch (`crate::git_source`) -- so this suggestion
+/// is no longer a URL that leads to a second, different refusal, only a
+/// GUESS at where the document lives (this crate never fetches the
+/// suggested URL itself to confirm it exists).
 fn manifest_url_hint(url: &str) -> String {
     let Some(rest) = url
         .strip_prefix("https://github.com/")
@@ -393,6 +595,119 @@ mod tests {
         let url = format!("{}/marketplace.json", server.uri());
         let err = fetch_marketplace(&url).await.expect_err("too large");
         assert_eq!(err.kind(), "response_too_large");
+    }
+}
+
+/// Board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`, layers 2-3: the real schema now
+/// parses -- `owner`/`metadata` are tolerated, and a `name`+`source` entry
+/// is accepted alongside an `id`+`files` one.
+#[cfg(test)]
+mod real_schema_tests {
+    use super::*;
+
+    /// A conway-native entry (`id`+`files`) and a real Claude Code entry
+    /// (`name`+`source`) coexist in one manifest -- the shape neither
+    /// format alone had to prove.
+    #[test]
+    fn owner_and_metadata_are_tolerated_and_both_entry_shapes_parse() {
+        let manifest: MarketplaceManifest = serde_json::from_str(
+            r#"{
+                "name": "mixed-marketplace",
+                "owner": { "name": "Acme Corp", "unexpected_owner_field": true },
+                "metadata": { "description": "d", "version": "1.0.0", "unexpected_meta_field": 1 },
+                "plugins": [
+                    {
+                        "id": "acme-tools",
+                        "files": { "a.json": "https://example.com/a.json" }
+                    },
+                    {
+                        "name": "beepboop",
+                        "source": {
+                            "source": "git-subdir",
+                            "url": "https://github.com/devnill/beepboop",
+                            "path": "plugin"
+                        },
+                        "description": "plays sounds",
+                        "version": "1.4.0"
+                    }
+                ]
+            }"#,
+        )
+        .expect("real schema, plus an unrecognized field inside owner/metadata, must parse");
+
+        assert_eq!(manifest.owner.unwrap().name, "Acme Corp");
+        assert_eq!(manifest.metadata.unwrap().version, "1.0.0");
+
+        let native = &manifest.plugins[0];
+        assert_eq!(native.identity(), Some("acme-tools"));
+        assert!(native.source.is_none());
+
+        let claude_code = &manifest.plugins[1];
+        assert_eq!(claude_code.identity(), Some("beepboop"));
+        assert!(claude_code.files.is_empty());
+        assert_eq!(
+            claude_code.source,
+            Some(PluginSource::GitSubdir {
+                url: "https://github.com/devnill/beepboop".to_string(),
+                path: "plugin".to_string(),
+            })
+        );
+    }
+
+    /// An entry naming neither `id` nor `name` has no identity -- the
+    /// post-parse check this module's own doc says serde cannot express
+    /// declaratively.
+    #[test]
+    fn an_entry_with_neither_id_nor_name_has_no_identity() {
+        let entry: MarketplacePluginEntry =
+            serde_json::from_str(r#"{"description": "orphaned"}"#).expect("still parses");
+        assert_eq!(entry.identity(), None);
+    }
+
+    /// [`PluginSource`]'s `github` shape.
+    #[test]
+    fn a_github_source_parses() {
+        let entry: MarketplacePluginEntry = serde_json::from_str(
+            r#"{"name": "ideate", "source": {"source": "github", "repo": "ideate-ai/ideate"}}"#,
+        )
+        .expect("github source parses");
+        assert_eq!(
+            entry.source,
+            Some(PluginSource::Github {
+                repo: "ideate-ai/ideate".to_string()
+            })
+        );
+    }
+
+    /// Board item's acceptance 4: a source kind requiring an archive (or
+    /// any kind this crate simply does not know) still PARSES -- browsing a
+    /// marketplace that lists one must not fail outright -- but is captured
+    /// as [`PluginSource::Unsupported`], named, so a later install attempt
+    /// can refuse it by name (see `git_source.rs`'s own tests for that
+    /// refusal).
+    #[test]
+    fn an_unrecognized_source_kind_parses_as_unsupported_rather_than_failing() {
+        let entry: MarketplacePluginEntry = serde_json::from_str(
+            r#"{"name": "archived-thing", "source": {"source": "url", "url": "https://example.com/thing.tar.gz"}}"#,
+        )
+        .expect("an unrecognized source kind must not fail the parse");
+        assert_eq!(
+            entry.source,
+            Some(PluginSource::Unsupported {
+                kind: "url".to_string()
+            })
+        );
+    }
+
+    /// A `git-subdir` source missing its own required `path` is a normal,
+    /// named parse failure -- never a panic.
+    #[test]
+    fn a_git_subdir_source_missing_a_required_field_is_a_clean_parse_error() {
+        let err = serde_json::from_str::<MarketplacePluginEntry>(
+            r#"{"name": "x", "source": {"source": "git-subdir", "url": "https://example.com/x"}}"#,
+        )
+        .expect_err("missing `path`");
+        assert!(err.to_string().contains("path"), "{err}");
     }
 }
 
