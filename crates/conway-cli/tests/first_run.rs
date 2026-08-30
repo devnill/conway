@@ -424,10 +424,7 @@ async fn complete_a_turn_from_the_file_at(
         .prompt("Reply with exactly one word: ok")
         .await
         .expect("prompt must succeed");
-    turn.result()
-        .await
-        .expect("result must resolve")
-        .status
+    turn.result().await.expect("result must resolve").status
 }
 
 /// **The load-bearing test for this whole board item.** Before this fix,
@@ -494,7 +491,11 @@ async fn finish_setup_alone_leaves_a_working_single_provider_config() {
     let outcome =
         first_run::finish_setup(&path, "solo", &entry_json, &mock.model, &mut chain).await;
     assert_eq!(outcome, first_run::GuidedSetupOutcome::Configured);
-    assert_eq!(chain.len(), 1, "declining after one success adds no second entry");
+    assert_eq!(
+        chain.len(),
+        1,
+        "declining after one success adds no second entry"
+    );
 
     let status = complete_a_turn_from_the_file_at(dir.path(), &path).await;
     assert_eq!(status, conway::ResultStatus::Completed, "{status:?}");

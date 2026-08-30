@@ -588,8 +588,14 @@ pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutco
         match read_single_key() {
             Some(KeyCode::Enter) => {
                 let entry_json = local_offer_entry_json(&offer);
-                match finish_setup(&path, LOCAL_OLLAMA_ID, &entry_json, &offer.model, &mut chain)
-                    .await
+                match finish_setup(
+                    &path,
+                    LOCAL_OLLAMA_ID,
+                    &entry_json,
+                    &offer.model,
+                    &mut chain,
+                )
+                .await
                 {
                     GuidedSetupOutcome::Configured => {
                         if !prompt_add_another() {
@@ -655,7 +661,14 @@ pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutco
         };
 
         let entry_json = backend_entry_json(choice, &credential);
-        match finish_setup(&path, choice.id, &entry_json, choice.default_model, &mut chain).await
+        match finish_setup(
+            &path,
+            choice.id,
+            &entry_json,
+            choice.default_model,
+            &mut chain,
+        )
+        .await
         {
             GuidedSetupOutcome::Configured => {
                 if !prompt_add_another() {
@@ -873,7 +886,10 @@ mod tests {
     #[test]
     fn chain_entry_formats_backend_slash_model() {
         assert_eq!(chain_entry("local", "qwen3:4b"), "local/qwen3:4b");
-        assert_eq!(chain_entry("anthropic", "claude-sonnet-4-6"), "anthropic/claude-sonnet-4-6");
+        assert_eq!(
+            chain_entry("anthropic", "claude-sonnet-4-6"),
+            "anthropic/claude-sonnet-4-6"
+        );
     }
 
     // ---- decline_or_keep: acceptance 4's own discriminating message ----
@@ -895,7 +911,10 @@ mod tests {
             GuidedSetupOutcome::Configured
         );
         assert_eq!(
-            decline_or_keep(&["local/qwen3:4b".to_string(), "ollama_cloud/glm-5.2".to_string()]),
+            decline_or_keep(&[
+                "local/qwen3:4b".to_string(),
+                "ollama_cloud/glm-5.2".to_string()
+            ]),
             GuidedSetupOutcome::Configured
         );
     }

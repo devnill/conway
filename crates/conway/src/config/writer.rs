@@ -1545,7 +1545,10 @@ fn patch_role_chain(
     }
     let (role_members, roles_close) = scan_object_members(text, roles_member.value_start)?;
 
-    let Some(role_member) = role_members.iter().rev().find(|m| member_key_matches(m, role))
+    let Some(role_member) = role_members
+        .iter()
+        .rev()
+        .find(|m| member_key_matches(m, role))
     else {
         let value = format!("{{\"chain\": {chain_json}}}");
         return Ok(Some(insert_member(
@@ -3124,8 +3127,8 @@ mod tests {
         let path = dir.join("settings.json");
         std::fs::write(&path, fresh_guided_setup_document()).unwrap();
 
-        let wrote = set_role_chain(&path, "default", &["local/qwen3:4b".to_string()])
-            .expect("write");
+        let wrote =
+            set_role_chain(&path, "default", &["local/qwen3:4b".to_string()]).expect("write");
         assert!(wrote);
 
         let text = std::fs::read_to_string(&path).unwrap();
@@ -3154,7 +3157,10 @@ mod tests {
         assert!(set_role_chain(
             &path,
             "default",
-            &["local/qwen3:8b".to_string(), "ollama_cloud/glm-5.2".to_string()],
+            &[
+                "local/qwen3:8b".to_string(),
+                "ollama_cloud/glm-5.2".to_string()
+            ],
         )
         .expect("write"));
 
@@ -3241,9 +3247,8 @@ mod tests {
         let path = dir.join("settings.json");
         std::fs::write(&path, hand_edited_fixture()).unwrap();
 
-        let wrote =
-            set_role_chain(&path, "coder", &["anthropic/claude-sonnet-4-6".to_string()])
-                .expect("write");
+        let wrote = set_role_chain(&path, "coder", &["anthropic/claude-sonnet-4-6".to_string()])
+            .expect("write");
         assert!(wrote);
 
         let new_text = std::fs::read_to_string(&path).unwrap();
