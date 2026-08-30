@@ -54,11 +54,11 @@ impl ArtifactWriter for AgentArtifactWriter {
         bytes: Vec<u8>,
     ) -> Result<PathBuf, ArtifactWriteError> {
         let cwd = self.cwd.current();
-        let Some(candidate) = resolve_like_the_tool_will(&cwd, name) else {
-            return Err(ArtifactWriteError::InvalidName {
-                detail: format!("name contains a NUL byte: {name:?}"),
-            });
-        };
+        let candidate = resolve_like_the_tool_will(&cwd, name).map_err(|err| {
+            ArtifactWriteError::InvalidName {
+                detail: err.to_string(),
+            }
+        })?;
 
         // THE GUARD: the identical
         // three-way match `PermissionBroker::check_root` applies to a

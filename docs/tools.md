@@ -50,6 +50,27 @@ first; the call is refused regardless of what the gate answers.
 `glob`/`grep`'s `pattern`/`glob` arguments are search expressions, not
 paths, and are never handed to a root check.
 
+### Tilde expansion
+
+Every `path` argument above (and `bash`'s `cwd` — see below) goes through
+one shared resolver, and that resolver expands a leading tilde: exactly `~`
+resolves to the process's home directory, and a leading `~/` resolves the
+rest of the path against it. This is *anchored* — the model can write
+`~/notes/todo.md` and get its home-relative meaning — not a substring
+replace: a `~` anywhere else in the argument (an ordinary filename
+character, or the middle of a later path component) is left exactly as
+written, never rewritten.
+
+A path that begins with `~` but that conway cannot honour — no home
+directory could be determined, or the argument uses a form conway does not
+expand (e.g. `~alice/notes`, the `~user` shorthand some shells support) —
+is refused with an error that names tilde explicitly, rather than a generic
+"file not found" that gives the model nothing to diagnose. This is the same
+resolver a `paths_under` permission rule's prefix uses (see
+[the structured `rules` array](permissions.md#the-structured-rules-array)),
+so a rule and the call it bounds never disagree about where a `~`-prefixed
+path lands.
+
 ## The `shell` tool (`conway.shell`, opt-in — see above)
 
 | Tool | Does | Category | Path arguments confinable | Truncation | Permission class |

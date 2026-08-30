@@ -298,10 +298,12 @@ enum RootDecision {
 }
 
 /// Resolves a tool-supplied path argument exactly the way the call will
-/// actually be resolved once it reaches the tool: relative inputs join onto
-/// `cwd`, absolute inputs pass through unchanged. Returns `None` for a path
-/// containing a NUL byte (the OS path APIs cannot represent it, so the tool
-/// itself would fail to resolve it too).
+/// actually be resolved once it reaches the tool: `raw` beginning with
+/// exactly `~` or a leading `~/` expands against the process's home
+/// directory; any other absolute input passes through unchanged; a
+/// relative input joins onto `cwd`. `Err` for a path containing a NUL byte,
+/// or one beginning with `~` in a form this crate does not expand -- see
+/// [`conway_core::containment::ResolveError`].
 ///
 /// **A thin, same-crate wrapper around the one shared implementation,
 /// [`conway_core::containment::resolve_candidate`]
@@ -310,11 +312,17 @@ enum RootDecision {
 /// common::resolve_path` only by a doc comment demanding lockstep edits,
 /// never enforced by the compiler); it is now a direct call, so the two
 /// crates' wrappers cannot independently drift or independently drop the
-/// NUL guard the way two inlined copies already did once. It still cannot simply BE `resolve_path`:
-/// crate layering runs `conway-tools -> conway-core` and `conway-runtime ->
-/// conway-core` only, never `conway-runtime -> conway-tools`, so this crate
-/// must keep its own `pub(crate)` entry point into the shared core function
-/// rather than gaining a dependency on `conway-tools` just for this.
+/// NUL guard the way two inlined copies already did once -- and cannot
+/// independently drift on tilde expansion either (board item
+/// `01M10HSENWKTEE4G691XJXBH6T`): a `paths_under` permission-rule prefix
+/// and the call argument it is meant to bound both resolve through THIS
+/// function, so a `~`-prefixed rule and a `~`-prefixed argument can never
+/// expand two different ways (P-13). It still cannot simply BE
+/// `resolve_path`: crate layering runs `conway-tools -> conway-core` and
+/// `conway-runtime -> conway-core` only, never `conway-runtime ->
+/// conway-tools`, so this crate must keep its own `pub(crate)` entry point
+/// into the shared core function rather than gaining a dependency on
+/// `conway-tools` just for this.
 ///
 /// `pub(crate)` so the crate's OTHER path-resolution consumers -- the
 /// spawn-time confinement-root resolution in `subagent.rs` and `runtime.rs` --
@@ -322,7 +330,10 @@ enum RootDecision {
 ///) instead of inlining "absolute -> as-is, relative
 /// -> join cwd" and silently dropping the NUL guard, as both did until that
 /// item.
-pub(crate) fn resolve_like_the_tool_will(cwd: &Path, raw: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_like_the_tool_will(
+    cwd: &Path,
+    raw: &str,
+) -> Result<PathBuf, conway_core::containment::ResolveError> {
     conway_core::containment::resolve_candidate(cwd, raw)
 }
 
@@ -345,13 +356,18 @@ pub(crate) fn resolve_like_the_tool_will(cwd: &Path, raw: &str) -> Option<PathBu
 /// PROJECT root for a project file, the agent cwd for the global file); the
 /// broker deliberately never reads `std::env::current_dir()` here, which
 /// would recreate the bug one level down. An ABSOLUTE prefix is unaffected
-/// by `base` (it passes through `resolve_like_the_tool_will` unchanged),
-/// and a prefix containing a NUL byte fails closed exactly like one that
+/// by `base` (it passes through `resolve_like_the_tool_will` unchanged); a
+/// `~`/`~/`-prefixed one expands against the process's home directory
+/// instead of `base` (board item `01M10HSENWKTEE4G691XJXBH6T`) -- the same
+/// resolution a tool's own path argument gets, so an operator who writes
+/// `~/notes` in BOTH a `paths_under` rule and a `read` call sees the two
+/// agree (P-13). A prefix containing a NUL byte, or one beginning with `~`
+/// in a form this crate does not expand, fails closed exactly like one that
 /// does not canonicalize.
 fn canonicalize_when(when: &When, base: &Path) -> Option<CanonicalRoot> {
     match when {
         When::PathsUnder(prefix) => {
-            let resolved = resolve_like_the_tool_will(base, prefix)?;
+            let resolved = resolve_like_the_tool_will(base, prefix).ok()?;
             CanonicalRoot::new(&resolved).ok()
         }
         _ => None,
@@ -386,7 +402,7 @@ fn paths_under_match(ctx: &PermissionCtx, call: &AuthorizedCall, root: &Canonica
         match call.arguments.get(*name) {
             None | Some(serde_json::Value::Null) => continue,
             Some(serde_json::Value::String(raw)) => {
-                let Some(resolved) = resolve_like_the_tool_will(&ctx.cwd, raw) else {
+                let Ok(resolved) = resolve_like_the_tool_will(&ctx.cwd, raw) else {
                     return false;
                 };
                 match root.contains(&resolved) {
@@ -1242,12 +1258,15 @@ impl PermissionBroker {
                 // check).
                 None | Some(serde_json::Value::Null) => continue,
                 Some(serde_json::Value::String(raw)) => {
-                    let Some(resolved) = resolve_like_the_tool_will(&ctx.cwd, raw) else {
-                        return RootDecision::Denied(format!(
-                            "`{}` argument `{name}` ({raw:?}) cannot be resolved to a \
-                             filesystem path",
-                            call.tool.as_str()
-                        ));
+                    let resolved = match resolve_like_the_tool_will(&ctx.cwd, raw) {
+                        Ok(resolved) => resolved,
+                        Err(err) => {
+                            return RootDecision::Denied(format!(
+                                "`{}` argument `{name}` ({raw:?}) cannot be resolved to a \
+                                 filesystem path: {err}",
+                                call.tool.as_str()
+                            ));
+                        }
                     };
                     match root.contains(&resolved) {
                         Containment::Inside => {}

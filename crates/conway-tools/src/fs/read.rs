@@ -234,4 +234,33 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments { .. }));
     }
+
+    /// An unsupported `~user`-style tilde form is refused reaching THIS
+    /// tool's production `invoke` entry point, not merely by `resolve_path`
+    /// in isolation -- same rationale as `invoke_rejects_nul_byte_in_path`
+    /// immediately above, applied to board item
+    /// `01M10HSENWKTEE4G691XJXBH6T`'s own guard. The denial text must name
+    /// tilde explicitly (the acceptance criterion this test anchors): the
+    /// pre-fix behavior for ANY `~`-prefixed path was a generic "could not
+    /// be found" that named nothing about `~` at all.
+    #[tokio::test]
+    async fn invoke_rejects_unsupported_tilde_form_naming_tilde() {
+        let (ctx, _h) = test_ctx(PathBuf::from("/tmp"));
+        let err = ReadTool::new()
+            .invoke(
+                call(serde_json::json!({"path": "~bob/secret.txt"})),
+                ctx,
+            )
+            .await
+            .unwrap_err();
+        match err {
+            ToolError::InvalidArguments { detail } => {
+                assert!(
+                    detail.contains('~'),
+                    "the denial reaching the model must name tilde explicitly: {detail:?}"
+                );
+            }
+            other => panic!("expected InvalidArguments, got {other:?}"),
+        }
+    }
 }

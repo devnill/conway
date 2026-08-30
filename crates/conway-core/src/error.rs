@@ -179,9 +179,11 @@ pub enum CwdError {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum ArtifactWriteError {
     /// The hook-supplied name could not be resolved into a candidate path
-    /// at all (untrusted input: a NUL byte, which the OS path APIs cannot represent --
-    /// the same rejection `conway_tools::common::resolve_path` gives a
-    /// tool's own path argument for the identical input). Distinct from
+    /// at all (untrusted input: a NUL byte, which the OS path APIs cannot
+    /// represent, or a `~`-prefixed name conway does not expand -- see
+    /// `conway_core::containment::ResolveError` -- the same rejection
+    /// `conway_tools::common::resolve_path` gives a tool's own path
+    /// argument for the identical input). Distinct from
     /// [`Self::OutsideRoot`]: this candidate was never even evaluated
     /// against the root.
     #[error("artifact name could not be resolved to a path: {detail}")]
