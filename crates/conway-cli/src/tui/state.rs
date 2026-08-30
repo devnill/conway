@@ -1001,13 +1001,21 @@ pub struct AppState {
     /// with an empty `chain` -- rendered as "not configured", never a
     /// synthesized guess.
     pub default_model_snapshot: Option<String>,
-    /// Every role name the current merged config's `[roles]` declares,
-    /// sorted (mirrors `BTreeMap`'s own iteration order, since
-    /// `app/defaults.rs` reads the same lax `roles` map
-    /// `app/provider_manage.rs::load_roles_lax` already uses) --
+    /// Every role name the current merged config's `[roles]` declares that
+    /// an OPERATOR actually configured, sorted (mirrors `BTreeMap`'s own
+    /// iteration order, since `app/defaults.rs` reads the same lax `roles`
+    /// map `app/provider_manage.rs::load_roles_lax` already uses) --
     /// `input::activate_settings_selection`'s `LEAF_DEFAULT_ROLE` arm
     /// cycles [`Self::default_role_snapshot`] through this list, wrapping.
     /// Refreshed on the identical seam as the two fields above.
+    ///
+    /// Excludes `conway::config::merge::default_document`'s baked-in
+    /// `"default"` role floor (see
+    /// `conway::config::is_baked_in_role_floor`'s own doc) -- that entry
+    /// exists only so an unconfigured `default_role` still validates, and
+    /// was never something an operator chose; offering it here would let a
+    /// human cycle the session default onto a role with an intentionally
+    /// empty chain.
     pub known_role_names: Vec<String>,
     /// The installed plugin commands, for `/help`'s pointer to the palette
     /// and `view::palette`'s own live-filtered listing. **NOT reset by `/resume`** despite

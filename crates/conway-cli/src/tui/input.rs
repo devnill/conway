@@ -3476,8 +3476,14 @@ mod tests {
         assert!(state.show_reasoning, "defaults true");
         state.open_settings();
 
-        // Row 0 is the "display" group; row 1 is "show reasoning traces".
-        handle_key(&mut state, key(KeyCode::Down));
+        // Board item `01M18Q7P25DTSKQJDJJCC3E800` put a "defaults" group
+        // ahead of "display": row 0 "defaults", row 1 "default role" leaf
+        // (row 2, "default model", is `MenuNode::Static` and Down skips
+        // it), row 3 "display" group, row 4 "show reasoning traces" --
+        // three Downs from the open menu, not one.
+        for _ in 0..3 {
+            handle_key(&mut state, key(KeyCode::Down));
+        }
         assert!(
             crate::tui::view::settings::build_tree(&state)
                 .selected_row()
@@ -3507,9 +3513,14 @@ mod tests {
         assert!(!state.show_timestamps, "defaults false");
         state.open_settings();
 
-        // Row 0 "display", row 1 "show reasoning", row 2 "show timestamps".
-        handle_key(&mut state, key(KeyCode::Down));
-        handle_key(&mut state, key(KeyCode::Down));
+        // Board item `01M18Q7P25DTSKQJDJJCC3E800` put a "defaults" group
+        // ahead of "display": "defaults", "default role" leaf, ("default
+        // model", `MenuNode::Static`, skipped by Down), "display", "show
+        // reasoning", "show timestamps" -- four Downs from the open menu,
+        // not two.
+        for _ in 0..4 {
+            handle_key(&mut state, key(KeyCode::Down));
+        }
         assert!(
             crate::tui::view::settings::build_tree(&state)
                 .selected_row()
@@ -3540,9 +3551,14 @@ mod tests {
         assert_eq!(state.tool_preview_lines, 3);
         state.open_settings();
 
-        // Navigate onto the numeric leaf: display group (0), reasoning (1),
-        // timestamps (2), tool output group (3), tool preview lines (4).
-        for _ in 0..4 {
+        // Navigate onto the numeric leaf. Board item
+        // `01M18Q7P25DTSKQJDJJCC3E800` put a "defaults" group ahead of
+        // "display", adding two selectable stops in front of the ones
+        // this test already walked past ("default role" leaf; "default
+        // model" is `MenuNode::Static` and Down skips it): defaults group
+        // (0), default role (1), display group (2), reasoning (3),
+        // timestamps (4), tool output group (5), tool preview lines (6).
+        for _ in 0..6 {
             handle_key(&mut state, key(KeyCode::Down));
         }
         assert!(
@@ -3576,7 +3592,10 @@ mod tests {
     fn left_right_is_a_noop_off_the_numeric_row() {
         let mut state = AppState::new(AgentId::new());
         state.open_settings();
-        // Row 0: the "display" group.
+        // Row 0: the "defaults" group (board item
+        // `01M18Q7P25DTSKQJDJJCC3E800` -- still a group row either way, so
+        // this test's "no group row steps the numeric leaf" claim holds
+        // regardless of which group sits at row 0).
         assert_eq!(state.tool_preview_lines, 3);
 
         handle_key(&mut state, key(KeyCode::Right));
@@ -3597,7 +3616,18 @@ mod tests {
         state.open_settings();
         assert!(state.settings_collapsed_groups.is_empty());
 
-        // Row 0 is the "display" group -- collapse it.
+        // Board item `01M18Q7P25DTSKQJDJJCC3E800` inserted a "defaults"
+        // group ahead of "display", so row 0 is no longer it -- find
+        // "display"'s own row rather than assume a position this test does
+        // not otherwise care about.
+        let display_idx = crate::tui::view::settings::build_tree(&state)
+            .rows()
+            .iter()
+            .position(|r| r.label == "display")
+            .expect("the display group must exist");
+        state.settings_selected = display_idx;
+
+        // Collapse it.
         handle_key(&mut state, key(KeyCode::Enter));
         assert!(
             state.settings_collapsed_groups.contains("display"),
@@ -3632,10 +3662,15 @@ mod tests {
         state.open_settings();
         assert_eq!(state.settings_selected, 0);
 
+        // Row 0: "defaults" group. Row 1: "default role" leaf.
         handle_key(&mut state, key(KeyCode::Down));
         assert_eq!(state.settings_selected, 1);
+        // Row 2 ("default model") is `MenuNode::Static` -- board item
+        // `01M18Q7P25DTSKQJDJJCC3E800`'s derived, read-only row -- so a
+        // second Down must skip it and land on row 3, the "display" group,
+        // not row 2.
         handle_key(&mut state, key(KeyCode::Down));
-        assert_eq!(state.settings_selected, 2);
+        assert_eq!(state.settings_selected, 3);
         handle_key(&mut state, key(KeyCode::Up));
         assert_eq!(state.settings_selected, 1);
     }

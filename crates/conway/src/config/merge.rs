@@ -400,9 +400,19 @@ fn resolve_metadata_path(config: &ConwayConfig, cwd: &std::path::Path) -> PathBu
 /// baked-in floor, a strictly larger change this finding did not ask for.
 /// `"default"` names the role's actual content (an unconfigured
 /// placeholder), not a task any particular embedder performs.
+///
+/// **Every caller that lists roles for a human to choose among must skip
+/// this floor entry** ([`is_baked_in_role_floor`], below) -- it is a
+/// validation safety net, not a role anyone configured or would
+/// deliberately select. Board item `01M18Q7P25DTSKQJDJJCC3E800` found this
+/// the hard way: `/settings`' "default role" cycle list read
+/// [`merged_document`]'s `roles` map directly and offered this floor
+/// alongside every real, operator-declared role.
+const BASELINE_ROLE_NAME: &str = "default";
+
 fn default_document() -> Value {
     serde_json::json!({
-        "default_role": "default",
+        "default_role": BASELINE_ROLE_NAME,
         "cwd": ".",
         "session": {
             // No "root" key: `SessionConfig`'s own container-level
@@ -430,7 +440,7 @@ fn default_document() -> Value {
             "default_headroom_tokens": crate::config::schema::DEFAULT_HEADROOM_TOKENS,
         },
         "roles": {
-            "default": { "chain": [], "headroom_tokens": null },
+            (BASELINE_ROLE_NAME): { "chain": [], "headroom_tokens": null },
         },
         "health": {
             "transport_failures_to_open": 3,
@@ -444,6 +454,26 @@ fn default_document() -> Value {
             "probe_on_startup": false,
         },
     })
+}
+
+/// True when `(name, entry)` is exactly [`default_document`]'s own baked-in
+/// role floor -- `"default"`, an empty chain, no overrides at all -- rather
+/// than a role an operator declared. The floor exists only so a config with
+/// no `[roles]`/`default_role` of its own still validates (see
+/// `default_document`'s own doc); it was never meant to be offered to a
+/// human as something to choose. Comparing the VALUE too (not just the
+/// name) means an operator who deliberately declares their own role
+/// literally named `"default"` is unaffected: the moment it carries a real
+/// chain or any other override, `entry != RoleEntry::default()` and this
+/// returns `false` -- exactly the layer at which the merge itself lets an
+/// overlay replace the floor's own fields (`merge_values`, above).
+///
+/// Board item `01M18Q7P25DTSKQJDJJCC3E800` needed this: `/settings`'
+/// "default role" cycle list (`conway_cli::tui::app::defaults`) read
+/// [`merged_document`]'s `roles` map directly and, without this filter,
+/// offered the floor alongside every real, operator-declared role.
+pub fn is_baked_in_role_floor(name: &str, entry: &crate::config::schema::RoleEntry) -> bool {
+    name == BASELINE_ROLE_NAME && *entry == crate::config::schema::RoleEntry::default()
 }
 
 /// Deep merge: `Object`+`Object` unions by key (recursing); anything else

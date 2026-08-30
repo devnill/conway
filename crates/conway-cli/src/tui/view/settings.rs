@@ -810,10 +810,20 @@ mod tests {
     #[test]
     fn build_tree_restores_the_persisted_cursor() {
         let mut state = AppState::new(AgentId::new());
-        state.settings_selected = 2;
+        // Any already-selectable row proves the restore -- `menu.rs`'s own
+        // `set_selected_is_clamped_on_read_not_on_write` already covers the
+        // "restored index now lands on a `Static` row" resolution
+        // separately. Row 2 used to be "show timestamps" (a leaf), but
+        // board item `01M18Q7P25DTSKQJDJJCC3E800` inserted the "defaults"
+        // group ahead of "display", so row 2 is now "default model" --
+        // `MenuNode::Static`, not selectable -- which would exercise that
+        // OTHER resolution path instead of the plain restore this test
+        // means to check. Row 4 ("show reasoning traces") is selectable in
+        // the new layout and keeps this test on its own, single behavior.
+        state.settings_selected = 4;
 
         let tree = build_tree(&state);
-        assert_eq!(tree.selected_index(), 2);
+        assert_eq!(tree.selected_index(), 4);
     }
 
     // ---- draw: bottom-anchored, content-sized (V1's shape) ----

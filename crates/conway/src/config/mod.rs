@@ -18,8 +18,8 @@ pub mod writer;
 pub use discovery::discover;
 pub use locality::role_is_local;
 pub use merge::{
-    apply_cli, load, load_ignoring_user_config, merged_document, validate, CliOverrides,
-    LoadOptions,
+    apply_cli, is_baked_in_role_floor, load, load_ignoring_user_config, merged_document, validate,
+    CliOverrides, LoadOptions,
 };
 pub use model_metadata::ModelMetadata;
 pub use schema::ConwayConfig;
