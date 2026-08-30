@@ -29,6 +29,19 @@
 //! of them must literally follow, only a proof that the tier's install
 //! mechanism holds together end to end.
 //!
+//! **As of board item `01M0WWPA70E8YAAN981EK10D3D`, this crate also proves
+//! Edge B (plugin -> plugin capability calls,
+//! `docs/vision/DESIGN-plugin-dependencies.md` §2).**
+//! [`SkeletonAskTool`]'s `skeleton_ask` is this tier's first CONSUMER of
+//! another plugin's capability, and the first in-tree caller of
+//! [`conway::plugin::CapabilityCallHandle::call_versioned`] -- that
+//! method's own doc named this crate's board item as its intended first
+//! consumer before this tool existed. It calls into `conway-plugin-ui`'s
+//! `ui.form` capability BY BARE NAME AND HAND-BUILT JSON, with no compile-
+//! time dependency on that crate from `src/` (see [`SkeletonAskTool`]'s own
+//! doc) -- proving, not merely asserting, that Edge B needs no shared type
+//! between a provider and a consumer.
+//!
 //! **`conway` (the facade) does not, and must never, depend on this
 //! crate.** Doing so would put a first-party plugin back on the exact
 //! footing the tier exists to avoid — a capability the core carries
@@ -122,6 +135,119 @@ impl Tool for SkeletonPingTool {
         ctx.plugin_events
             .emit(PONG_DISPATCHED_EVENT, serde_json::json!({ "reply": text }))
             .await;
+        Ok(ToolOutput {
+            blocks: vec![ContentBlock::Text { text }],
+            is_error: false,
+            truncation: TruncationPolicy::None,
+            artifacts: Vec::new(),
+        })
+    }
+
+    fn path_args(&self) -> PathArgs {
+        PathArgs::None
+    }
+
+    fn render_kind(&self) -> RenderKind {
+        RenderKind::Structured
+    }
+}
+
+/// The bare name `SkeletonAskTool` registers under.
+pub const ASK_TOOL_NAME: &str = "skeleton_ask";
+
+/// `conway.ui`'s published capability, named BARE -- this crate depends on
+/// no type from `conway-plugin-ui` in `src/` (only in `[dev-dependencies]`,
+/// for this crate's own tests -- see this crate's own Cargo.toml comment).
+/// A consumer that needed a compile-time dependency on its provider's crate
+/// would defeat the entire argument `docs/vision/
+/// DESIGN-plugin-dependencies.md` §2 makes for Edge B being dynamic,
+/// serialisable JSON rather than a typed Rust trait per capability: an
+/// out-of-process caller (a subprocess plugin) could never depend on
+/// `conway-plugin-ui`'s Rust types at all, and this in-process caller does
+/// not either, on purpose.
+const UI_FORM_CAPABILITY: &str = "ui.form";
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct AskArgs {
+    /// The question to pose. Optional: a bare call asks a fixed default
+    /// question, mirroring `PingArgs::message`'s own "optional, defaulted"
+    /// shape above.
+    #[serde(default)]
+    prompt: Option<String>,
+}
+
+/// `skeleton_ask`: this tier's first real CONSUMER of Edge B
+/// (`ctx.capabilities`, `docs/vision/DESIGN-plugin-dependencies.md` §2) --
+/// [`SkeletonPingTool`] above proves a plugin can give the model a tool;
+/// this proves a plugin can call ANOTHER plugin's capability from inside
+/// one. Poses one fixed yes/no question through `conway.ui`'s `ui.form`
+/// capability (`^1`, decision `01M189XS6Z9VKYENAHNY1B54CM`) and reports
+/// whatever comes back.
+///
+/// **Never fails the call, either way** (`ToolOutput::is_error` stays
+/// `false` in both branches below) -- `conway.ui` not installed at all,
+/// installed but declaring an incompatible version, or installed with no
+/// drawing surface wired in to answer through (`conway_plugin_ui`'s own
+/// module doc: every host today) are all the SAME, ordinary outcome from
+/// this tool's point of view: no answer was collected, so it says so and
+/// moves on. This is the MAIN-LINE degrade path board item
+/// `01M0WWPA70E8YAAN981EK10D3D`'s acceptance 3 names, not a fallback for an
+/// edge case -- asking a question nobody could answer is not a tool error.
+struct SkeletonAskTool;
+
+#[async_trait]
+impl Tool for SkeletonAskTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: ToolName::new(ASK_TOOL_NAME),
+            description: "First-party plugin tier: poses one fixed yes/no question through \
+                          conway.ui's ui.form capability (Edge B) and reports the answer, or a \
+                          plain degrade message if none could be collected. Not registered by \
+                          default -- installed via `[plugins].install` or \
+                          `ConwayBuilder::with_plugin`."
+                .to_string(),
+            schema: schemars::schema_for!(AskArgs),
+            category: ToolCategory::Read,
+            permission: PermissionClass::Safe,
+        }
+    }
+
+    async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        if ctx.cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        let args: AskArgs =
+            serde_json::from_value(call.arguments).map_err(|e| ToolError::InvalidArguments {
+                detail: e.to_string(),
+            })?;
+        let prompt = args.prompt.unwrap_or_else(|| "proceed?".to_string());
+        let payload = serde_json::json!({
+            "prompt": prompt,
+            "options": ["yes", "no"],
+        });
+        // A hand-written literal, never operator- or model-supplied --
+        // `.expect()` here is the same posture `CapabilityRegistration::new`
+        // itself takes for a hard-coded version string (that constructor's
+        // own doc): a malformed literal would be a programmer error caught
+        // the first time this code runs at all, not untrusted input P-10
+        // governs.
+        let required =
+            semver::VersionReq::parse("^1").expect("\"^1\" is a literal and always parses");
+        let text = match ctx
+            .capabilities
+            .call_versioned(UI_FORM_CAPABILITY, &required, payload)
+            .await
+        {
+            Ok(answer) => {
+                let selected = answer
+                    .get("selected")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(the answer carried no \"selected\" field)")
+                    .to_string();
+                format!("skeleton ask: answered '{selected}'")
+            }
+            Err(e) => format!("skeleton ask: no answer available ({e}); proceeding without one"),
+        };
         Ok(ToolOutput {
             blocks: vec![ContentBlock::Text { text }],
             is_error: false,
@@ -264,11 +390,21 @@ impl Plugin for SkeletonPlugin {
             // Versioned WITH the workspace --
             // see this crate's own Cargo.toml doc comment.
             version: env!("CARGO_PKG_VERSION").to_string(),
-            tools: vec![ToolName::new(TOOL_NAME)],
+            tools: vec![ToolName::new(TOOL_NAME), ToolName::new(ASK_TOOL_NAME)],
             required_host_caps: vec![],
             optional_host_caps: vec![],
             requires: vec![],
-            optional: vec![],
+            // `skeleton_ask` calls into `conway.ui`'s `ui.form` capability
+            // (board item `01M0WWPA70E8YAAN981EK10D3D`) but degrades
+            // cleanly when it is absent -- `docs/vision/
+            // DESIGN-plugin-dependencies.md` §4a's own test for `optional`
+            // rather than `requires`: this plugin's stated function (a
+            // tool that answers, or honestly says it could not) survives
+            // fully intact either way. Declaring it here means uninstalling
+            // `conway.ui` while this plugin is enabled is announced
+            // (`WarningCode::OptionalPluginDependencyMissing` plus a
+            // `tracing::warn!`), never silent.
+            optional: vec!["conway.ui".to_string()],
         }
     }
 
@@ -278,16 +414,18 @@ impl Plugin for SkeletonPlugin {
         PluginDescription {
             summary: "a worked example proving the plugin install mechanism".to_string(),
             you_get: format!(
-                "1 tool ({TOOL_NAME}) and 1 command that echo an argument back -- proof the \
-                 install mechanism works, no real capability"
+                "2 tools ({TOOL_NAME} echoes an argument back; {ASK_TOOL_NAME} poses a fixed \
+                 question through conway.ui's ui.form capability, if installed) and 1 command \
+                 that echoes an argument back -- proof the install mechanism, and now the \
+                 plugin-to-plugin capability channel, both work; no real capability of its own"
             ),
-            you_lose: "nothing -- it does no real work".to_string(),
+            you_lose: "nothing -- it does no real work of its own".to_string(),
             costs: "none".to_string(),
         }
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        vec![Arc::new(SkeletonPingTool)]
+        vec![Arc::new(SkeletonPingTool), Arc::new(SkeletonAskTool)]
     }
 
     fn commands(&self) -> Vec<Arc<dyn Command>> {
@@ -318,6 +456,41 @@ mod plugin_tests {
         assert!(!description.summary.is_empty());
         assert!(!description.you_get.is_empty());
         assert!(!description.you_lose.is_empty());
+    }
+
+    /// Board item `01M0WWPA70E8YAAN981EK10D3D`: `skeleton_ask` joins
+    /// `skeleton_ping` as a real, dispatchable tool -- the manifest's own
+    /// `tools` list (checked at `ConwayBuilder::build`, independent of
+    /// `Plugin::tools`'s own return) must name both.
+    #[test]
+    fn manifest_names_both_tools() {
+        let manifest = SkeletonPlugin.manifest();
+        assert_eq!(
+            manifest.tools,
+            vec![ToolName::new(TOOL_NAME), ToolName::new(ASK_TOOL_NAME)]
+        );
+    }
+
+    /// `skeleton_ask` degrades rather than requires -- `docs/vision/
+    /// DESIGN-plugin-dependencies.md` §4a's own test: this plugin's stated
+    /// function survives fully without `conway.ui` installed, so the edge
+    /// belongs in `optional`, never `requires`.
+    #[test]
+    fn conway_ui_is_declared_optional_not_required() {
+        let manifest = SkeletonPlugin.manifest();
+        assert_eq!(manifest.optional, vec!["conway.ui".to_string()]);
+        assert!(manifest.requires.is_empty());
+    }
+
+    #[test]
+    fn plugin_declares_both_tools_and_the_one_ping_command() {
+        let plugin = SkeletonPlugin;
+        let tool_names: Vec<_> = plugin.tools().iter().map(|t| t.spec().name).collect();
+        assert_eq!(
+            tool_names,
+            vec![ToolName::new(TOOL_NAME), ToolName::new(ASK_TOOL_NAME)]
+        );
+        assert_eq!(plugin.commands().len(), 1);
     }
 }
 

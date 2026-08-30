@@ -144,8 +144,8 @@ plugin does not carry that extra weight for it.
 
 ## Why this is not a `[plugins].install` entry
 
-Every one of the ten plugins `first_party_plugins::bundle()` resolves
-(`docs/plugins/README.md`'s "Ten shipped first-party plugins") is named in
+Every one of the eleven plugins `first_party_plugins::bundle()` resolves
+(`docs/plugins/README.md`'s "Eleven shipped first-party plugins") is named in
 `[plugins].install` against a closed candidate set this binary happens to
 link, and ships with **no `settings.json` field of its own** — naming the id
 is the whole of the opt-in.

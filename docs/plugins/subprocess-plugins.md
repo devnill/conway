@@ -252,11 +252,15 @@ dependencies.md` §7b/§9) — parsed as standard semver, degrading to `0.0.0`
 satisfies no non-zero-major requirement rather than failing discovery.
 There is no way today to declare two capabilities on the same plugin at two
 different versions; if you need that, say so where you name your
-capability and treat it as a gap, not an oversight. **No in-tree consumer
-calls `call_versioned` yet** (`docs/plugins/hooks.md`'s point 21 Status
-row) — an unversioned caller reaches you through `::call` exactly as
-before, and this section describes what a versioned caller WOULD check
-once one exists.
+capability and treat it as a gap, not an oversight. **`call_versioned` now
+has an in-tree consumer** (`docs/plugins/hooks.md`'s point 21 Status row,
+board item `01M0WWPA70E8YAAN981EK10D3D`) — `conway-plugin-skeleton`'s
+`skeleton_ask` tool calls an IN-PROCESS provider (`conway-plugin-ui`) that
+way. **No consumer calls `call_versioned` against an OUT-OF-PROCESS,
+subprocess-provided capability yet** — an unversioned caller reaches you
+through `::call` exactly as before, and this section describes what a
+versioned caller WOULD check against your own `tool.spec/1`-reported
+`version` once one exists.
 
 A capability call reaches you as a `capability/1` request — under EITHER
 transport, one-shot (fresh spawn per call) or persistent (over the same

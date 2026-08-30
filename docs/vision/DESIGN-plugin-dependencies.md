@@ -775,3 +775,40 @@ code, nothing in `conway-runtime`. The intended first consumer is board
 item `01M0WWPA70E8YAAN981EK10D3D` (`conway.ui`, which will publish
 `ui.form`), itself not yet built. `docs/plugins/hooks.md`'s point 21 Status
 row carries the same label.
+
+**2026-08-29 — board item `01M0WWPA70E8YAAN981EK10D3D` closed the forward
+declaration two paragraphs above; that paragraph is left as written (it was
+true when drafted) and this entry carries the correction, matching how
+every other closed gap on this page is handled.** `conway.ui`
+(`conway-plugin-ui`) is now built and bundled, publishing `ui.form` at
+`1.0.0`; `conway-plugin-skeleton`'s `skeleton_ask` tool is the first
+in-tree caller of `call_versioned`, supplying `^1`. `docs/plugins/hooks.md`
+point 21's Status row and `CapabilityCallHandle::call_versioned`'s own doc
+comment (`crates/conway-core/src/ports/capability.rs`) are corrected in
+place alongside this entry — declaration honesty: a declaration site
+describing a mechanism owns every paragraph describing it, not only the
+one an item adds.
+
+**Bundled is not enabled, unchanged by this closure.** `conway.ui` ships
+per §0 ruling 1 (first-party, bundled, resolvable by id) but stays off per
+ruling 2 (opt-in) exactly like every other bundle member —
+`crates/conway-cli/src/first_party_plugins.rs`'s `bundle()` carries it, and
+a build with no `[plugins]` section installs it not at all
+(`crates/conway-cli/tests/ui_form_absent_by_default.rs`).
+
+**§7a's sequencing constraint held, and produced a narrower shipped surface
+than this page's own altitude discussion might read as implied.** The
+first real form ships zero widgets beyond a single-select ask/answer
+(`AskSelectRequest`/`AskSelectAnswer`), and — a disclosed scope decision,
+not an oversight — no live, interactive `FormSurface` is wired into the
+shipped binary in this pass: `ConwayUiPlugin::new(None)` is what every
+dispatch target constructs today, TUI included, so `ui.form` degrades
+identically everywhere until a real form drives what a live surface should
+look like. See `conway-plugin-ui`'s own module doc ("Host requirement,
+declared honestly") for the full reasoning, and this item's own completion
+report for why building a rendering surface now — for a proof-of-mechanism
+consumer, with no shipped form yet needing a specific widget on screen —
+would have been exactly the "designing on theory" INTENT §8.5 forbids.
+§8's first falsifier ("`conway.ui` needs to draw, not declare") did not
+fire: the declarative request/answer shape expressed everything
+`skeleton_ask` needed to ask and to receive back.

@@ -14,7 +14,7 @@
 //! links.
 //!
 //! **This bundle is a worked example, not a commitment to any of its
-//! members individually.** Today it contains ten plugin entries --
+//! members individually.** Today it contains eleven plugin entries --
 //! `conway-plugin-skeleton`, a skeleton proving nothing beyond the install
 //! mechanism (see that crate's own module doc); `conway-plugin-history`,
 //! `/conway.history.rewind`/`/conway.history.mask`/`/conway.history.checkout`
@@ -36,7 +36,12 @@
 //! `conway-plugin-names`, which lets an operator name an agent and then
 //! steer it by that name, and which is the tier's worked proof that a real
 //! capability needs no core change at all (board item
-//! `01M0TV5BSE98S16SFYECG9G9WP`). Dynamic routing is
+//! `01M0TV5BSE98S16SFYECG9G9WP`); and `conway-plugin-ui`, `conway.ui`
+//! (board item `01M0WWPA70E8YAAN981EK10D3D`), which contributes no tool or
+//! command of its own but publishes `ui.form` for another installed
+//! plugin to call -- the first bundle member on the PROVIDING end of Edge
+//! B (`docs/vision/DESIGN-plugin-dependencies.md` §2), where every entry
+//! above is a leaf consumer of host services only. Dynamic routing is
 //! built too (`conway-plugin-routing`, resolved through `router_bundle`
 //! below, not this list), and so is MCP client support -- through a
 //! separate mechanism entirely, `[plugins].mcp` wired by this crate's own
@@ -322,6 +327,21 @@ fn bundle(
         // bundle is off by default, and making this one the exception
         // would be a change to the BUNDLE's policy, not to this plugin.
         Arc::new(conway_plugin_names::NamesPlugin::new(agent_names)),
+        // `conway.ui` -- publishes the `ui.form` Edge B capability (board
+        // item `01M0WWPA70E8YAAN981EK10D3D`, `docs/vision/
+        // DESIGN-plugin-dependencies.md` §0/§2/§7a): first-party AND
+        // bundled by operator ruling, but bundled is not enabled -- opt-in
+        // like every other member of this bundle, so a default build with
+        // no `[plugins]` section installs it not at all. `ConwayUiPlugin::
+        // default()` (no drawing surface wired in) is what EVERY dispatch
+        // target uses today, TUI included -- see that crate's own module
+        // doc, "Host requirement, declared honestly", for why: no shipped
+        // consumer yet needs a specific rendering, so none is built ahead
+        // of one. Needs no constructor argument beyond that default,
+        // exactly like `conway.path`/`conway.discover` above -- a call
+        // into `ui.form` with no surface refuses cleanly per-call rather
+        // than failing this plugin's own installation.
+        Arc::new(conway_plugin_ui::ConwayUiPlugin::default()),
     ]
 }
 
@@ -888,6 +908,7 @@ mod tests {
             conway_plugin_idiom::PLUGIN_ID,
             conway_plugin_trim::PLUGIN_ID,
             conway_plugin_names::PLUGIN_ID,
+            conway_plugin_ui::PLUGIN_ID,
         ] {
             assert!(
                 ids.contains(&expected.to_string()),
@@ -913,6 +934,28 @@ mod tests {
             "the linked bundle must contain the trim plugin under its published id, otherwise \
              `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
             conway_plugin_trim::PLUGIN_ID
+        );
+    }
+
+    /// Board item `01M0WWPA70E8YAAN981EK10D3D`, acceptance 1 (bundled but
+    /// not enabled), reachability half: `conway.ui` is present in the
+    /// linked candidate set at all, otherwise `[plugins].install =
+    /// ["conway.ui"]` resolves to an unknown-id error. The DEFAULT
+    /// (`[plugins]` section absent) half of that acceptance criterion is
+    /// proven separately, end to end through the real compiled binary, by
+    /// `crates/conway-cli/tests/ui_form_absent_by_default.rs`.
+    #[test]
+    fn bundle_carries_the_ui_plugin_under_its_published_id() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin())
+            .iter()
+            .any(|p| p.manifest().id == conway_plugin_ui::PLUGIN_ID);
+        assert!(
+            found,
+            "the linked bundle must contain conway.ui under its published id, otherwise \
+             `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
+            conway_plugin_ui::PLUGIN_ID
         );
     }
 
