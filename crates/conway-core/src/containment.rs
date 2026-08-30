@@ -420,6 +420,14 @@ fn expand_tilde(raw: &str) -> Result<Option<PathBuf>, ResolveError> {
 /// on what this function returns there; see the `#[cfg(unix)]` gate on
 /// `tilde_expansion.rs`'s binary-level home-directory test for the
 /// consequence.
+///
+/// Two other compiled-binary tests reach the same lookup transitively
+/// through `conway::config::discovery::home_settings_path`:
+/// `config_isolation_binary.rs` (two of its three tests, `#[cfg(unix)]`-gated
+/// there with the reason and the rejected alternatives recorded at the top
+/// of that file) and `global_instructions_isolation.rs` (NOT gated -- that
+/// file's own test never reaches this fallback at all, see the note at its
+/// one test for why).
 fn home_dir() -> Option<PathBuf> {
     directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
 }
