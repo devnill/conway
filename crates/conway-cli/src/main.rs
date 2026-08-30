@@ -114,9 +114,27 @@ async fn main() -> std::process::ExitCode {
         let gate: Arc<dyn PermissionGate> = Arc::new(conway::gates::DenyAllGate);
         (Some(gate), None)
     };
+    // Board item `01M19NH39AE2D5AMJK0RZRQY86`: `conway.ui`'s live answering
+    // surface, on the IDENTICAL footing as `gate_override`/`tui_gate_rx`
+    // immediately above and for the identical reason (`tui::form::
+    // TuiFormSurface`'s own module doc) -- `Some`/`Some` only for the
+    // interactive TUI, `None`/`None` for every other dispatch target, built
+    // HERE (before `build_conway`) because a `FormSurface` must be handed
+    // to `ConwayUiPlugin::new` (and, through it, `ConwayBuilder::
+    // with_plugin`) before `build()` returns -- after which `tui::run`
+    // only ever receives the already-built `Conway`.
+    let (form_surface, tui_form_rx): (
+        Option<Arc<dyn conway_plugin_ui::FormSurface>>,
+        Option<tui::form::FormReceiver>,
+    ) = if is_tui {
+        let (surface, rx) = tui::form::TuiFormSurface::channel();
+        (Some(Arc::new(surface)), Some(rx))
+    } else {
+        (None, None)
+    };
 
     let (conway, memory_store, agent_names) =
-        match build_conway(&cli, gate_override, is_tui, interactive, &env).await {
+        match build_conway(&cli, gate_override, form_surface, is_tui, interactive, &env).await {
             Ok(built) => built,
             Err(e) => {
                 diag::error(e.to_string());
@@ -147,7 +165,10 @@ async fn main() -> std::process::ExitCode {
         }
     }
 
-    let result = dispatch(&cli, conway, tui_gate_rx, memory_store, agent_names, &env).await;
+    let result = dispatch(
+        &cli, conway, tui_gate_rx, tui_form_rx, memory_store, agent_names, &env,
+    )
+    .await;
 
     match result {
         Ok(code) => to_process_code(code),
@@ -220,9 +241,19 @@ async fn main() -> std::process::ExitCode {
 /// install it -- see `first_party_plugins::resolve_agent_names`, and
 /// `conway_plugin_names`'s own module doc for why the trait lives in the
 /// plugin crate rather than in `conway-core`.
+///
+/// `form_surface` (board item `01M19NH39AE2D5AMJK0RZRQY86`) is `main`'s own
+/// `tui::form::TuiFormSurface` channel's answering half, `Some` exactly
+/// when `is_tui` is `true` -- forwarded to `first_party_plugins::install`,
+/// which threads it into `conway_plugin_ui::ConwayUiPlugin::new` inside
+/// `bundle`, on the identical "built and handed in before `build()`
+/// returns" footing `gate` already has (this function's own module-level
+/// disclosure, above, explains why: `Runtime` bakes both in at
+/// construction, with no later swap point).
 async fn build_conway(
     cli: &Cli,
     gate: Option<Arc<dyn PermissionGate>>,
+    form_surface: Option<Arc<dyn conway_plugin_ui::FormSurface>>,
     is_tui: bool,
     interactive: bool,
     env: &HashMap<String, String>,
@@ -347,7 +378,8 @@ async fn build_conway(
     // `[plugins]` section in `settings.json` at all. Every dispatch target
     // sees this union from the SAME choke point, so the property holds for
     // the TUI and every one-shot/subcommand invocation identically.
-    let (builder, memory_store, agent_names) = first_party_plugins::install(builder, env).await?;
+    let (builder, memory_store, agent_names) =
+        first_party_plugins::install(builder, env, form_surface).await?;
     // The subprocess plugin tier (board item 01KZY8PATND84AKY0J376E3DWV):
     // a SEPARATE choke point from the line above -- see
     // `subprocess_plugins`'s own module doc for why this is a distinct
@@ -391,11 +423,14 @@ async fn build_conway(
 /// If `command.is_some()` -> `commands::{sessions,routes}::run`; else if
 /// `print.is_some()` -> `oneshot::run`; else -> `tui::run` (module notes).
 /// `tui_gate_rx` is `Some` exactly when the `None` (tui) arm below is the
-/// one taken -- see `main`'s comment.
+/// one taken -- see `main`'s comment. `tui_form_rx` (board item
+/// `01M19NH39AE2D5AMJK0RZRQY86`) is `Some` on the identical condition, for
+/// the identical reason.
 async fn dispatch(
     cli: &Cli,
     conway: Conway,
     tui_gate_rx: Option<tui::gate::GateReceiver>,
+    tui_form_rx: Option<tui::form::FormReceiver>,
     memory_store: Arc<dyn conway::plugin::MemoryStore>,
     agent_names: Arc<dyn conway_plugin_names::AgentNames>,
     env: &HashMap<String, String>,
@@ -417,6 +452,8 @@ async fn dispatch(
         None if cli.print.is_some() => oneshot::run(cli, conway).await,
         None => {
             let gate_rx = tui_gate_rx.expect("tui_gate_rx is constructed whenever is_tui is true");
+            let form_rx =
+                tui_form_rx.expect("tui_form_rx is constructed whenever is_tui is true");
             // resolved from the SAME
             // `[plugins].install` config `build_conway`'s own
             // `first_party_plugins::install` call already read -- see
@@ -438,7 +475,7 @@ async fn dispatch(
                 agent_names.clone(),
                 env,
             )?;
-            tui::run(cli, conway, gate_rx, &plugins, agent_names).await
+            tui::run(cli, conway, gate_rx, form_rx, &plugins, agent_names).await
         }
     }
 }

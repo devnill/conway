@@ -255,12 +255,15 @@ Members today:
   `conway-plugin-subprocess`/`conway-plugin-mcp`/`conway-plugin-claude`
   rather than through `first_party_plugins::bundle()`'s
   `[plugins].install` list — see `docs/plugins/statusline.md`.
-- **`crates/conway-plugin-ui`** (`conway.ui`) — publishes `ui.form`, a
-  blocking ask-with-options capability over Edge B (plugin → plugin,
-  `docs/vision/DESIGN-plugin-dependencies.md` §2) another installed plugin
-  calls into. Contributes no tool or command of its own; the first bundle
-  member on the PROVIDING end of that edge, where every other member above
-  is a leaf consumer of host services only. See `docs/plugins/ui.md`.
+- **`crates/conway-plugin-ui`** (`conway.ui`) — a standalone
+  operator-facing feature (board item `01M19NH39AE2D5AMJK0RZRQY86`):
+  `ask_question`, a model-callable tool that interviews the operator
+  directly, and `ui.form`, the identical blocking ask-with-options shape
+  over Edge B (plugin → plugin, `docs/vision/DESIGN-plugin-dependencies.md`
+  §2) another installed plugin can call into. No command of its own. The
+  interactive TUI wires a real, live answering surface for both (`crates/
+  conway-cli/src/tui/form.rs`); every other dispatch target refuses
+  immediately instead of blocking. See `docs/plugins/ui.md`.
 
 Compaction remains separate, later work — the sole member of this list not
 yet written; see `PHILOSOPHY.md` §6's own "Where the tree is today" note.

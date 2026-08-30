@@ -23,6 +23,7 @@ use super::App;
 use super::SubmitOutcome;
 use crate::exit::ExitCode;
 use crate::tui::commands::{self, Effect, Host};
+use crate::tui::form::FormReceiver;
 use crate::tui::gate::GateReceiver;
 use crate::tui::input::{self, Action};
 use crate::tui::state::{should_animate, AskModal, Entry};
@@ -61,6 +62,7 @@ impl App {
         mut self,
         terminal: &mut Terminal<B>,
         mut gate_rx: GateReceiver,
+        mut form_rx: FormReceiver,
     ) -> conway::Result<ExitCode>
     where
         // ratatui 0.30 widened `Backend::Error` from the fixed `io::Error` it
@@ -423,6 +425,19 @@ impl App {
                 maybe_prompt = gate_rx.recv() => {
                     if let Some(prompt) = maybe_prompt {
                         self.state.offer_prompt(prompt);
+                        dirty = true;
+                    }
+                }
+                // Board item `01M19NH39AE2D5AMJK0RZRQY86`: `ask_question`'s
+                // own question, arriving over the SAME shape `gate_rx`'s arm
+                // just above already establishes for a permission prompt --
+                // `AppState::offer_ui_form` opens it immediately, or parks it
+                // behind whichever modal-bearing surface currently owns
+                // `mode` (never a second, competing modal stack -- see
+                // `tui::state::modal`'s own doc).
+                maybe_ask = form_rx.recv() => {
+                    if let Some(ask) = maybe_ask {
+                        self.state.offer_ui_form(ask);
                         dirty = true;
                     }
                 }
@@ -852,6 +867,18 @@ impl App {
                                     };
                                     commands::apply_trust_decision(decision, &mut self.state, &host)
                                         .await;
+                                }
+                                // Board item `01M19NH39AE2D5AMJK0RZRQY86`: the
+                                // `ask_question` modal's decision (`up`/`down`
+                                // choose, `enter` answer, `esc` cancel).
+                                // Unlike `Action::AskFate`/`TrustDecision`,
+                                // this needs no facade call at all -- the
+                                // answer travels back over the SAME
+                                // `oneshot` channel the blocked tool call is
+                                // awaiting, entirely inside `AppState` (see
+                                // `AppState::resolve_ui_form`'s own doc).
+                                Action::UiFormDecision(decision) => {
+                                    self.state.resolve_ui_form(decision);
                                 }
                                 Action::IntentConfirm(choice) => {
                                     // C2: the confirmation card's trust

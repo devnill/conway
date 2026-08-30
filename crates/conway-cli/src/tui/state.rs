@@ -34,6 +34,7 @@ use conway::{
 };
 
 use super::config::StatusLineConfig;
+use super::form::PendingFormAsk;
 use super::gate::PendingPrompt;
 
 mod agent_panel;
@@ -50,6 +51,7 @@ pub use agent_tree::{AgentTreeView, NodeStatus, TreeNode};
 pub use input_line::{clamp_history_size, DEFAULT_HISTORY_SIZE};
 pub use modal::{
     AddProviderCredentialState, AskFate, AskModal, Mode, TrustDecision, TrustPreviewCard,
+    UiFormDecision, UiFormState,
 };
 pub use status::{should_animate, Activity, SPINNER_FRAMES};
 pub use transcript::{clamp_tool_preview_lines, Entry, ToolStatus};
@@ -612,6 +614,14 @@ pub struct AppState {
     /// [`Self::promote_next_surface`] already documents (queued prompt,
     /// then ask, then intent card, then this).
     pending_trust_preview: Option<TrustPreviewCard>,
+    /// Board item `01M19NH39AE2D5AMJK0RZRQY86`: an `ask_question` question
+    /// parked behind another modal-bearing surface -- mirrors
+    /// `pending_trust_preview` exactly. `App::run`'s `form_rx.recv()` arm
+    /// calls [`Self::offer_ui_form`], which parks here whenever `mode` is
+    /// not `Normal`. Drained in the SAME fixed priority order
+    /// [`Self::promote_next_surface`] already documents (queued prompt,
+    /// then ask, then intent card, then trust preview, then this).
+    pending_ui_form: Option<PendingFormAsk>,
     /// Whether an `/ask` child's single turn is currently in flight (B5).
     /// Set by `app.rs` when it spawns the ask task, cleared when the result
     /// arrives -- while set, a second `/ask` is refused with a `Notice`
@@ -1172,6 +1182,7 @@ impl AppState {
             modal_scroll: 0,
             pending_intent_confirm: None,
             pending_trust_preview: None,
+            pending_ui_form: None,
             spinner_frame: 0,
             turn_started_at: None,
             turn_running_tokens: 0,

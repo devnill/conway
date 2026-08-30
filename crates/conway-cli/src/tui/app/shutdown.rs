@@ -153,5 +153,17 @@ impl App {
         // handling either: the process is exiting, and nothing was ever
         // written for it, so there is nothing left to undo.
         let _ = self.state.take_pending_trust_preview();
+        // Board item `01M19NH39AE2D5AMJK0RZRQY86`: drain a parked
+        // `ask_question` question on exit too, for the identical reason the
+        // trust-preview card just above needs it -- dropping the returned
+        // `PendingFormAsk` drops its reply channel, which is exactly
+        // `TuiFormSurface::ask_select`'s own fail-closed fallback (the
+        // blocked tool call resolves as a named `FormSurfaceError` rather
+        // than hanging forever). A card currently LIVE in `Mode::UiForm`
+        // (rather than parked) needs no special handling either, mirroring
+        // `take_pending_trust_preview`'s own doc: the process is exiting,
+        // and `self.state` (and the reply sender it owns) is dropped along
+        // with it either way.
+        let _ = self.state.take_pending_ui_form();
     }
 }

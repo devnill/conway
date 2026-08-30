@@ -37,11 +37,16 @@
 //! steer it by that name, and which is the tier's worked proof that a real
 //! capability needs no core change at all (board item
 //! `01M0TV5BSE98S16SFYECG9G9WP`); and `conway-plugin-ui`, `conway.ui`
-//! (board item `01M0WWPA70E8YAAN981EK10D3D`), which contributes no tool or
-//! command of its own but publishes `ui.form` for another installed
-//! plugin to call -- the first bundle member on the PROVIDING end of Edge
-//! B (`docs/vision/DESIGN-plugin-dependencies.md` §2), where every entry
-//! above is a leaf consumer of host services only. Dynamic routing is
+//! (board items `01M0WWPA70E8YAAN981EK10D3D`, `01M19NH39AE2D5AMJK0RZRQY86`),
+//! which contributes a model-callable `ask_question` tool AND publishes the
+//! same shape as `ui.form` for another installed plugin to call -- the
+//! first bundle member on the PROVIDING end of Edge B (`docs/vision/
+//! DESIGN-plugin-dependencies.md` §2), where every other entry above is a
+//! leaf consumer of host services only. Unlike every entry above it,
+//! `conway.ui`'s own tool is answered by a LIVE, interactive surface for
+//! one dispatch target (the TUI) and degrades cleanly for every other --
+//! see this module's own `bundle` function doc, "`form_surface`", for
+//! exactly where that split happens. Dynamic routing is
 //! built too (`conway-plugin-routing`, resolved through `router_bundle`
 //! below, not this list), and so is MCP client support -- through a
 //! separate mechanism entirely, `[plugins].mcp` wired by this crate's own
@@ -170,11 +175,26 @@ use conway_plugin_names::AgentNames;
 /// [`installed_plugins`] are read-only re-derivations for display and fall
 /// back to a plugin with no operator fragments on the same error, mirroring
 /// `skills_plugin`'s own fallback immediately below.
+///
+/// `form_surface` backs the `conway.ui` entry below (board item
+/// `01M19NH39AE2D5AMJK0RZRQY86`): `Some` exactly when [`install`]'s own
+/// caller (`main.rs`) is about to run the interactive TUI, `None` for every
+/// other dispatch target -- see [`install`]'s own doc for exactly where
+/// that split happens. [`all_bundle_plugins`]/[`installed_plugins`] always
+/// pass `None`: both are read-only re-derivations for display/command-
+/// registry purposes, never the instance a live turn actually dispatches
+/// a tool call through (that one is built exactly once, inside [`install`],
+/// from the `Arc` `main.rs` resolved before `ConwayBuilder::build` ran) --
+/// see `conway_plugin_ui::ConwayUiPlugin::tools`'s own doc for why a `None`
+/// instance still returns the SAME tool for browsing/registry purposes
+/// (whether a live surface is wired in changes what a CALL does, never
+/// which tools/capabilities this plugin declares).
 fn bundle(
     cwd: &std::path::Path,
     memory_store: Arc<dyn MemoryStore>,
     agent_names: Arc<dyn AgentNames>,
     idiom_plugin: Arc<dyn Plugin>,
+    form_surface: Option<Arc<dyn conway_plugin_ui::FormSurface>>,
 ) -> Vec<Arc<dyn Plugin>> {
     let skills_plugin =
         conway_plugin_skills::SkillsPlugin::from_dir(&cwd.join(".conway").join("skills"))
@@ -327,21 +347,23 @@ fn bundle(
         // bundle is off by default, and making this one the exception
         // would be a change to the BUNDLE's policy, not to this plugin.
         Arc::new(conway_plugin_names::NamesPlugin::new(agent_names)),
-        // `conway.ui` -- publishes the `ui.form` Edge B capability (board
-        // item `01M0WWPA70E8YAAN981EK10D3D`, `docs/vision/
+        // `conway.ui` -- asks the operator a question with options directly
+        // (the model-callable `ask_question` tool) and publishes the same
+        // shape as `ui.form` over Edge B for another installed plugin to
+        // call (board items `01M0WWPA70E8YAAN981EK10D3D`,
+        // `01M19NH39AE2D5AMJK0RZRQY86`, `docs/vision/
         // DESIGN-plugin-dependencies.md` §0/§2/§7a): first-party AND
         // bundled by operator ruling, but bundled is not enabled -- opt-in
         // like every other member of this bundle, so a default build with
-        // no `[plugins]` section installs it not at all. `ConwayUiPlugin::
-        // default()` (no drawing surface wired in) is what EVERY dispatch
-        // target uses today, TUI included -- see that crate's own module
-        // doc, "Host requirement, declared honestly", for why: no shipped
-        // consumer yet needs a specific rendering, so none is built ahead
-        // of one. Needs no constructor argument beyond that default,
-        // exactly like `conway.path`/`conway.discover` above -- a call
-        // into `ui.form` with no surface refuses cleanly per-call rather
-        // than failing this plugin's own installation.
-        Arc::new(conway_plugin_ui::ConwayUiPlugin::default()),
+        // no `[plugins]` section installs it not at all.
+        // `form_surface` (`Some` for the interactive TUI, `None` for every
+        // other dispatch target -- see this function's own doc) is what
+        // decides whether a call into `ask_question`/`ui.form` reaches a
+        // real, live answering mechanism or refuses cleanly per-call;
+        // either way this plugin installs the same tool/capability, so
+        // naming `"conway.ui"` in `[plugins].install` never depends on
+        // which host it ends up running under.
+        Arc::new(conway_plugin_ui::ConwayUiPlugin::new(form_surface)),
     ]
 }
 
@@ -387,7 +409,9 @@ pub fn all_bundle_plugins(
         Arc::new(conway_plugin_names::InMemoryAgentNames::new());
     let idiom_plugin = resolve_idiom_plugin(cwd, env)
         .unwrap_or_else(|_| Arc::new(conway_plugin_idiom::IdiomPlugin::new()) as Arc<dyn Plugin>);
-    bundle(cwd, memory_store, browse_names, idiom_plugin)
+    // `None`: a browsing-only re-derivation never needs a live `FormSurface`
+    // -- see `bundle`'s own doc, "`form_surface`".
+    bundle(cwd, memory_store, browse_names, idiom_plugin, None)
 }
 
 /// Resolves this process's real `conway.idiom` plugin (board item
@@ -677,9 +701,19 @@ fn resolve_agent_names(install_ids: &[String]) -> Result<Arc<dyn AgentNames>, Fa
 /// the operator-global instructions file honours `CONWAY_CONFIG_DIR` (board
 /// item `01M0W5Q569F0T97HSEP6F0MPCR`), never re-read ambiently inside this
 /// function or anything it calls.
+///
+/// `form_surface` (board item `01M19NH39AE2D5AMJK0RZRQY86`) is `Some` when
+/// `main.rs`'s caller is about to run the interactive TUI, `None`
+/// otherwise -- `main.rs` builds a `tui::form::TuiFormSurface` channel at
+/// the SAME point, for the SAME reason, `tui::gate::TuiGate`'s own channel
+/// already is: a `FormSurface` must be handed to `ConwayUiPlugin::new`
+/// (and, through it, `ConwayBuilder::with_plugin`) before `build()`
+/// returns, before `App`/`AppState` exist to answer into. Forwarded to
+/// `bundle` verbatim -- see that function's own doc, "`form_surface`".
 pub async fn install(
     builder: ConwayBuilder,
     env: &HashMap<String, String>,
+    form_surface: Option<Arc<dyn conway_plugin_ui::FormSurface>>,
 ) -> Result<(ConwayBuilder, Arc<dyn MemoryStore>, Arc<dyn AgentNames>), FacadeError> {
     let cwd = builder.config().cwd.clone();
     let memory_store = resolve_memory_store(&cwd, &builder.config().plugins.install).await?;
@@ -690,6 +724,7 @@ pub async fn install(
         memory_store.clone(),
         agent_names.clone(),
         idiom_plugin,
+        form_surface,
     );
     let builder = builder.install_selected(plugins, router_bundle(), backend_bundle())?;
     Ok((builder, memory_store, agent_names))
@@ -771,10 +806,14 @@ pub fn installed_plugins(
     let cwd = conway.config().cwd.clone();
     let idiom_plugin = resolve_idiom_plugin(&cwd, env)
         .unwrap_or_else(|_| Arc::new(conway_plugin_idiom::IdiomPlugin::new()) as Arc<dyn Plugin>);
-    let mut plugins: Vec<Arc<dyn Plugin>> = bundle(&cwd, memory_store, agent_names, idiom_plugin)
-        .into_iter()
-        .filter(|plugin| install.contains(&plugin.manifest().id))
-        .collect();
+    // `None`: this re-derivation feeds the command registry/plugin browser
+    // only, never a live turn's actual dispatch -- see `bundle`'s own doc,
+    // "`form_surface`".
+    let mut plugins: Vec<Arc<dyn Plugin>> =
+        bundle(&cwd, memory_store, agent_names, idiom_plugin, None)
+            .into_iter()
+            .filter(|plugin| install.contains(&plugin.manifest().id))
+            .collect();
     plugins.extend(crate::claude_compat_plugins::command_plugins(
         conway.config(),
     )?);
@@ -823,6 +862,11 @@ pub fn installed_plugins(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `Tool::invoke`/`Tool::spec` (board item `01M19NH39AE2D5AMJK0RZRQY86`'s
+    // own `bundle_gives_the_ui_plugin_the_callers_own_form_surface`, below)
+    // -- not needed by this module's PRODUCTION code, which only ever calls
+    // `Plugin::tools`/`Plugin::manifest`.
+    use conway::plugin::Tool;
 
     /// The non-durable store every wiring-only check here passes to
     /// `bundle`. Deliberately never `FsAgentNames`: nothing in this module's
@@ -855,7 +899,7 @@ mod tests {
         // this wiring-only check.
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin())
+        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin(), None)
             .iter()
             .any(|p| p.manifest().id == conway_plugin_skeleton::PLUGIN_ID);
         assert!(
@@ -873,7 +917,7 @@ mod tests {
     fn bundle_carries_the_memory_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin())
+        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin(), None)
             .iter()
             .any(|p| p.manifest().id == conway_plugin_memory::PLUGIN_ID);
         assert!(
@@ -926,7 +970,7 @@ mod tests {
     fn bundle_carries_the_trim_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin())
+        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin(), None)
             .iter()
             .any(|p| p.manifest().id == conway_plugin_trim::PLUGIN_ID);
         assert!(
@@ -948,7 +992,7 @@ mod tests {
     fn bundle_carries_the_ui_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin())
+        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin(), None)
             .iter()
             .any(|p| p.manifest().id == conway_plugin_ui::PLUGIN_ID);
         assert!(
@@ -956,6 +1000,78 @@ mod tests {
             "the linked bundle must contain conway.ui under its published id, otherwise \
              `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
             conway_plugin_ui::PLUGIN_ID
+        );
+    }
+
+    /// Board item `01M19NH39AE2D5AMJK0RZRQY86`: `bundle` must hand
+    /// `conway.ui` the SAME `form_surface` its own caller passed in, not a
+    /// private `None` -- mirrors `bundle_gives_the_names_plugin_the_callers_
+    /// own_store`'s own "prove the caller's own instance is used" shape.
+    /// Proven by driving the plugin's own `ask_question` tool end to end
+    /// against a fixture surface and asserting the REAL answer it produced
+    /// comes back, not a degrade sentence.
+    #[tokio::test]
+    async fn bundle_gives_the_ui_plugin_the_callers_own_form_surface() {
+        struct FixedAnswerSurface;
+        #[async_trait::async_trait]
+        impl conway_plugin_ui::FormSurface for FixedAnswerSurface {
+            async fn ask_select(
+                &self,
+                _request: conway_plugin_ui::AskSelectRequest,
+            ) -> Result<conway_plugin_ui::AskSelectAnswer, conway_plugin_ui::FormSurfaceError>
+            {
+                Ok(conway_plugin_ui::AskSelectAnswer {
+                    selected: "yes".to_string(),
+                })
+            }
+        }
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let surface: Arc<dyn conway_plugin_ui::FormSurface> = Arc::new(FixedAnswerSurface);
+        let plugins = bundle(
+            &cwd,
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(),
+            Some(surface),
+        );
+        let ui_plugin = plugins
+            .iter()
+            .find(|p| p.manifest().id == conway_plugin_ui::PLUGIN_ID)
+            .expect("conway.ui is in the bundle");
+        let tool = ui_plugin
+            .tools()
+            .into_iter()
+            .find(|t| t.spec().name.as_str() == conway_plugin_ui::ASK_QUESTION_TOOL_NAME)
+            .expect("conway.ui declares ask_question");
+        let call = conway::plugin::ToolCall {
+            call_id: "call-1".to_string(),
+            name: conway::ToolName::new(conway_plugin_ui::ASK_QUESTION_TOOL_NAME),
+            arguments: serde_json::json!({ "prompt": "proceed?", "options": ["yes", "no"] }),
+        };
+        let agent_id = conway::AgentId::new();
+        let ctx = conway::plugin::ToolCtx::for_test(
+            agent_id,
+            std::env::temp_dir(),
+            Arc::new(conway_testkit::FakeSubagentHost::new(agent_id)),
+            Arc::new(conway_testkit::CollectingEventSink::new()),
+        );
+        let output = tool
+            .invoke(call, ctx)
+            .await
+            .expect("ask_question never returns a ToolError for a well-formed call");
+        let text = output
+            .blocks
+            .iter()
+            .find_map(|b| match b {
+                conway::plugin::ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("ask_question replies with a text block");
+        assert_eq!(
+            text, "operator selected: yes",
+            "the tool must reach the SAME surface `bundle`'s caller passed in, not a private \
+             fallback -- a wrong wiring would degrade instead"
         );
     }
 
@@ -968,7 +1084,7 @@ mod tests {
     fn bundle_carries_the_idiom_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin())
+        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin(), None)
             .iter()
             .any(|p| p.manifest().id == conway_plugin_idiom::PLUGIN_ID);
         assert!(
@@ -1131,7 +1247,7 @@ mod tests {
     fn bundle_carries_the_names_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin())
+        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin(), None)
             .iter()
             .any(|p| p.manifest().id == conway_plugin_names::PLUGIN_ID);
         assert!(
@@ -1174,7 +1290,13 @@ mod tests {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
         let agent_names = test_agent_names();
-        let plugins = bundle(&cwd, memory_store, agent_names.clone(), test_idiom_plugin());
+        let plugins = bundle(
+            &cwd,
+            memory_store,
+            agent_names.clone(),
+            test_idiom_plugin(),
+            None,
+        );
         let names_plugin = plugins
             .iter()
             .find(|p| p.manifest().id == conway_plugin_names::PLUGIN_ID)

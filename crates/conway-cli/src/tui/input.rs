@@ -13,7 +13,7 @@
 use conway::{AgentId, PermissionDecision, PermissionScope};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::state::{AppState, AskFate, IntentChoice, Mode, TrustDecision};
+use super::state::{AppState, AskFate, IntentChoice, Mode, TrustDecision, UiFormDecision};
 
 /// What a keypress means for the app loop to carry out.
 #[derive(Debug, Clone, PartialEq)]
@@ -157,6 +157,12 @@ pub enum Action {
     /// `commands::apply_trust_decision`; this module only reports which
     /// decision was made.
     TrustDecision(TrustDecision),
+    /// Board item `01M19NH39AE2D5AMJK0RZRQY86`: a decision key was pressed
+    /// while `ask_question`'s modal was open (`Enter` answer with the
+    /// highlighted option / `Esc` cancel). Unlike `TrustDecision`/`AskFate`,
+    /// the app loop's own arm needs no facade call at all -- see
+    /// `AppState::resolve_ui_form`'s own doc.
+    UiFormDecision(UiFormDecision),
     /// Board item `01M11XWB4T8ZADNDB4M8R482MA`: `Enter` on the settings
     /// providers section's own `add_provider:<id>` leaf -- carries the
     /// chosen [`crate::first_run::ProviderChoice::id`] (never the whole
@@ -264,6 +270,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
         Mode::TrustPreview(_) => handle_trust_preview_key(state, key),
         Mode::EditingPattern(_) => handle_editing_pattern_key(state, key),
         Mode::AddProviderCredential(_) => handle_add_provider_credential_key(state, key),
+        Mode::UiForm(_) => handle_ui_form_key(state, key),
         Mode::Normal => handle_normal_key(state, key),
     }
 }
@@ -717,6 +724,59 @@ fn handle_trust_preview_key(state: &mut AppState, key: KeyEvent) -> Action {
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
             Action::TrustDecision(TrustDecision::Cancel)
         }
+        _ => Action::None,
+    }
+}
+
+/// `ask_question`'s own key handling (board item
+/// `01M19NH39AE2D5AMJK0RZRQY86`): `Up`/`Down` move the highlighted option
+/// (mutated directly here, exactly like `handle_settings_key`'s own
+/// navigation -- no `Action` needed for a pure local-state move), `Enter`
+/// answers with whichever option is currently highlighted, and `Esc`
+/// cancels. Everything else is SWALLOWED, mirroring
+/// [`handle_trust_preview_key`]'s shape exactly: the input line is inert,
+/// `/agents` is neither visible nor available, and the quit keys
+/// (`Ctrl-C`/`Ctrl-D`) still pass through as `Action::CtrlC`/`Action::Quit`
+/// -- quitting with the question open drops it on the floor (`shutdown.rs`'s
+/// quit path), which fails the blocked tool call closed rather than hanging
+/// it (see `AppState::take_pending_ui_form`'s own doc).
+///
+/// `Up`/`Down`/decision keys only fire on a bare keypress -- a held
+/// modifier is NOT a navigation or decision key, the same B5 M2 guard every
+/// other modal-bearing surface's key handler applies.
+fn handle_ui_form_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    match key.code {
+        KeyCode::PageDown => {
+            adjust_modal_scroll(state, 1);
+            return Action::None;
+        }
+        KeyCode::PageUp => {
+            adjust_modal_scroll(state, -1);
+            return Action::None;
+        }
+        _ => {}
+    }
+    if !key.modifiers.is_empty() {
+        return Action::None;
+    }
+    match key.code {
+        KeyCode::Up => {
+            state.move_ui_form_selection(-1);
+            Action::None
+        }
+        KeyCode::Down => {
+            state.move_ui_form_selection(1);
+            Action::None
+        }
+        KeyCode::Enter => Action::UiFormDecision(UiFormDecision::Answer),
+        KeyCode::Esc => Action::UiFormDecision(UiFormDecision::Cancel),
         _ => Action::None,
     }
 }

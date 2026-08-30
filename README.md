@@ -229,11 +229,14 @@ server declarations, commands, and hooks where a mapping exists, reporting
 by name everything it cannot use; `crates/conway-plugin-marketplace`,
 which fetches a marketplace's manifest and a chosen plugin's declared files
 over HTTP into the same plugin store `conway-plugin-claude` reads from; and
-`crates/conway-plugin-ui` (`conway.ui`), which contributes no tool or
-command of its own but publishes `ui.form`, a blocking ask-with-options
-capability another installed plugin calls into — the first member on the
-PROVIDING end of the plugin-to-plugin capability channel, where every
-other member above is a leaf consumer of host services only.
+`crates/conway-plugin-ui` (`conway.ui`), a standalone operator-facing
+feature: `ask_question`, a model-callable tool that interviews the operator
+directly, and `ui.form`, the identical blocking ask-with-options shape
+another installed plugin can call into over the plugin-to-plugin capability
+channel — the first member on the PROVIDING end of that channel, where
+every other member above is a leaf consumer of host services only. The
+interactive TUI wires a real, live answering surface for both; every other
+dispatch target refuses immediately instead of blocking.
 Compaction remains the one first-party-plugin-tier capability still unbuilt
 (`/checkout`/`ContextMask` are built, above, in `conway-plugin-history`);
 conway-plugin-routing is not

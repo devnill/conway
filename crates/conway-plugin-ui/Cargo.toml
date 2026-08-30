@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
-description = "First-party, bundled plugin (board item 01M0WWPA70E8YAAN981EK10D3D): conway.ui, which publishes the ui.form capability -- a blocking ask-with-options question over Edge B (docs/vision/DESIGN-plugin-dependencies.md) -- built narrow: one request shape, one answering primitive, no speculative widget vocabulary"
+description = "First-party, bundled plugin (board items 01M0WWPA70E8YAAN981EK10D3D, 01M19NH39AE2D5AMJK0RZRQY86): conway.ui, which asks the operator a question with options directly (ask_question, the model-callable tool) and publishes the same shape as ui.form over Edge B for another installed plugin to call -- built narrow: one request shape, one answering primitive, no speculative widget vocabulary"
 
 # Versioned WITH the workspace, like every other first-party plugin -- see
 # `conway-plugin-skeleton`'s own Cargo.toml doc comment for the full
@@ -31,8 +31,16 @@ description = "First-party, bundled plugin (board item 01M0WWPA70E8YAAN981EK10D3
 conway = { path = "../conway" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# `ask_question`'s own JSON schema (board item `01M19NH39AE2D5AMJK0RZRQY86`) --
+# the same crate every other first-party plugin tool's `ToolSpec::schema`
+# already derives through (`conway-plugin-skeleton`'s own Cargo.toml).
+schemars = { workspace = true }
 
 [dev-dependencies]
+# `ask_question`'s own `Tool::invoke` tests need a real `ToolCtx` (`ToolCtx::
+# for_test`'s own two doubles) -- the identical dev-dependency
+# `conway-plugin-skeleton`'s Cargo.toml already carries for the same reason.
+conway-testkit = { path = "../conway-testkit" }
 # Test-only: `semver::VersionReq`/`semver::Version` for the
 # version-negotiation tests (decision `01M189XS6Z9VKYENAHNY1B54CM`) against
 # the real Edge B channel (`CapabilityRegistry`, `CapabilityCallHandle`)

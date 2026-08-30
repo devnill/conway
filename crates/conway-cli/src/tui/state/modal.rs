@@ -25,6 +25,7 @@
 //! directly, the same way it owns [`AskModal`]'s.
 
 use super::*;
+use crate::tui::form::PendingFormAsk;
 
 /// The `/ask` modal's state (B5): one answered ephemeral fork-ask waiting
 /// for the user to choose its fate. The modal opens only once the child's
@@ -97,6 +98,41 @@ pub struct TrustPreviewCard {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustDecision {
     Confirm,
+    Cancel,
+}
+
+/// Board item `01M19NH39AE2D5AMJK0RZRQY86`: `ask_question`'s own modal state
+/// -- one question a model-called tool is blocked waiting on, plus which
+/// option the operator currently has highlighted. `ask` carries the
+/// [`PendingFormAsk`] itself (the request AND the reply channel the blocked
+/// `TuiFormSurface::ask_select` call is awaiting) -- unlike [`AskModal`]/
+/// [`TrustPreviewCard`], this card's own answer travels back over that
+/// channel directly, entirely inside `AppState`, never through a
+/// `commands::Host` facade call.
+pub struct UiFormState {
+    pub ask: PendingFormAsk,
+    /// The currently-highlighted option's index into `ask.request.options`
+    /// -- always in bounds (`ask.request.options` is never empty:
+    /// `conway_plugin_ui::AskSelectRequest`'s own producer refuses an empty
+    /// list before it ever reaches a surface), moved by `up`/`down` in
+    /// `input::handle_ui_form_key`.
+    pub selected: usize,
+}
+
+/// `Mode::UiForm`'s two ways out -- there is no third: quitting with the
+/// card open drops it on the floor (`shutdown.rs`'s quit path), which drops
+/// `ask.reply` and fails the blocked tool call closed as `FormSurfaceError`
+/// naming `"cancelled"` (`TuiFormSurface::ask_select`'s own fail-closed
+/// fallback), the identical "nothing left to do but let the channel closing
+/// speak for itself" posture the intent-confirm/trust-preview cards already
+/// take on quit. `Answer` sends the currently-`selected` option back
+/// verbatim; `Cancel` sends a named refusal instead -- neither ever fails
+/// (a closed reply channel on the OTHER end -- the tool call already gave
+/// up -- is not an error here either, mirroring [`AskModal::error`]'s own
+/// "there is nothing left to notify" reasoning one layer down).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiFormDecision {
+    Answer,
     Cancel,
 }
 
@@ -221,6 +257,24 @@ pub enum Mode {
     /// `AppState::promote_next_surface` so a prompt queued in the
     /// meantime is not stranded.
     AddProviderCredential(AddProviderCredentialState),
+    /// Board item `01M19NH39AE2D5AMJK0RZRQY86`: `ask_question`'s own modal
+    /// -- a model-called tool is blocked awaiting the operator's answer.
+    /// While this is the mode, the input line is inert and
+    /// `input.rs::handle_ui_form_key` swallows every key except `up`/`down`
+    /// (move the highlighted option), `enter` (answer with it), `esc`
+    /// (cancel), and the quit keys (`Ctrl-C`/`Ctrl-D`, which pass through --
+    /// like the trust-preview/intent-confirm cards, and unlike the `/ask`
+    /// modal, no session-visible side effect has happened yet, so quitting
+    /// needs no purge, only letting the reply channel close). A permission
+    /// prompt arriving while this modal is open queues in `queued_prompts`
+    /// exactly as it does behind another prompt, and a question arriving
+    /// while any of the other four modal-bearing surfaces is showing parks
+    /// in `pending_ui_form` until the surface clears -- this is the FIFTH
+    /// modal-bearing surface joining the SAME never-stack discipline
+    /// (`AwaitingPermission`, `AskModal`, `IntentConfirm`, `TrustPreview`,
+    /// `UiForm`), lowest priority, checked last in
+    /// `AppState::promote_next_surface`.
+    UiForm(UiFormState),
 }
 
 impl std::fmt::Debug for Mode {
@@ -242,6 +296,9 @@ impl std::fmt::Debug for Mode {
             }
             Mode::AddProviderCredential(cred) => {
                 write!(f, "AddProviderCredential(choice_id={})", cred.choice_id)
+            }
+            Mode::UiForm(form) => {
+                write!(f, "UiForm(prompt={:?})", form.ask.request.prompt)
             }
         }
     }
@@ -365,10 +422,12 @@ impl AppState {
 
     /// The shared "what surfaces gets promoted next after a modal/prompt
     /// closes" logic (C2 generalizes B5's two-surface version to three;
-    /// this item generalizes it again to four). Called with `mode` already
-    /// reset to `Mode::Normal` by the caller ([`Self::close_ask_modal`],
-    /// [`Self::close_intent_confirm`], [`Self::close_trust_preview`],
-    /// [`Self::resolve_current_prompt`]). Priority order:
+    /// a later item generalizes it again to four; board item
+    /// `01M19NH39AE2D5AMJK0RZRQY86` generalizes it once more, to five).
+    /// Called with `mode` already reset to `Mode::Normal` by the caller
+    /// ([`Self::close_ask_modal`], [`Self::close_intent_confirm`],
+    /// [`Self::close_trust_preview`], [`Self::resolve_current_prompt`],
+    /// [`Self::resolve_ui_form`]). Priority order:
     /// 1. A queued permission prompt ([`Self::queued_prompts`]) -- the
     ///    gate's pending prompts are always the highest-priority surface
     ///    (a tool call is waiting on a decision).
@@ -379,7 +438,12 @@ impl AppState {
     /// 4. A parked trust-preview card ([`Self::pending_trust_preview`]) --
     ///    a `/trust permissions` that completed while any of the above was
     ///    showing.
-    /// 5. Nothing -- `mode` stays `Normal`.
+    /// 5. A parked `ask_question` card ([`Self::pending_ui_form`]) -- a
+    ///    model-raised question that arrived while any of the above was
+    ///    showing. Lowest priority: a question a model is waiting on is
+    ///    still less urgent than a decision already forcing the operator's
+    ///    attention.
+    /// 6. Nothing -- `mode` stays `Normal`.
     ///
     /// Exactly one surface (at most) is promoted per call; the next call
     /// happens when THAT surface closes.
@@ -410,7 +474,90 @@ impl AppState {
         if let Some(card) = self.pending_trust_preview.take() {
             self.mode = Mode::TrustPreview(card);
             self.modal_scroll = 0;
+            return;
         }
+        if let Some(ask) = self.pending_ui_form.take() {
+            self.mode = Mode::UiForm(UiFormState { ask, selected: 0 });
+            self.modal_scroll = 0;
+        }
+    }
+
+    /// Opens `ask_question`'s modal (board item `01M19NH39AE2D5AMJK0RZRQY86`),
+    /// parking it in `pending_ui_form` instead whenever another modal-bearing
+    /// surface currently owns `mode` -- mirrors [`Self::offer_trust_preview`]
+    /// exactly, the lowest-priority slot in `Self::promote_next_surface`.
+    pub fn offer_ui_form(&mut self, ask: PendingFormAsk) {
+        if matches!(self.mode, Mode::Normal) {
+            self.mode = Mode::UiForm(UiFormState { ask, selected: 0 });
+            self.modal_scroll = 0;
+        } else {
+            self.pending_ui_form = Some(ask);
+        }
+    }
+
+    /// Drains a question parked in `pending_ui_form`. Used by `app.rs`'s
+    /// quit path so a question parked behind another surface when the user
+    /// quits does not leave a dangling reply channel -- mirrors
+    /// [`Self::take_pending_trust_preview`] exactly: dropping the returned
+    /// [`PendingFormAsk`] drops its `oneshot::Sender` half, which is exactly
+    /// `TuiFormSurface::ask_select`'s own documented fail-closed fallback
+    /// (a `FormSurfaceError` naming `"cancelled"` on a dropped reply
+    /// channel) -- the process is exiting either way, so there is nothing
+    /// left to answer into. Returns the parked ask if one was waiting, else
+    /// `None`; either way `pending_ui_form` is cleared.
+    pub fn take_pending_ui_form(&mut self) -> Option<PendingFormAsk> {
+        self.pending_ui_form.take()
+    }
+
+    /// Moves the highlighted option by `delta` (wrapping), while
+    /// `Mode::UiForm` is open. A no-op otherwise. `delta` is typically `1`
+    /// (down) or `-1` (up) -- `input::handle_ui_form_key`'s own callers.
+    pub fn move_ui_form_selection(&mut self, delta: isize) {
+        let Mode::UiForm(form) = &mut self.mode else {
+            return;
+        };
+        let len = form.ask.request.options.len() as isize;
+        if len == 0 {
+            // Unreachable in practice (an empty-options request is refused
+            // before it ever reaches a surface -- see `conway_plugin_ui`'s
+            // own `ask` function), but never a divide-by-zero if it somehow
+            // were.
+            return;
+        }
+        let current = form.selected as isize;
+        let next = (current + delta).rem_euclid(len);
+        form.selected = next as usize;
+    }
+
+    /// Carries out `ask_question`'s decision (board item
+    /// `01M19NH39AE2D5AMJK0RZRQY86`): sends the answer (or a named
+    /// cancellation) back over `ask.reply`, the SAME `oneshot` channel the
+    /// blocked `TuiFormSurface::ask_select` call is awaiting -- unlike
+    /// [`commands::apply_ask_fate`]/[`commands::apply_trust_decision`], this
+    /// needs no facade call at all, since answering a question the model
+    /// asked is entirely local to this process's own channel. A no-op when
+    /// no question is open. Promotes the next parked/queued surface via
+    /// `Self::promote_next_surface` afterward, exactly like every other
+    /// modal-bearing surface's close path.
+    pub fn resolve_ui_form(&mut self, decision: UiFormDecision) {
+        let Mode::UiForm(_) = &self.mode else {
+            return;
+        };
+        let Mode::UiForm(form) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            unreachable!("guarded by the matches! check above")
+        };
+        match decision {
+            UiFormDecision::Answer => {
+                let selected = form.ask.request.options[form.selected].clone();
+                form.ask.resolve(Ok(conway_plugin_ui::AskSelectAnswer { selected }));
+            }
+            UiFormDecision::Cancel => {
+                form.ask.resolve(Err(conway_plugin_ui::FormSurfaceError::new(
+                    "the operator cancelled the question",
+                )));
+            }
+        }
+        self.promote_next_surface();
     }
 
     /// Enqueues a freshly arrived prompt from the gate channel, promoting it
@@ -1190,5 +1337,275 @@ mod tests {
         assert!(!state.plugins_open);
         state.close_plugins();
         assert!(!state.plugins_open);
+    }
+
+    // -----------------------------------------------------------------
+    // Board item `01M19NH39AE2D5AMJK0RZRQY86`: `ask_question`'s modal --
+    // the FIFTH modal-bearing surface joining the SAME never-stack
+    // discipline every test above already pins for the other four.
+    // -----------------------------------------------------------------
+
+    fn ui_form_ask(prompt: &str) -> PendingFormAsk {
+        let (ask, _reply_rx) = PendingFormAsk::new_for_test(conway_plugin_ui::AskSelectRequest {
+            prompt: prompt.to_string(),
+            options: vec!["yes".to_string(), "no".to_string()],
+        });
+        ask
+    }
+
+    #[test]
+    fn offer_ui_form_opens_immediately_in_normal_mode() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(matches!(state.mode, Mode::Normal));
+
+        state.offer_ui_form(ui_form_ask("q"));
+
+        assert!(
+            matches!(&state.mode, Mode::UiForm(f) if f.ask.request.prompt == "q" && f.selected == 0),
+            "the modal must open immediately, got: {:?}",
+            state.mode
+        );
+    }
+
+    /// **VERIFICATION ANCHOR, acceptance 4, board item
+    /// `01M19NH39AE2D5AMJK0RZRQY86`.** A question raised while a permission
+    /// prompt is up PARKS, rather than stacking -- and is promoted, per the
+    /// existing discipline, once the prompt resolves.
+    #[test]
+    fn offer_ui_form_parks_behind_a_permission_prompt_and_opens_once_it_resolves() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_prompt(permission_prompt("bash: ls"));
+        assert!(matches!(state.mode, Mode::AwaitingPermission(_)));
+
+        state.offer_ui_form(ui_form_ask("parked"));
+
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "the permission prompt must keep the floor; the question parks, got: {:?}",
+            state.mode
+        );
+
+        state.resolve_current_prompt(conway::PermissionDecision::AllowOnce);
+
+        assert!(
+            matches!(&state.mode, Mode::UiForm(f) if f.ask.request.prompt == "parked"),
+            "the parked question must open once the prompt queue drains, got: {:?}",
+            state.mode
+        );
+    }
+
+    /// Same "never stack" proof, against the `/ask` modal specifically --
+    /// the FIRST of the four pre-existing surfaces, and the one whose own
+    /// module doc this item's spec pointed at as the precedent to read.
+    #[test]
+    fn offer_ui_form_parks_behind_an_ask_modal_and_opens_once_it_closes() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ask_modal(ask_modal("q"));
+        assert!(matches!(state.mode, Mode::AskModal(_)));
+
+        state.offer_ui_form(ui_form_ask("parked-behind-ask"));
+
+        assert!(
+            matches!(state.mode, Mode::AskModal(_)),
+            "the ask modal must keep the floor; the question parks, got: {:?}",
+            state.mode
+        );
+
+        state.close_ask_modal();
+
+        assert!(
+            matches!(&state.mode, Mode::UiForm(f) if f.ask.request.prompt == "parked-behind-ask"),
+            "the parked question must open once the ask modal closes, got: {:?}",
+            state.mode
+        );
+    }
+
+    /// Same proof against the intent-confirm card.
+    #[test]
+    fn offer_ui_form_parks_behind_an_intent_confirm_card_and_opens_once_it_closes() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_intent_confirm(intent_card("q"));
+        assert!(matches!(state.mode, Mode::IntentConfirm(_)));
+
+        state.offer_ui_form(ui_form_ask("parked-behind-intent"));
+
+        assert!(
+            matches!(state.mode, Mode::IntentConfirm(_)),
+            "the intent card must keep the floor; the question parks, got: {:?}",
+            state.mode
+        );
+
+        state.close_intent_confirm();
+
+        assert!(
+            matches!(&state.mode, Mode::UiForm(f) if f.ask.request.prompt == "parked-behind-intent"),
+            "the parked question must open once the intent card closes, got: {:?}",
+            state.mode
+        );
+    }
+
+    /// Same proof against the trust-preview card -- the lowest-priority of
+    /// the four pre-existing surfaces, checked last, so this is also the
+    /// discriminating test that `ask_question`'s own park slot is checked
+    /// AFTER it, not before (priority order 5, per `promote_next_surface`'s
+    /// own doc).
+    #[test]
+    fn offer_ui_form_parks_behind_a_trust_preview_card_and_opens_once_it_closes() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_trust_preview(trust_card("/repo/.conway/permissions.json"));
+        assert!(matches!(state.mode, Mode::TrustPreview(_)));
+
+        state.offer_ui_form(ui_form_ask("parked-behind-trust"));
+
+        assert!(
+            matches!(state.mode, Mode::TrustPreview(_)),
+            "the trust-preview card must keep the floor; the question parks, got: {:?}",
+            state.mode
+        );
+
+        state.close_trust_preview();
+
+        assert!(
+            matches!(&state.mode, Mode::UiForm(f) if f.ask.request.prompt == "parked-behind-trust"),
+            "the parked question must open once the trust-preview card closes, got: {:?}",
+            state.mode
+        );
+    }
+
+    /// The reverse direction: a question already open keeps the floor, and
+    /// a LATER permission prompt queues behind it rather than stealing it --
+    /// mirrors `close_ask_modal_promotes_a_prompt_queued_while_the_modal_
+    /// was_open`'s own proof for the `/ask` modal.
+    #[test]
+    fn a_permission_prompt_arriving_while_ui_form_is_open_queues_and_is_promoted_on_answer() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ui_form(ui_form_ask("q"));
+        state.offer_prompt(permission_prompt("bash: ls"));
+        assert!(
+            matches!(state.mode, Mode::UiForm(_)),
+            "the question must keep the floor; the prompt queues, got: {:?}",
+            state.mode
+        );
+
+        state.resolve_ui_form(UiFormDecision::Answer);
+
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "answering must promote the queued prompt, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn take_pending_ui_form_drains_a_parked_question_and_clears_the_slot() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_prompt(permission_prompt("bash: ls"));
+        state.offer_ui_form(ui_form_ask("parked"));
+
+        let drained = state.take_pending_ui_form();
+        let drained_prompt = drained.as_ref().map(|ask| ask.request.prompt.clone());
+        assert_eq!(
+            drained_prompt.as_deref(),
+            Some("parked"),
+            "the parked question must be returned"
+        );
+        assert!(
+            state.take_pending_ui_form().is_none(),
+            "the slot must be cleared after the take"
+        );
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "take must NOT clobber the surface currently owning `mode`"
+        );
+    }
+
+    #[test]
+    fn take_pending_ui_form_is_none_when_nothing_is_parked() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(state.take_pending_ui_form().is_none());
+        // A live (open) question is in `mode`, not in the parking slot.
+        state.offer_ui_form(ui_form_ask("live"));
+        assert!(
+            state.take_pending_ui_form().is_none(),
+            "a live question is not parked -- take must return None"
+        );
+    }
+
+    #[test]
+    fn move_ui_form_selection_wraps_in_both_directions() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ui_form(ui_form_ask("q")); // two options: yes, no
+        assert!(matches!(&state.mode, Mode::UiForm(f) if f.selected == 0));
+
+        state.move_ui_form_selection(1);
+        assert!(matches!(&state.mode, Mode::UiForm(f) if f.selected == 1));
+
+        // Wraps forward past the end back to the start.
+        state.move_ui_form_selection(1);
+        assert!(matches!(&state.mode, Mode::UiForm(f) if f.selected == 0));
+
+        // Wraps backward past the start to the end.
+        state.move_ui_form_selection(-1);
+        assert!(matches!(&state.mode, Mode::UiForm(f) if f.selected == 1));
+    }
+
+    #[test]
+    fn move_ui_form_selection_is_a_noop_when_no_question_is_open() {
+        let mut state = AppState::new(AgentId::new());
+        state.move_ui_form_selection(1);
+        assert!(matches!(state.mode, Mode::Normal));
+    }
+
+    /// **VERIFICATION ANCHOR, acceptance 1 (TUI half of "receives the
+    /// chosen answer").** Answering sends the SELECTED option (never index
+    /// 0, never the request's own default) back over the reply channel, and
+    /// closes the modal.
+    #[tokio::test]
+    async fn resolve_ui_form_answer_sends_the_selected_option_and_closes() {
+        let mut state = AppState::new(AgentId::new());
+        let (ask, reply_rx) = PendingFormAsk::new_for_test(conway_plugin_ui::AskSelectRequest {
+            prompt: "proceed?".to_string(),
+            options: vec!["yes".to_string(), "no".to_string()],
+        });
+        state.offer_ui_form(ask);
+        state.move_ui_form_selection(1); // -> "no"
+
+        state.resolve_ui_form(UiFormDecision::Answer);
+
+        assert!(matches!(state.mode, Mode::Normal), "answering must close the modal");
+        let answer = reply_rx
+            .await
+            .expect("the reply sender is alive")
+            .expect("Answer must resolve Ok");
+        assert_eq!(
+            answer.selected, "no",
+            "the answer must be the option the operator actually selected, not the default"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_ui_form_cancel_sends_a_named_refusal_and_closes() {
+        let mut state = AppState::new(AgentId::new());
+        let (ask, reply_rx) = PendingFormAsk::new_for_test(conway_plugin_ui::AskSelectRequest {
+            prompt: "proceed?".to_string(),
+            options: vec!["yes".to_string(), "no".to_string()],
+        });
+        state.offer_ui_form(ask);
+
+        state.resolve_ui_form(UiFormDecision::Cancel);
+
+        assert!(matches!(state.mode, Mode::Normal), "cancelling must close the modal");
+        let err = reply_rx
+            .await
+            .expect("the reply sender is alive")
+            .expect_err("Cancel must resolve Err");
+        assert_eq!(err.message, "the operator cancelled the question");
+    }
+
+    #[test]
+    fn resolve_ui_form_is_a_noop_when_no_question_is_open() {
+        let mut state = AppState::new(AgentId::new());
+        state.resolve_ui_form(UiFormDecision::Cancel);
+        assert!(matches!(state.mode, Mode::Normal));
     }
 }
