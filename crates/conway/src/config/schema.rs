@@ -145,9 +145,10 @@ impl ConwayConfig {
     /// `default_model` field would let an operator's `settings.json` name
     /// one model in `default_model` and a DIFFERENT one at
     /// `roles.<default_role>.chain[0]` — two answers to "which model does
-    /// the default role start on" that nothing keeps in sync. Steering
-    /// P-14 (one implementation) treats that shape as a drift hazard the
-    /// moment it exists, whether or not anything has drifted yet.
+    /// the default role start on" that nothing keeps in sync. This project's
+    /// rule that safety-critical resolution logic has ONE implementation
+    /// treats that shape as a drift hazard the moment it exists, whether
+    /// or not anything has drifted yet.
     ///
     /// The cost accepted by choosing this instead: "default model" is a
     /// computed display, not a value an operator can set independently of
@@ -171,7 +172,8 @@ impl ConwayConfig {
     /// off a live `settings.json` without going through the full,
     /// `#[serde(deny_unknown_fields)]`-strict `ConwayConfig` — can still
     /// call the exact same lookup [`Self::default_model`] uses, instead of
-    /// restating it (P-14).
+    /// restating it — one implementation of the lookup, never a second
+    /// callsite that reproduces it.
     pub fn model_for<'a>(roles: &'a BTreeMap<String, RoleEntry>, role: &str) -> Option<&'a str> {
         roles
             .get(role)

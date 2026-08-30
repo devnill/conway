@@ -54,10 +54,7 @@ use crate::tui::state::Entry;
 /// The scalar-valued sibling of `load_roles_lax`: reads the merged
 /// document's own top-level `"default_role"` member, laxly -- see this
 /// module's own doc, "Why a lax read, not the full `ConwayConfig`".
-fn load_default_role_lax(
-    env: &HashMap<String, String>,
-    cwd: &Path,
-) -> Result<RoleAlias, String> {
+fn load_default_role_lax(env: &HashMap<String, String>, cwd: &Path) -> Result<RoleAlias, String> {
     let merged = merged_document(&LoadOptions {
         env: env.clone(),
         cwd: cwd.to_path_buf(),
@@ -142,8 +139,7 @@ impl App {
 
         let Some(path) = discovery::user_config_path(env) else {
             self.state.transcript.push(Entry::Error {
-                text: "could not resolve a home directory to write settings.json into"
-                    .to_string(),
+                text: "could not resolve a home directory to write settings.json into".to_string(),
                 fatal: false,
             });
             return;
