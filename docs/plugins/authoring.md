@@ -714,6 +714,174 @@ What this means for you, concretely:
   produce the exact same observable output unless you've built the kind of
   test that distinguishes them.
 
+## Presenting your plugin to an operator
+
+Everything above this chapter teaches you how to make a plugin *work*.
+Nothing above it says how to make it *fit* — how it names itself, what it
+tells someone deciding whether to enable it, and where its own settings
+appear once enabled. That vacuum is why the twelve first-party plugin crates
+that ship today (`conway-plugin-{discover, history, idiom, mcp, memory,
+names, path, skills, statusline, stepguard, subprocess, trim}`) each surface
+themselves differently, with no single place an operator can go to learn
+what any one of them changed
+([`DESIGN-surface-coherence.md`](../vision/DESIGN-surface-coherence.md)
+names this finding in full). This chapter states the rules a plugin author
+can follow today, and names the one piece that is a ruling rather than a
+built mechanism yet.
+
+**Written as rules with examples, not principles.** "Be consistent" is not
+followable. Each rule below is stated so you can check your own plugin
+against it without a judgment call. Where a rule cannot be stated that
+concretely, this chapter says so rather than writing it up softly — that is
+itself a finding, not a gap you're expected to close by guessing.
+
+### Naming
+
+**Rule: a plugin's id is `<owner>.<name>`, lowercase, no more than two
+segments.** Every first-party plugin follows this already —
+`conway.memory`, `conway.stepguard`, `conway.skills` — and a third party
+follows the identical shape with their own owner segment instead of
+`conway`, e.g. `acme.greeter`. This is not a style suggestion: `PluginManifest::id`
+is the identity a `settings.json` `plugins.install`/`plugins.subprocess`/
+`plugins.mcp` entry names, the identity `hooks.rules[].event` narrows
+against for a plugin-declared event, and the identity every command this
+plugin contributes is prefixed with (next rule) — get it wrong and every
+one of those has to change together.
+
+**Rule: a command this plugin contributes is named `<plugin-id>.<verb>`,
+lowercase, one bare verb.** This is not a convention you have to remember —
+`Command::spec`'s own doc states it and the host enforces it mechanically:
+you supply a bare `name` (e.g. `"greet"`) to `CommandSpec`, and the host
+prefixes it with your plugin's own `PluginManifest::id` before registering
+it, so `/acme.greeter.greet` is what an operator types and you never choose
+your own namespace (`crates/conway-core/src/ports/plugin.rs`'s own doc on
+`Command::spec` and `CommandSpec::name`). Pick a verb the way you would pick
+a shell subcommand name — `memory.forget`, not `memory.do_the_forgetting`.
+
+**Rule: a status-line contribution is a short, fixed-width-friendly
+fragment, not a sentence.** `Plugin::status_contributions` sits beside
+other plugins' fragments and conway's own status text on one line
+(`conway.statusline`'s own page describes the budget this shares).
+`"mem: 12 notes"` fits; `"Memory plugin currently holding 12 saved notes for
+this session"` does not — it will get truncated by whatever renders the
+status line, and truncation is not this method's job to defend against.
+
+### When to contribute a command, a settings entry, status-line text, or nothing
+
+This is the same three-kind test
+[`DESIGN-surface-coherence.md`](../vision/DESIGN-surface-coherence.md) §4
+applies to the built-in TUI surface, applied to what your plugin adds to
+it — a plugin is not exempt from the house rules the CLI holds itself to
+just because it is optional.
+
+- **Contribute a command (`Plugin::commands`) when your plugin does
+  something now, or shows the operator something on demand.** `/ping`
+  (`conway-plugin-skeleton`'s worked example) is an ACTION; a hypothetical
+  `/acme.greeter.log` showing recent greetings would be a VIEW. If what
+  you're building is "the operator types something and gets an immediate
+  result," it's a command — not a settings toggle they have to go find
+  first.
+- **Contribute a settings entry when the thing being decided is
+  configuration your plugin reads on every turn or every session, not
+  something invoked once.** A plugin that reads its own `[plugins.config.
+  <id>]` values for behaviour that changes without the operator typing
+  anything (a memory retention window, a status-line refresh interval) is
+  CONFIGURATION-shaped and belongs wherever conway's own configuration of
+  that kind lives — see "Configuration" below for exactly where that is,
+  since the answer depends on the same persistent-versus-session split
+  conway's own settings menu follows.
+- **Contribute status-line text (`Plugin::status_contributions`) only for a
+  value an operator would want to glance at continuously without asking for
+  it** — a live count, a mode, a health indicator. If the value only matters
+  when explicitly requested, it belongs on a command's output instead; a
+  status line that accumulates every plugin's "just in case" fragment stops
+  being glanceable, which is the entire reason the budget exists.
+- **Contribute nothing** when your plugin's only job is registering a tool
+  for the model (`Plugin::tools`) or an instruction fragment
+  (`Plugin::instructions`) — most first-party plugins are exactly this
+  shape, and adding a command or a settings row with nothing operator-
+  actionable behind it is surface for its own sake.
+
+### What you owe an operator deciding whether to enable you
+
+**Rule: override `Plugin::description()`.** Its default
+(`PluginDescription::default()`, every field empty) is honest but useless —
+a browser renders it as "(no description)." At minimum, fill `summary` (one
+line) and `you_get` (what turning you on adds — tools, commands, an
+instruction). Fill `you_lose` if there is a real cost to leaving you off
+that isn't obvious from `you_get` alone, and `costs` if you do standing
+work every turn or every session (a network call, a file read) rather than
+only when invoked. This method is read before a plugin is enabled
+(`ConwayBuilder::build`-adjacent time), by a person, never assembled into a
+prompt — write it for a person, not for a model.
+
+```rust
+fn description(&self) -> PluginDescription {
+    PluginDescription {
+        summary: "notes that survive a restart".to_string(),
+        you_get: "3 tools · /memory · an instruction telling the model \
+                  when to write things down".to_string(),
+        you_lose: "nothing else -- recall falls back to context".to_string(),
+        costs: "a small read at the start of every turn".to_string(),
+    }
+}
+```
+
+**What this chapter cannot yet give you a rule for.** `description()`
+covers the free-text half of what an operator is owed. The other half —
+a *structured* declaration of exactly which commands, tools, settings, and
+status-line contributions a plugin registers, surfaced in one place rather
+than reconstructed by reading source — does not exist yet.
+[`DESIGN-surface-coherence.md`](../vision/DESIGN-surface-coherence.md) §7
+states the ruling that it must; no `Plugin` trait method for it is built as
+of this writing, and this page will not describe one until it lands. If you
+are writing a plugin today, `description()` plus accurate `commands()`/
+`tools()`/`status_contributions()` implementations are everything you can
+do — there is no additional method to implement.
+
+### Configuration: your settings follow the same rule conway's do
+
+**A plugin's own settings are subject to the identical persistent-versus-
+session split `DESIGN-surface-coherence.md`'s corrected rule 1 states for
+conway's own `/settings` menu.** If a value is global and persists across
+restarts (a retention window, an API endpoint your plugin calls), it is
+*persistent configuration* and belongs wherever conway's own persistent
+configuration of that shape lives — today that means a config-file key; the
+ruling anticipates a `/settings` row once the mechanism below exists. If a
+value is scoped to *this session's* current use — which of several modes
+your plugin is running in right now, for this conversation only — it stays
+reachable the way conway's own session-scoped state does: a command, not a
+buried settings toggle.
+
+**This is a rule stated ahead of its own mechanism, and that is disclosed
+rather than hidden.** Per-plugin configuration was ruled open
+(`DESIGN-plugin-dependencies.md` §6, "SETTLED 2026-08-26 — the first slice
+is over"): `[plugins.config.<id>]` is intended to become a real settings
+surface, with a plugin declaring its config schema once and that
+declaration rendering three ways (a TUI editor, an embedder's JSON, a
+one-shot run's declared defaults). As of this writing, no
+`Plugin`-trait method for declaring that schema exists in
+`crates/conway-core/src/ports/plugin.rs`, and `ConwayConfig` has no
+`[plugins.config.<id>]` key wired up to reject or accept one. The
+persistent-versus-session *rule* is settled; the *mechanism* that lets a
+plugin author act on it is not built. Do not invent a bespoke top-level
+config section for your plugin's persistent settings in the meantime —
+that is precisely the "stays closed" shape `DESIGN-plugin-dependencies.md`
+§6 rejected, and it will not be forward-compatible with the declared-schema
+surface once it lands.
+
+### The compat exception
+
+A plugin translated from Claude Code's format
+([`claude-compat.md`](claude-compat.md)) is not held to this chapter's bar.
+Compat is a curated on-ramp — it exists so someone arriving from Claude Code
+relearns nothing on day one, not a second, permanent way to author a
+plugin. A translated plugin may carry Claude Code's own naming and
+structure unchanged; this chapter's naming, contribution, and description
+rules apply in full to a *native* plugin — one written against
+`conway::plugin` directly, first-party or third-party, from this page's
+"Writing a Rust plugin" section onward.
+
 ## Where to go next
 
 [`docs/plugins/README.md`](README.md) routes the rest of the set.
