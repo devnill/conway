@@ -189,9 +189,17 @@ pre-check in the browser, never live dependency reconciliation mid-session.
 
 **Two dependency tiers on `PluginManifest` — `requires` and `optional` —
 by plugin id, with no version constraint in the first pass.**
-`PluginManifest::version` is a bare `String` and there is **no `semver`
-crate anywhere in the workspace**. Name-only edges cover every case
-currently on the table and can be shipped without that dependency —
+`PluginManifest::version` is a bare `String`, and these `requires`/
+`optional` edges carry no version constraint: they match on plugin id
+alone. *(2026-08-29 — qualified: `semver` is now a direct dependency of
+`conway-core`, added for the UNRELATED capability-CALL channel, Edge B —
+`crates/conway-core/src/ports/capability.rs`, `CapabilityRegistration::
+version` and `CapabilityCallHandle::call_versioned`; see §7b's own closing
+entry. That crate governs a different edge, name-and-version between a
+capability consumer and its provider, not the plugin-id `requires`/
+`optional` edges this section is about — those remain name-only, unchanged
+by that addition.)* Name-only edges cover every case currently on the
+table and can be shipped without a version constraint of their own —
 provided the limitation is stated out loud rather than implied away. §7
 argues the case for doing versions immediately instead.
 
@@ -759,3 +767,11 @@ VersionMismatch` is the refusal, naming both. §4's plugin-id `requires`/
 `PluginManifest::requires`'s own doc (`crates/conway-core/src/ports/
 plugin.rs`) now states explicitly, distinguishing that edge from the one
 this entry versions.
+
+**`call_versioned` is a forward declaration: shipped, tested, reachable
+from every `Tool::invoke` via `ToolCtx::capabilities`, and NOT called by
+anything in-tree yet** — no built-in plugin, no `conway-plugin-subprocess`
+code, nothing in `conway-runtime`. The intended first consumer is board
+item `01M0WWPA70E8YAAN981EK10D3D` (`conway.ui`, which will publish
+`ui.form`), itself not yet built. `docs/plugins/hooks.md`'s point 21 Status
+row carries the same label.
