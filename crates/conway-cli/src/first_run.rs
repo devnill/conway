@@ -4,15 +4,17 @@
 //! says nothing usable is configured, this module replaces the old hard
 //! `"no backends configured"` error with a short, interactive fix: detect a
 //! local provider already running, offer it in one keypress, otherwise ask
-//! for one of the two provider shapes `conway-plugin-backends` ships and a
-//! credential, save it (`conway::config::set_backend_provider`), prove it
-//! with one real completion, and get out of the way.
+//! for one of the [`HOSTED_CHOICES`] and a credential, save it
+//! (`conway::config::set_backend_provider`), prove it with one real
+//! completion, and get out of the way.
 //!
 //! # Appetite, restated here because it is easy to over-build this
 //!
 //! **Detect, offer, verify, get out of the way.** No model-pinning
-//! question, no roles/fallback-chain question -- exactly the local-or-two-
-//! hosted-shapes menu below, one credential prompt at most, one verify.
+//! question, no roles/fallback-chain question -- exactly the local-or-
+//! hosted-choices menu below, one credential prompt at most, one verify.
+//! [`ProviderChoice`]'s own doc states which choices are admissible here,
+//! and why that is a lower bar than "closed at two forever".
 //!
 //! # How this is structured for testability without a terminal
 //!
@@ -61,11 +63,23 @@ pub const LOCAL_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/v1";
 /// The `backends.<id>` key this flow writes for the local-detected case.
 pub const LOCAL_OLLAMA_ID: &str = "local";
 
-/// One of the two provider shapes offered when no local server answered.
-/// Deliberately just these two: `docs/providers.md`'s own table names them
-/// as the only two `kind`s `conway-plugin-backends` ships, and the appetite
-/// ruling ("a fourth question" bar) forbids a longer menu or a free-text
-/// base-url prompt that would require also asking about a model.
+/// One of the hosted provider shapes offered when no local server answered.
+///
+/// **The admissibility rule, restated because it is easy to misread the
+/// original two-entry menu as a closed list:** a hosted choice belongs here
+/// when adding it needs **no extra question** -- a known `kind`, a known
+/// `base_url` (or none, for a `kind` with a sensible built-in default), and
+/// a known `default_model`, so the flow's own appetite (detect, offer,
+/// verify, get out of the way -- see this module's own doc) is unaffected.
+/// The appetite ruling's "a fourth question" bar forbids a longer menu ONLY
+/// in the sense of forbidding a free-text base-url prompt or a model-pinning
+/// question that a genuinely unknown provider would require -- it does not
+/// cap the menu at two. Anthropic and OpenAI were the first two entries
+/// because they were the only two `kind`s `conway-plugin-backends` shipped
+/// at the time this list was written; Ollama Cloud is a third because it
+/// is `openai-compat` (a `kind` this list already needed no new question
+/// for) with its own known `base_url` and `default_model` -- zero new
+/// questions, not a longer menu in the sense the ruling forbids.
 pub struct ProviderChoice {
     pub id: &'static str,
     pub label: &'static str,
@@ -97,6 +111,43 @@ pub const HOSTED_CHOICES: &[ProviderChoice] = &[
         base_url: Some("https://api.openai.com/v1"),
         default_model: "gpt-4o-mini",
         credential_env: "OPENAI_API_KEY",
+    },
+    ProviderChoice {
+        id: "ollama_cloud",
+        label: "Ollama Cloud",
+        kind: "openai-compat",
+        // `"ollama"`, not `"openai"` -- confirmed by the operator's own
+        // working `~/.conway/settings.json` (archived 2026-08-13, two
+        // `.bak` copies) using this exact dialect for this exact
+        // `base_url`, which settles what would otherwise be a judgment
+        // call between the two.
+        dialect: Some("ollama"),
+        // Confirmed live 2026-08-30: `GET https://ollama.com/v1/models`
+        // returns 200 with a real model roster; `/v1`, not `/api/v1`
+        // (that path is Ollama's native, non-OpenAI-compat surface).
+        // **Not stated in `docs.ollama.com`'s own prose** -- those pages
+        // document only the local `http://localhost:11434/v1` form, so a
+        // future reader re-deriving this from the docs alone will not find
+        // it there; this value is confirmed by the live server and by a
+        // config that was actually running against it, not by the docs.
+        base_url: Some("https://ollama.com/v1"),
+        // `glm-5.2`, deliberately NOT `gpt-oss:20b` despite the latter
+        // being the smaller, cheaper model in the roster. Reason: this is
+        // the model `openai_compat::wire`'s tool-call-content-type
+        // workaround (see that module's `assistant_message`, the
+        // `content: ""` vs `null` comment) was actually debugged against,
+        // and the one the operator ran in production -- `gpt-oss:20b` has
+        // never been through conway's wire layer at all. A first-run
+        // default that hits an unhandled dialect quirk on a new user's
+        // FIRST tool call is the worst possible first experience;
+        // cheapness does not compensate for that risk. **Expected to
+        // age**: `docs.ollama.com/cloud` states Ollama "will occasionally
+        // deprecate and retire older cloud models" -- this id is not
+        // expected to be permanent, and a future reader finding it gone
+        // from the roster should replace it, not treat its disappearance
+        // as a conway defect.
+        default_model: "glm-5.2",
+        credential_env: "OLLAMA_API_KEY",
     },
 ];
 
@@ -613,6 +664,36 @@ mod tests {
         );
     }
 
+    /// Acceptance 2 (env-var half), pinned against `ollama_cloud`
+    /// specifically rather than only the generic `HOSTED_CHOICES[0]` case
+    /// above: `resolve_credential_plan` is generic over every choice, but
+    /// this is the one this item actually adds, so it gets its own direct
+    /// assertion.
+    #[test]
+    fn ollama_cloud_reuses_ollama_api_key_when_already_set() {
+        let choice = HOSTED_CHOICES
+            .iter()
+            .find(|c| c.id == "ollama_cloud")
+            .expect("ollama_cloud is one of the shipped choices");
+        let env = env_with(&[("OLLAMA_API_KEY", "sk-real-value")]);
+        assert_eq!(
+            resolve_credential_plan(choice, &env),
+            CredentialPlan::ReuseEnvVar
+        );
+    }
+
+    #[test]
+    fn ollama_cloud_prompts_for_a_literal_when_ollama_api_key_is_unset() {
+        let choice = HOSTED_CHOICES
+            .iter()
+            .find(|c| c.id == "ollama_cloud")
+            .expect("ollama_cloud is one of the shipped choices");
+        assert_eq!(
+            resolve_credential_plan(choice, &HashMap::new()),
+            CredentialPlan::PromptForLiteral
+        );
+    }
+
     #[test]
     fn an_unset_env_var_prompts_for_a_literal() {
         let choice = &HOSTED_CHOICES[0];
@@ -687,12 +768,57 @@ mod tests {
         let choice = HOSTED_CHOICES
             .iter()
             .find(|c| c.id == "openai")
-            .expect("openai is one of the two shipped choices");
+            .expect("openai is one of the shipped choices");
         let json = backend_entry_json(choice, &CredentialSource::EnvVar("OPENAI_API_KEY".into()));
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(value["kind"], "openai-compat");
         assert_eq!(value["dialect"], "openai");
         assert_eq!(value["base_url"], "https://api.openai.com/v1");
+    }
+
+    /// Acceptance 1: picking Ollama Cloud writes an entry matching the
+    /// proven shape from the operator's own working `~/.conway/
+    /// settings.json` (archived 2026-08-13) -- `kind: "openai-compat"`,
+    /// `dialect: "ollama"` (NOT `"openai"` -- this is the exact judgment
+    /// call that config settles), the confirmed-live `base_url`, and the
+    /// deliberately-chosen `default_model` (`glm-5.2`, not the smaller
+    /// `gpt-oss:20b` -- see the constant's own doc for why).
+    #[test]
+    fn the_ollama_cloud_choice_carries_its_own_dialect_base_url_and_model() {
+        let choice = HOSTED_CHOICES
+            .iter()
+            .find(|c| c.id == "ollama_cloud")
+            .expect("ollama_cloud is one of the shipped choices");
+        let json = backend_entry_json(choice, &CredentialSource::EnvVar("OLLAMA_API_KEY".into()));
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(value["kind"], "openai-compat");
+        assert_eq!(value["dialect"], "ollama");
+        assert_eq!(value["base_url"], "https://ollama.com/v1");
+        assert_eq!(choice.default_model, "glm-5.2");
+        assert_eq!(choice.credential_env, "OLLAMA_API_KEY");
+    }
+
+    /// Acceptance 1, the other half: a literal-credential Ollama Cloud
+    /// entry writes `api_key`, never `api_key_env` -- the same two-shape
+    /// contract [`backend_entry_json`] gives every other hosted choice,
+    /// proven here rather than assumed from the generic tests above (which
+    /// deliberately exercise `HOSTED_CHOICES[0]`, not this new entry).
+    #[test]
+    fn the_ollama_cloud_choice_also_accepts_a_literal_credential() {
+        let choice = HOSTED_CHOICES
+            .iter()
+            .find(|c| c.id == "ollama_cloud")
+            .expect("ollama_cloud is one of the shipped choices");
+        let json = backend_entry_json(choice, &CredentialSource::Literal("sk-cloud".to_string()));
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(value["api_key"], "sk-cloud");
+        assert_eq!(value["api_key_env"], "");
+    }
+
+    #[test]
+    fn hosted_choices_offers_exactly_three_entries_anthropic_openai_ollama_cloud() {
+        let ids: Vec<&str> = HOSTED_CHOICES.iter().map(|c| c.id).collect();
+        assert_eq!(ids, vec!["anthropic", "openai", "ollama_cloud"]);
     }
 
     #[test]
