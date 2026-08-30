@@ -25,6 +25,23 @@
 //! ordinary `#[tokio::test]`s below, driving the SAME `mock_backend` mock
 //! server the one-shot suite already uses -- no terminal involved, since
 //! `verify_backend` itself never touches one.
+//!
+//! # Board item `01M1A2HKMDGNK961ZFV1EGZDQ0`: guided setup's written config
+//! # must itself route
+//!
+//! `finish_setup` is public for the same reason `verify_backend` is (see
+//! `src/first_run.rs`'s own updated module doc): it reads the terminal
+//! only on its OWN failure path, so its SUCCESS path -- the one this item's
+//! acceptance 1 needs -- never touches a pty either. The tests below call
+//! it directly (never through `run_guided_setup`, which cannot be driven
+//! here at all) and then build a SEPARATE `ConwayBuilder` from the exact
+//! file it wrote, deliberately never reusing `verify_backend`'s own
+//! throwaway in-memory config -- that reuse is precisely the gap this
+//! board item closes: guided setup's old `verify_backend` call proved a
+//! chain shaped like the right one worked while the file left on disk had
+//! no `default_role`/`roles` override at all and could not route
+//! (`RoutingError::NoCandidate`, "no candidate for role default (0
+//! considered)" -- the operator's own report).
 
 mod common;
 
@@ -342,4 +359,200 @@ fn first_run_an_undetermined_fleet_never_opens_the_guided_setup_flow() {
          probe must not ambush an operator whose second provider merely hasn't answered yet; \
          got stderr: {stderr}"
     );
+}
+
+// ---------------------------------------------------------------------
+// `finish_setup` (board item `01M1A2HKMDGNK961ZFV1EGZDQ0`): the written
+// file itself must route -- see this file's own module doc for why a
+// `verify_backend` call alone does not establish this.
+// ---------------------------------------------------------------------
+
+/// Builds a `Conway` from `path` ALONE and completes one real turn,
+/// returning the real `ResultStatus`. This is a deliberately DIFFERENT
+/// construction path than `verify_backend`'s own (private)
+/// `run_one_verify_turn`: the whole point of these tests is that this
+/// path, built from public API only, proves the FILE routes -- not that
+/// some in-memory config shaped like it would.
+///
+/// **`ConwayBuilder::from_options_ignoring_user_config` with hand-built
+/// `LoadOptions`, not the simpler `from_config_only`** -- matching
+/// `common::mod.rs::open_conway`'s own established precedent, for the
+/// exact reason that function's doc gives: `from_config_only` always
+/// builds `LoadOptions` via `LoadOptions::default()`, whose `cwd`/`env` are
+/// this TEST PROCESS's real, ambient values, not `dir`'s. That is
+/// harmless for the two keys this test actually reads (`backends`,
+/// `default_role`/`roles`), but `[session].root`'s own central-default
+/// resolution happens INSIDE `config::load_ignoring_user_config` itself,
+/// using `LoadOptions.cwd`/`.env` directly -- with the real ambient values,
+/// a session this turn creates would land under THIS DEVELOPER'S real
+/// `~/.conway/sessions`, not `dir`. Passing `cwd: dir` and
+/// `CONWAY_CONFIG_DIR` pointing at `dir` keeps every file this turn writes
+/// inside the fixture, matching every other isolated fixture in this
+/// workspace.
+async fn complete_a_turn_from_the_file_at(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+) -> conway::ResultStatus {
+    let mut env = std::collections::HashMap::new();
+    env.insert(
+        "CONWAY_CONFIG_DIR".to_string(),
+        dir.to_string_lossy().into_owned(),
+    );
+    let options = conway::config::LoadOptions {
+        cwd: dir.to_path_buf(),
+        explicit_path: Some(path.to_path_buf()),
+        env,
+        cli_overrides: Default::default(),
+        model_metadata_refresh: false,
+    };
+    let conway = conway::ConwayBuilder::from_options_ignoring_user_config(options)
+        .expect("the file finish_setup wrote must itself load")
+        .with_backend_factory(std::sync::Arc::new(
+            conway_plugin_backends::AnthropicBackendFactory,
+        ))
+        .with_backend_factory(std::sync::Arc::new(
+            conway_plugin_backends::OpenAiCompatBackendFactory,
+        ))
+        .with_permission_gate(std::sync::Arc::new(conway::gates::DenyAllGate))
+        .build()
+        .expect("build must succeed against the file finish_setup wrote");
+    let handle = conway
+        .new_session(conway::SessionSpec::default())
+        .await
+        .expect("new_session must succeed against the file finish_setup wrote");
+    let turn = handle
+        .prompt("Reply with exactly one word: ok")
+        .await
+        .expect("prompt must succeed");
+    turn.result()
+        .await
+        .expect("result must resolve")
+        .status
+}
+
+/// **The load-bearing test for this whole board item.** Before this fix,
+/// `finish_setup` wrote only `backends.mock` -- no `default_role`/`roles`
+/// override -- so the file it left behind fell through to
+/// `conway::config::merge`'s baked-in empty-chain floor and
+/// `complete_a_turn_from_the_file_at` below failed with
+/// `RoutingError::NoCandidate` ("no candidate for role default (0
+/// considered)"), the operator's own reported error, even though
+/// `finish_setup`'s own `verify_backend` call had just proven a working
+/// chain shaped exactly like the one that needed to be written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finish_setup_writes_a_config_that_routes_from_the_file_alone() {
+    let mock = MockBackend::start(ok_script()).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    let entry_json = openai_compat_entry_json(&mock.base_url, "any-key");
+
+    let mut chain: Vec<String> = Vec::new();
+    let outcome =
+        first_run::finish_setup(&path, "mock", &entry_json, &mock.model, &mut chain).await;
+
+    assert_eq!(
+        outcome,
+        first_run::GuidedSetupOutcome::Configured,
+        "finish_setup must report success against a working mock provider"
+    );
+    assert_eq!(chain, vec![first_run::chain_entry("mock", &mock.model)]);
+
+    let text = std::fs::read_to_string(&path).expect("finish_setup must have written the file");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+    assert_eq!(value["default_role"], "default", "{text}");
+    assert_eq!(
+        value["roles"]["default"]["chain"],
+        serde_json::json!([format!("mock/{}", mock.model)]),
+        "{text}"
+    );
+
+    let status = complete_a_turn_from_the_file_at(dir.path(), &path).await;
+    assert_eq!(
+        status,
+        conway::ResultStatus::Completed,
+        "the written file itself must route and complete a turn: {status:?}"
+    );
+}
+
+/// Acceptance 4 (declining the "add another?" loop leaves a working
+/// single-provider config): a single `finish_setup` call IS exactly the
+/// state a run that declines after its first success ends in -- the file
+/// asserted here is the same file `run_guided_setup` would leave behind on
+/// that path, since `run_guided_setup` never mutates the file itself
+/// (`finish_setup`/`persist_chain` are the only writers). Distinct from the
+/// test above in what it asserts: this one is scoped to "one provider,
+/// declined immediately after," proven independently of the two-provider
+/// case below.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finish_setup_alone_leaves_a_working_single_provider_config() {
+    let mock = MockBackend::start(ok_script()).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    let entry_json = openai_compat_entry_json(&mock.base_url, "any-key");
+
+    let mut chain: Vec<String> = Vec::new();
+    let outcome =
+        first_run::finish_setup(&path, "solo", &entry_json, &mock.model, &mut chain).await;
+    assert_eq!(outcome, first_run::GuidedSetupOutcome::Configured);
+    assert_eq!(chain.len(), 1, "declining after one success adds no second entry");
+
+    let status = complete_a_turn_from_the_file_at(dir.path(), &path).await;
+    assert_eq!(status, conway::ResultStatus::Completed, "{status:?}");
+}
+
+/// Acceptance 3: two providers configured in one run (two `finish_setup`
+/// calls sharing ONE accumulator, exactly `run_guided_setup`'s own shape)
+/// write BOTH backends and a chain naming both, in the order they were
+/// added.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finish_setup_called_twice_writes_both_backends_and_a_chain_naming_both_in_order() {
+    let mock_first = MockBackend::start(ok_script()).await;
+    let mock_second = MockBackend::start(ok_script()).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+
+    let mut chain: Vec<String> = Vec::new();
+
+    let entry_first = openai_compat_entry_json(&mock_first.base_url, "any-key");
+    let outcome_first =
+        first_run::finish_setup(&path, "first", &entry_first, &mock_first.model, &mut chain).await;
+    assert_eq!(outcome_first, first_run::GuidedSetupOutcome::Configured);
+
+    let entry_second = openai_compat_entry_json(&mock_second.base_url, "any-key");
+    let outcome_second = first_run::finish_setup(
+        &path,
+        "second",
+        &entry_second,
+        &mock_second.model,
+        &mut chain,
+    )
+    .await;
+    assert_eq!(outcome_second, first_run::GuidedSetupOutcome::Configured);
+
+    assert_eq!(
+        chain,
+        vec![
+            first_run::chain_entry("first", &mock_first.model),
+            first_run::chain_entry("second", &mock_second.model),
+        ],
+        "order added must equal chain order"
+    );
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(value["backends"]["first"].is_object(), "{text}");
+    assert!(value["backends"]["second"].is_object(), "{text}");
+    assert_eq!(
+        value["roles"]["default"]["chain"],
+        serde_json::json!([
+            format!("first/{}", mock_first.model),
+            format!("second/{}", mock_second.model),
+        ]),
+        "{text}"
+    );
+
+    // Both providers actually usable from the file alone -- not just the
+    // JSON shape.
+    let status = complete_a_turn_from_the_file_at(dir.path(), &path).await;
+    assert_eq!(status, conway::ResultStatus::Completed, "{status:?}");
 }

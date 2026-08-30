@@ -408,6 +408,31 @@ fn resolve_metadata_path(config: &ConwayConfig, cwd: &std::path::Path) -> PathBu
 /// the hard way: `/settings`' "default role" cycle list read
 /// [`merged_document`]'s `roles` map directly and offered this floor
 /// alongside every real, operator-declared role.
+///
+/// **What this floor is for, restated after board item
+/// `01M1A2HKMDGNK961ZFV1EGZDQ0`, which found guided setup relying on it by
+/// accident:** `conway-cli::first_run::finish_setup` used to write only
+/// `backends.<id>` and never touched `default_role`/`roles` at all, so
+/// every guided run landed on THIS empty floor and failed loud with
+/// "no candidate for role default (0 considered)" the moment a real turn
+/// was attempted -- guided setup's own verification passed (it builds an
+/// independent, in-memory config with a real chain) while the file it left
+/// behind could never route. That was never this floor's job and is fixed
+/// at the writer (`conway::config::writer::set_role_chain`/
+/// `ensure_default_role`), not here: this floor exists ONLY so that a
+/// document with genuinely nothing configured -- an embedding caller that
+/// builds a bare `ConwayConfig`, a non-interactive run that declines
+/// guided setup, or a fresh checkout before guided setup has ever run --
+/// still VALIDATES (passes the "`default_role` exists in `[roles]`"
+/// check) instead of failing to even start. Once guided setup (or an
+/// operator by hand) writes a real `roles.default.chain`, this floor's own
+/// entry is masked by the overlay (`merge_values`, below) and never
+/// consulted again for that document -- nothing in this crate reads this
+/// floor's *content* as a fallback for a real chain that is merely short
+/// or exhausted. Continuing to rely on this floor for "the document
+/// parses at all" is still correct and still needed; relying on it for
+/// "the document routes anywhere" -- guided setup's old, accidental use --
+/// is the defect that board item fixed.
 const BASELINE_ROLE_NAME: &str = "default";
 
 fn default_document() -> Value {

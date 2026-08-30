@@ -1344,6 +1344,250 @@ fn patch_default_role(text: &str, role: &str) -> std::result::Result<Option<Stri
     )))
 }
 
+/// Sets the top-level `default_role` scalar, INVENTING the key when it is
+/// entirely absent -- the one property [`set_default_role`] deliberately
+/// refuses (see that function's own doc for why the TUI's "cycle default
+/// role" caller may assume the key already exists). This is that
+/// assumption's *producer*: board item `01M1A2HKMDGNK961ZFV1EGZDQ0` found
+/// guided setup (`conway-cli::first_run::finish_setup`) writing only
+/// `backends.<id>` and leaving `default_role` to fall through to
+/// [`crate::config::merge`]'s baked-in floor (an empty-chain `"default"`
+/// role -- see that module's own doc), which validates but routes
+/// nowhere. Guided setup is exactly the caller that may be writing the
+/// VERY FIRST `settings.json` an operator ever has, so it cannot rely on
+/// [`set_default_role`]'s "already has one" precondition -- it is the
+/// thing that has to make that precondition true.
+///
+/// Returns `Ok(true)` if a write happened (inserted OR changed), `Ok(false)`
+/// if `role` already matched. A missing FILE is still refused, matching
+/// [`set_default_role`]'s own posture -- this writer invents a missing
+/// *key*, never a missing *document* (callers needing a fresh document,
+/// e.g. `first_run::finish_setup`, call [`set_backend_provider`] first,
+/// which does create one).
+pub fn ensure_default_role(path: &Path, role: &str) -> Result<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(FacadeError::Config {
+                path: Some(path.to_path_buf()),
+                message: format!(
+                    "{} does not exist; write a backend provider first \
+                     (`set_backend_provider`), which creates the file",
+                    path.display()
+                ),
+            });
+        }
+        Err(e) => return Err(FacadeError::Io(e)),
+    };
+    if let Err(e) = serde_json::from_str::<serde_json::Value>(&text) {
+        return Err(FacadeError::Config {
+            path: Some(path.to_path_buf()),
+            message: format!(
+                "{} is not valid JSON, refusing to rewrite it blindly: {e}",
+                path.display()
+            ),
+        });
+    }
+    match patch_or_insert_default_role(&text, role) {
+        Ok(Some(patched)) => {
+            write_atomically(path, &patched)?;
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(msg) => Err(FacadeError::Config {
+            path: Some(path.to_path_buf()),
+            message: format!("{}: {msg}", path.display()),
+        }),
+    }
+}
+
+/// [`patch_default_role`], except a missing `"default_role"` member is
+/// INSERTED (via [`insert_member`], the same primitive [`set_backend_provider`]
+/// uses for a missing `backends` member) rather than refused.
+fn patch_or_insert_default_role(
+    text: &str,
+    role: &str,
+) -> std::result::Result<Option<String>, String> {
+    let bytes = text.as_bytes();
+    let root_open = skip_ws(bytes, 0);
+    if bytes.get(root_open) != Some(&b'{') {
+        return Err("the top-level JSON value must be an object".to_string());
+    }
+    let (root_members, root_close) = scan_object_members(text, root_open)?;
+
+    // LAST match, not first -- same last-wins reasoning as
+    // `patch_default_role`'s own doc.
+    match root_members.iter().rev().find(|m| m.key == "default_role") {
+        Some(member) => {
+            let current_raw = &text[member.value_start..member.value_end];
+            let new_raw = json_string_literal(role);
+            if current_raw == new_raw {
+                Ok(None)
+            } else {
+                Ok(Some(format!(
+                    "{}{}{}",
+                    &text[..member.value_start],
+                    new_raw,
+                    &text[member.value_end..]
+                )))
+            }
+        }
+        None => Ok(Some(insert_member(
+            text,
+            root_open,
+            &root_members,
+            root_close,
+            "default_role",
+            &json_string_literal(role),
+        ))),
+    }
+}
+
+/// Sets `roles.<role>.chain` to `chain` (`"backend/model"` strings, in
+/// order), creating the top-level `roles` object, the `roles.<role>`
+/// object, and the `chain` member itself when any is missing -- the
+/// writer half of board item `01M1A2HKMDGNK961ZFV1EGZDQ0`'s fix: the shape
+/// [`conway_cli::first_run::verify_backend`] (a sibling crate, named here
+/// only in prose) already builds in memory for its own throwaway
+/// verification config is the shape this function persists for real, built
+/// from the SAME `"id/model"` formatting
+/// (`conway_cli::first_run::chain_entry`) so the two can never drift --
+/// one shared construction rather than two that could silently diverge --
+/// this function only ever receives the already-formatted strings, never
+/// reformats an id/model pair itself.
+///
+/// Three levels deep (`roles` -> `<role>` -> `chain`), unlike every sibling
+/// writer in this module (`backends.<id>` is two levels): each level is
+/// patched independently, re-scanning the document from scratch (its own
+/// text may have just changed at the level above) rather than composing
+/// byte offsets across levels, which is the simplest correct way to chain
+/// two variable-depth inserts without a stale-offset hazard.
+///
+/// Returns `Ok(true)` if a write happened, `Ok(false)` if `chain` already
+/// matched the current value. A missing FILE is refused (this writer never
+/// invents a document, same posture as [`ensure_default_role`]); a document
+/// that is not valid JSON is refused, never blindly rewritten.
+pub fn set_role_chain(path: &Path, role: &str, chain: &[String]) -> Result<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(FacadeError::Config {
+                path: Some(path.to_path_buf()),
+                message: format!(
+                    "{} does not exist; write a backend provider first \
+                     (`set_backend_provider`), which creates the file",
+                    path.display()
+                ),
+            });
+        }
+        Err(e) => return Err(FacadeError::Io(e)),
+    };
+    if let Err(e) = serde_json::from_str::<serde_json::Value>(&text) {
+        return Err(FacadeError::Config {
+            path: Some(path.to_path_buf()),
+            message: format!(
+                "{} is not valid JSON, refusing to rewrite it blindly: {e}",
+                path.display()
+            ),
+        });
+    }
+    let chain_json =
+        serde_json::to_string(chain).expect("&[String] always serializes to a JSON array");
+
+    match patch_role_chain(&text, role, &chain_json) {
+        Ok(Some(patched)) => {
+            write_atomically(path, &patched)?;
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(msg) => Err(FacadeError::Config {
+            path: Some(path.to_path_buf()),
+            message: format!("{}: {msg}", path.display()),
+        }),
+    }
+}
+
+/// The three-level insert-or-patch [`set_role_chain`] itself is a thin
+/// wrapper over: locates (inserting if absent) `roles`, then `roles.<role>`,
+/// then `roles.<role>.chain`, replacing only `chain`'s own value span in
+/// the innermost case, exactly like [`patch_default_role`]'s single-level
+/// version of the same idea.
+fn patch_role_chain(
+    text: &str,
+    role: &str,
+    chain_json: &str,
+) -> std::result::Result<Option<String>, String> {
+    let bytes = text.as_bytes();
+    let root_open = skip_ws(bytes, 0);
+    if bytes.get(root_open) != Some(&b'{') {
+        return Err("the top-level JSON value must be an object".to_string());
+    }
+    let (root_members, root_close) = scan_object_members(text, root_open)?;
+
+    let Some(roles_member) = root_members.iter().rev().find(|m| m.key == "roles") else {
+        let value = format!(
+            "{{{}: {{\"chain\": {}}}}}",
+            json_string_literal(role),
+            chain_json
+        );
+        return Ok(Some(insert_member(
+            text,
+            root_open,
+            &root_members,
+            root_close,
+            "roles",
+            &value,
+        )));
+    };
+
+    if bytes.get(roles_member.value_start) != Some(&b'{') {
+        return Err("\"roles\" must be a JSON object".to_string());
+    }
+    let (role_members, roles_close) = scan_object_members(text, roles_member.value_start)?;
+
+    let Some(role_member) = role_members.iter().rev().find(|m| member_key_matches(m, role))
+    else {
+        let value = format!("{{\"chain\": {chain_json}}}");
+        return Ok(Some(insert_member(
+            text,
+            roles_member.value_start,
+            &role_members,
+            roles_close,
+            role,
+            &value,
+        )));
+    };
+
+    if bytes.get(role_member.value_start) != Some(&b'{') {
+        return Err(format!("\"roles.{role}\" must be a JSON object"));
+    }
+    let (chain_members, role_close) = scan_object_members(text, role_member.value_start)?;
+
+    match chain_members.iter().rev().find(|m| m.key == "chain") {
+        Some(member) => {
+            let current_raw = &text[member.value_start..member.value_end];
+            if current_raw == chain_json {
+                Ok(None)
+            } else {
+                Ok(Some(format!(
+                    "{}{}{}",
+                    &text[..member.value_start],
+                    chain_json,
+                    &text[member.value_end..]
+                )))
+            }
+        }
+        None => Ok(Some(insert_member(
+            text,
+            role_member.value_start,
+            &chain_members,
+            role_close,
+            "chain",
+            chain_json,
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2769,5 +3013,251 @@ mod tests {
         assert!(pos("\"//\"") < pos("\"zebra_first_key\""));
         assert!(pos("\"zebra_first_key\"") < pos("\"default_role\""));
         assert!(pos("\"default_role\"") < pos("\"backends\""));
+    }
+
+    // -----------------------------------------------------------------
+    // `ensure_default_role` / `set_role_chain` (board item
+    // `01M1A2HKMDGNK961ZFV1EGZDQ0`): guided setup's own two missing
+    // writes, restored -- see each function's own doc for why
+    // `set_default_role` alone cannot fill this gap.
+    // -----------------------------------------------------------------
+
+    /// The exact document `set_backend_provider` leaves behind for a FIRST
+    /// provider on a brand-new file -- `backends` only, no `default_role`,
+    /// no `roles` at all. This is the shape that made guided setup produce
+    /// "no candidate for role default (0 considered)": nothing in this
+    /// document overrides the merge floor's empty `roles.default.chain`.
+    fn fresh_guided_setup_document() -> &'static str {
+        "{\n  \"backends\": {\n    \"local\": {\"kind\": \"openai-compat\", \"dialect\": \"ollama\", \"base_url\": \"http://127.0.0.1:11434/v1\", \"local\": true}\n  }\n}\n"
+    }
+
+    #[test]
+    fn ensure_default_role_inserts_the_key_when_entirely_missing() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, fresh_guided_setup_document()).unwrap();
+
+        let wrote = ensure_default_role(&path, "default").expect("write");
+        assert!(wrote);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).expect("still valid json");
+        assert_eq!(value["default_role"], "default", "{text}");
+        // The `backends` map guided setup already wrote must be untouched.
+        assert!(value["backends"]["local"]["dialect"] == "ollama");
+    }
+
+    #[test]
+    fn ensure_default_role_overwrites_an_existing_different_value() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"default_role": "coder"}"#).unwrap();
+
+        let wrote = ensure_default_role(&path, "reviewer").expect("write");
+        assert!(wrote);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["default_role"], "reviewer");
+    }
+
+    #[test]
+    fn ensure_default_role_is_a_no_op_when_the_value_already_matches() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"default_role": "default"}"#).unwrap();
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        let wrote = ensure_default_role(&path, "default").expect("no-op");
+        assert!(!wrote);
+
+        let after = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn ensure_default_role_refuses_a_missing_file() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        assert!(!path.exists());
+
+        let err = ensure_default_role(&path, "default")
+            .expect_err("a missing file must be refused, not silently created");
+        assert!(!path.exists());
+        let _ = err;
+    }
+
+    #[test]
+    fn ensure_default_role_refuses_invalid_json() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        let err = ensure_default_role(&path, "default")
+            .expect_err("invalid JSON must be refused, not blindly rewritten");
+        assert!(err.to_string().contains("not valid JSON"), "{err}");
+    }
+
+    #[test]
+    fn ensure_default_role_preserves_comments_and_unrelated_sections_byte_for_byte() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, hand_edited_fixture()).unwrap();
+
+        let wrote = ensure_default_role(&path, "reviewer").expect("write");
+        assert!(wrote);
+
+        let new_text = std::fs::read_to_string(&path).unwrap();
+        assert!(new_text
+            .contains("\"//\": \"operator note: do not touch the backends section by hand\""));
+        assert!(new_text
+            .contains("\"anthropic\": { \"kind\": \"anthropic\", \"api_key\": \"sk-unused\" }"));
+    }
+
+    /// The load-bearing test for this whole board item's writer half: the
+    /// EXACT document `set_backend_provider` leaves after a first,
+    /// brand-new provider -- `roles` is entirely absent -- ends up with a
+    /// `roles.default.chain` naming it, built from nothing.
+    #[test]
+    fn set_role_chain_creates_roles_and_role_and_chain_from_a_backends_only_document() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, fresh_guided_setup_document()).unwrap();
+
+        let wrote = set_role_chain(&path, "default", &["local/qwen3:4b".to_string()])
+            .expect("write");
+        assert!(wrote);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).expect("still valid json");
+        assert_eq!(
+            value["roles"]["default"]["chain"],
+            serde_json::json!(["local/qwen3:4b"])
+        );
+        // `backends` must be untouched.
+        assert_eq!(value["backends"]["local"]["dialect"], "ollama");
+    }
+
+    /// ACCEPTANCE 3 (two providers in one run -> a chain naming both, in
+    /// order): a second call with the accumulated chain (the shape
+    /// `first_run::run_guided_setup`'s own accumulator produces) OVERWRITES
+    /// the one-entry chain the first call wrote with a two-entry chain in
+    /// the same order they were added -- never appends blindly, since the
+    /// caller always passes the full accumulated chain.
+    #[test]
+    fn set_role_chain_replaces_the_whole_chain_preserving_the_order_two_providers_were_added_in() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, fresh_guided_setup_document()).unwrap();
+
+        assert!(set_role_chain(&path, "default", &["local/qwen3:8b".to_string()]).expect("write"));
+        assert!(set_role_chain(
+            &path,
+            "default",
+            &["local/qwen3:8b".to_string(), "ollama_cloud/glm-5.2".to_string()],
+        )
+        .expect("write"));
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value["roles"]["default"]["chain"],
+            serde_json::json!(["local/qwen3:8b", "ollama_cloud/glm-5.2"]),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn set_role_chain_is_a_no_op_when_the_chain_already_matches() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, fresh_guided_setup_document()).unwrap();
+        assert!(set_role_chain(&path, "default", &["local/qwen3:4b".to_string()]).expect("write"));
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        let wrote =
+            set_role_chain(&path, "default", &["local/qwen3:4b".to_string()]).expect("no-op");
+        assert!(!wrote);
+
+        let after = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(before, after);
+    }
+
+    /// A role that already exists with OTHER fields set (e.g. a
+    /// hand-written `headroom_tokens`) keeps them -- this writer patches
+    /// `chain` alone, never reserializes the whole role entry.
+    #[test]
+    fn set_role_chain_preserves_other_fields_already_set_on_the_role() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"backends": {}, "roles": {"default": {"chain": [], "headroom_tokens": 4096}}}"#,
+        )
+        .unwrap();
+
+        assert!(set_role_chain(&path, "default", &["local/qwen3:4b".to_string()]).expect("write"));
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["roles"]["default"]["headroom_tokens"], 4096);
+        assert_eq!(
+            value["roles"]["default"]["chain"],
+            serde_json::json!(["local/qwen3:4b"])
+        );
+    }
+
+    #[test]
+    fn set_role_chain_refuses_a_missing_file() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        assert!(!path.exists());
+
+        let err = set_role_chain(&path, "default", &["local/qwen3:4b".to_string()])
+            .expect_err("a missing file must be refused, not silently created");
+        assert!(!path.exists());
+        let _ = err;
+    }
+
+    #[test]
+    fn set_role_chain_refuses_invalid_json() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        let err = set_role_chain(&path, "default", &["local/qwen3:4b".to_string()])
+            .expect_err("invalid JSON must be refused, not blindly rewritten");
+        assert!(err.to_string().contains("not valid JSON"), "{err}");
+    }
+
+    /// Acceptance 7's own "hand-edited files survive byte-for-byte" bar,
+    /// applied to the fifth/sixth writer: a document with no `roles`
+    /// section at all gains one without disturbing a comment key, an
+    /// unrelated top-level scalar, or the existing `backends`/`plugins`
+    /// sections.
+    #[test]
+    fn set_role_chain_preserves_comments_and_unrelated_sections_byte_for_byte() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, hand_edited_fixture()).unwrap();
+
+        let wrote =
+            set_role_chain(&path, "coder", &["anthropic/claude-sonnet-4-6".to_string()])
+                .expect("write");
+        assert!(wrote);
+
+        let new_text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&new_text).expect("still valid json");
+        assert_eq!(
+            value["roles"]["coder"]["chain"],
+            serde_json::json!(["anthropic/claude-sonnet-4-6"])
+        );
+        assert!(new_text
+            .contains("\"//\": \"operator note: do not touch the backends section by hand\""));
+        assert!(new_text.contains("\"zebra_first_key\": \"kept exactly as-is\""));
+        assert!(new_text.contains("\"apple_last_key\": 42"));
+        assert!(new_text
+            .contains("\"anthropic\": { \"kind\": \"anthropic\", \"api_key\": \"sk-unused\" }"));
+        assert!(new_text.contains("\"_comment_plugins\": \"toggle plugins here\""));
     }
 }

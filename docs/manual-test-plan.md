@@ -79,9 +79,14 @@ project directory that has never seen conway.
 | Step | Do | Pass | Fail |
 | --- | --- | --- | --- |
 | 1.1 | Run `conway` with no config anywhere | The guided first-run setup appears | It errors, or drops to a prompt with no backend and no explanation |
-| 1.2 | Read what it offers before choosing | Exactly three hosted choices — **Anthropic**, **OpenAI**, and **Ollama Cloud** — plus a local-server probe | A fourth option appears, one of the three is missing, or the list is empty |
-| 1.3 | Watch the local probe | It reports looking for Ollama on `127.0.0.1:11434` | It scans something else, or hangs |
-| 1.4 | Decline setup (`Esc`) | The app stays open and usable rather than exiting | It exits, or leaves a half-written config |
+| 1.2 | Watch the local probe, which runs FIRST, before any hosted menu | It reports looking for Ollama on `127.0.0.1:11434` | It scans something else, or hangs |
+| 1.3 | If Ollama answers, read the offer | It names the model it found and offers `Enter` to use it, any other key to see hosted providers instead, or `Esc` to skip setup entirely | The wording says "any other key" without distinguishing `Esc`, or `Esc` browses instead of skipping |
+| 1.4 | If Ollama does **not** answer (stop it first if it's running, to reach this path), read the hosted menu | Exactly three choices — **Anthropic**, **OpenAI**, and **Ollama Cloud** | A fourth option appears, one of the three is missing, or the list is empty |
+| 1.5 | Configure one provider (either path above) | It saves, verifies with a real request ("it works"), then asks `Add another provider? [y/N]` | No follow-up prompt appears at all, or it asks before verifying |
+| 1.6 | Decline the follow-up (anything but `y`/`Y`) | You land straight in a working session with the ONE provider just configured | It declines the whole run, discarding the provider that just succeeded |
+| 1.7 | Answer `y` instead and configure a second, different provider | Both backends are saved, and the default role's chain names both, in the order you added them | Only the second provider is reachable, or the first is silently dropped |
+| 1.8 | With one or two providers configured this way, send a real prompt | It completes normally | `routing error: no candidate for role default (0 considered)` — the exact defect board item `01M1A2HKMDGNK961ZFV1EGZDQ0` fixed: guided setup used to save `backends.<id>` but never `default_role`/`roles`, so the file it left behind could not route even though its own verification step had just proven a working chain |
+| 1.9 | Decline setup instead, at the very first opportunity (`Esc`) | The app stays open and usable rather than exiting | It exits, or leaves a half-written config |
 
 > **Closed 2026-08-30, board item `01M19XZPZD5CKRB83JJS42E8JN`:** `HOSTED_CHOICES`
 > now has three entries and Ollama Cloud is one of them (`dialect: "ollama"`,
@@ -89,6 +94,16 @@ project directory that has never seen conway.
 > is a guided path now — if the wizard does not offer it, or picking it does not
 > reach a working entry, that is a **regression**, not the expected gap this
 > note used to describe.
+>
+> **Closed 2026-08-30, board item `01M1A2HKMDGNK961ZFV1EGZDQ0`:** this Part's
+> rows used to describe the hosted menu as always shown alongside the local
+> probe ("three hosted choices ... plus a local-server probe"), which was never
+> accurate — a **successful** local probe short-circuits the hosted menu
+> entirely (`run_guided_setup`'s own structure: the hosted `loop` is only
+> reached when the local branch does not `return`). The same fix also added
+> the "add another?" follow-up (rows 1.5–1.7) and closed the gap where a
+> completed guided run produced a config that could not route at all (row
+> 1.8) — if 1.8 fails, that is the regression this whole item exists to catch.
 
 ---
 
