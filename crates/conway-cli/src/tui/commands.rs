@@ -1999,10 +1999,7 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                         }
                     })
                     .collect();
-                notice(
-                    state,
-                    format!("configured models:\n{}", lines.join("\n")),
-                );
+                notice(state, format!("configured models:\n{}", lines.join("\n")));
             }
             Effect::None
         }
@@ -2933,10 +2930,7 @@ mod tests {
     /// rather than an error.
     #[test]
     fn model_with_no_argument_parses_as_a_bare_listing_request() {
-        assert_eq!(
-            parse("/model"),
-            Ok(SlashCommand::Model { model: None })
-        );
+        assert_eq!(parse("/model"), Ok(SlashCommand::Model { model: None }));
         // Bare whitespace after the command name is the same as none at all.
         assert_eq!(parse("/model   "), Ok(SlashCommand::Model { model: None }));
     }
@@ -5792,7 +5786,10 @@ mod tests {
         let effect = execute(SlashCommand::Model { model: None }, &mut state, &host).await;
 
         assert!(matches!(effect, Effect::None));
-        assert!(host.calls().is_empty(), "opening the menu makes no facade call yet");
+        assert!(
+            host.calls().is_empty(),
+            "opening the menu makes no facade call yet"
+        );
         assert!(
             state.model_picker_active,
             "the picker flag must be set so answering it runs the switch"
@@ -5833,7 +5830,10 @@ mod tests {
 
         assert!(
             matches!(effect, Effect::FocusNewSession { .. }),
-            "a pair straight from the listing must be accepted, got {effect:?}"
+            "a pair straight from the listing ({pair}) must be accepted verbatim \
+             by `/model <arg>` -- the round trip that makes the bare listing \
+             useful. `Effect` deliberately carries no `Debug` (it holds a live \
+             `SessionHandle`), so this reports the input, not the effect."
         );
     }
 

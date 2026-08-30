@@ -729,14 +729,23 @@ mod tests {
             "the operator's own comment must survive: {text}"
         );
         assert!(text.contains("\"default_role\": \"coder\""), "{text}");
-        // Everything outside the spliced `backends` table is BYTE-FOR-BYTE
-        // the original -- the writer's own "targeted splice, never a
+        // The operator's own bytes survive VERBATIM and in their original
+        // relative order -- the writer's "targeted splice, never a
         // reserialize" contract (`config::writer`'s own module doc).
-        let backends_start = text.find("\"backends\"").expect("backends member inserted");
-        let before_backends = &text[..text.find(",\n  \"backends\"").unwrap_or(backends_start)];
+        //
+        // Asserted on the operator's own content directly, not on a
+        // positional prefix. The previous form computed the slice before
+        // the inserted `backends` member and checked it was a prefix of
+        // the original -- but both writers splice a new top-level member
+        // at the FRONT, so that slice was only ever `"{\n  "`, which is a
+        // prefix of anything. It could not have failed for the reason it
+        // claimed. Adding a second front-inserted member (`roles`, from
+        // this item's chain wiring) is what exposed that.
+        let operator_bytes = "\"//\": \"an operator comment\",\n  \"default_role\": \"coder\"";
         assert!(
-            original.trim_end().starts_with(before_backends.trim_end()),
-            "everything before the inserted `backends` member must be untouched: {text}"
+            text.contains(operator_bytes),
+            "the operator's own two members must survive contiguously, verbatim, and in \
+             their original order -- a reserialize would reorder or reformat them: {text}"
         );
     }
 
