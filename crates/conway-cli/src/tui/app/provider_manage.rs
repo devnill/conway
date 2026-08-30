@@ -865,11 +865,9 @@ mod tests {
             app.state.transcript
         );
         assert!(
-            !app
-                .state
-                .transcript
-                .iter()
-                .any(|e| matches!(e, Entry::Error { text, .. } if text.contains("update those roles"))),
+            !app.state.transcript.iter().any(
+                |e| matches!(e, Entry::Error { text, .. } if text.contains("update those roles"))
+            ),
             "the refusal must not name an action the operator has no UI for: {:?}",
             app.state.transcript
         );
@@ -913,7 +911,10 @@ mod tests {
             "kimi must actually be removed, since coder still routes via anthropic: {text}"
         );
         assert!(
-            !app.state.transcript.iter().any(|e| matches!(e, Entry::Error { .. })),
+            !app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Error { .. })),
             "a successful removal must not also carry a refusal: {:?}",
             app.state.transcript
         );

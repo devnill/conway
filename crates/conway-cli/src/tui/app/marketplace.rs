@@ -282,6 +282,17 @@ impl App {
             // `apply_marketplace_install` never reaches this call with one
             // -- named explicitly so this match stays exhaustive rather
             // than silently defaulting if `PluginSource` grows a variant.
+            // Added when `PluginSource` grew `RelativePath` (board item
+            // `01M1A9J9C9YRH3YPTGD335HZPZ`): a marketplace whose entry points
+            // at its own repository, which is the commonest Claude Code shape.
+            // The comment above is what made this a compile error rather than a
+            // silent default -- it worked.
+            Some(PluginSource::RelativePath { path }) => {
+                format!(
+                    "fetched via git from the marketplace's own repository \
+                     (relative path '{path}')"
+                )
+            }
             Some(PluginSource::Unsupported { kind }) => {
                 format!("(unexpected: an unsupported source kind '{kind}' was installed)")
             }

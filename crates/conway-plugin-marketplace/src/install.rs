@@ -243,14 +243,8 @@ pub async fn install_entry(
     let _ = std::fs::remove_dir_all(&staging_dir);
 
     let stage_result = if let Some(source) = &entry.source {
-        crate::git_source::fetch_git_source(
-            &id,
-            marketplace_url,
-            source,
-            store_root,
-            &staging_dir,
-        )
-        .await
+        crate::git_source::fetch_git_source(&id, marketplace_url, source, store_root, &staging_dir)
+            .await
     } else {
         match client().map_err(|source| MarketplaceError::Network {
             url: marketplace_url.to_string(),
@@ -842,8 +836,7 @@ exit 1
     /// wrong URL happened to also succeed" silently passing.
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_relative_source_from_the_real_ideate_fixture_installs_via_the_resolved_repository()
-    {
+    async fn a_relative_source_from_the_real_ideate_fixture_installs_via_the_resolved_repository() {
         const REAL_IDEATE_MANIFEST: &str =
             include_str!("../tests/fixtures/ideate-marketplace.json");
 
@@ -873,7 +866,10 @@ exit 1
         .expect("install via stub git, resolved through the real fixture's own relative source");
 
         assert_eq!(installed.id, "ideate");
-        assert!(installed.dir.join("plugin/.claude-plugin/plugin.json").is_file());
+        assert!(installed
+            .dir
+            .join("plugin/.claude-plugin/plugin.json")
+            .is_file());
 
         let argv = std::fs::read_to_string(&captured_argv).expect("stub git recorded its own argv");
         assert!(

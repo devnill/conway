@@ -216,19 +216,33 @@ async fn ask_question_is_not_reachable_when_conway_ui_is_absent_from_plugins_ins
     assert_eq!(
         requests.len(),
         2,
-        "expected the initial (toolless, streamed) attempt plus AttemptEngine's own \
-         one-shot non-streaming ToolParse retry, got: {requests:#?}"
+        "expected the initial streamed attempt plus AttemptEngine's own one-shot \
+         non-streaming ToolParse retry, got: {requests:#?}"
     );
+    // `[plugins].install` is NOT the only source of tools: `tools.builtin_plugins`
+    // registers the fs/shell/report/subagent families independently, so a request
+    // here legitimately announces `bash`, `read`, `conway_fork` and the rest. What
+    // proves `conway.ui` is absent is specifically that `ask_question` is not among
+    // them -- asserting NO tools at all was wrong, and passed only in the imagination.
     for request in &requests {
+        let announced: Vec<&str> = request
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| t.pointer("/function/name").and_then(|n| n.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default();
         assert!(
-            request.get("tools").is_none(),
-            "ask_question (indeed every tool) must not be announced when conway.ui is \
-             absent from [plugins].install, got request: {request}"
+            !announced.contains(&"ask_question"),
+            "ask_question must not be announced when conway.ui is absent from \
+             [plugins].install; announced tools were: {announced:?}"
         );
     }
     assert_eq!(
         requests[0]["stream"], true,
-        "the first attempt is the ordinary no-tools streaming path, got: {}",
+        "the first attempt is the ordinary streaming path, got: {}",
         requests[0]
     );
     assert!(

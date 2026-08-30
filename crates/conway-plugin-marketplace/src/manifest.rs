@@ -462,9 +462,7 @@ pub async fn fetch_marketplace(url: &str) -> Result<MarketplaceManifest, Marketp
 ///   any input shape this function does not special-case (a per-file URL a
 ///   manifest itself declares, say) -- see that function's own doc.
 pub(crate) fn resolve_marketplace_url(url: &str) -> Result<String, MarketplaceError> {
-    if let Some((owner, repo)) =
-        github_repo_root_url(url).or_else(|| github_shorthand_repo(url))
-    {
+    if let Some((owner, repo)) = github_repo_root_url(url).or_else(|| github_shorthand_repo(url)) {
         return Ok(format!(
             "https://raw.githubusercontent.com/{owner}/{repo}/HEAD/.claude-plugin/marketplace.json"
         ));
@@ -547,7 +545,7 @@ fn github_raw_content_repo(url: &str) -> Option<(String, String)> {
     let owner = parts.next()?;
     let repo = parts.next()?;
     parts.next()?; // a ref segment must follow, or this URL never pointed
-                    // INSIDE a repository to begin with.
+                   // INSIDE a repository to begin with.
     if owner.is_empty() || repo.is_empty() {
         return None;
     }

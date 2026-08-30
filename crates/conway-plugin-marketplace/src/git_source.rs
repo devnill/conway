@@ -240,11 +240,13 @@ fn clone_url(
         // `https://`, so no scheme/credential check applies here.
         PluginSource::Github { repo } => Ok(format!("https://github.com/{repo}.git")),
         PluginSource::RelativePath { path } => {
-            let (owner, repo) = crate::manifest::github_repo_from_url(marketplace_url)
-                .ok_or_else(|| MarketplaceError::UnresolvableRelativeSource {
-                    id: plugin_id.to_string(),
-                    path: path.clone(),
-                    marketplace_url: marketplace_url.to_string(),
+            let (owner, repo) =
+                crate::manifest::github_repo_from_url(marketplace_url).ok_or_else(|| {
+                    MarketplaceError::UnresolvableRelativeSource {
+                        id: plugin_id.to_string(),
+                        path: path.clone(),
+                        marketplace_url: marketplace_url.to_string(),
+                    }
                 })?;
             Ok(format!("https://github.com/{owner}/{repo}.git"))
         }
