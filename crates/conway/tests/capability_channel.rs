@@ -460,7 +460,11 @@ where
 /// can assert on it, and renders the call's outcome as plain text so a test
 /// can read it straight off the resulting `ToolResultRecord` -- one branch
 /// per [`CapabilityCallError`] variant, so a wrong variant is as visible as
-/// a wrong value.
+/// a wrong value. `CapabilityCallError` carries no `#[non_exhaustive]` and
+/// this match has no wildcard arm, so that "one branch per variant" claim
+/// is not just a description -- rustc's own exhaustiveness check (`E0004`)
+/// enforces it: a fifth variant added to that enum without a matching arm
+/// here fails this crate's own test build, not just a code review.
 struct CapabilityCallingTool {
     capability: &'static str,
 }
@@ -497,6 +501,14 @@ impl Tool for CapabilityCallingTool {
             }
             Err(CapabilityCallError::MalformedName { capability, reason }) => {
                 format!("malformed:{capability}:{reason}")
+            }
+            Err(CapabilityCallError::VersionMismatch {
+                capability,
+                required,
+                available,
+                available_declared: _,
+            }) => {
+                format!("version_mismatch:{capability}:{required}:{available}")
             }
         };
         Ok(ToolOutput {

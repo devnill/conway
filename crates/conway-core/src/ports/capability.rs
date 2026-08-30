@@ -161,6 +161,20 @@ pub struct CapabilityRegistration {
     /// [`CapabilityCallHandle::call`] (unversioned) ignores this field
     /// entirely, exactly as it always has.
     pub version: semver::Version,
+    /// Whether [`Self::version`] is an author-declared value this
+    /// registration's own caller supplied, or
+    /// [`Self::from_declared_version_or_unversioned`]'s own `0.0.0`
+    /// fallback for a declaration that was absent or did not parse as
+    /// semver. [`Self::new`] always sets this `true` -- a hand-written
+    /// literal that failed to parse panics before this field is ever
+    /// assigned, so every `CapabilityRegistration` built that way carries a
+    /// REAL declared version by construction. Consulted by
+    /// [`CapabilityCallHandle::call_versioned`] so a
+    /// [`CapabilityCallError::VersionMismatch`] can say WHICH kind of
+    /// mismatch this is, rather than let the `0.0.0` fallback read as a
+    /// provider that declared and shipped that exact version (see that
+    /// variant's own doc for the concrete confusion this heads off).
+    pub version_declared: bool,
     pub provider: Arc<dyn CapabilityProvider>,
 }
 
@@ -191,6 +205,7 @@ impl CapabilityRegistration {
             version: semver::Version::parse(version).unwrap_or_else(|e| {
                 panic!("CapabilityRegistration::new: malformed semver literal '{version}': {e}")
             }),
+            version_declared: true,
             provider,
         }
     }
@@ -213,10 +228,14 @@ impl CapabilityRegistration {
         declared_version: &str,
         provider: Arc<dyn CapabilityProvider>,
     ) -> Self {
+        let (version, version_declared) = match semver::Version::parse(declared_version) {
+            Ok(version) => (version, true),
+            Err(_) => (semver::Version::new(0, 0, 0), false),
+        };
         Self {
             capability,
-            version: semver::Version::parse(declared_version)
-                .unwrap_or_else(|_| semver::Version::new(0, 0, 0)),
+            version,
+            version_declared,
             provider,
         }
     }
@@ -229,6 +248,7 @@ impl std::fmt::Debug for CapabilityRegistration {
         f.debug_struct("CapabilityRegistration")
             .field("capability", &self.capability)
             .field("version", &self.version)
+            .field("version_declared", &self.version_declared)
             .field("provider", &"<dyn CapabilityProvider>")
             .finish()
     }
@@ -274,10 +294,26 @@ pub enum CapabilityCallError {
     /// at a version `required` accepts -- naming both `required` and
     /// `available` is the whole point of this variant existing separately
     /// from a bare "no match" boolean.
+    ///
+    /// **`available_declared` distinguishes two different failures that
+    /// would otherwise both print `available` as if it were a real shipped
+    /// version.** When `true`, `available` is what the provider actually
+    /// declared. When `false`, `available` is
+    /// [`CapabilityRegistration::from_declared_version_or_unversioned`]'s
+    /// own `0.0.0` fallback for a declaration that was absent or did not
+    /// parse as semver (`PluginManifest::version`'s own contract: "a bare
+    /// string", never guaranteed semver) -- WITHOUT this field, `required:
+    /// '^1', available: '0.0.0'` reads as a provider that regressed to
+    /// version zero, when the truth is it never declared a parseable
+    /// version at all; conflating those two is exactly the
+    /// "plausible-looking dead end" a misleading error produces (this
+    /// module's own item history: the tilde-formatting bug this same
+    /// cycle fixed for the same reason).
     VersionMismatch {
         capability: String,
         required: semver::VersionReq,
         available: semver::Version,
+        available_declared: bool,
     },
 }
 
@@ -301,11 +337,26 @@ impl std::fmt::Display for CapabilityCallError {
                 capability,
                 required,
                 available,
+                available_declared: true,
             } => {
                 write!(
                     f,
                     "capability '{capability}' requires version '{required}', but the \
                      installed provider offers '{available}'"
+                )
+            }
+            CapabilityCallError::VersionMismatch {
+                capability,
+                required,
+                available_declared: false,
+                ..
+            } => {
+                write!(
+                    f,
+                    "capability '{capability}' requires version '{required}', but the \
+                     installed provider declared no usable version (its declared \
+                     version was absent or did not parse as semver, so it is treated \
+                     as unversioned and satisfies no non-zero version requirement)"
                 )
             }
         }
@@ -340,6 +391,16 @@ pub trait CapabilityHost: Send + Sync + 'static {
     /// synchronous too; nothing about "what version did this provider
     /// declare at registration" requires I/O.
     fn provided_version(&self, capability: &str) -> Option<semver::Version>;
+
+    /// Whether [`Self::provided_version`]'s answer (when `Some`) is an
+    /// author-declared version, or
+    /// [`CapabilityRegistration::from_declared_version_or_unversioned`]'s
+    /// own `0.0.0` fallback -- see
+    /// [`CapabilityCallError::VersionMismatch`]'s own doc for why this
+    /// distinction exists and what conflating it would misread as.
+    /// Meaningless, and never consulted, when [`Self::provided_version`]
+    /// answers `None`.
+    fn version_is_declared(&self, capability: &str) -> bool;
 }
 
 /// Two [`CapabilityRegistration`]s declaring the SAME capability name --
@@ -380,6 +441,10 @@ pub struct CapabilityRegistry {
     /// `providers` itself, so [`Self::version_of`]/[`Self::provided_version`]
     /// can answer without touching the trait-object map at all.
     versions: HashMap<String, semver::Version>,
+    /// Each registration's own [`CapabilityRegistration::version_declared`],
+    /// keyed the same way as `versions` -- backs
+    /// [`CapabilityHost::version_is_declared`].
+    version_declared: HashMap<String, bool>,
 }
 
 // A manual `Debug` rather than a derive: `Arc<dyn CapabilityProvider>` is a
@@ -409,6 +474,7 @@ impl CapabilityRegistry {
     ) -> Result<Self, DuplicateCapabilityProvider> {
         let mut providers: HashMap<String, Arc<dyn CapabilityProvider>> = HashMap::new();
         let mut versions: HashMap<String, semver::Version> = HashMap::new();
+        let mut version_declared: HashMap<String, bool> = HashMap::new();
         for registration in registrations {
             let key = registration.capability.as_wire_str().to_string();
             if providers
@@ -417,9 +483,14 @@ impl CapabilityRegistry {
             {
                 return Err(DuplicateCapabilityProvider { capability: key });
             }
-            versions.insert(key, registration.version);
+            versions.insert(key.clone(), registration.version);
+            version_declared.insert(key, registration.version_declared);
         }
-        Ok(Self { providers, versions })
+        Ok(Self {
+            providers,
+            versions,
+            version_declared,
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -465,6 +536,10 @@ impl CapabilityHost for CapabilityRegistry {
 
     fn provided_version(&self, capability: &str) -> Option<semver::Version> {
         self.version_of(capability).cloned()
+    }
+
+    fn version_is_declared(&self, capability: &str) -> bool {
+        self.version_declared.get(capability).copied().unwrap_or(false)
     }
 }
 
@@ -575,6 +650,18 @@ impl CapabilityCallHandle {
     /// A satisfied requirement proceeds through the SAME [`Self::call`]
     /// dispatch this handle already had -- one implementation of the
     /// actual call, never a second copy behind the version check.
+    ///
+    /// **No in-tree caller yet.** This method is reachable -- every
+    /// dispatched `Tool::invoke` gets a `ToolCtx::capabilities:
+    /// CapabilityCallHandle` that exposes it -- and is exercised by this
+    /// module's own tests, but nothing in `conway-runtime`, no built-in
+    /// plugin, and no `conway-plugin-subprocess` code calls it today; every
+    /// production call site still goes through the unversioned
+    /// [`Self::call`]. The intended first consumer is board item
+    /// `01M0WWPA70E8YAAN981EK10D3D` (`conway.ui`, which will publish
+    /// `ui.form` and is not yet built). Forward-declared ahead of that
+    /// consumer deliberately (this method's own doc names why); not yet
+    /// wired to one.
     pub async fn call_versioned(
         &self,
         capability: &str,
@@ -594,11 +681,15 @@ impl CapabilityCallHandle {
             Some(available) if required.matches(&available) => {
                 self.host.call(capability, payload).await
             }
-            Some(available) => Err(CapabilityCallError::VersionMismatch {
-                capability: capability.to_string(),
-                required: required.clone(),
-                available,
-            }),
+            Some(available) => {
+                let available_declared = self.host.version_is_declared(capability);
+                Err(CapabilityCallError::VersionMismatch {
+                    capability: capability.to_string(),
+                    required: required.clone(),
+                    available,
+                    available_declared,
+                })
+            }
         }
     }
 }
@@ -622,6 +713,10 @@ impl CapabilityHost for NoopCapabilityHost {
 
     fn provided_version(&self, _capability: &str) -> Option<semver::Version> {
         None
+    }
+
+    fn version_is_declared(&self, _capability: &str) -> bool {
+        false
     }
 }
 
@@ -720,6 +815,7 @@ mod tests {
         CapabilityRegistry::from_registrations([CapabilityRegistration {
             capability: HostCapability::named(capability).unwrap(),
             version,
+            version_declared: true,
             provider,
         }])
         .unwrap()
@@ -786,11 +882,13 @@ mod tests {
             CapabilityRegistration {
                 capability: HostCapability::named("acme.dup").unwrap(),
                 version: semver::Version::new(1, 0, 0),
+                version_declared: true,
                 provider: Arc::new(EchoProvider),
             },
             CapabilityRegistration {
                 capability: HostCapability::named("acme.dup").unwrap(),
                 version: semver::Version::new(1, 0, 0),
+                version_declared: true,
                 provider: Arc::new(AlwaysFailsProvider),
             },
         ])
@@ -838,10 +936,15 @@ mod tests {
                 capability,
                 required: named_required,
                 available,
+                available_declared,
             } => {
                 assert_eq!(capability, "acme.fixture.versioned");
                 assert_eq!(named_required, required);
                 assert_eq!(available, semver::Version::new(2, 0, 0));
+                assert!(
+                    available_declared,
+                    "registry_with_version registers a real declared version"
+                );
             }
             other => panic!("expected VersionMismatch, got {other:?}"),
         }
@@ -898,6 +1001,62 @@ mod tests {
             CapabilityCallError::NotProvided {
                 capability: "acme.nobody.home".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn an_undeclared_fallback_version_mismatch_names_itself_not_a_regressed_provider() {
+        // The concrete case a subprocess plugin manifest produces: a
+        // `PluginManifest::version` string that is legitimate under that
+        // field's own "bare string" contract but is not valid semver
+        // (`"beta-3"`, standing in for anything
+        // `semver::Version::parse` refuses) -- `CapabilityRegistration::
+        // from_declared_version_or_unversioned` degrades this to the
+        // `0.0.0` sentinel rather than panicking or refusing registration.
+        let registration = CapabilityRegistration::from_declared_version_or_unversioned(
+            HostCapability::named("acme.fixture.undeclared").unwrap(),
+            "beta-3",
+            Arc::new(EchoProvider),
+        );
+        assert!(
+            !registration.version_declared,
+            "an unparseable declared_version must not read as author-declared"
+        );
+        let registry = CapabilityRegistry::from_registrations([registration]).unwrap();
+        let handle = CapabilityCallHandle::new(Arc::new(registry), "acme.consumer");
+        let required = semver::VersionReq::parse("^1").expect("valid semver req");
+        let err = block_on(handle.call_versioned(
+            "acme.fixture.undeclared",
+            &required,
+            serde_json::json!(null),
+        ))
+        .expect_err("the 0.0.0 fallback satisfies no non-zero version requirement");
+        match &err {
+            CapabilityCallError::VersionMismatch {
+                available,
+                available_declared,
+                ..
+            } => {
+                assert_eq!(*available, semver::Version::new(0, 0, 0));
+                assert!(
+                    !*available_declared,
+                    "the 0.0.0 sentinel is a fallback, not something the provider declared"
+                );
+            }
+            other => panic!("expected VersionMismatch, got {other:?}"),
+        }
+        // The Display text must not phrase the fallback as though the
+        // provider itself declared and shipped version '0.0.0' -- exactly
+        // the "plausible-looking dead end" an operator reading this error
+        // must not be sent down.
+        let rendered = err.to_string();
+        assert!(
+            !rendered.contains("offers '0.0.0'"),
+            "must not read as an author-declared version, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("declared no usable version"),
+            "must name the actual failure, got: {rendered}"
         );
     }
 
