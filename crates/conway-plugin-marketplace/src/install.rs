@@ -18,7 +18,7 @@
 //! [`uninstall_plugin`] removes the directory outright rather than leaving
 //! it and merely forgetting about it.
 //!
-//! # Path safety (P-10): no archive, so no archive-traversal class of bug
+//! # Path safety: no archive, so no archive-traversal class of bug
 //!
 //! `validate_relative_path` (private to this module, also used by
 //! `crate::git_source` to validate a `git-subdir` entry's own `path` field)
@@ -34,7 +34,7 @@
 //! by THIS crate, one file at a time, into a staging directory it just
 //! created (never extracted from an archive whose own entries might
 //! contain symlinks pointing outside the extraction root), the
-//! symlink-in-an-extracted-archive hazard P-10 names does not apply here at
+//! symlink-in-an-extracted-archive hazard does not apply here at
 //! all -- there is no archive-extraction step for it to attach to, and this
 //! remains true even now that a git-sourced entry is also supported: this
 //! crate still never extracts an archive of any kind (`Cargo.toml`'s own
@@ -46,7 +46,7 @@
 //! outright before this module ever copies a byte of it into a staging
 //! directory. See `crate::git_source`'s own doc for that half.
 //!
-//! # Never a partial install (P-13)
+//! # Never a partial install
 //!
 //! Every file `stage_files` (private to this module) fetches is written into a STAGING directory
 //! (`store_root/.<plugin id>.install-tmp`), never directly into
@@ -73,8 +73,7 @@ use crate::manifest::{client, fetch_bytes, MarketplacePluginEntry};
 /// Safety cap on any single fetched file's size -- generous for a
 /// `.claude-plugin/plugin.json`, a `.mcp.json`, a `commands/*.md`, or a
 /// small server script, small enough that a malicious or broken
-/// marketplace entry cannot make one file fetch exhaust memory or disk
-/// (P-10).
+/// marketplace entry cannot make one file fetch exhaust memory or disk.
 pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Safety cap on how many files a single plugin entry may declare -- bounds
@@ -101,8 +100,8 @@ pub fn plugin_dir(plugin_id: &str, store_root: &Path) -> PathBuf {
 }
 
 /// `plugin_id` must be a single, ordinary path component: non-empty, no
-/// `/`/`\`, no `..`, and not itself `.` -- the plugin-id half of P-10's
-/// named "path traversal in a plugin name (`../../etc`)" hazard. Checked
+/// `/`/`\`, no `..`, and not itself `.` -- the plugin-id half of the
+/// "path traversal in a plugin name (`../../etc`)" hazard. Checked
 /// BEFORE this crate ever joins `plugin_id` onto `store_root`, in both
 /// [`install_entry`] and [`uninstall_plugin`].
 pub fn validate_plugin_id(id: &str) -> Result<(), MarketplaceError> {

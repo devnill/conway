@@ -689,8 +689,8 @@ impl ConwayBuilder {
     /// [`Self::with_context_hook`]'s own shape exactly: an embedder with a
     /// standalone curator and no plugin still uses it directly, but a plugin
     /// can ALSO contribute curators through [`Plugin::curators`] on the SAME
-    /// `with_plugin`/`install_selected` surface (GP-03 -- no privileged
-    /// channel). `build()` composes this injected curator first, then each
+    /// `with_plugin`/`install_selected` surface -- no privileged channel a
+    /// plugin cannot also reach. `build()` composes this injected curator first, then each
     /// plugin's `curators()` in install order, into the single
     /// `Runtime::set_context_curator` call the runtime reads.
     ///
@@ -1092,7 +1092,7 @@ impl ConwayBuilder {
     /// Sets this `Conway`'s confinement root -- every root agent
     /// [`crate::Conway::new_session`] starts afterward is confined to it.
     ///
-    /// **This is the ergonomic surface GP-13 required stay reachable
+    /// **This is the ergonomic surface a prior ruling required stay reachable
     /// through "Retire the harness-level confinement root once
     /// `conway.fs` enforces its own":** a harness-level pre-gate check used
     /// to be the ONLY thing this method's `root` fed; that check is retired.

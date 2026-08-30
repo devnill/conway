@@ -67,7 +67,8 @@ pub use conway_core::agent::{
 };
 pub use conway_core::config::AgentDef;
 /// Re-exported so a crate depending only on `conway` (the facade -- the
-/// surface a third-party plugin author gets, per GP-03) can name the type
+/// surface a third-party plugin author gets, never a privileged shortcut
+/// into `conway-core`/`conway-runtime` directly) can name the type
 /// `conway::skills::load_skill_defs` returns in its own signature. A plugin
 /// that consumes skill defs (e.g. `conway-plugin-skills`' progressive-
 /// disclosure hook/tool) needs to name `SkillDef` to construct itself from
@@ -93,8 +94,7 @@ pub use conway_core::permission_pattern::{
 /// [`ModeCycleEntry`] and [`ModeCycle`] are what the cycle resolves to,
 /// and they live in `conway-runtime` rather than `conway-core` because
 /// ordering, collision handling, and uninstall reconciliation are ONE
-/// implementation there (steering P-14) rather than a rule each host
-/// surface re-derives.
+/// implementation there rather than a rule each host surface re-derives.
 pub use conway_core::ports::PluginDeclaredMode;
 /// V2b: `conway-cli` reaches `parse_rules` through here (it cannot depend
 /// on `conway-core` directly -- `no_forbidden_deps`).

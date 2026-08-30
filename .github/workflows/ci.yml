@@ -123,7 +123,11 @@ jobs:
 
   # The steering-shorthand half of `check-board-citations.py` -- bare `GP-*`/
   # `P-*`/`C-*` ids from `.ideate/steering/` (gitignored, unresolvable outside
-  # a maintainer checkout) leaking onto a page a third party actually reads.
+  # a maintainer checkout) leaking onto a page a third party actually reads,
+  # now including a `pub` item's own rustdoc comment in a library crate's
+  # `src/` (`scan_rustdoc_shorthand`, board item `01M18Q8YWWQC6CNQSVCENGFC9B`)
+  # -- a plugin author reading `cargo doc` has exactly as little access to
+  # that directory as a reader of a `.md` page does.
   # Needs no store, unlike this script's OTHER half (ULID citation
   # resolution against `.ideate-work/board.db`/`.ideate/record`), which CI
   # cannot run -- both are `.gitignore`d local tooling state, and committing

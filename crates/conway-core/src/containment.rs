@@ -338,8 +338,8 @@ pub enum ResolveError {
 /// wrapper, is what keeps a `paths_under` permission-rule prefix and the
 /// tool argument it is meant to bound expanding identically -- the two
 /// `~`-prefixed strings hit the SAME code, so they cannot silently diverge
-/// (P-13: a rule and the call it bounds must never resolve a shared prefix
-/// two different ways).
+/// -- a rule and the call it bounds must never resolve a shared prefix
+/// two different ways.
 ///
 /// `conway-runtime`'s `resolve_like_the_tool_will` and `conway-tools`'
 /// `resolve_path` each keep their own thin, same-signature, same-crate

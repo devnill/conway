@@ -3,7 +3,7 @@
 //! sides run "when `event` happens, run `command`," with the same
 //! stdin-JSON/stdout-JSON protocol shape, but the event VOCABULARY differs,
 //! and a rule naming an event with no conway counterpart must be reported
-//! by name, never silently dropped (P-13).
+//! by name, never silently dropped.
 //!
 //! **Board item `01M0X1FCQ80C9ET97HENXSAW2K`: this module now produces
 //! real, dispatchable registrations for every `Mapped` rule**

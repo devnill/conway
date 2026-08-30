@@ -185,15 +185,16 @@ impl CapabilityRegistration {
     /// to spell `semver::Version::new(1, 0, 0)` -- most workspace crates
     /// constructing a fixture `CapabilityRegistration` are in exactly that
     /// position; only `conway-core` (this field's own home) needs `semver`
-    /// as a direct dependency (C-04, and the zero-`Cargo.lock`-diff premise
-    /// this item's own acceptance criteria rest on).
+    /// as a direct dependency -- no new dependency for any other crate,
+    /// the zero-`Cargo.lock`-diff premise this item's own acceptance
+    /// criteria rest on.
     ///
     /// **Panics on a malformed literal.** This constructor is for a version
     /// written BY HAND in source -- a programmer error if it does not
     /// parse, exactly like an invalid literal in any other `::new`. It must
     /// never be used on an operator- or plugin-supplied string: that caller
     /// has untrusted input and must call `semver::Version::parse` itself
-    /// and handle the `Err` (P-10) -- see
+    /// and handle the `Err` -- see
     /// [`Self::from_declared_version_or_unversioned`] for that case.
     pub fn new(
         capability: HostCapability,
@@ -216,9 +217,9 @@ impl CapabilityRegistration {
     /// untrusted and may not be valid semver at all
     /// (`PluginManifest::version`'s own doc: "a bare string", never
     /// guaranteed semver). A malformed or absent version degrades to
-    /// `0.0.0` rather than panicking or refusing registration outright
-    /// (P-10: untrusted input maps to a typed, in-range value, never a
-    /// panic) -- `0.0.0` satisfies no requirement with a non-zero major
+    /// `0.0.0` rather than panicking or refusing registration outright --
+    /// untrusted input maps to a typed, in-range value, never a
+    /// panic -- `0.0.0` satisfies no requirement with a non-zero major
     /// version (`VersionReq::parse("^1")` never matches `0.0.0`), so a
     /// provider that has not adopted semver for this capability can still
     /// register, but a REAL version requirement against it refuses rather

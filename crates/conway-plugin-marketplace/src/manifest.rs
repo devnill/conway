@@ -104,7 +104,7 @@ use crate::error::MarketplaceError;
 /// Safety cap on a marketplace manifest response's own byte size -- large
 /// enough for a marketplace listing hundreds of plugins with real
 /// descriptions, small enough that a malicious or broken marketplace
-/// cannot make this crate buffer an unbounded response into memory (P-10).
+/// cannot make this crate buffer an unbounded response into memory.
 pub const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 
 /// One marketplace: a name, an optional description, every plugin it
@@ -324,7 +324,7 @@ pub(crate) fn client() -> Result<reqwest::Client, reqwest::Error> {
 /// plugin a marketplace lists before anything is written to disk.
 ///
 /// Every failure mode is a named [`MarketplaceError`] variant, never a
-/// panic and never an unbounded read (P-10): a network failure (DNS,
+/// panic and never an unbounded read: a network failure (DNS,
 /// connection refused, timeout) is [`MarketplaceError::Network`]; a
 /// non-2xx response is [`MarketplaceError::Http`]; a response exceeding
 /// [`MAX_MANIFEST_BYTES`] is [`MarketplaceError::ResponseTooLarge`]; a 2xx

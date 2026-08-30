@@ -172,8 +172,8 @@ pub enum HookOnFailure {
 /// `01M129QW0GV90QTQS6B3BY3DAR`).
 ///
 /// **Why this exists at all: a plugin's hooks reach dispatch at the SAME
-/// tier a config-declared one does (GP-03 -- no privileged, no
-/// second-class surface), but that means a downloaded plugin's hook can
+/// tier a config-declared one does -- no privileged, no second-class
+/// surface -- but that means a downloaded plugin's hook can
 /// now deny a real tool call or a submitted prompt exactly as an
 /// operator-authored rule can, with nothing distinguishing the two once
 /// they are both just entries in a dispatch list.** Before this type
@@ -184,8 +184,8 @@ pub enum HookOnFailure {
 /// addition supersedes. Once a plugin can register a hook directly, that
 /// claim would silently become false for a plugin-contributed rule unless
 /// something threads the real source through to the same review surface;
-/// this is that something. P-12 -- "an operator must be able to inspect
-/// every active rule, including one contributed by an untrusted repo" --
+/// this is that something. An operator must be able to inspect every
+/// active rule, including one contributed by an untrusted repo, which
 /// is the reason this is a real field carried on every dispatched hook
 /// spec, not a comment.
 ///

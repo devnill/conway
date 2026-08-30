@@ -100,7 +100,8 @@
 //! left open for lack of a consumer. A digest check on a plugin's own
 //! entrypoint file is a real, honest integrity primitive -- digest equality
 //! is a decidable claim it can actually keep, unlike the shell-metacharacter
-//! blocklist GP-13 records as a cautionary tale, which tried to infer safety
+//! blocklist standing steering already records as a cautionary tale, which
+//! tried to infer safety
 //! it could not verify -- but gating only this crate's `command` with one,
 //! while `[hooks].rules[].command` stays permanently ungated, would
 //! manufacture exactly the false distinction the paragraph above argues
@@ -945,7 +946,7 @@ impl SubprocessPlugin {
     /// unparseable one degrades to `0.0.0`
     /// ([`CapabilityRegistration::from_declared_version_or_unversioned`]'s
     /// own doc) rather than panicking on a value this plugin's own author
-    /// supplied, not this host (P-10).
+    /// supplied, not this host.
     pub fn capabilities(&self) -> Vec<CapabilityRegistration> {
         self.provides
             .iter()

@@ -12,7 +12,7 @@
 //! > for. Tight enough to catch those, it rejects enough routine commands
 //! > that the people relying on it turn it off.
 //!
-//! GP-13 names this exact module as the cautionary example of the
+//! Standing steering names this exact module as the cautionary example of the
 //! anti-pattern the page rules out: "when a dangerous tool surface needs
 //! constraining, the answer is a containment primitive or the tool's
 //! absence -- NOT more policy machinery inside the permission gate. The

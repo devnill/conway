@@ -23,9 +23,9 @@
 //! consumers are expected (a first-run flow deciding whether to offer
 //! guided setup, and a settings screen showing per-provider status), and
 //! both call *this*: a classification vocabulary restated at a second call
-//! site is the exact drift hazard steering policy P-14 records, whose own
-//! worked example is a doc comment asserting a restatement "can never
-//! drift" while it already had.
+//! site is exactly the kind of drift a single-implementation rule exists to
+//! prevent, whose own worked example elsewhere in this tree is a doc
+//! comment asserting a restatement "can never drift" while it already had.
 //!
 //! **It never performs inference.** Reachability is not a completion.
 //! Proving a provider works by spending a real turn is a deliberate,

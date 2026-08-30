@@ -1,5 +1,5 @@
 //! [`MarketplaceError`] -- the one error type every fallible operation in
-//! this crate returns. P-13 (fail closed, never silently open): every
+//! this crate returns. Fail closed, never silently open: every
 //! variant here is checked and returned BEFORE this crate writes a single
 //! byte to `dest_dir` in [`crate::install::install_plugin`] -- see that
 //! function's own doc for the staging-then-rename mechanics that make a
@@ -8,9 +8,9 @@
 
 /// Every way fetching a marketplace manifest, installing a plugin from it,
 /// or removing an installed plugin can fail. Never a bare `String` or
-/// `anyhow`-shaped catch-all (P-10: untrusted network input gets a named,
+/// `anyhow`-shaped catch-all -- untrusted network input gets a named,
 /// typed failure a caller can match on, not a formatted sentence a caller
-/// can only display).
+/// can only display.
 #[derive(Debug, thiserror::Error)]
 pub enum MarketplaceError {
     /// The marketplace URL (or a per-file URL a manifest names) could not
