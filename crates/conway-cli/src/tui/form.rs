@@ -51,7 +51,10 @@ impl PendingFormAsk {
     /// tied to the live surface channel. State/render tests elsewhere under
     /// `tui/` that need a `Mode::UiForm` `AppState` with no live surface at
     /// all go through this instead of reaching into a private field --
-    /// mirrors [`crate::tui::gate::PendingPrompt::new_for_test`] exactly.
+    /// mirrors [`crate::tui::gate::PendingPrompt::new_for_test`] exactly,
+    /// `#[cfg(test)]` included -- without that gate it is dead code in a
+    /// non-test build, which is what `-D dead-code` caught.
+    #[cfg(test)]
     pub(crate) fn new_for_test(
         request: AskSelectRequest,
     ) -> (
@@ -117,10 +120,12 @@ impl FormSurface for TuiFormSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // `Plugin::tools`/`Tool::invoke`/`Tool::spec` -- needed by
+    // `Plugin::tools` -- needed by
     // `a_real_ask_question_call_renders_is_answered_and_reaches_the_tool_result`
-    // below, not by this module's own production code.
-    use conway::plugin::{Plugin, Tool};
+    // below, not by this module's own production code. `Tool` is NOT
+    // imported: the test reaches the tool through a concrete type, so the
+    // trait is never in scope-resolution's way.
+    use conway::plugin::Plugin;
 
     fn sample_request() -> AskSelectRequest {
         AskSelectRequest {

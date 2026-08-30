@@ -862,11 +862,6 @@ pub fn installed_plugins(
 #[cfg(test)]
 mod tests {
     use super::*;
-    // `Tool::invoke`/`Tool::spec` (board item `01M19NH39AE2D5AMJK0RZRQY86`'s
-    // own `bundle_gives_the_ui_plugin_the_callers_own_form_surface`, below)
-    // -- not needed by this module's PRODUCTION code, which only ever calls
-    // `Plugin::tools`/`Plugin::manifest`.
-    use conway::plugin::Tool;
 
     /// The non-durable store every wiring-only check here passes to
     /// `bundle`. Deliberately never `FsAgentNames`: nothing in this module's

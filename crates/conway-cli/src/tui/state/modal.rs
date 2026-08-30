@@ -533,7 +533,7 @@ impl AppState {
     /// `01M19NH39AE2D5AMJK0RZRQY86`): sends the answer (or a named
     /// cancellation) back over `ask.reply`, the SAME `oneshot` channel the
     /// blocked `TuiFormSurface::ask_select` call is awaiting -- unlike
-    /// [`commands::apply_ask_fate`]/[`commands::apply_trust_decision`], this
+    /// [`crate::tui::commands::apply_ask_fate`]/[`crate::tui::commands::apply_trust_decision`], this
     /// needs no facade call at all, since answering a question the model
     /// asked is entirely local to this process's own channel. A no-op when
     /// no question is open. Promotes the next parked/queued surface via
