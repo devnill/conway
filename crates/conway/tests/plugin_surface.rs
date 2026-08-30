@@ -164,10 +164,11 @@ impl Plugin for EchoPlugin {
     /// from outside the workspace, not merely nameable" property this
     /// whole file exists to check, extended to the new channel.
     fn capabilities(&self) -> Vec<CapabilityRegistration> {
-        vec![CapabilityRegistration {
-            capability: HostCapability::named("test.echo.repeat").unwrap(),
-            provider: Arc::new(EchoCapabilityProvider) as Arc<dyn CapabilityProvider>,
-        }]
+        vec![CapabilityRegistration::new(
+            HostCapability::named("test.echo.repeat").unwrap(),
+            "1.0.0",
+            Arc::new(EchoCapabilityProvider) as Arc<dyn CapabilityProvider>,
+        )]
     }
 }
 

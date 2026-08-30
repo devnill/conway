@@ -628,6 +628,18 @@ plugin that declares `provides` (`docs/plugins/subprocess-plugins.md`'s
 "Providing a capability" section). This module registers no capability of
 its own — it is the channel, exactly as its own module doc states.
 
+**Versioning (decision `01M189XS6Z9VKYENAHNY1B54CM`) changes nothing about
+this trust shape.** A provider now declares a `semver::Version` and a
+consumer may check it via `CapabilityCallHandle::call_versioned`, refusing
+with `CapabilityCallError::VersionMismatch` on a mismatch. That is a
+COMPATIBILITY refusal, not an authorization boundary: it changes whether an
+incompatible pair calls each other successfully, never who is allowed to
+call whom, what payload a provider receives, or what
+`CapabilityCallHandle::caller_plugin_id` is trusted with (still
+tracing/audit only, per the paragraph above). An operator's trust review of
+"what can this installed set of plugins reach into each other" is
+unaffected by whether either side happens to pin a version.
+
 ## Plugin-registered hooks: a downloaded plugin's deny rule, at the operator's own tier, with structural provenance
 
 See [`hooks.md` point 13](hooks.md#13-declarative-script-fired-hooks--the-hooks-configuration-block)

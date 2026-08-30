@@ -443,14 +443,55 @@ finds themselves designing a widget vocabulary no shipped form exercises
 has left the ruling. §8's first falsifier — "`conway.ui` needs to draw, not
 declare" — is unchanged and is still the thing that would overturn this.
 
-**7b. Versions now or name-only first.** Name-only is much cheaper and
-covers everything currently on the table. But `ui.form/1` gaining a widget
-is exactly the case where a consumer needs a floor, and retrofitting semver
-onto edges already in the wild is worse than starting with it. **Weak
-recommendation: name-only first**, on the condition that the limitation is
-documented at the manifest field rather than left to be inferred — and
-noting the counter-argument is strong enough that the operator may
-reasonably overrule it.
+**7b. Versions now or name-only first. SETTLED 2026-08-29 — versioned now,
+via standard semver.** Operator ruling, decision `01M189XS6Z9VKYENAHNY1B54CM`
+(mechanism), which supersedes an earlier same-cycle decision,
+`01M1893Q2DV773ZQ5B138W6G07`, on mechanism only — that earlier decision's
+own argument for versioning the edge AT ALL is unchanged and still governs;
+what it got wrong was inventing a bespoke `ui.form/1`-style major-exact
+identifier instead of reaching for the crate this problem already has a
+name for. Operator direction: *"I don't want to reinvent the wheel on this.
+If it's okay to just use semver or pin to a specific version, that is fine
+by me."* See §9 for both decision ids and the full argument.
+
+The rejected option, kept rather than deleted (a decision that discards its
+alternative cannot be re-examined): **name-only**, this page's own original
+weak recommendation. It is cheaper and covers everything that was on the
+table when it was written, but it fails on exactly the case this section
+itself named as the falsifier — `ui.form/1` gaining a widget is precisely
+when a consumer needs a version floor, and retrofitting semver onto edges
+already in the wild is worse than starting with it. The recommendation
+explicitly flagged its own counter-argument as strong enough to overrule,
+and the operator did.
+
+**The mechanism, for a plugin author reading this page rather than the
+code.** A capability's PROVIDING side declares a `semver::Version` as a
+field separate from its namespaced name — `ui.form` stays `ui.form`;
+`1.0.0` is not folded into that string. A capability's CONSUMING side
+declares a `semver::VersionReq` — `^1` for the ordinary floor, `=1.2.3` for
+a hard pin (the operator asked specifically that pinning be available;
+`VersionReq` gives it for free, which is why one type covers both cases
+rather than two). Resolution is `req.matches(&version)`. A mismatch is
+**refused, naming both the requirement and the version actually
+installed** — never degraded, the same "not degraded, not silently
+auto-installed — refused" posture §0 ruling 3 already states for a missing
+dependency, applied here to a present-but-incompatible one rather than an
+absent one. This needs no resolver: a capability name has exactly one
+provider (a second registration for the same name is refused at
+construction, not selected between), so there is no candidate set to
+select among and nothing to backtrack over — `VersionReq::matches` is a
+predicate over a single pair, not a search. If a second provider for the
+same capability name ever exists, candidate selection becomes a real
+question for the first time; that is its own item, with a real consumer,
+not something this entry anticipates.
+
+**This settles only Edge B's capability-CALL channel
+(`CapabilityRegistration`/`CapabilityCallHandle`), not the plugin-id
+`requires`/`optional` edges §4 describes.** Those two fields stay name-only
+plugin-id lists; a `requires` entry naming a capability is still satisfied
+by the mere presence of a provider, at whatever version it declares.
+Whether that edge should also gain a version floor is undecided and is not
+this entry's question.
 
 **7c. Push versus pull are different machinery.** Asking a question is a
 *pull* — a blocking call returning one answer. Augmenting the status bar is
@@ -686,3 +727,35 @@ already in the wild is the cost of getting it wrong, so it should be ruled
 before `ui.form/1` has a second consumer.
 
 No code changed in this item.
+
+**2026-08-29 — §7b is now settled, and settled twice in the same cycle; §7b
+is edited in place with the answer (mirroring how §7a/§6/§7c were each
+closed above), and both decision ids belong here.** First,
+`01M1893Q2DV773ZQ5B138W6G07` ruled that a capability edge should carry a
+version at all, closing the "name-only first" recommendation this page's
+original §7b text carried. As FIRST drafted against that ruling, the
+mechanism was a bespoke `ui.form/1`-style identifier with major-exact
+equality — a notation invented for this one problem rather than reached
+for off the shelf. That mechanism was itself superseded mid-cycle, the same
+day, by `01M189XS6Z9VKYENAHNY1B54CM`, on the operator's own direction: *"I
+don't want to reinvent the wheel on this. If it's okay to just use semver
+or pin to a specific version, that is fine by me."* The WHY (versioning
+edges at all) is `01M1893Q2DV773ZQ5B138W6G07`'s and stands; the HOW
+(standard semver, `Version` on the provider, `VersionReq` on the consumer,
+`req.matches(&version)`, refuse on mismatch, no resolver because one name
+has one provider) is `01M189XS6Z9VKYENAHNY1B54CM`'s and is what shipped.
+§7b's own text above carries the full mechanism and keeps the rejected
+name-only option with its cost, matching how §7a keeps its two rejected
+altitudes and §6 keeps its two rejected shapes.
+
+`semver` is now a direct dependency of `conway-core` (`crates/conway-core/
+src/ports/capability.rs`) — already present in `Cargo.lock` at 1.0.28,
+pulled in transitively before this promotion, so the promotion added no
+new lock entry. `CapabilityRegistration::version` (provider) and
+`CapabilityCallHandle::call_versioned`'s `required: &semver::VersionReq`
+parameter (consumer) are the two new surfaces; `CapabilityCallError::
+VersionMismatch` is the refusal, naming both. §4's plugin-id `requires`/
+`optional` edges are UNCHANGED by this entry — they remain name-only, as
+`PluginManifest::requires`'s own doc (`crates/conway-core/src/ports/
+plugin.rs`) now states explicitly, distinguishing that edge from the one
+this entry versions.

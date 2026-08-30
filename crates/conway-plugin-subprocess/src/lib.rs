@@ -931,16 +931,34 @@ impl SubprocessPlugin {
     /// `Plugin::capabilities`' own "no initialization hook" contract --
     /// each call to this method is free to reconstruct its answer). Empty
     /// when `provides` was empty (the common, unchanged case).
+    ///
+    /// **Version (decision `01M189XS6Z9VKYENAHNY1B54CM`): borrowed from
+    /// this plugin's own `PluginManifest::version`, not a per-capability
+    /// wire field.** `WireManifest::provides` names capabilities only, with
+    /// no version alongside each -- giving each capability its own declared
+    /// version over the wire is a distinct, not-yet-built extension to that
+    /// wire point (its own item, if a subprocess plugin ever needs two
+    /// capabilities at two different versions). Until then every capability
+    /// this plugin registers is deemed to be at the plugin's own declared
+    /// version, parsed as semver; `PluginManifest::version`'s own doc
+    /// states it is "a bare string" with no semver guarantee, so an
+    /// unparseable one degrades to `0.0.0`
+    /// ([`CapabilityRegistration::from_declared_version_or_unversioned`]'s
+    /// own doc) rather than panicking on a value this plugin's own author
+    /// supplied, not this host (P-10).
     pub fn capabilities(&self) -> Vec<CapabilityRegistration> {
         self.provides
             .iter()
-            .map(|cap| CapabilityRegistration {
-                capability: cap.clone(),
-                provider: Arc::new(SubprocessCapabilityProvider {
-                    capability: cap.as_wire_str().to_string(),
-                    process_spec: self.process_spec.clone(),
-                    session: self.session.clone(),
-                }) as Arc<dyn CapabilityProvider>,
+            .map(|cap| {
+                CapabilityRegistration::from_declared_version_or_unversioned(
+                    cap.clone(),
+                    &self.manifest.version,
+                    Arc::new(SubprocessCapabilityProvider {
+                        capability: cap.as_wire_str().to_string(),
+                        process_spec: self.process_spec.clone(),
+                        session: self.session.clone(),
+                    }) as Arc<dyn CapabilityProvider>,
+                )
             })
             .collect()
     }

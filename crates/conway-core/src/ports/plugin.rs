@@ -1861,15 +1861,27 @@ pub struct PluginManifest {
     /// "satisfied first", so it is refused rather than resolved by
     /// accident of iteration order.
     ///
-    /// **Name-only: NO version constraint is expressed or checked.** There
-    /// is no `semver` crate anywhere in this workspace, and this field is a
-    /// bare plugin id string -- `requires: vec!["conway.ui".into()]`
-    /// verifies only that SOME plugin with that id is installed, never
-    /// which [`PluginManifest::version`] it reports. A dependent that needs
-    /// a version floor (e.g. "a widget `ui.form/1` only gained in
-    /// `conway.ui` 0.4") has no way to express that yet; see
-    /// `docs/vision/DESIGN-plugin-dependencies.md` §7b for the tradeoff
-    /// argued and the condition under which this should change.
+    /// **Name-only: NO version constraint is expressed or checked here.**
+    /// This field is a bare plugin id string -- `requires:
+    /// vec!["conway.ui".into()]` verifies only that SOME plugin with that
+    /// id is installed, never which [`PluginManifest::version`] it reports.
+    /// A dependent that needs a version floor on the PLUGIN-ID edge this
+    /// field expresses (e.g. "any plugin named `conway.ui` at all") still
+    /// has no way to state that.
+    ///
+    /// **This is unrelated to the `semver` crate now being a real,
+    /// workspace dependency** (decision `01M189XS6Z9VKYENAHNY1B54CM`,
+    /// `docs/vision/DESIGN-plugin-dependencies.md` §7b/§9): that promotion
+    /// versions Edge B's CAPABILITY channel --
+    /// [`super::CapabilityRegistration::version`] (a `semver::Version` the
+    /// provider declares) checked against a `semver::VersionReq` the
+    /// consumer supplies to [`super::CapabilityCallHandle::call_versioned`]
+    /// -- not this field. A `requires` entry naming a capability (rather
+    /// than a plugin id; see `crates/conway/src/builder.rs`'s
+    /// `missing_required_dependency`) is still satisfied by the mere
+    /// PRESENCE of a provider, at whatever version it declares; if this
+    /// plugin-id/capability-name edge itself ever needs a version floor,
+    /// that is its own item, not a consequence of the one just decided.
     ///
     /// **Resolution order is topological; installation/injection order is
     /// not.** `ConwayBuilder::install_selected` uses a dependency-ordered
