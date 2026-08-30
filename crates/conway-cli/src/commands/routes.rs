@@ -43,7 +43,20 @@ pub async fn run(args: &RoutesArgs, conway: &Conway) -> conway::Result<ExitCode>
             // "unknown role" from bare emptiness previously made that
             // fallback misreport every correctly-configured role as unknown.
             if !conway.config().roles.contains_key(role.as_str()) {
-                let mut roles: Vec<&String> = conway.config().roles.keys().collect();
+                // The merge floor bakes in an empty role named "default" so
+                // an unconfigured `default_role` still validates, so listing
+                // `roles` raw would name a role the operator never wrote --
+                // and one that cannot route. `/settings`' own cycle list
+                // filters it with this same predicate; this is the second
+                // surface that presents `roles` to a person, and it must use
+                // the one predicate rather than restate the check.
+                let mut roles: Vec<&String> = conway
+                    .config()
+                    .roles
+                    .iter()
+                    .filter(|(name, entry)| !conway::config::is_baked_in_role_floor(name, entry))
+                    .map(|(name, _)| name)
+                    .collect();
                 roles.sort();
                 let roles_list = roles
                     .iter()

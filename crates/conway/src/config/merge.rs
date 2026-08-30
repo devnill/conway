@@ -472,6 +472,14 @@ fn default_document() -> Value {
 /// "default role" cycle list (`conway_cli::tui::app::defaults`) read
 /// [`merged_document`]'s `roles` map directly and, without this filter,
 /// offered the floor alongside every real, operator-declared role.
+/// ACCEPTED LIMIT, stated rather than left to be discovered: this matches
+/// on the name AND on the entry being byte-identical to `RoleEntry::default()`,
+/// so an operator who deliberately names their own role `default` and has not
+/// yet given it a chain is indistinguishable from the floor and is filtered
+/// too. It reappears the instant that role gains any content, nothing is lost
+/// from the config itself, and the alternative -- a marker distinguishing the
+/// floor from an identical operator-written entry -- would mean carrying
+/// provenance through the whole merge for one self-resolving edge case.
 pub fn is_baked_in_role_floor(name: &str, entry: &crate::config::schema::RoleEntry) -> bool {
     name == BASELINE_ROLE_NAME && *entry == crate::config::schema::RoleEntry::default()
 }
