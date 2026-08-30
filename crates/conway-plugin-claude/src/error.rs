@@ -1,6 +1,6 @@
 //! Typed, non-panicking failure modes for reading an untrusted Claude Code
-//! plugin directory (P-10: untrusted input is range-checked at the boundary,
-//! never trusted to be well-formed).
+//! plugin directory: untrusted input is range-checked at the boundary,
+//! never trusted to be well-formed.
 
 use std::path::PathBuf;
 

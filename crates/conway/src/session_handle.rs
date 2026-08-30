@@ -215,8 +215,8 @@ impl SessionHandle {
     ///
     /// **Reachable here, on `SessionHandle` itself, not only from
     /// `conway-cli`'s `App`** -- this is this item's own answer to its
-    /// "port variant, not a renderer `Effect`" determine-first question
-    /// (GP-05/C-03: no capability may exist in only one mode). Any caller
+    /// "port variant, not a renderer `Effect`" determine-first question:
+    /// no capability may exist in only one mode. Any caller
     /// holding a `SessionHandle` and a `CommandOutcome::SubmitPrompt` a
     /// `Command::invoke` returned -- the TUI's `App`, `conway-cli`'s
     /// one-shot `<plugin-id>.<command>` dispatch, or a bare library
@@ -555,9 +555,9 @@ impl SessionHandle {
     /// model round-trip in flight RIGHT NOW, straight from `Runtime::
     /// turn_in_flight` (sync, no I/O, like `Self::tree` immediately above).
     ///
-    /// **This is the chosen fix's whole surface (P-8/GP-05: a behavioural
+    /// **This is the chosen fix's whole surface: a behavioural
     /// difference between modes is a renderer bug, so this belongs on the
-    /// facade, not bolted onto the TUI's own `AppState` alone).** The item's
+    /// facade, not bolted onto the TUI's own `AppState` alone.** The item's
     /// three candidates were: (1) a runtime query -- this method, (2) make
     /// `Event::TurnStarted` survive resubscription (persisted or
     /// synthesized), (3) track it in the TUI. Option 3 was checked and

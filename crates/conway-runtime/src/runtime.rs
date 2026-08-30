@@ -959,9 +959,9 @@ impl Runtime {
     /// board item `01M0VSMF71S6VXX81YRAAF5S8Q` ("No command can submit a
     /// prompt"): a plugin `Command`'s `CommandOutcome::SubmitPrompt` must
     /// land as [`Provenance::
-    /// CommandPrompt`], never silently as [`Provenance::UserPrompt`] (GP-10
-    /// -- a turn conway generated from a plugin's own template is not a
-    /// turn the operator typed). `Self::prompt` is now a thin wrapper over
+    /// CommandPrompt`], never silently as [`Provenance::UserPrompt`] --
+    /// a turn conway generated from a plugin's own template is not a
+    /// turn the operator typed. `Self::prompt` is now a thin wrapper over
     /// this method, stamping `Provenance::UserPrompt` -- so every existing
     /// caller (an ordinary operator turn, `subagent.rs`'s spawn-with-first-
     /// message path, ...) keeps its exact prior behavior, byte-for-byte,

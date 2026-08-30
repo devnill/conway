@@ -421,34 +421,33 @@ against them where they existed.
   subagents with their own terminals, a skills system, a self-evolution
   loop over its own skills and prompts — so it is kept in the roster, with
   this distinction on the record rather than papered over.
-- **"Py"** — **not confirmed as spelled.** No terminal coding harness named
-  literally "Py" was found. The dictation is almost certainly a mishearing
-  of **Pi** (`https://pi.dev`), a real, actively developed "minimal agent
-  harness" by Earendil Inc. — confirmed this run via the product site
-  (*"Pi is a minimal agent harness. Adapt Pi to your workflows, not the
-  other way around"*; installable via `curl -fsSL https://pi.dev/install.sh
-  | sh` or `npm install -g @earendil-works/pi-coding-agent`, currently at
-  version `0.84.4` on the npm registry) and the GitHub organisation
-  `earendil-works` (repo `pi`, described as *"AI agent toolkit: unified LLM
-  API, agent loop, TUI, coding agent CLI"*). This identification is
-  strengthened by a fact independent of this run's own web search:
-  `INTENT.md` §7b **already cites [Pi](https://pi.dev) by name**, the same
-  spelling this run independently arrived at, as *"the
-  reference [for] the shape of a lightweight core with good extension
-  surfaces: four tools, a short system prompt, tree-structured sessions,
-  and an explicit list of things it refuses to own."* The same project,
-  already load-bearing in this tree under its correct spelling, is the only
-  serious match a homophone search for "Py"/"Pai"/"Pi" surfaces. **Stated
-  as directed rather than smoothed over: this is an inference from a
-  dictated homophone, not a confirmed transcription of the operator's own
-  spelling.** If the operator meant something else, that should replace
-  this entry rather than be reconciled with it.
+- **"Py" is Pi** (`https://pi.dev`) — **confirmed, not merely inferred.**
+  The dictated "Py" was a mishearing of **Pi**, a real, actively developed
+  "minimal agent harness" by Earendil Inc. — confirmed this run via the
+  product site (*"Pi is a minimal agent harness. Adapt Pi to your workflows,
+  not the other way around"*; installable via `curl -fsSL
+  https://pi.dev/install.sh | sh` or `npm install -g
+  @earendil-works/pi-coding-agent`, currently at version `0.84.4` on the npm
+  registry) and the GitHub organisation `earendil-works` (repo `pi`,
+  described as *"AI agent toolkit: unified LLM API, agent loop, TUI, coding
+  agent CLI"*). Two pieces of evidence settle it, neither available to this
+  page's first pass: the operator's own earlier words in the same session —
+  *"I've used pie and Hermes a bit"* — are the same pairing that later
+  reappeared as "Py … and Hermes," and `INTENT.md` §7b already cites both
+  by name and URL, [Pi](https://pi.dev) as *"the reference [for] the shape
+  of a lightweight core with good extension surfaces: four tools, a short
+  system prompt, tree-structured sessions, and an explicit list of things
+  it refuses to own,"* and [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+  as the harness-features reference cited above. The same project, already
+  load-bearing in this tree under its correct spelling, is the only serious
+  match a homophone search for "Py"/"Pai"/"Pi" surfaces, and the operator's
+  own prior "pie" removes the last reason to treat the match as coincidence.
 
 A convention page that misnames its own evidence loses its argument, and
 the rule does not depend on any single roster entry being right — it
-depends on the *test* (do several independent harnesses converge, not one),
-which stands regardless of whether "Py" resolves to Pi or to something this
-run failed to find.
+depends on the *test* (do several independent harnesses converge, not one).
+That said, §8a's roster is now fully confirmed: Claude Code needs no
+external source, and OpenCode, Hermes, and Pi are each verified by name.
 
 ---
 
@@ -571,10 +570,6 @@ checked.
   §8's convergence test is falsified the moment conway holds a position that
   several independent harnesses have since converged against — the test
   obligates re-examination, not just adoption on the way in.
-- **"Py" resolves to something other than Pi.** §8a's identification is an
-  inference from a dictated homophone. If the operator meant a different
-  tool, every claim this page makes about Pi under that name should be
-  struck rather than merged with the correct one.
 
 ---
 
@@ -583,10 +578,22 @@ checked.
 Corrections are appended here dated, never absorbed upward — matching
 [`DESIGN-context-path.md`](DESIGN-context-path.md)'s own rule.
 
-This page is written directly from the 2026-08-29 operator interview and
-carries no revisions of its own yet. It already records, in its own body
-rather than here, that the ruling it transcribes was itself corrected twice
-during that single sitting — rule 1 (§5) and the familiarity input (§8). A
-page that shows its own correction history, including corrections that
-happened before the page existed, is more trustworthy than one that
-presents a clean answer arrived at on the first try.
+This page is written directly from the 2026-08-29 operator interview. It
+already records, in its own body rather than here, that the ruling it
+transcribes was itself corrected twice during that single sitting — rule 1
+(§5) and the familiarity input (§8). A page that shows its own correction
+history, including corrections that happened before the page existed, is
+more trustworthy than one that presents a clean answer arrived at on the
+first try.
+
+**2026-08-30 — §8a's "Py" hedge removed.** §8a originally reported "Py" as
+"not confirmed as spelled," reasoning to Pi as the likely match but stating
+plainly that this was an inference from a dictated homophone. Two pieces of
+evidence not available to that first pass settle the question: the
+operator's own earlier words in the same session, *"I've used pie and
+Hermes a bit"* — the same pairing that later reappeared as "Py … and
+Hermes" — and `INTENT.md` §7b's pre-existing citation of both Pi and Hermes
+Agent by name and URL. §8a now names Pi as confirmed rather than inferred;
+§12's corresponding falsifier ("Py resolves to something other than Pi") is
+removed as resolved. The Hermes caveat (a multi-surface agent, not a
+dedicated terminal coding harness) is unchanged — it was never in question.

@@ -979,7 +979,7 @@ impl PermissionBroker {
     /// permission_mode`, one layer down at the broker itself.
     ///
     /// `entry.base()` is the ONLY thing this reads off `entry` for
-    /// enforcement (steering P-14) -- `entry.declared_ref()` is purely the
+    /// enforcement -- `entry.declared_ref()` is purely the
     /// display/bookkeeping half, `None` for a `Core` entry and `Some` for a
     /// `Declared` one.
     pub fn select_mode_cycle_entry(&self, entry: &conway_core::mode_cycle::ModeCycleEntry) {

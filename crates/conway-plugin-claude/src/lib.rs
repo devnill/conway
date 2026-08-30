@@ -48,7 +48,7 @@
 //! root (`builder.rs`); `AgentsConfig::dir` is a single `PathBuf`, not a
 //! list. Making either multi-rooted is a real, separate change (widening a
 //! public config field, touching the loader, its own test coverage) --
-//! GP-04's own "thin demonstrable slices" argues for scoping this item down
+//! "thin demonstrable slices" argues for scoping this item down
 //! to what a directory-read layer can prove out cleanly rather than
 //! shipping a fourth translated kind that is only partially wired. Every
 //! `skills/<name>/SKILL.md` and `agents/*.md` found is still NAMED, in
@@ -72,8 +72,9 @@
 //!
 //! ## What this crate does NOT do
 //!
-//! - No network access of any kind (C-04/acceptance 7) -- every read in
-//!   this crate is local disk I/O (`fsutil::read_bounded`).
+//! - No network access of any kind, and no new dependency for it either
+//!   (acceptance 7) -- every read in this crate is local disk I/O
+//!   (`fsutil::read_bounded`).
 //! - **No new `conway_core::ports::plugin` surface, and no new
 //!   `CommandOutcome` variant.** This crate now DOES depend on
 //!   `conway-core` in production code -- [`commands::ClaudeCommand`]
@@ -218,8 +219,8 @@ impl ClaudeCompatReport {
 /// Reads `dir` as a Claude Code plugin directory, translating what conway
 /// can use and naming everything it cannot (acceptance 5). Fails closed on
 /// a directory that does not exist, and on any file this crate reads that
-/// is malformed (P-13: a directory that cannot be read correctly is a named
-/// error, never a silently partial result) -- see [`ClaudeCompatError`] for
+/// is malformed -- a directory that cannot be read correctly is a named
+/// error, never a silently partial result -- see [`ClaudeCompatError`] for
 /// every failure mode.
 ///
 /// A `.claude-plugin/plugin.json` is NOT required to be present: `dir` is

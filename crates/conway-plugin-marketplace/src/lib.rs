@@ -18,7 +18,7 @@
 //!    install_entry`]/[`install::uninstall_plugin`] -- see `install.rs`'s
 //!    own doc for where a fetched artifact lives, who owns it, and why
 //!    nothing is written until every one of a plugin's declared files has
-//!    been fetched successfully (P-13).
+//!    been fetched successfully.
 //! 3. **No config writer for an array of OBJECTS.** NOT solved by this
 //!    crate -- see spec update 1, confirmed here: an installed plugin is
 //!    declared to conway as an ordinary `[plugins].claude_compat[]` entry

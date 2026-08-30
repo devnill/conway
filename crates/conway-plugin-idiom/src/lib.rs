@@ -193,7 +193,7 @@
 //! [`resolve_operator_paths`] collapses that case to the project fragment
 //! alone rather than injecting the same text twice under two names.
 //!
-//! **4. Missing is silent (P-13); unreadable or malformed is not.** A
+//! **4. Missing is silent; unreadable or malformed is not.** A
 //! `NotFound` read error yields no fragment and no `Result::Err` -- an
 //! operator who never wrote either file sees conway behave exactly as
 //! before this item. An empty (or whitespace-only) file is treated the

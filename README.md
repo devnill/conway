@@ -168,9 +168,9 @@ memory, skills, and MCP support are the ones named in
 and each lands as its own crate under `crates/` as it is built — a capability
 being common does not make it neutral, so conway ships these as things you
 install rather than behavior you inherit. Routing, the provider adapters,
-session rewind, step-guarding, skills, memory, and MCP support (plus the
-out-of-process subprocess plugin host, which the list above does not name)
-are the occupants today; compaction remains unbuilt.
+session rewind/mask/checkout, step-guarding, skills, memory, and MCP support
+(plus the out-of-process subprocess plugin host, which the list above does
+not name) are the occupants today; compaction remains unbuilt.
 
 **The tier's shape is settled and demonstrated, with eighteen members shipping
 today:** `crates/conway-plugin-skeleton`, a plugin that registers a single
@@ -180,12 +180,17 @@ the declarative role-routing engine (ordered fallback chains, capability
 filtering, health tracking, circuit breaking) `conway` itself used to compile
 in unconditionally, now installed the same way; `crates/conway-plugin-backends`,
 the Anthropic-native and OpenAI-compatible provider adapters `conway` itself
-used to compile in unconditionally too; and `crates/conway-plugin-history`, `/conway.history.rewind <seq>` —
-the owner's ruling that "features like /rewind, /checkout, etc are to be
-plugins, to fit into the philosophy; they are not core functionality," built
-via `Command::invoke`'s `CommandOutcome::ForkSession` outcome (the TUI's own
+used to compile in unconditionally too; and `crates/conway-plugin-history`,
+`/conway.history.rewind <seq>`, `/conway.history.mask <seq> [unmask]`, and
+`/conway.history.checkout <session-id>` — the owner's ruling that "features
+like /rewind, /checkout, etc are to be plugins, to fit into the philosophy;
+they are not core functionality," so `/checkout` and a reachable
+`ContextMask` are built too, not only `/rewind`: `/rewind` forks via
+`Command::invoke`'s `CommandOutcome::ForkSession` outcome (the TUI's own
 mechanism for a plugin command to fork the session driving it, without a
-command ever holding a live handle onto any session); and
+command ever holding a live handle onto any session), `/checkout` forks a
+DIFFERENT session by id via its own `CommandOutcome::Checkout`, and `/mask`
+appends a `LogRecord::ContextMask` via `CommandOutcome::MaskRecord`; and
 `crates/conway-plugin-stepguard`, repeated-tool-call detection, which the
 agent loop used to carry unconditionally — `PHILOSOPHY.md` §6 leaves loop
 intervention to the operator "including writing none", which is only a real
@@ -229,8 +234,9 @@ command of its own but publishes `ui.form`, a blocking ask-with-options
 capability another installed plugin calls into — the first member on the
 PROVIDING end of the plugin-to-plugin capability channel, where every
 other member above is a leaf consumer of host services only.
-Compaction, and `/checkout`/`ContextMask`,
-remain separate, later work; conway-plugin-routing is not
+Compaction remains the one first-party-plugin-tier capability still unbuilt
+(`/checkout`/`ContextMask` are built, above, in `conway-plugin-history`);
+conway-plugin-routing is not
 "dynamic routing" in the learned/adaptive sense PHILOSOPHY.md describes
 elsewhere — no classifier, no embedding model, ever — it is the same purely
 declarative resolver conway always had, no longer compiled in by default.

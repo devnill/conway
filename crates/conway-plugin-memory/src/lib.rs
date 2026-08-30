@@ -246,7 +246,7 @@ impl Default for MemoryConfig {
 /// injection) and three [`Tool`]s (`remember`/`forget`/`list_memories`),
 /// all sharing one `Arc<dyn MemoryStore>` captured at construction time.
 /// Installs through the SAME `Plugin::tools`/`Plugin::context_hooks`/
-/// `with_plugin` surface every other plugin capability uses (GP-03) -- no
+/// `with_plugin` surface every other plugin capability uses -- no
 /// privileged first-party channel.
 pub struct MemoryPlugin {
     store: Arc<dyn MemoryStore>,

@@ -59,7 +59,7 @@
 //! nothing here that would need to.
 //!
 //! **`conway::plugin` alone, no `conway-core` dependency** -- the same
-//! GP-03 discipline `conway-plugin-skeleton`'s own module doc states: a
+//! discipline `conway-plugin-skeleton`'s own module doc states: a
 //! first-party plugin gets no privileged API. Everything this crate names
 //! (`Plugin`, `CapabilityProvider`, `CapabilityRegistration`,
 //! `CapabilityError`, `HostCapability`, `PluginDescription`) is reachable
@@ -119,7 +119,7 @@ pub struct AskSelectRequest {
     pub prompt: String,
     /// The choices offered, in display order. `FormProvider::call`
     /// refuses ([`CapabilityError`]) a request whose `options` is empty --
-    /// P-10: a caller-supplied shape is untrusted input, range-checked at
+    /// a caller-supplied shape is untrusted input, range-checked at
     /// the boundary, never a panic.
     pub options: Vec<String>,
 }

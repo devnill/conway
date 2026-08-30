@@ -330,8 +330,8 @@ impl Command for SkeletonPingCommand {
 /// `include_str!` convention's accepted tradeoff (see that method's own
 /// doc, "Convention, not enforcement"), chosen here for the identical
 /// reason: a v1 whose entire job is proving the capability end to end
-/// needs no live-reload story, and P-10 (range-check untrusted input at
-/// the boundary) prefers the smaller slice -- no template language exists
+/// needs no live-reload story, and range-checking untrusted input at
+/// the boundary prefers the smaller slice -- no template language exists
 /// anywhere in this type for a file's own content, or an operator's typed
 /// arguments, to be parsed through.
 pub struct FilePromptCommand {

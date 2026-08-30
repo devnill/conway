@@ -4,8 +4,8 @@
 //! `conway-testkit` ships its own `SubagentHost`/`EventSink` fakes
 //! (`conway_testkit::{FakeSubagentHost, CollectingEventSink}`), but this
 //! crate defines its own lightweight doubles instead of depending on that
-//! crate, for real behavioural reasons (P-14: a shared implementation is
-//! restated only when there is one) checked against `conway-testkit`'s
+//! crate, for real behavioural reasons -- a shared implementation is
+//! restated only when there is one -- checked against `conway-testkit`'s
 //! doubles directly, not assumed:
 //! 1. The `FakeSubagentHost` this crate's downstream tests need must also
 //!    record `steer`/`cancel` calls (`conway_testkit`'s does not — it is a
@@ -307,8 +307,8 @@ pub struct TestHandles {
 /// [`TestHandles`] to inspect/drive those doubles.
 ///
 /// Delegates the field-by-field assembly to
-/// [`conway_core::ports::ToolCtx::for_test`] (P-14: one implementation of
-/// "build a `ToolCtx`", not two) and overrides only `cancel` — every other
+/// [`conway_core::ports::ToolCtx::for_test`] -- one implementation of
+/// "build a `ToolCtx`", not two -- and overrides only `cancel` — every other
 /// caller of `for_test` gets a fresh, unobservable token of its own, but
 /// this crate's own tests need the SAME token back out through
 /// [`TestHandles::cancel`] so a test can cancel it mid-invoke and observe

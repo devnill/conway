@@ -13,7 +13,7 @@
 //! declared mode is a LABEL over that same base, plus optional bookkeeping
 //! for the status line and the mode cycle; it is never a second place
 //! `decide()`'s own question ("what does this mode allow") gets answered —
-//! steering P-14: one implementation.
+//! one implementation, never a restatement at a second call site.
 //!
 //! ## Why this lives in `conway-core` rather than beside the broker
 //!
@@ -27,7 +27,7 @@
 //! `PluginDeclaredMode`, ordering, and collision handling, all of which
 //! are `conway-core` vocabulary already.
 //!
-//! Steering P-14 is unaffected by the move: this is still ONE
+//! The one-implementation rule is unaffected by the move: this is still ONE
 //! implementation of "which modes exist and in what order do they cycle."
 //! It is simply in the layer every consumer can already see, instead of
 //! one only the runtime can.
@@ -92,7 +92,7 @@ pub enum ModeCycleEntry {
 impl ModeCycleEntry {
     /// The core mode this entry ultimately resolves to for enforcement.
     /// `PermissionBroker::decide` is the ONLY place that question is
-    /// answered (steering P-14) — this accessor exists so a caller
+    /// answered — this accessor exists so a caller
     /// selecting a `Declared` entry sets the broker's REAL mode with
     /// `PermissionBroker::set_mode(entry.base())`, never a second decision
     /// path.

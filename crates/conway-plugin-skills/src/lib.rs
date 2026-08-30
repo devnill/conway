@@ -44,7 +44,7 @@
 //! the map); the tool returns the body (looked up in the same map). Neither
 //! reaches into `Runtime.skills` or any runtime-internal state -- the map
 //! is this plugin's own copy, the cookbook example 4's static `SKILLS`
-//! table with a runtime-populated stand-in. See the board item's GP-03
+//! table with a runtime-populated stand-in. See the board item's own
 //! note: a first-party plugin needing a hook a third party cannot reach
 //! would be a design failure; [`Plugin::context_hooks`] (the trait method
 //! that lets this plugin's hook install through the SAME `with_plugin`/
