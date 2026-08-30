@@ -141,4 +141,15 @@ async fn skeleton_ask_degrades_under_a_real_one_shot_run_with_no_drawing_surface
         text.starts_with("skeleton ask: no answer available"),
         "expected the degrade message conway.ui's no-drawing-surface refusal produces, got: {text}"
     );
+    // The discriminating half -- this file's own module doc names the
+    // sibling case (`ui_form_absent_by_default.rs`, `conway.ui` absent
+    // entirely) that shares this exact "no answer available" prefix via
+    // `CapabilityCallError::NotProvided`. Only the `Provider{
+    // no_drawing_surface}` wording below proves `conway.ui` WAS reached
+    // and refused, rather than never having been reached at all.
+    assert!(
+        text.contains("provider failed") && text.contains("no drawing surface"),
+        "expected the Provider{{no_drawing_surface}}-shaped message proving \
+         conway.ui was reached and refused, got: {text}"
+    );
 }

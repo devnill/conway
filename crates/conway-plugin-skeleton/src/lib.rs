@@ -32,13 +32,13 @@
 //! **As of board item `01M0WWPA70E8YAAN981EK10D3D`, this crate also proves
 //! Edge B (plugin -> plugin capability calls,
 //! `docs/vision/DESIGN-plugin-dependencies.md` §2).**
-//! [`SkeletonAskTool`]'s `skeleton_ask` is this tier's first CONSUMER of
+//! `SkeletonAskTool`'s `skeleton_ask` is this tier's first CONSUMER of
 //! another plugin's capability, and the first in-tree caller of
 //! [`conway::plugin::CapabilityCallHandle::call_versioned`] -- that
 //! method's own doc named this crate's board item as its intended first
 //! consumer before this tool existed. It calls into `conway-plugin-ui`'s
 //! `ui.form` capability BY BARE NAME AND HAND-BUILT JSON, with no compile-
-//! time dependency on that crate from `src/` (see [`SkeletonAskTool`]'s own
+//! time dependency on that crate from `src/` (see `SkeletonAskTool`'s own
 //! doc) -- proving, not merely asserting, that Edge B needs no shared type
 //! between a provider and a consumer.
 //!
