@@ -675,12 +675,33 @@ fn bool_label(name: &str, value: bool) -> String {
 /// (`view/modal.rs`'s own doc).
 const FOOTER_ROWS: u16 = 2;
 
-/// The settings menu's own cap denominator -- `1`, the same generous cap
-/// `/help` uses (`view/help.rs::CAP_DENOMINATOR`'s own doc): this is an
-/// INFORMATIONAL surface the user opened on purpose to browse/adjust, not a
-/// decision interrupting them, so it can reasonably claim more of the
-/// screen than the `2`-denominator decision-owed surfaces.
-const CAP_DENOMINATOR: u16 = 1;
+/// The settings menu's own cap denominator -- `2`: at most half the
+/// transcript pane.
+///
+/// This was `1` (claim the whole pane, the generous cap `/help` still
+/// uses), on the reasoning that an INFORMATIONAL surface the user opened
+/// on purpose may take more of the screen than a decision-owed one. That
+/// reasoning was sound while the menu drew OVER an already-rendered
+/// transcript: claiming the whole pane cost nothing that the `Clear` was
+/// not covering anyway.
+///
+/// The reservation this item introduced (see [`modal_rect`]) inverts that.
+/// `layout` now shrinks the transcript by exactly the menu's height, so
+/// a denominator of `1` is self-defeating by construction: the menu claims
+/// the full pane, the transcript is shrunk to nothing, and an error raised
+/// while `/settings` is open is once again unreadable -- the very defect
+/// the reservation exists to fix. A cap and a reservation are the same
+/// mechanism seen from two ends; only the cap decides what the reservation
+/// leaves behind.
+///
+/// Capping is safe here because [`menu::draw`] renders the tree as a
+/// stateful `List` whose `ListState` carries the selection: ratatui scrolls
+/// it to keep the selected row visible, so rows past the cap stay reachable
+/// with `Up`/`Down` rather than being truncated away.
+///
+/// `/help` keeps `1` and stays coherent: it takes no reservation, so
+/// nothing there contradicts.
+const CAP_DENOMINATOR: u16 = 2;
 
 /// The `/settings` menu's own bottom-anchored, content-sized `Rect`,
 /// computed against `transcript_area` -- exactly what [`draw`] itself now

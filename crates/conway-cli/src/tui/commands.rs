@@ -1500,7 +1500,7 @@ async fn switch_session<H: Host>(
     }
 }
 
-/// Parses `model` and forks the focused agent onto it via [`switch_session`]
+/// Parses `model` and forks the focused agent onto it via `switch_session`
 /// -- the ONE place a chosen `"backend/model"` string becomes a live switch
 /// (steering P-14), called both by [`execute`]'s `Model { model: Some(_) }`
 /// arm (typed `/model <backend/model>`) and by `run.rs`'s
