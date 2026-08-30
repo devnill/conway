@@ -456,7 +456,7 @@ fn default_document() -> Value {
     })
 }
 
-/// True when `(name, entry)` is exactly [`default_document`]'s own baked-in
+/// True when `(name, entry)` is exactly `default_document`'s own baked-in
 /// role floor -- `"default"`, an empty chain, no overrides at all -- rather
 /// than a role an operator declared. The floor exists only so a config with
 /// no `[roles]`/`default_role` of its own still validates (see
