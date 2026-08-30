@@ -200,7 +200,9 @@ impl CapabilityProvider for FormProvider {
         // structurally, and a malformed shape maps to a typed
         // `CapabilityError`, never a panic.
         let request: AskSelectRequest = serde_json::from_value(payload).map_err(|e| {
-            CapabilityError::new(format!("ui.form: request did not match the expected shape: {e}"))
+            CapabilityError::new(format!(
+                "ui.form: request did not match the expected shape: {e}"
+            ))
         })?;
         if request.options.is_empty() {
             return Err(CapabilityError::new(
@@ -541,7 +543,10 @@ mod tests {
         // future change adds one without updating this text, this test
         // fails rather than the claim silently going stale.
         assert!(plugin.tools().is_empty(), "description claims no tools");
-        assert!(plugin.commands().is_empty(), "description claims no commands");
+        assert!(
+            plugin.commands().is_empty(),
+            "description claims no commands"
+        );
         assert_eq!(
             plugin.capabilities().len(),
             1,

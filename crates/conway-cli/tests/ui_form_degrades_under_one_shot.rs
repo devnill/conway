@@ -45,7 +45,9 @@ fn one_skeleton_ask_call_script() -> Script {
 /// entry naming both `conway.ui` and `conway.plugin_skeleton` -- mirrors
 /// `claude_compat_hooks.rs::write_fixture_with_claude_compat_entry`'s own
 /// "patch the parsed JSON in place" pattern.
-fn write_fixture_with_ui_and_skeleton_installed(mock: &common::mock_backend::MockHandle) -> Fixture {
+fn write_fixture_with_ui_and_skeleton_installed(
+    mock: &common::mock_backend::MockHandle,
+) -> Fixture {
     let fixture = write_fixture(mock, 5);
     let text = std::fs::read_to_string(&fixture.config_path).expect("read fixture config");
     let mut value: serde_json::Value = serde_json::from_str(&text).expect("parse fixture config");
@@ -100,7 +102,9 @@ fn skeleton_ask_result_text(records: &[LogRecord]) -> (bool, String) {
     records
         .iter()
         .find_map(|r| match r {
-            LogRecord::ToolResultRecord { result, .. } if result.tool.as_str() == "skeleton_ask" => {
+            LogRecord::ToolResultRecord { result, .. }
+                if result.tool.as_str() == "skeleton_ask" =>
+            {
                 let text = result
                     .blocks
                     .iter()
@@ -114,7 +118,9 @@ fn skeleton_ask_result_text(records: &[LogRecord]) -> (bool, String) {
             _ => None,
         })
         .unwrap_or_else(|| {
-            panic!("expected a `skeleton_ask` ToolResultRecord in the session transcript: {records:?}")
+            panic!(
+                "expected a `skeleton_ask` ToolResultRecord in the session transcript: {records:?}"
+            )
         })
 }
 

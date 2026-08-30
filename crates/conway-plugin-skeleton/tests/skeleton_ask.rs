@@ -23,7 +23,9 @@ use conway::plugin::{
 };
 use conway::AgentId;
 use conway_plugin_skeleton::{SkeletonPlugin, ASK_TOOL_NAME, PLUGIN_ID};
-use conway_plugin_ui::{AskSelectAnswer, AskSelectRequest, ConwayUiPlugin, FormSurface, FormSurfaceError};
+use conway_plugin_ui::{
+    AskSelectAnswer, AskSelectRequest, ConwayUiPlugin, FormSurface, FormSurfaceError,
+};
 use conway_testkit::{CollectingEventSink, FakeSubagentHost};
 
 /// A [`FormSurface`] that always answers with a fixed choice -- the SAME

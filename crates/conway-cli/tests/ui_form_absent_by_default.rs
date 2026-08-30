@@ -95,7 +95,9 @@ fn skeleton_ask_result_text(records: &[LogRecord]) -> (bool, String) {
     records
         .iter()
         .find_map(|r| match r {
-            LogRecord::ToolResultRecord { result, .. } if result.tool.as_str() == "skeleton_ask" => {
+            LogRecord::ToolResultRecord { result, .. }
+                if result.tool.as_str() == "skeleton_ask" =>
+            {
                 let text = result
                     .blocks
                     .iter()
@@ -109,7 +111,9 @@ fn skeleton_ask_result_text(records: &[LogRecord]) -> (bool, String) {
             _ => None,
         })
         .unwrap_or_else(|| {
-            panic!("expected a `skeleton_ask` ToolResultRecord in the session transcript: {records:?}")
+            panic!(
+                "expected a `skeleton_ask` ToolResultRecord in the session transcript: {records:?}"
+            )
         })
 }
 
