@@ -269,7 +269,7 @@ pub(crate) const LEAF_OPEN_PLUGINS: &str = "open_plugins";
 pub(crate) const LEAF_REMOVE_PROVIDER_PREFIX: &str = "remove_provider:";
 /// Prefix for one add-a-provider leaf, one per
 /// `crate::first_run::HOSTED_CHOICES` entry -- `"{LEAF_ADD_PROVIDER_PREFIX}{choice.id}"`.
-/// The same two shapes the first-run flow offers, reused verbatim (never a
+/// The same shapes the first-run flow offers, reused verbatim (never a
 /// second, independent list of "which provider kinds conway supports" --
 /// P-14; see this module's own doc, "Providers: add/remove owned here").
 pub(crate) const LEAF_ADD_PROVIDER_PREFIX: &str = "add_provider:";

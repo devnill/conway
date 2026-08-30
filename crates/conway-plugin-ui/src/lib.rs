@@ -292,9 +292,9 @@ impl CapabilityProvider for FormProvider {
             ))
         })?;
         match ask(&self.surface, request).await {
-            Ok(answer) => {
-                Ok(serde_json::to_value(answer).expect("AskSelectAnswer always serializes to JSON"))
-            }
+            Ok(answer) => Ok(
+                serde_json::to_value(answer).expect("AskSelectAnswer always serializes to JSON")
+            ),
             Err(AskError::EmptyOptions) => Err(CapabilityError::new(
                 "ui.form: request.options must not be empty",
             )),

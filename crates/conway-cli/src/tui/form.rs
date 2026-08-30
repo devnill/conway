@@ -42,9 +42,7 @@ impl PendingFormAsk {
     }
 
     #[cfg(test)]
-    pub(crate) fn reply_sender(
-        self,
-    ) -> oneshot::Sender<Result<AskSelectAnswer, FormSurfaceError>> {
+    pub(crate) fn reply_sender(self) -> oneshot::Sender<Result<AskSelectAnswer, FormSurfaceError>> {
         self.reply
     }
 
@@ -56,7 +54,10 @@ impl PendingFormAsk {
     /// mirrors [`crate::tui::gate::PendingPrompt::new_for_test`] exactly.
     pub(crate) fn new_for_test(
         request: AskSelectRequest,
-    ) -> (PendingFormAsk, oneshot::Receiver<Result<AskSelectAnswer, FormSurfaceError>>) {
+    ) -> (
+        PendingFormAsk,
+        oneshot::Receiver<Result<AskSelectAnswer, FormSurfaceError>>,
+    ) {
         let (reply, rx) = oneshot::channel();
         (PendingFormAsk { request, reply }, rx)
     }
@@ -139,10 +140,7 @@ mod tests {
             selected: "yes".to_string(),
         }));
 
-        let answer = ask
-            .await
-            .expect("ask_select task")
-            .expect("resolved Ok");
+        let answer = ask.await.expect("ask_select task").expect("resolved Ok");
         assert_eq!(answer.selected, "yes");
     }
 
@@ -216,8 +214,7 @@ mod tests {
     #[tokio::test]
     async fn a_real_ask_question_call_renders_is_answered_and_reaches_the_tool_result() {
         let (surface, mut form_rx) = TuiFormSurface::channel();
-        let plugin =
-            conway_plugin_ui::ConwayUiPlugin::new(Some(std::sync::Arc::new(surface)));
+        let plugin = conway_plugin_ui::ConwayUiPlugin::new(Some(std::sync::Arc::new(surface)));
         let tool = plugin
             .tools()
             .into_iter()
@@ -246,7 +243,10 @@ mod tests {
         // The app loop's own `form_rx.recv()` arm, reproduced directly --
         // mirrors `App::run`'s real select-loop arm byte for byte (see
         // `tui/app/run.rs`).
-        let ask = form_rx.recv().await.expect("the tool call reaches the surface promptly");
+        let ask = form_rx
+            .recv()
+            .await
+            .expect("the tool call reaches the surface promptly");
         let mut state = crate::tui::state::AppState::new(agent_id);
         state.offer_ui_form(ask);
 
@@ -256,7 +256,10 @@ mod tests {
             crate::tui::state::Mode::UiForm(form) => {
                 assert_eq!(form.ask.request.prompt, "which way?");
                 assert_eq!(form.ask.request.options, vec!["left", "right"]);
-                assert_eq!(form.selected, 0, "the modal opens with the first option lit");
+                assert_eq!(
+                    form.selected, 0,
+                    "the modal opens with the first option lit"
+                );
             }
             other => panic!("expected Mode::UiForm, got {other:?}"),
         }
@@ -278,9 +281,7 @@ mod tests {
         );
         assert_eq!(
             answer_action,
-            crate::tui::input::Action::UiFormDecision(
-                crate::tui::state::UiFormDecision::Answer
-            )
+            crate::tui::input::Action::UiFormDecision(crate::tui::state::UiFormDecision::Answer)
         );
         state.resolve_ui_form(crate::tui::state::UiFormDecision::Answer);
         assert!(

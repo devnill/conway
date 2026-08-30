@@ -166,7 +166,13 @@ async fn main() -> std::process::ExitCode {
     }
 
     let result = dispatch(
-        &cli, conway, tui_gate_rx, tui_form_rx, memory_store, agent_names, &env,
+        &cli,
+        conway,
+        tui_gate_rx,
+        tui_form_rx,
+        memory_store,
+        agent_names,
+        &env,
     )
     .await;
 
@@ -452,8 +458,7 @@ async fn dispatch(
         None if cli.print.is_some() => oneshot::run(cli, conway).await,
         None => {
             let gate_rx = tui_gate_rx.expect("tui_gate_rx is constructed whenever is_tui is true");
-            let form_rx =
-                tui_form_rx.expect("tui_form_rx is constructed whenever is_tui is true");
+            let form_rx = tui_form_rx.expect("tui_form_rx is constructed whenever is_tui is true");
             // resolved from the SAME
             // `[plugins].install` config `build_conway`'s own
             // `first_party_plugins::install` call already read -- see

@@ -549,12 +549,14 @@ impl AppState {
         match decision {
             UiFormDecision::Answer => {
                 let selected = form.ask.request.options[form.selected].clone();
-                form.ask.resolve(Ok(conway_plugin_ui::AskSelectAnswer { selected }));
+                form.ask
+                    .resolve(Ok(conway_plugin_ui::AskSelectAnswer { selected }));
             }
             UiFormDecision::Cancel => {
-                form.ask.resolve(Err(conway_plugin_ui::FormSurfaceError::new(
-                    "the operator cancelled the question",
-                )));
+                form.ask
+                    .resolve(Err(conway_plugin_ui::FormSurfaceError::new(
+                        "the operator cancelled the question",
+                    )));
             }
         }
         self.promote_next_surface();
@@ -1572,7 +1574,10 @@ mod tests {
 
         state.resolve_ui_form(UiFormDecision::Answer);
 
-        assert!(matches!(state.mode, Mode::Normal), "answering must close the modal");
+        assert!(
+            matches!(state.mode, Mode::Normal),
+            "answering must close the modal"
+        );
         let answer = reply_rx
             .await
             .expect("the reply sender is alive")
@@ -1594,7 +1599,10 @@ mod tests {
 
         state.resolve_ui_form(UiFormDecision::Cancel);
 
-        assert!(matches!(state.mode, Mode::Normal), "cancelling must close the modal");
+        assert!(
+            matches!(state.mode, Mode::Normal),
+            "cancelling must close the modal"
+        );
         let err = reply_rx
             .await
             .expect("the reply sender is alive")

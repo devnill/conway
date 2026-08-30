@@ -887,10 +887,7 @@ fn draw_ui_form(
         } else {
             ("  ", theme.dim)
         };
-        body_lines.push(Line::from(Span::styled(
-            format!("{marker}{option}"),
-            style,
-        )));
+        body_lines.push(Line::from(Span::styled(format!("{marker}{option}"), style)));
     }
     let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
     let content_rows = body
@@ -1182,12 +1179,11 @@ mod tests {
     fn draw_ui_form_shows_the_prompt_and_the_highlighted_option() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
-        let (ask, _reply_rx) = crate::tui::form::PendingFormAsk::new_for_test(
-            conway_plugin_ui::AskSelectRequest {
+        let (ask, _reply_rx) =
+            crate::tui::form::PendingFormAsk::new_for_test(conway_plugin_ui::AskSelectRequest {
                 prompt: "which way?".to_string(),
                 options: vec!["left".to_string(), "right".to_string()],
-            },
-        );
+            });
         state.offer_ui_form(ask);
         state.move_ui_form_selection(1);
 
@@ -1198,7 +1194,10 @@ mod tests {
             .expect("draw");
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        assert!(text.contains("which way?"), "the prompt must render: {text}");
+        assert!(
+            text.contains("which way?"),
+            "the prompt must render: {text}"
+        );
         assert!(text.contains("left"), "every option must render: {text}");
         assert!(text.contains("right"), "every option must render: {text}");
         assert!(

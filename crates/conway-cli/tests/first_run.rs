@@ -274,7 +274,10 @@ async fn first_run_a_provider_configured_via_api_key_env_actually_completes_a_tu
 
     let started = Instant::now();
     let out = common::command(&["-p", "hi"], &fixture)
-        .env("CONWAY_TEST_FIRST_RUN_API_KEY_ENV_STYLE", "sk-child-process-only")
+        .env(
+            "CONWAY_TEST_FIRST_RUN_API_KEY_ENV_STYLE",
+            "sk-child-process-only",
+        )
         .output()
         .expect("run conway binary");
     let elapsed = started.elapsed();

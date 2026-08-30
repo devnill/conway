@@ -139,7 +139,8 @@ async fn ask_question_degrades_under_a_real_one_shot_run_with_no_drawing_surface
         "the tool result itself must not be marked an error; got text: {text}"
     );
     assert_eq!(
-        text, "no answer available: no interactive surface is available in this host to ask the operator",
+        text,
+        "no answer available: no interactive surface is available in this host to ask the operator",
         "expected ask_question's own no-surface degrade sentence"
     );
 }

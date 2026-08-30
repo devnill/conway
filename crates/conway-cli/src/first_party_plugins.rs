@@ -899,9 +899,15 @@ mod tests {
         // this wiring-only check.
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin(), None)
-            .iter()
-            .any(|p| p.manifest().id == conway_plugin_skeleton::PLUGIN_ID);
+        let found = bundle(
+            &cwd,
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(),
+            None,
+        )
+        .iter()
+        .any(|p| p.manifest().id == conway_plugin_skeleton::PLUGIN_ID);
         assert!(
             found,
             "the linked bundle must contain the skeleton plugin under its published id, \
@@ -917,9 +923,15 @@ mod tests {
     fn bundle_carries_the_memory_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin(), None)
-            .iter()
-            .any(|p| p.manifest().id == conway_plugin_memory::PLUGIN_ID);
+        let found = bundle(
+            &cwd,
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(),
+            None,
+        )
+        .iter()
+        .any(|p| p.manifest().id == conway_plugin_memory::PLUGIN_ID);
         assert!(
             found,
             "the linked bundle must contain the memory plugin under its published id, \
@@ -970,9 +982,15 @@ mod tests {
     fn bundle_carries_the_trim_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin(), None)
-            .iter()
-            .any(|p| p.manifest().id == conway_plugin_trim::PLUGIN_ID);
+        let found = bundle(
+            &cwd,
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(),
+            None,
+        )
+        .iter()
+        .any(|p| p.manifest().id == conway_plugin_trim::PLUGIN_ID);
         assert!(
             found,
             "the linked bundle must contain the trim plugin under its published id, otherwise \
@@ -992,9 +1010,15 @@ mod tests {
     fn bundle_carries_the_ui_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin(), None)
-            .iter()
-            .any(|p| p.manifest().id == conway_plugin_ui::PLUGIN_ID);
+        let found = bundle(
+            &cwd,
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(),
+            None,
+        )
+        .iter()
+        .any(|p| p.manifest().id == conway_plugin_ui::PLUGIN_ID);
         assert!(
             found,
             "the linked bundle must contain conway.ui under its published id, otherwise \
@@ -1084,9 +1108,15 @@ mod tests {
     fn bundle_carries_the_idiom_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin(), None)
-            .iter()
-            .any(|p| p.manifest().id == conway_plugin_idiom::PLUGIN_ID);
+        let found = bundle(
+            &cwd,
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(),
+            None,
+        )
+        .iter()
+        .any(|p| p.manifest().id == conway_plugin_idiom::PLUGIN_ID);
         assert!(
             found,
             "the linked bundle must contain the idiom plugin under its published id, \
@@ -1247,9 +1277,15 @@ mod tests {
     fn bundle_carries_the_names_plugin_under_its_published_id() {
         let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
         let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
-        let found = bundle(&cwd, memory_store, test_agent_names(), test_idiom_plugin(), None)
-            .iter()
-            .any(|p| p.manifest().id == conway_plugin_names::PLUGIN_ID);
+        let found = bundle(
+            &cwd,
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(),
+            None,
+        )
+        .iter()
+        .any(|p| p.manifest().id == conway_plugin_names::PLUGIN_ID);
         assert!(
             found,
             "the linked bundle must contain the names plugin under its published id, \
