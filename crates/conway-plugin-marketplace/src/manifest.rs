@@ -94,6 +94,32 @@
 //! all for it. A git checkout is a DIFFERENT surface with its own hazard
 //! (a checkout can itself contain a symlink) -- `crate::git_source`'s own
 //! doc states how that is validated before anything is installed.
+//!
+//! # A third shape found within hours -- `source` as a plain string
+//!
+//! Board item `01M1A9J9C9YRH3YPTGD335HZPZ`: the operator's very next
+//! attempt, against ideate's own real marketplace, hit a THIRD shape this
+//! module's own `git-subdir`/`github`-object model above did not cover at
+//! all -- `"source": "./"`, a bare relative path meaning "this repository
+//! is the plugin". [`PluginSource::RelativePath`] is that shape (that
+//! enum's own doc has the full argument for why this is likely the
+//! COMMONEST real-world case, not an edge one). Verified against ideate's
+//! own manifest (`https://raw.githubusercontent.com/ideate-ai/ideate/HEAD/
+//! .claude-plugin/marketplace.json`, fetched 2026-08-30; the exact bytes
+//! are the committed fixture `tests/fixtures/ideate-marketplace.json`).
+//!
+//! **Other Claude Code manifest shapes checked for and NOT found** (so this
+//! stays a documented finding rather than an unstated assumption): the
+//! `files`/`directory` `source` kinds Claude Code's own schema documents
+//! alongside `git-subdir`/`github` were already representable before this
+//! item (`PluginSource::Unsupported`, refused by name only at install
+//! time -- see `docs/migrating-from-claude-code.md`'s own worked
+//! `extraKnownMarketplaces` example, which uses `"source": "directory"` for
+//! a local path); no `plugins[]` entry combining `id` AND `source`, or
+//! `name` AND `files`, was found in either real manifest this crate has
+//! now ingested; neither real manifest nests a marketplace inside another
+//! marketplace's own `plugins[]` array. A THIRD real, published manifest
+//! was not located to check against beyond the two already fetched.
 
 use std::collections::BTreeMap;
 
@@ -236,17 +262,42 @@ impl MarketplacePluginEntry {
     }
 }
 
-/// A real Claude Code `plugins[].source` object -- board item
-/// `01M0Y6RYZA94BK6YXJ7X8TNEGR`, layer 4. Custom [`Deserialize`] rather than
-/// `#[derive]` with `#[serde(tag = "source")]`: a derive-tagged enum's
-/// "unknown variant" case is a hard parse error, which would make browsing a
-/// marketplace fail outright the moment it lists ANY source kind this crate
-/// does not fetch (an archive-requiring kind, or one published after this
-/// was written) -- exactly the layer-4/layer-5 "refuse by name, but only
-/// when actually asked to install it" split this item's ruling draws.
-/// [`Self::Unsupported`] instead carries the kind's own name forward so
-/// this crate's own `git_source` module can name it in a refusal, without
-/// ever failing the PARSE.
+/// A real Claude Code `plugins[].source` -- board item
+/// `01M0Y6RYZA94BK6YXJ7X8TNEGR`, layer 4, widened by `01M1A9J9C9YRH3YPTGD335HZPZ`
+/// (defect 1) to also accept the plain-STRING shape. Custom [`Deserialize`]
+/// rather than `#[derive]` with `#[serde(tag = "source")]`: a derive-tagged
+/// enum's "unknown variant" case is a hard parse error, which would make
+/// browsing a marketplace fail outright the moment it lists ANY source kind
+/// this crate does not fetch (an archive-requiring kind, or one published
+/// after this was written) -- exactly the layer-4/layer-5 "refuse by name,
+/// but only when actually asked to install it" split this item's ruling
+/// draws. [`Self::Unsupported`] instead carries the kind's own name forward
+/// so this crate's own `git_source` module can name it in a refusal,
+/// without ever failing the PARSE.
+///
+/// # Defect 1: `source` may be a plain string, not only an object
+///
+/// ideate's own real, published manifest (`.claude-plugin/marketplace.json`
+/// at `https://github.com/ideate-ai/ideate`, fetched 2026-08-30, committed
+/// verbatim as `tests/fixtures/ideate-marketplace.json`) names
+/// `"source": "./"` for its own `ideate` entry -- a relative path meaning
+/// "this repository IS the plugin", not an object with an inner `source`
+/// discriminator field at all. The custom [`Deserialize`] impl below used
+/// to call `value.get("source")` unconditionally, which -- given a JSON
+/// *string* rather than an object -- looked for a `source` field INSIDE
+/// the string and reported `missing field `source``, a confusing error
+/// about the very value it was trying to read. [`Self::RelativePath`] is
+/// this shape; before this crate can fetch it, [`crate::install::
+/// install_entry`] resolves it against the REPOSITORY the marketplace
+/// manifest itself was reached through (`crate::git_source`'s own
+/// resolution, using `github_repo_from_url` below) -- a bare relative path
+/// alone names no git remote of its own.
+///
+/// This is likely the COMMONEST real-world shape, not an edge case: a
+/// repository that publishes a Claude Code marketplace listing only
+/// itself has no reason to name a `git-subdir`/`github` object pointing
+/// back at its own clone URL when a bare `"./"` says the same thing more
+/// simply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginSource {
     /// `{"source": "git-subdir", "url": "...", "path": "..."}` -- a git
@@ -256,6 +307,16 @@ pub enum PluginSource {
     /// `{"source": "github", "repo": "owner/repo"}` -- a whole GitHub
     /// repository is this plugin's own root.
     Github { repo: String },
+    /// A plain JSON string, e.g. `"./"` or `"plugin/subdir"` -- the
+    /// marketplace's OWN repository is this plugin's root (or contains it
+    /// at the named relative path). See this enum's own doc, "Defect 1".
+    /// Resolved against the marketplace's own repository at install time
+    /// (`crate::git_source`'s own `clone_url`/`subdir`); a marketplace this
+    /// crate cannot trace back to a git repository at all (e.g. reached via
+    /// an arbitrary HTTP host with no known git remote) refuses this
+    /// resolution BY NAME (`MarketplaceError::UnresolvableRelativeSource`)
+    /// rather than guessing one.
+    RelativePath { path: String },
     /// Any other declared `source` value -- most plausibly one of the
     /// archive-requiring kinds this item's ruling explicitly scopes out
     /// (`Cargo.toml`'s own doc: no `tar`/`zip` extraction dependency).
@@ -269,6 +330,16 @@ impl<'de> Deserialize<'de> for PluginSource {
         D: serde::Deserializer<'de>,
     {
         let value = serde_json::Value::deserialize(deserializer)?;
+        // Checked BEFORE `value.get("source")` -- a plain string has no
+        // fields to `.get` at all, and asking it for one is exactly the
+        // defect this enum's own doc describes ("Defect 1"). A string
+        // value is never ambiguous with an object, so this check can never
+        // shadow the object-shaped match below.
+        if let Some(path) = value.as_str() {
+            return Ok(PluginSource::RelativePath {
+                path: path.to_string(),
+            });
+        }
         let kind = value
             .get("source")
             .and_then(serde_json::Value::as_str)
@@ -331,21 +402,173 @@ pub(crate) fn client() -> Result<reqwest::Client, reqwest::Error> {
 /// response whose body is not valid JSON or is missing a required field is
 /// [`MarketplaceError::MalformedManifest`].
 pub async fn fetch_marketplace(url: &str) -> Result<MarketplaceManifest, MarketplaceError> {
+    let effective_url = resolve_marketplace_url(url)?;
     let client = client().map_err(|source| MarketplaceError::Network {
-        url: url.to_string(),
+        url: effective_url.clone(),
         source,
     })?;
-    let bytes = fetch_bytes(&client, url, MAX_MANIFEST_BYTES).await?;
+    let bytes = fetch_bytes(&client, &effective_url, MAX_MANIFEST_BYTES).await?;
     if looks_like_markup(&bytes) {
         return Err(MarketplaceError::NotAManifestUrl {
-            url: url.to_string(),
-            hint: manifest_url_hint(url),
+            url: effective_url.clone(),
+            hint: manifest_url_hint(&effective_url),
         });
     }
     serde_json::from_slice(&bytes).map_err(|source| MarketplaceError::MalformedManifest {
-        url: url.to_string(),
+        url: effective_url,
         message: source.to_string(),
     })
+}
+
+/// Resolves what [`fetch_marketplace`] should actually GET for `url` --
+/// board item `01M1A9J9C9YRH3YPTGD335HZPZ`, defects 2 and 3 together, since
+/// both are the same root cause: the operator named a GitHub REPOSITORY,
+/// the same thing Claude Code's own `/plugin install`/`/plugin marketplace
+/// add` accept, not a manifest DOCUMENT, and conway must resolve that
+/// itself rather than fail or leak `reqwest`'s own error text.
+///
+/// - **Defect 3** -- a bare `https://github.com/<owner>/<repo>` repository
+///   URL (no deeper path: `/tree/...`, `/blob/...`, and similar are left
+///   unresolved, since the manifest's location is not mechanically
+///   derivable from those) is expanded to the raw-content URL of the
+///   manifest Claude Code itself keeps at that repository's own root
+///   (`.claude-plugin/marketplace.json`). Board item
+///   `01M0Y6RYZA94BK6YXJ7X8TNEGR` was supposed to make hunting for that URL
+///   unnecessary and only wired the git-fetch half
+///   (`crate::git_source::clone_url`, for a `source` INSIDE an
+///   already-parsed manifest) -- this is the top-level fetch's own missing
+///   half, finally wired in. **Once this resolves, [`manifest_url_hint`]'s
+///   "usually at ..." suggestion never fires for this exact shape**: this
+///   function already reached the resolved URL directly, so the "operator
+///   sees a repository page, must hunt for the raw URL themselves"
+///   experience this replaces does not happen for it at all.
+/// - **Defect 2** -- a bare `<owner>/<repo>` GitHub shorthand, Claude
+///   Code's own `/plugin marketplace add owner/repo` shape, is expanded the
+///   identical way (via `https://github.com/<owner>/<repo>` first). This
+///   previously reached `reqwest`'s own request builder as a malformed,
+///   non-absolute URL and surfaced literally as **"builder error"** --
+///   `reqwest::Error`'s own internal `Display`, an implementation detail no
+///   operator should ever see. `github_repo_from_url` recognizes the
+///   shorthand and expands it BEFORE any request is attempted, so this
+///   never reaches `reqwest` at all for the reported shape.
+/// - Anything already an absolute `http(s)://` URL is used completely
+///   unchanged -- the overwhelmingly common case, a manifest document named
+///   directly.
+/// - Anything else is refused before a single byte is requested:
+///   [`MarketplaceError::InvalidUrl`], naming exactly what conway accepts,
+///   rather than reaching `reqwest` with a string it cannot build a
+///   request from at all. [`fetch_bytes`] catches the same failure mode a
+///   second time (`reqwest::Error::is_builder`), as defense in depth for
+///   any input shape this function does not special-case (a per-file URL a
+///   manifest itself declares, say) -- see that function's own doc.
+pub(crate) fn resolve_marketplace_url(url: &str) -> Result<String, MarketplaceError> {
+    if let Some((owner, repo)) =
+        github_repo_root_url(url).or_else(|| github_shorthand_repo(url))
+    {
+        return Ok(format!(
+            "https://raw.githubusercontent.com/{owner}/{repo}/HEAD/.claude-plugin/marketplace.json"
+        ));
+    }
+    if url.starts_with("https://") || url.starts_with("http://") {
+        return Ok(url.to_string());
+    }
+    Err(MarketplaceError::InvalidUrl {
+        url: url.to_string(),
+    })
+}
+
+/// `<owner>/<repo>`, and nothing more -- the shared primitive behind every
+/// "does this string name exactly a GitHub owner/repo pair" check below:
+/// [`github_repo_root_url`] (after stripping a `github.com/` prefix),
+/// [`github_shorthand_repo`] (no prefix to strip at all), and
+/// [`github_raw_content_repo`] (after stripping a
+/// `raw.githubusercontent.com/` prefix and an additional ref segment).
+/// Requires EXACTLY two non-empty segments once a trailing `/` is
+/// trimmed -- a third segment (`/tree/main`, `/blob/...`, a shorthand
+/// typo'd with an extra `/`) means `rest` names something more specific
+/// than a bare repository, which none of this function's callers can
+/// resolve a manifest location from.
+fn bare_repo_pair(rest: &str, allow_git_suffix: bool) -> Option<(String, String)> {
+    let rest = rest.trim_end_matches('/');
+    let mut parts = rest.split('/');
+    let owner = parts.next()?;
+    let repo_raw = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    if owner.is_empty() || repo_raw.is_empty() {
+        return None;
+    }
+    let repo = if allow_git_suffix {
+        repo_raw.strip_suffix(".git").unwrap_or(repo_raw)
+    } else {
+        repo_raw
+    };
+    Some((owner.to_string(), repo.to_string()))
+}
+
+/// `https://github.com/<owner>/<repo>` (optional trailing `/` and/or
+/// `.git`), and nothing deeper -- shared by [`resolve_marketplace_url`]'s
+/// own "the operator named a bare repository" case and [`manifest_url_hint`]'s
+/// fallback suggestion.
+fn github_repo_root_url(url: &str) -> Option<(String, String)> {
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))?;
+    bare_repo_pair(rest, true)
+}
+
+/// A no-scheme `<owner>/<repo>` shorthand -- Claude Code's own `/plugin
+/// marketplace add owner/repo` shape (board item's defect 2). Refuses
+/// anything containing `://` (an absolute URL naming a different host
+/// entirely, never a shorthand) or starting with `.`/`/` (a relative or
+/// absolute filesystem-shaped path, not a repository name) before even
+/// trying to split it -- a wrong guess here is worse than none, exactly
+/// [`manifest_url_hint`]'s own long-standing "a wrong suggestion is worse
+/// than none" argument applied to resolution rather than a suggestion.
+fn github_shorthand_repo(url: &str) -> Option<(String, String)> {
+    if url.contains("://") || url.starts_with('.') || url.starts_with('/') {
+        return None;
+    }
+    bare_repo_pair(url, false)
+}
+
+/// `https://raw.githubusercontent.com/<owner>/<repo>/<ref>/...` -- a raw
+/// content URL already pointing INSIDE the repository at some ref, used
+/// only by [`github_repo_from_url`] (never by [`resolve_marketplace_url`]
+/// itself: a raw-content URL is already exactly the kind of URL that
+/// function's job is to PRODUCE, so re-deriving and rebuilding one from it
+/// would silently discard whatever ref/path the operator actually named).
+fn github_raw_content_repo(url: &str) -> Option<(String, String)> {
+    let rest = url
+        .strip_prefix("https://raw.githubusercontent.com/")
+        .or_else(|| url.strip_prefix("http://raw.githubusercontent.com/"))?;
+    let mut parts = rest.splitn(3, '/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    parts.next()?; // a ref segment must follow, or this URL never pointed
+                    // INSIDE a repository to begin with.
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
+}
+
+/// Any of the three shapes that name a GitHub repository -- board item
+/// `01M1A9J9C9YRH3YPTGD335HZPZ`'s shared parser (P-14: one implementation),
+/// used by `crate::git_source`'s own resolution of a
+/// [`PluginSource::RelativePath`] at install time: whichever of the three
+/// shapes the operator's own `marketplace_url` happens to be, this answers
+/// "what repository is this install relative to" uniformly. Deliberately
+/// wider than [`resolve_marketplace_url`]'s own matching (which excludes
+/// the raw-content shape for the reason [`github_raw_content_repo`]'s own
+/// doc states) -- that function answers "what should conway fetch", this
+/// one answers "what repository is this", a different question the
+/// raw-content shape has a perfectly good answer to.
+pub(crate) fn github_repo_from_url(url: &str) -> Option<(String, String)> {
+    github_repo_root_url(url)
+        .or_else(|| github_shorthand_repo(url))
+        .or_else(|| github_raw_content_repo(url))
 }
 
 /// Is this response body markup rather than JSON?
@@ -389,19 +612,9 @@ fn looks_like_markup(bytes: &[u8]) -> bool {
 /// GUESS at where the document lives (this crate never fetches the
 /// suggested URL itself to confirm it exists).
 fn manifest_url_hint(url: &str) -> String {
-    let Some(rest) = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("http://github.com/"))
-    else {
+    let Some((owner, repo)) = github_repo_root_url(url) else {
         return String::new();
     };
-    let mut parts = rest.trim_end_matches('/').split('/');
-    let (Some(owner), Some(repo), None) = (parts.next(), parts.next(), parts.next()) else {
-        return String::new();
-    };
-    if owner.is_empty() || repo.is_empty() {
-        return String::new();
-    }
     format!(
         " -- if this is a Claude Code marketplace repository, its manifest is usually at \
          https://raw.githubusercontent.com/{owner}/{repo}/HEAD/.claude-plugin/marketplace.json"
@@ -415,19 +628,37 @@ fn manifest_url_hint(url: &str) -> String {
 /// refused before this crate reads a single byte of it, and checked again
 /// against the actual decoded length so a server that omits or lies about
 /// `Content-Length` cannot bypass the cap either.
+///
+/// **Never leaks `reqwest`'s own "builder error" text** (board item
+/// `01M1A9J9C9YRH3YPTGD335HZPZ`, defect 2): `client.get(url)` defers URL
+/// parsing to `.send()`, so a `url` `reqwest` cannot turn into a request at
+/// all (not absolute, an unsupported scheme, ...) fails HERE with
+/// `reqwest::Error::is_builder() == true` -- caught explicitly and mapped
+/// to [`MarketplaceError::InvalidUrl`], a named, typed failure, rather than
+/// falling into [`MarketplaceError::Network`] and rendering `reqwest`'s own
+/// internal `Display` (literally the string "builder error: ...") to an
+/// operator. [`resolve_marketplace_url`] already prevents the reported
+/// shape (an `owner/repo` shorthand used as `fetch_marketplace`'s own top-
+/// level URL) from ever reaching this function malformed; this check is
+/// defense in depth for anything else that still could -- a per-file URL a
+/// marketplace's own `files` map declares, for instance.
 pub(crate) async fn fetch_bytes(
     client: &reqwest::Client,
     url: &str,
     cap: u64,
 ) -> Result<Vec<u8>, MarketplaceError> {
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|source| MarketplaceError::Network {
-            url: url.to_string(),
-            source,
-        })?;
+    let response = client.get(url).send().await.map_err(|source| {
+        if source.is_builder() {
+            MarketplaceError::InvalidUrl {
+                url: url.to_string(),
+            }
+        } else {
+            MarketplaceError::Network {
+                url: url.to_string(),
+                source,
+            }
+        }
+    })?;
     let status = response.status();
     if !status.is_success() {
         return Err(MarketplaceError::Http {
@@ -837,5 +1068,120 @@ mod not_a_manifest_url_tests {
         assert!(!looks_like_markup(br#"{"name":"m","plugins":[]}"#));
         assert!(!looks_like_markup(b"  \n{}"));
         assert!(!looks_like_markup(b""));
+    }
+}
+
+/// Board item `01M1A9J9C9YRH3YPTGD335HZPZ`, defects 2 and 3: resolving what
+/// [`fetch_marketplace`] actually GETs for a bare repository URL or an
+/// `owner/repo` shorthand, and never leaking `reqwest`'s own "builder
+/// error" text for anything this crate cannot turn into a request.
+#[cfg(test)]
+mod resolve_marketplace_url_tests {
+    use super::*;
+
+    /// Defect 3, the exact reported shape: a bare repository URL resolves
+    /// to the raw-content manifest URL Claude Code itself keeps at that
+    /// repository's own root -- no operator hunting for it required.
+    #[test]
+    fn a_bare_github_repository_url_resolves_to_the_raw_manifest_url() {
+        assert_eq!(
+            resolve_marketplace_url("https://github.com/ideate-ai/ideate").unwrap(),
+            "https://raw.githubusercontent.com/ideate-ai/ideate/HEAD/.claude-plugin/marketplace.json"
+        );
+    }
+
+    /// A trailing slash or a `.git` suffix does not defeat resolution.
+    #[test]
+    fn a_trailing_slash_or_git_suffix_does_not_defeat_resolution() {
+        let expected =
+            "https://raw.githubusercontent.com/ideate-ai/ideate/HEAD/.claude-plugin/marketplace.json";
+        assert_eq!(
+            resolve_marketplace_url("https://github.com/ideate-ai/ideate/").unwrap(),
+            expected
+        );
+        assert_eq!(
+            resolve_marketplace_url("https://github.com/ideate-ai/ideate.git").unwrap(),
+            expected
+        );
+    }
+
+    /// Defect 2, the exact reported shape: a bare `owner/repo` shorthand
+    /// (Claude Code's own `/plugin marketplace add owner/repo`) resolves
+    /// the identical way -- **the discriminating observable**: before this
+    /// fix, this exact string reached `reqwest`'s own request builder as a
+    /// non-absolute URL and failed with `reqwest`'s own internal "builder
+    /// error" text (`crate::error::MarketplaceError::Network`'s rendered
+    /// `Display`); this asserts the NEW, resolved value instead of any
+    /// error at all.
+    #[test]
+    fn an_owner_repo_shorthand_resolves_the_same_way_as_the_bare_repository_url() {
+        assert_eq!(
+            resolve_marketplace_url("ideate-ai/ideate").unwrap(),
+            "https://raw.githubusercontent.com/ideate-ai/ideate/HEAD/.claude-plugin/marketplace.json"
+        );
+    }
+
+    /// A deeper GitHub path (`/tree/...`) is not mechanically "the repo
+    /// root" -- left unresolved, same as `manifest_url_hint`'s own refusal
+    /// to guess for it.
+    #[test]
+    fn a_deeper_github_path_is_left_unresolved() {
+        let url = "https://github.com/devnill/claude-marketplace/tree/main/plugins";
+        assert_eq!(resolve_marketplace_url(url).unwrap(), url);
+    }
+
+    /// An already-absolute URL naming a manifest document directly --
+    /// whether or not it happens to live on GitHub -- passes through
+    /// completely unchanged. A raw-content URL matches this branch too:
+    /// re-deriving one from `github_repo_from_url`'s raw-content parsing
+    /// would silently discard whatever ref/path the operator actually
+    /// named, which `resolve_marketplace_url`'s own doc states is exactly
+    /// why it does not use that parser at all.
+    #[test]
+    fn an_already_absolute_url_is_used_unchanged() {
+        for url in [
+            "http://127.0.0.1:9999/marketplace.json",
+            "https://example.com/some/marketplace.json",
+            "https://raw.githubusercontent.com/devnill/beepboop/main/some/other/manifest.json",
+        ] {
+            assert_eq!(resolve_marketplace_url(url).unwrap(), url);
+        }
+    }
+
+    /// Anything that is neither an absolute URL nor a recognizable
+    /// shorthand is refused BEFORE a request is ever attempted -- named,
+    /// never `reqwest`'s own "builder error" text.
+    #[test]
+    fn anything_else_is_refused_by_name_before_any_request() {
+        for bad in [
+            "not a valid marketplace string!!",
+            "ftp://example.com/x",
+            "./a/relative/path",
+            "/an/absolute/path",
+        ] {
+            let err = resolve_marketplace_url(bad).expect_err(bad);
+            assert_eq!(err.kind(), "invalid_url", "{bad}");
+            assert!(
+                !err.to_string().contains("builder error"),
+                "must never leak reqwest's own error text: {err}"
+            );
+        }
+    }
+
+    /// [`fetch_bytes`]'s own defense-in-depth check: a URL that passes
+    /// `resolve_marketplace_url` (it IS `http://`-prefixed) but is
+    /// otherwise malformed enough that `reqwest` itself cannot parse it
+    /// still never surfaces `reqwest`'s own "builder error" text -- proven
+    /// through the real public entry point, not the private helper alone.
+    #[tokio::test]
+    async fn a_malformed_but_prefixed_url_still_never_leaks_builder_error_text() {
+        let err = fetch_marketplace("http://[not-a-valid-host")
+            .await
+            .expect_err("an unparseable URL must not silently succeed");
+        assert_eq!(err.kind(), "invalid_url", "{err}");
+        assert!(
+            !err.to_string().contains("builder error"),
+            "must never leak reqwest's own error text: {err}"
+        );
     }
 }

@@ -205,6 +205,47 @@ pub enum MarketplaceError {
         url: String,
         detail: String,
     },
+    /// `url` cannot be turned into an HTTP request at all -- board item
+    /// `01M1A9J9C9YRH3YPTGD335HZPZ`, defect 2, verbatim: *"'builder error'
+    /// is an HTTP-client construction failure text reaching an operator."*
+    /// An `owner/repo` GitHub shorthand used directly as a marketplace URL
+    /// (or any other non-absolute, malformed string) used to reach
+    /// `reqwest`'s own request builder and surface as `reqwest`'s own
+    /// internal `Display` -- literally the string "builder error: ..." --
+    /// an implementation detail no operator should ever see. This variant
+    /// is that failure, named and typed instead: never rendered from
+    /// `reqwest`'s own error text (`crate::manifest::fetch_bytes`'s own
+    /// doc). `crate::manifest::resolve_marketplace_url` prevents the
+    /// reported shape from ever reaching a request at all; `fetch_bytes`'s
+    /// own `reqwest::Error::is_builder()` check is this crate's second,
+    /// defense-in-depth line, for anything else that still could (a
+    /// per-file URL a marketplace's own `files` map declares, say).
+    #[error(
+        "'{url}' is not a URL conway can fetch -- conway accepts an https:// (or http://) URL \
+         pointing directly at a marketplace manifest, an https://github.com/<owner>/<repo> \
+         repository URL, or an <owner>/<repo> GitHub shorthand"
+    )]
+    InvalidUrl { url: String },
+    /// A [`crate::manifest::PluginSource::RelativePath`] (a plain-string
+    /// `source`, e.g. `"./"`) names the marketplace's OWN repository as
+    /// this plugin's root, but this install was not reached through a URL
+    /// `crate::manifest::github_repo_from_url` can resolve back to a GitHub
+    /// repository at all -- conway cannot invent a `git clone` target for a
+    /// plain HTTP host it was never told hosts a git repository. Distinct
+    /// from [`Self::UnsafeFilePath`]: THAT variant means the path itself is
+    /// unsafe (a `..` component); this one means the path is fine but there
+    /// is no repository to resolve it against.
+    #[error(
+        "plugin '{id}' names a relative source ('{path}') but conway could not resolve which \
+         git repository it is relative to from '{marketplace_url}' -- a relative source is only \
+         supported when the marketplace was reached via a GitHub repository URL, a GitHub \
+         owner/repo shorthand, or a raw.githubusercontent.com URL"
+    )]
+    UnresolvableRelativeSource {
+        id: String,
+        path: String,
+        marketplace_url: String,
+    },
 }
 
 impl MarketplaceError {
@@ -231,6 +272,8 @@ impl MarketplaceError {
             Self::CredentialedGitUrl { .. } => "credentialed_git_url",
             Self::GitUnavailable { .. } => "git_unavailable",
             Self::GitFailed { .. } => "git_failed",
+            Self::InvalidUrl { .. } => "invalid_url",
+            Self::UnresolvableRelativeSource { .. } => "unresolvable_relative_source",
         }
     }
 }
