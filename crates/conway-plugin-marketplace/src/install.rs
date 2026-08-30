@@ -200,12 +200,17 @@ async fn stage_files(
 ///
 /// **Two fetch paths, chosen by which `entry` actually declared** (board
 /// item `01M0Y6RYZA94BK6YXJ7X8TNEGR`): `entry.source` present routes to
-/// `crate::git_source::fetch_git_source` (a real Claude Code entry);
-/// `entry.files` non-empty routes to this module's own `stage_files` (a
-/// conway-native entry). Both land in the identical `staging_dir`, so
-/// everything below this branch -- the atomic rename, the `InstalledPlugin`
-/// this returns -- is unchanged by which path ran. An entry declaring
-/// neither is [`MarketplaceError::NoFiles`], exactly as before.
+/// `crate::git_source::fetch_git_source` (a real Claude Code entry -- now
+/// including a plain-string, "this repository IS the plugin" source,
+/// `01M1A9J9C9YRH3YPTGD335HZPZ`'s defect 1: `fetch_git_source` resolves it
+/// against `marketplace_url` itself, which is why that parameter is
+/// threaded all the way down to it, not only used for attribution as it
+/// was before that item); `entry.files` non-empty routes to this module's
+/// own `stage_files` (a conway-native entry). Both land in the identical
+/// `staging_dir`, so everything below this branch -- the atomic rename,
+/// the `InstalledPlugin` this returns -- is unchanged by which path ran.
+/// An entry declaring neither is [`MarketplaceError::NoFiles`], exactly as
+/// before.
 pub async fn install_entry(
     marketplace_url: &str,
     entry: &MarketplacePluginEntry,
@@ -238,7 +243,14 @@ pub async fn install_entry(
     let _ = std::fs::remove_dir_all(&staging_dir);
 
     let stage_result = if let Some(source) = &entry.source {
-        crate::git_source::fetch_git_source(&id, source, store_root, &staging_dir).await
+        crate::git_source::fetch_git_source(
+            &id,
+            marketplace_url,
+            source,
+            store_root,
+            &staging_dir,
+        )
+        .await
     } else {
         match client().map_err(|source| MarketplaceError::Network {
             url: marketplace_url.to_string(),
@@ -768,6 +780,169 @@ exit 1
         assert!(
             installed.dir.join("root-file.txt").is_file(),
             "a `github` source has no subdirectory -- the whole checkout root installs"
+        );
+    }
+
+    /// Writes a stub `git` that, like [`write_stub_git`], populates a fixed
+    /// checkout (`plugin/.claude-plugin/plugin.json` plus a `root-file.txt`
+    /// at the checkout root) but ALSO appends its own `clone` argv to
+    /// `captured_argv` -- so a test can assert the exact clone URL this
+    /// crate resolved, not merely that installation succeeded (which a
+    /// wrong-but-still-reachable URL could also produce).
+    #[cfg(unix)]
+    fn write_stub_git_capturing_argv(
+        dir: &std::path::Path,
+        captured_argv: &std::path::Path,
+    ) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join("git");
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "git version 2.99.0 (stub)"
+  exit 0
+fi
+if [ "$1" = "clone" ]; then
+  echo "$@" >> "{captured}"
+  last=""
+  for a in "$@"; do
+    last="$a"
+  done
+  dest="$last"
+  mkdir -p "$dest/plugin/.claude-plugin"
+  echo '{{"name":"stub"}}' > "$dest/plugin/.claude-plugin/plugin.json"
+  echo 'root' > "$dest/root-file.txt"
+  exit 0
+fi
+exit 1
+"#,
+            captured = captured_argv.display()
+        );
+        std::fs::write(&path, script).expect("write stub git");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x stub git");
+        path
+    }
+
+    /// Board item `01M1A9J9C9YRH3YPTGD335HZPZ`, acceptance 1, against the
+    /// COMMITTED fixture: the literal operator command
+    /// `/plugin install https://github.com/ideate-ai/ideate ideate`
+    /// installs, end to end, via ideate's own real `"source": "./"` entry
+    /// resolved against exactly that URL.
+    ///
+    /// **The discriminating observable.** The stub `git` records its own
+    /// `clone` argv, so this asserts the DERIVED clone URL
+    /// (`https://github.com/ideate-ai/ideate.git`) rather than only "an
+    /// install eventually returned `Ok`" -- a deleted fix (either
+    /// `PluginSource`'s own string-`Deserialize` branch, or `clone_url`'s
+    /// resolution of `RelativePath`) fails at a DIFFERENT point (a parse
+    /// error, or `unresolvable_relative_source`) that this would also
+    /// catch, but capturing the argv additionally rules out "some other,
+    /// wrong URL happened to also succeed" silently passing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_relative_source_from_the_real_ideate_fixture_installs_via_the_resolved_repository()
+    {
+        const REAL_IDEATE_MANIFEST: &str =
+            include_str!("../tests/fixtures/ideate-marketplace.json");
+
+        let manifest: crate::manifest::MarketplaceManifest =
+            serde_json::from_str(REAL_IDEATE_MANIFEST).expect("real ideate manifest parses");
+        let entry = manifest
+            .find("https://github.com/ideate-ai/ideate", "ideate")
+            .expect("the fixture names an `ideate` entry")
+            .clone();
+        assert_eq!(
+            entry.source,
+            Some(crate::manifest::PluginSource::RelativePath {
+                path: "./".to_string()
+            }),
+            "sanity: the fixture's own defect-1 shape, unchanged"
+        );
+
+        let bin_dir = tempfile::tempdir().expect("bin tempdir");
+        let captured_argv = bin_dir.path().join("captured-argv.txt");
+        let git = write_stub_git_capturing_argv(bin_dir.path(), &captured_argv);
+        let store = tempfile::tempdir().expect("store tempdir");
+
+        let installed = with_stub_git(&git, || {
+            install_entry("https://github.com/ideate-ai/ideate", &entry, store.path())
+        })
+        .await
+        .expect("install via stub git, resolved through the real fixture's own relative source");
+
+        assert_eq!(installed.id, "ideate");
+        assert!(installed.dir.join("plugin/.claude-plugin/plugin.json").is_file());
+
+        let argv = std::fs::read_to_string(&captured_argv).expect("stub git recorded its own argv");
+        assert!(
+            argv.contains("https://github.com/ideate-ai/ideate.git"),
+            "the clone URL must be resolved from the literal operator-typed marketplace_url, \
+             got: {argv}"
+        );
+    }
+
+    /// The SAME command, but via the `owner/repo` GitHub shorthand as
+    /// `marketplace_url` instead of the full repository URL -- defect 2's
+    /// own shape, proven to resolve identically for a relative source too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_relative_source_also_resolves_via_the_owner_repo_shorthand() {
+        const REAL_IDEATE_MANIFEST: &str =
+            include_str!("../tests/fixtures/ideate-marketplace.json");
+        let manifest: crate::manifest::MarketplaceManifest =
+            serde_json::from_str(REAL_IDEATE_MANIFEST).expect("real ideate manifest parses");
+        let entry = manifest
+            .find("ideate-ai/ideate", "ideate")
+            .expect("the fixture names an `ideate` entry")
+            .clone();
+
+        let bin_dir = tempfile::tempdir().expect("bin tempdir");
+        let captured_argv = bin_dir.path().join("captured-argv.txt");
+        let git = write_stub_git_capturing_argv(bin_dir.path(), &captured_argv);
+        let store = tempfile::tempdir().expect("store tempdir");
+
+        let installed = with_stub_git(&git, || {
+            install_entry("ideate-ai/ideate", &entry, store.path())
+        })
+        .await
+        .expect("install via stub git, resolved through the owner/repo shorthand");
+
+        assert_eq!(installed.id, "ideate");
+        let argv = std::fs::read_to_string(&captured_argv).expect("stub git recorded its own argv");
+        assert!(
+            argv.contains("https://github.com/ideate-ai/ideate.git"),
+            "got: {argv}"
+        );
+    }
+
+    /// A relative source reached through a marketplace URL this crate
+    /// cannot trace back to a GitHub repository is refused BY NAME, before
+    /// `git` is ever invoked -- no stub `git` needed, mirroring
+    /// `a_source_entry_naming_an_unsupported_kind_is_refused_and_writes_nothing`'s
+    /// own "refused before any subprocess" shape.
+    #[tokio::test]
+    async fn a_relative_source_from_an_unresolvable_marketplace_url_is_refused_and_writes_nothing()
+    {
+        let store = tempfile::tempdir().expect("store tempdir");
+        let e = MarketplacePluginEntry {
+            id: String::new(),
+            name: "ideate".to_string(),
+            description: String::new(),
+            version: String::new(),
+            source: Some(crate::manifest::PluginSource::RelativePath {
+                path: "./".to_string(),
+            }),
+            files: BTreeMap::new(),
+        };
+        let err = install_entry("https://example.com/marketplace.json", &e, store.path())
+            .await
+            .expect_err("a non-GitHub marketplace URL cannot resolve a relative source");
+        assert_eq!(err.kind(), "unresolvable_relative_source");
+        assert!(
+            std::fs::read_dir(store.path()).unwrap().next().is_none(),
+            "nothing may be written when a relative source cannot be resolved"
         );
     }
 

@@ -1,31 +1,46 @@
 # Installing a plugin from a marketplace
 
 **Two manifest shapes are understood: conway's own, and a real, published
-Claude Code marketplace.** Board item `01M0Y6RYZA94BK6YXJ7X8TNEGR` (ruling
+Claude Code marketplace — and a real Claude Code marketplace itself comes
+in two `source` shapes.** Board item `01M0Y6RYZA94BK6YXJ7X8TNEGR` (ruling
 2026-08-29) closed the gap this page used to carry as a warning: an
 operator who passed a real `https://github.com/<owner>/<repo>` Claude Code
 marketplace got a `serde_json` parse error about GitHub's own HTML, because
 conway's manifest reader understood only its own format and never resolved
 a repository URL to the document Claude Code actually keeps
-(`.claude-plugin/marketplace.json`). Both gaps are closed:
+(`.claude-plugin/marketplace.json`). The very next operator attempt —
+installing ideate's OWN marketplace, hours later — found a THIRD manifest
+shape and a gap in the repository-URL resolution the first item had only
+half-wired; board item `01M1A9J9C9YRH3YPTGD335HZPZ` closed those:
 
-- A repository URL is resolved: `/plugin install
-  https://github.com/<owner>/<repo> <plugin>` reads
-  `.claude-plugin/marketplace.json` from inside it (see "Passing a
-  repository URL", below, for the mechanics conway uses without needing a
-  git clone just to LOCATE the manifest).
+- **A repository URL is now actually resolved, not merely diagnosed.**
+  `/plugin install https://github.com/<owner>/<repo> <plugin>` reads
+  `.claude-plugin/marketplace.json` from inside it directly — conway GETs
+  the resolved raw-content URL itself, so an operator pointed at a
+  repository page never sees one at all. **A bare `<owner>/<repo>` GitHub
+  shorthand — Claude Code's own `/plugin marketplace add owner/repo` shape
+  — resolves identically.** See "Passing a repository URL or shorthand",
+  below.
 - The real schema parses: `owner`/`metadata` top-level objects are
   tolerated, and a `plugins[]` entry identified by `name` (rather than
   `id`) naming a `source` (rather than a `files` map) is accepted
-  alongside conway's own shape -- see "The two manifest formats", below.
+  alongside conway's own shape — see "The two manifest formats", below.
 - A `git-subdir`/`github` source actually FETCHES, by invoking the system
-  `git` binary (never a git library -- see "Fetching a git-sourced entry",
+  `git` binary (never a git library — see "Fetching a git-sourced entry",
   below).
+- **A plain-STRING `source` (`"./"`, meaning "this repository IS the
+  plugin") now fetches too** — ideate's own real marketplace uses exactly
+  this shape, resolved against whichever repository the marketplace itself
+  was reached through. See "A relative source", below.
+- **No internal error text reaches an operator on any of the above paths.**
+  An `owner/repo` shorthand used to reach `reqwest`'s own request-builder
+  failure and surface literally as "builder error"; it no longer does.
 
-`crates/conway-plugin-marketplace/tests/claude_code_manifest.rs` asserts
-acceptance against the identical real, published manifest that used to be
-this page's characterization-test-for-a-refusal, so this claim cannot
-quietly go stale the way the old warning eventually would have.
+`crates/conway-plugin-marketplace/tests/claude_code_manifest.rs` and
+`tests/ideate_manifest.rs` assert acceptance against real, published
+manifests (the second one committed the same day this gap was found), so
+these claims cannot quietly go stale the way the old warning eventually
+would have.
 
 The network-reaching half of the plugin feature (board items
 `01M0VR96Y87FF2BVNTBSC6GEYR` and `01M0Y6RYZA94BK6YXJ7X8TNEGR`), shipped by
@@ -137,6 +152,41 @@ still works) but refuses BY NAME the moment an install is attempted** —
 most plausibly one requiring archive extraction, which this crate still
 never adds (`Cargo.toml`'s own doc has the up-to-date argument).
 
+### A relative source — `"source": "./"`
+
+Board item `01M1A9J9C9YRH3YPTGD335HZPZ`: ideate's own real marketplace
+(`https://github.com/ideate-ai/ideate`, fetched 2026-08-30, committed as
+`crates/conway-plugin-marketplace/tests/fixtures/ideate-marketplace.json`)
+names its `ideate` entry with `"source": "./"` — a plain JSON STRING, not
+an object naming `git-subdir`/`github`:
+
+```json
+{
+  "name": "ideate-marketplace",
+  "plugins": [
+    { "name": "ideate", "source": "./", "version": "3.2.2" }
+  ]
+}
+```
+
+This is likely the COMMONEST real-world shape, not an edge case: a
+repository that publishes a marketplace listing only itself has no reason
+to spell out an object pointing back at its own clone URL when a bare
+`"./"` says the same thing more simply. conway's manifest reader used to
+call the object-shaped lookup on this value unconditionally, which — given
+a *string* rather than an object — looked for a `source` field *inside*
+the string and reported `missing field `source``, an accurate-sounding but
+useless error about the exact value it was trying to read.
+
+A relative source names no git remote of its own — it means "the
+repository the marketplace manifest was itself reached through". conway
+resolves it against the literal `marketplace_url` the install was
+requested with (a repository URL, an `owner/repo` shorthand, or a
+`raw.githubusercontent.com` URL — all three recognized). **A marketplace
+reached through anything else (an arbitrary HTTP host with no known git
+remote) refuses this resolution by name** rather than guessing one —
+conway has no general "what git remote served this HTTP URL" mechanism.
+
 ## Fetching a git-sourced entry
 
 `git-subdir`/`github` sources are fetched by invoking the **system `git`
@@ -164,20 +214,45 @@ files-map entry's paths:**
   one — see "Path safety", below, and
   [`trust-and-security.md`](trust-and-security.md)'s own note on this.
 
-## Passing a repository URL
+## Passing a repository URL or shorthand
 
 Claude Code treats a marketplace as a git repository and reads
-`.claude-plugin/marketplace.json` from inside it. conway needs a URL
-pointing directly at the manifest DOCUMENT — passing
-`https://github.com/<owner>/<repo>` itself answers 200 with GitHub's own
-HTML, which conway recognizes (a body that begins `<` rather than `{`) and
-refuses as `not_a_manifest_url`, naming what it wanted rather than a
-`serde_json` parse error about someone else's markup — the error also
-suggests the raw manifest URL
-(`https://raw.githubusercontent.com/<owner>/<repo>/HEAD/.claude-plugin/marketplace.json`)
-when the input is recognizably a bare GitHub repository URL. This does not
-fetch the suggested URL to confirm it exists — a wrong suggestion is worse
-than none, so it is offered as a guess, never a claim.
+`.claude-plugin/marketplace.json` from inside it; `/plugin install`/`/plugin
+marketplace add` also accept a bare `<owner>/<repo>` shorthand, assuming
+GitHub. conway now does the identical resolution itself, for both forms,
+**before ever sending a request** — board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`
+was supposed to make hunting for the raw manifest URL unnecessary and only
+wired the git-FETCH half (a `source` *inside* an already-parsed manifest);
+`01M1A9J9C9YRH3YPTGD335HZPZ` finished the job for the top-level marketplace
+URL itself:
+
+- `https://github.com/<owner>/<repo>` (no deeper path — `/tree/...`,
+  `/blob/...`, and similar are left unresolved, since the manifest's
+  location is not mechanically derivable from those) resolves to
+  `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/.claude-plugin/marketplace.json`
+  and conway GETs that directly. **An operator pointed at a repository page
+  never sees one at all** — the "returned a web page, not a manifest"
+  refusal this section used to describe as the normal outcome for this
+  input no longer fires for it.
+- `<owner>/<repo>` (no scheme) resolves the identical way.
+- Anything already an absolute `http(s)://` URL — the overwhelmingly common
+  case, a manifest document named directly — is used completely unchanged.
+- Anything else is refused before a single request is attempted, naming
+  exactly what conway accepts, rather than reaching the HTTP client with a
+  string it cannot build a request from at all. **This used to surface as
+  `reqwest`'s own internal "builder error" text** for an `owner/repo`
+  shorthand used directly — an implementation detail, not a diagnosis. It
+  no longer does, on any path: a defense-in-depth check at the actual HTTP
+  call site catches the identical failure mode a second time, for anything
+  this resolution step does not special-case (a per-file URL a marketplace's
+  own `files` map declares, say).
+
+conway's older "usually at ..." suggestion for a repository page mistaken
+for a manifest still exists, but only fires for a shape this resolution
+does not cover — a deeper GitHub path serving HTML, or a non-GitHub host
+that answers with markup. This does not fetch the suggested URL to confirm
+it exists — a wrong suggestion is worse than none, so it is offered as a
+guess, never a claim.
 
 Every failure this crate can hit is a named, typed error, never a panic and
 never an unbounded read: offline (DNS failure, connection refused, or a
@@ -186,9 +261,9 @@ request that would otherwise hang — bounded by a 20-second client timeout so
 status, a response over a byte-size cap (checked against `Content-Length`
 before any byte is read, and against the actual length either way, so a
 server that lies about or omits its own length cannot bypass the cap), a
-repository page mistaken for a manifest, and a malformed manifest (invalid
-JSON, or missing a required field) are each their own `MarketplaceError`
-variant.
+repository page mistaken for a manifest, an unresolvable/malformed URL, and
+a malformed manifest (invalid JSON, or missing a required field) are each
+their own `MarketplaceError` variant.
 
 ## Where a fetched artifact lives, and what installing writes
 

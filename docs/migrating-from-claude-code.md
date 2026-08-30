@@ -287,8 +287,24 @@ Claude Code does:
   a real, published Claude Code marketplace directly — `owner`/`metadata`
   tolerated, a `name`+`source`-identified entry accepted, and a
   `git-subdir`/`github` source fetched by invoking the operator's own
-  `git` binary. `extraKnownMarketplaces.marketplace` names
-  `devnill/claude-marketplace` as a GitHub repo; conway resolves that
+  `git` binary.
+
+  **A follow-on claim right here — that conway already resolved a bare
+  repository URL to `.claude-plugin/marketplace.json` the way this
+  paragraph then said — was checked against the real operator command
+  and found false the same day.** `/plugin install
+  https://github.com/ideate-ai/ideate ideate` returned "returned a web
+  page, not a marketplace manifest," not an install: the top-level
+  marketplace fetch never actually resolved a repository URL at all (only
+  a `source` *inside* an already-parsed manifest did). And even past that,
+  ideate's own real manifest names its `ideate` entry with
+  `"source": "./"` — a plain STRING, a THIRD shape conway's `git-subdir`/
+  `github`-object model above did not cover, which failed to parse with
+  "missing field `source`." Board item `01M1A9J9C9YRH3YPTGD335HZPZ`
+  (2026-08-30) closed both, against the real bytes each command actually
+  hits (`crates/conway-plugin-marketplace/tests/fixtures/
+  ideate-marketplace.json`): `extraKnownMarketplaces.marketplace` names
+  `devnill/claude-marketplace` as a GitHub repo; conway now resolves that
   SAME repo URL to `.claude-plugin/marketplace.json` (the document Claude
   Code itself reads), so:
 
@@ -302,18 +318,31 @@ Claude Code does:
   not a conway-authored `files` map. `ideate@ideate-marketplace` is the
   same shape one level removed: `extraKnownMarketplaces.ideate-marketplace`
   names `ideate-ai/ideate` itself as the marketplace repo, so
-  `/plugin install https://github.com/ideate-ai/ideate ideate` is the
-  equivalent lookup against THAT repo's own manifest.
+
+  ```
+  /plugin install https://github.com/ideate-ai/ideate ideate
+  ```
+
+  now genuinely is the equivalent lookup against THAT repo's own manifest
+  — reads its `"source": "./"` entry, resolves the relative source against
+  the SAME `ideate-ai/ideate` repository the URL already named, and
+  installs via git. (A bare `ideate-ai/ideate` shorthand, Claude Code's own
+  `/plugin marketplace add owner/repo` shape, resolves identically —
+  `docs/plugins/marketplace.md`'s own "Passing a repository URL or
+  shorthand" section.)
 
   **What is still a real gap, stated precisely rather than implied
   away**: `git` must actually be on the operator's own `PATH` (refused by
   name, `git_unavailable`, if not); a source kind requiring archive
   extraction still refuses by name rather than installing (not a
-  limitation either of the two marketplaces above hits, since both
-  publish only `git-subdir`/`github` sources); and there is still no
-  persistent "known marketplaces" registry or alias — the full repository
-  URL is typed every time, exactly as `extraKnownMarketplaces` (3) above
-  already notes.
+  limitation any of the three marketplaces above hits, since all three
+  publish only `git-subdir`/`github`/relative-path sources); a relative
+  source only resolves when the marketplace was itself reached via a
+  GitHub repository URL, shorthand, or raw-content URL (refused by name
+  otherwise — conway has no general "what git remote served this HTTP
+  URL" mechanism); and there is still no persistent "known marketplaces"
+  registry or alias — the full repository URL is typed every time, exactly
+  as `extraKnownMarketplaces` (3) above already notes.
 
 - **`rust-analyzer-lsp@claude-plugins-official`** — sourced from Claude
   Code's own built-in official marketplace, with no directory or URL

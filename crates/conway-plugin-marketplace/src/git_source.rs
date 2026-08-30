@@ -19,11 +19,31 @@
 //!
 //! # No archive support -- still, deliberately
 //!
-//! [`fetch_git_source`] fetches exactly the two kinds
+//! [`fetch_git_source`] fetches exactly the three kinds
 //! [`crate::manifest::PluginSource`] can represent as fetchable
-//! (`GitSubdir`/`Github`); [`crate::manifest::PluginSource::Unsupported`]
-//! refuses by name via [`clone_url`] before invoking `git` at all -- an
-//! archive-requiring source kind never reaches a subprocess.
+//! (`GitSubdir`/`Github`/`RelativePath` -- the last resolved to an
+//! effective `github`-shaped clone URL via [`clone_url`]'s own new match
+//! arm, board item `01M1A9J9C9YRH3YPTGD335HZPZ`'s defect 1);
+//! [`crate::manifest::PluginSource::Unsupported`] refuses by name via
+//! [`clone_url`] before invoking `git` at all -- an archive-requiring
+//! source kind never reaches a subprocess.
+//!
+//! # A relative source resolves against the marketplace's OWN repository
+//!
+//! `RelativePath` (a plain-string `source`, e.g. `"./"`) names no git
+//! remote of its own -- it means "the repository the marketplace manifest
+//! was itself reached through". [`clone_url`] resolves this via
+//! [`crate::manifest::github_repo_from_url`] against the literal
+//! `marketplace_url` [`crate::install::install_entry`] was called with (the
+//! same string the operator typed, or `App::apply_marketplace_install`'s
+//! own argument, unchanged end to end -- never re-derived a second way, per
+//! P-14). A marketplace this crate cannot trace back to a GitHub repository
+//! at all refuses this resolution BY NAME
+//! (`MarketplaceError::UnresolvableRelativeSource`) rather than guessing:
+//! conway has no general "what git remote is this HTTP URL served from"
+//! mechanism, and inventing one for this one case would be exactly the
+//! kind of narrow, unverifiable guess `manifest.rs`'s own "a wrong
+//! suggestion is worse than none" argument already rejects elsewhere.
 //!
 //! # Bounded, never a hang (P-10)
 //!
@@ -183,8 +203,17 @@ async fn require_git(program: &str) -> Result<(), MarketplaceError> {
 /// subprocess) for anything this module cannot fetch at all -- see this
 /// module's own doc for both hazards this checks: an archive-requiring
 /// source kind, and a `git-subdir` URL naming a git transport other than
-/// `http(s)://`.
-fn clone_url(plugin_id: &str, source: &PluginSource) -> Result<String, MarketplaceError> {
+/// `http(s)://`. `marketplace_url` is used only for
+/// [`PluginSource::RelativePath`] -- board item
+/// `01M1A9J9C9YRH3YPTGD335HZPZ`'s defect 1: a relative source names no git
+/// remote of its own, so this resolves it against whichever repository the
+/// marketplace manifest was itself reached through
+/// (`crate::manifest::github_repo_from_url`).
+fn clone_url(
+    plugin_id: &str,
+    marketplace_url: &str,
+    source: &PluginSource,
+) -> Result<String, MarketplaceError> {
     match source {
         PluginSource::GitSubdir { url, .. } => {
             let allowed_scheme = url.starts_with("https://") || url.starts_with("http://");
@@ -210,6 +239,15 @@ fn clone_url(plugin_id: &str, source: &PluginSource) -> Result<String, Marketpla
         // network-supplied text passed through verbatim -- always
         // `https://`, so no scheme/credential check applies here.
         PluginSource::Github { repo } => Ok(format!("https://github.com/{repo}.git")),
+        PluginSource::RelativePath { path } => {
+            let (owner, repo) = crate::manifest::github_repo_from_url(marketplace_url)
+                .ok_or_else(|| MarketplaceError::UnresolvableRelativeSource {
+                    id: plugin_id.to_string(),
+                    path: path.clone(),
+                    marketplace_url: marketplace_url.to_string(),
+                })?;
+            Ok(format!("https://github.com/{owner}/{repo}.git"))
+        }
         PluginSource::Unsupported { kind } => Err(MarketplaceError::UnsupportedSourceKind {
             id: plugin_id.to_string(),
             kind: kind.clone(),
@@ -234,11 +272,57 @@ fn credentialed_url_redacted(url: &str) -> Option<String> {
 
 /// The subdirectory inside the clone that is the plugin's own root --
 /// `git-subdir`'s own `path`; `github` names none, so the plugin root is
-/// the repository root itself.
-fn subdir(source: &PluginSource) -> Option<&str> {
+/// the repository root itself. [`PluginSource::RelativePath`]'s own `path`
+/// is normalized first (`normalize_relative_source`): `"./"`/`"."`/`""`
+/// (or any path made up only of `.` components) means the repository root
+/// itself, same as `github`'s `None` -- and a `..` component, or anything
+/// else unsafe, is refused HERE, before this crate ever invokes `git`
+/// (P-10: `path` came from a marketplace's own network-supplied response).
+fn subdir(plugin_id: &str, source: &PluginSource) -> Result<Option<String>, MarketplaceError> {
     match source {
-        PluginSource::GitSubdir { path, .. } => Some(path.as_str()),
-        PluginSource::Github { .. } | PluginSource::Unsupported { .. } => None,
+        PluginSource::GitSubdir { path, .. } => Ok(Some(path.clone())),
+        PluginSource::RelativePath { path } => normalize_relative_source(plugin_id, path),
+        PluginSource::Github { .. } | PluginSource::Unsupported { .. } => Ok(None),
+    }
+}
+
+/// Normalizes a [`PluginSource::RelativePath`]'s own `path` into an
+/// optional subdirectory -- `Ok(None)` means "the repository root itself is
+/// the plugin root" (`"./"`/`"."`/`""`, or any path consisting only of `.`
+/// components); `Ok(Some(_))` names an actual subdirectory. This is
+/// deliberately NOT [`crate::install::validate_relative_path`]: that
+/// function refuses a bare `.` outright (a FILE path has no sensible
+/// meaning for "the current directory"), while a SOURCE path's `.`/`./` is
+/// the well-defined, common case meaning "no subdirectory at all" -- the
+/// alphabet of unsafe components overlaps (an absolute path, a `..`, a
+/// Windows drive/prefix component are refused here exactly as there), but
+/// the meaning of `.` itself does not, so this is a distinct function
+/// rather than a restatement of that one's rule.
+fn normalize_relative_source(
+    plugin_id: &str,
+    path: &str,
+) -> Result<Option<String>, MarketplaceError> {
+    let unsafe_path = || MarketplaceError::UnsafeFilePath {
+        id: plugin_id.to_string(),
+        path: path.to_string(),
+    };
+    // Joined with `/` explicitly, never `PathBuf`'s own platform separator
+    // -- the result is a relative path STRING fed back into
+    // `crate::install::validate_relative_path` (which itself normalizes
+    // via `Path`), so nothing here needs -- or should introduce -- a
+    // platform-specific separator of its own.
+    let mut parts: Vec<String> = Vec::new();
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            _ => return Err(unsafe_path()),
+        }
+    }
+    if parts.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(parts.join("/")))
     }
 }
 
@@ -257,16 +341,20 @@ fn subdir(source: &PluginSource) -> Option<&str> {
 /// install, never a partial one.
 pub(crate) async fn fetch_git_source(
     plugin_id: &str,
+    marketplace_url: &str,
     source: &PluginSource,
     store_root: &Path,
     staging_dir: &Path,
 ) -> Result<(), MarketplaceError> {
     // Checked BEFORE `git` is required to be present at all: an
-    // archive-requiring source kind, or a `git-subdir` URL naming an unsafe
-    // transport, is refused on the manifest's own say-so, regardless of
-    // whether this machine happens to have a working `git` -- neither
-    // refusal should depend on the other.
-    let url = clone_url(plugin_id, source)?;
+    // archive-requiring source kind, a `git-subdir` URL naming an unsafe
+    // transport, or a relative source this crate cannot resolve to a
+    // repository at all, is refused on the manifest's own say-so (or the
+    // marketplace_url's own shape), regardless of whether this machine
+    // happens to have a working `git` -- no refusal here should depend on
+    // any other.
+    let url = clone_url(plugin_id, marketplace_url, source)?;
+    let resolved_subdir = subdir(plugin_id, source)?;
     let program = git_program();
     require_git(&program).await?;
 
@@ -277,16 +365,20 @@ pub(crate) async fn fetch_git_source(
         return fail_cleaning_up(&checkout_dir, err).await;
     }
 
-    let plugin_root = match subdir(source) {
+    let plugin_root = match resolved_subdir.as_deref() {
         Some(rel) => match crate::install::validate_relative_path(plugin_id, rel) {
             Ok(safe_rel) => checkout_dir.join(safe_rel),
             Err(err) => return fail_cleaning_up(&checkout_dir, err).await,
         },
         None => checkout_dir.clone(),
     };
-    if let Err(err) =
-        validate_plugin_root(plugin_id, &url, subdir(source), &checkout_dir, &plugin_root)
-    {
+    if let Err(err) = validate_plugin_root(
+        plugin_id,
+        &url,
+        resolved_subdir.as_deref(),
+        &checkout_dir,
+        &plugin_root,
+    ) {
         return fail_cleaning_up(&checkout_dir, err).await;
     }
 
@@ -603,6 +695,7 @@ mod tests {
     fn an_unsupported_source_kind_is_refused_by_name_before_any_git_invocation() {
         let err = clone_url(
             "archived-thing",
+            "https://example.com/marketplace.json",
             &PluginSource::Unsupported {
                 kind: "url".to_string(),
             },
@@ -626,6 +719,7 @@ mod tests {
         ] {
             let err = clone_url(
                 "acme-tools",
+                "https://example.com/marketplace.json",
                 &PluginSource::GitSubdir {
                     url: dangerous.to_string(),
                     path: "plugin".to_string(),
@@ -641,6 +735,7 @@ mod tests {
     fn an_https_git_subdir_url_is_accepted() {
         let url = clone_url(
             "beepboop",
+            "https://example.com/marketplace.json",
             &PluginSource::GitSubdir {
                 url: "https://github.com/devnill/beepboop".to_string(),
                 path: "plugin".to_string(),
@@ -661,6 +756,7 @@ mod tests {
     fn a_git_subdir_url_with_embedded_credentials_is_refused_and_never_echoed() {
         let err = clone_url(
             "acme-tools",
+            "https://example.com/marketplace.json",
             &PluginSource::GitSubdir {
                 url: "https://attacker:s3cr3t@example.com/repo.git".to_string(),
                 path: "plugin".to_string(),
@@ -680,12 +776,102 @@ mod tests {
     fn a_github_source_builds_its_own_https_clone_url() {
         let url = clone_url(
             "ideate",
+            "https://example.com/marketplace.json",
             &PluginSource::Github {
                 repo: "ideate-ai/ideate".to_string(),
             },
         )
         .expect("github sources always build an https url");
         assert_eq!(url, "https://github.com/ideate-ai/ideate.git");
+    }
+
+    /// Board item `01M1A9J9C9YRH3YPTGD335HZPZ`, defect 1: a
+    /// [`PluginSource::RelativePath`] (`"source": "./"`) resolves against
+    /// whichever GitHub repository the marketplace itself was reached
+    /// through -- proven for all three URL shapes
+    /// `crate::manifest::github_repo_from_url` recognizes, including the
+    /// bare `owner/repo` shorthand (defect 2's own shape), since the exact
+    /// literal `marketplace_url` an operator typed is what this crate
+    /// threads through unchanged from `App::apply_marketplace_install`
+    /// down to here.
+    #[test]
+    fn a_relative_source_resolves_against_every_recognized_marketplace_url_shape() {
+        for marketplace_url in [
+            "https://github.com/ideate-ai/ideate",
+            "https://github.com/ideate-ai/ideate/",
+            "ideate-ai/ideate",
+            "https://raw.githubusercontent.com/ideate-ai/ideate/HEAD/.claude-plugin/marketplace.json",
+        ] {
+            let url = clone_url(
+                "ideate",
+                marketplace_url,
+                &PluginSource::RelativePath {
+                    path: "./".to_string(),
+                },
+            )
+            .unwrap_or_else(|err| panic!("{marketplace_url}: {err}"));
+            assert_eq!(
+                url, "https://github.com/ideate-ai/ideate.git",
+                "{marketplace_url}"
+            );
+        }
+    }
+
+    /// The discriminating observable for defect 1's OWN root cause: before
+    /// this fix, `PluginSource`'s custom `Deserialize` never produced a
+    /// `RelativePath` variant at all (a plain-string `source` failed to
+    /// parse with "missing field `source`" -- `manifest.rs`'s own tests
+    /// cover that half). This test covers the OTHER half a deleted fix
+    /// would also break: even with a `RelativePath` value in hand, deleting
+    /// `clone_url`'s new match arm (or `github_repo_from_url` itself)
+    /// leaves no way to turn `"./"` into a clone URL at all.
+    #[test]
+    fn a_relative_source_from_an_unresolvable_marketplace_url_is_refused_by_name() {
+        let err = clone_url(
+            "ideate",
+            "https://example.com/marketplace.json",
+            &PluginSource::RelativePath {
+                path: "./".to_string(),
+            },
+        )
+        .expect_err("a non-GitHub marketplace URL cannot resolve a relative source");
+        assert_eq!(err.kind(), "unresolvable_relative_source");
+        assert!(err.to_string().contains("./"), "{err}");
+    }
+
+    /// [`subdir`] normalizes a relative source's own path: `"./"` means no
+    /// subdirectory at all (same as `github`'s own `None`), an actual
+    /// subdirectory is kept, and a `..` component is refused outright --
+    /// P-10, untrusted marketplace-supplied input.
+    #[test]
+    fn a_relative_sources_path_is_normalized_and_traversal_is_refused() {
+        assert_eq!(
+            subdir("id", &PluginSource::RelativePath { path: "./".into() }).unwrap(),
+            None,
+            "the bare repository root case"
+        );
+        assert_eq!(
+            subdir("id", &PluginSource::RelativePath { path: ".".into() }).unwrap(),
+            None,
+        );
+        assert_eq!(
+            subdir(
+                "id",
+                &PluginSource::RelativePath {
+                    path: "./plugin/sub".into()
+                }
+            )
+            .unwrap(),
+            Some("plugin/sub".to_string())
+        );
+        let err = subdir(
+            "id",
+            &PluginSource::RelativePath {
+                path: "../escape".into(),
+            },
+        )
+        .expect_err("a `..` component must be refused");
+        assert_eq!(err.kind(), "unsafe_file_path");
     }
 
     /// Board item's acceptance 5: `git` being unusable at all is refused by
@@ -717,7 +903,15 @@ mod tests {
         let plugin_root = store.path().join("outpost");
         let result = test_support::with_program(
             std::ffi::OsStr::new("conway-test-nonexistent-git-binary-2f9a7c"),
-            || fetch_git_source("outpost", &source, store.path(), &plugin_root),
+            || {
+                fetch_git_source(
+                    "outpost",
+                    "https://example.com/marketplace.json",
+                    &source,
+                    store.path(),
+                    &plugin_root,
+                )
+            },
         )
         .await;
 
@@ -789,7 +983,13 @@ exit 1
         // returned future outlives (E0515).
         let plugin_root = store.path().join("beepboop");
         let result = test_support::with_program(git_path.as_os_str(), || {
-            fetch_git_source("beepboop", &source, store.path(), &plugin_root)
+            fetch_git_source(
+                "beepboop",
+                "https://example.com/marketplace.json",
+                &source,
+                store.path(),
+                &plugin_root,
+            )
         })
         .await;
 
