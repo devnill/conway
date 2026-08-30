@@ -34,7 +34,7 @@
 //! functions in the first half of this file: [`resolve_credential_plan`],
 //! [`validate_credential_input`], [`backend_entry_json`],
 //! [`local_offer_entry_json`], [`non_interactive_guidance`], [`chain_entry`],
-//! [`decline_or_keep`]. Only the very
+//! `decline_or_keep`. Only the very
 //! last function, [`run_guided_setup`], touches a real terminal (via
 //! `crossterm` raw-mode reads) -- it is a thin imperative shell over the
 //! pure functions above and is not, and cannot be, exercised by this crate's
@@ -739,7 +739,7 @@ fn decline_or_keep(chain: &[String]) -> GuidedSetupOutcome {
 
 /// Saves `entry_json` under `id`, verifies it with one real turn, and --
 /// only once verification succeeds -- gives it a place in the persisted
-/// `default_role` chain ([`persist_chain`]). Board item
+/// `default_role` chain (`persist_chain`). Board item
 /// `01M1A2HKMDGNK961ZFV1EGZDQ0`: writing `backends.<id>` alone left every
 /// guided run with nothing to route to ("no candidate for role default (0
 /// considered)"), even though the [`verify_backend`] call right above had
