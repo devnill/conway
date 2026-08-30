@@ -15,6 +15,10 @@
 //! - acceptance 6: a configured, working provider starts straight into a
 //!   session with no flow and no material added delay.
 //! - acceptance 8: an `Undetermined` fleet never opens the flow.
+//! - board item `01M19XZPZD5CKRB83JJS42E8JN`'s acceptance 2 (Ollama Cloud):
+//!   an `api_key_env`-shaped backend entry actually resolves and completes
+//!   a real turn, not merely that the JSON written for it has the right
+//!   shape.
 //!
 //! `verify_backend`'s own two directions (a fake provider that accepts, one
 //! that rejects the key -- acceptance 3's own mechanism) are covered as
@@ -230,6 +234,64 @@ async fn first_run_a_working_provider_starts_straight_into_a_session_with_no_flo
     assert!(
         elapsed < std::time::Duration::from_secs(10),
         "a working provider must not pay for a startup probe; took {elapsed:?}"
+    );
+}
+
+/// Acceptance 2 (the second of the two credential styles the board item
+/// requires): an `api_key_env`-shaped backend entry -- the shape
+/// `first_run.rs::backend_entry_json` writes for `CredentialPlan::
+/// ReuseEnvVar`, exactly what an operator with `OLLAMA_API_KEY` (or
+/// `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`) already exported gets -- actually
+/// resolves through `conway::builder::resolve_api_key` and completes a real
+/// turn, not merely that the JSON it produces has the right shape (the unit
+/// tests in `first_run.rs` itself already cover that half).
+///
+/// **The credential is set via `Command::env`, scoped to the CHILD PROCESS
+/// only, never `std::env::set_var` in this test's own process** -- that
+/// would race every other test thread in this binary reading real process
+/// env in parallel, the exact hazard `conway::backend_usability`'s own
+/// module doc names (`crates/conway/tests/config_isolation_guard.rs`
+/// exists because it broke a suite once).
+///
+/// Dialect stays `"openai"`, matching [`write_fixture`]'s own template
+/// (see that helper's module doc for why: `MockBackend` only speaks the
+/// streaming wire shape, and `"ollama"`'s default `tool_calling` would pick
+/// the non-streaming path instead) -- credential resolution is dialect-
+/// agnostic, so this proves the exact mechanism the new `ollama_cloud`
+/// choice depends on without needing the mock to speak a wire format it
+/// does not implement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_run_a_provider_configured_via_api_key_env_actually_completes_a_turn() {
+    let mock = MockBackend::start(ok_script()).await;
+    let fixture = write_fixture(&mock, 5);
+
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&fixture.config_path).expect("read fixture"))
+            .expect("fixture is valid json");
+    config["backends"]["mock"]["api_key_env"] =
+        serde_json::json!("CONWAY_TEST_FIRST_RUN_API_KEY_ENV_STYLE");
+    std::fs::write(&fixture.config_path, config.to_string()).expect("rewrite fixture");
+
+    let started = Instant::now();
+    let out = common::command(&["-p", "hi"], &fixture)
+        .env("CONWAY_TEST_FIRST_RUN_API_KEY_ENV_STYLE", "sk-child-process-only")
+        .output()
+        .expect("run conway binary");
+    let elapsed = started.elapsed();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains(GUIDED_SETUP_MARKER),
+        "an api_key_env-credentialed backend must not read as unconfigured; got stderr: {stderr}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "took {elapsed:?}"
     );
 }
 

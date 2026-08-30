@@ -314,9 +314,9 @@ a second way to reach it, not a second implementation of it:
   (including remote ones, unlike the quieter check conway runs at
   startup), on the understanding that you opened it because you wanted
   to know right now.
-- **Adding a provider** offers the same two shapes the first-run flow
-  offers when conway starts with nothing configured (Anthropic, or an
-  OpenAI-compatible endpoint) — reusing your already-set credential
+- **Adding a provider** offers the same three hosted choices the first-run
+  flow offers when conway starts with nothing configured (Anthropic,
+  OpenAI, or Ollama Cloud) — reusing your already-set credential
   environment variable in one keystroke if it's there, or prompting for
   the key (never echoed, never logged) if it isn't. It writes the same
   `backends.<id>` entry a hand-edit would, to your user-scope
@@ -405,7 +405,7 @@ streamed tool calls, and the model's baseline capabilities before
 | `dialect` | Server | Notable behavior |
 | --- | --- | --- |
 | `openai` | OpenAI's own API, or a fully-compatible clone | Streams usage, sends `parallel_tool_calls`, `max_completion_tokens` |
-| `ollama` | Ollama | Flattens multi-block content, tolerant tool-call parsing |
+| `ollama` | Ollama, local or [Cloud](#ollama-cloud) — both are the same project's wire behavior | Flattens multi-block content, tolerant tool-call parsing |
 | `vllm-hermes` | vLLM serving a Hermes-style tool-call template | Scans `delta.content` for an inline `<tool_call>` block some builds emit instead of a structured delta |
 | `lm-studio` | LM Studio | No structured output, tolerant parsing |
 | `llamacpp-server` | `llama-server` | Grammar-constrained (GBNF) structured output, not JSON-schema |
@@ -430,6 +430,54 @@ A local Ollama server, reachable at its OpenAI-compatible path — note the
 Swap `dialect`/`base_url` for llama.cpp's or vLLM's own address to point
 at those instead. `api_key` is optional for a server that doesn't require
 one.
+
+### Ollama Cloud
+
+Ollama's hosted offering, served over an OpenAI-compatible endpoint —
+`https://ollama.com/v1`, note the **`/v1` suffix** and **not**
+`/api/v1` (that path is Ollama's native, non-OpenAI-compat surface).
+Also one of the three choices the guided first-run flow and `/settings`'
+providers section both offer directly, needing no hand-edit at all:
+
+```json
+// .conway/settings.json
+{
+  "backends": {
+    "ollama_cloud": {
+      "kind": "openai-compat",
+      "dialect": "ollama",
+      "base_url": "https://ollama.com/v1",
+      "api_key_env": "OLLAMA_API_KEY"
+    }
+  },
+  "roles": {
+    "coder": { "chain": ["ollama_cloud/glm-5.2"] }
+  }
+}
+```
+
+**`dialect` is `"ollama"`, the same profile the local server above uses —
+not `"openai"`.** The two servers are different deployments of the same
+project and share the same tool-call/content-shaping quirks, which is what
+`dialect` actually selects.
+
+`https://ollama.com/v1` is confirmed against the live server (2026-08-30):
+`GET /v1/models` returns 200 with a real model roster; an unauthenticated
+`POST /v1/chat/completions` returns 401. **This is not stated anywhere in
+`docs.ollama.com`'s own prose** — those pages document only the local
+`http://localhost:11434/v1` form — so don't "correct" this back to a
+documented-looking value without re-checking the live server first.
+
+`glm-5.2` above is a deliberate choice, not the smallest or cheapest model
+in Ollama Cloud's roster (`gpt-oss:20b` is smaller): it is the model
+conway's `openai-compat` wire layer has actually been debugged against — see
+the `content: ""` (never `null`) comment in
+`crates/conway-plugin-backends/src/openai_compat/wire.rs`'s tool-call
+message builder, which exists specifically because Ollama Cloud's `glm-5.2`
+rejects a `null` content field on a tool-call-only turn. Model ids on
+Ollama Cloud are expected to age — `docs.ollama.com/cloud` states Ollama
+"will occasionally deprecate and retire older cloud models" — so treat this
+one as a snapshot, not a permanent recommendation.
 
 ### Kimi (Moonshot platform API)
 

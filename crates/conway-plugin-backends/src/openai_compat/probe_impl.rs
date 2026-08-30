@@ -18,11 +18,23 @@
 //!
 //! The three-tier Ollama fallback is ordered richest-to-plainest: `/models`
 //! and `/api/tags` both carry a model list, `/api/version` carries none but
-//! is the most universally-served Ollama liveness endpoint — real
-//! Ollama Cloud deployments have been observed 404-ing on both `/models`
-//! (no OpenAI-compat model listing) and `/api/tags` (a local-instance
-//! management endpoint), so a plain version check is the last resort that
-//! still proves the server answers HTTP requests at all. If every tier
+//! is the most universally-served Ollama liveness endpoint.
+//!
+//! **Two dated observations, not one, because the second supersedes part of
+//! the first and the honest record is both.** As originally written (date
+//! unrecorded, before 2026-08-30): real Ollama Cloud deployments had been
+//! observed 404-ing on both `/models` (no OpenAI-compat model listing) and
+//! `/api/tags` (a local-instance management endpoint), which was this
+//! fallback's whole rationale. **2026-08-30, live against
+//! `https://ollama.com/v1`: both `/models` and `/api/tags` now return 200
+//! with a real roster.** That earlier 404 sighting is no longer reproducible
+//! against the current Ollama Cloud deployment. The fallback is **kept
+//! regardless** — deliberately, not because both tiers are still known-dead:
+//! defending against a 404 that may return, or that some other Ollama-
+//! compatible deployment still shows, costs nothing on the success path
+//! (the extra requests only fire once `/models` has already 404'd) and this
+//! module has no way to promise "this will never regress" for a
+//! third-party-operated server it does not control. If every tier
 //! 404s, [`OpenAiCompatBackend::run_probe`] still returns
 //! `Err(BackendError::BadRequest{..})` (via [`classify`]) rather than
 //! inventing a synthetic success — a caller of [`Backend::probe`] classifying

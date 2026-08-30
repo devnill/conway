@@ -79,14 +79,16 @@ project directory that has never seen conway.
 | Step | Do | Pass | Fail |
 | --- | --- | --- | --- |
 | 1.1 | Run `conway` with no config anywhere | The guided first-run setup appears | It errors, or drops to a prompt with no backend and no explanation |
-| 1.2 | Read what it offers before choosing | Exactly two hosted choices — **Anthropic** and **OpenAI** — plus a local-server probe | A third option appears, or the list is empty |
+| 1.2 | Read what it offers before choosing | Exactly three hosted choices — **Anthropic**, **OpenAI**, and **Ollama Cloud** — plus a local-server probe | A fourth option appears, one of the three is missing, or the list is empty |
 | 1.3 | Watch the local probe | It reports looking for Ollama on `127.0.0.1:11434` | It scans something else, or hangs |
 | 1.4 | Decline setup (`Esc`) | The app stays open and usable rather than exiting | It exits, or leaves a half-written config |
 
-> **Expected gap, already known from the code:** `HOSTED_CHOICES` has two
-> entries. **Ollama Cloud is not among them.** Part 2.1 is therefore *not* a
-> guided path — record how far the wizard gets you and exactly where you fall
-> off it. That gap is a finding about the product, not a mistake in your walk.
+> **Closed 2026-08-30, board item `01M19XZPZD5CKRB83JJS42E8JN`:** `HOSTED_CHOICES`
+> now has three entries and Ollama Cloud is one of them (`dialect: "ollama"`,
+> `base_url: "https://ollama.com/v1"`, default model `glm-5.2`). Part 2.1 below
+> is a guided path now — if the wizard does not offer it, or picking it does not
+> reach a working entry, that is a **regression**, not the expected gap this
+> note used to describe.
 
 ---
 
@@ -94,17 +96,26 @@ project directory that has never seen conway.
 
 ### 2.1 Ollama Cloud (hosted, credentialed, OpenAI-compatible)
 
+**No longer a fall-off case as of board item `01M19XZPZD5CKRB83JJS42E8JN`
+(2026-08-30): first-run and `/settings` both offer it directly, third in the
+list after Anthropic and OpenAI.** If step 2.1.1 below does not reach a
+working entry through the guided path, that is a regression against this
+item, not the expected gap the earlier version of this row described.
+
 | Step | Do | Pass | Fail |
 | --- | --- | --- | --- |
-| 2.1.1 | Try to add it through first-run or `/settings` | You reach a working entry | No path offers it — **record where you fall off**, then configure by hand |
-| 2.1.2 | Configure by hand if needed: an `openai-compat` backend with Ollama Cloud's base URL and your key | `conway routes explain <role>` names it | Config is rejected — capture the exact error |
-| 2.1.3 | Send one real prompt | A real completion returns | Transport or auth error — capture verbatim |
+| 2.1.1 | Add it through first-run or `/settings` -> providers -> add Ollama Cloud, using an `OLLAMA_API_KEY` you have (try once with it already exported, once without, to walk both credential styles) | You reach a working, verified entry both ways | Either path fails, or only one credential style works — **record which** |
+| 2.1.2 | If you need to configure by hand instead: an `openai-compat` backend, `dialect: "ollama"`, `base_url: "https://ollama.com/v1"`, and your key | `conway routes explain <role>` names it | Config is rejected — capture the exact error |
+| 2.1.3 | Send one real prompt, then a prompt that forces at least one tool call | Both return real completions | Transport or auth error on the first; on the second, `bad request: invalid message content type: <nil>` would mean the `glm-5.2` content-type workaround (`openai_compat/wire.rs`) regressed — capture verbatim |
 
 > Ollama Cloud has bitten conway before and the fixes were reactive, so watch
 > these specifically: a rejected request field
-> (`openai_compat/wire.rs`), and a capability probe that **404s on both
-> `/models` and `/api/tags`** (`probe_impl.rs`). If either shows up, it is a
-> known shape, not a new mystery.
+> (`openai_compat/wire.rs`), and a capability probe that **used to 404 on
+> both `/models` and `/api/tags`** (`probe_impl.rs`) — live as of 2026-08-30
+> both return 200, so the three-tier fallback to `/api/version` should not
+> even trigger; if it does, that is itself worth noting (a regression on
+> Ollama Cloud's side, not conway's). If either the wire quirk or the old
+> 404 shape shows up, it is a known shape, not a new mystery.
 
 ### 2.2 A local model
 
@@ -197,8 +208,9 @@ Then:
 1. File every conway defect the walk found as **its own board item** — not as
    a workaround buried in prose.
 2. Correct [`getting-started.md`](getting-started.md) so a literal
-   follow-through works, including both backends. Where a path does not exist
-   — Ollama Cloud in the wizard, for instance — say so plainly rather than
-   implying one that does not.
+   follow-through works, including all three hosted choices (Ollama Cloud
+   joined the wizard 2026-08-30, board item `01M19XZPZD5CKRB83JJS42E8JN` — if
+   your walk still finds a path that does not exist, say so plainly rather
+   than implying one that does).
 3. Correct **this plan** where the walk showed it wrong, and change its status
    line from UNWALKED.
