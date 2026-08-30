@@ -17,6 +17,7 @@
 pub mod app;
 pub mod commands;
 pub mod config;
+pub mod form;
 pub mod gate;
 pub mod history;
 pub mod input;
@@ -72,6 +73,15 @@ fn sweep_live_threshold() -> chrono::Duration {
 /// matching [`GateReceiver`] half of that same channel as its third
 /// argument so the app loop can service the requests the already-built
 /// `Conway`'s live `Runtime` sends into it.
+///
+/// `form_rx`: board item `01M19NH39AE2D5AMJK0RZRQY86`'s exact sibling of
+/// `gate_rx` -- the [`form::FormReceiver`] half of a `form::TuiFormSurface`
+/// channel `main.rs` builds and hands to `ConwayBuilder` (via
+/// `ConwayUiPlugin::new(Some(surface))`) at the identical point `gate_rx`'s
+/// own `TuiGate` is, for the identical reason (see that field's own doc
+/// just above). Threaded straight into [`App::run`], never stored on `App`
+/// itself, mirroring `gate_rx`'s own shape exactly.
+///
 /// `plugins`: the installed plugin
 /// list, forwarded verbatim to [`App::new`] so it can build the plugin
 /// command registry -- see that method's own doc for why this is threaded
@@ -95,6 +105,7 @@ pub async fn run(
     cli: &Cli,
     conway: Conway,
     gate_rx: GateReceiver,
+    form_rx: form::FormReceiver,
     plugins: &[std::sync::Arc<dyn conway::plugin::Plugin>],
     agent_names: std::sync::Arc<dyn conway_plugin_names::AgentNames>,
 ) -> conway::Result<ExitCode> {
@@ -173,7 +184,7 @@ pub async fn run(
         }
     });
 
-    let result = app.run(&mut terminal, gate_rx).await;
+    let result = app.run(&mut terminal, gate_rx, form_rx).await;
     restore_terminal();
     // Clean shutdown. Stop the heartbeat FIRST so an in-flight `touch` can
     // no longer rename the marker back over a just-cleared file, then drop

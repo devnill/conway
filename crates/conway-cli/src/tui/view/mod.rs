@@ -70,7 +70,7 @@ use ratatui::Frame;
 
 use super::state::{
     AddProviderCredentialState, AppState, AskModal, EditingPatternState, IntentConfirm, Mode,
-    TrustPreviewCard,
+    TrustPreviewCard, UiFormState,
 };
 pub use theme::Theme;
 
@@ -186,6 +186,13 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
         draw_add_provider_credential(frame, areas.transcript, cred, theme);
     }
 
+    // Board item `01M19NH39AE2D5AMJK0RZRQY86`: `ask_question`'s own modal --
+    // the fifth surface in the SAME never-stack family every branch above
+    // this one belongs to.
+    if let Mode::UiForm(form) = &state.mode {
+        draw_ui_form(frame, areas.transcript, form, state.modal_scroll, theme);
+    }
+
     // T7: the `/help` keybinding overlay is NOT a `Mode` variant (see
     // `AppState::help_open`'s own doc) -- it is gated on `Mode::Normal`
     // here instead, which is exactly how it avoids ever stacking on top of
@@ -245,7 +252,7 @@ fn layout(state: &AppState, area: Rect) -> Areas {
     let show_agents = state.agent_view_open
         && !matches!(
             state.mode,
-            Mode::AskModal(_) | Mode::IntentConfirm(_) | Mode::TrustPreview(_)
+            Mode::AskModal(_) | Mode::IntentConfirm(_) | Mode::TrustPreview(_) | Mode::UiForm(_)
         )
         && area.height > input_height + STATUS_HEIGHT + 3;
 
@@ -845,6 +852,75 @@ fn draw_trust_preview(
     frame.render_widget(footer, frame_areas.footer_area);
 }
 
+/// Rows `ask_question`'s own footer ALWAYS reserves: the key hint plus a
+/// blank line reserved for symmetry (mirrors [`INTENT_CONFIRM_FOOTER_ROWS`]
+/// -- this card, like the intent-confirm card and unlike the `/ask` modal
+/// or the trust-preview card, has no in-modal error state: neither
+/// `UiFormDecision::Answer` nor `::Cancel` can fail, per
+/// `AppState::resolve_ui_form`'s own doc).
+const UI_FORM_FOOTER_ROWS: u16 = 2;
+
+/// `ask_question`'s own modal (board item `01M19NH39AE2D5AMJK0RZRQY86`):
+/// bottom-anchored, content-sized, capped, via the shared [`modal`]
+/// primitive (V1) -- following [`draw_trust_preview`]'s precedent exactly.
+/// Shows the question's `prompt`, then every option in
+/// `form.ask.request.options`, with the currently-`selected` one
+/// highlighted (`theme.selected`) and marked with a leading `> ` so the
+/// highlight survives a monochrome terminal too -- never color alone.
+fn draw_ui_form(
+    frame: &mut Frame,
+    transcript_area: Rect,
+    form: &UiFormState,
+    scroll: u16,
+    theme: &Theme,
+) {
+    let mut body_lines = vec![
+        Line::from(Span::styled(
+            form.ask.request.prompt.clone(),
+            theme.emphasized,
+        )),
+        Line::from(""),
+    ];
+    for (i, option) in form.ask.request.options.iter().enumerate() {
+        let (marker, style) = if i == form.selected {
+            ("> ", theme.selected)
+        } else {
+            ("  ", theme.dim)
+        };
+        body_lines.push(Line::from(Span::styled(
+            format!("{marker}{option}"),
+            style,
+        )));
+    }
+    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
+
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        UI_FORM_FOOTER_ROWS,
+        modal::DEFAULT_CAP_DENOMINATOR,
+        " QUESTION ",
+        theme.border_accent,
+    );
+
+    let body_max_scroll = modal::body_max_scroll(content_rows, frame_areas.body_area.height);
+    let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
+    frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
+
+    let hint = if body_max_scroll > 0 {
+        "[up/down] choose  [enter] answer  [esc] cancel  [PageUp/PageDown] scroll"
+    } else {
+        "[up/down] choose  [enter] answer  [esc] cancel"
+    };
+    let footer_lines = vec![Line::from(hint), Line::from("")];
+    let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, frame_areas.footer_area);
+}
+
 /// Footer rows reserved below the field list: the hint line plus a blank
 /// for symmetry (mirrors [`INTENT_CONFIRM_FOOTER_ROWS`]).
 const EDITING_PATTERN_FOOTER_ROWS: u16 = 2;
@@ -1094,6 +1170,45 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
         assert!(text.contains("agents ("));
+    }
+
+    /// Board item `01M19NH39AE2D5AMJK0RZRQY86`, acceptance 2's rendering
+    /// half: `ask_question`'s modal actually draws the real question and
+    /// options a model sent, with the highlighted option marked -- driven
+    /// through the REAL `draw` render pass into a `TestBackend`, exactly
+    /// like every other modal-bearing surface's own render test in this
+    /// module.
+    #[test]
+    fn draw_ui_form_shows_the_prompt_and_the_highlighted_option() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let (ask, _reply_rx) = crate::tui::form::PendingFormAsk::new_for_test(
+            conway_plugin_ui::AskSelectRequest {
+                prompt: "which way?".to_string(),
+                options: vec!["left".to_string(), "right".to_string()],
+            },
+        );
+        state.offer_ui_form(ask);
+        state.move_ui_form_selection(1);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| draw(&state, f, &Theme::default()))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(text.contains("which way?"), "the prompt must render: {text}");
+        assert!(text.contains("left"), "every option must render: {text}");
+        assert!(text.contains("right"), "every option must render: {text}");
+        assert!(
+            text.contains("> right"),
+            "the highlighted option must be marked, got: {text}"
+        );
+        assert!(
+            text.contains("answer") && text.contains("cancel"),
+            "the footer must name the decision keys: {text}"
+        );
     }
 
     #[test]

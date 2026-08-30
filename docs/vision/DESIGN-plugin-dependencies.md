@@ -583,7 +583,16 @@ convenience.
 - **No second consumer of a plugin-provided capability appears.** If
   `conway.ui` remains the only provider and `conway.permissions` the only
   consumer, Edge B was overbuilt and the capability should have been a host
-  surface (Edge A) all along.
+  surface (Edge A) all along. **2026-08-30: this bullet's premise no longer
+  applies to `conway.ui` specifically — see §9's dated entry.** `conway.ui`'s
+  own justification, as of board item `01M19NH39AE2D5AMJK0RZRQY86`, runs
+  through a DIFFERENT path entirely (model → tool → operator, never through
+  Edge B at all), so counting plugin-provided-capability consumers was
+  measuring the wrong axis for it. This does NOT close the falsifier for
+  Edge B itself: whether the plugin→plugin capability channel has a real
+  second consumer beyond `conway.permissions` is still exactly as open as it
+  was, and remains this bullet's live question — narrower now that
+  `conway.ui` is no longer the evidence either side of it could point to.
 - **The toggle-off defect turns out not to bite.** If nobody ever disables a
   depended-on plugin, §3's headline acceptance criterion is theatre and the
   simpler build-time-only check was sufficient.
@@ -800,18 +809,29 @@ a build with no `[plugins]` section installs it not at all
 than this page's own altitude discussion might read as implied.** The
 first real form ships zero widgets beyond a single-select ask/answer
 (`AskSelectRequest`/`AskSelectAnswer`), and — a disclosed scope decision,
-not an oversight — no live, interactive `FormSurface` is wired into the
+not an oversight — no live, interactive `FormSurface` was wired into the
 shipped binary in this pass: `ConwayUiPlugin::new(None)` is what every
-dispatch target constructs today, TUI included, so `ui.form` degrades
-identically everywhere until a real form drives what a live surface should
-look like. See `conway-plugin-ui`'s own module doc ("Host requirement,
-declared honestly") for the full reasoning, and this item's own completion
-report for why building a rendering surface now — for a proof-of-mechanism
-consumer, with no shipped form yet needing a specific widget on screen —
-would have been exactly the "designing on theory" INTENT §8.5 forbids.
-§8's first falsifier ("`conway.ui` needs to draw, not declare") did not
-fire: the declarative request/answer shape expressed everything
-`skeleton_ask` needed to ask and to receive back.
+dispatch target constructed at the time, TUI included, so `ui.form`
+degraded identically everywhere until a real form drove what a live
+surface should look like. See `conway-plugin-ui`'s own module doc ("Host
+requirement, declared honestly") for the full reasoning, and this item's
+own completion report for why building a rendering surface then — for a
+proof-of-mechanism consumer, with no shipped form yet needing a specific
+widget on screen — would have been exactly the "designing on theory"
+INTENT §8.5 forbids. §8's first falsifier ("`conway.ui` needs to draw, not
+declare") did not fire: the declarative request/answer shape expressed
+everything `skeleton_ask` needed to ask and to receive back.
+
+**2026-08-30 correction: a live `FormSurface` now IS wired in, for one
+dispatch target.** Board item `01M19NH39AE2D5AMJK0RZRQY86` is the real
+consumer with a stated on-screen need INTENT §8.5 was waiting on (see the
+dated entry below, at this page's end, for the ruling that licensed this):
+`crates/conway-cli/src/main.rs` now builds a `tui::form::TuiFormSurface`
+and hands `Some(surface)` to `ConwayUiPlugin::new` exactly when the process
+is about to run the interactive TUI; every OTHER dispatch target still
+constructs `ConwayUiPlugin::new(None)`, so the two paragraphs above are
+left as written (they were true when drafted) rather than rewritten, per
+this page's own append-only convention.
 
 **§8's third falsifier ("no second consumer of a plugin-provided
 capability appears") is now live, and this entry does not rule on it.**
@@ -836,3 +856,40 @@ or otherwise — actually calling `ui.form` (or some other Edge B
 capability) for its own functional reasons, not to prove the mechanism
 works. Until that happens, this falsifier remains open, and this entry
 records that rather than ruling on it.
+
+**2026-08-30 — the operator ruled the question the paragraph above posed,
+but not the way either of its two readings expected: the falsifier's OWN
+PREMISE stopped applying to `conway.ui`, rather than either reading being
+selected.** Board item `01M19NH39AE2D5AMJK0RZRQY86`, decision
+`01M19NF1C8E8CA8Y3X653Q3R23`: *"conway.ui should work as a standalone
+feature, making the consumer rule moot. I need to be able to prompt a model
+to be able to interact with me in an interview format."* `conway.ui` now
+contributes a model-callable tool (`ask_question`) whose own justification
+runs model → tool → operator — a path that never traverses Edge B at all.
+Counting plugin-provided-capability consumers was measuring the wrong axis
+for a plugin whose real justification does not depend on that count.
+
+**This is a narrower finding than "the falsifier fired" or "the falsifier
+was answered," and narrower still than "Edge B is vindicated" — none of
+those is what happened, and this page does not claim any of them.** The
+falsifier's third bullet (§8, amended in place alongside this entry) is
+MOOT for `conway.ui` specifically, not resolved for the plugin→plugin
+capability channel itself: whether Edge B ever gets a real second consumer
+beyond `conway.permissions` is exactly as open a question today as it was
+in the entry above, and `conway.ui` can no longer be pointed to as evidence
+either way, having stopped being a data point on that axis at all.
+`skeleton_ask` is untouched by this item and still calls `ui.form` over
+Edge B exactly as it did before — that half of `conway.ui`'s own surface
+(the capability) keeps whatever evidentiary weight it already had; only the
+question of whether `conway.ui` AS A PLUGIN needed a second Edge B consumer
+to justify its own existence is what this ruling moots.
+
+**§7a's sequencing constraint held a second time.** This item's own spec
+named the first falsifier explicitly as a live risk — "if the declarative
+`AskSelectRequest`/`AskSelectAnswer` shape cannot express what a real
+interview needs... STOP and report" — and it did not fire: the tool a real
+model-driven interview needs is exactly the existing declarative shape,
+unchanged. `docs/plugins/ui.md` and `conway-plugin-ui`'s own module doc
+carry the corrected, current state of both the tool and the capability;
+this page's own §8 first-falsifier discussion two entries above is left as
+written, since it was true when drafted and remains true now.

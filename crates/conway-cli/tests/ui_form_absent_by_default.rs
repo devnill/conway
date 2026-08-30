@@ -4,9 +4,19 @@
 //! `[plugins].install` (the general case a build with no `[plugins]`
 //! section at all reduces to -- `PluginsConfig::install`'s own
 //! `#[serde(default)]` empty `Vec`) must NOT also reach `conway.ui`'s
-//! `ui.form` capability. `conway.ui` contributes no tool of its own to call
-//! directly, so the observable is indirect but exact: `skeleton_ask`
-//! (`conway-plugin-skeleton`'s consumer tool) calls into `ui.form` and gets
+//! `ui.form` capability. As of board item `01M19NH39AE2D5AMJK0RZRQY86`,
+//! `conway.ui` DOES contribute a tool of its own (`ask_question`, called
+//! directly by the model) -- but this test's own observable predates and is
+//! unaffected by that: it drives `conway.ui`'s Edge B capability through a
+//! DIFFERENT consumer (`skeleton_ask`, `conway-plugin-skeleton`'s own tool)
+//! specifically to prove the capability itself is unreachable when
+//! `conway.ui` is absent, which is orthogonal to whether `conway.ui` also
+//! ships a tool of its own -- `crates/conway-cli/tests/
+//! ui_ask_question_one_shot.rs` is this file's own sibling, proving the
+//! identical "absent -> unreachable" claim for `ask_question` directly,
+//! plus that tool's own no-drawing-surface degrade (this file's own
+//! `ui_form_degrades_under_one_shot.rs` sibling's claim, restated for the
+//! new consumer). `skeleton_ask` calls into `ui.form` and gets
 //! `CapabilityCallError::NotProvided` unless `conway.ui` is ALSO named. The
 //! assertion below checks for `NotProvided`'s own `Display` wording
 //! specifically (`"no installed plugin provides capability"`), not merely

@@ -21,7 +21,7 @@ a summary pointing somewhere else.
 | [`authoring.md`](authoring.md) — your first hook | How do I actually write one in Rust, register it, and confirm it fired? | You're ready to build. Its ten-minute walkthrough has been **executed verbatim** against a crate depending only on `conway`. |
 | [`subprocess-plugins.md`](subprocess-plugins.md) — the subprocess plugin host | How do I add a tool to a `conway` binary I already built, in a language that isn't Rust, with a `settings.json` edit and no rebuild? | You want a plugin that isn't Rust, or you're evaluating what naming a command in `[plugins].subprocess` actually trusts. |
 | [`memory.md`](memory.md) — `conway.memory` | What does the model-writable memory store do, where does it live on disk, and what happens if that directory can't be opened? | You want the model to remember things across turns and across separate `conway` invocations, or you're deciding whether its fail-closed startup behavior blocks you. |
-| [`ui.md`](ui.md) — `conway.ui` | What does `ui.form` let one plugin ask another, what shape is the request/answer, and why does every host refuse it today? | Another plugin you installed says it needs `ui.form`, or you're writing a plugin that wants to ask an operator a question with options. |
+| [`ui.md`](ui.md) — `conway.ui` | How does a model ask you a question with options directly (`ask_question`), what does `ui.form` let one plugin ask another, and which hosts actually answer either one interactively? | You want a model to interview you rather than just chat, another plugin you installed says it needs `ui.form`, or you're writing a plugin that wants to ask an operator a question with options. |
 | [`path.md`](path.md) — `conway.path` | What does the `compose_context_path` tool let a model do to a session's future context, what does it report afterward, and how does it avoid silently undoing an earlier exclusion? | You want an operator's stated intent ("forget that dead end", "bring in what we found in that other session") to actually change what a later turn sees, or you're evaluating what this new capability can and cannot read/write. |
 | [`discover.md`](discover.md) — `conway.discover` | What does the `search_sessions` tool let a model find that it did not already hold a reference to, what does a search cost, and how wide can it reach? | You want an operator's stated intent ("what did we work out yesterday") to name a session the model never started or spawned, or you're evaluating what this reaches and what it costs before it runs. |
 | [`idiom.md`](idiom.md) — `conway.idiom` | What does the prepended conway-idioms instruction fragment actually say, where does it land relative to an agent def's own system prompt, and why does a subagent never see it? | You want a bare interactive session to carry any harness orientation at all, or you're evaluating what this fragment assumes about which tools are announced. |
@@ -172,12 +172,15 @@ with a one-line `settings.json` edit and no rebuild:
   of a description of one. Listed here for completeness against `bundle()`,
   not as a capability to install. See `conway-plugin-skeleton`'s own
   crate-level doc.
-- [`ui.md`](ui.md) — `conway.ui`, publishes `ui.form`: a blocking
-  ask-with-options capability another installed plugin calls into over Edge
-  B. Contributes no tool or command of its own — nothing here is reachable
-  by the model or the operator directly, only by another plugin's own code.
-  Every host today refuses every call (no live drawing surface is wired in
-  yet); a calling plugin degrades from that refusal, it does not fail.
+- [`ui.md`](ui.md) — `conway.ui`, a standalone operator-facing feature
+  (board item `01M19NH39AE2D5AMJK0RZRQY86`): `ask_question`, a model-callable
+  tool that interviews the operator directly, and `ui.form`, the identical
+  blocking ask-with-options shape another installed plugin can call into
+  over Edge B. No command of its own. The interactive TUI wires a real,
+  live answering surface for both; every other host (one-shot `-p`,
+  `sessions`, `routes`) refuses immediately instead of blocking, and a
+  caller (the model, or another plugin) degrades from that refusal rather
+  than failing.
 
 ## A status-line command — first-party, but not a `[plugins].install` id either
 

@@ -695,6 +695,9 @@ fn mode_label(mode: &Mode) -> String {
         // Board item `01M11XWB4T8ZADNDB4M8R482MA`: the settings providers
         // section's credential prompt owns the screen.
         Mode::AddProviderCredential(_) => "add provider".to_string(),
+        // Board item `01M19NH39AE2D5AMJK0RZRQY86`: `ask_question`'s own
+        // modal owns the screen.
+        Mode::UiForm(_) => "question".to_string(),
     }
 }
 

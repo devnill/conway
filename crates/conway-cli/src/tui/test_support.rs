@@ -80,6 +80,10 @@ pub(crate) fn key(code: KeyCode) -> KeyEvent {
 ///   `state.jump_to_tail()` call in `app.rs`'s action dispatch.
 /// - `PermissionDecision`: `AppState::resolve_current_prompt` -- mirrors the
 ///   run loop's `Action::PermissionDecision` arm exactly.
+/// - `UiFormDecision` (board item `01M19NH39AE2D5AMJK0RZRQY86`):
+///   `AppState::resolve_ui_form` -- mirrors the run loop's
+///   `Action::UiFormDecision` arm exactly; needs no facade call, unlike
+///   `AskFate`/`TrustDecision`/`IntentConfirm` below.
 ///
 /// `Submit`/`CtrlC`/`Quit`/`FocusAgent`/`AskFate` are NOT applied here:
 /// each of those needs a live facade call in `app.rs` (`self.submit`,
@@ -136,6 +140,16 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         Action::JumpToTail => state.jump_to_tail(),
         Action::PermissionDecision(decision) => {
             state.resolve_current_prompt(decision.clone());
+        }
+        // Board item `01M19NH39AE2D5AMJK0RZRQY86`: unlike `AskFate`/
+        // `TrustDecision`/`IntentConfirm` just below, answering
+        // `ask_question` needs no live facade call at all -- the answer
+        // travels back over the blocked tool call's own `oneshot` channel,
+        // entirely inside `AppState` (see `AppState::resolve_ui_form`'s own
+        // doc) -- so this harness applies it directly, mirroring
+        // `PermissionDecision` immediately above.
+        Action::UiFormDecision(decision) => {
+            state.resolve_ui_form(*decision);
         }
         Action::None
         | Action::Submit(_)
