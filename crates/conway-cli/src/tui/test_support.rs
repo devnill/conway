@@ -144,7 +144,10 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         | Action::FocusAgent(_)
         | Action::AskFate(_)
         | Action::IntentConfirm(_)
-        | Action::TrustDecision(_) => {}
+        | Action::TrustDecision(_)
+        // Cycling the default role is an `App` action with no `AppState`-only
+        // effect, so this state-level dispatcher has nothing to do for it.
+        | Action::CycleDefaultRole => {}
     }
     action
 }
