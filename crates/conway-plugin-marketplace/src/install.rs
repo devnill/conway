@@ -762,7 +762,10 @@ exit 1
         .expect("install via stub git");
 
         assert_eq!(installed.id, "outpost");
-        assert!(installed.dir.join("plugin/.claude-plugin/plugin.json").is_file());
+        assert!(installed
+            .dir
+            .join("plugin/.claude-plugin/plugin.json")
+            .is_file());
         assert!(
             installed.dir.join("root-file.txt").is_file(),
             "a `github` source has no subdirectory -- the whole checkout root installs"

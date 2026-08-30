@@ -205,7 +205,8 @@ a JSON file" even though the underlying trust posture is identical:
   component leading to it) is a symlink, and the whole tree beneath it is
   then walked and refused if a symlink appears anywhere further down,
   before a single byte is copied into conway's own plugin store. A
-  narrower version of P-10's symlink-in-an-extracted-archive hazard, not
+  narrower version of the symlink-in-an-extracted-archive hazard this
+  project declined to take on, not
   an absent one.
 
 No new trust MECHANISM is created by any of this — no digest, no
@@ -213,7 +214,8 @@ allow-list, no prompt beyond the one install action's own disclosure,
 unchanged from the ruling above. What changed is the SURFACE a
 network-supplied value can reach (a subprocess argument, not only an HTTP
 request path), and the three bullets above are what closes each concrete
-way that surface could otherwise be abused, at the boundary, per P-10.
+way that surface could otherwise be abused, checked at the boundary where
+untrusted input arrives.
 
 **A persistent subprocess plugin (board item `01M03VJHG1WFECFJB4ZH3CKWDX`,
 `"transport": "persistent"`) is a larger exposure, not a larger capability

@@ -351,7 +351,9 @@ pub enum ResolveError {
 /// restatement, so the two can no longer independently drop the guard.
 pub fn resolve_candidate(cwd: &Path, raw: &str) -> Result<PathBuf, ResolveError> {
     if raw.contains('\0') {
-        return Err(ResolveError::NulByte { raw: raw.to_string() });
+        return Err(ResolveError::NulByte {
+            raw: raw.to_string(),
+        });
     }
     if let Some(expanded) = expand_tilde(raw)? {
         return Ok(expanded);
@@ -378,10 +380,12 @@ pub fn resolve_candidate(cwd: &Path, raw: &str) -> Result<PathBuf, ResolveError>
 /// than expansion. Left as-is rather than special-cased.
 fn expand_tilde(raw: &str) -> Result<Option<PathBuf>, ResolveError> {
     if raw == "~" {
-        return home_dir().map(Some).ok_or_else(|| ResolveError::UnresolvableTilde {
-            raw: raw.to_string(),
-            reason: "no home directory could be determined for this process".to_string(),
-        });
+        return home_dir()
+            .map(Some)
+            .ok_or_else(|| ResolveError::UnresolvableTilde {
+                raw: raw.to_string(),
+                reason: "no home directory could be determined for this process".to_string(),
+            });
     }
     if let Some(rest) = raw.strip_prefix("~/") {
         return home_dir()

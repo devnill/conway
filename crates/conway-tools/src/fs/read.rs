@@ -247,10 +247,7 @@ mod tests {
     async fn invoke_rejects_unsupported_tilde_form_naming_tilde() {
         let (ctx, _h) = test_ctx(PathBuf::from("/tmp"));
         let err = ReadTool::new()
-            .invoke(
-                call(serde_json::json!({"path": "~bob/secret.txt"})),
-                ctx,
-            )
+            .invoke(call(serde_json::json!({"path": "~bob/secret.txt"})), ctx)
             .await
             .unwrap_err();
         match err {

@@ -284,13 +284,9 @@ pub(crate) async fn fetch_git_source(
         },
         None => checkout_dir.clone(),
     };
-    if let Err(err) = validate_plugin_root(
-        plugin_id,
-        &url,
-        subdir(source),
-        &checkout_dir,
-        &plugin_root,
-    ) {
+    if let Err(err) =
+        validate_plugin_root(plugin_id, &url, subdir(source), &checkout_dir, &plugin_root)
+    {
         return fail_cleaning_up(&checkout_dir, err).await;
     }
 
@@ -347,10 +343,12 @@ async fn run_git_clone(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
 
-    let mut child = command.spawn().map_err(|source| MarketplaceError::GitUnavailable {
-        program: program.to_string(),
-        detail: source.to_string(),
-    })?;
+    let mut child = command
+        .spawn()
+        .map_err(|source| MarketplaceError::GitUnavailable {
+            program: program.to_string(),
+            detail: source.to_string(),
+        })?;
     let mut stderr_pipe = child.stderr.take();
 
     // Drains stderr concurrently with waiting for exit (the same shape
@@ -438,9 +436,7 @@ fn validate_plugin_root(
 
     let meta = match std::fs::symlink_metadata(plugin_root) {
         Ok(meta) => meta,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            return Err(no_directory())
-        }
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Err(no_directory()),
         Err(source) => {
             return Err(MarketplaceError::Io {
                 id: plugin_id.to_string(),

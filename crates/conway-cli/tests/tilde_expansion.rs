@@ -131,11 +131,14 @@ async fn a_leading_tilde_slash_argument_resolves_against_the_real_home_directory
     let mock = MockBackend::start(one_read_call_script("~/target.txt")).await;
     let fixture = write_fixture(&mock, 5);
 
-    let out = command(&["-p", "read the file", "--allowed-tools", "read"], &fixture)
-        .env("HOME", simulated_home.path())
-        .env("USERPROFILE", simulated_home.path())
-        .output()
-        .expect("run conway binary");
+    let out = command(
+        &["-p", "read the file", "--allowed-tools", "read"],
+        &fixture,
+    )
+    .env("HOME", simulated_home.path())
+    .env("USERPROFILE", simulated_home.path())
+    .output()
+    .expect("run conway binary");
 
     assert!(
         out.status.success(),
@@ -172,9 +175,12 @@ async fn an_unsupported_tilde_user_form_names_tilde_in_the_denial_reaching_the_m
     let mock = MockBackend::start(one_read_call_script("~bob/secret.txt")).await;
     let fixture = write_fixture(&mock, 5);
 
-    let out = command(&["-p", "read the file", "--allowed-tools", "read"], &fixture)
-        .output()
-        .expect("run conway binary");
+    let out = command(
+        &["-p", "read the file", "--allowed-tools", "read"],
+        &fixture,
+    )
+    .output()
+    .expect("run conway binary");
 
     assert!(
         out.status.success(),

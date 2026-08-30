@@ -309,7 +309,9 @@ impl SubagentHost for Runtime {
                             // still names itself, via `ResolveError`'s own
                             // `Display`, rather than falling back to the
                             // NUL-specific wording above.
-                            _ => format!("subagent root {requested_str:?} could not be resolved: {err}"),
+                            _ => format!(
+                                "subagent root {requested_str:?} could not be resolved: {err}"
+                            ),
                         },
                     })
                 })?;

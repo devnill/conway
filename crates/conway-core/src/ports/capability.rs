@@ -539,7 +539,10 @@ impl CapabilityHost for CapabilityRegistry {
     }
 
     fn version_is_declared(&self, capability: &str) -> bool {
-        self.version_declared.get(capability).copied().unwrap_or(false)
+        self.version_declared
+            .get(capability)
+            .copied()
+            .unwrap_or(false)
     }
 }
 
@@ -963,12 +966,8 @@ mod tests {
             Arc::new(EchoProvider),
         );
         let handle = CapabilityCallHandle::new(Arc::new(pinned), "acme.consumer");
-        block_on(handle.call_versioned(
-            "acme.fixture.pinned",
-            &required,
-            serde_json::json!(null),
-        ))
-        .expect("=1.2.3 accepts an installed 1.2.3 provider");
+        block_on(handle.call_versioned("acme.fixture.pinned", &required, serde_json::json!(null)))
+            .expect("=1.2.3 accepts an installed 1.2.3 provider");
 
         let next_patch = registry_with_version(
             "acme.fixture.pinned",
@@ -990,12 +989,9 @@ mod tests {
         let registry = CapabilityRegistry::default();
         let handle = CapabilityCallHandle::new(Arc::new(registry), "acme.consumer");
         let required = semver::VersionReq::parse("^1").expect("valid semver req");
-        let err = block_on(handle.call_versioned(
-            "acme.nobody.home",
-            &required,
-            serde_json::json!(null),
-        ))
-        .expect_err("nothing registered this capability at any version");
+        let err =
+            block_on(handle.call_versioned("acme.nobody.home", &required, serde_json::json!(null)))
+                .expect_err("nothing registered this capability at any version");
         assert_eq!(
             err,
             CapabilityCallError::NotProvided {

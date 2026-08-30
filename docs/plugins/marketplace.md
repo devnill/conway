@@ -325,9 +325,9 @@ and network access. This is not a NEW class of trust decision — it sits on
 the identical footing the paragraph above already states for a files-map
 fetch — but "conway now clones arbitrary third-party git repositories on
 operator command" is a materially different-SOUNDING sentence from "conway
-fetches a JSON file," and P-11 requires stating a new trust surface
-explicitly rather than letting a reader infer it from an unrelated
-paragraph.
+fetches a JSON file," and this project's documentation rule requires stating a new trust
+surface explicitly rather than letting a reader infer it from an
+unrelated paragraph.
 
 ## What this does NOT do
 
