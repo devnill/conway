@@ -1447,7 +1447,7 @@ fn patch_or_insert_default_role(
 /// order), creating the top-level `roles` object, the `roles.<role>`
 /// object, and the `chain` member itself when any is missing -- the
 /// writer half of board item `01M1A2HKMDGNK961ZFV1EGZDQ0`'s fix: the shape
-/// [`conway_cli::first_run::verify_backend`] (a sibling crate, named here
+/// `conway_cli::first_run::verify_backend` (a sibling crate, named here
 /// only in prose) already builds in memory for its own throwaway
 /// verification config is the shape this function persists for real, built
 /// from the SAME `"id/model"` formatting
