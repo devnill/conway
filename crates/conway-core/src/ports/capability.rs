@@ -654,17 +654,17 @@ impl CapabilityCallHandle {
     /// dispatch this handle already had -- one implementation of the
     /// actual call, never a second copy behind the version check.
     ///
-    /// **No in-tree caller yet.** This method is reachable -- every
-    /// dispatched `Tool::invoke` gets a `ToolCtx::capabilities:
-    /// CapabilityCallHandle` that exposes it -- and is exercised by this
-    /// module's own tests, but nothing in `conway-runtime`, no built-in
-    /// plugin, and no `conway-plugin-subprocess` code calls it today; every
-    /// production call site still goes through the unversioned
-    /// [`Self::call`]. The intended first consumer is board item
-    /// `01M0WWPA70E8YAAN981EK10D3D` (`conway.ui`, which will publish
-    /// `ui.form` and is not yet built). Forward-declared ahead of that
-    /// consumer deliberately (this method's own doc names why); not yet
-    /// wired to one.
+    /// **Has an in-tree caller (board item `01M0WWPA70E8YAAN981EK10D3D`).**
+    /// This method was forward-declared ahead of a consumer; that consumer
+    /// now exists: `conway-plugin-skeleton`'s `skeleton_ask` tool calls it
+    /// with `^1` against `conway-plugin-ui`'s published `ui.form`
+    /// capability (`conway_plugin_ui::FORM_CAPABILITY`, registered at
+    /// `1.0.0`). Every OTHER production call site still goes through the
+    /// unversioned [`Self::call`] -- this is the first, not the only
+    /// caller this method will ever have, and nothing about the mechanism
+    /// changed to accommodate it: `conway-core`'s own tests above already
+    /// exercised both the satisfied and mismatched paths before this
+    /// consumer existed.
     pub async fn call_versioned(
         &self,
         capability: &str,

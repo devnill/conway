@@ -172,7 +172,7 @@ session rewind, step-guarding, skills, memory, and MCP support (plus the
 out-of-process subprocess plugin host, which the list above does not name)
 are the occupants today; compaction remains unbuilt.
 
-**The tier's shape is settled and demonstrated, with seventeen members shipping
+**The tier's shape is settled and demonstrated, with eighteen members shipping
 today:** `crates/conway-plugin-skeleton`, a plugin that registers a single
 `skeleton_ping` tool and does nothing else — it exists to prove the `Plugin`/
 `Tool` mechanism below, not to be useful on its own — `crates/conway-plugin-routing`,
@@ -221,9 +221,14 @@ conway-specific instruction fragment prepended near the front of a
 session's assembled context; `crates/conway-plugin-claude`, which reads a
 Claude Code plugin directory already on disk and translates its MCP
 server declarations, commands, and hooks where a mapping exists, reporting
-by name everything it cannot use; and `crates/conway-plugin-marketplace`,
+by name everything it cannot use; `crates/conway-plugin-marketplace`,
 which fetches a marketplace's manifest and a chosen plugin's declared files
-over HTTP into the same plugin store `conway-plugin-claude` reads from.
+over HTTP into the same plugin store `conway-plugin-claude` reads from; and
+`crates/conway-plugin-ui` (`conway.ui`), which contributes no tool or
+command of its own but publishes `ui.form`, a blocking ask-with-options
+capability another installed plugin calls into — the first member on the
+PROVIDING end of the plugin-to-plugin capability channel, where every
+other member above is a leaf consumer of host services only.
 Compaction, and `/checkout`/`ContextMask`,
 remain separate, later work; conway-plugin-routing is not
 "dynamic routing" in the learned/adaptive sense PHILOSOPHY.md describes

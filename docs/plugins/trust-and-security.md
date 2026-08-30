@@ -677,12 +677,21 @@ only "install this plugin," never "let this plugin be called by that one."
 `CapabilityCallHandle::caller_plugin_id` is carried through for tracing and
 audit only — it is never consulted to decide whether a call is allowed.
 
-**No first-party built-in registers a capability by default today.** The
-one shipped consumer is generic, not a specific grant: `conway-plugin-
-subprocess` forwards `Plugin::capabilities()` for a configured subprocess
-plugin that declares `provides` (`docs/plugins/subprocess-plugins.md`'s
-"Providing a capability" section). This module registers no capability of
-its own — it is the channel, exactly as its own module doc states.
+**One first-party, bundled plugin registers a capability today:
+`conway.ui`** (board item `01M0WWPA70E8YAAN981EK10D3D`,
+[`ui.md`](ui.md)), publishing `ui.form` at `1.0.0` — read that page's own
+trust section for what a call into it can and cannot do (short version:
+nothing beyond the request/answer round trip itself; it reads and writes
+nothing, spawns nothing). Bundled is not a trust exception: `conway.ui`
+sits on the identical footing this section already states for a
+compiled-in provider, and is opt-in like every other bundle member — a
+build with no `[plugins]` section installs it not at all. Beyond that one
+capability, the one other shipped consumer is generic, not a specific
+grant: `conway-plugin-subprocess` forwards `Plugin::capabilities()` for a
+configured subprocess plugin that declares `provides`
+(`docs/plugins/subprocess-plugins.md`'s "Providing a capability" section).
+This module registers no capability of its own — it is the channel,
+exactly as its own module doc states.
 
 **Versioning (decision `01M189XS6Z9VKYENAHNY1B54CM`) changes nothing about
 this trust shape.** A provider now declares a `semver::Version` and a

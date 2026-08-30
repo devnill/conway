@@ -1,0 +1,48 @@
+[package]
+name = "conway-plugin-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party, bundled plugin (board item 01M0WWPA70E8YAAN981EK10D3D): conway.ui, which publishes the ui.form capability -- a blocking ask-with-options question over Edge B (docs/vision/DESIGN-plugin-dependencies.md) -- built narrow: one request shape, one answering primitive, no speculative widget vocabulary"
+
+# Versioned WITH the workspace, like every other first-party plugin -- see
+# `conway-plugin-skeleton`'s own Cargo.toml doc comment for the full
+# reasoning (this crate carries none of `conway-core`'s strict-semver
+# discipline; that discipline exists for the crate third-party plugins
+# depend on, and from `conway`'s own point of view this is just another
+# consumer of the public facade). Operator ruling (`docs/vision/
+# DESIGN-plugin-dependencies.md` §0): `conway.ui` is first-party and
+# bundled -- linked into the binary, resolvable by id, no download --
+# but bundled is not enabled: it stays opt-in like every other member of
+# `first_party_plugins::bundle()`.
+
+[dependencies]
+# The ONLY workspace crate this plugin depends on -- the public facade, the
+# exact surface a third-party plugin author gets (GP-03/P-6). `Plugin`,
+# `CapabilityProvider`, `CapabilityRegistration`, `CapabilityError`,
+# `HostCapability` and `PluginDescription` are all reachable through
+# `conway`/`conway::plugin` alone -- this crate needs no `semver` of its
+# own: `CapabilityRegistration::new` takes the version as a hand-written
+# `&str` literal and parses it internally, exactly so a caller with a
+# hard-coded version string does not need to add `semver` merely to spell
+# `semver::Version::new(1, 0, 0)` (see that constructor's own doc).
+conway = { path = "../conway" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Test-only: `semver::VersionReq`/`semver::Version` for the
+# version-negotiation tests (decision `01M189XS6Z9VKYENAHNY1B54CM`) against
+# the real Edge B channel (`CapabilityRegistry`, `CapabilityCallHandle`)
+# this crate's own `Plugin::capabilities` registration answers on. Not a
+# new dependency to the workspace (C-04): `semver` is already a direct
+# dependency of `conway-core`, and `tokio` is a pinned
+# `[workspace.dependencies]` entry used throughout this tree. `async_trait`
+# needs no line of its own -- test fixtures reach it the same way `src/`
+# does, via the `conway::plugin::async_trait` re-export already imported at
+# this crate's module scope (see `conway-plugin-skeleton`'s own Cargo.toml
+# for the identical precedent).
+semver = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

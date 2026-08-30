@@ -35,8 +35,26 @@ conway = { path = "../conway" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
+# `SkeletonAskTool`'s own `VersionReq` for `ctx.capabilities.call_versioned`
+# (board item 01M0WWPA70E8YAAN981EK10D3D) -- `conway::plugin` does not
+# re-export `semver` itself (only the `conway-core` types built on top of
+# it), so a caller that needs to SPELL a `semver::VersionReq` names this
+# crate directly, the same "name it in your own Cargo.toml" convention the
+# comment above states for serde/serde_json/schemars. Already a direct
+# dependency of `conway-core` and a pinned `[workspace.dependencies]` entry
+# -- not a new dependency to the workspace (C-04).
+semver = { workspace = true }
 
 [dev-dependencies]
+# Test-only: this crate's own `skeleton_ask_*` tests build a REAL
+# `conway_plugin_ui::ConwayUiPlugin` registration to drive `SkeletonAskTool`
+# against the actual Edge B provider it calls in production, rather than a
+# hand-rolled fixture provider that would only prove this crate's OWN
+# JSON-shape assumptions agree with themselves. Test-only and one-directional
+# (this crate's `src/` names no `conway-plugin-ui` type) -- both crates are
+# already in this workspace, so this is not a new dependency to the
+# workspace (C-04).
+conway-plugin-ui = { path = "../conway-plugin-ui" }
 # Board item 01M0TV8MSFRHHQ5BNZV3NHZCEW: this crate's tests reach
 # `conway::test_support` (the shared `build_conway`/`test_builder` wiring
 # that used to be hand-rolled per test file), which is behind the facade's

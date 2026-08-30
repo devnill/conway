@@ -21,6 +21,7 @@ a summary pointing somewhere else.
 | [`authoring.md`](authoring.md) — your first hook | How do I actually write one in Rust, register it, and confirm it fired? | You're ready to build. Its ten-minute walkthrough has been **executed verbatim** against a crate depending only on `conway`. |
 | [`subprocess-plugins.md`](subprocess-plugins.md) — the subprocess plugin host | How do I add a tool to a `conway` binary I already built, in a language that isn't Rust, with a `settings.json` edit and no rebuild? | You want a plugin that isn't Rust, or you're evaluating what naming a command in `[plugins].subprocess` actually trusts. |
 | [`memory.md`](memory.md) — `conway.memory` | What does the model-writable memory store do, where does it live on disk, and what happens if that directory can't be opened? | You want the model to remember things across turns and across separate `conway` invocations, or you're deciding whether its fail-closed startup behavior blocks you. |
+| [`ui.md`](ui.md) — `conway.ui` | What does `ui.form` let one plugin ask another, what shape is the request/answer, and why does every host refuse it today? | Another plugin you installed says it needs `ui.form`, or you're writing a plugin that wants to ask an operator a question with options. |
 | [`path.md`](path.md) — `conway.path` | What does the `compose_context_path` tool let a model do to a session's future context, what does it report afterward, and how does it avoid silently undoing an earlier exclusion? | You want an operator's stated intent ("forget that dead end", "bring in what we found in that other session") to actually change what a later turn sees, or you're evaluating what this new capability can and cannot read/write. |
 | [`discover.md`](discover.md) — `conway.discover` | What does the `search_sessions` tool let a model find that it did not already hold a reference to, what does a search cost, and how wide can it reach? | You want an operator's stated intent ("what did we work out yesterday") to name a session the model never started or spawned, or you're evaluating what this reaches and what it costs before it runs. |
 | [`idiom.md`](idiom.md) — `conway.idiom` | What does the prepended conway-idioms instruction fragment actually say, where does it land relative to an agent def's own system prompt, and why does a subagent never see it? | You want a bare interactive session to carry any harness orientation at all, or you're evaluating what this fragment assumes about which tools are announced. |
@@ -64,7 +65,7 @@ full design describes (a persistent connection, `permission.policy/1`,
 `context.hook/1`, `observe/1`, a `plugin` trust subject) is not, and that
 page's own "What's left" section names each gap.
 
-## Ten shipped first-party plugins
+## Eleven shipped first-party plugins
 
 **The membership rule for this section:** every id
 [`first_party_plugins::bundle()`](../../crates/conway-cli/src/first_party_plugins.rs)
@@ -106,7 +107,7 @@ example, not a commitment to any of its members individually" — the list
 below decides which plugins ship, not what an operator may tune about any
 one of them from outside code.
 
-Ten capabilities beyond the mechanism itself now ship, each installable
+Eleven capabilities beyond the mechanism itself now ship, each installable
 with a one-line `settings.json` edit and no rebuild:
 
 - [`memory.md`](memory.md) — `conway.memory`, a mutable store the model can
@@ -163,12 +164,20 @@ with a one-line `settings.json` edit and no rebuild:
   something an operator can actually do. No dedicated page in this set yet;
   see `conway-plugin-stepguard`'s own crate-level doc.
 - `conway.plugin_skeleton` — **not operator-facing.** A worked example
-  proving the install mechanism end to end (one `skeleton_ping` tool, one
-  custom event); it performs no real work of its own, and exists so a
-  third-party plugin author has a real, shipped, first-party-tier plugin to
-  point at instead of a description of one. Listed here for completeness
-  against `bundle()`, not as a capability to install. See
-  `conway-plugin-skeleton`'s own crate-level doc.
+  proving the install mechanism end to end: `skeleton_ping` (one tool, one
+  custom event) and `skeleton_ask` (calls another plugin's capability over
+  Edge B — `conway.ui`'s `ui.form`, if installed, else replies saying so);
+  it performs no real work of its own, and exists so a third-party plugin
+  author has a real, shipped, first-party-tier plugin to point at instead
+  of a description of one. Listed here for completeness against `bundle()`,
+  not as a capability to install. See `conway-plugin-skeleton`'s own
+  crate-level doc.
+- [`ui.md`](ui.md) — `conway.ui`, publishes `ui.form`: a blocking
+  ask-with-options capability another installed plugin calls into over Edge
+  B. Contributes no tool or command of its own — nothing here is reachable
+  by the model or the operator directly, only by another plugin's own code.
+  Every host today refuses every call (no live drawing surface is wired in
+  yet); a calling plugin degrades from that refusal, it does not fail.
 
 ## A status-line command — first-party, but not a `[plugins].install` id either
 
@@ -177,7 +186,7 @@ bounded refresh cadence (floored at one spawn per second regardless of
 configuration) and pushes its output as a `PluginStatusContribution` shown
 on the status line. The migration home for a Claude Code
 `statusLine.command`, which conway's own closed status-line vocabulary
-cannot express. Deliberately excluded from the "ten shipped first-party
+cannot express. Deliberately excluded from the "eleven shipped first-party
 plugins" count above: it attaches through its own `[tui.status_line_command]`
 config surface, resolved by `crates/conway-cli/src/statusline_plugin.rs`,
 a fifth choke point alongside the MCP/Claude-compat/marketplace ones in
@@ -201,7 +210,7 @@ directory the operator already has on disk (no downloading) and translates
 what it can. **Only its MCP server declarations are wired to actually
 run** — everything else it finds (`commands/*.md`, `skills/`, `agents/*.md`,
 most hook events) is named in an operator-visible report, never silently
-imported. Deliberately excluded from the "ten shipped first-party plugins"
+imported. Deliberately excluded from the "eleven shipped first-party plugins"
 count above and from the MCP section immediately above this one: it
 attaches through its own `[plugins].claude_compat[]` config surface,
 resolved by `crates/conway-cli/src/claude_compat_plugins.rs`, a fourth
@@ -219,7 +228,7 @@ describes, pointing at where it landed. Not a fourth import mechanism: an
 installed marketplace plugin is, on disk and in `settings.json`,
 indistinguishable from a directory the operator cloned or typed the path to
 by hand — same entry shape, same read-at-runtime translation, same trust
-footing. Deliberately excluded from the "ten shipped first-party plugins"
+footing. Deliberately excluded from the "eleven shipped first-party plugins"
 count and from both sections immediately above: it writes its own
 `[plugins].claude_compat[]` entry through `crates/conway-cli/src/tui/app/
 marketplace.rs`, not through `first_party_plugins::bundle()`,

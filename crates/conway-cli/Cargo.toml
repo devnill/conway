@@ -33,6 +33,15 @@ conway = { path = "../conway" }
 # doc). See `src/first_party_plugins.rs` for the install path this crate's
 # dependency feeds.
 conway-plugin-skeleton = { path = "../conway-plugin-skeleton" }
+# Board item 01M0WWPA70E8YAAN981EK10D3D: `conway.ui`, which publishes the
+# `ui.form` Edge B capability -- the same "the shipped binary is the one
+# place a first-party plugin crate is linked" pattern the line above
+# establishes. See `src/first_party_plugins.rs`'s `bundle` for the install
+# path this dependency feeds; bundled but NOT installed by default (per
+# `docs/vision/DESIGN-plugin-dependencies.md` §0's "bundle liberally,
+# enable nothing" ruling), the same opt-in posture every other line in this
+# section has.
+conway-plugin-ui = { path = "../conway-plugin-ui" }
 # Board item 01KZY8Q1CMMNVSF54CTC270N3H: `/conway.history.rewind` -- the
 # same "the shipped binary is the one place a first-party plugin crate is
 # linked" pattern the line above establishes. See `src/
