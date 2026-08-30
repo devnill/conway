@@ -123,6 +123,62 @@ impl ConwayConfig {
             .unwrap_or(self.routing.default_headroom_tokens)
     }
 
+    /// The default model: the head of [`Self::default_role`]'s fallback
+    /// chain, or `None` when the default role has no `[roles]` entry, or
+    /// one with an empty `chain`.
+    ///
+    /// **Decision (board item `01M18Q7P25DTSKQJDJJCC3E800`, closing the
+    /// open question `docs/vision/DESIGN-surface-coherence.md` §11 left
+    /// under "Where the 'default model' the corrected rule 1 asks
+    /// `/settings` to show actually lives"): this is a DERIVED READ over
+    /// `roles`, not a second `default_model` scalar field beside
+    /// [`Self::default_role`].**
+    ///
+    /// The rejected alternative was a `default_model: String` field,
+    /// symmetric with `default_role` and what a reader of that design page
+    /// would expect to find. Its cost, why it was rejected: model
+    /// selection already has exactly one source of truth in this schema —
+    /// `roles.<alias>.chain` (`PHILOSOPHY.md` §5, "Routing": *"the core
+    /// keeps the smallest thing that has to be true: a role names a
+    /// model"* — `chain[0]` **is** that one model; the rest of the chain is
+    /// fallback layered on top by the routing plugin). A parallel
+    /// `default_model` field would let an operator's `settings.json` name
+    /// one model in `default_model` and a DIFFERENT one at
+    /// `roles.<default_role>.chain[0]` — two answers to "which model does
+    /// the default role start on" that nothing keeps in sync. Steering
+    /// P-14 (one implementation) treats that shape as a drift hazard the
+    /// moment it exists, whether or not anything has drifted yet.
+    ///
+    /// The cost accepted by choosing this instead: "default model" is a
+    /// computed display, not a value an operator can set independently of
+    /// `default_role`/its chain — an operator who wants a different
+    /// default model changes `roles.<default_role>.chain`'s head (or
+    /// changes `default_role` to a role whose chain already starts where
+    /// they want), never a `default_model` key that does not exist. See
+    /// [`Self::model_for`], the one place this lookup is implemented —
+    /// `crates/conway-cli/src/tui/app/defaults.rs`'s own lax re-read of a
+    /// live `settings.json` calls the SAME function rather than
+    /// restating "the head of a role's chain" a second time.
+    pub fn default_model(&self) -> Option<&str> {
+        Self::model_for(&self.roles, self.default_role.as_str())
+    }
+
+    /// The one implementation of "the model a role currently names": the
+    /// head of `roles.get(role)`'s `chain`, or `None` when `role` is
+    /// undeclared or its chain is empty. Takes `roles` as a plain
+    /// parameter (rather than only existing as a `&self` method) so a
+    /// caller holding a LAX, partially-parsed `roles` map — read straight
+    /// off a live `settings.json` without going through the full,
+    /// `#[serde(deny_unknown_fields)]`-strict `ConwayConfig` — can still
+    /// call the exact same lookup [`Self::default_model`] uses, instead of
+    /// restating it (P-14).
+    pub fn model_for<'a>(roles: &'a BTreeMap<String, RoleEntry>, role: &str) -> Option<&'a str> {
+        roles
+            .get(role)
+            .and_then(|r| r.chain.first())
+            .map(|s| s.as_str())
+    }
+
     /// Converts this facade schema into the authoritative
     /// `conway_core::routing::RoutingConfig`, parsing each chain entry's
     /// `"backend/model"` string via `ModelRef::from_str`. See the module
@@ -1637,5 +1693,84 @@ mod tests {
         let rule = &cfg.hooks.rules[0];
         assert_eq!(rule.timeout_ms, 5000);
         assert!(rule.enabled);
+    }
+
+    // -----------------------------------------------------------------
+    // `ConwayConfig::default_model` / `ConwayConfig::model_for` (board
+    // item `01M18Q7P25DTSKQJDJJCC3E800`). The discriminating observable
+    // throughout: if this were a stored `default_model` scalar instead of
+    // a derived read, changing ONLY `roles.<default_role>.chain` (never a
+    // separate `default_model` key, which does not exist in this schema)
+    // would leave `default_model()`'s answer unchanged -- these tests
+    // fail exactly that way if the derivation is ever replaced by a
+    // second, independent field.
+    // -----------------------------------------------------------------
+
+    /// The default role's chain head is the default model.
+    #[test]
+    fn default_model_is_the_head_of_the_default_roles_chain() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "roles": { "coder": { "chain": ["anthropic/claude-sonnet-4-6", "kimi/k3"] } }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse");
+        assert_eq!(cfg.default_model(), Some("anthropic/claude-sonnet-4-6"));
+    }
+
+    /// A default role with an empty chain has no default model -- `None`,
+    /// never a synthesized fallback.
+    #[test]
+    fn default_model_is_none_when_the_default_roles_chain_is_empty() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "roles": { "coder": { "chain": [] } }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse");
+        assert_eq!(cfg.default_model(), None);
+    }
+
+    /// Changing `default_role` to a DIFFERENT role changes `default_model`'s
+    /// answer purely by re-deriving from that role's own chain -- there is
+    /// nowhere else the answer could have come from, since no
+    /// `default_model` key exists in the document at all.
+    #[test]
+    fn default_model_follows_default_role_when_it_changes() {
+        let json = r#"
+        {
+          "default_role": "reviewer",
+          "roles": {
+            "coder": { "chain": ["anthropic/claude-sonnet-4-6"] },
+            "reviewer": { "chain": ["kimi/k3"] }
+          }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse");
+        assert_eq!(cfg.default_model(), Some("kimi/k3"));
+    }
+
+    /// `ConwayConfig::model_for` is the same lookup `default_model` calls,
+    /// exposed to take a plain `roles` map directly -- this is what a lax,
+    /// partially-parsed re-read of a live `settings.json` (`conway-cli`'s
+    /// `/settings` "defaults" section) calls instead of restating "the
+    /// head of a role's chain" a second time (P-14).
+    #[test]
+    fn model_for_matches_default_model_for_the_same_inputs() {
+        let mut roles = BTreeMap::new();
+        roles.insert(
+            "coder".to_string(),
+            RoleEntry {
+                chain: vec!["anthropic/claude-sonnet-4-6".to_string()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            ConwayConfig::model_for(&roles, "coder"),
+            Some("anthropic/claude-sonnet-4-6")
+        );
+        assert_eq!(ConwayConfig::model_for(&roles, "unknown-role"), None);
     }
 }

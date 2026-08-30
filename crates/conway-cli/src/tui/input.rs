@@ -191,6 +191,16 @@ pub enum Action {
     /// names this provider BEFORE writing anything, mirroring
     /// `app/plugin_toggle.rs`'s own toggle-off refusal.
     RemoveProvider(String),
+    /// Board item `01M18Q7P25DTSKQJDJJCC3E800`: `Enter` on the "defaults"
+    /// section's `default role` leaf -- advances to the next configured
+    /// role (sorted, wrapping) and persists it via
+    /// `conway::config::set_default_role` (`App::apply_cycle_default_role`).
+    /// There is no equivalent action for "default model": that row is
+    /// `MenuNode::Static`, a DERIVED display over the (possibly just-
+    /// changed) default role's own routing chain, never a second stored
+    /// value -- see `conway::config::schema::ConwayConfig::default_model`'s
+    /// own doc for that decision.
+    CycleDefaultRole,
 }
 
 /// Routes a keypress based on `state.mode`, mutating `state.input`/`cursor`
@@ -462,6 +472,13 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                 // `Action::AddProviderChoice`'s own doc for why that
                 // decision cannot live here.
                 return Some(Action::AddProviderChoice(choice_id.to_string()));
+            } else if id == super::view::settings::LEAF_DEFAULT_ROLE {
+                // Mirrors `LEAF_PERMISSION_MODE`'s own arm: cycles by
+                // returning an `Action`, never mutating `state` directly
+                // here -- the app loop owns the write (`conway::config::
+                // set_default_role`) and the fresh re-read afterward, which
+                // this function has no access to (`env`/`cwd`).
+                return Some(Action::CycleDefaultRole);
             }
             // `LEAF_TOOL_PREVIEW_LINES`: Enter has nothing to activate on
             // the numeric leaf -- it is adjusted with Left/Right instead

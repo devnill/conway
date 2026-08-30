@@ -98,7 +98,12 @@ pub(super) fn roles_referencing_provider(
 /// escape hatch `[tui]`'s own reader uses) and deserializes ONLY the
 /// `roles` member, which is a far narrower -- and far more likely to
 /// actually succeed -- validation surface.
-fn load_roles_lax(
+///
+/// `pub(super)`, not private: board item `01M18Q7P25DTSKQJDJJCC3E800`'s
+/// `app/defaults.rs` reuses this exact function for its own
+/// `default_role`-cycling refresh rather than re-reading `[roles]` a
+/// second way (P-14) -- see that module's own doc.
+pub(super) fn load_roles_lax(
     env: &HashMap<String, String>,
     cwd: &Path,
 ) -> Result<BTreeMap<String, RoleEntry>, String> {

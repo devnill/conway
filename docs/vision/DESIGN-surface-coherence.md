@@ -532,14 +532,15 @@ checked.
   the build item that implements it — but it is worth naming explicitly as
   unanswered rather than implying a specific fix was chosen and merely
   omitted.
-- **Where the "default model" the corrected rule 1 asks `/settings` to show
-  actually lives.** §5's schema check found `default_role` already exists
-  as a persistent config field with nothing else needed; the model
-  equivalent does not exist as a scalar anywhere in `ConwayConfig` today
-  (only `RoutingSection`, which is routing policy, not a single default).
-  Whether "default model" becomes a new top-level scalar or is expressed
-  through routing is a real design question this page surfaces but does not
-  resolve.
+- ~~**Where the "default model" the corrected rule 1 asks `/settings` to
+  show actually lives.**~~ **CLOSED, board item
+  `01M18Q7P25DTSKQJDJJCC3E800`, 2026-08-30 (see §13).** Resolved as a
+  DERIVED read over `roles.<default_role>.chain` (`ConwayConfig::
+  default_model`), not a new `default_model` scalar beside `default_role`
+  — the rejected alternative and its cost are recorded at that method's
+  own declaration site (`crates/conway/src/config/schema.rs`). `/settings`'
+  "defaults" section now shows both: `default role` as a settable,
+  cyclable leaf; `default model` as a read-only row computed from it.
 - **Whether an operator may override a plugin-declared default independent
   of the plugin's own on/off state**, and other second-order questions
   about how the persistent/session-scoped split in rule 1 interacts with
@@ -583,10 +584,23 @@ checked.
 Corrections are appended here dated, never absorbed upward — matching
 [`DESIGN-context-path.md`](DESIGN-context-path.md)'s own rule.
 
-This page is written directly from the 2026-08-29 operator interview and
-carries no revisions of its own yet. It already records, in its own body
-rather than here, that the ruling it transcribes was itself corrected twice
-during that single sitting — rule 1 (§5) and the familiarity input (§8). A
-page that shows its own correction history, including corrections that
-happened before the page existed, is more trustworthy than one that
-presents a clean answer arrived at on the first try.
+This page is written directly from the 2026-08-29 operator interview. It
+already records, in its own body rather than here, that the ruling it
+transcribes was itself corrected twice during that single sitting — rule 1
+(§5) and the familiarity input (§8). A page that shows its own correction
+history, including corrections that happened before the page existed, is
+more trustworthy than one that presents a clean answer arrived at on the
+first try.
+
+**2026-08-30 (board item `01M18Q7P25DTSKQJDJJCC3E800`).** §11's "where the
+default model lives" open question is closed, not struck: "default model"
+is a derived read over `roles.<default_role>.chain`
+(`ConwayConfig::default_model`), never a second, independently-settable
+`default_model` scalar — the rejected alternative (a `default_model`
+field beside `default_role`) and its cost (a second source of truth for
+model selection, exactly the "one implementation" drift this project's own
+safety-critical-resolution-logic rule exists to prevent) are recorded at
+that method's own declaration site, not only here. `/settings` now has a
+sixth top-level group, "defaults", implementing rule 1's own words from
+§5: the default role as a settable, cyclable leaf; the default model as a
+read-only row computed from it, both labelled as defaults.
