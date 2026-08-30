@@ -182,6 +182,67 @@ pub struct AddProviderCredentialState {
     pub error: Option<String>,
 }
 
+/// The generic wording `Esc` on the permission prompt used to send
+/// unconditionally, before this item -- kept as the fallback [`AppState::
+/// submit_deny_feedback`] uses when the operator submits [`DenyFeedbackState`]
+/// with nothing typed, so a bare `Esc`-then-`Enter` (no typing at all) still
+/// reproduces exactly the old one-keystroke behavior.
+pub const DEFAULT_DENY_FEEDBACK: &str = "user declined; try another approach";
+
+/// Board item `01M1A9M2EVJNR0HBN86A8E40EA`: the permission prompt's own
+/// "deny with feedback" text entry, opened by `Esc` on `Mode::
+/// AwaitingPermission` instead of resolving the call immediately.
+///
+/// **Why this exists.** Before this item, the overlay's own footer read
+/// `[Esc] deny with feedback`, but `Esc` sent [`conway::PermissionDecision::
+/// DenyWithFeedback`] with a single hardcoded message (now
+/// [`DEFAULT_DENY_FEEDBACK`]) and no way for the operator to type anything of
+/// their own -- a control that claimed to collect feedback but never asked
+/// for it (GP-14: a UI affordance describing itself incorrectly is the same
+/// defect as a doc comment that does). The channel the feedback travels over
+/// already existed end to end (`conway::PermissionDecision::DenyWithFeedback
+/// { message }` -> `conway_runtime::permission::PermissionOutcome::Deny {
+/// rendered_error: message }` -> the model's own tool-result error text,
+/// `conway/src/gates.rs`'s own doc on why `DenyWithFeedback` rather than
+/// `Deny` is used for every gate rejection) -- what was missing was the
+/// COLLECTION step, which this state/mode exists to provide.
+///
+/// Mirrors [`EditingPatternState`]'s own "opened from `AwaitingPermission`,
+/// cancel restores it, submit resolves it" shape exactly: the
+/// [`PendingPrompt`] is MOVED out of `mode` (it is not `Clone`), so
+/// cancelling never loses it, and this modal never stacks against the other
+/// modal-bearing surfaces (it can only open FROM `AwaitingPermission` and
+/// returns there).
+pub struct DenyFeedbackState {
+    pub prompt: PendingPrompt,
+    /// The typed-so-far feedback message -- a small, self-contained
+    /// single-line editor (`input`/`cursor`), mirroring
+    /// [`AddProviderCredentialState::input`]/[`AddProviderCredentialState::
+    /// cursor`]'s own char-index convention. Starts empty; unlike the
+    /// credential prompt, this text is NOT a secret and renders in the
+    /// clear.
+    pub input: String,
+    /// Cursor position within `input`, as a *char* index -- same convention
+    /// as [`super::AppState::cursor`].
+    pub cursor: usize,
+}
+
+impl std::fmt::Debug for DenyFeedbackState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DenyFeedbackState")
+            .field("tool", &self.prompt.request.tool)
+            .field("input", &self.input)
+            .field("cursor", &self.cursor)
+            .finish()
+    }
+}
+
+impl PartialEq for DenyFeedbackState {
+    fn eq(&self, other: &Self) -> bool {
+        self.input == other.input && self.cursor == other.cursor
+    }
+}
+
 /// `Normal` (the input line submits a prompt or a `/command`) or
 /// `AwaitingPermission` (the input line is inert; `y`/`a`/`n`/`Esc` resolve
 /// the pending prompt -- see `input.rs`). Only one prompt is shown at a
@@ -275,6 +336,18 @@ pub enum Mode {
     /// `UiForm`), lowest priority, checked last in
     /// `AppState::promote_next_surface`.
     UiForm(UiFormState),
+    /// Board item `01M1A9M2EVJNR0HBN86A8E40EA`: the permission prompt's own
+    /// "deny with feedback" text entry -- see [`DenyFeedbackState`]'s own
+    /// doc for why this exists. While this is the mode, the input line is
+    /// inert and `input.rs::handle_deny_feedback_key` swallows every key
+    /// except ordinary character/`Backspace`/`Left`/`Right` editing, `Enter`
+    /// (submit -- resolves the call as `DenyWithFeedback`), `Esc` (cancel --
+    /// no decision at all, returns the prompt to the screen unresolved,
+    /// mirroring `EditingPattern`'s own cancel), and the quit keys. Opens
+    /// only from `AwaitingPermission` and returns there either way, so it
+    /// never stacks against the other modal-bearing surfaces, the same
+    /// non-stacking guarantee `EditingPattern` already has.
+    EditingDenyFeedback(DenyFeedbackState),
 }
 
 impl std::fmt::Debug for Mode {
@@ -299,6 +372,9 @@ impl std::fmt::Debug for Mode {
             }
             Mode::UiForm(form) => {
                 write!(f, "UiForm(prompt={:?})", form.ask.request.prompt)
+            }
+            Mode::EditingDenyFeedback(fb) => {
+                write!(f, "EditingDenyFeedback(tool={})", fb.prompt.request.tool)
             }
         }
     }
@@ -539,27 +615,40 @@ impl AppState {
     /// no question is open. Promotes the next parked/queued surface via
     /// `Self::promote_next_surface` afterward, exactly like every other
     /// modal-bearing surface's close path.
-    pub fn resolve_ui_form(&mut self, decision: UiFormDecision) {
+    ///
+    /// **Returns the chosen option on `Answer`, `None` on `Cancel`/no-open
+    /// (board item `01M1A35S609TZ613GAECPEHX8D`).** Added for `/model`
+    /// bare's own menu: `run.rs`'s `Action::UiFormDecision` arm reads this
+    /// return value to decide whether to also run `commands::
+    /// apply_model_switch` (gated on `Self::model_picker_active`, so a
+    /// REAL model-raised question -- which never sets that flag -- is
+    /// completely unaffected by this addition; its own answer still travels
+    /// only over `ask.reply`, exactly as before).
+    pub fn resolve_ui_form(&mut self, decision: UiFormDecision) -> Option<String> {
         let Mode::UiForm(_) = &self.mode else {
-            return;
+            return None;
         };
         let Mode::UiForm(form) = std::mem::replace(&mut self.mode, Mode::Normal) else {
             unreachable!("guarded by the matches! check above")
         };
-        match decision {
+        let answered = match decision {
             UiFormDecision::Answer => {
                 let selected = form.ask.request.options[form.selected].clone();
-                form.ask
-                    .resolve(Ok(conway_plugin_ui::AskSelectAnswer { selected }));
+                form.ask.resolve(Ok(conway_plugin_ui::AskSelectAnswer {
+                    selected: selected.clone(),
+                }));
+                Some(selected)
             }
             UiFormDecision::Cancel => {
                 form.ask
                     .resolve(Err(conway_plugin_ui::FormSurfaceError::new(
                         "the operator cancelled the question",
                     )));
+                None
             }
-        }
+        };
         self.promote_next_surface();
+        answered
     }
 
     /// Enqueues a freshly arrived prompt from the gate channel, promoting it
@@ -794,6 +883,71 @@ impl AppState {
         }
         self.mode = Mode::Normal;
         self.promote_next_surface();
+    }
+
+    /// Opens the "deny with feedback" text entry from a permission prompt
+    /// (board item `01M1A9M2EVJNR0HBN86A8E40EA`) -- mirrors
+    /// [`Self::offer_editing_pattern`] exactly: only callable while a prompt
+    /// is showing (a no-op otherwise), and the [`PendingPrompt`] is MOVED out
+    /// of `mode` into [`DenyFeedbackState`] (it is not `Clone`), so the
+    /// prompt is not lost -- cancel restores it, submit resolves it.
+    pub fn offer_deny_feedback(&mut self) {
+        if !matches!(self.mode, Mode::AwaitingPermission(_)) {
+            return;
+        }
+        let Mode::AwaitingPermission(prompt) = std::mem::replace(&mut self.mode, Mode::Normal)
+        else {
+            unreachable!()
+        };
+        self.mode = Mode::EditingDenyFeedback(DenyFeedbackState {
+            prompt,
+            input: String::new(),
+            cursor: 0,
+        });
+        self.modal_scroll = 0;
+    }
+
+    /// Cancels the feedback entry and returns the prompt to the screen
+    /// unresolved -- the operator can press `y`/`a`/`n`/`p`/`Esc` again.
+    /// Mirrors [`Self::cancel_editing_pattern`] exactly: unlike
+    /// [`Self::submit_deny_feedback`], this makes NO decision at all.
+    pub fn cancel_deny_feedback(&mut self) {
+        if !matches!(self.mode, Mode::EditingDenyFeedback(_)) {
+            return;
+        }
+        let Mode::EditingDenyFeedback(fb) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            unreachable!()
+        };
+        self.mode = Mode::AwaitingPermission(fb.prompt);
+        self.modal_scroll = 0;
+    }
+
+    /// Submits the feedback entry: restores the prompt to
+    /// `AwaitingPermission` (so the app loop's EXISTING
+    /// `Action::PermissionDecision` arm resolves it via
+    /// `Self::resolve_current_prompt`, mirroring [`Self::
+    /// submit_editing_pattern`]'s own "restore, then let the dispatch arm
+    /// resolve" shape) and returns the message to send: the typed text,
+    /// trimmed, or [`DEFAULT_DENY_FEEDBACK`] when the operator typed nothing
+    /// at all -- a bare `Esc`-then-`Enter` still reproduces exactly the old
+    /// one-keystroke behavior, one keystroke later. Returns `None` if no
+    /// feedback entry is open.
+    pub fn submit_deny_feedback(&mut self) -> Option<String> {
+        if !matches!(self.mode, Mode::EditingDenyFeedback(_)) {
+            return None;
+        }
+        let Mode::EditingDenyFeedback(fb) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            unreachable!()
+        };
+        let trimmed = fb.input.trim();
+        let message = if trimmed.is_empty() {
+            DEFAULT_DENY_FEEDBACK.to_string()
+        } else {
+            trimmed.to_string()
+        };
+        self.mode = Mode::AwaitingPermission(fb.prompt);
+        self.modal_scroll = 0;
+        Some(message)
     }
 }
 

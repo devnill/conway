@@ -698,6 +698,9 @@ fn mode_label(mode: &Mode) -> String {
         // Board item `01M19NH39AE2D5AMJK0RZRQY86`: `ask_question`'s own
         // modal owns the screen.
         Mode::UiForm(_) => "question".to_string(),
+        // Board item `01M1A9M2EVJNR0HBN86A8E40EA`: the permission prompt's
+        // "deny with feedback" text entry owns the screen.
+        Mode::EditingDenyFeedback(_) => "deny feedback".to_string(),
     }
 }
 

@@ -80,6 +80,7 @@ use conway::{
     ToolSelector, TrustPermissionReport, TrustPreview, Usage,
 };
 
+use super::form::PendingFormAsk;
 use super::state::{
     AppState, AskFate, Entry, IntentChoice, IntentConfirm, Mode, PluginCommandEntry, TrustDecision,
     TrustPreviewCard,
@@ -158,14 +159,21 @@ pub enum SlashCommand {
     Resume {
         sid: String,
     },
-    /// `/model <backend/model>` (INTENT.md §5c: "changing model mid-session
-    /// is ordinary, and stays cheap"). `model` is still the raw, unparsed
-    /// `--model`-spelled string (`ModelRef::from_str` runs in [`execute`],
-    /// where a malformed value becomes a `Notice` like any other facade
-    /// failure, not a [`ParseError`]) -- see [`execute`]'s own `Model` arm
-    /// for the fork-based mechanism this drives.
+    /// `/model [<backend/model>]` (INTENT.md §5c: "changing model
+    /// mid-session is ordinary, and stays cheap"). `Some(model)` is still
+    /// the raw, unparsed `--model`-spelled string (`ModelRef::from_str` runs
+    /// in [`execute`], where a malformed value becomes a `Notice` like any
+    /// other facade failure, not a [`ParseError`]) -- see [`execute`]'s own
+    /// `Model` arm for the fork-based mechanism this drives.
+    ///
+    /// **Board item `01M1A35S609TZ613GAECPEHX8D`: `None` (bare `/model`) is
+    /// no longer a [`ParseError`].** It used to be -- `/model` with nothing
+    /// after it errored the same way `/resume` with no session id does.
+    /// Now it lists the configured `"backend/model"` pairs instead (a menu,
+    /// when `conway.ui` is installed; a text listing otherwise) -- see
+    /// [`execute`]'s own `Model { model: None }` arm.
     Model {
-        model: String,
+        model: Option<String>,
     },
     /// `/role <alias>` -- the same mid-session-switch mechanism as
     /// [`SlashCommand::Model`], naming a role instead of pinning a model
@@ -411,9 +419,9 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
         },
         SlashCommand::Model { .. } => CommandSpec {
             name: "/model",
-            usage: "/model <backend/model>",
-            description:
-                "switch the focused agent to a pinned model (forks; see /why for the reason)",
+            usage: "/model [<backend/model>]",
+            description: "list configured models (menu, with conway.ui) or switch the focused \
+                           agent to a pinned model (forks; see /why for the reason)",
         },
         SlashCommand::Role { .. } => CommandSpec {
             name: "/role",
@@ -495,9 +503,7 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
             prompt: None,
         },
         SlashCommand::Resume { sid: String::new() },
-        SlashCommand::Model {
-            model: String::new(),
-        },
+        SlashCommand::Model { model: None },
         SlashCommand::Role {
             role: String::new(),
         },
@@ -610,7 +616,18 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             Ok(SlashCommand::Resume { sid })
         }
         "/model" => {
-            let model = parse_one_arg(rest, "/model <backend/model>")?;
+            // Board item `01M1A35S609TZ613GAECPEHX8D`: bare `/model` (no
+            // argument) is a valid parse now, not a `ParseError` -- unlike
+            // `parse_one_arg`'s every other caller, empty `rest` means
+            // "list what's configured", handled entirely in `execute`
+            // (parse stays state-free either way -- it only tells apart
+            // "an argument was given" from "none was").
+            let trimmed = rest.trim();
+            let model = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
             Ok(SlashCommand::Model { model })
         }
         "/role" => {
@@ -1483,6 +1500,42 @@ async fn switch_session<H: Host>(
     }
 }
 
+/// Parses `model` and forks the focused agent onto it via [`switch_session`]
+/// -- the ONE place a chosen `"backend/model"` string becomes a live switch
+/// (steering P-14), called both by [`execute`]'s `Model { model: Some(_) }`
+/// arm (typed `/model <backend/model>`) and by `run.rs`'s
+/// `Action::UiFormDecision` arm once the operator answers `/model` bare's
+/// own menu (board item `01M1A35S609TZ613GAECPEHX8D`) -- a pair shown by
+/// that menu (or by the bare listing's text form) is, by construction,
+/// already a valid `ModelRef` string (every entry comes straight from a
+/// configured role's own `chain`, `AppState::configured_models`'s own doc),
+/// but this still parses it the same way a hand-typed value would rather
+/// than trusting the caller -- the SAME function either path goes through
+/// can never accept one shape's input more leniently than the other's.
+pub async fn apply_model_switch<H: Host>(model: String, state: &mut AppState, host: &H) -> Effect {
+    let focused = state.focused_agent;
+    match model.parse::<ModelRef>() {
+        Ok(model_ref) => {
+            let spec = ForkSpec::new(String::new())
+                .keep_alive(true)
+                .tools(interactive_keep_alive_tools())
+                .model(model_ref.clone());
+            switch_session(
+                state,
+                host,
+                focused,
+                format!("switched model to {model_ref}"),
+                spec,
+            )
+            .await
+        }
+        Err(e) => {
+            notice(state, format!("/model {model}: {e}"));
+            Effect::None
+        }
+    }
+}
+
 /// The bare/implicit `/spawn` execution path (WI "bare /spawn & /fork open an
 /// interactive session"): a fresh, interactive KEEP-ALIVE session with an
 /// EMPTY prompt (the child idles until `first_message`, if given, is
@@ -1880,29 +1933,78 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
         // `/model <backend/model>` -- see [`switch_session`]'s own doc for
         // the fork-based mechanism and why it, not a live mutation of the
         // focused agent's own running task, is what actually reaches a LIVE
-        // session (INTENT.md §5c).
-        SlashCommand::Model { model } => {
-            let focused = state.focused_agent;
-            match model.parse::<ModelRef>() {
-                Ok(model_ref) => {
-                    let spec = ForkSpec::new(String::new())
-                        .keep_alive(true)
-                        .tools(interactive_keep_alive_tools())
-                        .model(model_ref.clone());
-                    switch_session(
-                        state,
-                        host,
-                        focused,
-                        format!("switched model to {model_ref}"),
-                        spec,
-                    )
-                    .await
-                }
-                Err(e) => {
-                    notice(state, format!("/model {model}: {e}"));
-                    Effect::None
-                }
+        // session (INTENT.md §5c). The actual switch is factored into
+        // [`apply_model_switch`] -- the SAME function `run.rs`'s
+        // `Action::UiFormDecision` arm calls once the operator answers
+        // `/model` bare's own menu (board item
+        // `01M1A35S609TZ613GAECPEHX8D`), so there is exactly ONE place that
+        // turns a chosen `"backend/model"` string into a live switch,
+        // whichever surface produced it (steering P-14).
+        SlashCommand::Model { model: Some(model) } => apply_model_switch(model, state, host).await,
+        // Board item `01M1A35S609TZ613GAECPEHX8D`: bare `/model` lists the
+        // configured `"backend/model"` pairs rather than erroring -- see
+        // `AppState::configured_models`'s own doc for where the list comes
+        // from (`[roles]`'s own chains, refreshed just before this call by
+        // `App::submit`'s own `/model`-bare seam -- never a live provider
+        // API call: "what is configured", not a remote roster).
+        //
+        // **With `conway.ui` installed, this is a MENU**, not a text dump --
+        // `AskSelectRequest { prompt, options }` is exactly the
+        // pick-one-from-a-list shape board item `01M19NH39AE2D5AMJK0RZRQY86`
+        // already built for a model-called `ask_question` tool; this is
+        // that mechanism's SECOND real consumer, reusing `Mode::UiForm`/
+        // `draw_ui_form`/`handle_ui_form_key` exactly as they already are.
+        // The one thing a model-raised question never needs and this one
+        // does: the app itself (not a blocked tool call) is the asker, so
+        // `state.model_picker_active` is set here to tell `run.rs`'s
+        // `Action::UiFormDecision` arm to run [`apply_model_switch`] once
+        // answered -- see that field's own doc.
+        //
+        // **Without `conway.ui`, this is plain transcript text** -- the
+        // degrade path, not a fallback bolted on afterward: `conway.ui` is
+        // opt-in and absent by default (`docs/plugins/trust-and-security.md`),
+        // so the text listing is the MAIN path most sessions take, and the
+        // menu is the enhancement, not the reverse.
+        SlashCommand::Model { model: None } => {
+            if state.configured_models.is_empty() {
+                notice(
+                    state,
+                    "no models are configured -- add a provider and a role chain first \
+                     (see /settings)"
+                        .to_string(),
+                );
+                return Effect::None;
             }
+            let ui_available = state
+                .plugin_browser
+                .iter()
+                .any(|entry| entry.id == "conway.ui" && entry.installed);
+            if ui_available {
+                let ask = PendingFormAsk::new_local(conway_plugin_ui::AskSelectRequest {
+                    prompt: "select a model".to_string(),
+                    options: state.configured_models.clone(),
+                });
+                state.offer_ui_form(ask);
+                state.model_picker_active = true;
+            } else {
+                let focused = state.focused_model.clone();
+                let lines: Vec<String> = state
+                    .configured_models
+                    .iter()
+                    .map(|m| {
+                        if focused.as_deref() == Some(m.as_str()) {
+                            format!("  {m}  (active)")
+                        } else {
+                            format!("  {m}")
+                        }
+                    })
+                    .collect();
+                notice(
+                    state,
+                    format!("configured models:\n{}", lines.join("\n")),
+                );
+            }
+            Effect::None
         }
         // `/role <alias>` -- same mechanism as `Model` above, naming a role
         // instead of pinning a model directly.
@@ -2586,7 +2688,7 @@ mod tests {
     use conway_core::provenance::{ContextReportEntry, InstructionFragmentEntry};
 
     use super::*;
-    use crate::tui::state::{NodeStatus, TreeNode};
+    use crate::tui::state::{NodeStatus, PluginBrowserEntry, TreeNode};
 
     /// Wide enough that a rendered status line's `focused: <ulid>` suffix
     /// (a 26-char ULID, after every other status segment) is never itself
@@ -2819,15 +2921,24 @@ mod tests {
         assert_eq!(
             parse("/model anthropic/claude-sonnet-4-6"),
             Ok(SlashCommand::Model {
-                model: "anthropic/claude-sonnet-4-6".to_string(),
+                model: Some("anthropic/claude-sonnet-4-6".to_string()),
             })
         );
     }
 
+    /// **VERIFICATION ANCHOR, board item `01M1A35S609TZ613GAECPEHX8D`
+    /// acceptance 4.** Bare `/model` used to be a `ParseError` naming the
+    /// form -- it is now a valid parse carrying `model: None`, which
+    /// `execute`'s own `Model { model: None }` arm turns into a listing
+    /// rather than an error.
     #[test]
-    fn model_missing_value_is_a_parse_error_naming_the_form() {
-        let err = parse("/model").unwrap_err();
-        assert!(err.to_string().contains("/model <backend/model>"));
+    fn model_with_no_argument_parses_as_a_bare_listing_request() {
+        assert_eq!(
+            parse("/model"),
+            Ok(SlashCommand::Model { model: None })
+        );
+        // Bare whitespace after the command name is the same as none at all.
+        assert_eq!(parse("/model   "), Ok(SlashCommand::Model { model: None }));
     }
 
     #[test]
@@ -5514,7 +5625,7 @@ mod tests {
 
         let effect = execute(
             SlashCommand::Model {
-                model: "anthropic/claude-haiku".to_string(),
+                model: Some("anthropic/claude-haiku".to_string()),
             },
             &mut state,
             &host,
@@ -5573,7 +5684,7 @@ mod tests {
 
         let effect = execute(
             SlashCommand::Model {
-                model: "not-a-valid-ref".to_string(),
+                model: Some("not-a-valid-ref".to_string()),
             },
             &mut state,
             &host,
@@ -5589,6 +5700,141 @@ mod tests {
             state.transcript.last(),
             Some(Entry::Notice { text }) if text.contains("not-a-valid-ref")
         ));
+    }
+
+    fn ui_installed_browser() -> Vec<PluginBrowserEntry> {
+        vec![PluginBrowserEntry {
+            id: "conway.ui".to_string(),
+            version: "0.0.0".to_string(),
+            installed: true,
+            description: conway::plugin::PluginDescription::default(),
+        }]
+    }
+
+    /// **VERIFICATION ANCHOR, board item `01M1A35S609TZ613GAECPEHX8D`
+    /// acceptance 4.** Bare `/model` with `conway.ui` ABSENT (the default --
+    /// `state.plugin_browser` empty) lists the configured pairs as plain
+    /// transcript text, marking the focused agent's own model `(active)` --
+    /// never a facade call, since nothing is being switched yet.
+    #[tokio::test]
+    async fn model_bare_lists_configured_pairs_and_marks_the_active_one() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.configured_models = vec![
+            "anthropic/claude-haiku".to_string(),
+            "anthropic/claude-sonnet-4-6".to_string(),
+        ];
+        state.focused_model = Some("anthropic/claude-sonnet-4-6".to_string());
+        let host = FakeHost::new(root);
+
+        let effect = execute(SlashCommand::Model { model: None }, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            host.calls().is_empty(),
+            "listing what's configured must never touch the facade"
+        );
+        assert!(
+            !matches!(state.mode, Mode::UiForm(_)),
+            "with conway.ui absent this must be plain text, never a menu"
+        );
+        match state.transcript.last() {
+            Some(Entry::Notice { text }) => {
+                assert!(text.contains("anthropic/claude-haiku"), "{text}");
+                let active_lines: Vec<&str> =
+                    text.lines().filter(|l| l.contains("(active)")).collect();
+                assert_eq!(
+                    active_lines.len(),
+                    1,
+                    "exactly the focused agent's own model must be marked: {text}"
+                );
+                assert!(
+                    active_lines[0].contains("anthropic/claude-sonnet-4-6"),
+                    "{text}"
+                );
+            }
+            other => panic!("expected a Notice listing, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn model_bare_with_nothing_configured_is_a_named_notice() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(SlashCommand::Model { model: None }, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(matches!(
+            state.transcript.last(),
+            Some(Entry::Notice { text }) if text.contains("no models are configured")
+        ));
+    }
+
+    /// **VERIFICATION ANCHOR, board item `01M1A35S609TZ613GAECPEHX8D`
+    /// acceptance 5 (menu half).** With `conway.ui` installed, bare
+    /// `/model` opens `Mode::UiForm` -- the SAME surface a model-called
+    /// `ask_question` opens -- rather than printing text, and marks
+    /// `AppState::model_picker_active` so `run.rs`'s dispatch arm knows to
+    /// run the switch once answered.
+    #[tokio::test]
+    async fn model_bare_opens_a_menu_when_conway_ui_is_installed() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.configured_models = vec![
+            "anthropic/claude-haiku".to_string(),
+            "openai/gpt-5".to_string(),
+        ];
+        state.plugin_browser = ui_installed_browser();
+        let host = FakeHost::new(root);
+
+        let effect = execute(SlashCommand::Model { model: None }, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(host.calls().is_empty(), "opening the menu makes no facade call yet");
+        assert!(
+            state.model_picker_active,
+            "the picker flag must be set so answering it runs the switch"
+        );
+        match &state.mode {
+            Mode::UiForm(form) => {
+                assert_eq!(form.ask.request.prompt, "select a model");
+                assert_eq!(
+                    form.ask.request.options,
+                    vec![
+                        "anthropic/claude-haiku".to_string(),
+                        "openai/gpt-5".to_string()
+                    ]
+                );
+            }
+            other => panic!("expected Mode::UiForm, got {other:?}"),
+        }
+    }
+
+    /// **VERIFICATION ANCHOR, board item `01M1A35S609TZ613GAECPEHX8D`
+    /// acceptance 4.** "A pair shown is accepted verbatim by `/model
+    /// <pair>`" -- takes a string straight out of `AppState::
+    /// configured_models` (exactly what the bare listing shows) and feeds
+    /// it back through `parse` + `execute` as a normal `/model <pair>`
+    /// invocation.
+    #[tokio::test]
+    async fn a_configured_pair_is_accepted_verbatim_by_model_with_an_argument() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.configured_models = vec!["anthropic/claude-haiku".to_string()];
+        let mut host = FakeHost::new(root);
+        host.fork_child = Some(AgentId::new());
+
+        let pair = state.configured_models[0].clone();
+        let cmd = parse(&format!("/model {pair}")).expect("a listed pair must parse");
+
+        let effect = execute(cmd, &mut state, &host).await;
+
+        assert!(
+            matches!(effect, Effect::FocusNewSession { .. }),
+            "a pair straight from the listing must be accepted, got {effect:?}"
+        );
     }
 
     #[tokio::test]

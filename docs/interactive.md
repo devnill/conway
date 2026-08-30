@@ -96,8 +96,8 @@ while you're composing:
 | --- | --- |
 | `Enter` | Submit. |
 | `Alt-Enter` or `Shift-Enter` | Insert a literal newline instead of submitting (both are bound, since some terminals don't distinguish Shift-Enter from plain Enter). |
-| `Up` / `Down` | Recall older/newer entries from your input history, when the cursor is already on the first/last line of the draft. |
-| `Ctrl-P` / `Ctrl-N` | Recall input history unconditionally (works the same as `Up`/`Down` recall, without the line-position condition). |
+| `Up` / `Down` | Move the cursor within a multi-line draft; once the cursor is already on the first/last line, scroll the transcript one line instead (bare arrows are also what a two-finger scroll arrives as — see "Why `Up`/`Down` scroll, not recall history" below). |
+| `Ctrl-P` / `Ctrl-N` | Recall older/newer entries from your input history, unconditionally — the readline pairing, and conway's one way to reach history from the keyboard. |
 | `Ctrl-W` | Delete the previous word. |
 | `Home` / `End` | With the input box empty, jump the transcript to the top/tail instead of moving the cursor. |
 | `PageUp` / `PageDown` | Scroll the transcript a page at a time. |
@@ -108,6 +108,69 @@ Your input history persists across sessions (`~/.conway/history`, or under
 `$CONWAY_CONFIG_DIR/conway` if set) — it follows you across every project,
 not just the current checkout. A pasted block is inserted as one edit, not
 replayed as a flood of keystrokes.
+
+### Why `Up`/`Down` scroll, not recall history
+
+**This is deliberate, checked against the convergence test, and kept as a
+documented divergence rather than left looking accidental.**
+
+Conway runs its TUI in the terminal's alternate screen (`EnterAlternateScreen`)
+and deliberately never enables mouse capture, so the terminal's own
+click-drag text selection keeps working on the transcript (the "clean-copy"
+guarantee — see `view/transcript.rs`'s own doc). The cost of that choice: with
+mouse capture off, a terminal's *alternate scroll* mode (DECSET 1007)
+translates two-finger scroll-wheel events into bare `Up`/`Down` keypresses
+while the alternate screen is active — indistinguishable from a real
+keystroke. An earlier revision bound history recall to bare `Up`/`Down` and a
+two-finger scroll silently recalled history instead of scrolling; moving
+recall to `Ctrl-P`/`Ctrl-N` fixed it, and this section records that as
+deliberate rather than as an unexplained rebinding.
+
+The harness-convergence check this decision was re-run against (2026-08-30),
+per `docs/vision/DESIGN-surface-coherence.md` §8's "several independent
+harnesses, not one" test:
+
+- **Claude Code** — bare `Up`/`Down` (or `Ctrl-P`/`Ctrl-N`) move the cursor
+  within a multi-line draft first; once the cursor is on the first/last
+  visual row, the SAME keys recall history next.
+- **OpenCode** — ships both `input_move_up`/`input_move_down` (cursor) and
+  `history_previous`/`history_next` bound to bare `up`/`down` by default
+  (`tui.json`'s own defaults), the identical "cursor first, history at the
+  edge" shape.
+- **Pi** (`pi.dev`) — `tui.editor.cursorUp`/`cursorDown` default to bare
+  `up`/`down`, documented in Pi's own reference as *"move cursor up, browsing
+  older history at the top."*
+- **Hermes** — its own keybinding reference does not list `Up`/`Down` at all
+  for the main composer, consistent with the ordinary readline-style default
+  (history recall) rather than a scroll override.
+
+Three of four converge cleanly on bare `Up`/`Down` recalling history once the
+cursor is at an edge. **The convergence is on the key, not on the mechanism
+that makes it safe.** OpenCode and Pi both run a genuine alternate-screen TUI
+the same way conway does, and both resolve the identical wheel-vs-keystroke
+ambiguity DECSET 1007 creates by enabling mouse capture — Pi's own docs
+describe implementing click-drag text selection *itself* once capture is on,
+replacing the terminal's native selection rather than preserving it; Claude
+Code's classic (non-fullscreen) renderer avoids the ambiguity a different
+way, by not taking over the alternate screen at all, so a wheel scroll is the
+terminal's own native scrollback and never reaches the application as a
+keystroke in the first place. Conway's own bottom-anchored transcript
+(`view/transcript.rs`'s clean-copy guarantee) chose neither: it keeps the
+terminal's native, zero-implementation-cost selection and stays out of the
+alternate-screen mouse-capture business entirely, which is exactly what
+makes the wheel arrive as `Up`/`Down` keystrokes with no way to tell it apart
+from a real one.
+
+Matching the converged key binding without adopting the mechanism underneath
+it would not be a neutral change: it would reintroduce the exact regression
+an earlier revision already shipped and had to revert (a two-finger scroll
+silently recalling history instead of scrolling the transcript). Building
+conway's own mouse-capture-plus-selection layer to close that gap is real,
+separable work with its own cost (see the follow-up note in this item's own
+report), not a rebinding this page can settle on its own — so `Up`/`Down`
+stays bound to scrolling, `Ctrl-P`/`Ctrl-N` stays the one way to reach
+history from the keyboard, and this is recorded here as the deliberate
+reason, not an accident.
 
 ## Watching a turn
 
@@ -194,7 +257,7 @@ shrinking the candidate list).
 | `/fork` | `/fork [<text>]` or `/fork @<agent> <directive>` | Open an interactive fork of the focused agent (inherits its context, frozen at the fork point), or fork a specific agent explicitly. Free text is classified into a fork/spawn recipe and confirmed before anything is created. |
 | `/spawn` | `/spawn [@<agent_def>] [<prompt>]` | Open an interactive spawned agent — a clean slate, optionally from a named agent definition; inherits the parent's role/model if none is given. |
 | `/resume` | `/resume <session-id>` | Resume a prior session. |
-| `/model` | `/model <backend/model>` | Switch the focused agent to a pinned model, mid-conversation. |
+| `/model` | `/model [<backend/model>]` | With an argument, switch the focused agent to a pinned model, mid-conversation. Bare, list every configured `backend/model` pair instead — a menu if `conway.ui` is installed, plain text otherwise (see below). |
 | `/role` | `/role <alias>` | Switch the focused agent to a different role, mid-conversation. |
 | `/trust permissions` | `/trust permissions` | Opens a preview card showing the project's `.conway/permissions.json` at its current content; `[y]`/`Enter` confirms (trusting it and installing its `allow` rules for this session), `[n]`/`Esc` cancels having written nothing. See [`permissions.md`](permissions.md). |
 | `/tree` | `/tree` | Print the same agent tree the `/agents` panel shows, as plain transcript lines you can scroll back to or copy — with each agent's **full** id rather than the panel's short one, since a printed line may be pasted elsewhere long after the row set on screen has changed. |
@@ -274,6 +337,36 @@ conversation's current size, you'll see the same loud refusal an ordinary
 turn's admission gate gives — naming what didn't fit — the next time you
 send a message. Nothing silently falls back to the old model, and nothing
 is silently trimmed to make it fit.
+
+#### `/model` with no argument: list, or a menu
+
+Typing `/model` with nothing after it lists what's actually configured —
+every `backend/model` pair named in any role's `chain` — rather than
+erroring or reaching out to a provider for a live roster:
+
+```
+configured models:
+  anthropic/claude-haiku
+  anthropic/claude-sonnet-4-6  (active)
+  openai/gpt-5
+```
+
+The line matching the focused agent's own current model is marked
+`(active)` — the point of listing is comparison, not just discovery. Any
+line shown here is accepted verbatim as `/model <that line>`.
+
+**With `conway.ui` installed** (`plugins.install`, opt-in and absent by
+default — see [`plugins/trust-and-security.md`](plugins/trust-and-security.md)),
+bare `/model` is a menu instead of text: `Up`/`Down` move the highlighted
+option, `Enter` switches to it, `Esc` cancels with no switch at all. This
+reuses the exact same modal `ask_question` (a model-called tool) opens —
+`/model` is simply a second, TUI-raised consumer of it. Without `conway.ui`,
+the text listing above is the whole experience — it is the main path, not a
+degraded fallback, since `conway.ui` is opt-in.
+
+If nothing is configured yet (no `[backends]`, no role with a non-empty
+`chain`), `/model` says so by name rather than showing an empty list or a
+blank menu.
 
 ### Plugin-declared commands
 

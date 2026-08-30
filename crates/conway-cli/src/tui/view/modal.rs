@@ -199,7 +199,38 @@ pub fn draw_modal_frame(
     border_style: Style,
 ) -> ModalFrame {
     let area = modal_area(transcript_area, content_rows, footer_rows, cap_denominator);
+    draw_modal_frame_in(frame, area, footer_rows, title, border_style)
+}
 
+/// The chrome-only half of [`draw_modal_frame`], for a caller that has
+/// ALREADY resolved its own bottom-anchored `Rect` via [`modal_area`] rather
+/// than asking this function to resolve one inline.
+///
+/// **Board item `01M1A9M2EVJNR0HBN86A8E40EA`: this is what lets a caller
+/// RESERVE its own height out of the transcript pane instead of drawing
+/// over already-rendered content.** `view::mod::layout` resolves an
+/// INFORMATIONAL surface's `Rect` (today: `/settings`, via
+/// `settings::modal_rect`) up front, shrinks the transcript pane by exactly
+/// that height, and passes the same already-resolved `Rect` here -- so the
+/// transcript's own last-rendered line ends exactly where the modal begins,
+/// never underneath it. `draw_modal_frame` itself is now a thin wrapper over
+/// this function: the ONE place that actually draws a modal's `Clear`+
+/// `Block`+body/footer split (steering P-14), whether the caller resolves
+/// its own `Rect` moments earlier (this fn) or asks [`modal_area`] to
+/// resolve one inline against a NOT-yet-shrunk `transcript_area`
+/// (`draw_modal_frame`, still what every DECISION-owed surface -- the
+/// permission prompt, the `/ask` modal, the intent-confirm/trust-preview
+/// cards, the `[p]` field editor, the add-provider-credential prompt,
+/// `ask_question`'s modal -- uses, drawing OVER the transcript's tail rather
+/// than reserving space ahead of it; see this item's own report for why
+/// those are deliberately left unreserved).
+pub fn draw_modal_frame_in(
+    frame: &mut Frame,
+    area: Rect,
+    footer_rows: u16,
+    title: &str,
+    border_style: Style,
+) -> ModalFrame {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)

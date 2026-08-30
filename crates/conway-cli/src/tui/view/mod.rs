@@ -69,8 +69,8 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::state::{
-    AddProviderCredentialState, AppState, AskModal, EditingPatternState, IntentConfirm, Mode,
-    TrustPreviewCard, UiFormState,
+    AddProviderCredentialState, AppState, AskModal, DenyFeedbackState, EditingPatternState,
+    IntentConfirm, Mode, TrustPreviewCard, UiFormState,
 };
 pub use theme::Theme;
 
@@ -186,6 +186,14 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
         draw_add_provider_credential(frame, areas.transcript, cred, theme);
     }
 
+    // Board item `01M1A9M2EVJNR0HBN86A8E40EA`: the permission prompt's own
+    // "deny with feedback" text entry -- opens FROM `AwaitingPermission` and
+    // returns there either way, so it never stacks with anything drawn
+    // above.
+    if let Mode::EditingDenyFeedback(fb) = &state.mode {
+        draw_deny_feedback(frame, areas.transcript, fb, theme);
+    }
+
     // Board item `01M19NH39AE2D5AMJK0RZRQY86`: `ask_question`'s own modal --
     // the fifth surface in the SAME never-stack family every branch above
     // this one belongs to.
@@ -214,7 +222,14 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     // (`AppState::open_settings`/`open_help` each clear the other), so this
     // branch and the one above it never both fire.
     if state.settings_open && matches!(state.mode, Mode::Normal) {
-        settings::draw(frame, areas.transcript, state, theme);
+        // Board item `01M1A9M2EVJNR0HBN86A8E40EA`: drawn against
+        // `unreserved_transcript` (the pre-shrink row), NOT `areas.transcript`
+        // (already shrunk by exactly this menu's own height, via
+        // `settings_reservation` in `layout`) -- `settings::modal_rect`
+        // computes the identical `Rect` either way `layout` already reserved
+        // for it, so this paints into precisely the space `layout` freed up,
+        // never into (or short of) it.
+        settings::draw(frame, areas.unreserved_transcript, state, theme);
     }
 
     // Board item `01M0VR5RCCB8NDGG2JEQW8X7XR`: the `/plugin` listing joins
@@ -232,10 +247,48 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
 /// `Constraint`/`Layout` sequence a second time and risking it drifting out
 /// of sync with what is actually on screen.
 struct Areas {
+    /// The transcript's own render area -- shrunk by
+    /// [`settings_reservation`]'s own height while `/settings` is open (see
+    /// that function's doc), so `transcript::draw`/`header::draw_*` never
+    /// paint a line the settings menu is about to draw over.
     transcript: Rect,
+    /// The FULL row `transcript` was carved out of, before any reservation
+    /// -- `/settings`' own bottom-anchored `Rect` (board item
+    /// `01M1A9M2EVJNR0HBN86A8E40EA`) is computed against THIS, never against
+    /// the already-shrunk `transcript`, so the menu's own cap fraction stays
+    /// stable regardless of the reservation it itself produced.
+    unreserved_transcript: Rect,
     agents: Option<Rect>,
     input: Rect,
     status: Rect,
+}
+
+/// How much of `unreserved_transcript`'s own height `/settings` needs, if it
+/// is currently the surface that will render there -- `0` otherwise (the
+/// ordinary case, and every other bottom-anchored surface: the permission
+/// prompt, the `/ask` modal, the intent-confirm/trust-preview cards, the
+/// `[p]` field editor, the add-provider-credential prompt, and
+/// `ask_question`'s modal all stay drawn straight over the transcript's
+/// tail, unreserved -- see this item's own report on why those are
+/// deliberately left as they were).
+///
+/// **Board item `01M1A9M2EVJNR0HBN86A8E40EA`.** Before this item, an error
+/// appended to the transcript while `/settings` was open rendered directly
+/// behind the menu -- `Clear` painted over it every frame, and it stayed
+/// invisible until the operator closed the menu and scrolled to find it.
+/// `layout` calls this to learn the menu's own height BEFORE
+/// `transcript::draw` runs, and shrinks `Areas::transcript` by exactly that
+/// much, so the transcript's own last rendered line ends where the menu
+/// begins rather than underneath it -- the menu still opens and closes with
+/// zero extra latency (this is a pure `Rect` computation, not a second
+/// render pass), and the operator sees a newly-appended error the instant it
+/// lands, no different from any other moment.
+fn settings_reservation(state: &AppState, unreserved_transcript: Rect) -> u16 {
+    if state.settings_open && matches!(state.mode, Mode::Normal) {
+        settings::modal_rect(state, unreserved_transcript).height
+    } else {
+        0
+    }
 }
 
 fn layout(state: &AppState, area: Rect) -> Areas {
@@ -276,7 +329,7 @@ fn layout(state: &AppState, area: Rect) -> Areas {
         .split(area);
 
     let mut next = 0;
-    let transcript = rows[next];
+    let unreserved_transcript = rows[next];
     next += 1;
     let agents = if show_agents {
         let a = rows[next];
@@ -289,8 +342,19 @@ fn layout(state: &AppState, area: Rect) -> Areas {
     next += 1;
     let status = rows[next];
 
+    // Board item `01M1A9M2EVJNR0HBN86A8E40EA`: reserve `/settings`' own
+    // height out of the transcript pane BEFORE anything renders into it --
+    // see `settings_reservation`'s own doc for why, and `Areas::transcript`'s
+    // doc for what this shrinks.
+    let reserved = settings_reservation(state, unreserved_transcript);
+    let transcript = Rect {
+        height: unreserved_transcript.height.saturating_sub(reserved),
+        ..unreserved_transcript
+    };
+
     Areas {
         transcript,
+        unreserved_transcript,
         agents,
         input,
         status,
@@ -1064,6 +1128,56 @@ fn draw_add_provider_credential(
     frame.render_widget(footer, frame_areas.footer_area);
 }
 
+/// Fixed footer rows for [`draw_deny_feedback`] -- the key hint and a blank
+/// spacer, mirroring [`ADD_PROVIDER_CREDENTIAL_FOOTER_ROWS`]'s own shape.
+const DENY_FEEDBACK_FOOTER_ROWS: u16 = 2;
+
+/// Board item `01M1A9M2EVJNR0HBN86A8E40EA`: the permission prompt's
+/// "deny with feedback" text entry (`Mode::EditingDenyFeedback`). Renders
+/// the typed-so-far `fb.input` IN THE CLEAR (unlike
+/// [`draw_add_provider_credential`]'s masking -- this is not a secret), with
+/// the ORIGINAL call's own rendering shown above it for context (so the
+/// operator can see what they are declining feedback on without scrolling
+/// back to find the permission overlay that was just replaced).
+fn draw_deny_feedback(
+    frame: &mut Frame,
+    transcript_area: Rect,
+    fb: &DenyFeedbackState,
+    theme: &Theme,
+) {
+    let body_lines = vec![
+        Line::from(Span::styled(
+            format!("deny: {}", fb.prompt.request.rendered),
+            theme.emphasized,
+        )),
+        Line::from(""),
+        Line::from("feedback (optional -- tells the model what to try instead):"),
+        Line::from(fb.input.clone()),
+    ];
+    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
+
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        DENY_FEEDBACK_FOOTER_ROWS,
+        modal::DEFAULT_CAP_DENOMINATOR,
+        " DENY WITH FEEDBACK ",
+        theme.border_accent,
+    );
+    frame.render_widget(body, frame_areas.body_area);
+
+    let footer_lines = vec![
+        Line::from("[enter] deny (blank = \"user declined; try another approach\")  [esc] cancel"),
+        Line::from(""),
+    ];
+    let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, frame_areas.footer_area);
+}
+
 #[cfg(test)]
 mod tests {
     use conway::{AgentId, PermissionDecision, PermissionRequest, ToolCategory, ToolName};
@@ -1678,6 +1792,47 @@ mod tests {
         );
     }
 
+    /// Board item `01M1A9M2EVJNR0HBN86A8E40EA`: `layout` itself reserves
+    /// `/settings`' own height out of the transcript row -- the unit-level
+    /// counterpart to `an_error_raised_while_settings_is_open_is_not_covered_
+    /// by_the_menu`'s full-render proof. Asserts the actual geometry: the
+    /// shrunk `transcript` and the menu's own `Rect` (computed against the
+    /// UNSHRUNK row, `unreserved_transcript`) sit flush against each other,
+    /// never overlapping and never leaving a gap.
+    #[test]
+    fn settings_open_reserves_its_own_height_out_of_the_transcript_row() {
+        let mut state = AppState::new(AgentId::new());
+        let area = Rect::new(0, 0, 80, 40);
+        let closed = layout(&state, area);
+
+        state.open_settings();
+        let open = layout(&state, area);
+
+        assert_eq!(
+            open.unreserved_transcript, closed.transcript,
+            "the reference row `/settings`' own Rect is computed against must be \
+             the SAME row the transcript rendered into before anything was reserved"
+        );
+        assert!(
+            open.transcript.height < closed.transcript.height,
+            "opening settings must shrink the transcript row, got {:?} vs {:?}",
+            open.transcript,
+            closed.transcript
+        );
+        let menu_rect = settings::modal_rect(&state, open.unreserved_transcript);
+        assert_eq!(
+            open.transcript.height + menu_rect.height,
+            open.unreserved_transcript.height,
+            "the transcript row and the menu's own Rect must together account for \
+             the WHOLE unreserved row -- no gap, no overlap"
+        );
+        assert_eq!(
+            open.transcript.y + open.transcript.height,
+            menu_rect.y,
+            "the transcript row must end exactly where the menu begins"
+        );
+    }
+
     #[test]
     fn intent_confirm_card_hides_the_agents_panel_even_when_it_was_open() {
         let mut state = intent_confirm_state(conway::SubagentMode::Spawn, None, "go");
@@ -2116,6 +2271,55 @@ mod tests {
         assert!(
             above.contains("TRANSCRIPT_MARKER_ABOVE_THE_MODAL"),
             "ordinary transcript text must remain visible above the settings menu: {above}"
+        );
+    }
+
+    /// **VERIFICATION ANCHOR, board item `01M1A9M2EVJNR0HBN86A8E40EA`
+    /// acceptance 2.** The operator's own report: *"when in settings, errors
+    /// that occur are covered by the settings menu."* The test above
+    /// (`settings_menu_is_bottom_anchored_and_content_sized`) pushes a
+    /// single short entry, which lands nowhere near the settings menu's own
+    /// bottom-anchored rows regardless of whether the transcript pane was
+    /// ever shrunk -- it cannot discriminate the bug from the fix. This test
+    /// fills the transcript PAST the viewport height (`follow_tail`, the
+    /// default, always shows the transcript's own tail) so the freshly
+    /// appended error lands exactly where the settings menu's own rows are:
+    /// the discriminating case. Before this item, `layout` handed
+    /// `transcript::draw` the FULL transcript row regardless of `/settings`
+    /// being open, and the menu's `Clear`+`Block` painted over that row's
+    /// own tail afterward -- the newest line (this error) would have been
+    /// erased by that `Clear`, never reaching the buffer this test reads.
+    #[test]
+    fn an_error_raised_while_settings_is_open_is_not_covered_by_the_menu() {
+        let mut state = AppState::new(AgentId::new());
+        for i in 0..40 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("filler line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+        }
+        // The newest entry -- with `follow_tail` (the default), this is
+        // exactly the line that would sit at the transcript pane's own
+        // bottom edge, immediately adjacent to wherever the settings menu
+        // starts.
+        state.transcript.push(Entry::Error {
+            text: "ERROR_RAISED_WHILE_SETTINGS_OPEN".to_string(),
+            fatal: false,
+        });
+        state.open_settings();
+
+        let text = render_text(&state, 80, 24);
+
+        assert!(
+            text.contains(" SETTINGS "),
+            "the menu itself must still be open and drawn: {text}"
+        );
+        assert!(
+            text.contains("ERROR_RAISED_WHILE_SETTINGS_OPEN"),
+            "an error appended while /settings is open must stay readable, \
+             pushed above the menu rather than hidden behind it: {text}"
         );
     }
 

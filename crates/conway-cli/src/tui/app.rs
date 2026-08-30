@@ -321,6 +321,25 @@ impl App {
                         // build_tree` stays a pure function of `AppState`.
                         self.refresh_default_entries(&env_vars, &cwd);
                     }
+                    // Board item `01M1A35S609TZ613GAECPEHX8D`: bare `/model`
+                    // needs `AppState::configured_models` fresh, for the
+                    // identical reason the `/settings` branch above needs its
+                    // own mirrors fresh -- `commands::execute`'s `Model
+                    // { model: None }` arm must stay a pure function of
+                    // `AppState` (it has no `env`/`cwd` of its own; `Host`'s
+                    // own doc: "a thin abstraction ... this needs neither").
+                    // `App::refresh_default_entries` already computes this
+                    // list (see that method's own doc) as a side effect of
+                    // its existing `[roles]` read, so this is the SAME call
+                    // the `/settings` branch makes, not a second
+                    // implementation of "read the configured chains".
+                    if matches!(cmd, commands::SlashCommand::Model { model: None }) {
+                        let env_vars: std::collections::HashMap<String, String> =
+                            std::env::vars().collect();
+                        let cwd = std::env::current_dir()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                        self.refresh_default_entries(&env_vars, &cwd);
+                    }
                     let host = commands::LiveHost {
                         handle: &self.handle,
                         conway: &self.conway,
