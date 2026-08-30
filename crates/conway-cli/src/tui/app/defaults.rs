@@ -56,7 +56,17 @@ use crate::tui::state::Entry;
 /// The scalar-valued sibling of `load_roles_lax`: reads the merged
 /// document's own top-level `"default_role"` member, laxly -- see this
 /// module's own doc, "Why a lax read, not the full `ConwayConfig`".
-fn load_default_role_lax(env: &HashMap<String, String>, cwd: &Path) -> Result<RoleAlias, String> {
+///
+/// `pub(super)`, not private: board item `01M1A54RS91QHHHTY7N1PV8X0H`'s
+/// `app/provider_manage.rs` reuses this exact function to find which role
+/// a newly-added provider should be wired into (P-14 -- "which role is the
+/// current default" is read exactly once across this crate, never
+/// restated at a second callsite that could drift from this one when the
+/// merge's own baked-in-floor handling changes).
+pub(super) fn load_default_role_lax(
+    env: &HashMap<String, String>,
+    cwd: &Path,
+) -> Result<RoleAlias, String> {
     let merged = merged_document(&LoadOptions {
         env: env.clone(),
         cwd: cwd.to_path_buf(),
