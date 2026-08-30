@@ -112,6 +112,14 @@ impl Tool for CapabilityCallingTool {
             Err(CapabilityCallError::MalformedName { capability, reason }) => {
                 format!("malformed:{capability}:{reason}")
             }
+            Err(CapabilityCallError::VersionMismatch {
+                capability,
+                required,
+                available,
+                available_declared,
+            }) => {
+                format!("version_mismatch:{capability}:{required}:{available}:{available_declared}")
+            }
         };
         Ok(ToolOutput {
             blocks: vec![ContentBlock::Text { text }],
