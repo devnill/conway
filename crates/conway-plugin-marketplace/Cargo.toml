@@ -56,8 +56,12 @@ thiserror = { workspace = true }
 # "process"/"time": `crate::git_source` invokes the system `git` binary as
 # a child process (board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`) and bounds it
 # with `tokio::time::timeout`, exactly the shape this crate's own HTTP
-# fetches already bound with `reqwest`'s client-level timeout.
-tokio = { workspace = true, features = ["fs", "rt", "macros", "process", "time"] }
+# fetches already bound with `reqwest`'s client-level timeout. "io-util":
+# `run_git_clone` drains the child's own stderr pipe with
+# `AsyncReadExt::read_to_end` concurrently with `Child::wait`, rather than
+# `Child::wait_with_output` (which CONSUMES the `Child`, leaving nothing to
+# `.kill()` if the wait times out -- that function's own doc).
+tokio = { workspace = true, features = ["fs", "rt", "macros", "process", "time", "io-util"] }
 
 [dev-dependencies]
 # The public facade, for this crate's own end-to-end test (board item

@@ -171,6 +171,22 @@ pub enum MarketplaceError {
          path, can run an arbitrary command or read an arbitrary local file)"
     )]
     UnsafeGitUrl { id: String, url: String },
+    /// `plugin_id`'s `git-subdir` source names an `http(s)://` URL whose
+    /// authority embeds userinfo (`https://user:pass@host/...`). Refused
+    /// OUTRIGHT rather than stripped-and-proceeded: a legitimate public
+    /// marketplace has no reason to embed a credential, and the credential
+    /// would otherwise survive into this crate's own error text and into
+    /// `conway-cli`'s operator-facing "fetched via git from {url}"
+    /// disclosure, which lands in a TUI transcript that can be copied,
+    /// screen-shared, or logged (`crate::git_source`'s own doc,
+    /// "credentials in a marketplace-supplied URL"). `url` here is always
+    /// the REDACTED form (`crate::git_source::credentialed_url_redacted`)
+    /// -- this variant never carries the credential itself.
+    #[error(
+        "plugin '{id}' names a git URL with embedded credentials -- conway refuses to run git \
+         against a URL containing a username or password ('{url}')"
+    )]
+    CredentialedGitUrl { id: String, url: String },
     /// The system `git` binary could not be invoked at all -- board item
     /// `01M0Y6RYZA94BK6YXJ7X8TNEGR`, acceptance 5: refused by name, never a
     /// confusing failure partway through a clone attempt.
@@ -212,6 +228,7 @@ impl MarketplaceError {
             Self::MissingIdentity => "missing_identity",
             Self::UnsupportedSourceKind { .. } => "unsupported_source_kind",
             Self::UnsafeGitUrl { .. } => "unsafe_git_url",
+            Self::CredentialedGitUrl { .. } => "credentialed_git_url",
             Self::GitUnavailable { .. } => "git_unavailable",
             Self::GitFailed { .. } => "git_failed",
         }
