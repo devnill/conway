@@ -31,6 +31,71 @@
 //! subcommand every test here drives -- never dials anything: no backend
 //! id is ever named in a role chain for it to resolve, let alone connect
 //! to.
+//!
+//! ## Windows: two of the three tests below are `#[cfg(unix)]`-gated
+//!
+//! (Board item `01M18Q8AASY761DQ5HNN83TFY4`.) `run_sessions_list` sets
+//! `HOME`/`USERPROFILE` on the spawned child to `home.path()`, intending to
+//! make the child believe `home` genuinely IS its home directory -- but
+//! `directories::BaseDirs::home_dir()` (what `conway::config::discovery::
+//! home_settings_path` calls, and what `project_discovery_exclusions` uses
+//! to compute the ONE path `discover`'s walk must recognise as "the home
+//! settings file, wearing its project hat") only reads that override on
+//! Unix. On Windows it goes through the Known Folder API instead
+//! (`SHGetKnownFolderPath`/`FOLDERID_Profile` -- see the doc on
+//! `conway_core::containment`'s private `home_dir` for the full citation)
+//! and returns this machine's REAL profile directory, which does not match
+//! `home.path()`. `project_discovery_exclusions` then computes the wrong
+//! exclusion candidate, `discover` fails to exclude `<home>/.conway/
+//! settings.json`, and the two tests that depend on that exclusion actually
+//! firing -- `cli_with_conway_config_dir_set_never_reads_a_settings_json_
+//! discovered_under_a_simulated_home` and `cli_with_conway_config_dir_set_
+//! resolves_the_session_root_inside_the_isolated_dir` -- would fail on
+//! Windows for that reason alone, regardless of whether the fix they exist
+//! to guard is correct. Both are `#[cfg(unix)]`-gated below, with this same
+//! reason restated locally (matching `tilde_expansion.rs`'s precedent: the
+//! reason lives at the test, not just here).
+//!
+//! The third test in this file (`cli_run_never_attempts_a_connection_to_
+//! the_fixtures_own_backend_address`) is NOT gated: both fixtures always
+//! declare the identical backend port and an empty `roles.default.chain`,
+//! so its assertion holds no matter which config layer `discover` picks --
+//! it does not depend on the exclusion resolving correctly, only on
+//! neither config ever being dialed.
+//!
+//! **Decision and rejected alternatives**, recorded once here rather than
+//! in all three affected test files:
+//!
+//! - **Chosen: gate with a stated reason.** Cheapest, consistent with the
+//!   existing `tilde_expansion.rs` precedent, and it leaves Windows home-
+//!   directory resolution honestly untested here rather than asserting
+//!   against whatever the CI runner's real profile directory happens to
+//!   contain (a machine-configuration-dependent pass/fail, which is exactly
+//!   what this item's finding calls out as unable to gate anything).
+//! - **Rejected: find a mechanism that genuinely redirects what
+//!   `directories`/`dirs-sys` read on Windows.** Researched, not merely
+//!   assumed absent: `dirs-sys-0.4.1/src/lib.rs`'s Windows `known_folder`
+//!   calls `SHGetKnownFolderPath` directly with no environment-variable
+//!   read anywhere in that path, and `directories-5.0.1/src/lib.rs`'s own
+//!   doc for `BaseDirs::new()` states the Windows rule as exactly one step
+//!   ("retrieve the user profile folder using `SHGetKnownFolderPath`; if
+//!   this fails, return `None`") with no `HOME`-first fallback the way the
+//!   Unix/macOS rule has one for `getpwuid_r`. There is no override knob to
+//!   find.
+//! - **Rejected: introduce a home-directory seam in conway** (a trait/
+//!   closure `BaseDirs::new()` sits behind production-side, substituted in
+//!   tests). Most invasive, and it would add a seam that exists ONLY for
+//!   these tests to call -- no production consumer needs configurable home
+//!   resolution today. `docs/vision/INTENT.md` §8.5's narrow-first rule
+//!   weighs directly against adding a seam ahead of a real second caller;
+//!   a test harness is not that caller.
+//!
+//! **What remains genuinely untested on Windows**: whether
+//! `project_discovery_exclusions` correctly excludes `~/.conway/
+//! settings.json` from the project-layer walk when `CONWAY_CONFIG_DIR` is
+//! set. This is stated in `.github/workflows/ci.yml` at the `test` job
+//! (the site a person adding a `windows-latest` job would look), not only
+//! here.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -188,6 +253,17 @@ fn run_sessions_list(isolated: &IsolatedConfigDir, home: &SimulatedHome) -> std:
 /// `discover` excludes that candidate (`project_discovery_exclusions`), the
 /// central default resolves against the ISOLATED `CONWAY_CONFIG_DIR`
 /// instead, and the poisoned directory is never created.
+///
+/// `#[cfg(unix)]` only (board item `01M18Q8AASY761DQ5HNN83TFY4`, decision
+/// recorded in this file's own module doc): `run_sessions_list`'s
+/// `HOME`/`USERPROFILE` override on the child has no effect on what
+/// `directories::BaseDirs::home_dir()` returns on Windows, so
+/// `project_discovery_exclusions` would compute this machine's REAL
+/// profile's settings path as the exclusion candidate -- not `home.path()`
+/// -- `discover` would fail to exclude `<home>/.conway/settings.json`, and
+/// this test would fail for that reason regardless of whether the fix under
+/// test is correct.
+#[cfg(unix)]
 #[test]
 fn cli_with_conway_config_dir_set_never_reads_a_settings_json_discovered_under_a_simulated_home() {
     let isolated = IsolatedConfigDir::write(&backend_json(DEAD_PORT));
@@ -218,6 +294,15 @@ fn cli_with_conway_config_dir_set_never_reads_a_settings_json_discovered_under_a
 /// isolated directory, not in some third, unaccounted-for place (e.g. the
 /// real developer machine's own `~/.conway`, which would also make the
 /// assertion above pass for the wrong reason).
+///
+/// `#[cfg(unix)]` only, for the identical reason stated on
+/// `cli_with_conway_config_dir_set_never_reads_a_settings_json_discovered_
+/// under_a_simulated_home` above (board item `01M18Q8AASY761DQ5HNN83TFY4`):
+/// this test depends on the same `project_discovery_exclusions` exclusion
+/// firing correctly, which in turn depends on the `HOME`/`USERPROFILE`
+/// override actually redirecting `directories::BaseDirs::home_dir()` --
+/// true on Unix, never true on Windows.
+#[cfg(unix)]
 #[test]
 fn cli_with_conway_config_dir_set_resolves_the_session_root_inside_the_isolated_dir() {
     let isolated = IsolatedConfigDir::write(&backend_json(DEAD_PORT));
@@ -266,6 +351,15 @@ fn cli_with_conway_config_dir_set_resolves_the_session_root_inside_the_isolated_
 /// `sessions list` is read-only and both fixtures' `roles.default.chain` is
 /// empty, so no code path in `ConwayBuilder::build`/dispatch ever names this
 /// backend id to begin with; this test is the belt to that suspenders.
+///
+/// NOT `#[cfg(unix)]`-gated, unlike the two tests above (board item
+/// `01M18Q8AASY761DQ5HNN83TFY4`'s module-doc decision): `isolated` and
+/// `home` both point their one `[backends]` entry at the SAME `port`, so
+/// whichever config layer `discover` actually resolves as the project
+/// config -- the isolated one (correct, Unix) or the simulated home's
+/// (wrong, Windows, since the exclusion never fires there) -- this
+/// assertion holds either way. It does not depend on the exclusion
+/// resolving correctly, only on neither config ever being dialed.
 #[test]
 fn cli_run_never_attempts_a_connection_to_the_fixtures_own_backend_address() {
     let listener =

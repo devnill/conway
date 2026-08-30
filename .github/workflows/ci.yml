@@ -57,6 +57,28 @@ jobs:
       - name: cargo fmt --all --check
         run: scripts/check-fast-gates.sh --gate "cargo fmt (--check)"
 
+  # If you are adding a `windows-latest` (or any non-Unix) job here: this
+  # workspace's Windows home-directory resolution is currently UNTESTED, on
+  # purpose, not by oversight (board item `01M18Q8AASY761DQ5HNN83TFY4`).
+  # `directories::BaseDirs::home_dir()` -- the one lookup every home-
+  # directory-dependent code path in this tree goes through
+  # (`conway_core::containment`'s private `home_dir`, `conway::config::
+  # discovery::home_settings_path`) -- resolves via the Windows Known
+  # Folder API (`SHGetKnownFolderPath`/`FOLDERID_Profile`) and does NOT
+  # read `%USERPROFILE%` at all; researched against the vendored
+  # `dirs-sys-0.4.1`/`directories-5.0.1` source, no override knob exists.
+  # Three compiled-binary tests that simulate a home directory by
+  # overriding `HOME`/`USERPROFILE` on a spawned child are consequently
+  # `#[cfg(unix)]`-gated (or, in one case, verified not to depend on the
+  # override at all) rather than silently asserting against whatever this
+  # runner's real profile directory happens to contain:
+  # `crates/conway-cli/tests/tilde_expansion.rs`,
+  # `crates/conway-cli/tests/config_isolation_binary.rs` (decision and
+  # rejected alternatives recorded in that file's module doc), and
+  # `crates/conway-cli/tests/global_instructions_isolation.rs`. A
+  # `windows-latest` job will run these files' non-gated tests only; the
+  # Windows-specific coverage those gated tests would have provided does
+  # not exist anywhere else in this tree today.
   test:
     name: cargo test (workspace, all features)
     runs-on: ubuntu-latest

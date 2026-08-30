@@ -21,6 +21,22 @@
 //! `sessions list`, so the assertion is on the actual wire request the
 //! `conway.idiom` plugin's operator-global fragment lands in -- the real
 //! pipeline, not a unit-level path comparison.
+//!
+//! **Unlike `config_isolation_binary.rs`'s two `#[cfg(unix)]`-gated tests
+//! (board item `01M18Q8AASY761DQ5HNN83TFY4`), the test below is NOT
+//! gated**, and deliberately so: `common::command` (which this test uses)
+//! always sets `CONWAY_CONFIG_DIR` on the child to the fixture's own temp
+//! dir, and `global_instructions_path` -> `conway::config::discovery::
+//! user_config_path` returns as soon as `CONWAY_CONFIG_DIR` is set and
+//! non-empty in `env`, *before* ever calling `home_settings_path()` (the
+//! `directories::BaseDirs`-backed lookup that does not honour
+//! `HOME`/`USERPROFILE` on Windows). This test's own `HOME`/`USERPROFILE`
+//! overrides and its `simulated_home`/`POISON_MARKER` setup are therefore
+//! inert on every platform under the code path this specific scenario
+//! exercises (`CONWAY_CONFIG_DIR` always set) -- not merely on Windows --
+//! so there is no platform-dependent behavior here to gate against. Kept
+//! anyway as a belt-and-suspenders negative assertion (see the test's own
+//! doc below).
 
 mod common;
 
@@ -61,6 +77,13 @@ fn enable_idiom_plugin(config_path: &std::path::Path) {
 /// `global_instructions_path` reads `<CONWAY_CONFIG_DIR>/instructions.md`
 /// instead, so the request carries `EXPECTED_MARKER` and never
 /// `POISON_MARKER`.
+///
+/// Not `#[cfg(unix)]`-gated (see this file's own module doc for why, and
+/// contrast with `config_isolation_binary.rs`'s two gated tests, board item
+/// `01M18Q8AASY761DQ5HNN83TFY4`): `command()` always sets
+/// `CONWAY_CONFIG_DIR`, so `global_instructions_path` never falls back to
+/// the `directories::BaseDirs`-backed `home_settings_path()` in this
+/// scenario on any platform, Windows included.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conway_config_dir_relocates_the_global_operator_instructions_file() {
     let simulated_home = tempfile::tempdir().expect("tempdir for simulated $HOME");
