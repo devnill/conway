@@ -7,11 +7,18 @@
 //! `ui.form` capability. `conway.ui` contributes no tool of its own to call
 //! directly, so the observable is indirect but exact: `skeleton_ask`
 //! (`conway-plugin-skeleton`'s consumer tool) calls into `ui.form` and gets
-//! `CapabilityCallError::NotProvided` unless `conway.ui` is ALSO named --
-//! if this bundle member were ever made default-on (the "useful plugin
-//! silently switched on" failure `docs/vision/
-//! DESIGN-plugin-dependencies.md` §0 ruling 2 forbids), this test would see
-//! a real answer instead of the degrade text and fail.
+//! `CapabilityCallError::NotProvided` unless `conway.ui` is ALSO named. The
+//! assertion below checks for `NotProvided`'s own `Display` wording
+//! specifically (`"no installed plugin provides capability"`), not merely
+//! the "no answer available" prefix every degrade shares with the
+//! installed-but-no-surface case
+//! (`ui_form_degrades_under_one_shot.rs`) -- that shared prefix alone would
+//! stay green even if `conway.ui` were made default-on, since a default-on
+//! `conway.ui` would still refuse (today, with no shipped call site wiring
+//! a `FormSurface`), just via `Provider{no_drawing_surface}` instead of
+//! `NotProvided`. Naming the differentiating substring is what lets this
+//! test actually fail if `conway.ui` becomes reachable when absent from
+//! `[plugins].install`.
 
 mod common;
 
@@ -125,5 +132,15 @@ async fn conway_ui_is_not_reachable_when_absent_from_plugins_install() {
     assert!(
         text.starts_with("skeleton ask: no answer available"),
         "conway.ui must not be reachable when it is not named in [plugins].install, got: {text}"
+    );
+    // The discriminating half -- see this file's module doc: the shared
+    // prefix above cannot tell "genuinely absent" apart from "installed
+    // but no drawing surface" (`ui_form_degrades_under_one_shot.rs`'s own
+    // case). Only `NotProvided`'s own wording proves `conway.ui` was never
+    // reached at all.
+    assert!(
+        text.contains("no installed plugin provides capability"),
+        "expected the NotProvided-shaped message proving conway.ui was never \
+         reached, got: {text}"
     );
 }

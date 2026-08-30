@@ -18,8 +18,8 @@
 use std::sync::Arc;
 
 use conway::plugin::{
-    async_trait, CapabilityCallHandle, CapabilityRegistry, ContentBlock, Plugin as _, Tool as _,
-    ToolCall, ToolCtx, ToolOutput,
+    async_trait, CapabilityCallHandle, CapabilityRegistry, ContentBlock, Plugin as _, ToolCall,
+    ToolCtx, ToolOutput,
 };
 use conway::AgentId;
 use conway_plugin_skeleton::{SkeletonPlugin, ASK_TOOL_NAME, PLUGIN_ID};
@@ -133,6 +133,17 @@ async fn skeleton_ask_degrades_without_failing_when_conway_ui_is_not_installed()
         text.starts_with("skeleton ask: no answer available"),
         "got: {text}"
     );
+    // The discriminating half: `CapabilityCallError::NotProvided`'s own
+    // `Display` wording (`conway-core::ports::capability`), not merely the
+    // "no answer available" prefix every degrade shares with the
+    // installed-but-no-surface case below -- without this, a regression
+    // that swapped `NotProvided` for `Provider{no_drawing_surface}` here
+    // would still pass.
+    assert!(
+        text.contains("no installed plugin provides capability"),
+        "expected the NotProvided-shaped message for a capability nothing \
+         provides, got: {text}"
+    );
 }
 
 /// **VERIFICATION ANCHOR (acceptance 3, unit-level half).** `conway.ui`
@@ -160,5 +171,15 @@ async fn skeleton_ask_degrades_when_conway_ui_installs_with_no_drawing_surface()
     assert!(
         text.starts_with("skeleton ask: no answer available"),
         "got: {text}"
+    );
+    // The discriminating half: `CapabilityCallError::Provider`'s own
+    // `Display` wording wraps `FormProvider::call`'s `no_drawing_surface`
+    // refusal (`conway-plugin-ui::lib::FormProvider::call`) -- distinct
+    // from `NotProvided`'s wording above. Without this, a regression that
+    // swapped the two `CapabilityCallError` variants here would still pass.
+    assert!(
+        text.contains("provider failed") && text.contains("no drawing surface"),
+        "expected the Provider{{no_drawing_surface}}-shaped message for an \
+         installed conway.ui with no surface wired in, got: {text}"
     );
 }

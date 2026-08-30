@@ -812,3 +812,27 @@ would have been exactly the "designing on theory" INTENT §8.5 forbids.
 §8's first falsifier ("`conway.ui` needs to draw, not declare") did not
 fire: the declarative request/answer shape expressed everything
 `skeleton_ask` needed to ask and to receive back.
+
+**§8's third falsifier ("no second consumer of a plugin-provided
+capability appears") is now live, and this entry does not rule on it.**
+`conway.ui` is `ui.form`'s only provider, and its only consumer is
+`skeleton_ask` — which is not `conway.permissions`, the consumer the
+falsifier names, and not a real feature plugin at all: it is explicitly a
+proof-of-mechanism tool, built to exercise Edge B end to end rather than
+to need it. That is arguably a stronger case for the falsifier than its
+own wording anticipated, since the wording assumed at least a real
+consumer would show up first. Two readings are both defensible and this
+page does not choose between them: either a proof-of-mechanism consumer
+does not count toward "a second consumer" at all — in which case Edge B
+still has exactly the same zero real consumers it had when this page was
+first drafted, and the falsifier's condition has not actually changed —
+or `skeleton_ask` DOES count as the first consumer, and the falsifier is
+really asking whether an INDEPENDENT second one ever appears, making this
+the one-consumer state the falsifier describes, one item early. Resolving
+this either way is an operator call about how much a proof-of-mechanism
+consumer should count for, not a call this implementation pass gets to
+make; what would resolve it is a real feature plugin — `conway.permissions`
+or otherwise — actually calling `ui.form` (or some other Edge B
+capability) for its own functional reasons, not to prove the mechanism
+works. Until that happens, this falsifier remains open, and this entry
+records that rather than ruling on it.
