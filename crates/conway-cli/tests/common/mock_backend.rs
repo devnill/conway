@@ -17,6 +17,15 @@
 //! Request parsing uses `httparse` (already resolved in the workspace's
 //! `Cargo.lock` as a transitive dependency of `reqwest`/`hyper`) rather
 //! than hand-rolled header scanning.
+//!
+//! Every scripted [`Chunk`] entry can be delivered either way: as SSE
+//! (`write_sse_response`, when the request's own `"stream"` field is
+//! `true`) or as a single plain-JSON response (`write_json_chat_response`,
+//! otherwise) — `handle_connection` reads that field off the real request
+//! body rather than assuming one shape, since `conway-runtime` legitimately
+//! sends both (e.g. `AttemptEngine`'s one-shot non-streaming `ToolParse`
+//! retry, `conway-runtime/src/attempt.rs`) and a mock that only understood
+//! SSE would misreport a real non-streaming attempt as a wire-format bug.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -201,11 +210,27 @@ async fn handle_connection(
     }
 
     if method == "POST" && path.starts_with("/v1/chat/completions") {
+        // `"stream"` is only ever present-and-`true` on a streamed request
+        // (`wire::build_request_body` inserts the literal `true`, never
+        // `false`, gating on an `if stream` -- see that function); its
+        // absence IS a non-streaming request, matching the real OpenAI
+        // default for an omitted field. This is the ONE place that
+        // decision is made -- both response writers below are chosen from
+        // it, never re-derived.
+        let mut stream_requested = false;
         if let Ok(value) = serde_json::from_slice::<Value>(&body) {
+            stream_requested = value
+                .get("stream")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             requests.lock().unwrap().push(value);
         }
         let entry = script_entries.lock().unwrap().pop_front();
-        write_sse_response(&mut stream, entry, &call_id_counter).await?;
+        if stream_requested {
+            write_sse_response(&mut stream, entry, &call_id_counter).await?;
+        } else {
+            write_json_chat_response(&mut stream, entry, &call_id_counter).await?;
+        }
         return Ok(());
     }
 
@@ -290,36 +315,127 @@ async fn write_json_response(stream: &mut TcpStream, body: &str) -> std::io::Res
     Ok(())
 }
 
+/// If `chunks` leads with a [`Chunk::HttpError`], writes that whole HTTP
+/// error response (status + plain body, no SSE/JSON framing) and returns
+/// `true`; otherwise writes nothing and returns `false`. Shared by
+/// [`write_sse_response`] and [`write_json_chat_response`] -- a scripted
+/// error is a property of the ENTRY, independent of whether the request
+/// that triggered it asked to stream, so there is exactly one place that
+/// decides how an HTTP-error status renders on the wire.
+async fn write_leading_http_error(
+    stream: &mut TcpStream,
+    chunks: &[Chunk],
+) -> std::io::Result<bool> {
+    let Some(Chunk::HttpError { status, body }) = chunks.first() else {
+        return Ok(false);
+    };
+    let reason = match status {
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "Error",
+    };
+    let head = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).await?;
+    stream.write_all(body.as_bytes()).await?;
+    stream.flush().await?;
+    Ok(true)
+}
+
+/// Answers a NON-streaming (`"stream"` absent or `false`) `/chat/completions`
+/// request with a single plain-JSON `ChatCompletionResponse`-shaped body,
+/// synthesized from the same `Vec<Chunk>` script entry [`write_sse_response`]
+/// would otherwise have streamed as SSE -- the two are driven by identical
+/// script data so a test only has to write one script regardless of which
+/// path a given attempt takes. `entry` is `None` (script exhausted) -> a
+/// single `Finish("stop")`, matching [`Script`]'s doc on the graceful
+/// default for an unscripted request.
+///
+/// Every `Chunk::Text` is concatenated into `message.content`; every
+/// `Chunk::ToolCall` becomes one `message.tool_calls[]` entry (arguments
+/// JSON-encoded as a string, matching the streamed shape); the LAST
+/// `Chunk::Finish` in the entry wins as `choices[0].finish_reason` (a script
+/// with more than one `Finish` is not expected, but taking the last rather
+/// than panicking costs nothing). `Chunk::Delay` is honored with a real
+/// sleep -- a non-streaming server can still be slow -- and a `Chunk::Hang`
+/// blocks forever, matching [`write_sse_response`]'s own handling, for a
+/// script that (unusually) points a hang test at a non-streaming attempt.
+async fn write_json_chat_response(
+    stream: &mut TcpStream,
+    entry: Option<Vec<Chunk>>,
+    call_id_counter: &AtomicU64,
+) -> std::io::Result<()> {
+    let chunks = entry.unwrap_or_else(|| vec![Chunk::Finish("stop")]);
+    if write_leading_http_error(stream, &chunks).await? {
+        return Ok(());
+    }
+
+    let mut content = String::new();
+    let mut tool_calls: Vec<Value> = Vec::new();
+    let mut finish_reason = "stop".to_string();
+    for chunk in chunks {
+        match chunk {
+            Chunk::Text(text) => content.push_str(text),
+            Chunk::ToolCall { name, args } => {
+                let call_id = format!("call_{}", call_id_counter.fetch_add(1, Ordering::SeqCst));
+                tool_calls.push(serde_json::json!({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": args.to_string()},
+                }));
+            }
+            Chunk::Finish(reason) => finish_reason = reason.to_string(),
+            Chunk::Delay(duration) => tokio::time::sleep(duration).await,
+            Chunk::Hang => std::future::pending::<()>().await,
+            // Handled before any body is assembled (above).
+            Chunk::HttpError { .. } => {}
+        }
+    }
+
+    let mut message = serde_json::Map::new();
+    message.insert("role".into(), serde_json::json!("assistant"));
+    message.insert("content".into(), serde_json::json!(content));
+    if !tool_calls.is_empty() {
+        message.insert("tool_calls".into(), Value::Array(tool_calls));
+    }
+    let body = serde_json::json!({
+        "choices": [{"message": Value::Object(message), "finish_reason": finish_reason}]
+    })
+    .to_string();
+    write_json_response(stream, &body).await
+}
+
 /// Streams `entry` as chunked-transfer-encoded SSE, one HTTP chunk per
 /// `data:` line, flushing after each so a client genuinely observes bytes
 /// as they are produced rather than all at once at the end. `entry` is
 /// `None` (script exhausted) -> a single `Finish("stop")`, matching
 /// [`Script`]'s doc on the graceful default for an unscripted request.
+///
+/// Answers only a STREAMED (`"stream": true`) `/chat/completions` request --
+/// [`handle_connection`] is the one place that routes on the request's own
+/// `"stream"` field, to this function or to its non-streaming sibling
+/// [`write_json_chat_response`]. **Before that sibling existed, this was the
+/// mock's only response shape, full stop: a `stream: false` request (e.g.
+/// `conway-runtime`'s single non-streaming `ToolParse` retry, `attempt.rs`)
+/// got SSE bytes back regardless, which the real client then failed to
+/// parse as the plain JSON `ChatCompletionResponse` it expected --
+/// `classify_malformed_body`'s "malformed response body", diagnosing a mock
+/// gap as a wire-format bug.** Any OTHER test built against this mock
+/// before `write_json_chat_response` existed inherits that same blind spot
+/// for its own non-streaming requests, if it has any.
 async fn write_sse_response(
     stream: &mut TcpStream,
     entry: Option<Vec<Chunk>>,
     call_id_counter: &AtomicU64,
 ) -> std::io::Result<()> {
     let chunks = entry.unwrap_or_else(|| vec![Chunk::Finish("stop")]);
-    // A leading `HttpError` replaces the whole response: the SSE head must
-    // not go out first (see the variant's doc).
-    if let Some(Chunk::HttpError { status, body }) = chunks.first() {
-        let reason = match status {
-            401 => "Unauthorized",
-            403 => "Forbidden",
-            429 => "Too Many Requests",
-            500 => "Internal Server Error",
-            502 => "Bad Gateway",
-            503 => "Service Unavailable",
-            _ => "Error",
-        };
-        let head = format!(
-            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        stream.write_all(head.as_bytes()).await?;
-        stream.write_all(body.as_bytes()).await?;
-        stream.flush().await?;
+    if write_leading_http_error(stream, &chunks).await? {
         return Ok(());
     }
     let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
