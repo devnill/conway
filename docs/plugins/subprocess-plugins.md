@@ -242,6 +242,18 @@ a second-class citizen on this mechanism. Names follow the SAME shape rule
 manifest (a repeated name is a discovery-time `InvalidManifest` error, not
 "last one wins").
 
+**Version: your `tool.spec/1` response's own `"version"` field, not a
+per-capability wire field.** A consumer that calls you through
+`CapabilityCallHandle::call_versioned` with a `semver::VersionReq` is
+checked against the SAME `version` string your manifest already reports
+(decision `01M189XS6Z9VKYENAHNY1B54CM`, `docs/vision/DESIGN-plugin-
+dependencies.md` §7b/§9) — parsed as standard semver, degrading to `0.0.0`
+(never a panic) when it is not valid semver, so an unversioned plugin
+satisfies no non-zero-major requirement rather than failing discovery.
+There is no way today to declare two capabilities on the same plugin at two
+different versions; if you need that, say so where you name your
+capability and treat it as a gap, not an oversight.
+
 A capability call reaches you as a `capability/1` request — under EITHER
 transport, one-shot (fresh spawn per call) or persistent (over the same
 long-lived NDJSON channel `tool/1` already uses there):

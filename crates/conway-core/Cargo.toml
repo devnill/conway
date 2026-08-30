@@ -22,6 +22,13 @@ ulid = { workspace = true }
 # so it does not touch the T1 no-workspace-dependency invariant this crate
 # otherwise holds.
 lru = { workspace = true }
+# `ports::capability`'s capability-edge version check (decision
+# `01M189XS6Z9VKYENAHNY1B54CM`): `CapabilityRegistration::version` is a
+# `semver::Version`, a consumer's requirement is a `semver::VersionReq`, and
+# resolution is `req.matches(&version)`. Already in `Cargo.lock` at 1.0.28
+# via `rustc_version` transitively -- promoting it to a direct dependency
+# here adds no new lock entry.
+semver = { workspace = true }
 
 [dev-dependencies]
 static_assertions = { workspace = true }

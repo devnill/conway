@@ -234,3 +234,10 @@ claim: the trust page names conway.statusline by its own type, StatusLinePlugin,
 paths: docs/plugins/trust-and-security.md
 present: StatusLinePlugin
 -->
+
+<!-- claim-check
+why: P-11's extension-point clause, same finding (01M12WKMKJVE26EA6SYGB0PNZQ), applied to a mechanism CHANGE rather than a new surface: the plugin-to-plugin capability channel gained versioning (decision 01M189XS6Z9VKYENAHNY1B54CM), and P-11's own 2026-08-27 amendment specifically records that this channel shipped once already without a trust-page entry -- a second silent gap on the same channel would repeat the exact finding that amendment exists to prevent. Pinned to VersionMismatch -- the CapabilityCallError variant this item added -- rather than the word "version", which this page could use in an unrelated sense (a plugin's own PluginManifest::version, or a config schema version) without ever describing the capability-edge mechanism at all; a predicate on "version" alone would pass vacuously the same way a predicate on "capability" alone already did for the untouched-page failure this same finding first caught.
+claim: the trust page documents capability-edge versioning by name, naming CapabilityCallError::VersionMismatch specifically, and states that a version mismatch is a compatibility refusal rather than a change to who may call whom
+paths: docs/plugins/trust-and-security.md
+present: VersionMismatch
+-->

@@ -167,10 +167,11 @@ impl Plugin for ProvidingPlugin {
     }
 
     fn capabilities(&self) -> Vec<CapabilityRegistration> {
-        vec![CapabilityRegistration {
-            capability: HostCapability::named(self.capability).unwrap(),
-            provider: Arc::new(EchoProvider) as Arc<dyn CapabilityProvider>,
-        }]
+        vec![CapabilityRegistration::new(
+            HostCapability::named(self.capability).unwrap(),
+            "1.0.0",
+            Arc::new(EchoProvider) as Arc<dyn CapabilityProvider>,
+        )]
     }
 }
 
@@ -443,10 +444,11 @@ where
     }
 
     fn capabilities(&self) -> Vec<CapabilityRegistration> {
-        vec![CapabilityRegistration {
-            capability: HostCapability::named(self.capability).unwrap(),
-            provider: (self.make_provider)(),
-        }]
+        vec![CapabilityRegistration::new(
+            HostCapability::named(self.capability).unwrap(),
+            "1.0.0",
+            (self.make_provider)(),
+        )]
     }
 }
 

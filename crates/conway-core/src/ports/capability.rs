@@ -45,6 +45,31 @@
 //! `crates/conway/src/builder.rs`, not here -- it operates over plain
 //! `PluginManifest`/`Plugin::capabilities()` data at `ConwayBuilder::build`
 //! time and needs none of this module's runtime dispatch machinery.
+//!
+//! **Versioning (decision `01M189XS6Z9VKYENAHNY1B54CM`, which supersedes
+//! `01M1893Q2DV773ZQ5B138W6G07` on mechanism only -- that item's argument
+//! for versioning edges AT ALL still governs).** A capability edge carries
+//! a version, expressed in standard semver via the `semver` crate, not a
+//! bespoke notation and not a version folded into the name string:
+//! [`CapabilityRegistration::version`] is a [`semver::Version`] the
+//! PROVIDER declares as a field separate from its
+//! [`super::HostCapability`] name (`ui.form` stays `ui.form`; `1.0.0` is
+//! this field); [`CapabilityCallHandle::call_versioned`] takes a
+//! [`semver::VersionReq`] the CONSUMER supplies at the call site (`^1` for
+//! the ordinary floor, `=1.2.3` for a hard pin -- `VersionReq` gives pinning
+//! for free, which is why one type covers both). Resolution is
+//! `req.matches(&version)`; a mismatch is refused
+//! ([`CapabilityCallError::VersionMismatch`]), never degraded, naming both
+//! the requirement and the version actually installed -- the same
+//! "not degraded, not silently auto-installed -- refused" posture
+//! `docs/vision/DESIGN-plugin-dependencies.md` §0 ruling 3 already states
+//! for a missing dependency, applied here to a present-but-incompatible
+//! one. See `docs/vision/DESIGN-plugin-dependencies.md` §7b/§9 for the
+//! full argument, including why this needs no resolver: one capability
+//! name has exactly one provider ([`DuplicateCapabilityProvider`] refuses a
+//! second registration at construction), so there is no candidate set to
+//! select among and nothing to backtrack over -- `VersionReq::matches` is a
+//! predicate over a single pair, not a search.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -127,7 +152,74 @@ pub trait CapabilityProvider: Send + Sync + 'static {
 /// provider itself.
 pub struct CapabilityRegistration {
     pub capability: HostCapability,
+    /// This registration's declared version, standard semver
+    /// (`crate::ports::capability`'s own module doc: decision
+    /// `01M189XS6Z9VKYENAHNY1B54CM`) -- a field separate from `capability`,
+    /// never folded into the name string (`ui.form` at `1.0.0`, not
+    /// `"ui.form/1.0.0"`). Checked against a caller's own
+    /// `semver::VersionReq` by [`CapabilityCallHandle::call_versioned`];
+    /// [`CapabilityCallHandle::call`] (unversioned) ignores this field
+    /// entirely, exactly as it always has.
+    pub version: semver::Version,
     pub provider: Arc<dyn CapabilityProvider>,
+}
+
+impl CapabilityRegistration {
+    /// Builds a registration from a version LITERAL (`"1.0.0"`), for a
+    /// caller that has a hard-coded version string in its own source and
+    /// would otherwise need to add `semver` to its own `Cargo.toml` merely
+    /// to spell `semver::Version::new(1, 0, 0)` -- most workspace crates
+    /// constructing a fixture `CapabilityRegistration` are in exactly that
+    /// position; only `conway-core` (this field's own home) needs `semver`
+    /// as a direct dependency (C-04, and the zero-`Cargo.lock`-diff premise
+    /// this item's own acceptance criteria rest on).
+    ///
+    /// **Panics on a malformed literal.** This constructor is for a version
+    /// written BY HAND in source -- a programmer error if it does not
+    /// parse, exactly like an invalid literal in any other `::new`. It must
+    /// never be used on an operator- or plugin-supplied string: that caller
+    /// has untrusted input and must call `semver::Version::parse` itself
+    /// and handle the `Err` (P-10) -- see
+    /// [`Self::from_declared_version_or_unversioned`] for that case.
+    pub fn new(
+        capability: HostCapability,
+        version: &str,
+        provider: Arc<dyn CapabilityProvider>,
+    ) -> Self {
+        Self {
+            capability,
+            version: semver::Version::parse(version).unwrap_or_else(|e| {
+                panic!("CapabilityRegistration::new: malformed semver literal '{version}': {e}")
+            }),
+            provider,
+        }
+    }
+
+    /// Builds a registration from a version string this caller did NOT
+    /// write by hand -- `declared_version` is relayed from somewhere else
+    /// (an out-of-process plugin's own manifest, for instance), so it is
+    /// untrusted and may not be valid semver at all
+    /// (`PluginManifest::version`'s own doc: "a bare string", never
+    /// guaranteed semver). A malformed or absent version degrades to
+    /// `0.0.0` rather than panicking or refusing registration outright
+    /// (P-10: untrusted input maps to a typed, in-range value, never a
+    /// panic) -- `0.0.0` satisfies no requirement with a non-zero major
+    /// version (`VersionReq::parse("^1")` never matches `0.0.0`), so a
+    /// provider that has not adopted semver for this capability can still
+    /// register, but a REAL version requirement against it refuses rather
+    /// than silently matching by accident of the default chosen here.
+    pub fn from_declared_version_or_unversioned(
+        capability: HostCapability,
+        declared_version: &str,
+        provider: Arc<dyn CapabilityProvider>,
+    ) -> Self {
+        Self {
+            capability,
+            version: semver::Version::parse(declared_version)
+                .unwrap_or_else(|_| semver::Version::new(0, 0, 0)),
+            provider,
+        }
+    }
 }
 
 impl std::fmt::Debug for CapabilityRegistration {
@@ -136,6 +228,7 @@ impl std::fmt::Debug for CapabilityRegistration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CapabilityRegistration")
             .field("capability", &self.capability)
+            .field("version", &self.version)
             .field("provider", &"<dyn CapabilityProvider>")
             .finish()
     }
@@ -169,6 +262,23 @@ pub enum CapabilityCallError {
         capability: String,
         error: CapabilityError,
     },
+    /// Something registered `capability`, but its declared
+    /// [`CapabilityRegistration::version`] does not satisfy the caller's
+    /// own `semver::VersionReq` -- [`CapabilityCallHandle::call_versioned`]'s
+    /// own failure path, checked BEFORE the call ever reaches
+    /// [`CapabilityProvider::call`] (this module's doc: decision
+    /// `01M189XS6Z9VKYENAHNY1B54CM`, "not degraded, not silently
+    /// auto-installed -- refused", applied to a present-but-incompatible
+    /// version rather than a missing dependency). Distinct from
+    /// [`Self::NotProvided`]: someone DOES provide `capability`, just not
+    /// at a version `required` accepts -- naming both `required` and
+    /// `available` is the whole point of this variant existing separately
+    /// from a bare "no match" boolean.
+    VersionMismatch {
+        capability: String,
+        required: semver::VersionReq,
+        available: semver::Version,
+    },
 }
 
 impl std::fmt::Display for CapabilityCallError {
@@ -185,6 +295,17 @@ impl std::fmt::Display for CapabilityCallError {
                     f,
                     "capability '{capability}' provider failed: {}",
                     error.message
+                )
+            }
+            CapabilityCallError::VersionMismatch {
+                capability,
+                required,
+                available,
+            } => {
+                write!(
+                    f,
+                    "capability '{capability}' requires version '{required}', but the \
+                     installed provider offers '{available}'"
                 )
             }
         }
@@ -207,6 +328,18 @@ pub trait CapabilityHost: Send + Sync + 'static {
         capability: &str,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, CapabilityCallError>;
+
+    /// The registered provider's declared [`CapabilityRegistration::version`]
+    /// for `capability`, or `None` when nothing is registered for that name
+    /// -- [`CapabilityCallHandle::call_versioned`]'s own lookup, split out
+    /// from [`Self::call`] so a version requirement can be checked BEFORE a
+    /// call is ever dispatched. A plain `fn`, not `async`: every production
+    /// implementation ([`CapabilityRegistry`]) answers this from an
+    /// in-memory map populated once at construction, the same reason
+    /// [`CapabilityRegistry::len`]/[`CapabilityRegistry::is_empty`] are
+    /// synchronous too; nothing about "what version did this provider
+    /// declare at registration" requires I/O.
+    fn provided_version(&self, capability: &str) -> Option<semver::Version>;
 }
 
 /// Two [`CapabilityRegistration`]s declaring the SAME capability name --
@@ -241,6 +374,12 @@ impl std::error::Error for DuplicateCapabilityProvider {}
 #[derive(Clone, Default)]
 pub struct CapabilityRegistry {
     providers: HashMap<String, Arc<dyn CapabilityProvider>>,
+    /// Each registered provider's own declared [`CapabilityRegistration::
+    /// version`], keyed by the SAME capability name `providers` is keyed by
+    /// -- a second map rather than a `(provider, version)` tuple in
+    /// `providers` itself, so [`Self::version_of`]/[`Self::provided_version`]
+    /// can answer without touching the trait-object map at all.
+    versions: HashMap<String, semver::Version>,
 }
 
 // A manual `Debug` rather than a derive: `Arc<dyn CapabilityProvider>` is a
@@ -269,6 +408,7 @@ impl CapabilityRegistry {
         registrations: impl IntoIterator<Item = CapabilityRegistration>,
     ) -> Result<Self, DuplicateCapabilityProvider> {
         let mut providers: HashMap<String, Arc<dyn CapabilityProvider>> = HashMap::new();
+        let mut versions: HashMap<String, semver::Version> = HashMap::new();
         for registration in registrations {
             let key = registration.capability.as_wire_str().to_string();
             if providers
@@ -277,8 +417,9 @@ impl CapabilityRegistry {
             {
                 return Err(DuplicateCapabilityProvider { capability: key });
             }
+            versions.insert(key, registration.version);
         }
-        Ok(Self { providers })
+        Ok(Self { providers, versions })
     }
 
     pub fn len(&self) -> usize {
@@ -287,6 +428,15 @@ impl CapabilityRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.providers.is_empty()
+    }
+
+    /// The registered provider's declared version for `capability`, or
+    /// `None` when nothing is registered for that name -- the same answer
+    /// [`CapabilityHost::provided_version`] gives, exposed directly on this
+    /// concrete type for a caller that already holds a `CapabilityRegistry`
+    /// rather than a `dyn CapabilityHost`.
+    pub fn version_of(&self, capability: &str) -> Option<&semver::Version> {
+        self.versions.get(capability)
     }
 }
 
@@ -311,6 +461,10 @@ impl CapabilityHost for CapabilityRegistry {
                 capability: capability.to_string(),
             }),
         }
+    }
+
+    fn provided_version(&self, capability: &str) -> Option<semver::Version> {
+        self.version_of(capability).cloned()
     }
 }
 
@@ -391,6 +545,62 @@ impl CapabilityCallHandle {
         }
         self.host.call(capability, payload).await
     }
+
+    /// Calls `capability` with `payload`, exactly like [`Self::call`], but
+    /// first checks `required` (a consumer's own `semver::VersionReq`)
+    /// against the registered provider's declared
+    /// [`CapabilityRegistration::version`] -- this module's doc: decision
+    /// `01M189XS6Z9VKYENAHNY1B54CM`. Resolution is `required.matches(&
+    /// available)`: no candidate search, because a capability name has
+    /// exactly one provider ([`DuplicateCapabilityProvider`] refuses a
+    /// second registration for the same name at construction), so there is
+    /// nothing to select among.
+    ///
+    /// Failure shapes, checked in this order:
+    /// 1. A malformed `capability` name -> [`CapabilityCallError::
+    ///    MalformedName`], identical to [`Self::call`], before any host
+    ///    lookup.
+    /// 2. Nothing registered for `capability` at all -> [`CapabilityCallError::
+    ///    NotProvided`] -- the SAME variant an unversioned [`Self::call`]
+    ///    would reach for the identical reason, so "no version answered
+    ///    this call" is never confused with "no one is even listening"
+    ///    ([`CapabilityCallError::VersionMismatch`]'s own doc draws this
+    ///    same line).
+    /// 3. Something registered, but its version does not satisfy
+    ///    `required` -> [`CapabilityCallError::VersionMismatch`], naming
+    ///    both `required` and the version actually installed, refused
+    ///    rather than degraded -- the call never reaches
+    ///    [`CapabilityProvider::call`] in this case.
+    ///
+    /// A satisfied requirement proceeds through the SAME [`Self::call`]
+    /// dispatch this handle already had -- one implementation of the
+    /// actual call, never a second copy behind the version check.
+    pub async fn call_versioned(
+        &self,
+        capability: &str,
+        required: &semver::VersionReq,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, CapabilityCallError> {
+        if let Err(reason) = HostCapability::named(capability) {
+            return Err(CapabilityCallError::MalformedName {
+                capability: capability.to_string(),
+                reason,
+            });
+        }
+        match self.host.provided_version(capability) {
+            None => Err(CapabilityCallError::NotProvided {
+                capability: capability.to_string(),
+            }),
+            Some(available) if required.matches(&available) => {
+                self.host.call(capability, payload).await
+            }
+            Some(available) => Err(CapabilityCallError::VersionMismatch {
+                capability: capability.to_string(),
+                required: required.clone(),
+                available,
+            }),
+        }
+    }
 }
 
 /// The private implementation behind [`CapabilityCallHandle::noop`]. Not
@@ -408,6 +618,10 @@ impl CapabilityHost for NoopCapabilityHost {
         Err(CapabilityCallError::NotProvided {
             capability: capability.to_string(),
         })
+    }
+
+    fn provided_version(&self, _capability: &str) -> Option<semver::Version> {
+        None
     }
 }
 
@@ -487,8 +701,25 @@ mod tests {
         capability: &str,
         provider: Arc<dyn CapabilityProvider>,
     ) -> CapabilityRegistry {
+        // Version-agnostic tests (everything above [`Self::call`], not
+        // [`Self::call_versioned`]) don't care what version is on record,
+        // so this fixes one arbitrary value rather than making every
+        // pre-existing caller supply its own.
+        registry_with_version(capability, semver::Version::new(1, 0, 0), provider)
+    }
+
+    /// Like [`registry_with`], but with an explicit declared version -- the
+    /// helper the version-resolution tests below use so the version under
+    /// test is visible at each call site rather than hidden behind a fixed
+    /// default.
+    fn registry_with_version(
+        capability: &str,
+        version: semver::Version,
+        provider: Arc<dyn CapabilityProvider>,
+    ) -> CapabilityRegistry {
         CapabilityRegistry::from_registrations([CapabilityRegistration {
             capability: HostCapability::named(capability).unwrap(),
+            version,
             provider,
         }])
         .unwrap()
@@ -554,15 +785,120 @@ mod tests {
         let err = CapabilityRegistry::from_registrations([
             CapabilityRegistration {
                 capability: HostCapability::named("acme.dup").unwrap(),
+                version: semver::Version::new(1, 0, 0),
                 provider: Arc::new(EchoProvider),
             },
             CapabilityRegistration {
                 capability: HostCapability::named("acme.dup").unwrap(),
+                version: semver::Version::new(1, 0, 0),
                 provider: Arc::new(AlwaysFailsProvider),
             },
         ])
         .expect_err("two providers for the same capability name must be refused");
         assert_eq!(err.capability, "acme.dup");
+    }
+
+    // -- Capability-edge versioning (decision `01M189XS6Z9VKYENAHNY1B54CM`) --
+
+    #[test]
+    fn a_satisfied_version_requirement_resolves_and_reaches_the_provider() {
+        let registry = registry_with_version(
+            "acme.fixture.versioned",
+            semver::Version::new(1, 3, 0),
+            Arc::new(EchoProvider),
+        );
+        let handle = CapabilityCallHandle::new(Arc::new(registry), "acme.consumer");
+        let required = semver::VersionReq::parse("^1").expect("valid semver req");
+        let answer = block_on(handle.call_versioned(
+            "acme.fixture.versioned",
+            &required,
+            serde_json::json!({ "n": 1 }),
+        ))
+        .expect("^1 is satisfied by an installed 1.3.0 provider");
+        assert_eq!(answer, serde_json::json!({ "echoed": { "n": 1 } }));
+    }
+
+    #[test]
+    fn an_unsatisfied_version_requirement_refuses_naming_the_requirement_and_available() {
+        let registry = registry_with_version(
+            "acme.fixture.versioned",
+            semver::Version::new(2, 0, 0),
+            Arc::new(EchoProvider),
+        );
+        let handle = CapabilityCallHandle::new(Arc::new(registry), "acme.consumer");
+        let required = semver::VersionReq::parse("^1").expect("valid semver req");
+        let err = block_on(handle.call_versioned(
+            "acme.fixture.versioned",
+            &required,
+            serde_json::json!(null),
+        ))
+        .expect_err("^1 does not accept an installed 2.0.0 provider");
+        match err {
+            CapabilityCallError::VersionMismatch {
+                capability,
+                required: named_required,
+                available,
+            } => {
+                assert_eq!(capability, "acme.fixture.versioned");
+                assert_eq!(named_required, required);
+                assert_eq!(available, semver::Version::new(2, 0, 0));
+            }
+            other => panic!("expected VersionMismatch, got {other:?}"),
+        }
+        // The provider itself must never be reached on a version refusal --
+        // if it had been, this would be `Ok`, not `Err`, since
+        // `EchoProvider::call` never fails.
+    }
+
+    #[test]
+    fn an_exact_pin_requirement_accepts_that_version_and_refuses_the_next_patch() {
+        let required = semver::VersionReq::parse("=1.2.3").expect("valid semver req");
+
+        let pinned = registry_with_version(
+            "acme.fixture.pinned",
+            semver::Version::new(1, 2, 3),
+            Arc::new(EchoProvider),
+        );
+        let handle = CapabilityCallHandle::new(Arc::new(pinned), "acme.consumer");
+        block_on(handle.call_versioned(
+            "acme.fixture.pinned",
+            &required,
+            serde_json::json!(null),
+        ))
+        .expect("=1.2.3 accepts an installed 1.2.3 provider");
+
+        let next_patch = registry_with_version(
+            "acme.fixture.pinned",
+            semver::Version::new(1, 2, 4),
+            Arc::new(EchoProvider),
+        );
+        let handle = CapabilityCallHandle::new(Arc::new(next_patch), "acme.consumer");
+        let err = block_on(handle.call_versioned(
+            "acme.fixture.pinned",
+            &required,
+            serde_json::json!(null),
+        ))
+        .expect_err("=1.2.3 is a hard pin and must refuse 1.2.4, not just older versions");
+        assert!(matches!(err, CapabilityCallError::VersionMismatch { .. }));
+    }
+
+    #[test]
+    fn a_version_requirement_against_nothing_registered_is_not_provided_not_a_version_mismatch() {
+        let registry = CapabilityRegistry::default();
+        let handle = CapabilityCallHandle::new(Arc::new(registry), "acme.consumer");
+        let required = semver::VersionReq::parse("^1").expect("valid semver req");
+        let err = block_on(handle.call_versioned(
+            "acme.nobody.home",
+            &required,
+            serde_json::json!(null),
+        ))
+        .expect_err("nothing registered this capability at any version");
+        assert_eq!(
+            err,
+            CapabilityCallError::NotProvided {
+                capability: "acme.nobody.home".to_string()
+            }
+        );
     }
 
     #[test]

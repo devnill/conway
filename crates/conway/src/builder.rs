@@ -2712,10 +2712,12 @@ mod plugin_dependency_resolution_tests {
         fn capabilities(&self) -> Vec<conway_core::ports::CapabilityRegistration> {
             self.provides
                 .iter()
-                .map(|name| conway_core::ports::CapabilityRegistration {
-                    capability: conway_core::ports::HostCapability::named(*name).unwrap(),
-                    provider: Arc::new(EchoProvider)
-                        as Arc<dyn conway_core::ports::CapabilityProvider>,
+                .map(|name| {
+                    conway_core::ports::CapabilityRegistration::new(
+                        conway_core::ports::HostCapability::named(*name).unwrap(),
+                        "1.0.0",
+                        Arc::new(EchoProvider) as Arc<dyn conway_core::ports::CapabilityProvider>,
+                    )
                 })
                 .collect()
         }

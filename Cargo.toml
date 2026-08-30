@@ -68,6 +68,14 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 assert_cmd = "2"
 predicates = "3"
 httparse = "1"
+# Capability-edge version resolution (`conway-core`'s `ports::capability`,
+# decision `01M189XS6Z9VKYENAHNY1B54CM`): a provider declares a
+# `semver::Version`, a consumer a `semver::VersionReq`, and the host checks
+# `req.matches(&version)`. Already present in `Cargo.lock` at 1.0.28 (pulled
+# in transitively by `rustc_version`) before this promotion -- this line adds
+# no new entry to the lock, only a direct dependency edge onto one that was
+# already there.
+semver = "1"
 
 # ---------------------------------------------------------------- profiles ----
 #
