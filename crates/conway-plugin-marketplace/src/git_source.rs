@@ -712,16 +712,12 @@ mod tests {
         let source = PluginSource::Github {
             repo: "devnill/outpost".to_string(),
         };
+        // Bound to a local: `&store.path().join(..)` would be a temporary the
+        // returned future outlives (E0515).
+        let plugin_root = store.path().join("outpost");
         let result = test_support::with_program(
             std::ffi::OsStr::new("conway-test-nonexistent-git-binary-2f9a7c"),
-            || {
-                fetch_git_source(
-                    "outpost",
-                    &source,
-                    store.path(),
-                    &store.path().join("outpost"),
-                )
-            },
+            || fetch_git_source("outpost", &source, store.path(), &plugin_root),
         )
         .await;
 
@@ -789,13 +785,11 @@ exit 1
             path: "plugin".to_string(),
         };
 
+        // Bound to a local: `&store.path().join(..)` would be a temporary the
+        // returned future outlives (E0515).
+        let plugin_root = store.path().join("beepboop");
         let result = test_support::with_program(git_path.as_os_str(), || {
-            fetch_git_source(
-                "beepboop",
-                &source,
-                store.path(),
-                &store.path().join("beepboop"),
-            )
+            fetch_git_source("beepboop", &source, store.path(), &plugin_root)
         })
         .await;
 

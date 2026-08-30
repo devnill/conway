@@ -294,27 +294,25 @@ impl SubagentHost for Runtime {
                         detail: format!("subagent root {} is not valid UTF-8", requested.display()),
                     })
                 })?;
-                let resolved = crate::permission::resolve_like_the_tool_will(
-                    &parent_meta.cwd,
-                    requested_str,
-                )
-                .map_err(|err| {
-                    invalid_spec(ConwayError::Config {
-                        detail: match &err {
-                            conway_core::containment::ResolveError::NulByte { .. } => {
-                                "subagent root contains a NUL byte the OS cannot resolve"
-                                    .to_string()
-                            }
-                            // `#[non_exhaustive]`: any other/future reason
-                            // still names itself, via `ResolveError`'s own
-                            // `Display`, rather than falling back to the
-                            // NUL-specific wording above.
-                            _ => format!(
+                let resolved =
+                    crate::permission::resolve_like_the_tool_will(&parent_meta.cwd, requested_str)
+                        .map_err(|err| {
+                            invalid_spec(ConwayError::Config {
+                                detail: match &err {
+                                    conway_core::containment::ResolveError::NulByte { .. } => {
+                                        "subagent root contains a NUL byte the OS cannot resolve"
+                                            .to_string()
+                                    }
+                                    // `#[non_exhaustive]`: any other/future reason
+                                    // still names itself, via `ResolveError`'s own
+                                    // `Display`, rather than falling back to the
+                                    // NUL-specific wording above.
+                                    _ => format!(
                                 "subagent root {requested_str:?} could not be resolved: {err}"
                             ),
-                        },
-                    })
-                })?;
+                                },
+                            })
+                        })?;
                 let canonical_requested = CanonicalRoot::new(&resolved).map_err(|err| {
                     invalid_spec(ConwayError::Config {
                         detail: format!(
