@@ -31,7 +31,16 @@
 //! repository over a slow connection, but an unreachable git remote must be
 //! an ordinary reported failure, never a hang, exactly like this crate's
 //! own HTTP client's 20-second bound (`manifest::client`'s own doc) applied
-//! to a transport that can legitimately take longer.
+//! to a transport that can legitimately take longer. "Bounded" means the
+//! CHILD PROCESS itself, not merely this module's own `.await`:
+//! [`run_git_clone`] holds the spawned `git`'s [`tokio::process::Child`]
+//! for its whole run (never `Child::wait_with_output`, which consumes it)
+//! specifically so that on timeout it can `child.kill().await` BEFORE
+//! returning the timeout error -- `.kill_on_drop(true)` is set too, as a
+//! floor, but is not relied on alone: a merely-dropped, not explicitly
+//! killed, child can keep running and keep writing into `checkout_dir`
+//! while [`fail_cleaning_up`]'s `remove_dir_all` is concurrently deleting
+//! it, a live race an orphaned `git clone` would otherwise create.
 //!
 //! # A git checkout can contain a symlink too (P-10)
 //!
@@ -46,6 +55,22 @@
 //! surface, not an absent one" (the board item's ruling, verbatim): the
 //! hazard CLASS P-10 names is real here, just smaller than an arbitrary
 //! archive format's.
+//!
+//! **The plugin root itself is not a "descendant" [`validate_checkout_tree`]
+//! ever visits -- it is where the walk STARTS.** `Path::is_dir` and
+//! `std::fs::read_dir` both FOLLOW a symlink they are given directly, so a
+//! `git-subdir` entry naming `path: "plugin"` where the repository commits
+//! `plugin` itself as a symlink (git's own mode `120000` blob) to an
+//! arbitrary absolute path would previously have its TARGET walked and
+//! copied, unnoticed, by code whose own doc claimed every symlink
+//! "anywhere" was refused. [`validate_plugin_root`] closes this before
+//! [`validate_checkout_tree`] ever runs: `std::fs::symlink_metadata` (never
+//! followed) on the resolved root itself, PLUS canonicalizing both
+//! `checkout_dir` and the resolved root and requiring the second to start
+//! with the first -- the second check is what catches a symlink in an
+//! INTERMEDIATE path component (`path: "a/b/plugin"` where `a` escapes),
+//! which the first alone would miss whenever the final component happens
+//! to be an ordinary directory once the earlier symlink is resolved.
 //!
 //! # `git-subdir`'s own URL is untrusted input too (P-10)
 //!
@@ -62,19 +87,45 @@
 //! other direction. `github`'s own clone URL is never operator- or
 //! network-supplied text passed through verbatim: this module BUILDS it
 //! from `owner/repo`, always `https://github.com/<repo>.git`.
+//!
+//! [`clone_url`] also refuses a `git-subdir` URL whose authority embeds
+//! userinfo (`https://user:pass@host/...`) outright, rather than stripping
+//! it and proceeding: a legitimate public marketplace has no reason to ask
+//! this crate to carry a credential through a clone, and the credential
+//! would otherwise survive into [`MarketplaceError::GitFailed`]'s own
+//! `detail` and into `conway-cli`'s operator-facing "fetched via git from
+//! {url}" disclosure -- a TUI transcript entry that can be copied,
+//! screen-shared, or logged. Because this refusal happens before `git` is
+//! ever invoked, no downstream error variant can carry a credentialed URL
+//! either; nothing downstream needs its own redaction.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use crate::error::MarketplaceError;
 use crate::manifest::PluginSource;
 
-/// Overrides which program this module invokes as `git`. Production code
-/// never sets this; it exists purely so a test can simulate "git is not
-/// installed" deterministically, without depending on whether the machine
-/// actually running the test suite happens to have `git` on its `PATH`
-/// (steering policy P-15: acceptance must not depend on one machine's local
+/// Overrides which program this module invokes as `git`, so a test can
+/// simulate "git is not installed" (or substitute a stub script)
+/// deterministically, without depending on whether the machine actually
+/// running the test suite happens to have `git` on its `PATH` (steering
+/// policy P-15: acceptance must not depend on one machine's local
 /// configuration). Not part of this crate's public API.
+///
+/// **`#[cfg(test)]`, not merely documented-as-test-only.** An env var this
+/// module's own `git_program()` reads unconditionally would let ANYTHING
+/// that can influence this process's environment -- a shell profile, a
+/// `.env` loader, a container/CI definition, a wrapper script --
+/// substitute an arbitrary binary for every git install this crate ever
+/// performs, invisibly, in a release build. Gating the constant (and
+/// [`git_program`]'s reading half) behind `#[cfg(test)]` means the seam
+/// does not exist in a compiled release binary AT ALL: there is no
+/// mechanism left to accidentally rely on, only a `cfg(not(test))` fallback
+/// that always returns `"git"`. This crate's own tests (here and in
+/// `install.rs`, both integration-free `#[cfg(test)] mod tests` inside this
+/// crate's own `src/`, never a `tests/` integration binary) compile with
+/// `cfg(test)` set, so no feature flag is needed to reach this from either.
+#[cfg(test)]
 pub(crate) const GIT_PROGRAM_ENV: &str = "CONWAY_MARKETPLACE_GIT_PROGRAM";
 
 /// How long a single `git` invocation may run before this crate gives up
@@ -85,6 +136,21 @@ pub(crate) const GIT_PROGRAM_ENV: &str = "CONWAY_MARKETPLACE_GIT_PROGRAM";
 /// longer).
 pub(crate) const GIT_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// The `git` binary to invoke -- always `"git"` (resolved via `PATH`, like
+/// every other subprocess this crate spawns) in a release build. Only a
+/// `#[cfg(test)]` build can override it, via `GIT_PROGRAM_ENV` (a plain
+/// code span here, deliberately not an intra-doc link: that constant is
+/// itself `#[cfg(test)]`-gated, so it does not exist at all in the default
+/// build this doc comment is compiled under, and an intra-doc link to a
+/// cfg'd-out item is exactly the broken-link shape this workspace's own
+/// `cargo doc` gate refuses) -- see that constant's own doc for why the
+/// override does not exist as a mechanism outside a test binary at all.
+#[cfg(not(test))]
+fn git_program() -> String {
+    "git".to_string()
+}
+
+#[cfg(test)]
 fn git_program() -> String {
     std::env::var(GIT_PROGRAM_ENV).unwrap_or_else(|_| "git".to_string())
 }
@@ -121,24 +187,49 @@ async fn require_git(program: &str) -> Result<(), MarketplaceError> {
 fn clone_url(plugin_id: &str, source: &PluginSource) -> Result<String, MarketplaceError> {
     match source {
         PluginSource::GitSubdir { url, .. } => {
-            if url.starts_with("https://") || url.starts_with("http://") {
-                Ok(url.clone())
-            } else {
-                Err(MarketplaceError::UnsafeGitUrl {
+            let allowed_scheme = url.starts_with("https://") || url.starts_with("http://");
+            if !allowed_scheme {
+                return Err(MarketplaceError::UnsafeGitUrl {
                     id: plugin_id.to_string(),
                     url: url.clone(),
-                })
+                });
             }
+            // Refused outright, not stripped-and-proceeded -- this
+            // module's own doc, "git-subdir's own URL is untrusted input
+            // too". `redacted` never carries the credential itself, even
+            // in the error this returns.
+            if let Some(redacted) = credentialed_url_redacted(url) {
+                return Err(MarketplaceError::CredentialedGitUrl {
+                    id: plugin_id.to_string(),
+                    url: redacted,
+                });
+            }
+            Ok(url.clone())
         }
         // Built by this crate from `owner/repo`, never operator- or
         // network-supplied text passed through verbatim -- always
-        // `https://`, so no scheme check applies here.
+        // `https://`, so no scheme/credential check applies here.
         PluginSource::Github { repo } => Ok(format!("https://github.com/{repo}.git")),
         PluginSource::Unsupported { kind } => Err(MarketplaceError::UnsupportedSourceKind {
             id: plugin_id.to_string(),
             kind: kind.clone(),
         }),
     }
+}
+
+/// If `url`'s authority section embeds userinfo (`user[:pass]@host`),
+/// returns a redacted copy with everything before the final `@` in that
+/// section replaced by `***` -- otherwise `None`. Never returns (or even
+/// separately extracts) the credential itself; the caller uses the `Some`
+/// case only to build an error, never to proceed with the original `url`.
+fn credentialed_url_redacted(url: &str) -> Option<String> {
+    let scheme_end = url.find("://")?;
+    let (scheme, rest) = url.split_at(scheme_end + 3);
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+    let at = authority.rfind('@')?;
+    let host = &authority[at + 1..];
+    Some(format!("{scheme}***@{host}{tail}"))
 }
 
 /// The subdirectory inside the clone that is the plugin's own root --
@@ -193,15 +284,13 @@ pub(crate) async fn fetch_git_source(
         },
         None => checkout_dir.clone(),
     };
-    if !plugin_root.is_dir() {
-        let err = MarketplaceError::GitFailed {
-            id: plugin_id.to_string(),
-            url,
-            detail: format!(
-                "the checkout has no directory at '{}'",
-                subdir(source).unwrap_or(".")
-            ),
-        };
+    if let Err(err) = validate_plugin_root(
+        plugin_id,
+        &url,
+        subdir(source),
+        &checkout_dir,
+        &plugin_root,
+    ) {
         return fail_cleaning_up(&checkout_dir, err).await;
     }
 
@@ -232,6 +321,17 @@ async fn fail_cleaning_up(
 /// [`GIT_TIMEOUT`]. `--` separates the URL from any flag `git` might
 /// otherwise mistake it for (defense in depth alongside [`clone_url`]'s own
 /// scheme check).
+///
+/// **Timing out KILLS the child, it does not merely stop awaiting it** --
+/// this module's own doc, "Bounded, never a hang". Deliberately never
+/// `Child::wait_with_output`, which CONSUMES the `Child`: doing so would
+/// leave no handle to kill if the wait times out, and `.kill_on_drop(true)`
+/// alone (set below as a floor, not relied on exclusively) only reaps the
+/// child on a best-effort background task, racing
+/// [`fail_cleaning_up`]'s own `remove_dir_all` of the same directory the
+/// orphaned `git` may still be writing into. `child.wait()` (borrows, never
+/// consumes) is used instead specifically so `child` is still ours to
+/// `.kill().await` on the timeout branch, before this function returns.
 async fn run_git_clone(
     program: &str,
     url: &str,
@@ -242,30 +342,131 @@ async fn run_git_clone(
     command
         .args(["clone", "--depth", "1", "--single-branch", "--quiet", "--"])
         .arg(url)
-        .arg(into);
+        .arg(into)
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
 
-    let output = tokio::time::timeout(GIT_TIMEOUT, command.output()).await;
-    let output = match output {
+    let mut child = command.spawn().map_err(|source| MarketplaceError::GitUnavailable {
+        program: program.to_string(),
+        detail: source.to_string(),
+    })?;
+    let mut stderr_pipe = child.stderr.take();
+
+    // Drains stderr concurrently with waiting for exit (the same shape
+    // `Child::wait_with_output` uses internally, reimplemented by hand
+    // here because that method consumes `child` -- see this function's own
+    // doc). This whole future only ever BORROWS `child`/`stderr_pipe`; on
+    // timeout it is dropped, handing both back for the explicit kill
+    // below.
+    let run = async {
+        let mut stderr_buf = Vec::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            let _ = tokio::io::AsyncReadExt::read_to_end(pipe, &mut stderr_buf).await;
+        }
+        let status = child.wait().await;
+        (status, stderr_buf)
+    };
+
+    let (status, stderr_buf) = match tokio::time::timeout(GIT_TIMEOUT, run).await {
         Ok(result) => result,
         Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
             return Err(MarketplaceError::GitFailed {
                 id: plugin_id.to_string(),
                 url: url.to_string(),
                 detail: format!("timed out after {}s", GIT_TIMEOUT.as_secs()),
-            })
+            });
         }
     };
-    let output = output.map_err(|source| MarketplaceError::GitUnavailable {
+    let status = status.map_err(|source| MarketplaceError::GitUnavailable {
         program: program.to_string(),
         detail: source.to_string(),
     })?;
 
-    if !output.status.success() {
+    if !status.success() {
         return Err(MarketplaceError::GitFailed {
             id: plugin_id.to_string(),
             url: url.to_string(),
-            detail: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            detail: String::from_utf8_lossy(&stderr_buf).trim().to_string(),
         });
+    }
+    Ok(())
+}
+
+/// Refuses `plugin_root` outright unless it is an ordinary directory
+/// strictly inside `checkout_dir` -- called BEFORE [`validate_checkout_tree`]
+/// ever runs, closing the gap that walk cannot: `Path::is_dir` and
+/// `std::fs::read_dir` both FOLLOW a symlink they are given directly, so a
+/// walk that starts AT `plugin_root` never gets a chance to flag `plugin_root`
+/// itself being one (see this module's own doc, "The plugin root itself is
+/// not a 'descendant' `validate_checkout_tree` ever visits").
+///
+/// Two independent checks, not one:
+///
+/// 1. [`std::fs::symlink_metadata`] on `plugin_root` itself (never
+///    followed) -- catches a symlink that IS the resolved plugin root: a
+///    `git-subdir` entry naming `path: "plugin"` where the repository
+///    commits `plugin` as a symlink (git's own mode `120000` blob) to an
+///    arbitrary absolute path.
+/// 2. Canonicalizing both `checkout_dir` and `plugin_root` and requiring
+///    the second to start with the first -- catches a symlink in an
+///    INTERMEDIATE path component (`path: "a/b/plugin"` where `a` is the
+///    symlink), which check 1 alone would miss whenever the final
+///    component happens to be an ordinary directory once the earlier
+///    symlink is resolved.
+fn validate_plugin_root(
+    plugin_id: &str,
+    url: &str,
+    subdir_label: Option<&str>,
+    checkout_dir: &Path,
+    plugin_root: &Path,
+) -> Result<(), MarketplaceError> {
+    let no_directory = || MarketplaceError::GitFailed {
+        id: plugin_id.to_string(),
+        url: url.to_string(),
+        detail: format!(
+            "the checkout has no directory at '{}'",
+            subdir_label.unwrap_or(".")
+        ),
+    };
+    let unsafe_root = || MarketplaceError::UnsafeFilePath {
+        id: plugin_id.to_string(),
+        path: plugin_root.display().to_string(),
+    };
+
+    let meta = match std::fs::symlink_metadata(plugin_root) {
+        Ok(meta) => meta,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Err(no_directory())
+        }
+        Err(source) => {
+            return Err(MarketplaceError::Io {
+                id: plugin_id.to_string(),
+                source,
+            })
+        }
+    };
+    if meta.file_type().is_symlink() {
+        return Err(unsafe_root());
+    }
+    if !meta.is_dir() {
+        return Err(no_directory());
+    }
+
+    let checkout_canonical =
+        std::fs::canonicalize(checkout_dir).map_err(|source| MarketplaceError::Io {
+            id: plugin_id.to_string(),
+            source,
+        })?;
+    let root_canonical =
+        std::fs::canonicalize(plugin_root).map_err(|source| MarketplaceError::Io {
+            id: plugin_id.to_string(),
+            source,
+        })?;
+    if !root_canonical.starts_with(&checkout_canonical) {
+        return Err(unsafe_root());
     }
     Ok(())
 }
@@ -453,6 +654,30 @@ mod tests {
         assert_eq!(url, "https://github.com/devnill/beepboop");
     }
 
+    /// An `https://` `git-subdir` URL with embedded userinfo is refused
+    /// outright -- BEFORE `git` is ever invoked -- and the credential never
+    /// appears anywhere in the error this produces. The discriminating
+    /// observable: if `clone_url`'s credential check were deleted, this
+    /// URL would be ACCEPTED (it already passes the scheme allow-list), so
+    /// asserting the specific `credentialed_git_url` kind -- not merely
+    /// "an error occurred" -- is what actually exercises the fix.
+    #[test]
+    fn a_git_subdir_url_with_embedded_credentials_is_refused_and_never_echoed() {
+        let err = clone_url(
+            "acme-tools",
+            &PluginSource::GitSubdir {
+                url: "https://attacker:s3cr3t@example.com/repo.git".to_string(),
+                path: "plugin".to_string(),
+            },
+        )
+        .expect_err("a credentialed url must be refused");
+        assert_eq!(err.kind(), "credentialed_git_url");
+        let message = err.to_string();
+        assert!(!message.contains("s3cr3t"), "{message}");
+        assert!(!message.contains("attacker"), "{message}");
+        assert!(message.contains("example.com"), "{message}");
+    }
+
     /// `github` sources build their own clone URL from `owner/repo` --
     /// always `https://`, regardless of what `repo` itself contains.
     #[test]
@@ -510,5 +735,121 @@ mod tests {
             !store.path().join("outpost").exists(),
             "nothing may be written when git itself cannot be run"
         );
+    }
+
+    /// The CRITICAL fix this module was reviewed for: a `git-subdir` entry
+    /// whose repository commits its own `path` AS A SYMLINK (git's mode
+    /// `120000` blob) to an arbitrary filesystem location must be refused,
+    /// never silently followed. A REAL symlink
+    /// (`std::os::unix::fs::symlink`, via `ln -s` in a stub `git` script
+    /// standing in for an ordinary `mkdir -p`) proves the fix against the
+    /// actual hostile shape, not a mocked-out check.
+    ///
+    /// **The discriminating observable.** Delete [`validate_plugin_root`]'s
+    /// new check and this test does not merely stop erroring -- the install
+    /// SUCCEEDS, having copied `secret_dir`'s own file into the store:
+    /// `Path::is_dir`/`std::fs::read_dir` both follow the symlink, and
+    /// [`validate_checkout_tree`]'s descendant walk finds no symlink of
+    /// `secret_dir`'s OWN inside it to flag. Asserting the specific
+    /// `unsafe_file_path` kind (not merely "an error occurred") and the
+    /// absence of any store entry are both required to catch that.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlinked_plugin_root_is_refused_and_writes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin_dir = tempfile::tempdir().expect("bin tempdir");
+        let secret_dir = tempfile::tempdir().expect("secret tempdir");
+        std::fs::write(secret_dir.path().join("id_rsa"), "not a real key").expect("write secret");
+
+        let git_path = bin_dir.path().join("git");
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "git version 2.99.0 (stub)"
+  exit 0
+fi
+if [ "$1" = "clone" ]; then
+  last=""
+  for a in "$@"; do
+    last="$a"
+  done
+  dest="$last"
+  mkdir -p "$dest"
+  ln -s "{target}" "$dest/plugin"
+  exit 0
+fi
+exit 1
+"#,
+            target = secret_dir.path().display()
+        );
+        std::fs::write(&git_path, script).expect("write stub git");
+        std::fs::set_permissions(&git_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x stub git");
+
+        let store = tempfile::tempdir().expect("store tempdir");
+        let source = PluginSource::GitSubdir {
+            url: "https://github.com/devnill/beepboop".to_string(),
+            path: "plugin".to_string(),
+        };
+
+        let result = test_support::with_program(git_path.as_os_str(), || {
+            fetch_git_source(
+                "beepboop",
+                &source,
+                store.path(),
+                &store.path().join("beepboop"),
+            )
+        })
+        .await;
+
+        let err = result.expect_err("a symlinked plugin root must be refused");
+        assert_eq!(err.kind(), "unsafe_file_path");
+        assert!(
+            std::fs::read_dir(store.path()).unwrap().next().is_none(),
+            "nothing -- not even a partial store entry -- may be written when the plugin root \
+             itself is a symlink"
+        );
+    }
+
+    /// The SECOND half of the fix: a symlink in an INTERMEDIATE path
+    /// component (`path: "a/b/plugin"` where `a` itself escapes
+    /// `checkout_dir`) is caught by the canonicalize-and-`starts_with`
+    /// check even though the FINAL component (`plugin`) is an ordinary
+    /// directory once `a` resolves -- exercised directly against
+    /// [`validate_plugin_root`], since a stub-`git`-driven end-to-end test
+    /// would only re-prove the stub mechanism the symlink-at-the-root test
+    /// above already covers, not this specific check.
+    ///
+    /// Discriminating observable: delete the canonicalize check (keeping
+    /// only `symlink_metadata` on `plugin_root` itself) and this test
+    /// starts passing incorrectly -- `plugin_root`'s OWN
+    /// `symlink_metadata` reports an ordinary directory, because the
+    /// symlink is in `a`, not in the final component.
+    #[cfg(unix)]
+    #[test]
+    fn an_intermediate_symlink_component_is_refused_even_when_the_final_component_is_ordinary() {
+        let checkout = tempfile::tempdir().expect("checkout tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        std::fs::create_dir_all(outside.path().join("b/plugin")).expect("create outside dir");
+        std::os::unix::fs::symlink(outside.path(), checkout.path().join("a"))
+            .expect("create intermediate symlink");
+
+        let plugin_root = checkout.path().join("a").join("b").join("plugin");
+        assert!(
+            plugin_root.is_dir(),
+            "the final component must be an ordinary directory once `a` resolves, for this to \
+             actually exercise the canonicalize check rather than the symlink_metadata one"
+        );
+
+        let err = validate_plugin_root(
+            "acme-tools",
+            "https://example.com/repo.git",
+            Some("a/b/plugin"),
+            checkout.path(),
+            &plugin_root,
+        )
+        .expect_err("a symlinked intermediate component must still be refused");
+        assert_eq!(err.kind(), "unsafe_file_path");
     }
 }

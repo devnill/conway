@@ -646,6 +646,96 @@ exit 1
         assert!(!store.path().join(".beepboop.install-tmp").exists());
     }
 
+    /// Writes a stub `git` that, instead of `mkdir -p`-ing an ordinary
+    /// directory at the checkout's `plugin/`, makes it a SYMLINK (`ln -s`)
+    /// to `target` -- the hostile shape a real repository could commit via
+    /// git's own mode `120000` blob (CRITICAL review finding on this
+    /// board item: a symlink AT the plugin root, not merely one nested
+    /// inside it, previously escaped `crate::git_source`'s own guard
+    /// entirely).
+    #[cfg(unix)]
+    fn write_stub_git_with_symlinked_plugin_root(
+        dir: &std::path::Path,
+        target: &std::path::Path,
+    ) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join("git");
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "git version 2.99.0 (stub)"
+  exit 0
+fi
+if [ "$1" = "clone" ]; then
+  last=""
+  for a in "$@"; do
+    last="$a"
+  done
+  dest="$last"
+  mkdir -p "$dest"
+  ln -s "{target}" "$dest/plugin"
+  exit 0
+fi
+exit 1
+"#,
+            target = target.display()
+        );
+        std::fs::write(&path, script).expect("write stub git");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x stub git");
+        path
+    }
+
+    /// End-to-end through the REAL public entry point (`install_entry`,
+    /// not `crate::git_source::fetch_git_source` directly -- that module's
+    /// own test suite already covers this at that lower level): a
+    /// `git-subdir` entry whose checkout commits its own declared `path`
+    /// as a symlink to an arbitrary directory must be refused, and nothing
+    /// -- not the symlink target's own contents, not a staging directory,
+    /// not the final plugin directory -- may land under `store_root`.
+    ///
+    /// The discriminating observable named by the review: asserting only
+    /// "install_entry returned an error" would still pass if some
+    /// unrelated error fired first. This asserts the SPECIFIC refusal
+    /// (`unsafe_file_path`) `crate::git_source::validate_plugin_root`
+    /// produces, which a deleted fix could not produce (a deleted fix
+    /// would instead let `install_entry` return `Ok`, having copied
+    /// `secret_dir`'s file into the store).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_git_subdir_entry_with_a_symlinked_plugin_root_is_refused_and_writes_nothing() {
+        let bin_dir = tempfile::tempdir().expect("bin tempdir");
+        let secret_dir = tempfile::tempdir().expect("secret tempdir");
+        std::fs::write(secret_dir.path().join("id_rsa"), "not a real key").expect("write secret");
+        let git = write_stub_git_with_symlinked_plugin_root(bin_dir.path(), secret_dir.path());
+        let store = tempfile::tempdir().expect("store tempdir");
+
+        let e = MarketplacePluginEntry {
+            id: String::new(),
+            name: "beepboop".to_string(),
+            description: String::new(),
+            version: "1.0.0".to_string(),
+            source: Some(crate::manifest::PluginSource::GitSubdir {
+                url: "https://github.com/devnill/beepboop".to_string(),
+                path: "plugin".to_string(),
+            }),
+            files: BTreeMap::new(),
+        };
+
+        let err = with_stub_git(&git, || {
+            install_entry("https://example.com/marketplace.json", &e, store.path())
+        })
+        .await
+        .expect_err("a symlinked plugin root must be refused, never silently followed");
+
+        assert_eq!(err.kind(), "unsafe_file_path");
+        assert!(
+            std::fs::read_dir(store.path()).unwrap().next().is_none(),
+            "nothing may be written under store_root when the plugin root itself is a symlink"
+        );
+    }
+
     /// A `github` entry (no subdirectory) installs the WHOLE checkout root.
     #[cfg(unix)]
     #[tokio::test]

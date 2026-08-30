@@ -262,7 +262,14 @@ impl App {
         // produces. Board item `01M0Y6RYZA94BK6YXJ7X8TNEGR`: a real Claude
         // Code entry declares no `files` map at all (`entry.source` names a
         // git remote instead), so the disclosure names WHERE it came from
-        // rather than an empty, misleading "files: " for that shape.
+        // rather than an empty, misleading "files: " for that shape. `url`
+        // here can never carry embedded credentials
+        // (`https://user:pass@host/...`): `conway_plugin_marketplace::
+        // git_source::clone_url` refuses a credentialed `git-subdir` URL
+        // outright, before `install_entry` (this method's own caller,
+        // above) can ever return `Ok` with one -- so this transcript
+        // Notice needs no redaction of its own (that crate's own doc,
+        // "credentials in a marketplace-supplied URL").
         let source_note = match &entry.source {
             Some(PluginSource::GitSubdir { url, path }) => {
                 format!("fetched via git from {url} (subdirectory '{path}')")

@@ -190,14 +190,23 @@ a JSON file" even though the underlying trust posture is identical:
   correctly in that direction: everything not on the allow-list is
   refused, nothing is inferred past it) — this is the one place in this
   crate where refusing a whole CLASS of otherwise-syntactically-valid
-  input is load-bearing, not merely tidy.
+  input is load-bearing, not merely tidy. A `git-subdir` URL whose
+  authority embeds userinfo (`https://user:pass@host/...`) is refused the
+  same way, before `git` is ever invoked: a legitimate public marketplace
+  has no reason to embed a credential, and the credential would otherwise
+  survive into an error message and into the operator-facing "fetched via
+  git from {url}" install notice, both of which can be copied,
+  screen-shared, or logged.
 - **A git checkout can contain a symlink**, the one hazard class a
   files-map entry's own "no archive, so no archive-traversal" argument
   does not cover (a checkout is not an archive, so it needed its own
-  check): the checked-out plugin root is walked and refused outright if
-  it contains a symlink anywhere, before a single byte is copied into
-  conway's own plugin store. A narrower version of P-10's
-  symlink-in-an-extracted-archive hazard, not an absent one.
+  check): the checked-out plugin root — the root itself, not only its
+  descendants — is refused outright if it (or an intermediate path
+  component leading to it) is a symlink, and the whole tree beneath it is
+  then walked and refused if a symlink appears anywhere further down,
+  before a single byte is copied into conway's own plugin store. A
+  narrower version of P-10's symlink-in-an-extracted-archive hazard, not
+  an absent one.
 
 No new trust MECHANISM is created by any of this — no digest, no
 allow-list, no prompt beyond the one install action's own disclosure,
