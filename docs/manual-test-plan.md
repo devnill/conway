@@ -144,6 +144,22 @@ llama.cpp **is** supported — dialect `llamacpp-server`. Five dialects ship:
 | 2.2.3 | Send one real prompt | A completion returns | Capture verbatim |
 | 2.2.4 | Check `/settings` shows both backends and their status | Both listed, status accurate | A backend is missing or its status is wrong |
 
+### 2.3 Adding and removing a provider through `/settings`
+
+**Closed 2026-08-30, board items `01M1A54RS91QHHHTY7N1PV8X0H`/`01M1A9K7KHA78Q9V0NNGEFXC9F`:**
+the operator hit both of the rows below within minutes of rebuilding, and this
+plan covered neither at the time — added now specifically because they were
+found on a real walk, not derived from the code.
+
+| Step | Do | Pass | Fail |
+| --- | --- | --- | --- |
+| 2.3.1 | Decline first-run setup (`Esc`), then open `/settings` → providers → add a provider | The provider saves | It refuses, or crashes |
+| 2.3.2 | Immediately after 2.3.1, send a real prompt — no restart | It completes normally | `routing error: no candidate for role default (0 considered)` — the exact defect board item `01M1A54RS91QHHHTY7N1PV8X0H` fixed: adding a provider through `/settings` used to save `backends.<id>` and nothing else, leaving `default_role`/`roles` untouched, so the freshly added provider had nothing to route to even though it was the only provider configured |
+| 2.3.3 | With that one provider now configured, open `/settings` → providers and try to remove it | It refuses, naming the provider and the affected role, and suggests adding another provider first (never "update those roles" — this app has no chain editor) | It removes anyway (leaving the config unroutable), or the message names an action you cannot actually take anywhere in the app |
+| 2.3.4 | Add a SECOND, different provider (still via `/settings`) | It saves, and the default role's chain now names both, in the order added | Only the second is reachable, or the first silently drops out of the chain |
+| 2.3.5 | Now remove EITHER of the two | It succeeds — the role still routes via the one left behind | It refuses, citing the exact defect board item `01M1A9K7KHA78Q9V0NNGEFXC9F` fixed: before that fix, ANY role still naming a provider anywhere in its chain blocked removal outright, even when a real fallback was sitting right next to it — so once every provider landed in a chain (the fix for 2.3.2 above), nothing could ever be removed again |
+| 2.3.6 | Remove the one provider now left | It refuses — this is the correct, surviving guard: removing a role's LAST routable entry is still prevented | It succeeds, leaving the default role with an empty chain and the next prompt unable to route |
+
 ---
 
 ## Part 3 — a first session
