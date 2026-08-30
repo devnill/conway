@@ -21,6 +21,13 @@ everything else assumes that page's setup.
 | [`scripting.md`](scripting.md) | How does `-p`/`--print` behave — exit codes, output formats, permissions with nobody there to answer a prompt? | You're calling conway from a script or another program as a subprocess. |
 | [`embedding.md`](embedding.md) | How do I depend on the `conway` crate directly — the builder chain, a minimal example, what's actually reachable from outside the workspace? | You're linking conway into a host application (an IDE, a service) instead of running it as a subprocess. |
 
+## Testing conway by hand
+
+| Page | Answers | Read if |
+| --- | --- | --- |
+| [`manual-test-plan.md`](manual-test-plan.md) | What do I actually do, step by step, to verify conway from a machine with no conway state through to building something with it — and what does pass and fail look like at each step? | You are walking a release, a cycle's work, or a virgin install, and want a procedure rather than improvisation. The executable twin of `getting-started.md`. |
+| [`dogfooding.md`](dogfooding.md) | How is friction recorded while using conway for real work, and why must it be recorded as it happens? | You are about to do a walk, or are wondering where friction records go. |
+
 ## Concepts
 
 | Page | Answers | Read if |
