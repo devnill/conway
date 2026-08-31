@@ -174,7 +174,11 @@ pub enum ContextTokensSource {
 /// supplied the value, without recomputing or duplicating that chain's own
 /// logic — see [`ContextTokensSource`]'s doc for why this exists.
 pub fn max_context_tokens_source(inputs: &CapabilityInputs<'_>) -> ContextTokensSource {
-    if inputs.overrides.and_then(|o| o.max_context_tokens).is_some() {
+    if inputs
+        .overrides
+        .and_then(|o| o.max_context_tokens)
+        .is_some()
+    {
         ContextTokensSource::Override
     } else if inputs.metadata.and_then(|m| m.max_context_tokens).is_some() {
         ContextTokensSource::Metadata

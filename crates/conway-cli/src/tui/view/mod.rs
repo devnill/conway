@@ -221,7 +221,12 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     // (or short of) it -- mirrors `/settings`' own reservation immediately
     // below, one item earlier (`01M1A9M2EVJNR0HBN86A8E40EA`).
     if state.help_open && matches!(state.mode, Mode::Normal) {
-        help::draw(frame, areas.unreserved_transcript, state.modal_scroll, theme);
+        help::draw(
+            frame,
+            areas.unreserved_transcript,
+            state.modal_scroll,
+            theme,
+        );
     }
 
     // V4: the `/settings` menu follows the EXACT same gating as `/help`

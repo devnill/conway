@@ -1924,10 +1924,9 @@ mod tests {
         // make the session/persistent distinction legible, never merged
         // into one.
         assert!(
-            rows.iter()
-                .any(|r| r.label.contains("default model")
-                    && r.label.contains("local/qwen3.8:27b-mlx")
-                    && r.kind == menu::MenuRowKind::Static),
+            rows.iter().any(|r| r.label.contains("default model")
+                && r.label.contains("local/qwen3.8:27b-mlx")
+                && r.kind == menu::MenuRowKind::Static),
             "{rows:?}"
         );
     }
