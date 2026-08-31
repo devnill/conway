@@ -173,8 +173,8 @@ use conway::config::{
 use super::defaults::load_default_role_lax;
 use super::App;
 use crate::first_run::{
-    backend_entry_json, chain_entry, resolve_credential_plan, CredentialPlan, CredentialSource,
-    HOSTED_CHOICES,
+    backend_entry_json, chain_entry, context_window_setup_notice, discover_setup_context_window,
+    resolve_credential_plan, CredentialPlan, CredentialSource, HOSTED_CHOICES,
 };
 use crate::tui::state::Entry;
 
@@ -319,7 +319,7 @@ impl App {
     /// otherwise this opens the credential prompt
     /// (`AppState::begin_add_provider_credential`) instead of writing
     /// anything yet.
-    pub(super) fn apply_add_provider_choice(
+    pub(super) async fn apply_add_provider_choice(
         &mut self,
         choice_id: &str,
         env: &HashMap<String, String>,
@@ -340,11 +340,14 @@ impl App {
                 );
                 self.write_provider_entry_and_refresh(
                     choice.id,
-                    &entry_json,
+                    entry_json,
+                    choice.base_url,
+                    choice.dialect,
                     choice.default_model,
                     env,
                     cwd,
-                );
+                )
+                .await;
             }
             CredentialPlan::PromptForLiteral => {
                 self.state.begin_add_provider_credential(
@@ -362,7 +365,7 @@ impl App {
     /// `crate::first_run::validate_credential_input`) before this is ever
     /// called, mirroring `finish_setup`'s own pre-validated call in
     /// `first_run.rs`.
-    pub(super) fn apply_add_provider_credential(
+    pub(super) async fn apply_add_provider_credential(
         &mut self,
         choice_id: &str,
         secret: String,
@@ -379,30 +382,57 @@ impl App {
         let entry_json = backend_entry_json(choice, &CredentialSource::Literal(secret));
         self.write_provider_entry_and_refresh(
             choice.id,
-            &entry_json,
+            entry_json,
+            choice.base_url,
+            choice.dialect,
             choice.default_model,
             env,
             cwd,
-        );
+        )
+        .await;
     }
 
     /// The shared write-then-refresh tail both add paths above end in:
-    /// [`set_backend_provider`] (USER SCOPE, per that function's own doc),
-    /// [`wire_provider_into_default_chain`] (this module's own top doc, "A
-    /// newly added provider is wired into the routing chain, not just
-    /// saved" -- board item `01M1A54RS91QHHHTY7N1PV8X0H`), a transcript
-    /// notice/error, and -- on success -- [`Self::
-    /// refresh_provider_entries_and_kick_off_status`] so the freshly added
-    /// provider appears (and is classified) without a restart, acceptance
-    /// 5's own requirement.
-    fn write_provider_entry_and_refresh(
+    /// setup-time context-window discovery (`base_url`/`dialect`, board item
+    /// context-window declaration honesty/num_ctx -- see this function's own
+    /// body and [`crate::first_run::discover_setup_context_window`]'s own
+    /// doc for why this only ever produces a transcript notice, never a
+    /// persisted config write), [`set_backend_provider`] (USER SCOPE, per
+    /// that function's own doc), [`wire_provider_into_default_chain`] (this
+    /// module's own top doc, "A newly added provider is wired into the
+    /// routing chain, not just saved" -- board item
+    /// `01M1A54RS91QHHHTY7N1PV8X0H`), a transcript notice/error, and -- on
+    /// success -- [`Self::refresh_provider_entries_and_kick_off_status`] so
+    /// the freshly added provider appears (and is classified) without a
+    /// restart, acceptance 5's own requirement. `async` (unlike its
+    /// `01M1A54RS91QHHHTY7N1PV8X0H` shape): the discovery step is a real,
+    /// bounded network read.
+    async fn write_provider_entry_and_refresh(
         &mut self,
         id: &str,
-        entry_json: &str,
+        entry_json: String,
+        base_url: Option<&str>,
+        dialect: Option<&str>,
         model: &str,
         env: &HashMap<String, String>,
         cwd: &Path,
     ) {
+        // Board item (context-window declaration honesty, num_ctx): the
+        // DISCOVER half of the operator's "discover, or ask if discovery
+        // fails" setup-time ruling, via the SAME shared primitive
+        // `first_run.rs`'s guided setup calls -- never a second
+        // implementation of "try to learn this model's window before
+        // writing it" (P-14). A `base_url` of `None` (only a hosted choice
+        // with no fixed `base_url`, i.e. `anthropic`, ever reaches here
+        // with `None`) skips discovery entirely.
+        if let Some(base_url) = base_url {
+            if let Some(window) = discover_setup_context_window(base_url, dialect, model).await {
+                self.state.transcript.push(Entry::Notice {
+                    text: context_window_setup_notice(model, window),
+                });
+            }
+        }
+        let entry_json = entry_json.as_str();
         let Some(path) = discovery::user_config_path(env) else {
             self.state.transcript.push(Entry::Error {
                 text: "could not resolve a home directory to write settings.json into".to_string(),
@@ -632,7 +662,7 @@ mod tests {
         env.insert("ANTHROPIC_API_KEY".to_string(), "sk-real".to_string());
         let cwd = tempfile::tempdir().expect("cwd tempdir");
 
-        app.apply_add_provider_choice("anthropic", &env, cwd.path());
+        app.apply_add_provider_choice("anthropic", &env, cwd.path()).await;
 
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -689,7 +719,7 @@ mod tests {
         env.insert("ANTHROPIC_API_KEY".to_string(), "sk-real".to_string());
         let cwd = tempfile::tempdir().expect("cwd tempdir");
 
-        app.apply_add_provider_choice("anthropic", &env, cwd.path());
+        app.apply_add_provider_choice("anthropic", &env, cwd.path()).await;
 
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -721,7 +751,7 @@ mod tests {
         env.insert("ANTHROPIC_API_KEY".to_string(), "sk-real".to_string());
         let cwd = tempfile::tempdir().expect("cwd tempdir");
 
-        app.apply_add_provider_choice("anthropic", &env, cwd.path());
+        app.apply_add_provider_choice("anthropic", &env, cwd.path()).await;
 
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         assert!(
@@ -786,7 +816,7 @@ mod tests {
         let env = isolated_env(dir.path());
         let cwd = tempfile::tempdir().expect("cwd tempdir");
 
-        app.apply_add_provider_choice("openai", &env, cwd.path());
+        app.apply_add_provider_choice("openai", &env, cwd.path()).await;
 
         assert!(
             !dir.path().join("settings.json").exists(),
@@ -808,7 +838,7 @@ mod tests {
         let env = isolated_env(dir.path());
         let cwd = tempfile::tempdir().expect("cwd tempdir");
 
-        app.apply_add_provider_credential("openai", "sk-typed".to_string(), &env, cwd.path());
+        app.apply_add_provider_credential("openai", "sk-typed".to_string(), &env, cwd.path()).await;
 
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -1082,7 +1112,16 @@ mod tests {
         // acceptance-1 test makes (calling `finish_setup` directly rather
         // than the interactive `run_guided_setup`) for the analogous reason
         // (there, a pty; here, a fixed real base URL).
-        app.write_provider_entry_and_refresh("mock", &entry_json, "mock-model", &env, cwd.path());
+        app.write_provider_entry_and_refresh(
+            "mock",
+            entry_json,
+            Some(server.uri().as_str()),
+            Some("openai"),
+            "mock-model",
+            &env,
+            cwd.path(),
+        )
+        .await;
 
         let path = dir.path().join("settings.json");
         let text =
@@ -1101,6 +1140,119 @@ mod tests {
             conway::ResultStatus::Completed,
             "the file /settings' add-provider flow wrote must itself route and complete a turn, \
              not merely have the right JSON shape: {status:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Board item (context-window declaration honesty, num_ctx):
+    // `write_provider_entry_and_refresh`'s discovery step actually runs
+    // for an `"ollama"`-dialect provider and surfaces a real discovered
+    // result as a transcript notice -- the `/settings` → providers → add
+    // half of "at provider setup, we should attempt to determine the
+    // size." (Discovery is NOT auto-persisted into config -- no real
+    // per-model override channel reaches `[backends.<id>]` for
+    // `"openai-compat"`; see `crate::first_run::discover_setup_context_window`'s
+    // own doc for why.) `HOSTED_CHOICES`' own `ollama_cloud` entry points
+    // at a real hosted URL a hermetic test cannot reach (same reason the
+    // test above substitutes a caller-supplied entry rather than driving
+    // `apply_add_provider_choice("ollama_cloud", ...)` directly), so this
+    // drives the shared tail function directly with a mock server standing
+    // in for Ollama's native `/api/show`, mirroring that test's own
+    // substitution.
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn adding_an_ollama_provider_discovers_its_context_window_and_notifies() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/show"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "model_info": {
+                    "general.architecture": "glm5.2",
+                    "glm5.2.context_length": 1_048_576
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        let entry_json = serde_json::json!({
+            "kind": "openai-compat",
+            "dialect": "ollama",
+            "base_url": server.uri(),
+            "api_key": "any-key",
+        })
+        .to_string();
+
+        app.write_provider_entry_and_refresh(
+            "mock_ollama",
+            entry_json,
+            Some(server.uri().as_str()),
+            Some("ollama"),
+            "glm-5.2",
+            &env,
+            cwd.path(),
+        )
+        .await;
+
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("glm-5.2") && text.contains("1048576")
+            )),
+            "a successful discovery must produce a transcript notice naming the model and the \
+             discovered window: {:?}",
+            app.state.transcript
+        );
+    }
+
+    /// The negative case: a dialect with no known discovery endpoint (here,
+    /// `"openai"`) never even attempts discovery, so no notice appears --
+    /// silence is exactly the point for the common case (guided setup's
+    /// own appetite: no fourth question / no surprise output when there is
+    /// nothing to report).
+    #[tokio::test]
+    async fn adding_a_non_ollama_provider_produces_no_discovery_notice() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        let entry_json = serde_json::json!({
+            "kind": "anthropic",
+            "api_key": "any-key",
+        })
+        .to_string();
+
+        app.write_provider_entry_and_refresh(
+            "mock_anthropic",
+            entry_json,
+            None,
+            None,
+            "claude-sonnet-4-6",
+            &env,
+            cwd.path(),
+        )
+        .await;
+
+        assert!(
+            !app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice { text } if text.contains("discovered"))),
+            "a provider with no base_url/dialect to discover against must never produce a \
+             discovery notice: {:?}",
+            app.state.transcript
         );
     }
 }

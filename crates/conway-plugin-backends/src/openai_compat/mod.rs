@@ -10,6 +10,7 @@
 //! `llama_cpp_server`, `kimi` — and any user-supplied profile compile
 //! through the same code paths (every field this module reads is total).
 
+mod ollama_native;
 mod probe_impl;
 mod stream;
 mod wire;
@@ -35,6 +36,7 @@ use crate::config::{ConfigError, ModelOverrides, OpenAiCompatConfig, SecretStrin
 use crate::error::classify_malformed_body;
 use crate::http::HttpClient;
 use crate::model_metadata::ModelMetadataStore;
+use crate::probe::join_origin;
 use crate::profile::Profile;
 
 /// Applied when `OpenAiCompatConfig::timeout` is `None`. Shorter than
@@ -106,12 +108,62 @@ impl OpenAiCompatBackend {
             .expect("validated in OpenAiCompatBackend::new")
     }
 
+    /// Ollama's NATIVE `/api/chat` endpoint — host-level, not versioned
+    /// under `base_url`'s path, exactly like `probe.rs`'s own
+    /// `/api/tags`/`/api/show` (`join_origin`, not `join_base`). Only ever
+    /// called when `self.profile.sends_num_ctx` — see
+    /// `openai_compat/ollama_native.rs`'s module doc for why this endpoint
+    /// exists at all.
+    fn native_chat_url(&self) -> Url {
+        join_origin(&self.base, "/api/chat")
+    }
+
     fn request_builder(&self, url: Url, body: &serde_json::Value) -> reqwest::RequestBuilder {
         let mut builder = self.http.inner().post(url).json(body);
         if let Some(key) = &self.auth {
             builder = builder.bearer_auth(key.expose_secret());
         }
         builder
+    }
+
+    /// The single construction site for [`CapabilityInputs`] over `model` —
+    /// used by both [`Backend::capabilities`] and
+    /// [`Self::context_window_to_request`], so the two can never
+    /// independently drift on what `metadata`/`overrides`/`dialect_defaults`
+    /// resolve to for the same `(backend, model)` pair (P-14).
+    fn capability_inputs<'a>(&'a self, model: &ModelId) -> CapabilityInputs<'a> {
+        CapabilityInputs {
+            dialect_defaults: self.profile.dialect_defaults(),
+            metadata: self.models.get(model),
+            overrides: self.overrides.get(model.as_str()),
+        }
+    }
+
+    /// The context window this request should actually ask the provider to
+    /// arrange, `None` when conway has established no real ceiling for
+    /// `model` (an `Unverified` resolution — board item context-window
+    /// declaration honesty/num_ctx). Never a number conway invented: `None`
+    /// here is exactly what stops `wire::build_request_body`/
+    /// `ollama_native::build_native_request_body` from ever sending
+    /// `options.num_ctx`/an equivalent field built on an unfounded guess.
+    fn context_window_to_request(&self, model: &ModelId) -> Option<u32> {
+        let inputs = self.capability_inputs(model);
+        match max_context_tokens_source(&inputs) {
+            ContextTokensSource::Unverified => None,
+            _ => Some(build_capabilities(inputs).max_context_tokens),
+        }
+    }
+
+    /// Whether `req` should be sent to Ollama's NATIVE `/api/chat` instead
+    /// of the OpenAI-compatible endpoint every other call routes through —
+    /// true only when BOTH this profile can express a context window at all
+    /// (`sends_num_ctx`) AND conway actually has a real one to request for
+    /// this model (`context_window_to_request` is `Some`). See
+    /// `openai_compat/ollama_native.rs`'s module doc for why this is scoped
+    /// this narrowly: every session that has not yet established a window
+    /// takes the unchanged, pre-existing OpenAI-compatible path.
+    fn use_native_ollama_chat(&self, context_window: Option<u32>) -> bool {
+        self.profile.sends_num_ctx && context_window.is_some()
     }
 }
 
@@ -122,11 +174,7 @@ impl Backend for OpenAiCompatBackend {
     }
 
     fn capabilities(&self, model: &ModelId) -> Capabilities {
-        let inputs = CapabilityInputs {
-            dialect_defaults: self.profile.dialect_defaults(),
-            metadata: self.models.get(model),
-            overrides: self.overrides.get(model.as_str()),
-        };
+        let inputs = self.capability_inputs(model);
         // Discoverability, not a hard dependency: this crate has no
         // filesystem/network side effect of its own here (`tracing`
         // recording is orthogonal to that boundary) — see
@@ -135,23 +183,74 @@ impl Backend for OpenAiCompatBackend {
         // dialect floor is expected for a genuinely unfamiliar server, not
         // itself an error; it becomes actionable only once a caller reads
         // the logs while diagnosing a context-window refusal.
-        if max_context_tokens_source(&inputs) == ContextTokensSource::DialectDefaultFloor {
-            tracing::debug!(
-                backend = %self.id,
-                model = %model,
-                dialect = %self.profile.id,
-                floor_tokens = inputs.dialect_defaults.max_context_tokens,
-                "max_context_tokens resolved from the dialect's conservative floor, not a \
-                 model-specific declaration -- add a models.json/ModelMetadata entry for this \
-                 model if the real window is larger"
-            );
+        match max_context_tokens_source(&inputs) {
+            ContextTokensSource::DialectDefaultFloor => {
+                tracing::debug!(
+                    backend = %self.id,
+                    model = %model,
+                    dialect = %self.profile.id,
+                    floor_tokens = inputs.dialect_defaults.max_context_tokens,
+                    "max_context_tokens resolved from the dialect's conservative floor, not a \
+                     model-specific declaration -- add a models.json/ModelMetadata entry for this \
+                     model if the real window is larger"
+                );
+            }
+            // Board item context-window declaration honesty/num_ctx:
+            // `Unverified` is the case `DialectDefaultFloor` used to
+            // silently cover too -- this dialect's own baseline
+            // `max_context_tokens` is not a sourced fact about any real
+            // model of this provider (`Profile::context_window_verified`).
+            // The operator's own remedy is establishing a real value at
+            // provider setup (discover, or ask) rather than reaching this
+            // branch at request time at all -- see `docs/providers.md`.
+            ContextTokensSource::Unverified => {
+                tracing::debug!(
+                    backend = %self.id,
+                    model = %model,
+                    dialect = %self.profile.id,
+                    clamp_tokens = inputs.dialect_defaults.max_context_tokens,
+                    "max_context_tokens is UNVERIFIED -- no override, metadata, or sourced \
+                     dialect figure named this model; the number in use is an internal \
+                     admission-safety clamp only, not a fact about this model's real window -- \
+                     reconfigure this provider to establish a real value"
+                );
+            }
+            ContextTokensSource::Override | ContextTokensSource::Metadata => {}
         }
         build_capabilities(inputs)
     }
 
     async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse, BackendError> {
         let caps = self.capabilities(&req.model);
-        let body = wire::build_request_body(&req, &self.profile, caps.parallel_tool_calls, false);
+        let context_window = self.context_window_to_request(&req.model);
+        if self.use_native_ollama_chat(context_window) {
+            let body = ollama_native::build_native_request_body(
+                &req,
+                &self.profile,
+                false,
+                context_window,
+            );
+            let url = self.native_chat_url();
+            let cancel = CancellationToken::new();
+            let make = || self.request_builder(url.clone(), &body);
+            let response = self.http.send_with_retry(make, &cancel).await?;
+            let text = response
+                .text()
+                .await
+                .map_err(|err| BackendError::Transport {
+                    detail: err.to_string(),
+                })?;
+            let parsed: ollama_native::NativeChatResponse =
+                serde_json::from_str(&text).map_err(|_| classify_malformed_body(&text))?;
+            return ollama_native::to_generate_response_native(parsed, &self.profile, &req.tools);
+        }
+        let body = wire::build_request_body(
+            &req,
+            &self.profile,
+            caps.parallel_tool_calls,
+            false,
+            context_window,
+        );
         let url = self.chat_url();
         let cancel = CancellationToken::new();
         let make = || self.request_builder(url.clone(), &body);
@@ -172,7 +271,27 @@ impl Backend for OpenAiCompatBackend {
         req: GenerateRequest,
     ) -> Result<BoxStream<'static, Result<StreamChunk, BackendError>>, BackendError> {
         let caps = self.capabilities(&req.model);
-        let body = wire::build_request_body(&req, &self.profile, caps.parallel_tool_calls, true);
+        let context_window = self.context_window_to_request(&req.model);
+        if self.use_native_ollama_chat(context_window) {
+            let body =
+                ollama_native::build_native_request_body(&req, &self.profile, true, context_window);
+            let url = self.native_chat_url();
+            let cancel = CancellationToken::new();
+            let make = || self.request_builder(url.clone(), &body);
+            let response = self.http.send_with_retry(make, &cancel).await?;
+            return Ok(ollama_native::spawn_native(
+                response,
+                self.profile.clone(),
+                req.tools,
+            ));
+        }
+        let body = wire::build_request_body(
+            &req,
+            &self.profile,
+            caps.parallel_tool_calls,
+            true,
+            context_window,
+        );
         let url = self.chat_url();
         let cancel = CancellationToken::new();
         let make = || self.request_builder(url.clone(), &body);
@@ -205,7 +324,18 @@ impl Backend for OpenAiCompatBackend {
         headroom_tokens: u32,
     ) -> Result<Admission, BackendError> {
         let caps = self.capabilities(&req.model);
-        let body = wire::build_request_body(req, &self.profile, caps.parallel_tool_calls, false);
+        let context_window = self.context_window_to_request(&req.model);
+        let body = if self.use_native_ollama_chat(context_window) {
+            ollama_native::build_native_request_body(req, &self.profile, false, context_window)
+        } else {
+            wire::build_request_body(
+                req,
+                &self.profile,
+                caps.parallel_tool_calls,
+                false,
+                context_window,
+            )
+        };
         let est_tokens = crate::admission::estimate_wire_tokens(&body);
         check_admission(
             req.model.clone(),

@@ -720,7 +720,8 @@ impl App {
                                         &env_vars,
                                         &std::env::current_dir()
                                             .unwrap_or_else(|_| std::path::PathBuf::from(".")),
-                                    );
+                                    )
+                                    .await;
                                 }
                                 Action::SubmitProviderCredential(choice_id, secret) => {
                                     let env_vars: std::collections::HashMap<String, String> =
@@ -731,7 +732,8 @@ impl App {
                                         &env_vars,
                                         &std::env::current_dir()
                                             .unwrap_or_else(|_| std::path::PathBuf::from(".")),
-                                    );
+                                    )
+                                    .await;
                                 }
                                 Action::RemoveProvider(provider_id) => {
                                     let env_vars: std::collections::HashMap<String, String> =

@@ -58,6 +58,11 @@ pub struct DialectDefaults {
     pub cache: CacheMode,
     pub tool_calling: ToolCallSupport,
     pub max_context_tokens: u32,
+    /// See [`crate::profile::Profile::context_window_verified`]. Governs
+    /// only which [`ContextTokensSource`] [`max_context_tokens_source`]
+    /// reports when this layer is what actually resolved
+    /// `max_context_tokens` — never the numeric value itself.
+    pub context_window_verified: bool,
     pub structured_output: StructuredOutput,
     pub parallel_tool_calls: bool,
     pub reliability_tier: ReliabilityTier,
@@ -106,6 +111,10 @@ pub fn anthropic_defaults() -> DialectDefaults {
         },
         tool_calling: ToolCallSupport::Streaming { validated: true },
         max_context_tokens: 200_000,
+        // Anthropic's own documented per-family context window -- a real,
+        // sourced figure (board item: context-window declaration honesty,
+        // num_ctx), same category as `openai`'s `128_000`.
+        context_window_verified: true,
         structured_output: StructuredOutput::JsonSchema,
         parallel_tool_calls: true,
         reliability_tier: ReliabilityTier::Verified,
@@ -156,17 +165,48 @@ pub struct CapabilityInputs<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextTokensSource {
     /// A `models.json`/config-level `ModelOverrides::max_context_tokens`
-    /// named this exact `(backend, model)` pair.
+    /// named this exact `(backend, model)` pair. This is also where a
+    /// setup-time discover-or-ask answer (live-discovered or
+    /// operator-typed) ends up once persisted — see
+    /// `docs/providers.md`'s "context window" section — so `Override`
+    /// covers both a hand-edited config and one conway itself wrote.
     Override,
     /// A [`ModelMetadata`] entry (bundled `DEFAULTS`, a `metadata_path`
     /// file, or a live `probe_on_startup` discovery hint folded into
     /// `dialect_defaults` before this call — see `probe.rs`) named this
     /// model.
     Metadata,
-    /// Neither source above said anything about this model: the value is
-    /// [`Profile::max_context_tokens`](crate::profile::Profile::max_context_tokens)'s
-    /// per-dialect floor, not a fact about this specific model.
+    /// Neither source above said anything about this model, but this
+    /// dialect's [`Profile::max_context_tokens`](crate::profile::Profile::max_context_tokens)
+    /// IS a real, sourced figure for the provider as a whole
+    /// ([`Profile::context_window_verified`](crate::profile::Profile::context_window_verified)
+    /// is `true` — `openai`'s `128_000`, Anthropic's `200_000`), not a
+    /// per-model fact but not invented either.
     DialectDefaultFloor,
+    /// **2026-08-30 addendum, board item (context-window declaration
+    /// honesty, num_ctx):** neither source above said anything about this
+    /// model, AND this dialect's own baseline `max_context_tokens` is
+    /// itself an unsourced placeholder
+    /// (`context_window_verified == false` — every built-in profile except
+    /// `openai`/Anthropic, e.g. Ollama's `32768`, which is not a fact about
+    /// any real Ollama model — see `default_max_context_tokens`'s doc).
+    /// `build_capabilities` still resolves a numeric `max_context_tokens`
+    /// here (the same placeholder, kept only as an internal
+    /// admission-safety clamp — Rust's `Capabilities::max_context_tokens`
+    /// is a plain `u32`, not `Option<u32>`, a `conway-core` type outside
+    /// this crate's file scope to change), but a caller MUST treat that
+    /// number as exactly what it is: nothing conway actually established.
+    /// The operator's own ruling for this state: establish a real value
+    /// AT PROVIDER SETUP (discover, or ask if discovery fails/has no
+    /// endpoint) rather than let a session ever reach this variant in the
+    /// first place — `Unverified` is the seam that lets a caller (a request
+    /// declining to send `options.num_ctx` when it has no real number to
+    /// request, an operator-facing display, `ContextTooLarge`'s own
+    /// message) tell "conway never confirmed this" apart from a genuine
+    /// ceiling, for the one place that state can still arise: a config
+    /// written by a version of conway that predates this item, which never
+    /// asked and has nothing recorded.
+    Unverified,
 }
 
 /// Pure companion to [`build_capabilities`]: which of the three layers
@@ -178,8 +218,10 @@ pub fn max_context_tokens_source(inputs: &CapabilityInputs<'_>) -> ContextTokens
         ContextTokensSource::Override
     } else if inputs.metadata.and_then(|m| m.max_context_tokens).is_some() {
         ContextTokensSource::Metadata
-    } else {
+    } else if inputs.dialect_defaults.context_window_verified {
         ContextTokensSource::DialectDefaultFloor
+    } else {
+        ContextTokensSource::Unverified
     }
 }
 
@@ -502,8 +544,13 @@ mod tests {
     /// declared this number."
     #[test]
     fn max_context_tokens_source_reports_dialect_default_floor_when_nothing_is_declared() {
+        // `openai_defaults()`, not `ollama_defaults()`: `openai` is the
+        // built-in profile whose floor IS a real, sourced figure
+        // (`context_window_verified = true`) -- see the sibling test
+        // `max_context_tokens_source_reports_unverified_for_an_unsourced_dialect_floor`
+        // just below for the (now far more common) opposite case.
         let inputs = CapabilityInputs {
-            dialect_defaults: ollama_defaults(),
+            dialect_defaults: openai_defaults(),
             metadata: None,
             overrides: None,
         };
@@ -513,6 +560,35 @@ mod tests {
         );
         // The model still resolves a real, usable capability -- silence
         // about the *source* is not the same as failing to route.
+        assert_eq!(
+            build_capabilities(inputs).max_context_tokens,
+            openai_defaults().max_context_tokens
+        );
+    }
+
+    /// **2026-08-30 addendum, board item (context-window declaration
+    /// honesty, num_ctx):** `ollama`'s baseline `32768` is NOT a sourced
+    /// fact about any real Ollama model (`context_window_verified = false`)
+    /// -- when neither metadata nor an override says anything, this must
+    /// resolve `Unverified`, not `DialectDefaultFloor`. Before this item's
+    /// `context_window_verified` split, this exact case (ollama, nothing
+    /// declared) was the ORIGINAL test above, asserting
+    /// `DialectDefaultFloor` -- conflating "a real per-provider figure
+    /// governs" with "conway made up a clamp" is precisely the ambiguity
+    /// this variant exists to remove.
+    #[test]
+    fn max_context_tokens_source_reports_unverified_for_an_unsourced_dialect_floor() {
+        let inputs = CapabilityInputs {
+            dialect_defaults: ollama_defaults(),
+            metadata: None,
+            overrides: None,
+        };
+        assert_eq!(
+            max_context_tokens_source(&inputs),
+            ContextTokensSource::Unverified
+        );
+        // Still resolves a real, usable (if unverified) capability -- an
+        // `Unverified` source is not a routing failure.
         assert_eq!(
             build_capabilities(inputs).max_context_tokens,
             ollama_defaults().max_context_tokens

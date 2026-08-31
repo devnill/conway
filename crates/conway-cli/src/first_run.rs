@@ -44,6 +44,12 @@
 //! covered by ordinary `#[tokio::test]`s against a real mock HTTP server
 //! (`crates/conway-cli/tests/first_run.rs`), the same shape
 //! `tests/common/mock_backend.rs` already provides for the one-shot suite.
+//! [`discover_setup_context_window`] (board item: context-window
+//! declaration honesty, num_ctx) joins that same bucket -- async, network
+//! only, no terminal -- covered by `#[tokio::test]`s in this file's own
+//! test module against a wiremock server standing in for Ollama's native
+//! `/api/show`. [`context_window_setup_notice`]/`models_json_snippet` are
+//! pure string formatting, tested alongside the other pure functions above.
 //! [`finish_setup`] belongs in that same bucket -- it touches disk (via
 //! `conway::config`'s writers) and, on success, the network (via
 //! [`verify_backend`]), but reads the terminal only on its OWN failure
@@ -295,6 +301,91 @@ pub fn local_offer_entry_json(offer: &LocalOffer) -> String {
         ..BackendEntry::default()
     };
     serde_json::to_string(&entry).expect("BackendEntry always serializes to a JSON object")
+}
+
+/// The `.conway/models.json` snippet [`context_window_setup_notice`] prints
+/// naming `model`'s discovered `window` — the exact, copy-pasteable shape
+/// `getting-started.md`'s own worked examples use for this file, built the
+/// same "always serialize a real value, never hand-format JSON" way
+/// [`backend_entry_json`] is (P-10: this text ends up on a real terminal).
+fn models_json_snippet(model: &str, window: u32) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "models": {
+            model: {
+                "max_context_tokens": window,
+                "tool_calling": "yes",
+                "reasoning": false,
+                "reliability_tier": "community"
+            }
+        }
+    }))
+    .expect("a constructed JSON value always serializes")
+}
+
+/// The DISCOVER half of the operator's "discover, or ask if discovery
+/// fails" setup-time ruling — the ASK half (a UI prompt for the value when
+/// discovery finds nothing) is a disclosed follow-up, not implemented by
+/// this item; see this module's own top doc.
+///
+/// Calls `conway_plugin_backends::probe::discover_context_window` (the ONE
+/// shared discovery primitive both guided first-run and `/settings` →
+/// providers → add call — see that function's own doc for why one
+/// implementation, never two, was load-bearing here). Returns `None`
+/// (never an error, never a panic) when: `dialect` is `None` or names a
+/// profile with no known discovery endpoint (only `"ollama"` has one
+/// today), `base_url` fails to parse, or discovery itself finds nothing
+/// (unreachable server, unrecognized model, timeout).
+///
+/// **Deliberately does NOT persist the result.** `conway`'s facade reads a
+/// per-model context-window override exclusively from the SEPARATE
+/// `.conway/models.json` file (`[models].metadata_path`, resolved relative
+/// to the process's own working directory — see `getting-started.md`),
+/// never from any key inside a `[backends.<id>]` entry itself (confirmed by
+/// reading `conway::builder::build_backend_context`/`models_overrides_for`:
+/// neither reads `BackendEntry.extra` for a `models` sub-key, and
+/// `conway_plugin_backends::factory`'s own module doc states outright that
+/// `ctx.extra`'s precedence-merge overlay is exercised for the `anthropic`
+/// kind only — `"openai-compat"`'s `Profile` is "resolved as a whole
+/// bundle, not an overlay map `ctx.extra` could sensibly patch key-for-
+/// key"). Writing a real, working entry into `.conway/models.json` needs
+/// its own path-resolution decision (project-scope-relative by default,
+/// versus every other setup-time write in this module being user-scope
+/// only) and its own writer (a fourth JSON-file shape this crate's byte-
+/// preserving splicer has never handled) — a real, separately-scoped
+/// follow-up, not invented here unverified. [`context_window_setup_notice`]
+/// is the honest interim: it tells the operator exactly what was
+/// discovered and exactly what to paste to make it take effect, rather
+/// than silently writing to a location nothing reads (which this module's
+/// very first implementation of this function did, and which is exactly
+/// the kind of claim GP-14 — the whole governing principle of this item —
+/// forbids: never presenting an inert write as if it configured anything).
+pub async fn discover_setup_context_window(
+    base_url: &str,
+    dialect: Option<&str>,
+    model: &str,
+) -> Option<u32> {
+    let Some("ollama") = dialect else {
+        return None;
+    };
+    let Ok(base) = base_url.parse() else {
+        return None;
+    };
+    let profile = conway_plugin_backends::config::Dialect::Ollama.profile();
+    conway_plugin_backends::probe::discover_context_window(&base, &profile, None, model).await
+}
+
+/// The operator-facing message printed after a successful discovery — names
+/// the model, the discovered window, and the exact `.conway/models.json`
+/// snippet that makes it take effect, per `INTENT.md` §8.3 ("refuse and
+/// name what changed") and this module's own `non_interactive_guidance`
+/// precedent for a copy-pasteable snippet over a vague description.
+pub fn context_window_setup_notice(model: &str, window: u32) -> String {
+    format!(
+        "conway discovered a {window}-token context window for {model} from the server. This \
+         isn't persisted automatically yet -- add it to .conway/models.json to make routing and \
+         admission reflect it:\n\n{}",
+        models_json_snippet(model, window)
+    )
 }
 
 /// The exact, non-interactive degrade message: names the file to edit and
@@ -588,6 +679,13 @@ pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutco
         match read_single_key() {
             Some(KeyCode::Enter) => {
                 let entry_json = local_offer_entry_json(&offer);
+                if let Some(window) =
+                    discover_setup_context_window(&offer.base_url, Some("ollama"), &offer.model)
+                        .await
+                {
+                    println!();
+                    println!("{}", context_window_setup_notice(&offer.model, window));
+                }
                 match finish_setup(
                     &path,
                     LOCAL_OLLAMA_ID,
@@ -661,6 +759,18 @@ pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutco
         };
 
         let entry_json = backend_entry_json(choice, &credential);
+        if let Some(base_url) = choice.base_url {
+            if let Some(window) =
+                discover_setup_context_window(base_url, choice.dialect, choice.default_model)
+                    .await
+            {
+                println!();
+                println!(
+                    "{}",
+                    context_window_setup_notice(choice.default_model, window)
+                );
+            }
+        }
         match finish_setup(
             &path,
             choice.id,
@@ -878,6 +988,71 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    // ---- discover_setup_context_window (board item: context-window ----
+    // ---- declaration honesty, num_ctx) ----
+
+    #[tokio::test]
+    async fn discover_setup_context_window_finds_a_real_ollama_window() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/show"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "model_info": {
+                    "general.architecture": "glm5.2",
+                    "glm5.2.context_length": 1_048_576
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let window =
+            discover_setup_context_window(&server.uri(), Some("ollama"), "glm-5.2").await;
+        assert_eq!(window, Some(1_048_576));
+    }
+
+    #[tokio::test]
+    async fn discover_setup_context_window_is_none_for_a_non_ollama_dialect() {
+        // No mock registered: proves no network call is even attempted for
+        // a dialect with no known discovery endpoint.
+        let server = wiremock::MockServer::start().await;
+        let window =
+            discover_setup_context_window(&server.uri(), Some("openai"), "gpt-4o-mini").await;
+        assert_eq!(window, None);
+    }
+
+    #[tokio::test]
+    async fn discover_setup_context_window_is_none_when_dialect_is_absent() {
+        let server = wiremock::MockServer::start().await;
+        let window = discover_setup_context_window(&server.uri(), None, "claude-sonnet-4-6").await;
+        assert_eq!(window, None);
+    }
+
+    // ---- context_window_setup_notice / models_json_snippet (board item: ----
+    // ---- context-window declaration honesty, num_ctx) ----
+
+    #[test]
+    fn context_window_setup_notice_names_the_model_window_and_a_pasteable_models_json_snippet() {
+        let msg = context_window_setup_notice("glm-5.2", 1_048_576);
+        assert!(msg.contains("glm-5.2"));
+        assert!(msg.contains("1048576"));
+        assert!(
+            msg.contains(".conway/models.json"),
+            "must name the file that actually reads this value: {msg}"
+        );
+        // The embedded snippet must itself be valid, complete JSON --
+        // parse it out and check the exact key path a real
+        // `.conway/models.json` reader (`conway::config::model_metadata`)
+        // expects.
+        let start = msg.find('{').expect("snippet has an opening brace");
+        let snippet = &msg[start..];
+        let parsed: serde_json::Value =
+            serde_json::from_str(snippet).expect("the printed snippet must itself be valid JSON");
+        assert_eq!(
+            parsed["models"]["glm-5.2"]["max_context_tokens"],
+            1_048_576
+        );
     }
 
     // ---- chain_entry: the ONE construction verify_backend and the real ----

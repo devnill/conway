@@ -546,3 +546,83 @@ async fn llama_cpp_missing_chat_template_downgrades_reliability_to_unknown() {
         "explicit override tier must win over the server-detected downgrade"
     );
 }
+
+// ---- `discover_context_window`: the setup-time discover-or-ask shared ----
+// ---- primitive (board item: context-window declaration honesty, num_ctx) ----
+
+/// The happy path: `"ollama"` profile, a model `/api/show` knows about --
+/// returns `Some`, the exact figure the provider reports.
+#[tokio::test]
+async fn discover_context_window_returns_the_probed_architecture_ceiling_for_ollama() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model_info": {
+                "general.architecture": "glm5.2",
+                "glm5.2.context_length": 1_048_576
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let base = server.uri().parse().unwrap();
+    let window = conway_plugin_backends::probe::discover_context_window(
+        &base,
+        &Dialect::Ollama.profile(),
+        None,
+        "glm-5.2:cloud",
+    )
+    .await;
+    assert_eq!(window, Some(1_048_576));
+}
+
+/// A dialect with no known discovery endpoint (every built-in profile
+/// except `"ollama"`) returns `None` immediately -- no network call at
+/// all, so the caller's discover-or-ask flow falls straight through to
+/// asking without waiting on a doomed request.
+#[tokio::test]
+async fn discover_context_window_returns_none_for_a_dialect_with_no_known_endpoint() {
+    let server = MockServer::start().await;
+    // No mock registered at all: if this function made a request, wiremock
+    // would panic on an unmatched request once `.verify()`-style strictness
+    // applies, or the request would simply 404 -- either way `None` must
+    // come back either without a call or from a failed one, never `Some`.
+    let base = server.uri().parse().unwrap();
+    for dialect in [
+        Dialect::OpenAi,
+        Dialect::VllmHermes,
+        Dialect::LmStudio,
+        Dialect::LlamaCppServer,
+    ] {
+        let window =
+            conway_plugin_backends::probe::discover_context_window(&base, &dialect.profile(), None, "any-model")
+                .await;
+        assert_eq!(window, None, "{dialect:?} has no known discovery endpoint");
+    }
+}
+
+/// A model `/api/show` doesn't recognize (e.g. retired -- confirmed live
+/// 2026-08-30 against `kimi-k2.5`) is `None`, never a stale or invented
+/// number: the caller's own job on `None` is to ask.
+#[tokio::test]
+async fn discover_context_window_returns_none_when_api_show_errors() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_json(json!({"error": "model not found"})),
+        )
+        .mount(&server)
+        .await;
+
+    let base = server.uri().parse().unwrap();
+    let window = conway_plugin_backends::probe::discover_context_window(
+        &base,
+        &Dialect::Ollama.profile(),
+        None,
+        "retired-model",
+    )
+    .await;
+    assert_eq!(window, None);
+}
