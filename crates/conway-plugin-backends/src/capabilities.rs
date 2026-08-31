@@ -32,6 +32,15 @@
 //! adding fields to `ModelOverrides` (owned by `conway-core`, out of
 //! the file scope) — flagged there as a scope-boundary follow-up, not
 //! solved here.
+//!
+//! [`ContextTokensSource`]/[`max_context_tokens_source`] are a later
+//! addition (the context-window-declaration-honesty item): a pure query
+//! over the same three [`CapabilityInputs`] that tells a caller which of
+//! `build_capabilities`'s three `max_context_tokens` layers actually
+//! supplied the resolved value, so "the profile's conservative floor
+//! governs" is a fact a caller can check and log/surface rather than one
+//! indistinguishable from a real, model-specific declaration. See that
+//! type's own doc for the incident this is a response to.
 
 use conway_core::capabilities::{
     CacheMode, CacheTtl, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
@@ -118,6 +127,60 @@ pub struct CapabilityInputs<'a> {
     pub dialect_defaults: DialectDefaults,
     pub metadata: Option<&'a ModelMetadata>,
     pub overrides: Option<&'a ModelOverrides>,
+}
+
+/// Where [`build_capabilities`]'s resolved `max_context_tokens` actually
+/// came from — the discoverability seam this item adds. A context ceiling
+/// is either something a real party declared about this specific model
+/// (`Override`, a `models.json`/`ModelOverrides` entry; or `Metadata`, a
+/// bundled/`metadata_path` [`ModelMetadata`] entry) or `DialectDefaultFloor`
+/// — [`Profile::max_context_tokens`](crate::profile::Profile::max_context_tokens)'s
+/// conservative per-*dialect* fallback, reached only when NEITHER of those
+/// two sources says anything about this model at all.
+///
+/// The defect this exists for: a rejection or a routing decision citing a
+/// context ceiling was, before this item, textually indistinguishable
+/// whether that ceiling was a real, model-specific figure or the "no one
+/// told conway anything" floor — one operator evening was spent chasing
+/// the wrong fix (conversation compaction) because a 32,768-token refusal
+/// looked exactly like a model's real limit rather than what it actually
+/// was, an undescribed model silently falling through to
+/// `default_max_context_tokens()`. [`max_context_tokens_source`] is the
+/// pure primitive a caller anywhere in this crate (or a consumer of it)
+/// can use to tell the two apart; `openai_compat::OpenAiCompatBackend`
+/// logs a `tracing::debug!` when it resolves `DialectDefaultFloor` for
+/// exactly this reason — see that module for the wiring. Surfacing this
+/// distinction all the way into the operator-facing `ContextTooLarge`
+/// message itself is `conway-core`'s `error.rs`/`routing.rs`, outside this
+/// crate's file scope; this enum is the seam that work consumes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextTokensSource {
+    /// A `models.json`/config-level `ModelOverrides::max_context_tokens`
+    /// named this exact `(backend, model)` pair.
+    Override,
+    /// A [`ModelMetadata`] entry (bundled `DEFAULTS`, a `metadata_path`
+    /// file, or a live `probe_on_startup` discovery hint folded into
+    /// `dialect_defaults` before this call — see `probe.rs`) named this
+    /// model.
+    Metadata,
+    /// Neither source above said anything about this model: the value is
+    /// [`Profile::max_context_tokens`](crate::profile::Profile::max_context_tokens)'s
+    /// per-dialect floor, not a fact about this specific model.
+    DialectDefaultFloor,
+}
+
+/// Pure companion to [`build_capabilities`]: which of the three layers
+/// [`build_capabilities`]'s `max_context_tokens` precedence chain actually
+/// supplied the value, without recomputing or duplicating that chain's own
+/// logic — see [`ContextTokensSource`]'s doc for why this exists.
+pub fn max_context_tokens_source(inputs: &CapabilityInputs<'_>) -> ContextTokensSource {
+    if inputs.overrides.and_then(|o| o.max_context_tokens).is_some() {
+        ContextTokensSource::Override
+    } else if inputs.metadata.and_then(|m| m.max_context_tokens).is_some() {
+        ContextTokensSource::Metadata
+    } else {
+        ContextTokensSource::DialectDefaultFloor
+    }
 }
 
 /// Composes `inputs` into a `Capabilities` value. Pure — equal inputs
@@ -426,6 +489,72 @@ mod tests {
             overrides: Some(&overrides),
         });
         assert_eq!(caps.max_context_tokens, 16_000);
+    }
+
+    /// Acceptance: "a model with no declared metadata still routes, and the
+    /// fact that a fallback figure governs is discoverable rather than
+    /// silent." The routing half is the pre-existing
+    /// `build_capabilities_with_no_metadata_or_overrides_uses_dialect_defaults`
+    /// test above (it still resolves a usable `Capabilities`, never an
+    /// error); this test is the discoverability half, which had no
+    /// assertion anywhere before this item — nothing previously
+    /// distinguished "the profile's floor governs" from "a real source
+    /// declared this number."
+    #[test]
+    fn max_context_tokens_source_reports_dialect_default_floor_when_nothing_is_declared() {
+        let inputs = CapabilityInputs {
+            dialect_defaults: ollama_defaults(),
+            metadata: None,
+            overrides: None,
+        };
+        assert_eq!(
+            max_context_tokens_source(&inputs),
+            ContextTokensSource::DialectDefaultFloor
+        );
+        // The model still resolves a real, usable capability -- silence
+        // about the *source* is not the same as failing to route.
+        assert_eq!(
+            build_capabilities(inputs).max_context_tokens,
+            ollama_defaults().max_context_tokens
+        );
+    }
+
+    #[test]
+    fn max_context_tokens_source_prefers_override_then_metadata_then_dialect_default_floor() {
+        let metadata = ModelMetadata {
+            max_context_tokens: Some(64_000),
+            ..ModelMetadata::default()
+        };
+
+        // Metadata present, no override: `Metadata`.
+        let inputs = CapabilityInputs {
+            dialect_defaults: ollama_defaults(),
+            metadata: Some(&metadata),
+            overrides: None,
+        };
+        assert_eq!(
+            max_context_tokens_source(&inputs),
+            ContextTokensSource::Metadata
+        );
+
+        // Both present: `Override` wins, exactly matching
+        // `build_capabilities`'s own precedence.
+        let overrides = ModelOverrides {
+            stream_tools: None,
+            max_context_tokens: Some(16_000),
+            reliability_tier: None,
+            parallel_tool_calls: None,
+            min_headroom_tokens: None,
+        };
+        let inputs = CapabilityInputs {
+            dialect_defaults: ollama_defaults(),
+            metadata: Some(&metadata),
+            overrides: Some(&overrides),
+        };
+        assert_eq!(
+            max_context_tokens_source(&inputs),
+            ContextTokensSource::Override
+        );
     }
 
     #[test]

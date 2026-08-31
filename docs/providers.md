@@ -479,6 +479,17 @@ Ollama Cloud are expected to age — `docs.ollama.com/cloud` states Ollama
 "will occasionally deprecate and retire older cloud models" — so treat this
 one as a snapshot, not a permanent recommendation.
 
+**`glm-5.2`'s context window ships bundled, so this exact config — the
+guided first-run flow's own output, with no `models.json` at all — already
+declares a real window, not the `"ollama"` profile's 32,768-token floor.**
+`ollama.com/library/glm-5.2` documents "a truly usable 1M-token context
+window"; conway's bundled per-model metadata
+(`crates/conway-plugin-backends/src/model_metadata.rs`'s `DEFAULTS`) carries
+`glm-5.2` at `1,000,000` tokens for exactly this reason — see ["Where a
+context ceiling comes from"](#where-a-context-ceiling-comes-from) below for
+the full precedence story and why this matters even before you've written a
+`models.json` entry of your own.
+
 ### Kimi (Moonshot platform API)
 
 `kimi` names Moonshot's platform API (`https://api.moonshot.ai/v1`) — a
@@ -561,10 +572,72 @@ like a maximally conservative, unfamiliar server. Verified against
 | `tool_call_style` | `"tolerant"` | `"structured"` (canonical deltas only), `"tolerant"` (also accepts a complete JSON-object `arguments` value, not just a string fragment), or `"hermes_text_fallback"` (also scans `delta.content` for an inline `<tool_call>` block). |
 | `cache` | `{ kind = "none" }` | Baseline caching behavior — see [prompt caching](routing.md#prompt-caching-economics-not-correctness). `{ kind = "implicit_prefix", min_prefix_tokens = N }`, `{ kind = "explicit_breakpoints", max_breakpoints, ttls }`, or `{ kind = "none" }`. |
 | `tool_calling` | `"non_streaming"` | Baseline tool-calling support: `"none"`, `"non_streaming"`, or `"streaming"` (with `structured_output`-style variants for validated streaming). |
-| `max_context_tokens` | `32768` | Baseline context window, in tokens. A `models.json` entry for the model is authoritative and always wins; a live startup probe (`probe_on_startup`) only fills in a window for a model that neither `models.json` nor conway's bundled model metadata already describes. |
+| `max_context_tokens` | `32768` | **A last-resort floor, not a routine per-model answer** — see ["Where a context ceiling comes from"](#where-a-context-ceiling-comes-from) immediately below. A context window is a property of a *model*, not a wire dialect (Ollama alone serves 4K- to 1M-token models under this identical `"ollama"` profile), so this number is reached only when nothing more specific — a `models.json` entry, conway's bundled per-model metadata, or a `probe_on_startup` discovery hint — says anything about the model in question. |
 | `structured_output` | `"none"` | `"none"`, `"json_schema"`, or `"grammar"`. |
 | `parallel_tool_calls` | `false` | Baseline "can an undescribed model of this provider make multiple tool calls in one turn" capability. |
 | `reliability_tier` | `"unknown"` | `"unknown"`, `"community"`, or `"verified"`. Feeds routing's capability floor if a role sets one. |
+
+### Where a context ceiling comes from
+
+A `max_context_tokens` conway actually uses for a `(backend, model)` pair
+is resolved through three layers, checked in this order — the first one
+that says anything about the model wins:
+
+1. **A `models.json`/config-level override.** `.conway/models.json`'s
+   `max_context_tokens` for this exact `"backend/model"` key
+   ([getting-started.md](getting-started.md)), or a `.conway/settings.json`
+   `backends.<id>.models.<model>.max_context_tokens` entry. This is a
+   statement an operator made about a specific model — always authoritative.
+2. **conway's per-model metadata.** Bundled at compile time
+   (`crates/conway-plugin-backends/src/model_metadata.rs`'s `DEFAULTS` —
+   e.g. `glm-5.2` at `1,000,000`, the two Kimi K3 variants
+   [above](#kimi-coding-plan)) and/or your own
+   `.conway/models.json`-adjacent `metadata_path` TOML file (`[models]`
+   config, defaults to none). A `probe_on_startup` discovery hint, if
+   enabled, is folded in at this same layer for a model this metadata
+   doesn't already cover — see below.
+3. **The dialect's `max_context_tokens` profile field** — the table above,
+   `32768` for every built-in profile except `openai` (`128000`). Reached
+   only when NEITHER layer above says anything about this exact model. This
+   is a floor, not a fact about the model in front of you.
+
+**Whether that floor is actually governing is discoverable, not silent.**
+This is the direct fix for the incident that motivated this section: an
+operator's Ollama Cloud session against `glm-5.2` was refused at 36,288
+tokens ("accepts at most 32768") while the same model, on the same
+endpoint, was independently recorded accepting 61,667 input tokens minutes
+earlier — the floor was governing silently because `glm-5.2` had no
+bundled metadata entry at all, and a rejection citing "32768" read exactly
+like a real model limit rather than what it actually was.
+`conway_plugin_backends::capabilities::{ContextTokensSource,
+max_context_tokens_source}` is the pure primitive that answers "did a real
+source declare this, or is the floor governing?" for any given resolution;
+`OpenAiCompatBackend::capabilities` emits a `tracing::debug!` naming the
+backend, model, and dialect whenever it resolves the floor for exactly this
+reason — run with `RUST_LOG=conway_plugin_backends=debug` (or the CLI's own
+`-vv`; see [`scripting.md`'s flag reference](scripting.md#flag-reference)
+for the other log-level knobs) to see it. Fix it the same way you'd fix any
+other under-declared model: add a `models.json` entry, or a `metadata_path`
+entry, naming the real window.
+
+**`probe_on_startup` (`[models]` config, default `false`) stays opt-in.**
+Considered and rejected: flipping the default to `true` so every session
+verifies its own context windows live. Rejected because a live network
+call at every startup contradicts this crate's own "never a hard network
+dependency" boundary (`model_metadata.rs`'s module doc) and adds startup
+latency an operator on a fast local loop would feel every single time, for
+a check that fixing the SOURCE data (bundled metadata) makes unnecessary
+for every model conway ships an entry for. When enabled, the `"ollama"`
+dialect's own discovery step queries `POST /api/show` for each observed
+model's `model_info["<arch>.context_length"]` — the model's own declared
+ceiling — deliberately NOT `GET /api/ps`'s per-instance *loaded* runtime
+window (which can be smaller than the model's real capacity, and requires
+the model to already be resident to answer at all); see
+`crates/conway-plugin-backends/src/probe.rs`'s module doc for the full
+reasoning and the accepted risk (a server deliberately configured with a
+smaller runtime window than its model's ceiling gets a real, loud
+provider-side refusal instead of a silent conway-side one — preferred,
+under this same declaration-honesty principle).
 
 A malformed profile — invalid TOML, an unrecognized field, an empty `id`
 — is always a loud, typed error naming the file and the offending field,

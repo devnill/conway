@@ -190,6 +190,121 @@ async fn ollama_fallback_is_not_attempted_for_other_dialects() {
     assert!(discovered.is_empty());
 }
 
+/// Discovery/`/api/show` note: the model's own architecture ceiling
+/// (`model_info["<arch>.context_length"]`), not `/api/ps`'s loaded-runtime
+/// window — see `probe.rs`'s module doc for why this module deliberately
+/// probes the former.
+#[tokio::test]
+async fn ollama_api_show_populates_max_context_tokens_from_the_architecture_ceiling() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "glm-5.2"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model_info": {
+                "general.architecture": "glm4",
+                "glm4.context_length": 1_000_000
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let probe = probe(&server.uri(), Dialect::Ollama);
+    let discovered = probe.discover().await.unwrap();
+
+    assert_eq!(
+        discovered[&ModelId::new("glm-5.2")].max_context_tokens,
+        1_000_000,
+        "the probed architecture ceiling must populate max_context_tokens, not the ollama \
+         dialect's 32,768-token floor"
+    );
+
+    // Confirm the real request shape: a POST naming the model, not a GET.
+    let received = server.received_requests().await.unwrap();
+    let show_request = received
+        .iter()
+        .find(|r| r.url.path() == "/api/show")
+        .expect("an /api/show request must have been made");
+    assert_eq!(show_request.method.to_string(), "POST");
+    let body: serde_json::Value = show_request.body_json().unwrap();
+    assert_eq!(body["model"], "glm-5.2");
+}
+
+#[tokio::test]
+async fn ollama_api_show_context_length_is_overridden_by_pinned_metadata() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "pinned-model"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model_info": {
+                "general.architecture": "llama",
+                "llama.context_length": 999_999
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let metadata = metadata_store_from_toml(
+        r#"
+        [[model]]
+        id = "pinned-model"
+        max_context_tokens = 4096
+        "#,
+    );
+    let probe = probe_with(&server.uri(), Dialect::Ollama, metadata, BTreeMap::new());
+    let discovered = probe.discover().await.unwrap();
+
+    assert_eq!(
+        discovered[&ModelId::new("pinned-model")].max_context_tokens,
+        4096,
+        "explicit ModelMetadata must win over the probed /api/show value"
+    );
+}
+
+/// `/api/show` is best-effort exactly like every other discovery step: a
+/// 404 (a server old enough not to have the endpoint, or a genuinely
+/// unknown model name) must not fail discovery or drop the model — it
+/// falls through to the ollama dialect's own floor, same as if this probe
+/// step didn't exist at all.
+#[tokio::test]
+async fn ollama_api_show_404_falls_back_to_the_dialect_floor_without_failing_discovery() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "unshowable-model"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let probe = probe(&server.uri(), Dialect::Ollama);
+    let discovered = probe.discover().await.unwrap();
+
+    assert_eq!(
+        discovered[&ModelId::new("unshowable-model")].max_context_tokens,
+        Dialect::Ollama.defaults().max_context_tokens,
+        "a failed /api/show must fall back to the dialect floor, not fail discovery"
+    );
+}
+
 #[tokio::test]
 async fn total_discovery_failure_yields_ok_with_metadata_derived_capabilities_and_is_degraded() {
     let unreachable = unreachable_base_url();

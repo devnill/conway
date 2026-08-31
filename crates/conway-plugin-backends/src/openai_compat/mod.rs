@@ -28,7 +28,9 @@ use conway_core::ports::{
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use crate::capabilities::{build_capabilities, CapabilityInputs};
+use crate::capabilities::{
+    build_capabilities, max_context_tokens_source, CapabilityInputs, ContextTokensSource,
+};
 use crate::config::{ConfigError, ModelOverrides, OpenAiCompatConfig, SecretString};
 use crate::error::classify_malformed_body;
 use crate::http::HttpClient;
@@ -120,11 +122,31 @@ impl Backend for OpenAiCompatBackend {
     }
 
     fn capabilities(&self, model: &ModelId) -> Capabilities {
-        build_capabilities(CapabilityInputs {
+        let inputs = CapabilityInputs {
             dialect_defaults: self.profile.dialect_defaults(),
             metadata: self.models.get(model),
             overrides: self.overrides.get(model.as_str()),
-        })
+        };
+        // Discoverability, not a hard dependency: this crate has no
+        // filesystem/network side effect of its own here (`tracing`
+        // recording is orthogonal to that boundary) — see
+        // `ContextTokensSource`'s doc for the incident this line exists
+        // for. `debug`, not `warn`: an undescribed model reaching the
+        // dialect floor is expected for a genuinely unfamiliar server, not
+        // itself an error; it becomes actionable only once a caller reads
+        // the logs while diagnosing a context-window refusal.
+        if max_context_tokens_source(&inputs) == ContextTokensSource::DialectDefaultFloor {
+            tracing::debug!(
+                backend = %self.id,
+                model = %model,
+                dialect = %self.profile.id,
+                floor_tokens = inputs.dialect_defaults.max_context_tokens,
+                "max_context_tokens resolved from the dialect's conservative floor, not a \
+                 model-specific declaration -- add a models.json/ModelMetadata entry for this \
+                 model if the real window is larger"
+            );
+        }
+        build_capabilities(inputs)
     }
 
     async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse, BackendError> {
