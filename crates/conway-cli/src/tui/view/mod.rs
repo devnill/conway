@@ -211,8 +211,17 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     // parking queue is needed -- `state.help_open` is untouched by any of
     // those transitions, so the overlay reappears on its own the moment
     // `mode` returns to `Normal`, with zero extra bookkeeping.
+    //
+    // Board item `01M1AFGDWR9CQ8WNYYV2B1TQBK`: drawn against
+    // `unreserved_transcript` (the pre-shrink row), NOT `areas.transcript`
+    // (already shrunk by exactly this overlay's own height, via
+    // `bottom_modal_reservation` in `layout`) -- `help::modal_rect` computes
+    // the identical `Rect` either way `layout` already reserved for it, so
+    // this paints into precisely the space `layout` freed up, never into
+    // (or short of) it -- mirrors `/settings`' own reservation immediately
+    // below, one item earlier (`01M1A9M2EVJNR0HBN86A8E40EA`).
     if state.help_open && matches!(state.mode, Mode::Normal) {
-        help::draw(frame, areas.transcript, state.modal_scroll, theme);
+        help::draw(frame, areas.unreserved_transcript, state.modal_scroll, theme);
     }
 
     // V4: the `/settings` menu follows the EXACT same gating as `/help`
@@ -225,7 +234,7 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
         // Board item `01M1A9M2EVJNR0HBN86A8E40EA`: drawn against
         // `unreserved_transcript` (the pre-shrink row), NOT `areas.transcript`
         // (already shrunk by exactly this menu's own height, via
-        // `settings_reservation` in `layout`) -- `settings::modal_rect`
+        // `bottom_modal_reservation` in `layout`) -- `settings::modal_rect`
         // computes the identical `Rect` either way `layout` already reserved
         // for it, so this paints into precisely the space `layout` freed up,
         // never into (or short of) it.
@@ -236,8 +245,13 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     // `/help`/`/settings`' own gating exactly -- see `AppState::
     // plugins_open`'s own doc for the three-way mutual exclusion that keeps
     // at most one of these three branches ever firing.
+    //
+    // Board item `01M1AFGDWR9CQ8WNYYV2B1TQBK`: drawn against
+    // `unreserved_transcript`, mirroring `/settings`/`/help` immediately
+    // above for the identical reason -- `plugins::modal_rect` computes the
+    // same `Rect` `layout` already reserved via `bottom_modal_reservation`.
     if state.plugins_open && matches!(state.mode, Mode::Normal) {
-        plugins::draw(frame, areas.transcript, state, theme);
+        plugins::draw(frame, areas.unreserved_transcript, state, theme);
     }
 }
 
@@ -248,44 +262,72 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
 /// of sync with what is actually on screen.
 struct Areas {
     /// The transcript's own render area -- shrunk by
-    /// [`settings_reservation`]'s own height while `/settings` is open (see
-    /// that function's doc), so `transcript::draw`/`header::draw_*` never
-    /// paint a line the settings menu is about to draw over.
+    /// [`bottom_modal_reservation`]'s own height while `/settings`, `/help`,
+    /// or `/plugin` is open (see that function's doc), so
+    /// `transcript::draw`/`header::draw_*` never paint a line the open
+    /// surface is about to draw over.
     transcript: Rect,
     /// The FULL row `transcript` was carved out of, before any reservation
-    /// -- `/settings`' own bottom-anchored `Rect` (board item
-    /// `01M1A9M2EVJNR0HBN86A8E40EA`) is computed against THIS, never against
-    /// the already-shrunk `transcript`, so the menu's own cap fraction stays
-    /// stable regardless of the reservation it itself produced.
+    /// -- each surface's own bottom-anchored `Rect` (board items
+    /// `01M1A9M2EVJNR0HBN86A8E40EA`/`01M1AFGDWR9CQ8WNYYV2B1TQBK`) is computed
+    /// against THIS, never against the already-shrunk `transcript`, so a
+    /// surface's own cap fraction stays stable regardless of the reservation
+    /// it itself produced.
     unreserved_transcript: Rect,
     agents: Option<Rect>,
     input: Rect,
     status: Rect,
 }
 
-/// How much of `unreserved_transcript`'s own height `/settings` needs, if it
-/// is currently the surface that will render there -- `0` otherwise (the
-/// ordinary case, and every other bottom-anchored surface: the permission
-/// prompt, the `/ask` modal, the intent-confirm/trust-preview cards, the
-/// `[p]` field editor, the add-provider-credential prompt, and
-/// `ask_question`'s modal all stay drawn straight over the transcript's
-/// tail, unreserved -- see this item's own report on why those are
-/// deliberately left as they were).
+/// How much of `unreserved_transcript`'s own height the CURRENTLY-OPEN
+/// bottom-anchored, transcript-reserving surface needs -- `0` when none of
+/// them is open (the ordinary case, and every OTHER bottom-anchored
+/// surface: the permission prompt, the `/ask` modal, the intent-confirm/
+/// trust-preview cards, the `[p]` field editor, the add-provider-credential
+/// prompt, and `ask_question`'s modal all stay drawn straight over the
+/// transcript's tail, unreserved -- see board item
+/// `01M1A9M2EVJNR0HBN86A8E40EA`'s own report on why those are deliberately
+/// left as they were, a posture board item `01M1AFGDWR9CQ8WNYYV2B1TQBK`
+/// re-confirms rather than revisits: each is transient and DECISION-owed,
+/// with the input line already inert and the operator's attention already
+/// captured, none of which holds for `/settings`/`/help`/`/plugin` -- all
+/// three are informational and commonly left open indefinitely while
+/// session activity continues behind them, which is the exact mechanism
+/// board item `01M1AFGDWR9CQ8WNYYV2B1TQBK`'s own report traces the
+/// unreadable-error defect back to).
 ///
-/// **Board item `01M1A9M2EVJNR0HBN86A8E40EA`.** Before this item, an error
-/// appended to the transcript while `/settings` was open rendered directly
-/// behind the menu -- `Clear` painted over it every frame, and it stayed
-/// invisible until the operator closed the menu and scrolled to find it.
-/// `layout` calls this to learn the menu's own height BEFORE
+/// **Board item `01M1A9M2EVJNR0HBN86A8E40EA` (originally `/settings` only),
+/// widened to `/help`/`/plugin` by board item
+/// `01M1AFGDWR9CQ8WNYYV2B1TQBK`.** Before the first of these two items, an
+/// error appended to the transcript while `/settings` was open rendered
+/// directly behind the menu -- `Clear` painted over it every frame, and it
+/// stayed invisible until the operator closed the menu and scrolled to find
+/// it. Before the second, the identical defect held for `/help`/`/plugin`,
+/// which share `/settings`' exact shape (informational, opened
+/// deliberately, left open indefinitely) but had never been given the same
+/// fix. `layout` calls this to learn the OPEN surface's own height BEFORE
 /// `transcript::draw` runs, and shrinks `Areas::transcript` by exactly that
-/// much, so the transcript's own last rendered line ends where the menu
-/// begins rather than underneath it -- the menu still opens and closes with
-/// zero extra latency (this is a pure `Rect` computation, not a second
-/// render pass), and the operator sees a newly-appended error the instant it
-/// lands, no different from any other moment.
-fn settings_reservation(state: &AppState, unreserved_transcript: Rect) -> u16 {
-    if state.settings_open && matches!(state.mode, Mode::Normal) {
+/// much, so the transcript's own last rendered line ends where the surface
+/// begins rather than underneath it -- the surface still opens and closes
+/// with zero extra latency (this is a pure `Rect` computation, not a second
+/// render pass), and the operator sees a newly-appended error the instant
+/// it lands, no different from any other moment.
+///
+/// The three-way mutual exclusion (`AppState::open_settings`/`open_help`/
+/// `open_plugins` each clear the other two -- verified by
+/// `open_plugins_help_and_settings_are_mutually_exclusive_three_ways`,
+/// `state/modal.rs`) means at most one `if` below ever matches, so this is
+/// never a sum of two reservations stacking on top of each other.
+fn bottom_modal_reservation(state: &AppState, unreserved_transcript: Rect) -> u16 {
+    if !matches!(state.mode, Mode::Normal) {
+        return 0;
+    }
+    if state.settings_open {
         settings::modal_rect(state, unreserved_transcript).height
+    } else if state.help_open {
+        help::modal_rect(unreserved_transcript).height
+    } else if state.plugins_open {
+        plugins::modal_rect(state, unreserved_transcript).height
     } else {
         0
     }
@@ -342,11 +384,12 @@ fn layout(state: &AppState, area: Rect) -> Areas {
     next += 1;
     let status = rows[next];
 
-    // Board item `01M1A9M2EVJNR0HBN86A8E40EA`: reserve `/settings`' own
-    // height out of the transcript pane BEFORE anything renders into it --
-    // see `settings_reservation`'s own doc for why, and `Areas::transcript`'s
-    // doc for what this shrinks.
-    let reserved = settings_reservation(state, unreserved_transcript);
+    // Board items `01M1A9M2EVJNR0HBN86A8E40EA`/`01M1AFGDWR9CQ8WNYYV2B1TQBK`:
+    // reserve the currently-open bottom-anchored surface's own height out
+    // of the transcript pane BEFORE anything renders into it -- see
+    // `bottom_modal_reservation`'s own doc for why, and `Areas::
+    // transcript`'s doc for what this shrinks.
+    let reserved = bottom_modal_reservation(state, unreserved_transcript);
     let transcript = Rect {
         height: unreserved_transcript.height.saturating_sub(reserved),
         ..unreserved_transcript
@@ -1852,17 +1895,52 @@ mod tests {
 
     // ---- T7: the /help keybinding overlay ----
 
+    /// Renders every PAGE of the `/help` overlay at `width`x`height` --
+    /// `PageDown` (stepping `state.modal_scroll` by the same
+    /// `MODAL_SCROLL_STEP` `input.rs::adjust_modal_scroll` uses) -- and
+    /// concatenates them, stopping once a step no longer changes what is on
+    /// screen (`modal::clamp_scroll` has pinned to the true bottom).
+    ///
+    /// **Board item `01M1AFGDWR9CQ8WNYYV2B1TQBK`.** Before this item,
+    /// `help::CAP_DENOMINATOR` was generous enough (`1`) that the overlay's
+    /// entire binding list rendered on ONE screen at any ordinary terminal
+    /// size, so a single `render_text` call was a faithful proof of
+    /// "every binding is shown." The correction that fixed the transcript-
+    /// reservation defect (see `help.rs::CAP_DENOMINATOR`'s own doc) also
+    /// means the overlay now legitimately scrolls at ordinary sizes -- the
+    /// same "long content stays reachable, never truncated" contract
+    /// `/settings`' `ListState`-backed cap already relies on, applied here
+    /// via `AppState::modal_scroll` instead. A test asserting a single
+    /// screenful would no longer prove completeness; this pages through
+    /// exactly the way an operator actually would (`PageDown`) instead.
+    fn render_help_all_pages(state: &mut AppState, width: u16, height: u16) -> String {
+        let mut combined = String::new();
+        let mut previous: Option<String> = None;
+        for _ in 0..200 {
+            let page = render_text(state, width, height);
+            combined.push_str(&page);
+            combined.push('\n');
+            if previous.as_deref() == Some(page.as_str()) {
+                break;
+            }
+            previous = Some(page);
+            state.modal_scroll = state.modal_scroll.saturating_add(5);
+        }
+        combined
+    }
+
     /// Acceptance: the overlay's content includes every binding in the
     /// verified list (enumerated from `input.rs` at HEAD -- see
     /// `view/help.rs`'s own doc for the full rationale), asserted against
-    /// the REAL rendered text, not a constant.
+    /// the REAL rendered text, not a constant -- paged through in full
+    /// (see [`render_help_all_pages`]'s own doc for why a single screenful
+    /// no longer proves this).
     #[test]
     fn help_overlay_shows_every_verified_binding() {
         let mut state = AppState::new(AgentId::new());
         state.open_help();
 
-        // Tall/wide enough that the full grouped list renders unclipped.
-        let text = render_text(&state, 100, 60);
+        let text = render_help_all_pages(&mut state, 100, 60);
 
         // input & editing
         assert!(text.contains("Enter") && text.contains("submit"), "{text}");
@@ -2321,6 +2399,200 @@ mod tests {
             "an error appended while /settings is open must stay readable, \
              pushed above the menu rather than hidden behind it: {text}"
         );
+    }
+
+    /// **VERIFICATION ANCHOR, board item `01M1AFGDWR9CQ8WNYYV2B1TQBK`
+    /// acceptance 1.** Mirrors `an_error_raised_while_settings_is_open_is_
+    /// not_covered_by_the_menu` exactly, for `/help` -- the geometry that
+    /// discriminates the bug from the fix: a single short filler entry
+    /// would land nowhere near the overlay's own bottom-anchored rows
+    /// regardless of whether the transcript pane was ever shrunk, so this
+    /// fills the transcript PAST the viewport height (`follow_tail`, the
+    /// default) so the freshly appended error lands exactly where the
+    /// overlay's own rows are. Before this item, `layout` handed
+    /// `transcript::draw` the FULL transcript row regardless of `/help`
+    /// being open, and the overlay's `Clear`+`Block` painted over that
+    /// row's own tail afterward -- the newest line (this error) would have
+    /// been erased, never reaching the buffer this test reads.
+    #[test]
+    fn an_error_raised_while_help_is_open_is_not_covered_by_the_overlay() {
+        let mut state = AppState::new(AgentId::new());
+        for i in 0..40 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("filler line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+        }
+        state.transcript.push(Entry::Error {
+            text: "ERROR_RAISED_WHILE_HELP_OPEN".to_string(),
+            fatal: false,
+        });
+        state.open_help();
+
+        let text = render_text(&state, 80, 24);
+
+        assert!(
+            text.contains(" HELP "),
+            "the overlay itself must still be open and drawn: {text}"
+        );
+        assert!(
+            text.contains("ERROR_RAISED_WHILE_HELP_OPEN"),
+            "an error appended while /help is open must stay readable, pushed \
+             above the overlay rather than hidden behind it: {text}"
+        );
+    }
+
+    /// Unit-level counterpart to the full-render proof just above, mirroring
+    /// `settings_open_reserves_its_own_height_out_of_the_transcript_row`
+    /// exactly: asserts the actual geometry (the shrunk `transcript` and the
+    /// overlay's own `Rect`, computed against the UNSHRUNK row, sit flush
+    /// against each other) rather than only the rendered text.
+    #[test]
+    fn help_open_reserves_its_own_height_out_of_the_transcript_row() {
+        let mut state = AppState::new(AgentId::new());
+        let area = Rect::new(0, 0, 80, 40);
+        let closed = layout(&state, area);
+
+        state.open_help();
+        let open = layout(&state, area);
+
+        assert_eq!(
+            open.unreserved_transcript, closed.transcript,
+            "the reference row `/help`'s own Rect is computed against must be \
+             the SAME row the transcript rendered into before anything was reserved"
+        );
+        assert!(
+            open.transcript.height < closed.transcript.height,
+            "opening help must shrink the transcript row, got {:?} vs {:?}",
+            open.transcript,
+            closed.transcript
+        );
+        let overlay_rect = help::modal_rect(open.unreserved_transcript);
+        assert_eq!(
+            open.transcript.height + overlay_rect.height,
+            open.unreserved_transcript.height,
+            "the transcript row and the overlay's own Rect must together account \
+             for the WHOLE unreserved row -- no gap, no overlap"
+        );
+        assert_eq!(
+            open.transcript.y + open.transcript.height,
+            overlay_rect.y,
+            "the transcript row must end exactly where the overlay begins"
+        );
+    }
+
+    // ---- board item `01M1AFGDWR9CQ8WNYYV2B1TQBK`: the `/plugin` listing
+    // gets the SAME transcript reservation, for the identical reason. ----
+
+    /// Mirrors `an_error_raised_while_settings_is_open_is_not_covered_by_
+    /// the_menu`/`an_error_raised_while_help_is_open_is_not_covered_by_the_
+    /// overlay` exactly, for `/plugin` -- the third and last of the three
+    /// surfaces this item names.
+    #[test]
+    fn an_error_raised_while_plugins_is_open_is_not_covered_by_the_listing() {
+        let mut state = AppState::new(AgentId::new());
+        for i in 0..40 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("filler line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+        }
+        state.transcript.push(Entry::Error {
+            text: "ERROR_RAISED_WHILE_PLUGINS_OPEN".to_string(),
+            fatal: false,
+        });
+        state.open_plugins();
+
+        let text = render_text(&state, 80, 24);
+
+        assert!(
+            text.contains(" PLUGINS "),
+            "the listing itself must still be open and drawn: {text}"
+        );
+        assert!(
+            text.contains("ERROR_RAISED_WHILE_PLUGINS_OPEN"),
+            "an error appended while /plugin is open must stay readable, pushed \
+             above the listing rather than hidden behind it: {text}"
+        );
+    }
+
+    /// Unit-level counterpart, mirroring `help_open_reserves_its_own_height_
+    /// out_of_the_transcript_row` exactly.
+    #[test]
+    fn plugins_open_reserves_its_own_height_out_of_the_transcript_row() {
+        let mut state = AppState::new(AgentId::new());
+        let area = Rect::new(0, 0, 80, 40);
+        let closed = layout(&state, area);
+
+        state.open_plugins();
+        let open = layout(&state, area);
+
+        assert_eq!(open.unreserved_transcript, closed.transcript);
+        assert!(
+            open.transcript.height < closed.transcript.height,
+            "opening /plugin must shrink the transcript row, got {:?} vs {:?}",
+            open.transcript,
+            closed.transcript
+        );
+        let listing_rect = plugins::modal_rect(&state, open.unreserved_transcript);
+        assert_eq!(
+            open.transcript.height + listing_rect.height,
+            open.unreserved_transcript.height,
+            "the transcript row and the listing's own Rect must together account \
+             for the WHOLE unreserved row -- no gap, no overlap"
+        );
+        assert_eq!(
+            open.transcript.y + open.transcript.height,
+            listing_rect.y,
+            "the transcript row must end exactly where the listing begins"
+        );
+    }
+
+    /// Acceptance 4: the five decision-owed surfaces (permission prompt,
+    /// `/ask`, intent-confirm, trust-preview, `Mode::UiForm`) stay
+    /// UNRESERVED -- transient, input line inert, attention already
+    /// captured, unlike the three informational surfaces above. Driven
+    /// through the same `layout` call: opening one of them must never
+    /// shrink the transcript row at all.
+    #[test]
+    fn the_five_decision_owed_surfaces_reserve_nothing() {
+        let area = Rect::new(0, 0, 80, 40);
+        let baseline = layout(&AppState::new(AgentId::new()), area);
+
+        let mut trust_preview_state = AppState::new(AgentId::new());
+        trust_preview_state.offer_trust_preview(TrustPreviewCard {
+            path: std::path::PathBuf::from("/repo/.conway/permissions.json"),
+            contents: "{}".to_string(),
+            status: conway::TrustStatus::New,
+            error: None,
+        });
+
+        let mut ui_form_state = AppState::new(AgentId::new());
+        let (ask, _reply_rx) =
+            crate::tui::form::PendingFormAsk::new_for_test(conway_plugin_ui::AskSelectRequest {
+                prompt: "which way?".to_string(),
+                options: vec!["left".to_string(), "right".to_string()],
+            });
+        ui_form_state.offer_ui_form(ask);
+
+        for state in [
+            awaiting_permission("bash: ls"),
+            ask_modal_state("q", "a", None),
+            intent_confirm_state(conway::SubagentMode::Spawn, None, "go"),
+            trust_preview_state,
+            ui_form_state,
+        ] {
+            let open = layout(&state, area);
+            assert_eq!(
+                open.transcript, baseline.transcript,
+                "a decision-owed surface must never reserve transcript height: {:?}",
+                state.mode
+            );
+        }
     }
 
     /// Acceptance: a long one grows to the cap and then SCROLLS rather than

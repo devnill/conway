@@ -92,6 +92,18 @@
 //! -- never a selectable-but-inert row that silently does nothing on
 //! `Enter` (the same "a worse lie than an obviously static one" reasoning
 //! `view/settings.rs`'s deny/prompt review rows already established).
+//!
+//! ## Transcript reservation, not just an overlay (board item
+//! `01M1AFGDWR9CQ8WNYYV2B1TQBK`)
+//!
+//! This listing is informational and, like `/help`, commonly left open
+//! while session activity continues behind it -- exactly the shape that
+//! made an appended error unreadable while `/settings` covered it (fixed
+//! one item earlier, `01M1A9M2EVJNR0HBN86A8E40EA`). [`modal_rect`] gives
+//! `view::mod::layout` this listing's own height BEFORE `transcript::draw`
+//! runs, so the transcript shrinks ahead of it instead of being drawn over
+//! -- see [`CAP_DENOMINATOR`]'s own doc for why the cap had to change
+//! alongside the reservation, not stay as it was.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
@@ -576,30 +588,88 @@ fn non_empty_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
 }
 
 const FOOTER_ROWS: u16 = 3;
-const CAP_DENOMINATOR: u16 = 1;
+/// The `/plugin` listing's own cap denominator.
+///
+/// **Written for the listing's own V1 as `1` ("up to the whole
+/// `transcript_area`"), corrected by board item
+/// `01M1AFGDWR9CQ8WNYYV2B1TQBK`.** The `1` was sound while this listing drew
+/// straight OVER an already-rendered transcript -- this item makes
+/// `view::mod::layout` reserve the listing's own height out of the
+/// transcript pane BEFORE `transcript::draw` runs (see [`modal_rect`],
+/// mirroring `view/settings.rs::modal_rect`'s own fix one item earlier, and
+/// `view/help.rs`'s identical correction alongside this one). A cap of `1`
+/// and a reservation are the same contradiction both of those modules'
+/// own `CAP_DENOMINATOR` docs already name: the listing claims the WHOLE
+/// pane, the transcript shrinks to nothing, and an error appended while
+/// `/plugin` is open is unreadable again. `2` (matching [`modal::
+/// DEFAULT_CAP_DENOMINATOR`] and `settings.rs`'s own choice) is this
+/// correction's answer, for the identical reason.
+///
+/// **Safe to cap: this listing's body is [`menu::draw`]'s stateful `List`,
+/// the SAME primitive `/settings` renders with -- see `view/
+/// settings.rs::CAP_DENOMINATOR`'s own doc for why a `ListState`-backed
+/// selection makes capping safe (ratatui auto-scrolls to keep the
+/// selection visible, so rows past the cap stay reachable with
+/// `Up`/`Down`).** The DETAIL PANEL below the list (`draw_plugin_detail`,
+/// [`DETAIL_ROWS`] fixed rows) is NOT part of the capped/scrolled body --
+/// it renders into `frame_areas.footer_area`, whose height (`FOOTER_ROWS +
+/// detail_rows`) is fully reserved by [`modal::modal_area`]'s own
+/// `footer_rows` parameter exactly as `/settings`' footer already is, so
+/// capping the overall modal height never truncates the detail panel
+/// either -- only the scrollable list above it shrinks.
+const CAP_DENOMINATOR: u16 = 2;
 
 const SESSION_NOTE: &str =
     "every kind conway can run: compiled-in, subprocess, MCP -- see docs/plugins/ for how each installs";
 const TOGGLE_NOTE: &str = "compiled-in toggles: Enter, written to disk, applied on next restart; \
      subprocess/MCP entries are read-only here (see settings.json)";
 
+/// The `/plugin` listing's own bottom-anchored, content-sized `Rect`,
+/// computed against `transcript_area` -- exactly what [`draw`] itself asks
+/// for via this same function, never a second, independent computation
+/// (steering P-14, mirrors `view/settings.rs::modal_rect`'s own doc).
+///
+/// **Board item `01M1AFGDWR9CQ8WNYYV2B1TQBK`.** Factored out so
+/// `view::mod::layout` can learn how tall this listing will render BEFORE
+/// `transcript::draw` runs, and shrink the transcript pane by exactly that
+/// height -- see [`CAP_DENOMINATOR`]'s own doc for why a cap alone was not
+/// enough.
+pub(crate) fn modal_rect(state: &AppState, transcript_area: Rect) -> Rect {
+    let tree = build_tree(state);
+    let content_rows = tree.rows().len().min(u16::MAX as usize) as u16;
+    let rows = all_plugin_rows(state);
+    let detail_rows = if selected_plugin_row(&tree, &rows).is_some() {
+        DETAIL_ROWS
+    } else {
+        0
+    };
+    modal::modal_area(
+        transcript_area,
+        content_rows,
+        FOOTER_ROWS + detail_rows,
+        CAP_DENOMINATOR,
+    )
+}
+
 /// Draws the `/plugin` listing over `transcript_area`, mirroring
 /// `view/settings.rs::draw`'s own shape (shared [`modal`] primitive,
 /// [`menu::draw`] for the body, a reserved detail-panel + footer tail).
 pub fn draw(frame: &mut Frame, transcript_area: Rect, state: &AppState, theme: &Theme) {
     let tree = build_tree(state);
-    let content_rows = tree.rows().len().min(u16::MAX as usize) as u16;
 
     let rows = all_plugin_rows(state);
     let detail_row = selected_plugin_row(&tree, &rows);
     let detail_rows = if detail_row.is_some() { DETAIL_ROWS } else { 0 };
+    // `modal_rect` re-derives the SAME `Rect` from the SAME tree/detail
+    // state this call just resolved -- never a second, independently-
+    // resolved area (steering P-14, mirrors `view/settings.rs::draw`'s own
+    // `modal_rect`-then-`draw_modal_frame_in` shape).
+    let area = modal_rect(state, transcript_area);
 
-    let frame_areas = modal::draw_modal_frame(
+    let frame_areas = modal::draw_modal_frame_in(
         frame,
-        transcript_area,
-        content_rows,
+        area,
         FOOTER_ROWS + detail_rows,
-        CAP_DENOMINATOR,
         " PLUGINS ",
         theme.help_border,
     );

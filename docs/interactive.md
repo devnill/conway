@@ -481,6 +481,24 @@ there is no separate "default model" setting to change independently;
 changing which model a fresh session starts on means changing the default
 role above, or that role's `chain` in `settings.json` by hand.
 
+**Making a session's model the persistent default.** `/model` (above)
+only ever changes what *this* session is running — a fresh session still
+starts on the default role's chain head, and nothing tells you the two
+have diverged unless you go looking. If they have, a third row appears
+right under "default model": `this session is running <model> — Enter to
+make it the persistent default`. Pressing `Enter` writes that model to the
+*head* of the default role's own `chain` (moving it there if it was
+already a fallback further down, inserting it if it wasn't in the chain at
+all) — every other configured fallback survives, in its previous order,
+just no longer first. This row is a REORDER of the same `chain` the
+"default model" row above already reads from, not a second, independent
+setting — and it only appears at all when the session's model and the
+persistent default actually differ; once they match, it's gone, because
+there is nothing left to promote. (This closes the gap where switching
+models mid-session with `/model` felt permanent but silently wasn't —
+restarting conway would put you back on the old default with no warning
+that anything had reverted.)
+
 ## The `/plugin` command
 
 `/plugin` lists **every kind of plugin conway can run today**, in one
