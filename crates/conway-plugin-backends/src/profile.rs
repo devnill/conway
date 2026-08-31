@@ -93,6 +93,30 @@ fn default_flatten_multiblock_user() -> bool {
     true
 }
 
+/// The `max_context_tokens` every built-in profile ships (and what an
+/// undescribed model of ANY dialect ultimately falls back to once neither a
+/// `ModelMetadata` entry — bundled `DEFAULTS`, a `metadata_path` file, or a
+/// live `probe_on_startup` hint — nor a `models.json`/`ModelOverrides` entry
+/// says anything about it). This is a genuinely LAST-RESORT floor, not a
+/// routine per-model answer: a context window is a property of a *model*,
+/// not of a wire dialect, and Ollama alone serves windows from 4K to 1M
+/// tokens under the identical `"ollama"` profile — one number cannot be
+/// right for more than one model here except by coincidence.
+///
+/// Kept deliberately conservative (not raised) rather than picking a larger
+/// number that would be equally unsourced for whatever unfamiliar server
+/// actually answers `"ollama"`/`"lm_studio"`/etc: the real fix for an
+/// under-declared model is a `ModelMetadata`/`models.json` entry for it (see
+/// `model_metadata.rs`'s bundled `DEFAULTS`, which is where `glm-5.2`'s
+/// correct 1,000,000-token window now lives — this constant is exactly the
+/// number that was silently governing it before that entry existed), never
+/// a bigger guess at this single per-dialect layer. What changed instead:
+/// `crate::capabilities::{ContextTokensSource, max_context_tokens_source}`
+/// makes it possible to tell, for any given resolution, whether this floor
+/// governed or a real declaration did — see that type's doc for the
+/// incident (an operator refused at 36,288 tokens against a model that, on
+/// the same endpoint, was independently recorded accepting 61,667) that
+/// made "kept but silent" no longer acceptable.
 fn default_max_context_tokens() -> u32 {
     32_768
 }

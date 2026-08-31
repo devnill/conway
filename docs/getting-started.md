@@ -103,6 +103,14 @@ affect the TUI's context-window display, and feed capability filtering once
 the routing plugin is installed. `tool_calling` and `reasoning` are
 currently informational.
 
+**This file is separate from the context-window check that always
+runs**, `models.json` or not: `Backend::admit` (every backend's own T-1
+admission gate, run on every turn regardless of which router or plugins
+are installed) reads its ceiling from the adapter's OWN per-model
+metadata, not from this file — see
+[`providers.md`'s "Where a context ceiling comes from"](providers.md#where-a-context-ceiling-comes-from)
+for that precedence chain and how to override it.
+
 Create the files under `.conway/` in your project directory (or under
 `~/.conway/` — or `$CONWAY_CONFIG_DIR/` if that's set — for a config
 that follows you across projects).

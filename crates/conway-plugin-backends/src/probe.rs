@@ -19,7 +19,7 @@
 //! ever adjusts `max_context_tokens` and (for the `"llama_cpp_server"`
 //! built-in profile with a missing/empty `chat_template`) downgrades
 //! `reliability_tier` to `Unknown`. The extra probing steps below (`/api/tags`,
-//! `/api/version`, `/props`) are matched by `profile.id`, not by a
+//! `/api/show`, `/props`) are matched by `profile.id`, not by a
 //! declarative field — endpoint selection for discovery is a different
 //! concern from the wire-behavior/capability fields `Profile` declares (see
 //! `openai_compat/probe_impl.rs`'s module doc), so a user-supplied or
@@ -29,6 +29,48 @@
 //! `discover` never fabricates a `Capabilities` entry for a model that was
 //! neither observed from an endpoint nor listed in the configured `models`
 //! overrides.
+//!
+//! # `/api/show` vs. `/api/ps` for Ollama's `max_context_tokens`
+//!
+//! Ollama exposes two different numbers under the name "context length" for
+//! the same model, and they can genuinely differ: `POST /api/show`'s
+//! `model_info["<arch>.context_length"]` is the model's own declared
+//! ceiling (a stable property of the model, observed at 262,144 for a real
+//! local `qwen3` model this item's investigation used); `GET /api/ps`'s
+//! per-entry `context_length` is whatever window the CURRENTLY LOADED
+//! runtime instance happens to be configured with right now (observed at
+//! 32,768 for that same running instance — smaller, because Ollama's own
+//! runtime default/last-requested `num_ctx` governs it, not the model's
+//! real capacity).
+//!
+//! **This module probes `/api/show`, never `/api/ps`, and does so
+//! deliberately.** `/api/ps` requires the model to already be resident
+//! (nothing is loaded until a generation happens, so a discovery step that
+//! ran before the first real request would usually see an empty list
+//! anyway) and reports a load-time-contingent number that this exact item's
+//! own defect is a case study in NOT trusting: the ORIGINAL 32,768-token
+//! ceiling that refused a real session came from exactly this kind of
+//! "smaller, session-contingent number substituting for the model's real
+//! capacity" pattern (there it was the profile's own static floor rather
+//! than a live `/api/ps` read, but the failure mode — a small, plausible-
+//! looking number standing in for the model's real window — is the same
+//! shape). `/api/show`'s architecture ceiling is a fact about the model,
+//! independent of what happens to be loaded at probe time, which is what
+//! `ModelMetadata`/`Capabilities::max_context_tokens` are FOR: describing
+//! the model, not the moment.
+//!
+//! The accepted risk: if an operator's server is deliberately configured
+//! with a smaller `num_ctx` than the model's architecture ceiling (a real,
+//! memory-constrained local setup), this probe reports a window larger than
+//! that server will currently honor, and a request sized against it can
+//! still be refused by Ollama itself. That refusal is a real, LOUD,
+//! provider-side error surfaced through the ordinary transport-error path —
+//! not a silent conway-side pre-refusal for a request the server might
+//! actually have served, which is what trusting a too-small number produces
+//! instead. Given this item's own governing principle (declaration
+//! honesty: a refusal must be honest about what actually gated it, and a
+//! silent under-declaration is strictly worse than a loud one), erring
+//! toward the model's real ceiling is the better default.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -109,6 +151,31 @@ struct OllamaTagEntry {
     name: String,
 }
 
+/// Ollama-shaped `POST /api/show` response (the fields this module reads
+/// out of it): `model_info` is a flat map of dotted keys
+/// (`"general.architecture"`, `"<arch>.context_length"`, ...) rather than a
+/// nested structure, so it is read as an untyped map and the
+/// architecture-prefixed context-length key is looked up dynamically —
+/// see [`context_length_from_show`].
+#[derive(Debug, Deserialize)]
+struct OllamaShowResponse {
+    #[serde(default)]
+    model_info: BTreeMap<String, serde_json::Value>,
+}
+
+/// `/api/show`'s `model_info` names its context-length key
+/// `"<arch>.context_length"`, where `<arch>` is itself declared under
+/// `"general.architecture"` in the same map (e.g. `"llama.context_length"`,
+/// `"qwen3.context_length"`) — there is no fixed key, so this reads the
+/// architecture first and builds the real key from it. `None` if either
+/// piece is missing or not the expected JSON type, never a panic: this is
+/// untrusted server response data.
+fn context_length_from_show(model_info: &BTreeMap<String, serde_json::Value>) -> Option<u32> {
+    let arch = model_info.get("general.architecture")?.as_str()?;
+    let key = format!("{arch}.context_length");
+    model_info.get(&key)?.as_u64().map(|n| n as u32)
+}
+
 /// Llama.cpp-shaped `/props` response.
 #[derive(Debug, Deserialize)]
 struct LlamaCppProps {
@@ -186,6 +253,21 @@ impl CapabilityProbe {
         builder
     }
 
+    /// [`Self::request`]'s `POST` counterpart, for `/api/show` — the only
+    /// discovery step that isn't a plain `GET`.
+    fn post_request(&self, url: Url, body: &serde_json::Value) -> reqwest::RequestBuilder {
+        let mut builder = self
+            .http
+            .inner()
+            .post(url)
+            .timeout(DISCOVERY_TIMEOUT)
+            .json(body);
+        if let Some(key) = &self.auth {
+            builder = builder.bearer_auth(key.expose_secret());
+        }
+        builder
+    }
+
     /// Step 1 (all dialects): `GET {base}/models`.
     async fn fetch_models(&self) -> Option<Vec<ModelEntry>> {
         let response = self
@@ -220,6 +302,31 @@ impl CapabilityProbe {
         } else {
             Some(body.models.into_iter().map(|m| m.name).collect())
         }
+    }
+
+    /// Step 2b (`"ollama"` profile, run after step 1/2 for every model name
+    /// observed so far): `POST {base_origin}/api/show`, body `{"model":
+    /// name}`, reading `model_info`'s architecture-prefixed
+    /// `"<arch>.context_length"` — the model's own declared ceiling, not
+    /// the currently-loaded runtime window (`GET /api/ps`'s
+    /// `context_length`, which this module deliberately does NOT probe;
+    /// see the module doc's "`/api/show` vs. `/api/ps`" note for why).
+    /// Best-effort per model: a failure for one name never affects any
+    /// other, and never affects `degraded`.
+    async fn fetch_ollama_show_context_length(&self, model_name: &str) -> Option<u32> {
+        let response = self
+            .post_request(
+                join_origin(&self.base, "/api/show"),
+                &serde_json::json!({ "model": model_name }),
+            )
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let body: OllamaShowResponse = response.json().await.ok()?;
+        context_length_from_show(&body.model_info)
     }
 
     /// Step 3 (`"llama_cpp_server"` profile): `GET {base_origin}/props`.
@@ -258,6 +365,23 @@ impl CapabilityProbe {
             if let Some(names) = self.fetch_ollama_tags().await {
                 for name in names {
                     observed.entry(name).or_default();
+                }
+            }
+        }
+
+        // Step 2b: for every model this run has observed so far (from
+        // `/models` or the `/api/tags` fallback above), ask `/api/show` for
+        // its declared context window -- see
+        // `fetch_ollama_show_context_length`'s doc for exactly which field
+        // and why. One request per model, all best-effort: a model this
+        // step can't reach keeps whatever `hints` it already had (`None`,
+        // falling through to the dialect floor -- never worse than before
+        // this step existed).
+        if self.profile.id == "ollama" {
+            let names: Vec<String> = observed.keys().cloned().collect();
+            for name in names {
+                if let Some(context_length) = self.fetch_ollama_show_context_length(&name).await {
+                    observed.entry(name).or_default().max_context_tokens = Some(context_length);
                 }
             }
         }

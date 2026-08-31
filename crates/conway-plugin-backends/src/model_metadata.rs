@@ -181,8 +181,24 @@ id = "llama3.1-8b"
 reliability_tier = "community"
 tool_calling = "non_streaming"
 
+# `max_context_tokens = 1_000_000`: ollama.com/library/glm-5.2 states "a
+# truly usable 1M-token context window"; the `glm-5.2:cloud` variant
+# specifically is documented there at 976K — this entry uses the round 1M
+# figure, matched to the pre-existing worked example this crate already
+# carried for this
+# exact id (see `crates/conway/src/builder.rs`'s `models_overrides_tests`)
+# rather than splitting hairs between the two documented numbers, since both
+# sit orders of magnitude above what this entry declared until now. Before
+# this line existed, an undescribed `glm-5.2` fell all the way through to
+# `profile::default_max_context_tokens()` -- the `"ollama"` profile's
+# 32,768-token floor -- and a real session against Ollama Cloud's `glm-5.2`
+# was refused at 36,288 tokens despite the same model, on the same endpoint,
+# recorded accepting 61,667 tokens moments earlier in an unrelated client.
+# See `docs/providers.md`'s Ollama Cloud section and its "Where a context
+# ceiling comes from" note for the full precedence story.
 [[model]]
 id = "glm-5.2"
+max_context_tokens = 1_000_000
 reliability_tier = "community"
 tool_calling = "non_streaming"
 
@@ -352,6 +368,39 @@ mod tests {
         assert!(
             k1m.max_context_tokens > k256.max_context_tokens,
             "the 1M variant must declare the larger window"
+        );
+    }
+
+    /// The regression this item exists for: `glm-5.2`'s bundled default
+    /// must declare a window comfortably past both the `"ollama"` profile's
+    /// 32,768-token floor and the 61,667-token figure a real Claude Code
+    /// session recorded the same model accepting on the same Ollama Cloud
+    /// endpoint (the value that a conway session, using only the profile
+    /// floor, was refused well under). Before this item, `glm-5.2` parsed
+    /// with `max_context_tokens: None` here (see the still-sparse fixture
+    /// entry `tests/model_metadata.rs` covers), so this assertion fails on
+    /// the pre-fix DEFAULTS block.
+    #[test]
+    fn glm_5_2_default_declares_a_window_past_the_ollama_floor_and_the_recorded_regression_figure()
+    {
+        let store = ModelMetadataStore::defaults();
+        let glm = store
+            .get(&ModelId::new("glm-5.2"))
+            .expect("glm-5.2 must be present in bundled DEFAULTS");
+        let window = glm
+            .max_context_tokens
+            .expect("glm-5.2 must declare max_context_tokens, not fall through to the floor");
+        const OLLAMA_PROFILE_FLOOR: u32 = 32_768;
+        const RECORDED_ACCEPTED_TOKENS: u32 = 61_667;
+        assert!(
+            window > OLLAMA_PROFILE_FLOOR,
+            "glm-5.2's declared window ({window}) must exceed the ollama profile's floor \
+             ({OLLAMA_PROFILE_FLOOR})"
+        );
+        assert!(
+            window > RECORDED_ACCEPTED_TOKENS,
+            "glm-5.2's declared window ({window}) must exceed the recorded-accepted figure \
+             ({RECORDED_ACCEPTED_TOKENS}) a real session hit"
         );
     }
 
