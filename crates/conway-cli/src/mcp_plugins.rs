@@ -62,6 +62,21 @@ use conway_plugin_mcp::{McpPlugin, McpPluginSpec};
 /// an operator who named an MCP server in `settings.json` and got nothing for
 /// it, silently, is exactly the rung-1 lie CONTRIBUTING's declaration rule
 /// exists to prevent.
+///
+/// **Deliberately UNCHANGED by board item `01M1AMSDE035HAG23TE6XPEF9R`,
+/// disclosed here so a reader of that item does not assume symmetry that
+/// was not actually shipped.** That item made the SIBLING install path,
+/// `claude_compat_plugins::install`, degrade-and-announce instead of
+/// hard-failing when a TRANSLATED `.mcp.json` server's own `McpPlugin::
+/// discover` call fails -- see that function's own doc for the full
+/// ruling (an MCP server contributes tools only, so a dead one narrows
+/// capability rather than silently dropping a permission rule; P-13 does
+/// not apply to a tool-only surface). The identical argument could be made
+/// for an operator-AUTHORED `[plugins].mcp[]` entry here -- same wire
+/// protocol, same "tools only" contribution shape -- but extending the
+/// ruling to this function is a SEPARATE, undone widening that item chose
+/// not to make on its own account. This function's own hard-fail posture
+/// stays exactly as it was.
 pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
     let entries = builder.config().plugins.mcp.clone();
     let mut builder = builder;

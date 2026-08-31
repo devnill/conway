@@ -95,6 +95,25 @@ pub enum WarningCode {
     /// `tracing::warn!` companion for a host with no reason to read
     /// `Conway::warnings()` at all.
     OptionalHostCapabilityMissing,
+    /// An MCP server this host tried to discover -- either an
+    /// operator-authored `[plugins].mcp[]` entry, or one translated from a
+    /// `[plugins].claude_compat[]` directory's own `.mcp.json` -- failed
+    /// discovery (spawn, timeout, or handshake refusal) at startup.
+    /// `message` names the offending entry (and, for a `claude_compat`
+    /// one, the specific server within its directory) plus the underlying
+    /// `conway_plugin_mcp::McpPluginError`. Board item
+    /// `01M1AMSDE035HAG23TE6XPEF9R`: NOT produced by `config::load` --
+    /// raised by `conway-cli`'s own `mcp_plugins`/`claude_compat_plugins`
+    /// install helpers, BEFORE `ConwayBuilder::build` runs, via
+    /// [`crate::ConwayBuilder::with_warning`]. An MCP server contributes
+    /// tools ONLY (no hook or permission-evaluator surface -- see that
+    /// method's own doc), so a server that never came up narrows what the
+    /// model can call rather than silently dropping or misapplying a
+    /// permission rule; that is what makes this a DEGRADE-and-announce
+    /// warning rather than a hard build failure, unlike a directory or file
+    /// this host cannot read at all (still `FacadeError::Build`,
+    /// unchanged).
+    McpServerFailed,
 }
 
 #[cfg(test)]
