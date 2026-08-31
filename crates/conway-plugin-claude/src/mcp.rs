@@ -53,6 +53,28 @@ impl TranslatedMcpServer {
 /// reported, never silently dropped from the list). `Ok((vec![], vec![]))`
 /// when the file is simply absent -- a plugin directory naming no MCP
 /// servers at all is ordinary, not an error.
+/// The bare name of the plugin-root variable -- [`PLUGIN_ROOT_TOKEN`] is the
+/// `${...}` interpolation form of this same name, and they must not drift.
+const PLUGIN_ROOT_TOKEN_NAME: &str = "CLAUDE_PLUGIN_ROOT";
+
+/// Substitutes `${CLAUDE_PLUGIN_ROOT}` in one translated `.mcp.json` string.
+///
+/// Uses `hooks`' own [`PLUGIN_ROOT_TOKEN`] rather than a second spelling of
+/// the same literal (steering P-14): hook commands and MCP argvs are the two
+/// places a Claude Code plugin writes this token, and a translation that
+/// resolved it in one and not the other is exactly the defect this fixes.
+///
+/// **Found by the operator, 2026-08-30.** `.mcp.json` shipping
+/// `"args": ["${CLAUDE_PLUGIN_ROOT}/bin/ideate-mcp"]` -- the ordinary shape,
+/// since a plugin cannot know its own absolute install path -- was passed to
+/// the spawner verbatim, so `sh` was handed a literal `${CLAUDE_PLUGIN_ROOT}`
+/// path, failed `No such file or directory`, and exited before writing a byte
+/// of protocol. conway reported that as `session died: closed stdout (EOF)
+/// mid-session` and refused to start at all.
+fn subst_plugin_root(raw: &str, dir: &Path) -> String {
+    raw.replace(crate::hooks::PLUGIN_ROOT_TOKEN, &dir.display().to_string())
+}
+
 pub(crate) fn read_mcp_servers(
     dir: &Path,
 ) -> Result<(Vec<TranslatedMcpServer>, Vec<UnsupportedItem>), ClaudeCompatError> {
@@ -82,14 +104,14 @@ pub(crate) fn read_mcp_servers(
             ));
             continue;
         };
-        let mut argv = vec![command.to_string()];
+        let mut argv = vec![subst_plugin_root(command, dir)];
         let mut malformed_args = false;
         if let Some(args) = entry.get("args") {
             match args.as_array() {
                 Some(items) => {
                     for item in items {
                         match item.as_str() {
-                            Some(s) => argv.push(s.to_string()),
+                            Some(s) => argv.push(subst_plugin_root(s, dir)),
                             None => malformed_args = true,
                         }
                     }
@@ -111,7 +133,7 @@ pub(crate) fn read_mcp_servers(
                 Some(pairs) => {
                     for (k, v) in pairs {
                         match v.as_str() {
-                            Some(s) => env.push((k.clone(), s.to_string())),
+                            Some(s) => env.push((k.clone(), subst_plugin_root(s, dir))),
                             None => malformed_env = true,
                         }
                     }
@@ -125,6 +147,25 @@ pub(crate) fn read_mcp_servers(
                 "\"env\" is present but is not an object of string values",
             ));
             continue;
+        }
+        // Claude Code exports `CLAUDE_PLUGIN_ROOT` into an MCP server's
+        // environment as well as interpolating it, and launchers rely on
+        // BOTH: ideate's `bin/ideate-mcp` is spawned through the
+        // interpolated argv but then reads
+        // `${CLAUDE_PLUGIN_ROOT:-<derived>}` at runtime to locate its own
+        // build output. Substituting without exporting fixes the spawn and
+        // leaves the runtime read to the fallback -- which happens to work
+        // there, and would not in a launcher that has no fallback.
+        //
+        // A plugin that declares the variable in its own `env` block wins:
+        // that is an explicit statement about its own layout, and silently
+        // overwriting it would be conway substituting its opinion for the
+        // plugin author's.
+        if !env.iter().any(|(k, _)| k == PLUGIN_ROOT_TOKEN_NAME) {
+            env.push((
+                PLUGIN_ROOT_TOKEN_NAME.to_string(),
+                dir.display().to_string(),
+            ));
         }
         servers.push(TranslatedMcpServer {
             name: name.clone(),
@@ -141,6 +182,85 @@ mod tests {
 
     fn write_mcp_json(dir: &Path, contents: &str) {
         std::fs::write(dir.join(".mcp.json"), contents).unwrap();
+    }
+
+    /// **Board finding, operator-reported 2026-08-30.** A `.mcp.json` that
+    /// locates its own launcher with `${CLAUDE_PLUGIN_ROOT}` -- the ordinary
+    /// shape, since a plugin cannot know its absolute install path -- must
+    /// have that token resolved before the argv reaches the spawner.
+    ///
+    /// This is the exact ideate manifest that stopped conway starting:
+    /// `sh` received a literal `${CLAUDE_PLUGIN_ROOT}/bin/ideate-mcp`, failed
+    /// `No such file or directory`, and exited before speaking any protocol,
+    /// which surfaced as `session died: closed stdout (EOF) mid-session`.
+    ///
+    /// `hooks.rs` resolved the token for hook commands from the start; this
+    /// path never did. Note that `tests/end_to_end.rs` in
+    /// `conway-plugin-marketplace` DOCUMENTED the gap and worked around it by
+    /// writing an absolute path into its fixture -- so the end-to-end test
+    /// passed against a manifest shape no real plugin uses. A test that
+    /// avoids the untranslated shape cannot fail on it.
+    #[test]
+    fn plugin_root_token_resolves_in_command_args_and_env() {
+        let dir = tempfile::tempdir().expect("plugin dir");
+        write_mcp_json(
+            dir.path(),
+            r#"{"mcpServers":{"ideate":{
+                 "command":"sh",
+                 "args":["${CLAUDE_PLUGIN_ROOT}/bin/ideate-mcp"],
+                 "env":{"IDEATE_HOME":"${CLAUDE_PLUGIN_ROOT}/state"}}}}"#,
+        );
+
+        let (servers, unsupported) = read_mcp_servers(dir.path()).expect("read");
+        assert!(unsupported.is_empty(), "{unsupported:?}");
+        assert_eq!(servers.len(), 1);
+        let root = dir.path().display().to_string();
+
+        assert_eq!(
+            servers[0].command,
+            vec!["sh".to_string(), format!("{root}/bin/ideate-mcp")],
+            "the argv handed to the spawner must carry a real path, never the \
+             literal token -- sh cannot open a file called `${{CLAUDE_PLUGIN_ROOT}}`"
+        );
+        assert!(
+            servers[0]
+                .env
+                .iter()
+                .any(|(k, v)| k == "IDEATE_HOME" && *v == format!("{root}/state")),
+            "env values carry the token too: {:?}",
+            servers[0].env
+        );
+        // Exported as well as interpolated: a launcher that resolves its own
+        // root at runtime (ideate's does) needs the variable to exist.
+        assert!(
+            servers[0]
+                .env
+                .iter()
+                .any(|(k, v)| k == "CLAUDE_PLUGIN_ROOT" && *v == root),
+            "CLAUDE_PLUGIN_ROOT must be exported to the server: {:?}",
+            servers[0].env
+        );
+    }
+
+    /// A plugin that declares `CLAUDE_PLUGIN_ROOT` itself keeps its own value
+    /// -- conway interpolates and exports, but does not overrule an explicit
+    /// statement by the plugin author about its own layout.
+    #[test]
+    fn an_explicitly_declared_plugin_root_is_not_overwritten() {
+        let dir = tempfile::tempdir().expect("plugin dir");
+        write_mcp_json(
+            dir.path(),
+            r#"{"mcpServers":{"x":{"command":"true",
+                 "env":{"CLAUDE_PLUGIN_ROOT":"/explicitly/chosen"}}}}"#,
+        );
+        let (servers, _) = read_mcp_servers(dir.path()).expect("read");
+        let roots: Vec<_> = servers[0]
+            .env
+            .iter()
+            .filter(|(k, _)| k == "CLAUDE_PLUGIN_ROOT")
+            .collect();
+        assert_eq!(roots.len(), 1, "exactly one binding, never a duplicate");
+        assert_eq!(roots[0].1, "/explicitly/chosen");
     }
 
     #[test]
@@ -162,9 +282,25 @@ mod tests {
                 "v".to_string()
             ]
         );
+        // The plugin's own declared pair survives verbatim...
+        assert!(
+            servers[0]
+                .env
+                .iter()
+                .any(|(k, v)| k == "API_KEY" && v == "secret"),
+            "{:?}",
+            servers[0].env
+        );
+        // ...alongside the CLAUDE_PLUGIN_ROOT conway now exports for every
+        // translated server (see `plugin_root_token_resolves_in_command_args_
+        // and_env`). This assertion used to be an exact-vector equality, which
+        // is why adding the export surfaced here: the extra binding is the
+        // intended new contract, not a regression.
         assert_eq!(
-            servers[0].env,
-            vec![("API_KEY".to_string(), "secret".to_string())]
+            servers[0].env.len(),
+            2,
+            "the declared pair plus the exported root, nothing else: {:?}",
+            servers[0].env
         );
     }
 

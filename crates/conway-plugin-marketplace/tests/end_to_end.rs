@@ -156,14 +156,25 @@ async fn browsing_installing_and_using_a_marketplace_plugin_works_end_to_end() {
     let script_bytes = std::fs::read_to_string(&script_source).unwrap();
     warm_python3().await;
 
-    // Where the plugin will actually be installed -- `.mcp.json`'s own
-    // `command`/`args` must name the FINAL on-disk path directly, since
-    // `conway_plugin_claude` does not (yet) expand a `${CLAUDE_PLUGIN_ROOT}`
-    // style variable (verified against its own `mcp.rs`: `command`/`args`
-    // are used verbatim) -- exactly the same "absolute script path" shape
-    // `conway-plugin-claude`'s own end-to-end fixture uses, just resolved
-    // against the store path this test controls instead of a path the
-    // operator typed by hand.
+    // Where the plugin will actually be installed. This fixture names the
+    // FINAL on-disk path directly, which is the shape this test has always
+    // used.
+    //
+    // It used to be REQUIRED to, because `conway_plugin_claude` did not
+    // expand `${CLAUDE_PLUGIN_ROOT}` in an MCP `command`/`args`. That was
+    // true when written and is no longer: `mcp.rs::subst_plugin_root` now
+    // resolves the token (and exports the variable) for every translated
+    // server.
+    //
+    // Worth recording why the workaround was costly. Writing an absolute
+    // path let this end-to-end test pass against a manifest shape almost no
+    // real plugin uses -- a plugin cannot know its own install path, so it
+    // writes the token -- and the gap surfaced only when an operator
+    // installed a real plugin and conway would not start at all. The
+    // token-resolving case is covered by a unit test at the translation
+    // boundary (`mcp.rs::plugin_root_token_resolves_in_command_args_and_env`);
+    // this test deliberately keeps the absolute-path shape so both are
+    // exercised rather than converting it and losing the coverage.
     let store = tempfile::tempdir().expect("plugin store");
     let installed_script_path = store.path().join("acme-tools").join("acme_mcp.py");
 

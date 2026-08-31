@@ -57,7 +57,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 /// never meaningfully runs). No other environment variable is substituted
 /// or set; a translated rule's command inherits the parent process's own
 /// environment unfiltered, same as any other `[hooks].rules[]` entry.
-const PLUGIN_ROOT_TOKEN: &str = "${CLAUDE_PLUGIN_ROOT}";
+pub(crate) const PLUGIN_ROOT_TOKEN: &str = "${CLAUDE_PLUGIN_ROOT}";
 
 /// One `hooks/hooks.json` rule, after event-name translation.
 #[derive(Debug, Clone, PartialEq, Eq)]
