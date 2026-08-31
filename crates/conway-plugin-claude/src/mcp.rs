@@ -42,6 +42,13 @@ impl TranslatedMcpServer {
             config_id: self.name,
             command: self.command,
             timeout_ms,
+            // A Claude Code plugin is installed by cloning it with no build
+            // step and no bundled runtime, so a plugin whose server is
+            // compiled builds itself on FIRST launch. That start is minutes,
+            // not milliseconds, and it is the ordinary case here rather than
+            // a pathological one -- so this path takes the generous startup
+            // budget rather than the per-call deadline.
+            startup_timeout_ms: conway_plugin_mcp::DEFAULT_STARTUP_TIMEOUT_MS,
             env: self.env,
         }
     }

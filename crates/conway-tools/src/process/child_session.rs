@@ -507,8 +507,39 @@ impl<E: ChildSessionError> ChildSession<E> {
     /// dropping the sender (session died mid-call) -- never a hang, never a
     /// silent retry.
     pub async fn framed_round_trip(&self, id: u64, json: Vec<u8>) -> Result<serde_json::Value, E> {
+        self.framed_round_trip_within(id, json, self.timeout_ms)
+            .await
+    }
+
+    /// [`Self::framed_round_trip`] under an EXPLICIT read deadline instead of
+    /// the session's own per-call `timeout_ms`.
+    ///
+    /// Exists because the per-call deadline is the wrong bound for the FIRST
+    /// round trip of a session's life. A per-call timeout answers "how long
+    /// may an already-running server take to answer one request"; the opening
+    /// handshake also covers the process getting to the point where it can
+    /// answer anything at all.
+    ///
+    /// **Found by the operator, 2026-08-30.** A Claude Code plugin is
+    /// installed by cloning it with no build step and no bundled runtime, so
+    /// a plugin whose server needs compiling builds itself on first launch --
+    /// ideate's `bin/ideate-mcp` runs `npm install && npm run build` before
+    /// exec'ing Node. Against a 5s per-call deadline that first start can
+    /// never finish, and the operator sees the session die at startup with no
+    /// hint that a build was underway.
+    ///
+    /// Everything else is identical and delegates to ONE implementation --
+    /// safety-critical logic is written once and parameterized, never copied
+    /// into a near-duplicate that can drift: same fail-closed handling of a
+    /// dead session, write failure, timeout, or a dropped sender.
+    pub async fn framed_round_trip_within(
+        &self,
+        id: u64,
+        json: Vec<u8>,
+        timeout_ms: u64,
+    ) -> Result<serde_json::Value, E> {
         let (rx, _guard) = self.send_request(id, json).await?;
-        match timeout(Duration::from_millis(self.timeout_ms), rx).await {
+        match timeout(Duration::from_millis(timeout_ms), rx).await {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(_canceled)) => {
                 // The reader dropped the sender -- the session died while we
@@ -523,7 +554,7 @@ impl<E: ChildSessionError> ChildSession<E> {
             }
             Err(_elapsed) => {
                 self.kill_group_now().await;
-                Err(E::timed_out(&self.config_id, self.timeout_ms))
+                Err(E::timed_out(&self.config_id, timeout_ms))
             }
         }
     }

@@ -70,6 +70,12 @@ pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
             config_id: entry.id.clone(),
             command: entry.command,
             timeout_ms: entry.timeout_ms,
+            // The opening handshake gets its own, larger budget: an
+            // operator-authored server may also need to start before it can
+            // answer. `timeout_ms` stays the per-call deadline it has always
+            // been, so an operator who tuned it sees no change in what it
+            // governs.
+            startup_timeout_ms: conway_plugin_mcp::DEFAULT_STARTUP_TIMEOUT_MS,
             env: entry.env,
         };
         let plugin = McpPlugin::discover(spec)

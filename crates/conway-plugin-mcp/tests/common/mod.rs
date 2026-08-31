@@ -161,6 +161,63 @@ pub async fn spec_with_timeout(
 /// The server reads NDJSON lines from stdin in a loop: `initialize` -> answer
 /// the handshake; `notifications/initialized` (no id) -> no answer; `tools/list`
 /// -> answer the tool list; `tools/call` -> dispatch by `name`.
+/// A server that is SLOW TO START and then behaves normally: it sleeps
+/// before answering `initialize`, then serves like [`REF_MCP_SERVER`].
+///
+/// Stands in for a Claude Code plugin that builds itself on first launch
+/// (ideate's `bin/ideate-mcp` runs `npm install && npm run build` before
+/// exec'ing Node). The delay is deliberately placed BEFORE the initialize
+/// answer and nowhere else, so a test can hold the per-call deadline far
+/// below it and still open the session -- which is exactly the separation
+/// `DEFAULT_STARTUP_TIMEOUT_MS` exists to express.
+pub const SLOW_START_SERVER: &str = r#"#!/usr/bin/env python3
+import sys, json, time, os
+
+time.sleep(float(os.environ.get("SLOW_START_SECONDS", "1.5")))
+
+def initialize(rid):
+    return {
+        "jsonrpc": "2.0", "id": rid, "result": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "slow-start", "version": "0.1"},
+        }
+    }
+
+def tools_list(rid):
+    return {
+        "jsonrpc": "2.0", "id": rid, "result": {
+            "tools": [{
+                "name": "ping",
+                "description": "Answer pong.",
+                "inputSchema": {"type": "object", "properties": {}},
+            }]
+        }
+    }
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method = msg.get("method")
+    rid = msg.get("id")
+    if rid is None:
+        continue
+    if method == "initialize":
+        out = initialize(rid)
+    elif method == "tools/list":
+        out = tools_list(rid)
+    elif method == "tools/call":
+        out = {"jsonrpc": "2.0", "id": rid,
+               "result": {"content": [{"type": "text", "text": "pong"}]}}
+    else:
+        out = {"jsonrpc": "2.0", "id": rid,
+               "error": {"code": -32601, "message": "no"}}
+    sys.stdout.write(json.dumps(out) + "\n")
+    sys.stdout.flush()
+"#;
+
 pub const REF_MCP_SERVER: &str = r#"#!/usr/bin/env python3
 import sys, json
 

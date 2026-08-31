@@ -107,6 +107,11 @@ use crate::{McpPluginError, McpPluginSpec};
 /// subprocess transport; an MCP server's tools share one server process too).
 pub struct McpSession {
     inner: ChildSession<McpPluginError>,
+    /// The opening handshake's own deadline, copied from the spec at spawn
+    /// (`McpPluginSpec::startup_timeout_ms`). Distinct from the shared
+    /// `ChildSession`'s per-call `timeout_ms`, which bounds every request
+    /// after the handshake.
+    startup_timeout_ms: u64,
 }
 
 impl McpSession {
@@ -142,7 +147,10 @@ impl McpSession {
                 NotificationRoute::WarnAndDrop,
             )
             .await?;
-            Ok(Self { inner })
+            Ok(Self {
+                inner,
+                startup_timeout_ms: spec.startup_timeout_ms,
+            })
         }
     }
 
@@ -201,7 +209,14 @@ impl McpSession {
             detail: format!("failed to serialize initialize request: {err}"),
         })?;
         json.push(b'\n');
-        let value = self.inner.framed_round_trip(id, json).await?;
+        // The OPENING round trip gets the startup budget, not the per-call
+        // deadline: it covers the server becoming able to answer at all
+        // (spawn, runtime start, and for a Claude Code plugin possibly a
+        // first-launch build). See `DEFAULT_STARTUP_TIMEOUT_MS`.
+        let value = self
+            .inner
+            .framed_round_trip_within(id, json, self.startup_timeout_ms)
+            .await?;
         let init = parse_initialize_response(&value, id).map_err(|detail| {
             // A malformed initialize answer fails the whole session.
             let err = McpPluginError::HandshakeFailed {

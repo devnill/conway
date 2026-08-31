@@ -81,6 +81,33 @@ use wire::CallOutcome;
 /// `conway_plugin_mcp::DEFAULT_TIMEOUT_MS` path still resolves.
 pub use conway::plugin::DEFAULT_TIMEOUT_MS;
 
+/// The default deadline for an MCP server's OPENING `initialize` handshake:
+/// two minutes, against [`DEFAULT_TIMEOUT_MS`]'s five seconds for every
+/// request after it.
+///
+/// These bound genuinely different things. A per-call deadline asks how long
+/// an already-running server may take to answer one request, and five seconds
+/// is generous for that. The first round trip additionally covers the server
+/// becoming able to answer anything -- process spawn, runtime start, and, for
+/// a Claude Code plugin, possibly a first-launch BUILD.
+///
+/// **Operator-reported, 2026-08-30.** Claude Code installs a plugin by
+/// cloning it with no build step and bundles no runtime, so a plugin whose
+/// server is compiled builds itself on first launch: ideate's
+/// `bin/ideate-mcp` runs `npm install && npm run build` before exec'ing Node,
+/// which is minutes on a cold cache and cannot fit in five seconds. conway's
+/// `claude_compat` has to tolerate that to host the same plugins, and
+/// tolerating it is what makes an install work on the operator's machine
+/// rather than only on one where the plugin happens to be prebuilt.
+///
+/// Two minutes is a real bound, not "effectively forever": a server that
+/// cannot open a session in two minutes is wedged, and failing then is
+/// better than hanging. It is deliberately generous because the cost of
+/// being wrong is asymmetric -- too short bricks a legitimate first launch,
+/// too long delays a diagnosis the operator can also get from the failing
+/// server's own stderr.
+pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 120_000;
+
 /// One operator-configured MCP-over-stdio plugin entry: the command to spawn
 /// (the external MCP server), how long any single framed JSON-RPC round-trip
 /// is allowed to run before this host kills it, and the explicit environment
@@ -114,6 +141,10 @@ pub struct McpPluginSpec {
     /// PER-CALL deadline, NOT a session-wide idle kill (a session that sits
     /// idle between calls is left alone).
     pub timeout_ms: u64,
+    /// The deadline for the OPENING `initialize` handshake only -- see
+    /// [`DEFAULT_STARTUP_TIMEOUT_MS`] for why this is separate from
+    /// [`Self::timeout_ms`]. Every later request uses `timeout_ms`.
+    pub startup_timeout_ms: u64,
     /// Explicit environment pairs the child inherits IN ADDITION to the
     /// parent process's own env -- the identical shape a `[hooks].rules[]`
     /// entry's env carries, so an operator scopes credentials/connection
@@ -132,6 +163,7 @@ impl McpPluginSpec {
             config_id: config_id.into(),
             command,
             timeout_ms: DEFAULT_TIMEOUT_MS,
+            startup_timeout_ms: DEFAULT_STARTUP_TIMEOUT_MS,
             env: Vec::new(),
         }
     }

@@ -411,3 +411,70 @@ async fn a_call_cancelled_in_flight_returns_cancelled_not_a_hang() {
         "the second call must round-trip the `slept` text, got {text:?}"
     );
 }
+
+/// **Operator-reported, 2026-08-30.** A server that is slow to become ready
+/// must still open a session, even when the per-call deadline is far shorter
+/// than its startup takes.
+///
+/// The concrete case: installing ideate under `[plugins].claude_compat` left
+/// conway unable to start at all. Claude Code installs a plugin by cloning it
+/// with no build step and bundles no runtime, so a plugin whose server is
+/// compiled builds itself on first launch -- ideate's `bin/ideate-mcp` runs
+/// `npm install && npm run build` before exec'ing Node. conway applied its
+/// 5s PER-CALL deadline to the opening handshake, which that first launch
+/// cannot fit inside.
+///
+/// The fixture sleeps 1.5s before answering `initialize` and the per-call
+/// deadline here is 300ms, so this test FAILS on the old single-timeout code
+/// and passes only once the handshake has its own budget. The two bounds are
+/// deliberately far apart: an accidental fallback to `timeout_ms` cannot pass.
+#[tokio::test]
+async fn a_slow_starting_server_still_opens_under_the_startup_budget() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // 300ms per-call deadline -- five times SHORTER than the fixture's own
+    // 1.5s startup sleep.
+    let mut spec =
+        common::spec_with_timeout(dir.path(), "slow_start.py", common::SLOW_START_SERVER, 300)
+            .await;
+    spec.startup_timeout_ms = 30_000;
+
+    let plugin = McpPlugin::discover(spec).await.expect(
+        "a server that takes longer than the PER-CALL deadline to become ready must \
+                 still open: the handshake is bounded by startup_timeout_ms, not timeout_ms",
+    );
+
+    let tools = plugin.tools();
+    assert_eq!(tools.len(), 1, "the slow starter's tool must be registered");
+    assert_eq!(tools[0].spec().name, conway::ToolName::new("ping"));
+}
+
+/// The startup budget is not unbounded: a server that never answers
+/// `initialize` still fails closed, it just fails on the startup deadline
+/// rather than the per-call one. Without this, "give startup more room" would
+/// be indistinguishable from "let a wedged server hang forever".
+#[tokio::test]
+async fn a_server_that_never_becomes_ready_still_fails_closed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // The same slow-start fixture, told to sleep far past the startup budget.
+    // `SLEEPY_SERVER` would be the wrong fixture here: it sleeps on
+    // `tools/call` and answers `initialize` promptly, so the session opens and
+    // the assertion never exercises the startup deadline at all.
+    let mut spec = common::spec_with_timeout(
+        dir.path(),
+        "never_ready.py",
+        common::SLOW_START_SERVER,
+        30_000,
+    )
+    .await;
+    spec.env
+        .push(("SLOW_START_SECONDS".to_string(), "30".to_string()));
+    spec.startup_timeout_ms = 400;
+
+    let err = McpPlugin::discover(spec)
+        .await
+        .expect_err("a server that never answers initialize must fail closed");
+    assert!(
+        matches!(err, McpPluginError::TimedOut { .. }),
+        "expected TimedOut on the STARTUP deadline, got {err:?}"
+    );
+}
