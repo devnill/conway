@@ -383,6 +383,32 @@ Fix it by raising the model's declared `max_context_tokens` in
 `models.json` (if you under-declared it), lowering the role's
 `headroom_tokens`, or adding a larger-window candidate to the chain.
 
+### A headroom that consumes most of a model's window, without exceeding it
+
+A second, milder warning catches the shape that actually broke a real
+walked session (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`): headroom that
+reaches `>= 25%` of the smallest reachable window, but not `>=` it
+outright. `8192` (conway's own built-in default) against a
+`32768`-token window is exactly `25%`; the check above never fires for that
+pair (`8192 < 32768`), so a role could sit at that ratio indefinitely with
+no warning at all, right up until a normal-sized prompt to that model hit
+`ContextTooLarge` mid-session:
+
+```
+conway: warning: routing.default_headroom_tokens is 8192 tokens (25% of the
+smallest context window in its chain, ollama-cloud/glm-5.2 = 32768 tokens);
+a long-running conversation to that model can hit the context-window gate
+well before it would with a smaller reservation -- consider a smaller
+headroom_tokens for this role, or a larger-window fallback later in its
+chain
+```
+
+Same non-clamping guarantee as the literal-exceeds warning above: this
+names the ratio and suggests the fix, but the configured value is never
+touched. `WarningCode::HeadroomConsumesLargeFractionOfContext` on the same
+`Conway::warnings()`/CLI-stderr/TUI-transcript surface `HeadroomExceedsContext`
+already uses.
+
 ### Estimated, not exact
 
 `est_tokens` is a heuristic, never a real tokenizer count — conway's
@@ -410,16 +436,105 @@ been selected, and each one's window alone is too small — conway raises
 a distinct, terminal error instead of `NoCandidate`:
 
 ```
-context rejected: 34000 prompt + 16000 reserved output = 50000 tokens, but ollama-cloud/glm-5.2 accepts at most 40000 (short by 10000); no truncation or escalation is performed
+context rejected: 34000 prompt + 16000 reserved output = 50000 tokens, but ollama-cloud/glm-5.2 accepts at most 40000 (short by 10000); no truncation or escalation is performed -- to admit this request, lower role planner's headroom_tokens, add a larger-window model later in its fallback chain, or shorten the prompt
 ```
 
 This is `RoutingError::ContextTooLarge`: it names the input size, the
 resolved headroom, and the *largest* window among the candidates that
 still didn't fit (so a chain with several too-small models reports its
 best case, not an arbitrary one). No truncation or escalation ever
-happens on your behalf — this is terminal by design; shrink the turn's
-content, raise the role's headroom budget, or add a larger-window
+happens on your behalf — this is terminal by design; the trailing clause
+(board item `01M1AVZPTRSWVE33G4DTJY7Q1B`) names the operator's actual next
+move so the message doubles as the fix, not just the diagnosis: shrink the
+turn's content, raise the role's headroom budget, or add a larger-window
 candidate to the chain.
+
+**This is a real dead end, not merely an unhelpfully-worded one, when it
+fires.** Nothing conway does today shrinks, summarizes, or otherwise
+edits an oversized turn on your behalf — the closest thing to that is
+[`ContextHook::on_overflow`](plugins/hooks.md), an extension point
+`AgentLoop` already retries against (up to `MAX_OVERFLOW_ATTEMPTS = 2`
+times) whenever this exact rejection fires, but which no first-party
+plugin implements as of this writing; see that doc's `on_overflow` row for
+the mechanism a compaction/trim plugin would hook. `conway.trim`
+([`plugins/README.md`](plugins/README.md)) addresses a related but
+different problem — it drops old tool round-trips proactively, on a fixed
+turn window, whether or not a turn is close to overflowing — not this
+message's trigger directly.
+
+Every candidate a role's chain configures IS already tried before this
+message fires, in order — a too-small candidate is skipped (never
+dialed), and the chain falls through to the next one; see ["Advisory vs.
+authoritative"](#advisory-vs-authoritative-two-context-checks-not-one)
+below for exactly where that happens. `ContextTooLarge` is what you see
+only once every configured candidate has been tried and every one of them
+failed on context alone — the fix that actually helps most often is a
+bigger `chain`, not a smaller prompt.
+
+### What conway does as a window fills, and what it deliberately does not (yet)
+
+Board item `01M1AVZPTRSWVE33G4DTJY7Q1B`'s own framing named four strategies
+and asked for a ranked decision, not just a fix. Recorded here rather than
+only in a completion report, so the ranking outlives the session that made
+it:
+
+1. **Escalate along the configured fallback chain — built, and already
+   there before this item.** Reading `DeclarativeRouter::resolve`
+   (`conway-plugin-routing`) and `AttemptEngine::execute`
+   (`conway-runtime`) found both already try every chain candidate in
+   order and fall through past one that is too small — `ContextTooLarge`
+   only fires once ALL of them have failed. This item added no code for
+   it, only a regression test proving it reaches the real seam (see that
+   test's own doc for exactly which layer does the skipping). **Cost:**
+   none by itself — it is a config authoring discipline (put a
+   larger-window model later in the chain), not a mechanism to build.
+   **Limit:** useless when no configured candidate has a bigger window,
+   which is exactly the shape this item's own framing calls out ("what
+   happens when a prompt genuinely does not fit a genuinely correct
+   ceiling").
+2. **A proactive, non-clamping warning for headroom that consumes a large
+   fraction of a window — built.** Extends the pre-existing
+   `HeadroomExceedsContext` config-load check (which only fires once
+   headroom literally exceeds the window) with a second, milder
+   `HeadroomConsumesLargeFractionOfContext` warning at `>= 25%`, the exact
+   ratio this item's own walked scenario hit. **Cost:** none to existing
+   behavior — nothing is clamped, so no admission decision changes; an
+   operator gets an earlier, more specific nudge toward the two knobs they
+   already had (a smaller `headroom_tokens`, or a bigger chain).
+3. **Silently auto-shrinking headroom per candidate (runtime adaptive
+   headroom) — considered, rejected.** The cheapest fix on paper, but two
+   things independently rule it out rather than one: (a) it would reverse
+   an EXISTING, deliberately-tested decision — a test named
+   `headroom_exceeding_smallest_reachable_context_warns_without_clamping`
+   (`crates/conway/tests/config_headroom.rs`) already pins "not clamped:
+   the configured value survives unmodified" as the answer to this exact
+   class of problem, and reversing that without being asked is a product
+   decision this item does not own; (b) headroom exists specifically to
+   avoid a WORSE failure mode than a pre-flight rejection — trimming it
+   trades a safe `ContextTooLarge` (paying nothing) for a live
+   mid-generation overflow (paying for tokens already generated) if the
+   estimate that shrank it was even slightly optimistic. Silently making
+   that trade on an operator's behalf is the thing this item's own
+   constraints forbid ("do not weaken the admission check to make this go
+   away").
+4. **Cap or elide oversized tool results — real, and out of this item's
+   file boundaries.** The proximate trigger in this item's own narrative
+   (`work_list --include_spec` pulling 28k tokens of board prose to answer
+   a question about titles) lives in context ASSEMBLY
+   (`conway-runtime`/`conway-tools`), not in the routing/admission surface
+   this item's files cover. Left as a follow-up, not attempted here —
+   see this item's completion report for the exact scope line.
+5. **Full conversation compaction — the largest piece, genuinely deferred,
+   and further along than it looks.** `PHILOSOPHY.md`'s own "Where the
+   tree is today" note already says it plainly: the `ContextHook` port
+   this would rest on is built and does everything a compaction plugin
+   would need — `AgentLoop` already retries `ContextHook::on_overflow` up
+   to `MAX_OVERFLOW_ATTEMPTS` times on exactly this rejection (see
+   [`plugins/hooks.md`](plugins/hooks.md)) — but no first-party plugin
+   implements it. Building one is a genuinely separate, large piece of
+   work (what gets summarized, by which model, and how the operator is
+   told, per this item's own list of open questions) that does not fit
+   this item's appetite alongside the other three.
 
 ### Advisory vs. authoritative: two context checks, not one
 
