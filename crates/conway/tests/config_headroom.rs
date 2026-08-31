@@ -317,6 +317,105 @@ fn headroom_exceeding_smallest_reachable_context_warns_without_clamping() {
     );
 }
 
+/// New for board item `01M1AVZPTRSWVE33G4DTJY7Q1B`:
+/// `WarningCode::HeadroomConsumesLargeFractionOfContext` fires below the
+/// literal-exceeds threshold (headroom(8192) < window(32768), so
+/// `headroom_exceeding_smallest_reachable_context_warns_without_clamping`'s
+/// own check does not fire) once headroom reaches the fraction threshold --
+/// exactly conway's own built-in default against a 32768-token window, the
+/// number the item's own walked scenario names. Fails against the
+/// pre-change code: before this item, `validate`'s step 7 only ever
+/// produced `HeadroomExceedsContext`, never this variant, so
+/// `outcome.warnings` would be empty here.
+#[test]
+fn headroom_consuming_a_large_fraction_of_context_warns_without_exceeding_it() {
+    let dir = support::unique_temp_dir("headroom-large-fraction");
+    let metadata_path = dir.join("models.json");
+    std::fs::write(
+        &metadata_path,
+        r#"{"models":{"anthropic/claude-haiku-4-5":{"max_context_tokens":32768,"tool_calling":"streaming","reasoning":false,"reliability_tier":"verified"}}}"#,
+    )
+    .unwrap();
+
+    let config_value = serde_json::json!({
+        "default_role": "coder",
+        "roles": {
+            "coder": { "chain": ["anthropic/claude-haiku-4-5"] },
+        },
+        "routing": { "default_headroom_tokens": 8192 },
+        "backends": { "anthropic": { "kind": "anthropic" } },
+        "models": { "metadata_path": metadata_path.to_string_lossy() },
+    });
+    let path = dir.join("settings.json");
+    std::fs::write(&path, serde_json::to_vec(&config_value).unwrap()).unwrap();
+
+    let outcome = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(path),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .unwrap();
+
+    assert_eq!(outcome.warnings.len(), 1);
+    let warning = &outcome.warnings[0];
+    assert_eq!(
+        warning.code,
+        WarningCode::HeadroomConsumesLargeFractionOfContext
+    );
+    assert!(warning.message.contains("coder"));
+    assert!(warning.message.contains("8192"));
+    assert!(warning.message.contains("32768"));
+    assert!(warning.message.contains("25%"));
+    assert!(warning.message.contains("anthropic/claude-haiku-4-5"));
+
+    // Not clamped -- same guarantee the literal-exceeds warning makes.
+    assert_eq!(
+        outcome.config.headroom_for(&RoleAlias::new("coder")),
+        8_192
+    );
+}
+
+/// Negative control (a check is not established until it has been shown to
+/// fail elsewhere, and shown NOT to over-fire here): the same built-in
+/// default against a realistically large window (200000) is a low
+/// single-digit percentage, well under the 25% threshold, and warns not at
+/// all.
+#[test]
+fn headroom_well_under_the_fraction_threshold_does_not_warn() {
+    let dir = support::unique_temp_dir("headroom-below-fraction");
+    let metadata_path = dir.join("models.json");
+    std::fs::write(
+        &metadata_path,
+        r#"{"models":{"anthropic/claude-haiku-4-5":{"max_context_tokens":200000,"tool_calling":"streaming","reasoning":false,"reliability_tier":"verified"}}}"#,
+    )
+    .unwrap();
+
+    let config_value = serde_json::json!({
+        "default_role": "coder",
+        "roles": {
+            "coder": { "chain": ["anthropic/claude-haiku-4-5"] },
+        },
+        "routing": { "default_headroom_tokens": 8192 },
+        "backends": { "anthropic": { "kind": "anthropic" } },
+        "models": { "metadata_path": metadata_path.to_string_lossy() },
+    });
+    let path = dir.join("settings.json");
+    std::fs::write(&path, serde_json::to_vec(&config_value).unwrap()).unwrap();
+
+    let outcome = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(path),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .unwrap();
+
+    assert!(outcome.warnings.is_empty());
+}
+
 #[test]
 fn no_headroom_warning_when_model_metadata_is_absent() {
     let dir = support::unique_temp_dir("headroom-no-metadata");

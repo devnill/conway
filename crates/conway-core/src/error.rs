@@ -324,8 +324,16 @@ pub enum RoutingError {
     #[error("unknown model reference: {reference}")]
     UnknownModelRef { reference: String },
     /// T-1: the assembled context plus reserved headroom exceeds the model's
-    /// window. Terminal — no truncation or escalation is performed.
-    #[error("context rejected: {est_tokens} prompt + {headroom_tokens} reserved output = {required_tokens} tokens, but {model} accepts at most {max_context_tokens} (short by {shortfall_tokens}); no truncation or escalation is performed")]
+    /// window. Terminal — no truncation or escalation is performed. The
+    /// trailing clause (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`) names the
+    /// operator's three actual levers -- a smaller `headroom_tokens` for
+    /// `role`, a larger-window model later in its fallback chain (escalation
+    /// along an already-configured chain, not something core invents), or a
+    /// shorter prompt -- the same three `docs/routing.md`'s own "A headroom
+    /// that already exceeds a model's window" and "Estimated, not exact"
+    /// sections already document, now surfaced at the error site itself
+    /// rather than left for the operator to find in a doc.
+    #[error("context rejected: {est_tokens} prompt + {headroom_tokens} reserved output = {required_tokens} tokens, but {model} accepts at most {max_context_tokens} (short by {shortfall_tokens}); no truncation or escalation is performed -- to admit this request, lower role {role}'s headroom_tokens, add a larger-window model later in its fallback chain, or shorten the prompt")]
     ContextTooLarge {
         role: RoleAlias,
         model: ModelRef,
@@ -444,7 +452,11 @@ pub enum RuntimeError {
     #[error("context path error: {0}")]
     Path(#[from] PathError),
     /// T-1 at the fork boundary. Terminal — no truncation or escalation.
-    #[error("context rejected: {est_tokens} prompt + {headroom_tokens} reserved output = {required_tokens} tokens, but {model} accepts at most {max_context_tokens} (short by {shortfall_tokens}); no truncation or escalation is performed")]
+    /// Same trailing-remediation amendment as `RoutingError::ContextTooLarge`
+    /// (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`); worded without a role name
+    /// since this variant has none (`parent` is an `AgentId`, not a
+    /// `RoleAlias`).
+    #[error("context rejected: {est_tokens} prompt + {headroom_tokens} reserved output = {required_tokens} tokens, but {model} accepts at most {max_context_tokens} (short by {shortfall_tokens}); no truncation or escalation is performed -- to admit this fork, lower its reserved headroom, route it through a larger-window model, or reduce what is forked into the child")]
     ForkContextOverflow {
         parent: AgentId,
         model: ModelRef,
@@ -814,6 +826,54 @@ mod tests {
                 runtime.contains(needle),
                 "missing {needle:?} in {runtime:?}"
             );
+        }
+    }
+
+    /// Board item `01M1AVZPTRSWVE33G4DTJY7Q1B`: the two T-1 messages must
+    /// name the operator's actual remediation, not just the numbers that
+    /// produced the rejection -- "no truncation or escalation is performed"
+    /// is true and stays, but stopping there leaves an operator with a
+    /// precise diagnosis and no next move. Fails against the pre-item
+    /// wording (neither `Display` named a fallback chain, a headroom knob,
+    /// or the word "shorten"/"larger-window" at all).
+    #[test]
+    fn t1_errors_name_the_operators_actual_remediation() {
+        let routing = RoutingError::ContextTooLarge {
+            role: RoleAlias::new("planner"),
+            model: model_ref(),
+            est_tokens: 30_000,
+            headroom_tokens: 4_000,
+            required_tokens: 34_000,
+            max_context_tokens: 32_768,
+            shortfall_tokens: 1_232,
+        }
+        .to_string();
+        for needle in [
+            "no truncation or escalation is performed",
+            "headroom_tokens",
+            "fallback chain",
+            "shorten the prompt",
+            "planner",
+        ] {
+            assert!(routing.contains(needle), "missing {needle:?} in {routing:?}");
+        }
+
+        let fork = RuntimeError::ForkContextOverflow {
+            parent: AgentId::new(),
+            model: model_ref(),
+            est_tokens: 100_000,
+            headroom_tokens: 16_000,
+            required_tokens: 116_000,
+            max_context_tokens: 32_768,
+            shortfall_tokens: 83_232,
+        }
+        .to_string();
+        for needle in [
+            "no truncation or escalation is performed",
+            "reserved headroom",
+            "larger-window model",
+        ] {
+            assert!(fork.contains(needle), "missing {needle:?} in {fork:?}");
         }
     }
 

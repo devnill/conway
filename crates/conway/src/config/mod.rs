@@ -54,6 +54,27 @@ pub enum WarningCode {
     /// smallest `max_context_tokens` reachable through its chain, per
     /// loaded model metadata.
     HeadroomExceedsContext,
+    /// A role's (or the global default's) effective headroom does not
+    /// literally exceed the smallest reachable context window
+    /// ([`Self::HeadroomExceedsContext`] would already have fired if it
+    /// did), but still consumes an unreasonably large FRACTION of it --
+    /// board item `01M1AVZPTRSWVE33G4DTJY7Q1B`: a flat default sized for a
+    /// large-window model (`conway`'s own built-in `8192`) reserves 25% of
+    /// a 32768-token window before a single prompt token is even counted,
+    /// and that ratio produced no warning at all under the check above
+    /// (`8192 < 32768`) right up until a normal-sized prompt to that model
+    /// hit `RoutingError::ContextTooLarge` mid-session with no warning
+    /// ever having fired. `merge::validate` computes this using the SAME
+    /// "smallest reachable window in the chain" scan
+    /// [`Self::HeadroomExceedsContext`] already performs -- no second pass
+    /// is added. Like that check, this one warns and does NOT clamp: an
+    /// operator's own configured value survives unmodified (see
+    /// `docs/routing.md`'s "A headroom that already exceeds a model's
+    /// window" section for why silently shrinking it is deliberately not
+    /// this project's job -- shrinking headroom trades a safe, pre-flight
+    /// rejection for the strictly worse failure of a mid-generation
+    /// overflow after tokens are already paid for).
+    HeadroomConsumesLargeFractionOfContext,
     /// A top-level `[tui]` section (or a `CONWAY_TUI__*` environment
     /// variable) is present in the merged document, but `ConwayConfig` no
     /// longer defines that key (Stage 2a moved `TuiSection` and its

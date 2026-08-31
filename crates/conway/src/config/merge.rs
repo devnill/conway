@@ -715,6 +715,17 @@ fn cli_overrides_to_value(cli: &CliOverrides) -> Value {
     Value::Object(root)
 }
 
+/// Threshold (as `1 / N`) for `WarningCode::HeadroomConsumesLargeFractionOfContext`
+/// (check 7, below): a role's effective headroom fires this warning once it
+/// reaches `>= 1 / HEADROOM_FRACTION_WARN_DENOM` of the smallest reachable
+/// context window in its chain. `4` (25%) is chosen to name the exact ratio
+/// that broke board item `01M1AVZPTRSWVE33G4DTJY7Q1B`'s walked scenario
+/// (conway's own built-in default, `8192`, against a 32768-token window is
+/// precisely 25%) without also firing for that same built-in default against
+/// any window a typical hosted model declares (most are hundreds of
+/// thousands of tokens, where 8192 is a low single-digit percentage).
+const HEADROOM_FRACTION_WARN_DENOM: u32 = 4;
+
 /// Runs every validation step in the documented order, failing on the
 /// first hard error and returning accumulated warnings from the last step.
 ///
@@ -888,7 +899,17 @@ fn validate_impl(
         }
     }
 
-    // 7. Warning only: headroom >= smallest reachable model context.
+    // 7. Warning only: headroom >= smallest reachable model context, plus
+    //    (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`) a milder warning when
+    //    headroom does not literally exceed that window but still consumes
+    //    an unreasonably large FRACTION of it -- see
+    //    `WarningCode::HeadroomConsumesLargeFractionOfContext`'s own doc
+    //    for why this is a second, deliberately non-clamping check rather
+    //    than a silent adjustment: shrinking an operator's own configured
+    //    headroom trades a safe, pre-flight rejection for the strictly
+    //    worse failure of a mid-generation overflow after tokens are
+    //    already paid for, so this project surfaces the number instead of
+    //    touching it.
     let mut warnings = Vec::new();
     if !metadata.models.is_empty() {
         let mut seen = BTreeSet::new();
@@ -907,12 +928,12 @@ fn validate_impl(
             }
 
             if let Some((model_ref, max_context)) = smallest {
+                let subject = if entry.headroom_tokens.is_some() {
+                    format!("headroom for role '{name}'")
+                } else {
+                    "routing.default_headroom_tokens".to_string()
+                };
                 if headroom >= max_context {
-                    let subject = if entry.headroom_tokens.is_some() {
-                        format!("headroom for role '{name}'")
-                    } else {
-                        "routing.default_headroom_tokens".to_string()
-                    };
                     let message = format!(
                         "{subject} is {headroom} tokens, which is not less than the smallest \
                          context window in its chain ({model_ref} = {max_context} tokens); every \
@@ -921,6 +942,26 @@ fn validate_impl(
                     if seen.insert(message.clone()) {
                         warnings.push(ConfigWarning {
                             code: WarningCode::HeadroomExceedsContext,
+                            message,
+                        });
+                    }
+                } else if headroom.saturating_mul(HEADROOM_FRACTION_WARN_DENOM) >= max_context {
+                    // Integer percentage, rounded down; `max_context` is
+                    // never 0 on this branch (a 0-token window would already
+                    // have tripped the `>=` check above for any headroom
+                    // `>= 1`, and `headroom_tokens` is validated `> 0` by
+                    // check 6, just above).
+                    let percent = u64::from(headroom) * 100 / u64::from(max_context);
+                    let message = format!(
+                        "{subject} is {headroom} tokens ({percent}% of the smallest context \
+                         window in its chain, {model_ref} = {max_context} tokens); a long-running \
+                         conversation to that model can hit the context-window gate well before \
+                         it would with a smaller reservation -- consider a smaller headroom_tokens \
+                         for this role, or a larger-window fallback later in its chain"
+                    );
+                    if seen.insert(message.clone()) {
+                        warnings.push(ConfigWarning {
+                            code: WarningCode::HeadroomConsumesLargeFractionOfContext,
                             message,
                         });
                     }
