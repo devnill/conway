@@ -181,6 +181,7 @@ id = "llama3.1-8b"
 reliability_tier = "community"
 tool_calling = "non_streaming"
 
+# ORIGINAL reasoning (2026-08-29), kept for the incident record --
 # `max_context_tokens = 1_000_000`: ollama.com/library/glm-5.2 states "a
 # truly usable 1M-token context window"; the `glm-5.2:cloud` variant
 # specifically is documented there at 976K — this entry uses the round 1M
@@ -196,9 +197,22 @@ tool_calling = "non_streaming"
 # recorded accepting 61,667 tokens moments earlier in an unrelated client.
 # See `docs/providers.md`'s Ollama Cloud section and its "Where a context
 # ceiling comes from" note for the full precedence story.
+#
+# 2026-08-30 UPDATE, board item (context-window declaration honesty,
+# num_ctx): `POST /api/show` against a real Ollama Cloud `glm-5.2:cloud`
+# reports `model_info["glm5.2.context_length"] = 1048576` -- exactly
+# `1024*1024`, the PROVIDER'S OWN figure, not the two documented-prose
+# numbers (1M-round / 976K) this entry originally split the difference
+# between. `max_context_tokens` below is corrected to match the provider
+# exactly (`1_048_576`, same value `k3[1m]` already used below for an
+# unrelated model) rather than left at the round-number compromise: a live
+# `/api/show` reading is authoritative over prose on a docs page, per this
+# same item's `probe.rs` module doc ("/api/show`'s architecture ceiling is
+# a fact about the model"). The original reasoning above is not wrong, only
+# superseded by a number this crate can now actually confirm.
 [[model]]
 id = "glm-5.2"
-max_context_tokens = 1_000_000
+max_context_tokens = 1_048_576
 reliability_tier = "community"
 tool_calling = "non_streaming"
 

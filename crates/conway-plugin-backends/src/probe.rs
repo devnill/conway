@@ -71,6 +71,36 @@
 //! honesty: a refusal must be honest about what actually gated it, and a
 //! silent under-declaration is strictly worse than a loud one), erring
 //! toward the model's real ceiling is the better default.
+//!
+//! **2026-08-30 re-confirmation, board item (context-window declaration
+//! honesty, num_ctx):** revisited against fresh, live evidence rather than
+//! re-argued from first principles, and this choice holds — reinforced, not
+//! merely repeated. Three findings from that item's own investigation,
+//! against a real live Ollama server:
+//!
+//! 1. `GET /api/ps` returned an EMPTY model list on a run where the target
+//!    model had idled out of memory. It cannot be a primary source at all —
+//!    only a refinement layered on top of `/api/show` for a model that
+//!    happens to already be resident, which is not a condition this crate
+//!    should ever depend on for an ordinary discovery step.
+//! 2. `/api/show` reported `glm-5.2:cloud`'s ceiling at exactly `1048576`
+//!    (`1024*1024`) — the PROVIDER'S OWN precise figure, more exact than
+//!    the round-number prose estimate a bundled table had been carrying
+//!    (`model_metadata.rs`'s `DEFAULTS` is corrected to match, dated the
+//!    same day — see that module's own `glm-5.2` entry).
+//! 3. A live `/api/show` probe against `kimi-k2.5` (a model this crate's
+//!    OWN bundled test fixtures once referenced) returned a named, loud
+//!    error: the model was retired 2026-07-31. A static bundled table has
+//!    no way to know that; a live provider does. This is direct,
+//!    first-hand evidence for why THIS module prefers a live discovery
+//!    endpoint over a shipped table wherever one is available — the same
+//!    principle the sibling item's setup-time discover-or-ask flow applies
+//!    at provider-configuration time (`docs/providers.md`'s "Establishing
+//!    the window at setup").
+//!
+//! None of this changes what this module does: it still probes `/api/show`,
+//! never `/api/ps`, for exactly the reasons the original paragraphs above
+//! already gave.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -448,6 +478,53 @@ impl CapabilityProbe {
     pub async fn discover(&self) -> Result<BTreeMap<ModelId, Capabilities>, BackendError> {
         Ok(self.discover_result().await.capabilities)
     }
+}
+
+/// Setup-time discovery for ONE model's context window — the shared
+/// primitive board item (context-window declaration honesty, num_ctx)'s
+/// "discover, or ask if discovery fails" flow calls from BOTH places a
+/// provider gets configured (`crates/conway-cli/src/first_run.rs`'s guided
+/// setup and `crates/conway-cli/src/tui/app/provider_manage.rs`'s
+/// `/settings` → providers → add), so the two entrances can never diverge
+/// on how discovery is attempted — see this crate's operator-visible doc,
+/// `docs/providers.md`'s "Establishing the window at setup", and the
+/// incident that made a fix applied to only one of these two entrances a
+/// real, quickly-hit defect.
+///
+/// `None` (never an error) whenever there is nothing useful to report: this
+/// `profile.id` has no known discovery endpoint (only `"ollama"`'s native
+/// `POST /api/show` is confirmed to expose one — see this module's own
+/// "`/api/show` vs. `/api/ps`" doc), the server is unreachable, the model
+/// name is unrecognized (a live `/api/show` against a since-retired model
+/// returns a named error, not a number — see this module's own 2026-08-30
+/// re-confirmation note), or the response is malformed. The caller's own
+/// job on `None` is to ask the operator instead — this function only ever
+/// answers the discovery half, never the asking half (a UI concern, out of
+/// this crate's scope).
+///
+/// Never persists anything: this is a pure, one-shot network read. Writing
+/// the resolved (or operator-typed) value into config is the caller's own
+/// responsibility, via the ordinary `models.<model>.max_context_tokens`
+/// config-file channel every other context-window override already uses
+/// (`ContextTokensSource::Override` — see `capabilities.rs`).
+pub async fn discover_context_window(
+    base: &Url,
+    profile: &Profile,
+    auth: Option<SecretString>,
+    model: &str,
+) -> Option<u32> {
+    if profile.id != "ollama" {
+        return None;
+    }
+    let probe = CapabilityProbe::new(
+        base.clone(),
+        profile.clone(),
+        auth,
+        DISCOVERY_TIMEOUT,
+        crate::model_metadata::ModelMetadataStore::defaults(),
+        BTreeMap::new(),
+    );
+    probe.fetch_ollama_show_context_length(model).await
 }
 
 #[cfg(test)]

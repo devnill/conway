@@ -30,17 +30,33 @@ use crate::tool_calls::{truncate_chars, ToolCallAccumulator};
 /// for `req.model` — the field is only emitted when it is `true` **and**
 /// `profile.sends_parallel_tool_calls` (Implementation Notes: "other
 /// servers 400 on the unknown field").
+///
+/// `context_window` is the resolved context window conway intends to admit
+/// this request against, `None` when
+/// [`crate::capabilities::ContextTokensSource::Unverified`] (conway never
+/// asks a server to arrange a window built on a number it did not actually
+/// establish — board item context-window-declaration-honesty/num_ctx).
+/// Emitted only when BOTH `context_window` is `Some` and
+/// `profile.sends_num_ctx` — this is the OpenAI-compatible body's own
+/// `options.num_ctx` field, which every dialect this crate confirmed
+/// (2026-08-30, live Ollama 0.32.13) ignores over THIS endpoint; it is kept
+/// here (never removed) as the honest, inert shape for a future profile
+/// whose OpenAI-compatible surface DOES honour it, and — for `ollama`
+/// specifically, `sends_num_ctx = true` — as the value
+/// `openai_compat/ollama_native.rs`'s own native-endpoint body construction
+/// reads instead of recomputing.
 pub(crate) fn build_request_body(
     req: &GenerateRequest,
     profile: &Profile,
     parallel_tool_calls: bool,
     stream: bool,
+    context_window: Option<u32>,
 ) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model.as_str()));
     body.insert(
         "messages".into(),
-        Value::Array(segments_to_messages(&req.segments, profile)),
+        Value::Array(segments_to_messages(&req.segments, profile, false)),
     );
 
     if !req.tools.is_empty() {
@@ -85,6 +101,11 @@ pub(crate) fn build_request_body(
     if let Some(effort) = reasoning_effort(req, profile) {
         body.insert("reasoning_effort".into(), json!(effort));
     }
+    if profile.sends_num_ctx {
+        if let Some(window) = context_window {
+            body.insert("options".into(), json!({ "num_ctx": window }));
+        }
+    }
 
     if stream {
         body.insert("stream".into(), json!(true));
@@ -123,14 +144,25 @@ fn reasoning_effort(req: &GenerateRequest, profile: &Profile) -> Option<String> 
 /// order is load-bearing (§5.3) and is preserved exactly; segments are
 /// never merged or reordered (§8), and this function reads nothing from
 /// `segment.cache_hint`.
-fn segments_to_messages(segments: &[PromptSegment], profile: &Profile) -> Vec<Value> {
+///
+/// `pub(crate)`, not private: `openai_compat/ollama_native.rs` calls this
+/// directly for `system`/`user`/`tool` messages (identical for both
+/// endpoints) via `native = true`, the ONE branch point this shares with
+/// [`assistant_message`] — see that function's own doc for why only the
+/// assistant/tool-call shape actually differs between Ollama's native
+/// `/api/chat` and its OpenAI-compatible `/v1/chat/completions`.
+pub(crate) fn segments_to_messages(
+    segments: &[PromptSegment],
+    profile: &Profile,
+    native: bool,
+) -> Vec<Value> {
     segments
         .iter()
-        .flat_map(|segment| segment_to_messages(segment, profile))
+        .flat_map(|segment| segment_to_messages(segment, profile, native))
         .collect()
 }
 
-fn segment_to_messages(segment: &PromptSegment, profile: &Profile) -> Vec<Value> {
+fn segment_to_messages(segment: &PromptSegment, profile: &Profile, native: bool) -> Vec<Value> {
     if matches!(segment.provenance, Provenance::ToolRegistry { .. }) {
         // No body content of its own anymore -- see this module's doc.
         return Vec::new();
@@ -138,7 +170,7 @@ fn segment_to_messages(segment: &PromptSegment, profile: &Profile) -> Vec<Value>
     match segment.role {
         Role::System => vec![system_message(&segment.content)],
         Role::User => vec![user_message(&segment.content, profile)],
-        Role::Assistant => vec![assistant_message(&segment.content)],
+        Role::Assistant => vec![assistant_message(&segment.content, native)],
         Role::ToolResult => tool_result_messages(&segment.content),
         // `Role` is `#[non_exhaustive]`; no fifth variant exists today.
         _ => Vec::new(),
@@ -184,7 +216,16 @@ fn user_message(content: &[ContentBlock], profile: &Profile) -> Value {
     json!({ "role": "user", "content": content_value })
 }
 
-fn assistant_message(content: &[ContentBlock]) -> Value {
+/// `native`: Ollama's NATIVE `/api/chat` requires `function.arguments` as a
+/// real JSON **object** in a replayed assistant tool-call message — a
+/// stringified-JSON `arguments` (the OpenAI-canonical shape every other
+/// call site here uses) is a loud `400` on that endpoint (confirmed
+/// 2026-08-30: `"Value looks like object, but can't find closing '}'
+/// symbol"`), not a tolerated quirk. This is the ONE place the native and
+/// OpenAI-compatible message shapes actually differ — see
+/// `openai_compat/ollama_native.rs`'s module doc for the rest of the
+/// dialect split and why only this function needed a branch.
+fn assistant_message(content: &[ContentBlock], native: bool) -> Value {
     let text = concat_text(content);
     let tool_calls: Vec<Value> = content
         .iter()
@@ -193,14 +234,21 @@ fn assistant_message(content: &[ContentBlock]) -> Value {
                 call_id,
                 name,
                 arguments,
-            } => Some(json!({
-                "id": call_id,
-                "type": "function",
-                "function": {
-                    "name": name.as_str(),
-                    "arguments": serde_json::to_string(arguments).unwrap_or_default(),
-                }
-            })),
+            } => {
+                let arguments_value = if native {
+                    arguments.clone()
+                } else {
+                    json!(serde_json::to_string(arguments).unwrap_or_default())
+                };
+                Some(json!({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": name.as_str(),
+                        "arguments": arguments_value,
+                    }
+                }))
+            }
             _ => None,
         })
         .collect();
@@ -474,7 +522,7 @@ mod tests {
     #[test]
     fn segment_to_message_mapping_matches_golden_json_for_the_four_segment_fixture() {
         let segments = fixture_segments();
-        let messages = segments_to_messages(&segments, &Dialect::OpenAi.profile());
+        let messages = segments_to_messages(&segments, &Dialect::OpenAi.profile(), false);
         let golden = json!([
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "What's the weather in Paris?"},
@@ -516,7 +564,7 @@ mod tests {
             ),
         );
 
-        let messages = segments_to_messages(&segments, &Dialect::OpenAi.profile());
+        let messages = segments_to_messages(&segments, &Dialect::OpenAi.profile(), false);
 
         assert!(
             messages
@@ -559,9 +607,9 @@ mod tests {
         };
 
         let with_hint_body =
-            build_request_body(&req_with_hint, &Dialect::OpenAi.profile(), true, false);
+            build_request_body(&req_with_hint, &Dialect::OpenAi.profile(), true, false, None);
         let without_hint_body =
-            build_request_body(&req_without_hint, &Dialect::OpenAi.profile(), true, false);
+            build_request_body(&req_without_hint, &Dialect::OpenAi.profile(), true, false, None);
         assert_eq!(
             serde_json::to_vec(&with_hint_body).unwrap(),
             serde_json::to_vec(&without_hint_body).unwrap()
@@ -580,11 +628,11 @@ mod tests {
             },
             prefix_key: None,
         };
-        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, false);
+        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None);
         assert_eq!(openai_body["max_completion_tokens"], 256);
         assert!(openai_body.get("max_tokens").is_none());
 
-        let ollama_body = build_request_body(&req, &Dialect::Ollama.profile(), false, false);
+        let ollama_body = build_request_body(&req, &Dialect::Ollama.profile(), false, false, None);
         assert_eq!(ollama_body["max_tokens"], 256);
         assert!(ollama_body.get("max_completion_tokens").is_none());
     }
@@ -606,14 +654,14 @@ mod tests {
             prefix_key: None,
         };
 
-        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), true, false);
+        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), true, false, None);
         assert_eq!(openai_body["parallel_tool_calls"], true);
 
-        let ollama_body = build_request_body(&req, &Dialect::Ollama.profile(), true, false);
+        let ollama_body = build_request_body(&req, &Dialect::Ollama.profile(), true, false, None);
         assert!(ollama_body.get("parallel_tool_calls").is_none());
 
         let openai_body_false_cap =
-            build_request_body(&req, &Dialect::OpenAi.profile(), false, false);
+            build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None);
         assert!(openai_body_false_cap.get("parallel_tool_calls").is_none());
     }
 
@@ -626,11 +674,11 @@ mod tests {
             params: SamplingParams::default(),
             prefix_key: None,
         };
-        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, true);
+        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, true, None);
         assert_eq!(openai_body["stream"], true);
         assert_eq!(openai_body["stream_options"]["include_usage"], true);
 
-        let vllm_body = build_request_body(&req, &Dialect::VllmHermes.profile(), false, true);
+        let vllm_body = build_request_body(&req, &Dialect::VllmHermes.profile(), false, true, None);
         assert_eq!(vllm_body["stream"], true);
         assert!(vllm_body.get("stream_options").is_none());
     }
@@ -644,16 +692,16 @@ mod tests {
             params: SamplingParams::default(),
             prefix_key: None,
         };
-        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, false);
+        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None);
         assert!(openai_body.get("reasoning_effort").is_none());
 
         req.params
             .extra
             .insert("reasoning_effort".into(), json!("high"));
-        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, false);
+        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, false, None);
         assert_eq!(openai_body["reasoning_effort"], "high");
 
-        let ollama_body = build_request_body(&req, &Dialect::Ollama.profile(), false, false);
+        let ollama_body = build_request_body(&req, &Dialect::Ollama.profile(), false, false, None);
         assert!(ollama_body.get("reasoning_effort").is_none());
     }
 
@@ -694,6 +742,7 @@ mod tests {
                 },
             )],
             &Dialect::OpenAi.profile(),
+            false,
         );
         assert_eq!(
             messages,
@@ -815,5 +864,116 @@ mod tests {
             cached_tokens: Some(32),
         }));
         assert_eq!(both.cache_read_tokens, 64, "nested must win over top-level");
+    }
+
+    // ---- `native` assistant-message argument shape (board item: ----
+    // ---- context-window declaration honesty, num_ctx) ----
+
+    /// Empirically confirmed 2026-08-30 against a live local Ollama
+    /// 0.32.13: its NATIVE `/api/chat` rejects the OpenAI-canonical
+    /// stringified `arguments` this module sends everywhere else, with a
+    /// loud 400 (`"Value looks like object, but can't find closing '}'
+    /// symbol"`) -- `native = true` must serialize `arguments` as the real
+    /// JSON object, never a string.
+    #[test]
+    fn native_assistant_message_serializes_tool_call_arguments_as_a_json_object_not_a_string() {
+        let segments = fixture_segments();
+        let native_messages = segments_to_messages(&segments, &Dialect::Ollama.profile(), true);
+        let assistant = native_messages
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("fixture has an assistant turn");
+        assert_eq!(
+            assistant["tool_calls"][0]["function"]["arguments"],
+            json!({"city": "Paris"}),
+            "native must send a real JSON object, not a stringified fragment"
+        );
+
+        // The OpenAI-compatible shape (`native = false`) is unchanged --
+        // still a stringified fragment, exactly as every non-native dialect
+        // requires.
+        let compat_messages = segments_to_messages(&segments, &Dialect::Ollama.profile(), false);
+        let assistant = compat_messages
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("fixture has an assistant turn");
+        assert_eq!(
+            assistant["tool_calls"][0]["function"]["arguments"],
+            json!("{\"city\":\"Paris\"}")
+        );
+    }
+
+    // ---- `options.num_ctx` (board item: context-window declaration ----
+    // ---- honesty, num_ctx) ----
+
+    fn minimal_request() -> GenerateRequest {
+        GenerateRequest {
+            model: ModelId::new("m"),
+            segments: vec![],
+            tools: vec![],
+            params: SamplingParams::default(),
+            prefix_key: None,
+        }
+    }
+
+    /// `sends_num_ctx = true` (the `ollama` profile) and a resolved
+    /// `context_window`: `options.num_ctx` is emitted, and nothing else
+    /// this dialect wouldn't otherwise send changes.
+    #[test]
+    fn ollama_emits_options_num_ctx_when_a_context_window_is_resolved() {
+        let body = build_request_body(
+            &minimal_request(),
+            &Dialect::Ollama.profile(),
+            false,
+            false,
+            Some(131_072),
+        );
+        assert_eq!(body["options"]["num_ctx"], 131_072);
+    }
+
+    /// `context_window: None` (an `Unverified` resolution, per this
+    /// function's own doc): conway never asks a server to arrange a window
+    /// built on a number it never established -- no `options` field at all,
+    /// not even an empty one.
+    #[test]
+    fn no_options_field_is_emitted_when_context_window_is_unresolved() {
+        let body = build_request_body(
+            &minimal_request(),
+            &Dialect::Ollama.profile(),
+            false,
+            false,
+            None,
+        );
+        assert!(
+            body.get("options").is_none(),
+            "an Unverified/unresolved context window must never be sent as a request field"
+        );
+    }
+
+    /// A dialect with `sends_num_ctx = false` (every built-in profile
+    /// except `ollama`) never emits `options.num_ctx` even when a resolved
+    /// `context_window` is passed in -- `profile.sends_num_ctx` gates it,
+    /// not merely whether the caller happened to have a number.
+    #[test]
+    fn a_dialect_without_sends_num_ctx_never_emits_options_even_with_a_resolved_window() {
+        for profile in [
+            Dialect::OpenAi.profile(),
+            Dialect::VllmHermes.profile(),
+            Dialect::LmStudio.profile(),
+            Dialect::LlamaCppServer.profile(),
+        ] {
+            let body = build_request_body(
+                &minimal_request(),
+                &profile,
+                false,
+                false,
+                Some(131_072),
+            );
+            assert!(
+                body.get("options").is_none(),
+                "{} must never emit options.num_ctx",
+                profile.id
+            );
+        }
     }
 }

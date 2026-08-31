@@ -108,7 +108,7 @@ fn default_flatten_multiblock_user() -> bool {
 /// actually answers `"ollama"`/`"lm_studio"`/etc: the real fix for an
 /// under-declared model is a `ModelMetadata`/`models.json` entry for it (see
 /// `model_metadata.rs`'s bundled `DEFAULTS`, which is where `glm-5.2`'s
-/// correct 1,000,000-token window now lives — this constant is exactly the
+/// correct window now lives — this constant is exactly the
 /// number that was silently governing it before that entry existed), never
 /// a bigger guess at this single per-dialect layer. What changed instead:
 /// `crate::capabilities::{ContextTokensSource, max_context_tokens_source}`
@@ -117,6 +117,27 @@ fn default_flatten_multiblock_user() -> bool {
 /// incident (an operator refused at 36,288 tokens against a model that, on
 /// the same endpoint, was independently recorded accepting 61,667) that
 /// made "kept but silent" no longer acceptable.
+///
+/// **2026-08-30 addendum, board item (context-window declaration honesty,
+/// num_ctx):** the operator ruled explicitly that this number must never be
+/// swapped for a different invented one (200,000 was proposed and rejected
+/// for exactly this reason — "we don't want to pick an arbitrary number").
+/// This constant is UNCHANGED (`32_768`) and is now understood, precisely,
+/// as what it always actually was: an internal admission-safety clamp, not
+/// a claim about any real model's window. What DID change is that this
+/// value's [`ContextTokensSource`](crate::capabilities::ContextTokensSource)
+/// is now [`Unverified`](crate::capabilities::ContextTokensSource::Unverified)
+/// for every profile whose [`Profile::context_window_verified`] is `false`
+/// (every built-in profile here except `openai`) rather than the same
+/// [`DialectDefaultFloor`](crate::capabilities::ContextTokensSource::DialectDefaultFloor)
+/// a genuinely curated per-provider figure gets — a caller/operator-facing
+/// surface can now tell "this cap is real" apart from "this cap is a
+/// last-resort clamp conway made up" even though both currently resolve to
+/// the identical `u32`. The operator's own preferred remedy for the
+/// `Unverified` case is establishing a real value BEFORE this floor is ever
+/// reached — see `docs/providers.md`'s "context window" section for the
+/// setup-time discover-or-ask flow this floor exists to be a safety net
+/// under, not a replacement for.
 fn default_max_context_tokens() -> u32 {
     32_768
 }
@@ -211,6 +232,17 @@ struct ProfileRaw {
     tool_calling: ToolCallSupportSpec,
     #[serde(default = "default_max_context_tokens")]
     max_context_tokens: u32,
+    /// See [`Profile::context_window_verified`]. `#[serde(default)]` (never
+    /// a `default = "fn"` override): the safe default for a profile that
+    /// does not mention this field at all is `false` -- an unfamiliar
+    /// provider's `max_context_tokens` is a placeholder until something
+    /// says otherwise, never treated as sourced fact by omission.
+    #[serde(default)]
+    context_window_verified: bool,
+    /// See [`Profile::sends_num_ctx`]. `#[serde(default)]`: `false` unless a
+    /// profile explicitly opts in.
+    #[serde(default)]
+    sends_num_ctx: bool,
     #[serde(default = "default_structured_output")]
     structured_output: StructuredOutputSpec,
     #[serde(default)]
@@ -238,6 +270,8 @@ impl TryFrom<ProfileRaw> for Profile {
             cache: raw.cache.to_cache_mode(),
             tool_calling: raw.tool_calling.to_capability(),
             max_context_tokens: raw.max_context_tokens,
+            context_window_verified: raw.context_window_verified,
+            sends_num_ctx: raw.sends_num_ctx,
             structured_output: raw.structured_output.to_capability(),
             parallel_tool_calls: raw.parallel_tool_calls,
             reliability_tier: raw.reliability_tier,
@@ -295,6 +329,41 @@ pub struct Profile {
     pub tool_calling: ToolCallSupport,
     /// Baseline context window, in tokens.
     pub max_context_tokens: u32,
+    /// Whether [`Profile::max_context_tokens`] is a real, sourced fact about
+    /// this PROVIDER as a whole (`openai`'s `128_000`, OpenAI's own
+    /// documented floor across its mainstream chat-completions models) --
+    /// board item (context-window declaration honesty, num_ctx): `true`
+    /// makes `crate::capabilities::max_context_tokens_source` report
+    /// [`crate::capabilities::ContextTokensSource::DialectDefaultFloor`]
+    /// when this layer governs; `false` (every built-in profile except
+    /// `openai`) makes it report
+    /// [`crate::capabilities::ContextTokensSource::Unverified`] instead --
+    /// `max_context_tokens`'s NUMBER is unchanged either way (still `32768`
+    /// for `ollama`/`vllm_hermes`/`lm_studio`/`llama_cpp_server`/`kimi`, kept
+    /// only as an internal admission-safety clamp, see
+    /// `default_max_context_tokens`'s own doc for why a real per-model
+    /// figure cannot exist at this layer for those five) -- what changes is
+    /// only whether a caller is told this number is a fact or a guess. A
+    /// hand-authored profile that omits this field gets the conservative
+    /// `false` (`#[serde(default)]`, no named default fn): an unfamiliar
+    /// provider is never assumed verified by silence.
+    pub context_window_verified: bool,
+    /// Whether this profile expresses a resolved context window on the wire
+    /// as Ollama's native `options.num_ctx` (`true`, `ollama` only today) or
+    /// has no equivalent to send (`false`, every other built-in profile) --
+    /// board item (context-window declaration honesty, num_ctx). Empirically
+    /// confirmed 2026-08-30 against a live local Ollama 0.32.13: Ollama's
+    /// OpenAI-compatible `/v1/chat/completions` endpoint silently IGNORES a
+    /// passed `options`/`num_ctx` field (verified via `GET /api/ps`
+    /// reporting the server's own unrequested default after the call, not
+    /// the value that was sent) -- only the NATIVE `/api/chat` endpoint
+    /// honours it. `sends_num_ctx = true` is therefore also the switch
+    /// `OpenAiCompatBackend` reads to route a request through the native
+    /// endpoint instead of the OpenAI-compatible one when (and only when) a
+    /// real context window was actually resolved to request -- see
+    /// `openai_compat/ollama_native.rs`'s module doc for the full
+    /// dialect-split rationale and its cost.
+    pub sends_num_ctx: bool,
     /// Baseline structured-output support.
     pub structured_output: StructuredOutput,
     /// Baseline "does an undescribed model of this provider support
@@ -316,6 +385,7 @@ impl Profile {
             cache: self.cache.clone(),
             tool_calling: self.tool_calling,
             max_context_tokens: self.max_context_tokens,
+            context_window_verified: self.context_window_verified,
             structured_output: self.structured_output,
             parallel_tool_calls: self.parallel_tool_calls,
             reliability_tier: self.reliability_tier,
@@ -368,6 +438,12 @@ sends_reasoning_effort = true
 tool_call_style = "structured"
 tool_calling = "streaming_validated"
 max_context_tokens = 128000
+# OpenAI's own documented context window across its current mainstream
+# chat-completions models (gpt-4o/gpt-4o-mini/gpt-4-turbo family) -- a real,
+# sourced figure, not a last-resort placeholder. See
+# `default_max_context_tokens`'s doc for the distinction this flag makes
+# discoverable (board item: context-window declaration honesty, num_ctx).
+context_window_verified = true
 structured_output = "json_schema"
 parallel_tool_calls = true
 reliability_tier = "verified"
@@ -387,6 +463,15 @@ sends_reasoning_effort = false
 tool_call_style = "tolerant"
 tool_calling = "non_streaming"
 max_context_tokens = 32768
+# 32768 here is NOT a sourced fact about any real Ollama model -- Ollama
+# alone serves windows from 4K to 1M+ tokens under this identical profile;
+# `context_window_verified` (omitted -- defaults false) reports this
+# resolution as `Unverified`, not `DialectDefaultFloor`, when it governs.
+# `sends_num_ctx = true`: Ollama's NATIVE `/api/chat` (never its
+# OpenAI-compatible `/v1/chat/completions`, confirmed 2026-08-30 to
+# silently ignore an `options`/`num_ctx` field) honours a requested context
+# window via `options.num_ctx` -- see `openai_compat/ollama_native.rs`.
+sends_num_ctx = true
 structured_output = "json_schema"
 parallel_tool_calls = false
 reliability_tier = "unknown"
@@ -641,6 +726,48 @@ mod tests {
         );
     }
 
+    /// Board item (context-window declaration honesty, num_ctx): `openai`
+    /// is the one built-in profile whose `max_context_tokens` is a real,
+    /// sourced figure; every other built-in is a placeholder clamp.
+    #[test]
+    fn only_openai_declares_its_context_window_verified() {
+        assert!(Dialect::OpenAi.profile().context_window_verified);
+        for dialect in [
+            Dialect::Ollama,
+            Dialect::VllmHermes,
+            Dialect::LmStudio,
+            Dialect::LlamaCppServer,
+        ] {
+            assert!(
+                !dialect.profile().context_window_verified,
+                "{dialect:?} has no sourced context-window figure at this layer"
+            );
+        }
+        assert!(
+            !ProfileStore::built_ins()
+                .get("kimi")
+                .unwrap()
+                .context_window_verified,
+            "kimi's 32768 is the same inherited placeholder as the other four"
+        );
+    }
+
+    /// Only `ollama` has a confirmed native request field for a resolved
+    /// context window (`options.num_ctx` via `/api/chat`) -- see
+    /// `openai_compat/ollama_native.rs`.
+    #[test]
+    fn only_ollama_sends_num_ctx() {
+        assert!(Dialect::Ollama.profile().sends_num_ctx);
+        for dialect in [
+            Dialect::OpenAi,
+            Dialect::VllmHermes,
+            Dialect::LmStudio,
+            Dialect::LlamaCppServer,
+        ] {
+            assert!(!dialect.profile().sends_num_ctx, "{dialect:?}");
+        }
+    }
+
     #[test]
     fn merge_file_records_a_shadow_when_an_id_already_exists() {
         let dir = std::env::temp_dir().join(format!(
@@ -788,6 +915,14 @@ mod tests {
         assert_eq!(minimal.cache, CacheMode::None);
         assert_eq!(minimal.tool_calling, ToolCallSupport::NonStreamingOnly);
         assert_eq!(minimal.max_context_tokens, 32_768);
+        assert!(
+            !minimal.context_window_verified,
+            "an unfamiliar provider's max_context_tokens is never assumed verified by omission"
+        );
+        assert!(
+            !minimal.sends_num_ctx,
+            "an unfamiliar provider has no known context-window request field by default"
+        );
         assert_eq!(minimal.structured_output, StructuredOutput::None);
         assert!(!minimal.parallel_tool_calls);
         assert_eq!(minimal.reliability_tier, ReliabilityTier::Unknown);
