@@ -444,6 +444,39 @@ impl ConwayBuilder {
         self
     }
 
+    /// Appends one [`ConfigWarning`] to whatever [`Self::from_config`]/
+    /// [`Self::discover`]/etc already loaded via the crate-private
+    /// `with_warnings` -- the public, additive counterpart that a
+    /// plugin-installation step running BEFORE [`Self::build`] (the four
+    /// async tiers `main.rs::
+    /// build_conway` chains: `first_party_plugins`, `subprocess_plugins`,
+    /// `mcp_plugins`, `claude_compat_plugins`) can call to make a non-fatal
+    /// discovery problem visible on [`crate::Conway::warnings`] rather than
+    /// only on whatever stderr channel that caller happens to also write to.
+    ///
+    /// **Board item `01M1AMSDE035HAG23TE6XPEF9R`'s own reason to exist**:
+    /// an MCP server this host tried to discover -- either an operator-
+    /// authored `[plugins].mcp[]` entry or one translated from a
+    /// `[plugins].claude_compat[]` directory's own `.mcp.json` -- can fail
+    /// for reasons entirely outside conway's control (missing runtime, a
+    /// failed first-launch build, a bad path, an upstream bug). An MCP
+    /// server contributes tools ONLY (`conway_plugin_mcp::McpPlugin`'s own
+    /// `Plugin` impl has no `hooks`/`permission_evaluator` override), so a
+    /// server that never came up narrows what the model can call -- it does
+    /// not silently drop or misapply a permission rule (the one thing
+    /// conway's fail-closed rule for deny/prompt permission rules actually
+    /// targets).
+    /// That is what makes this the DEGRADE-and-announce shape rather than
+    /// the hard `FacadeError::Build` every OTHER discovery failure in those
+    /// same four tiers still raises (a directory or file this host cannot
+    /// read at all is a different, harder failure this method does not
+    /// soften). See `crates/conway-cli/src/claude_compat_plugins.rs`'s own
+    /// `install` for the one caller that uses this today.
+    pub fn with_warning(mut self, warning: ConfigWarning) -> Self {
+        self.warnings.push(warning);
+        self
+    }
+
     /// Read-only access to the config this builder currently holds --
     ///'s answer to "how does a caller
     /// decide which first-party (or third-party) plugin to `with_plugin`
@@ -619,6 +652,20 @@ impl ConwayBuilder {
     /// explicitly injected, never conway's own bundled tools.
     pub fn plugins(&self) -> &[Arc<dyn Plugin>] {
         &self.plugins
+    }
+
+    /// Read-only access to every [`ConfigWarning`] this builder carries SO
+    /// FAR -- both what [`Self::from_config`]/[`Self::discover`]/etc loaded
+    /// (headroom-vs-context-window, a stale `[tui]` section) and every one
+    /// [`Self::with_warning`] appended since. [`Self::plugins`]'s own
+    /// sibling accessor, added for the identical reason: a caller composing
+    /// a `ConwayBuilder` across several async plugin-installation steps
+    /// (`claude_compat_plugins::install` above all -- board item
+    /// `01M1AMSDE035HAG23TE6XPEF9R`) can inspect what it has pushed so far
+    /// without waiting for [`Self::build`] to hand back a live [`crate::
+    /// Conway`] first.
+    pub fn warnings(&self) -> &[ConfigWarning] {
+        &self.warnings
     }
 
     /// Overrides `permissions.mode`-derived gate selection entirely.

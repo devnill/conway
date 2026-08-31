@@ -43,10 +43,77 @@ the best-effort, non-parity ruling that governs a dispatched command.
 ```
 
 Empty by default (`[plugins].claude_compat = []`): **nothing is ever read
-unless a directory is named here.** A discovery failure — the directory
-missing, a malformed `.claude-plugin/plugin.json`/`.mcp.json`, or the
-translated MCP server itself failing discovery — fails the **whole build**,
-naming the offending entry's own `id`, mirroring `mcp.md`'s own posture.
+unless a directory is named here.** A discovery failure reading the
+directory itself — the directory missing, a malformed
+`.claude-plugin/plugin.json`/`.mcp.json` — fails the **whole build**, naming
+the offending entry's own `id`, mirroring `mcp.md`'s own posture.
+
+## A dead MCP server degrades the entry — it does not brick the session
+
+**Board item `01M1AMSDE035HAG23TE6XPEF9R`, an operator-reported startup
+failure, 2026-08-30.** Installing a real Claude Code plugin (`ideate`) and
+restarting used to refuse to start conway *at all*: the plugin's own MCP
+server died on its first launch (a missing runtime, a first-launch build
+that never finished, an upstream bug — any of these is ordinary for a
+third-party server, not exceptional), and that ONE dead subprocess failed
+the whole build with `[plugins].claude_compat entry 'ideate': mcp server
+'ideate': session died: closed stdout (EOF) mid-session`. The trap: `/plugin`
+is how an operator disables or removes a plugin, and `/plugin` is
+unreachable when the process that would show it never starts — the only
+recovery was hand-editing `settings.json`, knowing the file existed, its
+schema, and which key to cut.
+
+**Ruling: a translated MCP server that fails discovery degrades that ONE
+server and announces it — it does not fail the build.** conway starts
+without that server's tools; the directory's own hooks and commands (an
+independent declaration, read from separate files, never contingent on the
+MCP server's own liveness) still attach exactly as if the server had
+succeeded. Every degraded server is reported on stderr, unconditionally,
+and as a `ConfigWarning` (`WarningCode::McpServerFailed`) on
+`Conway::warnings()` — the same accessor a non-interactive run already
+prints from and the TUI already renders into its own transcript, so the
+failure is stated once, prominently, not buried in scrollback. The message
+names the entry, the specific server, the underlying error, and the one
+live recovery: `/plugin uninstall <entry-id>` — reachable now, for the
+first time, because the session actually started.
+
+**Why this does not weaken conway's own rule that a deny/prompt permission
+rule must fail closed, never silently open.** An MCP server contributes
+tools ONLY — `conway_plugin_mcp::McpPlugin`'s own `Plugin` implementation
+carries no `hooks`/`permission_evaluator` override. A server that never
+came up narrows what the model can call; it does not silently drop or
+misapply a permission rule, which is the one thing that rule actually
+forbids. Contrast the SAME directory's `hooks/hooks.json` rules: those ARE
+permission-relevant, are discovered independently (a pure, local file read
+— `conway_plugin_claude::discover` never spawns anything), and keep the
+existing hard-fail posture on a genuine directory-read problem. The
+distinction is by CLASS, not by which entry it happens to be: a tool-only
+surface degrades; a permission/hook-contributing one still fails closed.
+
+**What this does NOT cover.** An operator-authored `[plugins].mcp[]` entry
+(`mcp.md`) and `[plugins].install` (a closed, compiled-in candidate set)
+both keep their existing hard-fail posture, unchanged by this item. The
+identical "tools only, degrade instead" argument could be made for
+`[plugins].mcp[]` — same wire protocol, same contribution shape — but
+extending the ruling there is a separate, undone widening this item does
+not make on its own account (`crates/conway-cli/src/mcp_plugins.rs`'s own
+doc states this explicitly). `[plugins].install` failing to load a
+first-party plugin is conway's own defect, not a third party's, and stays
+loud on purpose.
+
+**Known gap, disclosed rather than silently deferred:** `/plugin`'s own
+listing does not yet mark a degraded entry's row as failed — today it
+shows the same "N mcp server(s) translated" count `rows_from_claude_compat`
+always has, regardless of whether that server actually attached. Removal
+already works regardless (`/plugin uninstall <id>` operates on
+`settings.json` and the plugin store, never on the live installed-plugin
+set), and the failure is still fully stated on stderr/`Conway::warnings()`
+per the above — but the row itself does not yet distinguish "declared" from
+"declared and actually running." Closing that gap means threading
+`Conway::warnings()` (filtered by `WarningCode::McpServerFailed` and
+correlated by entry id) into the state `rows_from_claude_compat` reads, a
+small, separate change to `crates/conway-cli/src/tui/state.rs`/
+`tui/app/startup.rs`/`tui/view/plugins.rs` this item did not make.
 
 ## What appears named, but does NOT run — read this before assuming otherwise
 

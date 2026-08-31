@@ -149,6 +149,7 @@
 use std::sync::Arc;
 
 use conway::config::schema::ConwayConfig;
+use conway::config::{ConfigWarning, WarningCode};
 use conway::plugin::{Command, Plugin, PluginHookRule, PluginManifest, Tool};
 use conway::{ConwayBuilder, FacadeError, DENY_CAPABLE_EVENTS};
 use conway_plugin_claude::HookRegistration;
@@ -308,23 +309,105 @@ fn classify_hook_registrations(registrations: &[HookRegistration]) -> (Vec<&str>
 /// within a directory -- then attaches every mapped `hooks/hooks.json`
 /// rule's own [`HookRegistration`], wrapped as a `ClaudeCompatHooksPlugin`
 /// (`hooks_plugin`), into the SAME builder via [`ConwayBuilder::
-/// with_plugin`] (this module's own top doc). A discovery failure -- the
-/// directory itself missing, a malformed `.claude-plugin/plugin.json`/
-/// `.mcp.json` (`conway_plugin_claude::ClaudeCompatError`), or the
-/// translated MCP server itself failing discovery
-/// (`conway_plugin_mcp::McpPluginError`) -- fails the WHOLE call as
-/// [`FacadeError::Build`], naming the offending entry's own `id`, mirroring
-/// `subprocess_plugins::install`/`mcp_plugins::install`'s own "an
-/// unresolvable entry fails the whole build" posture for the same reason:
-/// an operator who named a directory in `settings.json` and got nothing for
-/// it, silently, is exactly the rung-1 lie CONTRIBUTING's declaration rule
-/// exists to prevent. Attaching translated hook rules never itself fails
-/// this call -- `HookRegistration` construction is infallible
-/// (`conway_plugin_claude::hooks::HookTranslation::registration`'s own
-/// doc); any defect in the RESULT (an empty bare id, a namespaced id
-/// collision, an invalid `match`) surfaces later, at `ConwayBuilder::
-/// build`'s own re-validation, exactly like an operator-authored
-/// `[hooks].rules[]` entry with the same defect would.
+/// with_plugin`] (this module's own top doc). A discovery failure reading
+/// the DIRECTORY itself -- the directory missing, a malformed
+/// `.claude-plugin/plugin.json`/`.mcp.json` (`conway_plugin_claude::
+/// ClaudeCompatError`) -- fails the WHOLE call as [`FacadeError::Build`],
+/// naming the offending entry's own `id`, mirroring `subprocess_plugins::
+/// install`/`mcp_plugins::install`'s own "an unresolvable entry fails the
+/// whole build" posture for the same reason: an operator who named a
+/// directory in `settings.json` and got nothing for it, silently, is
+/// exactly the rung-1 lie CONTRIBUTING's declaration rule exists to
+/// prevent. Attaching translated hook rules never itself fails this call --
+/// `HookRegistration` construction is infallible (`conway_plugin_claude::
+/// hooks::HookTranslation::registration`'s own doc); any defect in the
+/// RESULT (an empty bare id, a namespaced id collision, an invalid `match`)
+/// surfaces later, at `ConwayBuilder::build`'s own re-validation, exactly
+/// like an operator-authored `[hooks].rules[]` entry with the same defect
+/// would.
+///
+/// **A translated MCP server itself failing discovery is DIFFERENT --
+/// board item `01M1AMSDE035HAG23TE6XPEF9R`, the blast-radius fix.** Before
+/// this item, an `McpPlugin::discover` failure for even ONE server (spawn
+/// failure, a missing runtime, a first-launch build that never finishes,
+/// an upstream bug -- see `docs/plugins/claude-compat.md`'s own "reading a
+/// directory you already have" for the operator report that surfaced this)
+/// failed this WHOLE call exactly like a directory-read failure did, which
+/// meant conway refused to start at ALL over a single third-party plugin's
+/// own subprocess dying -- and `/plugin`, the one place that entry could be
+/// removed from, was unreachable precisely because the process that would
+/// show it never started. **Ruling: degrade and announce, never fail
+/// closed, for this ONE failure mode.** An MCP server contributes tools
+/// ONLY (`conway_plugin_mcp::McpPlugin`'s own `Plugin` impl carries no
+/// `hooks`/`permission_evaluator` override -- confirmed by reading that
+/// crate, not assumed), so a server that never came up narrows what the
+/// model can call; it does not silently drop or misapply a permission
+/// rule, which is the one thing P-13 ("deny and prompt rules fail closed,
+/// never silently open") actually forbids. **P-13 does NOT apply here for
+/// exactly that reason** -- it protects a rule from matching the wrong
+/// targets or silently vanishing, and a tool-only server that never loads
+/// contributes zero rules either way, matching or not. Contrast the SAME
+/// directory's `hooks/hooks.json` rules, discovered independently by
+/// `conway_plugin_claude::discover` above (a pure, local file read that
+/// never spawns anything -- see that crate's own doc): those keep the
+/// existing hard-fail posture (via the `discover` call above, unchanged),
+/// because a mapped hook IS a permission-relevant rule and P-13 DOES apply
+/// there. A dead MCP server in one entry never blocks that SAME entry's
+/// hooks or commands from attaching, nor any OTHER entry's anything --
+/// each server's own failure is caught and reported individually, in list
+/// order, exactly like `report_hook_registrations`'s own per-entry
+/// disclosure below.
+///
+/// **Considered and rejected: fail closed with a reachable escape
+/// (`--without-plugin <id>`/`--safe-mode`).** Weaker than degrading:
+/// it only helps an operator who already knows the flag exists, which is
+/// not the operator who hit this (the ideate report: first plugin
+/// install, first restart, no flag in mind at all -- the operator
+/// recovered only by hand-editing `settings.json`'s `plugins` section,
+/// having to know the file existed, its schema, and which key to cut).
+/// Kept in mind, not implemented alongside: nothing here removes the
+/// operator's ability to fix `settings.json` directly, so a future
+/// `--safe-mode` remains addable without reopening this ruling.
+///
+/// **Considered and rejected: keeping the hard failure but naming
+/// `~/.conway/settings.json`/`[plugins].claude_compat` in the error.**
+/// Materially better than the ORIGINAL message (which named neither), but
+/// still requires reaching a shell to edit a file conway itself already
+/// has the config, the entry id, and a working command (`/plugin
+/// uninstall`) to fix from INSIDE the running session -- degrading is a
+/// strictly better recovery than a better-worded dead end.
+///
+/// **Every degraded server is reported on TWO channels**, the identical
+/// "a host with no reason to read `Conway::warnings()` still sees it"
+/// shape `WarningCode::OptionalPluginDependencyMissing`/
+/// `OptionalHostCapabilityMissing` already establish one layer up in
+/// `conway::builder`: `diag::warn` (unconditional stderr, reaching every
+/// dispatch target before the TUI ever enters raw/alternate-screen mode --
+/// this module's own top doc), and a [`ConfigWarning`] pushed via
+/// [`ConwayBuilder::with_warning`], which reaches `Conway::warnings()` --
+/// already rendered, generically, by BOTH `main.rs`'s own non-interactive
+/// loop AND `tui::app::App::new`'s transcript (existing wiring, unmodified
+/// by this item: any `ConfigWarning` landing on that accessor was already
+/// surfaced by both before this `WarningCode` variant existed). The
+/// message itself names the entry, the specific server, the underlying
+/// `McpPluginError`, and the one live recovery: `/plugin uninstall
+/// <entry-id>` -- reachable ONLY because this entry's degrade let the
+/// session start at all.
+///
+/// **What this item does NOT change, disclosed rather than silently
+/// widened:** `[plugins].mcp[]` (`mcp_plugins::install`) and
+/// `[plugins].install` (`first_party_plugins::install`) keep their
+/// existing hard-fail posture, untouched by this function. An
+/// operator-authored `[plugins].mcp[]` entry is the identical wire
+/// protocol and the identical "tools only" contribution shape an argument
+/// for the SAME ruling could be made for, but extending it there is a
+/// SEPARATE, undone widening this item does not make on its own account --
+/// flagged, not silently applied, so a reviewer does not assume symmetry
+/// that is not actually shipped. `[plugins].install` is a CLOSED,
+/// compiled-in candidate set this binary tests directly; a first-party
+/// plugin failing to install is conway's own defect, not a third party's,
+/// and degrading there would hide exactly the kind of regression CI should
+/// catch loud.
 pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
     let entries = builder.config().plugins.claude_compat.clone();
     let mut builder = builder;
@@ -340,15 +423,30 @@ pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
         for server in report.mcp_servers {
             let server_name = server.name.clone();
             let spec = server.into_spec(entry.timeout_ms);
-            let plugin = McpPlugin::discover(spec)
-                .await
-                .map_err(|err| FacadeError::Build {
-                    message: format!(
-                        "[plugins].claude_compat entry '{}': mcp server '{server_name}': {err}",
-                        entry.id
-                    ),
-                })?;
-            builder = builder.with_plugin(Arc::new(plugin));
+            match McpPlugin::discover(spec).await {
+                Ok(plugin) => {
+                    builder = builder.with_plugin(Arc::new(plugin));
+                }
+                Err(err) => {
+                    // Degrade and announce (this function's own top doc,
+                    // "the blast-radius fix"): never fail the whole build
+                    // over one dead MCP server -- report it, on both
+                    // channels, and keep going with everything else this
+                    // entry (and every other entry) declares.
+                    let message = format!(
+                        "[plugins].claude_compat entry '{}': mcp server '{server_name}' failed \
+                         to start ({err}) -- starting WITHOUT this server's tools. Run \
+                         `/plugin uninstall {}` to remove the entry, or fix/remove it in \
+                         settings.json's [plugins].claude_compat list.",
+                        entry.id, entry.id
+                    );
+                    diag::warn(&message);
+                    builder = builder.with_warning(ConfigWarning {
+                        code: WarningCode::McpServerFailed,
+                        message,
+                    });
+                }
+            }
         }
 
         if !registrations.is_empty() {
@@ -520,6 +618,137 @@ mod tests {
         assert!(
             message.contains("acme-tools"),
             "the failing entry's own id must be named: {message}"
+        );
+    }
+
+    // ---- MCP server blast-radius fix (board item `01M1AMSDE035HAG23TE6XPEF9R`) ----
+
+    /// Writes a fixture "MCP server" that dies before completing the
+    /// `initialize` handshake -- the ideate report's exact shape ("session
+    /// died: closed stdout (EOF) mid-session"), reproduced with a trivial
+    /// script rather than the real ideate binary. Mirrors
+    /// `conway-plugin-mcp/tests/common::write_script`'s own convention
+    /// (plain Python 3, no interpreter prepended, `#!` shebang) -- that
+    /// helper lives in a sibling crate's OWN `tests/common/mod.rs`, not
+    /// reused across a crate boundary, so this is a fresh, minimal copy of
+    /// the same shape rather than a new inter-crate test dependency.
+    fn write_dying_mcp_server(dir: &std::path::Path, name: &str) {
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    /// **The headline claim this item exists to prove.** Before this
+    /// item's fix, `install`'s own MCP-discovery loop propagated
+    /// `McpPlugin::discover`'s `Err` straight out via `?`, exactly like the
+    /// directory-read failure `a_nonexistent_directory_fails_the_whole_
+    /// build_naming_the_entry` (immediately above) still does -- so a
+    /// single dead MCP server failed the WHOLE `install` call, which is
+    /// what `build_conway` propagates straight to `main`'s own top-level
+    /// `Err` branch, refusing to start conway at all. This test pins the
+    /// fix: the SAME fixture that used to produce that `Err` now produces
+    /// `Ok`, with the failure visible on `Conway::warnings()`'s own
+    /// pre-`build()` mirror instead of aborting the call.
+    #[tokio::test]
+    async fn a_dead_mcp_server_degrades_instead_of_failing_the_whole_build() {
+        use conway::config::schema::ClaudeCompatPluginEntry;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_dying_mcp_server(dir.path(), "dies.py");
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers":{"ideate":{"command":"${CLAUDE_PLUGIN_ROOT}/dies.py"}}}"#,
+        )
+        .unwrap();
+
+        let mut config = minimal_config();
+        config.plugins.claude_compat.push(ClaudeCompatPluginEntry {
+            id: "ideate".to_string(),
+            dir: dir.path().to_path_buf(),
+            timeout_ms: 5_000,
+        });
+        let builder = ConwayBuilder::from_parts(config);
+        let builder = install(builder)
+            .await
+            .expect("a dead MCP server must degrade, never fail the whole build");
+
+        assert!(
+            builder.plugins().is_empty(),
+            "the dead server's own plugin must never attach: {}",
+            builder.plugins().len()
+        );
+        let warning = builder
+            .warnings()
+            .iter()
+            .find(|w| w.code == WarningCode::McpServerFailed)
+            .expect("the degraded server must be reported on Conway::warnings()");
+        assert!(
+            warning.message.contains("ideate"),
+            "the failing entry's own id must be named: {}",
+            warning.message
+        );
+        assert!(
+            warning.message.contains("/plugin uninstall ideate"),
+            "the ONE live recovery -- removing the entry from inside the session -- must be \
+             named, not just the failure: {}",
+            warning.message
+        );
+    }
+
+    /// Two servers in the SAME `.mcp.json`, each failing for its own
+    /// reason: BOTH must degrade independently, neither one's failure
+    /// swallowing or masking the other's -- proves degrading one server
+    /// never takes down its own sibling, the narrowest possible blast
+    /// radius. (Not "one dead, one healthy": a genuine success path is
+    /// already covered by this crate's OWN `.mcp.json` translation tests
+    /// and by `conway-plugin-mcp`'s end-to-end suite; this test's whole
+    /// point is isolation between two independent failures, not a happy
+    /// path.)
+    #[tokio::test]
+    async fn two_independently_dead_mcp_servers_in_the_same_directory_both_degrade() {
+        use conway::config::schema::ClaudeCompatPluginEntry;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_dying_mcp_server(dir.path(), "dies.py");
+        // `true` -- a real, always-spawnable command -- is deliberately NOT
+        // a healthy MCP server (it never speaks the handshake either), so
+        // this asserts the SAME "reported, not attached" outcome for BOTH
+        // servers rather than claiming a genuine success path: the point
+        // of this test is that the two servers' OWN failures are isolated
+        // from each other, not that one of them fully succeeds.
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers":{
+                "dies":{"command":"${CLAUDE_PLUGIN_ROOT}/dies.py"},
+                "also-fails":{"command":"true"}
+            }}"#,
+        )
+        .unwrap();
+
+        let mut config = minimal_config();
+        config.plugins.claude_compat.push(ClaudeCompatPluginEntry {
+            id: "acme-tools".to_string(),
+            dir: dir.path().to_path_buf(),
+            timeout_ms: 5_000,
+        });
+        let builder = ConwayBuilder::from_parts(config);
+        let builder = install(builder)
+            .await
+            .expect("two independently-dead servers must still degrade, not fail the build");
+
+        assert_eq!(
+            builder
+                .warnings()
+                .iter()
+                .filter(|w| w.code == conway::config::WarningCode::McpServerFailed)
+                .count(),
+            2,
+            "both servers' own failures must be reported individually: {:?}",
+            builder.warnings()
         );
     }
 
