@@ -760,6 +760,22 @@ impl App {
                                             .unwrap_or_else(|_| std::path::PathBuf::from(".")),
                                     );
                                 }
+                                // Board item `01M1AWGSTD7084VFVGN1GK9AS8`:
+                                // mirrors `Action::CycleDefaultRole`
+                                // immediately above in every respect -- the
+                                // decision and write live in
+                                // `app/defaults.rs`, and `env_vars`/`cwd`
+                                // are collected HERE for the identical
+                                // hermetic-testing reason.
+                                Action::PromoteSessionModelToDefault => {
+                                    let env_vars: std::collections::HashMap<String, String> =
+                                        std::env::vars().collect();
+                                    self.apply_promote_session_model_to_default(
+                                        &env_vars,
+                                        &std::env::current_dir()
+                                            .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                                    );
+                                }
                                 Action::GrantPermissionPattern(rule, scope) => {
                                     // The granting agent is the one whose
                                     // call is being decided -- NOT

@@ -207,6 +207,21 @@ pub enum Action {
     /// value -- see `conway::config::schema::ConwayConfig::default_model`'s
     /// own doc for that decision.
     CycleDefaultRole,
+    /// Board item `01M1AWGSTD7084VFVGN1GK9AS8`: `Enter` on the "defaults"
+    /// section's own promotion leaf -- shown ONLY when this session is
+    /// currently running a model (`AppState::focused_model`, set by a real
+    /// `Event::ModelDecision`) that differs from the derived persistent
+    /// default. This is deliberately NOT a second scalar: the write is a
+    /// REORDER of `roles.<default_role>.chain` (the running model moves to
+    /// the head, deduped, everything else keeps its relative order) via
+    /// `conway::config::set_role_chain` -- the exact writer the "default
+    /// model" row's own doc already names as the one legitimate way to
+    /// change the derived value (`App::
+    /// apply_promote_session_model_to_default`, `app/defaults.rs`). The
+    /// "default model" row itself stays `MenuNode::Static` -- see
+    /// `view/settings.rs`'s own doc, "Defaults: role settable, model
+    /// derived" -- this is a SIBLING leaf, not that row turned settable.
+    PromoteSessionModelToDefault,
 }
 
 /// Routes a keypress based on `state.mode`, mutating `state.input`/`cursor`
@@ -488,6 +503,13 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                 // set_default_role`) and the fresh re-read afterward, which
                 // this function has no access to (`env`/`cwd`).
                 return Some(Action::CycleDefaultRole);
+            } else if id == super::view::settings::LEAF_PROMOTE_SESSION_MODEL {
+                // Mirrors `LEAF_DEFAULT_ROLE`'s own arm: the write (a
+                // `roles.<default_role>.chain` reorder) and the fresh
+                // re-read afterward both need `env`/`cwd`, which this
+                // function does not have -- the app loop owns them (`App::
+                // apply_promote_session_model_to_default`).
+                return Some(Action::PromoteSessionModelToDefault);
             }
             // `LEAF_TOOL_PREVIEW_LINES`: Enter has nothing to activate on
             // the numeric leaf -- it is adjusted with Left/Right instead

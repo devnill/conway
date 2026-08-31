@@ -62,6 +62,16 @@
 //! as a keybinding row, so a well-meaning future "mouse: scroll" row can
 //! never sneak back in as if it were a real binding (`no_binding_row_mentions_mouse`
 //! below guards this).
+//!
+//! **Transcript reservation, not just an overlay (board item
+//! `01M1AFGDWR9CQ8WNYYV2B1TQBK`).** This overlay is informational and
+//! commonly left open while session activity continues behind it -- exactly
+//! the shape that made an appended error unreadable while `/settings`
+//! covered it (fixed one item earlier, `01M1A9M2EVJNR0HBN86A8E40EA`).
+//! [`modal_rect`] gives `view::mod::layout` this overlay's own height BEFORE
+//! `transcript::draw` runs, so the transcript shrinks ahead of it instead of
+//! being drawn over -- see [`CAP_DENOMINATOR`]'s own doc for why the cap had
+//! to change alongside the reservation, not stay as it was.
 
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -264,28 +274,43 @@ pub(super) const MOUSE_NOTE: &str =
 /// Rows the overlay's footer always reserves: the `[Esc] close` hint.
 const FOOTER_ROWS: u16 = 1;
 
-/// The overlay's OWN cap denominator, deliberately more generous than
-/// [`modal::DEFAULT_CAP_DENOMINATOR`] -- `1` means "up to the whole
-/// `transcript_area`", the pre-V1 behavior this overlay already had. This is
-/// the one case `modal.rs`'s own doc calls out explicitly: `/help` is
-/// INFORMATIONAL (the user opened it on purpose, to read, not a decision
-/// interrupting them -- `AppState::help_open`'s own doc on that
-/// distinction), so it can reasonably claim more of the screen than a
-/// decision-owed modal, and its binding list is genuinely long enough that
-/// the tighter default would force scrolling even on an ordinary terminal.
-/// It still scrolls past THIS cap on a small enough viewport (below).
-const CAP_DENOMINATOR: u16 = 1;
-
-/// Draws the `/help` overlay over `transcript_area` via the shared
-/// [`modal`] primitive (V1): bottom-anchored, sized to the binding list's
-/// own wrapped height, capped at [`CAP_DENOMINATOR`] of the transcript
-/// area, and SCROLLING (`scroll`, `AppState::modal_scroll`) past the cap
-/// rather than clipping. No other `AppState` is needed -- every line of
-/// content here is static.
+/// The overlay's OWN cap denominator.
 ///
-/// Never panics on a tiny area -- [`modal::modal_area`]'s own clamp
-/// covers that; see its doc for why the floor can never exceed the ceiling.
-pub fn draw(frame: &mut Frame, transcript_area: Rect, scroll: u16, theme: &Theme) {
+/// **Written for V1 as `1` ("up to the whole `transcript_area`"), corrected
+/// by board item `01M1AFGDWR9CQ8WNYYV2B1TQBK`.** The `1` was sound while
+/// `/help` drew straight OVER an already-rendered transcript (`Clear` cost
+/// nothing the overlay wasn't already covering) -- but this item makes
+/// `view::mod::layout` reserve this overlay's own height out of the
+/// transcript pane BEFORE `transcript::draw` runs (see [`modal_rect`],
+/// mirroring `view/settings.rs::modal_rect`'s own fix one item earlier). A
+/// cap of `1` and a reservation are the same contradiction `settings.rs`'s
+/// own `CAP_DENOMINATOR` doc already names: the overlay claims the WHOLE
+/// pane, the transcript shrinks to nothing, and an error appended while
+/// `/help` is open is unreadable again -- the exact defect the reservation
+/// exists to fix. `2` (matching [`modal::DEFAULT_CAP_DENOMINATOR`] and
+/// `settings.rs`'s own choice) is what this correction settles on: half the
+/// transcript pane, leaving the other half visibly present above it.
+///
+/// **Still safe to cap, unlike a plain unscrollable `Paragraph`.** This
+/// overlay's body is a `Paragraph` (not `/settings`'/`/plugin`'s stateful
+/// `List`), but it is NOT scroll-state-free either: `draw` already calls
+/// `Paragraph::scroll` against `scroll` (`AppState::modal_scroll`), and
+/// `input.rs::handle_help_key` already wires `PageUp`/`PageDown` to it
+/// (`adjust_modal_scroll`) -- a REAL, working, independent scroll offset
+/// that has existed since before this item, not something this correction
+/// adds. Capping only shrinks the VIEWPORT (`frame_areas.body_area.height`,
+/// which `body_max_scroll` reads); the full binding list is still there to
+/// scroll to, exactly the way `/settings`' `ListState` keeps rows past ITS
+/// cap reachable, just via an explicit key instead of auto-follow-selection.
+const CAP_DENOMINATOR: u16 = 2;
+
+/// The overlay's own body content -- one `Paragraph`, built ONCE here so
+/// [`modal_rect`] (which needs its wrapped height BEFORE anything renders)
+/// and [`draw`] (which renders it) can never compute two different bodies
+/// that could silently drift apart (steering P-14; mirrors `view/
+/// settings.rs::build_tree` being the one tree both `modal_rect` and `draw`
+/// build from).
+fn build_body(theme: &Theme) -> Paragraph<'static> {
     let mut body_lines: Vec<Line> = Vec::new();
     for group in GROUPS {
         body_lines.push(Line::from(Span::styled(group.title, theme.emphasized)));
@@ -300,17 +325,63 @@ pub fn draw(frame: &mut Frame, transcript_area: Rect, scroll: u16, theme: &Theme
         body_lines.push(Line::from(""));
     }
     body_lines.push(Line::from(Span::styled(MOUSE_NOTE, theme.dim)));
-    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    Paragraph::new(body_lines).wrap(Wrap { trim: false })
+}
+
+/// The `/help` overlay's own bottom-anchored, content-sized `Rect`, computed
+/// against `transcript_area` -- exactly what [`draw`] itself asks for via
+/// this same function, never a second, independent computation (steering
+/// P-14, mirrors `view/settings.rs::modal_rect`'s own doc).
+///
+/// **Board item `01M1AFGDWR9CQ8WNYYV2B1TQBK`.** Factored out so
+/// `view::mod::layout` can learn how tall this overlay will render BEFORE
+/// `transcript::draw` runs, and shrink the transcript pane by exactly that
+/// height -- see this module's own doc, the `CAP_DENOMINATOR` correction,
+/// for why a cap alone was not enough.
+///
+/// Takes only `transcript_area` (unlike `settings::modal_rect`, which also
+/// takes `state`) because this overlay's own HEIGHT depends on nothing but
+/// its wrapped line count -- see this module's own doc, "No other
+/// `AppState` is needed": [`GROUPS`] is a `const`, so there is no
+/// `AppState` to thread through at all. [`build_body`] does need a `Theme`
+/// (for styling), but `Paragraph::line_count` measures wrapped rows from
+/// TEXT alone -- style never changes how many rows a `Line` wraps to -- so
+/// this passes `Theme::default()` rather than asking `view::mod::layout`
+/// (which has no `Theme` of its own to give it) to thread one through just
+/// for a value the row count can never actually depend on.
+pub(crate) fn modal_rect(transcript_area: Rect) -> Rect {
+    let body = build_body(&Theme::default());
     let content_rows = body
         .line_count(modal::body_width(transcript_area))
         .min(u16::MAX as usize) as u16;
+    modal::modal_area(transcript_area, content_rows, FOOTER_ROWS, CAP_DENOMINATOR)
+}
 
-    let frame_areas = modal::draw_modal_frame(
+/// Draws the `/help` overlay over `transcript_area` via the shared
+/// [`modal`] primitive (V1): bottom-anchored, sized to the binding list's
+/// own wrapped height, capped at [`CAP_DENOMINATOR`] of the transcript
+/// area, and SCROLLING (`scroll`, `AppState::modal_scroll`) past the cap
+/// rather than clipping. No other `AppState` is needed -- every line of
+/// content here is static.
+///
+/// Never panics on a tiny area -- [`modal::modal_area`]'s own clamp
+/// covers that; see its doc for why the floor can never exceed the ceiling.
+pub fn draw(frame: &mut Frame, transcript_area: Rect, scroll: u16, theme: &Theme) {
+    let body = build_body(theme);
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
+    // `modal_rect` re-derives the SAME `Rect` from the SAME `content_rows`
+    // this call just computed -- never a second, independently-resolved
+    // area that could disagree with what `view::mod::layout` already
+    // reserved (steering P-14, mirrors `view/settings.rs::draw`'s own
+    // `modal_rect`-then-`draw_modal_frame_in` shape).
+    let area = modal_rect(transcript_area);
+
+    let frame_areas = modal::draw_modal_frame_in(
         frame,
-        transcript_area,
-        content_rows,
+        area,
         FOOTER_ROWS,
-        CAP_DENOMINATOR,
         " HELP -- keybindings (/help does not list slash commands; see / for those) ",
         theme.help_border,
     );

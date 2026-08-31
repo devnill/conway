@@ -88,6 +88,67 @@
 //! in `settings.json` by hand -- there is no third way, and this row does
 //! not pretend there is one.
 //!
+//! ## The persistent-default gap: promoting the session's model
+//!
+//! Board item `01M1AWGSTD7084VFVGN1GK9AS8`. An operator who runs `/model
+//! <pair>` (session-scoped, forks -- INTENT.md §5c) has no in-app way to
+//! make that choice stick past a restart: before this item, the derived
+//! "default model" row above was READ-ONLY end to end, so the only path
+//! from "I like what this session is running" to "conway starts on it next
+//! time" was hand-editing `roles.<default_role>.chain` in `settings.json`.
+//! The operator report this item closes hit exactly that gap -- they chose
+//! a fast model with `/model`, worked on it, restarted, and landed back on
+//! the chain head (a slow default) with no warning that the switch had
+//! been session-only, corrupting a timing comparison they did not know
+//! they were making incorrectly.
+//!
+//! **Decided: [`LEAF_PROMOTE_SESSION_MODEL`], a SIBLING leaf, not the
+//! static row turned settable.** Three options were on the table (this
+//! item's own spec names all three): (a) make the static row itself
+//! actionable; (b) `/model --default <pair>`, an argument-modified
+//! `/model`; (c) documentation only. (b) is rejected against
+//! `docs/vision/DESIGN-surface-coherence.md`'s rule 1: the PERSISTENT
+//! default's home is `/settings` -- `/model` itself stays the
+//! session-scoped half of the split and must not grow a second,
+//! persistent-writing mode, which is exactly the "same capability, two
+//! claimed homes" shape rule 2 forbids. (c) is rejected as leaving the
+//! daily-driver friction the report exists to fix. (a) -- turning the
+//! static row itself into a leaf -- is rejected too, for a narrower
+//! reason: that row's `Enter` would have to mean something conditional on
+//! state that is not implied by the row's own label (cycle through the
+//! chain? promote the session's model? both, depending on what's
+//! running?), and `default_model_row_is_static_never_a_settable_leaf`
+//! exists precisely to catch that row becoming a leaf at all -- reversing
+//! it would need the test rewritten to describe a DIFFERENT invariant,
+//! for no benefit over a second, clearly-labelled row. A sibling leaf
+//! keeps the derived row's own contract ("this is a read, not a control")
+//! intact, keeps that test passing UNCHANGED, and names its own action in
+//! its own label instead of overloading the derived row's.
+//!
+//! **Rendering.** The new leaf appears in the "defaults" group, directly
+//! after the "default model" row, ONLY when `state.focused_model` is
+//! `Some` and differs from `state.default_model_snapshot` -- see
+//! [`build_tree`]. This is deliberately the SAME legibility test the
+//! report's own failure turned on: when the two already agree there is
+//! nothing to promote and no session/persistent distinction to surface;
+//! when they differ, the row states BOTH values by name (`"this session is
+//! running {session model} -- Enter to make it the persistent default"`),
+//! so an operator can never mistake a session choice for a persistent one
+//! or vice versa (acceptance 4).
+//!
+//! **The write.** `App::apply_promote_session_model_to_default`
+//! (`app/defaults.rs`) reads the default role's CURRENT chain (`app/
+//! provider_manage.rs::load_roles_lax`, reused rather than re-read a
+//! second way -- P-14), removes any existing occurrence of the session's
+//! model, and inserts it at index 0 -- a REORDER, preserving every other
+//! configured fallback and their relative order, never a truncation to a
+//! single entry (a chain's whole point is fallback candidates; promoting
+//! one to head must not silently discard the rest). Persisted via
+//! `conway::config::set_role_chain` -- the exact writer `/settings`'
+//! provider-add flow already calls for the identical "id/model" shape, no
+//! second opinion about chain-entry format (P-14, this item's own spec
+//! names this reuse explicitly).
+//!
 //! ## Plugins: one home, not two
 //!
 //! Board item `01M0VR5RCCB8NDGG2JEQW8X7XR` gave conway a `/plugin` command
@@ -222,6 +283,18 @@ use crate::tui::state::AppState;
 /// display, not something `Enter` sets -- see this module's own doc,
 /// "Defaults: role settable, model derived".
 pub(crate) const LEAF_DEFAULT_ROLE: &str = "default_role";
+/// Board item `01M1AWGSTD7084VFVGN1GK9AS8`: `Enter` writes the running
+/// session's model (`AppState::focused_model`) to the head of the default
+/// role's own `chain` via `conway::config::set_role_chain` -- a REORDER,
+/// not a second stored value, and a SIBLING of the "default model" row
+/// above, not that row turned settable (see this module's own doc,
+/// "Defaults: role settable, model derived", and "The persistent-default
+/// gap: promoting the session's model" below). `build_tree` renders this
+/// leaf only when `state.focused_model` is `Some` and differs from
+/// `state.default_model_snapshot` -- when the two already match there is
+/// nothing to promote, and the row would be a no-op action pretending to
+/// be a decision.
+pub(crate) const LEAF_PROMOTE_SESSION_MODEL: &str = "promote_session_model";
 pub(crate) const LEAF_SHOW_REASONING: &str = "show_reasoning";
 pub(crate) const LEAF_SHOW_TIMESTAMPS: &str = "show_timestamps";
 pub(crate) const LEAF_TOOL_PREVIEW_LINES: &str = "tool_preview_lines";
@@ -341,11 +414,12 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
         // Board item `01M18Q7P25DTSKQJDJJCC3E800`: see this module's own
         // doc, "Defaults: role settable, model derived", for why the first
         // row is a settable leaf (`Enter` cycles) and the second is
-        // `MenuNode::Static` (a derived display, never a leaf).
-        group_node(
-            DEFAULTS_GROUP,
-            state,
-            vec![
+        // `MenuNode::Static` (a derived display, never a leaf). Board item
+        // `01M1AWGSTD7084VFVGN1GK9AS8` adds a THIRD, conditional row -- see
+        // this module's own doc, "The persistent-default gap: promoting
+        // the session's model".
+        group_node(DEFAULTS_GROUP, state, {
+            let mut rows = vec![
                 MenuNode::leaf(
                     format!(
                         "default role -- {} (default) (Enter to cycle)",
@@ -362,8 +436,26 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                         .as_deref()
                         .unwrap_or("not configured")
                 )),
-            ],
-        ),
+            ];
+            // Shown only when THIS SESSION is running a model that
+            // differs from the persistent default -- when the two agree
+            // there is nothing to promote (see `LEAF_PROMOTE_SESSION_
+            // MODEL`'s own doc). Named by BOTH values, never just one, so
+            // the session choice and the persistent default can never be
+            // mistaken for each other (acceptance 4).
+            if let Some(session_model) = state.focused_model.as_deref() {
+                if Some(session_model) != state.default_model_snapshot.as_deref() {
+                    rows.push(MenuNode::leaf(
+                        format!(
+                            "this session is running {session_model} -- Enter to make it \
+                             the persistent default"
+                        ),
+                        LEAF_PROMOTE_SESSION_MODEL,
+                    ));
+                }
+            }
+            rows
+        }),
         group_node(
             DISPLAY_GROUP,
             state,
@@ -1790,6 +1882,108 @@ mod tests {
             .find(|r| r.label.contains("default model"))
             .expect("default-model row must exist");
         assert_eq!(model_row.kind, menu::MenuRowKind::Static, "{model_row:?}");
+    }
+
+    // ---------------------------------------------------------------
+    // Board item `01M1AWGSTD7084VFVGN1GK9AS8`: LEAF_PROMOTE_SESSION_MODEL,
+    // the writable path for the derived default -- a SIBLING leaf, not
+    // the static row above turned settable.
+    // ---------------------------------------------------------------
+
+    /// ACCEPTANCE 1/4: a session running a DIFFERENT model than the
+    /// persistent default gets an actionable row naming BOTH values --
+    /// this is the fix's own discriminating case, the operator's exact
+    /// report (`/model ollama_cloud/glm-5.2`, then a restart silently
+    /// reverting to the chain head).
+    #[test]
+    fn a_diverged_session_model_renders_a_selectable_promote_leaf_naming_both_values() {
+        let mut state = AppState::new(AgentId::new());
+        state.default_role_snapshot = "coder".to_string();
+        state.default_model_snapshot = Some("local/qwen3.8:27b-mlx".to_string());
+        state.focused_model = Some("ollama_cloud/glm-5.2".to_string());
+
+        let rows = build_tree(&state).rows();
+        let promote_row = rows
+            .iter()
+            .find(|r| r.label.contains("Enter to make it"))
+            .expect("a diverged session model must render a promote row");
+        assert!(
+            promote_row.label.contains("ollama_cloud/glm-5.2"),
+            "must name the session's own model: {}",
+            promote_row.label
+        );
+        assert_eq!(
+            promote_row.kind,
+            menu::MenuRowKind::Leaf {
+                id: LEAF_PROMOTE_SESSION_MODEL.to_string()
+            },
+            "{promote_row:?}"
+        );
+        // The static "default model" row is UNCHANGED and still names its
+        // own (still current) value -- the two rows together are what
+        // make the session/persistent distinction legible, never merged
+        // into one.
+        assert!(
+            rows.iter()
+                .any(|r| r.label.contains("default model")
+                    && r.label.contains("local/qwen3.8:27b-mlx")
+                    && r.kind == menu::MenuRowKind::Static),
+            "{rows:?}"
+        );
+    }
+
+    /// The session's model already matches the persistent default: no
+    /// promote row at all -- there is nothing to promote, and an always-
+    /// present row would be a no-op action pretending to be a decision.
+    #[test]
+    fn a_session_model_matching_the_default_renders_no_promote_leaf() {
+        let mut state = AppState::new(AgentId::new());
+        state.default_role_snapshot = "coder".to_string();
+        state.default_model_snapshot = Some("anthropic/claude-sonnet-4-6".to_string());
+        state.focused_model = Some("anthropic/claude-sonnet-4-6".to_string());
+
+        let rows = build_tree(&state).rows();
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(&r.kind, menu::MenuRowKind::Leaf { id } if id == LEAF_PROMOTE_SESSION_MODEL)),
+            "{rows:?}"
+        );
+    }
+
+    /// No `ModelDecision` has arrived for this session yet
+    /// (`focused_model` is `None`, `AppState::new`'s own default): no
+    /// promote row -- there is no session choice to name yet.
+    #[test]
+    fn no_focused_model_renders_no_promote_leaf() {
+        let mut state = AppState::new(AgentId::new());
+        state.default_role_snapshot = "coder".to_string();
+        state.default_model_snapshot = Some("anthropic/claude-sonnet-4-6".to_string());
+        assert!(state.focused_model.is_none());
+
+        let rows = build_tree(&state).rows();
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(&r.kind, menu::MenuRowKind::Leaf { id } if id == LEAF_PROMOTE_SESSION_MODEL)),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn draw_never_panics_with_a_diverged_session_model() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.default_role_snapshot = "coder".to_string();
+        state.default_model_snapshot = Some("local/qwen3.8:27b-mlx".to_string());
+        state.focused_model = Some("ollama_cloud/glm-5.2".to_string());
+        for (w, h) in [(80u16, 1u16), (80, 2), (1, 24), (0, 0)] {
+            let backend = TestBackend::new(w.max(1), h.max(1));
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+                .unwrap_or_else(|e| panic!("panicked/errored at {w}x{h}: {e}"));
+        }
     }
 
     /// The default-role row IS a settable leaf, addressed by

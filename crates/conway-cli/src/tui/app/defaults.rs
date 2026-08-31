@@ -5,8 +5,8 @@
 //! the identical reason (directly testable, no real terminal/`select!`
 //! loop needed).
 //!
-//! **Calls the two BUILT primitives this item names, never a second
-//! opinion about either (P-14):**
+//! **Calls the three BUILT primitives this item names, never a second
+//! opinion about any of them (P-14):**
 //! - `conway::config::schema::ConwayConfig::model_for` decides what "the
 //!   default model" means -- the head of a role's `chain` -- the exact
 //!   same function `ConwayConfig::default_model` itself calls; this module
@@ -15,19 +15,42 @@
 //!   written (splice, preserve comments/order, tmp-then-rename, refuse a
 //!   missing key rather than invent one) -- this module never touches
 //!   `settings.json`'s bytes itself.
+//! - `conway::config::set_role_chain` decides HOW `roles.<role>.chain` is
+//!   written -- the same writer `app/provider_manage.rs` already calls for
+//!   its own chain edits; this module's own reorder (below) never touches
+//!   `settings.json`'s bytes directly either.
 //!
-//! # Why `default_model` has no `apply_*` writer of its own
+//! # Why `default_model` has no `apply_*` writer of its own -- but the
+//! session DOES have one, as of board item `01M1AWGSTD7084VFVGN1GK9AS8`
 //!
-//! `/settings`' "default model" row is `MenuNode::Static` (`view/
-//! settings.rs`), not a leaf -- there is no `Action` that sets it, and
-//! therefore no write path here for it, because `ConwayConfig::
-//! default_model`'s own doc records the decision this item made: the
-//! default model is a DERIVED read over `roles.<default_role>.chain`, not
-//! a second stored value. Changing it means changing `default_role`
-//! (this module's own `apply_cycle_default_role`) or hand-editing that
-//! role's `chain` in `settings.json` -- both of which already flow
-//! through the one existing source of truth, so nothing here duplicates
-//! it.
+//! **Written 2026-08-29, corrected 2026-08-30 rather than left standing --
+//! see the paragraph below for what changed.** `/settings`' "default
+//! model" row is `MenuNode::Static` (`view/settings.rs`), not a leaf --
+//! there is no `Action` that sets IT, and therefore no writer here for
+//! THAT row, because `ConwayConfig::default_model`'s own doc records the
+//! decision this item made: the default model is a DERIVED read over
+//! `roles.<default_role>.chain`, not a second stored value.
+//!
+//! **What changed:** the observation above ("no write path here for it")
+//! was true only because nothing in the app had a REASON to write a chain
+//! reorder yet. Board item `01M1AWGSTD7084VFVGN1GK9AS8` found one: an
+//! operator whose SESSION is running a different model than the
+//! persistent default (via `/model`, session-scoped) had no in-app way to
+//! promote that choice to the persistent default, and silently lost it on
+//! restart. [`App::apply_promote_session_model_to_default`] is the writer
+//! that gap needed -- it still never sets a `default_model` scalar (none
+//! exists), and it still never mutates the STATIC row's own `Action` (it
+//! has none, unchanged); it writes a REORDER of `roles.<default_role>.
+//! chain` instead, driven by a NEW, separate leaf
+//! (`view::settings::LEAF_PROMOTE_SESSION_MODEL`) that this module's own
+//! doc, "The persistent-default gap," in `view/settings.rs` explains in
+//! full, including the two rejected alternatives. Changing the derived
+//! value therefore has THREE ways now, not two: changing `default_role`
+//! (this module's own `apply_cycle_default_role`), promoting the running
+//! session's model (this module's own `apply_promote_session_model_to_
+//! default`), or hand-editing that role's `chain` in `settings.json` --
+//! all three flow through the one existing source of truth
+//! (`roles.<role>.chain`), so nothing here duplicates it.
 //!
 //! # Why a lax read, not the full `ConwayConfig`
 //!
@@ -45,7 +68,8 @@ use std::path::Path;
 
 use conway::config::schema::ConwayConfig;
 use conway::config::{
-    discovery, is_baked_in_role_floor, merged_document, set_default_role, LoadOptions,
+    discovery, is_baked_in_role_floor, merged_document, set_default_role, set_role_chain,
+    LoadOptions,
 };
 use conway::RoleAlias;
 
@@ -202,6 +226,99 @@ impl App {
             }
         }
     }
+
+    /// `Enter` on the "defaults" section's `LEAF_PROMOTE_SESSION_MODEL`
+    /// leaf (`Action::PromoteSessionModelToDefault`, board item
+    /// `01M1AWGSTD7084VFVGN1GK9AS8`): writes `state.focused_model` -- the
+    /// model THIS session is actually running, set by a real
+    /// `Event::ModelDecision` -- to the head of the default role's own
+    /// `chain`, persistently. See `view/settings.rs`'s own doc, "The
+    /// persistent-default gap: promoting the session's model", for why
+    /// this is a REORDER via [`set_role_chain`], never a new scalar.
+    ///
+    /// Reads the default role's CURRENT chain via
+    /// `super::provider_manage::load_roles_lax` (reused, never a second
+    /// opinion -- P-14, same reuse `refresh_default_entries` above already
+    /// makes), removes any existing occurrence of `state.focused_model`
+    /// (a model already present elsewhere in the chain must not appear
+    /// TWICE once promoted), and inserts it at index 0 -- every other
+    /// configured fallback keeps its own relative order, never truncated
+    /// away: a chain's whole point is fallback candidates, and promoting
+    /// one to head is not a reason to discard the rest.
+    ///
+    /// Refuses -- a named error, no write -- when `state.focused_model` is
+    /// `None` (nothing to promote; `view/settings.rs`'s own `build_tree`
+    /// should never even render this leaf in that state, but this guards
+    /// the write path independently rather than trusting the render side
+    /// alone) or when it already matches `state.default_model_snapshot`
+    /// (nothing WOULD change; the render side already hides the leaf in
+    /// this case too, for the identical reason).
+    pub(super) fn apply_promote_session_model_to_default(
+        &mut self,
+        env: &HashMap<String, String>,
+        cwd: &Path,
+    ) {
+        let Some(model) = self.state.focused_model.clone() else {
+            self.state.transcript.push(Entry::Error {
+                text: "no session model to promote yet -- this session has not received a \
+                       model decision"
+                    .to_string(),
+                fatal: false,
+            });
+            return;
+        };
+        if self.state.default_model_snapshot.as_deref() == Some(model.as_str()) {
+            self.state.transcript.push(Entry::Error {
+                text: format!("{model} is already the persistent default"),
+                fatal: false,
+            });
+            return;
+        }
+
+        let role = self.state.default_role_snapshot.clone();
+        let roles = match load_roles_lax(env, cwd) {
+            Ok(roles) => roles,
+            Err(e) => {
+                self.state.transcript.push(Entry::Error {
+                    text: format!("could not read [roles] to promote {model}: {e}"),
+                    fatal: false,
+                });
+                return;
+            }
+        };
+        let mut chain: Vec<String> = roles
+            .get(role.as_str())
+            .map(|entry| entry.chain.clone())
+            .unwrap_or_default();
+        chain.retain(|m| m != &model);
+        chain.insert(0, model.clone());
+
+        let Some(path) = discovery::user_config_path(env) else {
+            self.state.transcript.push(Entry::Error {
+                text: "could not resolve a home directory to write settings.json into".to_string(),
+                fatal: false,
+            });
+            return;
+        };
+        match set_role_chain(&path, &role, &chain) {
+            Ok(_) => {
+                self.state.transcript.push(Entry::Notice {
+                    text: format!(
+                        "default model: {model} (written to {}, head of role \"{role}\"'s \
+                         chain)",
+                        path.display()
+                    ),
+                });
+                self.refresh_default_entries(env, cwd);
+            }
+            Err(e) => {
+                self.state.transcript.push(Entry::Error {
+                    text: format!("could not promote {model} to the persistent default: {e}"),
+                    fatal: false,
+                });
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -351,6 +468,164 @@ mod tests {
         assert!(app.state.known_role_names.is_empty());
 
         app.apply_cycle_default_role(&env, cwd.path());
+
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        assert_eq!(text, original, "a refusal must never write the file");
+    }
+
+    // ---------------------------------------------------------------
+    // Board item `01M1AWGSTD7084VFVGN1GK9AS8`:
+    // apply_promote_session_model_to_default.
+    // ---------------------------------------------------------------
+
+    /// ACCEPTANCE 1/2: a session running a DIFFERENT model than the
+    /// persistent default writes that model to the head of the default
+    /// role's chain -- a REORDER (the pre-existing fallback survives,
+    /// after the promoted entry, in its original relative order), never a
+    /// truncation to one entry and never a new scalar.
+    #[tokio::test]
+    async fn promoting_the_session_model_reorders_the_chain_and_persists() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("settings.json"),
+            serde_json::json!({
+                "default_role": "coder",
+                "roles": {
+                    "coder": {"chain": ["local/qwen3.8:27b-mlx", "ollama_cloud/glm-5.2"]}
+                }
+            })
+            .to_string(),
+        )
+        .expect("write fixture");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        app.refresh_default_entries(&env, cwd.path());
+        assert_eq!(
+            app.state.default_model_snapshot.as_deref(),
+            Some("local/qwen3.8:27b-mlx"),
+            "the chain head starts as the slow model, matching the operator's own report"
+        );
+        app.state.focused_model = Some("ollama_cloud/glm-5.2".to_string());
+
+        app.apply_promote_session_model_to_default(&env, cwd.path());
+
+        // Persists: the chain on disk now has the session's model FIRST,
+        // with the previous head surviving right after it -- not dropped.
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value["roles"]["coder"]["chain"],
+            serde_json::json!(["ollama_cloud/glm-5.2", "local/qwen3.8:27b-mlx"]),
+            "{text}"
+        );
+
+        // Read back: the derived default model now follows the session's
+        // own choice, without a restart.
+        assert_eq!(
+            app.state.default_model_snapshot.as_deref(),
+            Some("ollama_cloud/glm-5.2")
+        );
+    }
+
+    /// A session running a model that is not in the default role's chain
+    /// AT ALL is still promotable -- inserted at the head, not refused.
+    #[tokio::test]
+    async fn promoting_a_model_absent_from_the_chain_inserts_it_at_the_head() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("settings.json"),
+            serde_json::json!({
+                "default_role": "coder",
+                "roles": {"coder": {"chain": ["anthropic/claude-sonnet-4-6"]}}
+            })
+            .to_string(),
+        )
+        .expect("write fixture");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        app.refresh_default_entries(&env, cwd.path());
+        app.state.focused_model = Some("kimi/k3".to_string());
+
+        app.apply_promote_session_model_to_default(&env, cwd.path());
+
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value["roles"]["coder"]["chain"],
+            serde_json::json!(["kimi/k3", "anthropic/claude-sonnet-4-6"]),
+            "{text}"
+        );
+    }
+
+    /// No `focused_model` at all (no `ModelDecision` has arrived this
+    /// session yet): refuses without writing, rather than promoting `None`
+    /// or panicking on an absent value.
+    #[tokio::test]
+    async fn promoting_with_no_focused_model_refuses_without_writing() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let original = serde_json::json!({
+            "default_role": "coder",
+            "roles": {"coder": {"chain": ["anthropic/claude-sonnet-4-6"]}}
+        })
+        .to_string();
+        std::fs::write(dir.path().join("settings.json"), &original).expect("write fixture");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        app.refresh_default_entries(&env, cwd.path());
+        assert!(app.state.focused_model.is_none());
+
+        app.apply_promote_session_model_to_default(&env, cwd.path());
+
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        assert_eq!(text, original, "a refusal must never write the file");
+        assert!(
+            app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, crate::tui::state::Entry::Error { text, .. }
+                    if text.contains("no session model to promote"))),
+            "a named refusal must reach the transcript"
+        );
+    }
+
+    /// The session's model already IS the persistent default: refuses
+    /// without writing -- there is nothing to promote, and a write here
+    /// would be a no-op action pretending to be a decision.
+    #[tokio::test]
+    async fn promoting_a_model_that_already_matches_the_default_refuses_without_writing() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let original = serde_json::json!({
+            "default_role": "coder",
+            "roles": {"coder": {"chain": ["anthropic/claude-sonnet-4-6"]}}
+        })
+        .to_string();
+        std::fs::write(dir.path().join("settings.json"), &original).expect("write fixture");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        app.refresh_default_entries(&env, cwd.path());
+        app.state.focused_model = Some("anthropic/claude-sonnet-4-6".to_string());
+
+        app.apply_promote_session_model_to_default(&env, cwd.path());
 
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         assert_eq!(text, original, "a refusal must never write the file");

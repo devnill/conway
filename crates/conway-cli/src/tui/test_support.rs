@@ -161,7 +161,13 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         | Action::TrustDecision(_)
         // Cycling the default role is an `App` action with no `AppState`-only
         // effect, so this state-level dispatcher has nothing to do for it.
-        | Action::CycleDefaultRole => {}
+        | Action::CycleDefaultRole
+        // Board item `01M1AWGSTD7084VFVGN1GK9AS8`: mirrors `CycleDefaultRole`
+        // immediately above for the identical reason -- writing the chain
+        // reorder needs a real facade/filesystem context this
+        // terminal-free harness does not have, so it is applied in
+        // `app.rs`'s run loop only.
+        | Action::PromoteSessionModelToDefault => {}
     }
     action
 }
