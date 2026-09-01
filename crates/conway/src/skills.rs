@@ -740,18 +740,25 @@ mod tests {
             "Be concise.\n",
         )
         .unwrap();
+        // The root handed to the loader is the plugin's `skills/` DIRECTORY,
+        // exactly as production does (`claude_compat_plugins::install` calls
+        // `with_extra_skill_dir(entry.dir.join("skills"))`) -- `plugin_root`
+        // is then that directory's parent. Passing the plugin root itself
+        // here, as this test first did, made `.parent()` climb one level too
+        // far and name the tempdir's parent, so the note pointed somewhere
+        // no reference could resolve against. A fixture that does not mirror
+        // the real call site tests a layout the product never sees.
+        let plugin_skills = plugin.path().join("skills");
         write_skill(
-            plugin.path(),
+            &plugin_skills,
             "refine",
             "---\ndescription: refine\n---\n\nSee `skills/shared/human-presentation.md` \
              (relative to the plugin root). Read it.\n",
         );
 
-        let defs = load_skill_defs_from_roots(&[
-            primary.path().to_path_buf(),
-            plugin.path().to_path_buf(),
-        ])
-        .unwrap();
+        let defs =
+            load_skill_defs_from_roots(&[primary.path().to_path_buf(), plugin_skills.clone()])
+                .unwrap();
         let body = &defs["refine"].body;
         assert!(body.contains("skills/shared/human-presentation.md"));
         assert!(
