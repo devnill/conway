@@ -952,12 +952,21 @@ fn validate_impl(
                     // `>= 1`, and `headroom_tokens` is validated `> 0` by
                     // check 6, just above).
                     let percent = u64::from(headroom) * 100 / u64::from(max_context);
+                    // Names the ROLE as well as the knob. `subject` alone
+                    // says which setting to edit, which is right, but when
+                    // the global default governs it is
+                    // `routing.default_headroom_tokens` -- and this message's
+                    // own "its chain" / "for this role" then refer to nothing
+                    // the reader can identify. With `seen` deduplicating on
+                    // message text, one warning also has to stand for
+                    // whichever role actually tripped it.
                     let message = format!(
-                        "{subject} is {headroom} tokens ({percent}% of the smallest context \
-                         window in its chain, {model_ref} = {max_context} tokens); a long-running \
-                         conversation to that model can hit the context-window gate well before \
-                         it would with a smaller reservation -- consider a smaller headroom_tokens \
-                         for this role, or a larger-window fallback later in its chain"
+                        "{subject} is {headroom} tokens, {percent}% of the smallest context \
+                         window reachable from role '{name}' ({model_ref} = {max_context} \
+                         tokens); a long-running conversation to that model can hit the \
+                         context-window gate well before it would with a smaller reservation \
+                         -- consider a smaller headroom_tokens for that role, or a \
+                         larger-window fallback later in its chain"
                     );
                     if seen.insert(message.clone()) {
                         warnings.push(ConfigWarning {
