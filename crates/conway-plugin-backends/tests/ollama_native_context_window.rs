@@ -95,7 +95,10 @@ async fn generate_with_a_resolved_context_window_requests_native_num_ctx() {
         .await;
 
     let mut models = BTreeMap::new();
-    models.insert("qwen3:8b".to_string(), override_with_context_window(131_072));
+    models.insert(
+        "qwen3:8b".to_string(),
+        override_with_context_window(131_072),
+    );
     let backend = OpenAiCompatBackend::new(config(&server.uri(), models)).unwrap();
     let response = backend.generate(user_request("qwen3:8b")).await.unwrap();
 

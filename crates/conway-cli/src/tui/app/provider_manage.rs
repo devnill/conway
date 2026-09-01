@@ -662,7 +662,8 @@ mod tests {
         env.insert("ANTHROPIC_API_KEY".to_string(), "sk-real".to_string());
         let cwd = tempfile::tempdir().expect("cwd tempdir");
 
-        app.apply_add_provider_choice("anthropic", &env, cwd.path()).await;
+        app.apply_add_provider_choice("anthropic", &env, cwd.path())
+            .await;
 
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -719,7 +720,8 @@ mod tests {
         env.insert("ANTHROPIC_API_KEY".to_string(), "sk-real".to_string());
         let cwd = tempfile::tempdir().expect("cwd tempdir");
 
-        app.apply_add_provider_choice("anthropic", &env, cwd.path()).await;
+        app.apply_add_provider_choice("anthropic", &env, cwd.path())
+            .await;
 
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -751,7 +753,8 @@ mod tests {
         env.insert("ANTHROPIC_API_KEY".to_string(), "sk-real".to_string());
         let cwd = tempfile::tempdir().expect("cwd tempdir");
 
-        app.apply_add_provider_choice("anthropic", &env, cwd.path()).await;
+        app.apply_add_provider_choice("anthropic", &env, cwd.path())
+            .await;
 
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         assert!(
@@ -816,7 +819,8 @@ mod tests {
         let env = isolated_env(dir.path());
         let cwd = tempfile::tempdir().expect("cwd tempdir");
 
-        app.apply_add_provider_choice("openai", &env, cwd.path()).await;
+        app.apply_add_provider_choice("openai", &env, cwd.path())
+            .await;
 
         assert!(
             !dir.path().join("settings.json").exists(),
@@ -838,7 +842,8 @@ mod tests {
         let env = isolated_env(dir.path());
         let cwd = tempfile::tempdir().expect("cwd tempdir");
 
-        app.apply_add_provider_credential("openai", "sk-typed".to_string(), &env, cwd.path()).await;
+        app.apply_add_provider_credential("openai", "sk-typed".to_string(), &env, cwd.path())
+            .await;
 
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -1166,12 +1171,14 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/api/show"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "model_info": {
-                    "general.architecture": "glm5.2",
-                    "glm5.2.context_length": 1_048_576
-                }
-            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "model_info": {
+                        "general.architecture": "glm5.2",
+                        "glm5.2.context_length": 1_048_576
+                    }
+                })),
+            )
             .mount(&server)
             .await;
 

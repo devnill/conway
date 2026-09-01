@@ -371,10 +371,7 @@ fn headroom_consuming_a_large_fraction_of_context_warns_without_exceeding_it() {
     assert!(warning.message.contains("anthropic/claude-haiku-4-5"));
 
     // Not clamped -- same guarantee the literal-exceeds warning makes.
-    assert_eq!(
-        outcome.config.headroom_for(&RoleAlias::new("coder")),
-        8_192
-    );
+    assert_eq!(outcome.config.headroom_for(&RoleAlias::new("coder")), 8_192);
 }
 
 /// Negative control (a check is not established until it has been shown to

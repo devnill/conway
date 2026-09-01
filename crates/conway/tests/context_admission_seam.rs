@@ -453,9 +453,11 @@ async fn a_too_small_primary_is_skipped_and_the_session_continues_via_a_larger_f
     let config = two_candidate_config(8, metadata_path);
 
     let small = Arc::new(
-        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("should never run"))])
-            .with_id(BackendId::new("fake-small"))
-            .with_capabilities(caps(1)),
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response(
+            "should never run",
+        ))])
+        .with_id(BackendId::new("fake-small"))
+        .with_capabilities(caps(1)),
     );
     let big = Arc::new(
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("ok"))])

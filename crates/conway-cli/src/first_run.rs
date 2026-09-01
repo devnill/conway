@@ -761,8 +761,7 @@ pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutco
         let entry_json = backend_entry_json(choice, &credential);
         if let Some(base_url) = choice.base_url {
             if let Some(window) =
-                discover_setup_context_window(base_url, choice.dialect, choice.default_model)
-                    .await
+                discover_setup_context_window(base_url, choice.dialect, choice.default_model).await
             {
                 println!();
                 println!(
@@ -998,17 +997,18 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/api/show"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "model_info": {
-                    "general.architecture": "glm5.2",
-                    "glm5.2.context_length": 1_048_576
-                }
-            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "model_info": {
+                        "general.architecture": "glm5.2",
+                        "glm5.2.context_length": 1_048_576
+                    }
+                })),
+            )
             .mount(&server)
             .await;
 
-        let window =
-            discover_setup_context_window(&server.uri(), Some("ollama"), "glm-5.2").await;
+        let window = discover_setup_context_window(&server.uri(), Some("ollama"), "glm-5.2").await;
         assert_eq!(window, Some(1_048_576));
     }
 
@@ -1049,10 +1049,7 @@ mod tests {
         let snippet = &msg[start..];
         let parsed: serde_json::Value =
             serde_json::from_str(snippet).expect("the printed snippet must itself be valid JSON");
-        assert_eq!(
-            parsed["models"]["glm-5.2"]["max_context_tokens"],
-            1_048_576
-        );
+        assert_eq!(parsed["models"]["glm-5.2"]["max_context_tokens"], 1_048_576);
     }
 
     // ---- chain_entry: the ONE construction verify_backend and the real ----

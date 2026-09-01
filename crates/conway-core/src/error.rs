@@ -855,7 +855,10 @@ mod tests {
             "shorten the prompt",
             "planner",
         ] {
-            assert!(routing.contains(needle), "missing {needle:?} in {routing:?}");
+            assert!(
+                routing.contains(needle),
+                "missing {needle:?} in {routing:?}"
+            );
         }
 
         let fork = RuntimeError::ForkContextOverflow {

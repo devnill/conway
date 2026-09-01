@@ -595,9 +595,13 @@ async fn discover_context_window_returns_none_for_a_dialect_with_no_known_endpoi
         Dialect::LmStudio,
         Dialect::LlamaCppServer,
     ] {
-        let window =
-            conway_plugin_backends::probe::discover_context_window(&base, &dialect.profile(), None, "any-model")
-                .await;
+        let window = conway_plugin_backends::probe::discover_context_window(
+            &base,
+            &dialect.profile(),
+            None,
+            "any-model",
+        )
+        .await;
         assert_eq!(window, None, "{dialect:?} has no known discovery endpoint");
     }
 }
@@ -610,9 +614,7 @@ async fn discover_context_window_returns_none_when_api_show_errors() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/show"))
-        .respond_with(
-            ResponseTemplate::new(404).set_body_json(json!({"error": "model not found"})),
-        )
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"error": "model not found"})))
         .mount(&server)
         .await;
 

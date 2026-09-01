@@ -606,10 +606,20 @@ mod tests {
             ..req_with_hint.clone()
         };
 
-        let with_hint_body =
-            build_request_body(&req_with_hint, &Dialect::OpenAi.profile(), true, false, None);
-        let without_hint_body =
-            build_request_body(&req_without_hint, &Dialect::OpenAi.profile(), true, false, None);
+        let with_hint_body = build_request_body(
+            &req_with_hint,
+            &Dialect::OpenAi.profile(),
+            true,
+            false,
+            None,
+        );
+        let without_hint_body = build_request_body(
+            &req_without_hint,
+            &Dialect::OpenAi.profile(),
+            true,
+            false,
+            None,
+        );
         assert_eq!(
             serde_json::to_vec(&with_hint_body).unwrap(),
             serde_json::to_vec(&without_hint_body).unwrap()
@@ -962,13 +972,8 @@ mod tests {
             Dialect::LmStudio.profile(),
             Dialect::LlamaCppServer.profile(),
         ] {
-            let body = build_request_body(
-                &minimal_request(),
-                &profile,
-                false,
-                false,
-                Some(131_072),
-            );
+            let body =
+                build_request_body(&minimal_request(), &profile, false, false, Some(131_072));
             assert!(
                 body.get("options").is_none(),
                 "{} must never emit options.num_ctx",

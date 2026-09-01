@@ -233,11 +233,7 @@ pub(crate) fn to_generate_response_native(
     };
 
     let mut content = Vec::new();
-    if let Some(thinking) = response
-        .message
-        .thinking
-        .filter(|text| !text.is_empty())
-    {
+    if let Some(thinking) = response.message.thinking.filter(|text| !text.is_empty()) {
         content.push(ContentBlock::Thinking {
             text: thinking,
             signature: None,
@@ -249,7 +245,11 @@ pub(crate) fn to_generate_response_native(
 
     let mut accumulator = ToolCallAccumulator::new(profile.tool_call_style, tools);
     for tool_call in response.message.tool_calls {
-        accumulator.push_complete(tool_call.id, tool_call.function.name, tool_call.function.arguments)?;
+        accumulator.push_complete(
+            tool_call.id,
+            tool_call.function.name,
+            tool_call.function.arguments,
+        )?;
     }
     let tool_calls = accumulator.finish(stop)?;
 
@@ -443,7 +443,10 @@ fn process_native_line(
         .filter(|text| !text.is_empty())
     {
         state.text_buffer.push_str(text);
-        if tx.send(Ok(StreamChunk::TextDelta(text.to_string()))).is_err() {
+        if tx
+            .send(Ok(StreamChunk::TextDelta(text.to_string())))
+            .is_err()
+        {
             return false;
         }
     }
@@ -515,12 +518,8 @@ mod tests {
 
     #[test]
     fn build_native_request_body_omits_options_entirely_when_nothing_is_set() {
-        let body = build_native_request_body(
-            &minimal_request(),
-            &Dialect::Ollama.profile(),
-            false,
-            None,
-        );
+        let body =
+            build_native_request_body(&minimal_request(), &Dialect::Ollama.profile(), false, None);
         assert!(body.get("options").is_none());
     }
 
@@ -554,7 +553,10 @@ mod tests {
         assert_eq!(generated.usage.input_tokens, 18);
         assert_eq!(generated.usage.output_tokens, 4);
         assert_eq!(generated.stop, StopReason::EndTurn);
-        assert_eq!(generated.content, vec![ContentBlock::Text { text: "hi".into() }]);
+        assert_eq!(
+            generated.content,
+            vec![ContentBlock::Text { text: "hi".into() }]
+        );
     }
 
     fn get_weather_tool() -> ToolSpec {
