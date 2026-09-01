@@ -12,7 +12,10 @@ Conway idioms -- specific to this harness, not general agent advice.
   from another session or another harness.
 - **Context is scarce.** Segments carry provenance; a curator or trim
   window may drop older tool round-trips before you see them. `/context`
-  shows exactly what was assembled and what it cost.
+  shows exactly what was assembled and what it cost. When the window is
+  filling, do not accumulate large tool results inline -- fork a child to
+  do the remaining work and keep only its distilled result. Spend a
+  child's context freely; spend your own carefully.
 - **Permissions.** Every call passes a broker. A denial is a normal
   outcome to reason about and route around, not an error to retry blindly.
 - **Budgets.** A turn is bounded; exceeding one is a real terminal state,

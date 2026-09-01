@@ -288,6 +288,40 @@ fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Res
     let metadata_path = resolve_metadata_path(&config, &options.cwd);
     let metadata = model_metadata::load(&metadata_path)?;
 
+    // Adaptive headroom: when `routing.headroom_fraction` is set and a role
+    // has no explicit `headroom_tokens` override, compute the effective
+    // headroom as a fraction of the smallest context window reachable
+    // through that role's chain, clamped to `HEADROOM_FLOOR`. Scales
+    // headroom to the model — 8192 fixed is 25% of a 32K window but <1%
+    // of 976K. The operator's explicit choice always wins; this only
+    // touches roles with no override. The computed value is written into
+    // `roles.<alias>.headroom_tokens` so it is visible (GP-14). NOT
+    // clamping: `default_headroom_tokens` is untouched.
+    if let Some(fraction) = config.routing.headroom_fraction {
+        if fraction > 0 && !metadata.models.is_empty() {
+            for entry in config.roles.values_mut() {
+                if entry.headroom_tokens.is_some() {
+                    continue;
+                }
+                let mut smallest: Option<u32> = None;
+                for raw in &entry.chain {
+                    if let Some(model_meta) = metadata.models.get(raw.as_str()) {
+                        if smallest.is_none_or(|m| model_meta.max_context_tokens < m) {
+                            smallest = Some(model_meta.max_context_tokens);
+                        }
+                    }
+                }
+                if let Some(max_context) = smallest {
+                    let computed = std::cmp::max(
+                        max_context / fraction,
+                        crate::config::schema::HEADROOM_FLOOR,
+                    );
+                    entry.headroom_tokens = Some(computed);
+                }
+            }
+        }
+    }
+
     let mut warnings = validate(&config, &metadata, &options.env)?;
     if had_tui {
         warnings.push(ConfigWarning {

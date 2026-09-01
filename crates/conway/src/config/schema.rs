@@ -488,19 +488,47 @@ impl Default for BackendEntry {
 /// that never set `kind` before this item behaves identically after it.
 pub const DEFAULT_BACKEND_KIND: &str = "anthropic";
 
-/// `[routing]` (headroom amendment). Just the global headroom default —
-/// `[roles]` and `[health]` are separate top-level sections per the
-/// documented schema, not nested under `[routing]`.
+/// `[routing]` (headroom amendment). The global headroom default and an
+/// optional adaptive fraction — see [`Self::headroom_fraction`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct RoutingSection {
     pub default_headroom_tokens: u32,
+    /// When `Some(d)`, a role with no explicit `headroom_tokens` override
+    /// gets its effective headroom computed as a fraction of the smallest
+    /// context window reachable through its chain, rather than inheriting
+    /// [`default_headroom_tokens`]: `max(smallest_window / d, HEADROOM_FLOOR)`.
+    ///
+    /// This scales headroom to the model: 8192 tokens is 25% of a 32K window
+    /// but <1% of a 976K window. A fraction of 10 (`d = 10`) reserves 10%
+    /// of the window — 3200 tokens on a 32K model (leaving more room for
+    /// the prompt), 97K on a 976K model (generous for output).
+    ///
+    /// The per-role override always wins: an operator who sets
+    /// `roles.<alias>.headroom_tokens` explicitly gets that value
+    /// regardless of this setting. An operator who sets neither gets the
+    /// fraction-computed value when this is `Some`, or
+    /// [`default_headroom_tokens`] when `None`.
+    ///
+    /// The floor ([`HEADROOM_FLOOR`]) prevents a tiny window from
+    /// producing an unusably small reservation — 10% of a 4K window is
+    /// 400 tokens, which is too small for most outputs. The floor is
+    /// disclosed here rather than silently applied.
+    #[serde(default)]
+    pub headroom_fraction: Option<u32>,
 }
+
+/// The minimum headroom the adaptive fraction may produce. Disclosed: a
+/// fraction of a very small window can starve the model of output space,
+/// so the fraction is clamped to this floor. See
+/// [`RoutingSection::headroom_fraction`].
+pub const HEADROOM_FLOOR: u32 = 2_048;
 
 impl Default for RoutingSection {
     fn default() -> Self {
         Self {
             default_headroom_tokens: DEFAULT_HEADROOM_TOKENS,
+            headroom_fraction: None,
         }
     }
 }
