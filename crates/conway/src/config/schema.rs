@@ -515,7 +515,7 @@ pub struct RoutingSection {
     /// When `Some(d)`, a role with no explicit `headroom_tokens` override
     /// gets its effective headroom computed as a fraction of the smallest
     /// context window reachable through its chain, rather than inheriting
-    /// [`default_headroom_tokens`]: `max(smallest_window / d, HEADROOM_FLOOR)`.
+    /// [`Self::default_headroom_tokens`]: `max(smallest_window / d, HEADROOM_FLOOR)`.
     ///
     /// This scales headroom to the model: 8192 tokens is 25% of a 32K window
     /// but <1% of a 976K window. A fraction of 10 (`d = 10`) reserves 10%
@@ -526,7 +526,7 @@ pub struct RoutingSection {
     /// `roles.<alias>.headroom_tokens` explicitly gets that value
     /// regardless of this setting. An operator who sets neither gets the
     /// fraction-computed value when this is `Some`, or
-    /// [`default_headroom_tokens`] when `None`.
+    /// [`Self::default_headroom_tokens`] when `None`.
     ///
     /// The floor ([`HEADROOM_FLOOR`]) prevents a tiny window from
     /// producing an unusably small reservation — 10% of a 4K window is
