@@ -484,7 +484,11 @@ fn default_document() -> Value {
             "fsync_interval_ms": 200,
         },
         "limits": {
-            "max_steps": 40,
+            // `0` = unlimited. See `LimitsConfig::max_steps`'s own doc for
+            // why the baked-in default no longer caps a root session: a
+            // fixed step ceiling terminated an interactive coding turn
+            // mid-task and reported no output.
+            "max_steps": 0,
             "max_tokens": 0,
             "deadline_secs": 0,
             "max_parallel_tools": 4,

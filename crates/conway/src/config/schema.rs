@@ -284,6 +284,24 @@ pub enum FsyncMode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LimitsConfig {
+    /// Steps per turn for a session created from this config. `0` =
+    /// unlimited, like every other dimension here.
+    ///
+    /// **Defaults to `0`, and that is a deliberate change.** It was `40`,
+    /// which governs the ROOT session -- the interactive CLI one. A real
+    /// coding turn routinely exceeds forty steps, so the harness terminated
+    /// mid-task with `budget_exceeded` and, because the terminal path passes
+    /// no trailing text, reported `(no output)` -- work done and then not
+    /// accounted for. Observed dogfooding this repository: an agent wrote a
+    /// complete, compiling change and reported nothing; it survived only
+    /// because it had already written to disk.
+    ///
+    /// A step ceiling is a runaway-tool-loop guard, and it earns its keep on
+    /// a SUBAGENT, which no one is watching. It does not on a root session
+    /// driven by a person who can read the transcript and interrupt --
+    /// there, the human is the guard, and a fixed number can only be wrong
+    /// in one of two directions. `Budget::default()`'s `40` is unchanged, so
+    /// a spawned agent that names no budget of its own still gets one.
     pub max_steps: u32,
     /// `0` = unlimited.
     pub max_tokens: u32,
@@ -304,7 +322,7 @@ pub struct LimitsConfig {
 impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
-            max_steps: 40,
+            max_steps: 0,
             max_tokens: 0,
             deadline_secs: 0,
             max_parallel_tools: 4,

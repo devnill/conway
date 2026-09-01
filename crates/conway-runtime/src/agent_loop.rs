@@ -1735,7 +1735,15 @@ impl AgentLoop {
         } else {
             state.turn
         };
-        if steps_this_turn >= budget.max_steps {
+        // `0` means NO CEILING, matching every other dimension in
+        // `[limits]` (`max_tokens`, `deadline_secs`, `max_tool_calls` all
+        // document "0 = unlimited"). `max_steps` was the one limit an
+        // operator could not turn off: `Conway::default_budget` maps the
+        // other three through `if x == 0 { None }` and passes this one
+        // straight through as a `u32`, so any value at all was a hard
+        // ceiling. An interactive coding session routinely needs more
+        // steps in one turn than any fixed number a default can guess.
+        if budget.max_steps > 0 && steps_this_turn >= budget.max_steps {
             return Some(
                 self.finish(
                     ResultStatus::BudgetExceeded {

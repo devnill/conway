@@ -219,7 +219,14 @@ fn five_source_precedence_across_representative_keys() {
     })
     .unwrap();
     assert_eq!(outcome.config.default_role.as_str(), "default");
-    assert_eq!(outcome.config.limits.max_steps, 40);
+    // `0` = unlimited. This was `40`, and that default terminated an
+    // interactive coding turn mid-task with `budget_exceeded` and no
+    // reported output. A step ceiling guards a runaway SUBAGENT loop, where
+    // nobody is watching; on a root session a person is reading the
+    // transcript and can interrupt. `Budget::default()` still carries 40 for
+    // an agent that names no budget of its own -- asserted separately in
+    // `conway_core::agent`'s own tests.
+    assert_eq!(outcome.config.limits.max_steps, 0);
     assert_eq!(outcome.config.permissions.mode, PermissionMode::Prompt);
     assert!(!outcome.config.backends.contains_key("anthropic"));
 }
