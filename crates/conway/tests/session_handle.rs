@@ -111,9 +111,16 @@ async fn turn_handle_result_resolves_on_budget_exceeded() {
     let store = Arc::new(FakeStore::new());
     let conway = build_conway_with_echo_backend(base_config(), store);
     let spec = SessionSpec {
+        // A deadline already in the past, NOT `max_steps: 0`. Zero used to
+        // mean "no steps permitted", so it tripped on the first check; it
+        // now means UNLIMITED, matching every other dimension in `[limits]`
+        // (see `LimitsConfig::max_steps`). A deadline trips on that same
+        // first check and yields the identical `BudgetExceeded` status, so
+        // this still tests what its name says: that the handle's `result()`
+        // resolves on a non-`Completed` terminal status rather than hanging.
         budget: Some(Budget {
             max_steps: 0,
-            deadline: None,
+            deadline: Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
             max_tokens: None,
             max_tool_calls: None,
         }),
@@ -131,7 +138,7 @@ async fn turn_handle_result_resolves_on_budget_exceeded() {
         .expect("result() should succeed");
     assert!(
         matches!(result.status, ResultStatus::BudgetExceeded { .. }),
-        "expected BudgetExceeded with max_steps = 0, got {:?}",
+        "expected BudgetExceeded from an elapsed deadline, got {:?}",
         result.status
     );
 }

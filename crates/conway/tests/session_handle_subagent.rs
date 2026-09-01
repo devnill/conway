@@ -613,9 +613,11 @@ async fn await_agent_on_a_budget_exhausted_child_returns_ok_budget_exceeded() {
     let conway = build_conway_with_echo_backend(base_config(), store);
     let handle = new_handle(&conway).await;
 
+    // See `session_handle.rs`'s companion test: `max_steps: 0` now means
+    // UNLIMITED, so an elapsed deadline is what trips the budget here.
     let spec = ForkSpec::new("go").budget(Budget {
         max_steps: 0,
-        deadline: None,
+        deadline: Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
         max_tokens: None,
         max_tool_calls: None,
     });
@@ -630,7 +632,7 @@ async fn await_agent_on_a_budget_exhausted_child_returns_ok_budget_exceeded() {
         .expect("await_agent should resolve Ok even on BudgetExceeded");
     assert!(
         matches!(result.status, ResultStatus::BudgetExceeded { .. }),
-        "expected BudgetExceeded with max_steps = 0, got {:?}",
+        "expected BudgetExceeded from an elapsed deadline, got {:?}",
         result.status
     );
 }
