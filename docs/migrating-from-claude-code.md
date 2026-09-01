@@ -268,14 +268,19 @@ Claude Code does:
   ```
 
   **Verified against the actual directory, not assumed**: it contains
-  `.claude-plugin/`, `commands/`, and `hooks/` — **no `.mcp.json`**.
-  `docs/plugins/claude-compat.md` is explicit that only `.mcp.json` server
-  declarations are wired to actually run; `commands/*.md` and
-  `hooks/hooks.json` entries are named in the operator-visible discovery
-  report and never executed. So this translation is honest about its
-  ceiling: adding this entry to `settings.json` gets you a report line
-  naming what `kg` declares, not a running equivalent of whatever it did
-  inside Claude Code.
+  `.claude-plugin/`, `commands/`, and `hooks/` — **no `.mcp.json`, no
+  `skills/`, no `agents/`**. `docs/plugins/claude-compat.md`'s own "What
+  runs, with real caveats" section is the authoritative, current list
+  (corrected here: an earlier version of THIS paragraph said
+  `commands/*.md` was only named, never executed — board item
+  `01M0X1G29EZSFEWB1YAG40SE69` wired most `commands/*.md` files to a real,
+  invokable command; board item `01M0X1FCQ80C9ET97HENXSAW2K` wired mapped
+  `hooks/hooks.json` rules to real dispatch). So `kg`'s own `commands/*.md`
+  files and mapped `hooks/hooks.json` rules DO run once this entry is
+  added — what remains an honest ceiling for `kg` specifically is the
+  payload-shape gap `hooks/hooks.json`'s own dispatch still has (a Claude
+  Code hook script reads `tool_name`/`tool_input` on stdin; conway's
+  dispatcher sends its own shape), not "nothing here runs at all."
 
 - **A marketplace fetch** → `/plugin install <manifest-url> <plugin-id>`,
   which then writes its own `[plugins].claude_compat[]` entry for you
@@ -330,6 +335,17 @@ Claude Code does:
   `/plugin marketplace add owner/repo` shape, resolves identically —
   `docs/plugins/marketplace.md`'s own "Passing a repository URL or
   shorthand" section.)
+
+  **`ideate` itself is the plugin that motivated skills/agents importing
+  at all** (board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K`): its own six
+  `skills/*/SKILL.md` (`init`, `refine`, `execute`, `review`, `autopilot`,
+  plus `shared/` — a cross-referenced helper file, not a sixth skill
+  itself) resolve as real slash commands (`/ideate.refine`, and, typed
+  Claude Code's own way, `/ideate:refine`) once this entry is installed;
+  its own ten `agents/*.md` (`worker`, `code-reviewer`, `architect`, ...)
+  become real, spawnable `AgentDef`s (`/spawn @worker`). Before this item,
+  naming this exact entry got every one of those sixteen files listed in
+  the discovery report and nothing more.
 
   **What is still a real gap, stated precisely rather than implied
   away**: `git` must actually be on the operator's own `PATH` (refused by

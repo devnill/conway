@@ -416,6 +416,24 @@ pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
             conway_plugin_claude::discover(&entry.dir).map_err(|err| FacadeError::Build {
                 message: format!("[plugins].claude_compat entry '{}': {err}", entry.id),
             })?;
+
+        // Board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K`: `ConwayBuilder::
+        // with_extra_skill_dir`/`with_extra_agent_dir` already existed,
+        // already documented as "the seam a Claude Code compat layer...
+        // calls to hand a plugin's own directories to a real build," and
+        // simply had no caller until now. A missing `skills/`/`agents/`
+        // subdirectory is not an error -- `load_skill_defs_from_roots`/
+        // `load_agent_defs_from_roots`'s own lenient path already treats an
+        // unreadable non-primary root as "zero entries," so this is always
+        // safe to add, whether or not the entry's own directory happens to
+        // contain either subdirectory. `crates/conway/src/skills.rs`/
+        // `agents.rs`'s own lenient loaders (this item's other sibling
+        // change) are what make a REAL Claude Code `SKILL.md`/agent file
+        // found there actually translate.
+        builder = builder
+            .with_extra_skill_dir(entry.dir.join("skills"))
+            .with_extra_agent_dir(entry.dir.join("agents"));
+
         // Computed BEFORE the `mcp_servers` loop below moves that field out
         // of `report` -- `hook_registrations()` takes `&self`, which a
         // partially-moved `report` could no longer satisfy.
@@ -464,6 +482,17 @@ pub async fn install(builder: ConwayBuilder) -> conway::Result<ConwayBuilder> {
 /// top doc, "the command half is reachable now too"). Carries no tools and
 /// no host-capability requirements: its single job is handing back the
 /// `Ready` translations [`command_plugins`] already resolved.
+///
+/// **Board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K`: also carries every `Ready`
+/// `skills/<name>/SKILL.md` translation.** A translated skill is
+/// registered through the IDENTICAL bare-name + host-namespacing scheme a
+/// `commands/*.md` file already uses (`conway_plugin_claude::skills`'s own
+/// module doc: this crate reuses `commands::ClaudeCommand` itself) -- so
+/// the two kinds fold into the SAME `commands` list here rather than a
+/// second `Plugin`, and `CommandRegistry::build`'s own duplicate-name
+/// check (unmodified) is what an operator sees, named, if a plugin's own
+/// `commands/foo.md` and `skills/foo/SKILL.md` ever collide on the same
+/// bare name.
 struct ClaudeCompatCommandsPlugin {
     /// [`conway_plugin_claude::ClaudeCompatReport::id`] -- the
     /// manifest-derived identity, NOT the config entry's own
@@ -525,7 +554,8 @@ pub fn command_plugins(config: &ConwayConfig) -> conway::Result<Vec<Arc<dyn Plug
             conway_plugin_claude::discover(&entry.dir).map_err(|err| FacadeError::Build {
                 message: format!("[plugins].claude_compat entry '{}': {err}", entry.id),
             })?;
-        let commands = report.command_registrations();
+        let mut commands = report.command_registrations();
+        commands.extend(report.skill_registrations());
         if commands.is_empty() {
             continue;
         }

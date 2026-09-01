@@ -115,10 +115,16 @@ correlated by entry id) into the state `rows_from_claude_compat` reads, a
 small, separate change to `crates/conway-cli/src/tui/state.rs`/
 `tui/app/startup.rs`/`tui/view/plugins.rs` this item did not make.
 
-## What appears named, but does NOT run — read this before assuming otherwise
+## What runs, with real caveats — read this before assuming full parity
 
-This is the equally-prominent half of this page, by design (nothing here
-may claim to be reached that isn't).
+**Renamed from "does NOT run"** (board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K`):
+every kind below except `.claude-plugin/plugin.json` itself now genuinely
+reaches a running `conway` process in some form — the heading calling all
+of it "does NOT run" would now be actively wrong, not merely stale. This
+is still the equally-prominent half of this page, by design (nothing here
+may claim MORE than what actually reaches a running process, either):
+every caveat, gap, and best-effort disclosure that keeps a translated kind
+from matching real Claude Code exactly lives here, named, not glossed over.
 
 - **`commands/*.md` — wired all the way to a running `conway` process,
   best effort (board items `01M0X1G29EZSFEWB1YAG40SE69`,
@@ -155,30 +161,66 @@ may claim to be reached that isn't).
   id and validates the result with `validate_command_name`, the same
   structural guarantee that already makes shadowing a built-in impossible
   for every other plugin command, translated or not.
-- **`skills/<name>/SKILL.md` — still not imported by THIS layer.** conway's
-  own skill loader (`crates/conway/src/skills.rs`) is no longer
-  single-root: `skills::load_skill_defs_from_roots` (board item
-  `01M0X1EH2GW5DKY9XD1EZ78S3F`) accepts an ORDERED list of roots — the
-  operator's own `.conway/skills` always shadows a plugin's on a name
-  collision, and a plugin root's own malformed `SKILL.md` is skipped rather
-  than failing the whole load. Reading a second directory is now possible
-  in the loader, and (board item `01M0XRE2N96ATHEXJ1617E133P`)
-  `ConwayBuilder::with_extra_skill_dir` is a real, callable seam that reaches
-  it through an actual build; this layer just does not yet CALL that seam
-  with a plugin's own `skills/` directory, so nothing changes for an
-  operator naming a `[plugins].claude_compat[]` entry today. That wiring —
-  the translation step, not the loader capability or its seam — is a
-  separate, deferred item. Every `skills/<name>/SKILL.md` directory found is
-  still named in the report.
-- **`agents/*.md` — still not imported by THIS layer,** for the identical
-  reason: `agents::load_agent_defs_from_roots` exists and (board item
-  `01M0XRE2N96ATHEXJ1617E133P`) `ConwayBuilder::with_extra_agent_dir` is a
-  real, callable seam onto it, but this layer does not yet call it with a
-  plugin's own `agents/` directory. Named in the report, never read for
-  content. (An earlier version of this paragraph pointed at an
-  `AgentsConfig::extra_dirs` config field; that field was retired in favor
-  of the builder method above so the agents and skills halves of this
-  capability stay symmetric — see `AgentsConfig`'s own doc.)
+- **`skills/<name>/SKILL.md` — imported two ways at once (board item
+  `01M1DG5TTF6NHW2RXJRZ8ZPE7K`, reversing the earlier "out of scope"
+  ruling).** First, as a real, invokable **slash command**: a skill is
+  translated the identical way a `commands/*.md` file is (bare name, the
+  host prefixing it with the declaring plugin's own id), so `ideate`'s own
+  `refine` skill resolves as `/ideate.refine` — and, because real Claude
+  Code names it `/ideate:refine` (a colon, not conway's own `.`),
+  `conway-cli`'s slash-command parser accepts a leading `:` as an input
+  ALIAS for `.`, so typing it exactly the way Claude Code itself would have
+  you type it also resolves. Second, as a genuine **context-injectable
+  skill**: `ConwayBuilder::with_extra_skill_dir` (a real, callable seam
+  that already existed, just uncalled) is now called with each entry's own
+  `skills/` directory, and `crates/conway/src/skills.rs`'s own lenient
+  loader learned a third-party-tolerant fallback shape (no `name`
+  frontmatter key required — the directory IS the identity, real Claude
+  Code's own convention — and unrecognized keys tolerated rather than
+  rejected), so a plugin's skill is selectable by name from `AgentDef.
+  skills`, exactly like an operator's own `.conway/skills` entry, and
+  always loses a name collision against one. **Cross-references survive
+  by construction, not by rewriting prose:** a real `SKILL.md` tells its
+  own reader to open a sibling file "relative to the plugin root" — every
+  translated skill's own submitted prompt (and every context-injected
+  skill body) is prefixed with one line naming this plugin's own absolute
+  root directory, so a model reading it can resolve that reference with
+  its own Read tool. Every `SKILL.md` frontmatter key besides
+  `description` is named, not silently honored, mirroring `commands/*.md`'s
+  own posture exactly (`allowed-tools` above all: a permission surprise,
+  not a fidelity gap). A directory that fails to translate (unreadable,
+  malformed/unterminated frontmatter, an empty body) is still named in the
+  report.
+- **`agents/*.md` — imported as real `AgentDef`s (same board item).**
+  `ConwayBuilder::with_extra_agent_dir` (also a real, previously-uncalled
+  seam) is now called with each entry's own `agents/` directory;
+  `crates/conway/src/agents.rs`'s own lenient loader learned the identical
+  kind of third-party-tolerant fallback (identity is always the file's own
+  stem; `tools:` accepted as EITHER a YAML list — conway's own convention
+  — OR a comma-separated string — real Claude Code's own convention, e.g.
+  `tools: Read, Edit, Write, Bash, Grep, Glob`; `${CLAUDE_PLUGIN_ROOT}` in
+  the body substituted with the plugin's own absolute root, the identical
+  token `hooks.json`/`.mcp.json` commands already use). **How it is
+  invoked is not a new mechanism**: an `AgentDef` is already "a prompt
+  inserted into a session, like a system prompt" (`SpawnSpec.agent_def`),
+  so `/spawn @worker` starts a fresh child running `ideate`'s own real
+  `worker.md` as its system prompt — the same command an operator's own
+  `.conway/agents/*.md` entry already answers to. **The safety ruling on
+  `tools:`, escalated and decided, load-bearing:** a Claude Code tool name
+  (`Read`, `Edit`, ...) is never conway's own (`read`, `edit`, ..., lower
+  case) — every declared name is matched case-insensitively against
+  conway's known first-party tool names; anything that does not resolve is
+  DROPPED and named (never silently included), and a `tools:` declaration
+  that resolves to zero known names still degrades to "this agent gets NO
+  tools," never to "this agent gets every tool" — a translation gap only
+  ever narrows what an agent can do, never widens it. `model:`'s own real
+  convention is a bare alias (`model: sonnet`/`opus`), not conway's
+  `<backend>/<model>` wire shape; an unparseable value is simply dropped
+  (not a permission concern, so no safety consequence) and the agent falls
+  back to its role's own default model. A file that fails to translate, or
+  whose own declared tool restriction had something dropped, is named in
+  the report — `AgentToolRestriction` is its own distinct
+  `UnsupportedKind`, permission-shaped, separate from a whole-file failure.
 - **`hooks/hooks.json` — event names are matched, and (board item
   `01M0X1FCQ80C9ET97HENXSAW2K`) a mapped rule now translates into a real,
   dispatchable `[hooks].rules[]`-shaped registration.**
@@ -326,13 +368,16 @@ folded into a single count.
 ## Where the full list of what did not import lives
 
 `conway_plugin_claude::discover` returns a `ClaudeCompatReport` whose
-`unsupported: Vec<UnsupportedItem>` names every `commands/*.md`, every
-`skills/<name>`, every `agents/*.md`, and every unmapped hook event, each
-with its own reason — never a single "N things skipped" count. `/plugin`
-(the TUI listing) surfaces the same names on the directory's own row,
-bounded to a few names with an honest "+N more" tail for a very large
-directory rather than an unbounded line or a silent truncation with no
-indication anything was cut.
+`unsupported: Vec<UnsupportedItem>` names every `commands/*.md`,
+`skills/<name>`, or `agents/*.md` file that did NOT translate, every
+ignored `commands/*.md`/`skills/<name>` frontmatter key (even on a file
+that otherwise translated), every `agents/*.md` tool restriction dropped
+for lacking a conway counterpart (even on a file that otherwise
+translated), and every unmapped hook event — each with its own reason,
+never a single "N things skipped" count. `/plugin` (the TUI listing)
+surfaces the same names on the directory's own row, bounded to a few names
+with an honest "+N more" tail for a very large directory rather than an
+unbounded line or a silent truncation with no indication anything was cut.
 
 ## Foreign frontmatter is read permissively, deliberately
 
@@ -341,10 +386,16 @@ parsed as a `serde_json::Value` and only the fields actually used are read
 — an unrecognized Claude Code key is simply never looked at, never a
 `deny_unknown_fields`-style hard failure. **This is deliberately NOT how
 conway's own `.conway/skills`/`.conway/agents` frontmatter is parsed** —
-`crates/conway/src/skills.rs`/`agents.rs` reject an unknown key outright,
-and that strictness is untouched by this item: it catches an operator's
-own typo in a file conway itself defines the shape of, which a Claude Code
-plugin author's file is not.
+`crates/conway/src/skills.rs`/`agents.rs` reject an unknown key outright
+for the operator's OWN `.conway/skills`/`.conway/agents` root, and that
+strictness is untouched: it catches an operator's own typo in a file
+conway itself defines the shape of, which a Claude Code plugin author's
+file is not. A THIRD-PARTY root (what `with_extra_skill_dir`/
+`with_extra_agent_dir` add) is different: both loaders now try that strict
+shape first, then fall back to a permissive one tolerant of real Claude
+Code conventions (no `name` key, `tools:` as a comma-separated string,
+...) — see this page's own "What actually reaches a running process"
+section, above, for the full shape.
 
 ## Trust — read this before you name a directory
 

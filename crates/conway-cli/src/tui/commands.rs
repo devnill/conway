@@ -690,10 +690,31 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             // asserted equal, not merely commented, by
             // `plugin_shape_check_uses_the_same_separator_validate_command_name_enforces`
             // below, so the two can never silently desync.
+            //
+            // Board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K`: a LEADING `:` is
+            // ALSO accepted here, as a typed-input ALIAS for `.` -- real
+            // Claude Code names a plugin skill/command `/<plugin-id>:
+            // <name>` (a colon), and the operator's own trigger for this
+            // item was typing exactly that (`/ideate:refine`) and getting
+            // "unknown command". `EVENT_NAMESPACE_SEPARATOR` itself stays
+            // `.` (unchanged, still load-bearing for `validate_command_name`
+            // and every other plugin-declared event/command); only the
+            // FIRST `:` in what the operator TYPED is translated to `.`
+            // before it becomes `full_name`, so `CommandRegistry`'s own
+            // lookup keys (always `.`-joined) need no change either. A `.`
+            // and a `:` in the SAME typed word (an unusual plugin id
+            // containing `.` of its own, spelled Claude Code's way) still
+            // resolves correctly: only the first `:` is rewritten, so
+            // `"foo.bar:baz"` becomes `"foo.bar.baz"`, the same full name a
+            // plugin id containing `.` already produces today.
             let bare = other.strip_prefix('/').unwrap_or(other);
-            if bare.contains('.') {
+            let full_name = match bare.split_once(':') {
+                Some((head, tail)) => format!("{head}.{tail}"),
+                None => bare.to_string(),
+            };
+            if full_name.contains('.') {
                 Ok(SlashCommand::Plugin {
-                    full_name: bare.to_string(),
+                    full_name,
                     args: rest.to_string(),
                 })
             } else {
@@ -3313,6 +3334,47 @@ mod tests {
                 args: String::new(),
             })
         );
+    }
+
+    /// Board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K`'s own trigger, pinned
+    /// directly: the operator typed `/ideate:refine` -- Claude Code's own
+    /// separator -- and it must resolve to the SAME `full_name` the `.`
+    /// form already does, not "unknown command".
+    #[test]
+    fn a_colon_separated_plugin_command_is_accepted_as_an_alias_for_the_dot_form() {
+        assert_eq!(
+            parse("/ideate:refine do the thing"),
+            Ok(SlashCommand::Plugin {
+                full_name: "ideate.refine".to_string(),
+                args: "do the thing".to_string(),
+            })
+        );
+        // Both spellings land on the IDENTICAL full_name.
+        assert_eq!(parse("/ideate:refine"), parse("/ideate.refine"));
+    }
+
+    /// Only the FIRST `:` is rewritten -- a plugin id that itself contains
+    /// `.` (already a supported, if unusual, shape --
+    /// `plugin_shape_check_uses_the_same_separator_validate_command_name_
+    /// enforces`'s own sibling coverage) still resolves correctly when
+    /// typed Claude Code's way.
+    #[test]
+    fn only_the_first_colon_is_rewritten() {
+        assert_eq!(
+            parse("/foo.bar:baz"),
+            Ok(SlashCommand::Plugin {
+                full_name: "foo.bar.baz".to_string(),
+                args: String::new(),
+            })
+        );
+    }
+
+    /// A bare word with neither `.` nor `:` is still "unknown command", not
+    /// a plugin shape -- the colon alias narrows nothing about what
+    /// already fails to parse.
+    #[test]
+    fn a_word_with_no_separator_at_all_is_still_unknown() {
+        assert!(parse("/nonsense").is_err());
     }
 
     /// The shape check `parse` uses (a `.` in the command word) must agree
