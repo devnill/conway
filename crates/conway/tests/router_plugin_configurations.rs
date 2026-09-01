@@ -104,6 +104,7 @@ fn base_config(
         backends,
         routing: RoutingSection {
             default_headroom_tokens: 4_096,
+            ..RoutingSection::default()
         },
         roles,
         health: HealthSection::default(),

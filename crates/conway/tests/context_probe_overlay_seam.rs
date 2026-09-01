@@ -264,6 +264,7 @@ fn config_naming(base_url: String, metadata_path: PathBuf) -> ConwayConfig {
         backends,
         routing: RoutingSection {
             default_headroom_tokens: 8,
+            ..RoutingSection::default()
         },
         roles,
         health: HealthSection::default(),
@@ -730,6 +731,7 @@ fn t1_backstop_config(metadata_path: PathBuf) -> ConwayConfig {
         backends,
         routing: RoutingSection {
             default_headroom_tokens: 8,
+            ..RoutingSection::default()
         },
         roles,
         health: HealthSection::default(),

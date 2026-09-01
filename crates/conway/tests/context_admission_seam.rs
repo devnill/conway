@@ -194,6 +194,7 @@ fn config_naming(headroom: u32, metadata_path: PathBuf) -> ConwayConfig {
         backends,
         routing: RoutingSection {
             default_headroom_tokens: headroom,
+            ..RoutingSection::default()
         },
         roles,
         health: HealthSection::default(),
@@ -422,6 +423,7 @@ fn two_candidate_config(headroom: u32, metadata_path: PathBuf) -> ConwayConfig {
         backends,
         routing: RoutingSection {
             default_headroom_tokens: headroom,
+            ..RoutingSection::default()
         },
         roles,
         health: HealthSection::default(),
