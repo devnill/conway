@@ -361,7 +361,7 @@ impl App {
                 self.write_provider_entry_and_refresh(
                     NewProviderEntry {
                         id: choice.id,
-                        entry_json: entry_json,
+                        entry_json,
                         base_url: choice.base_url,
                         dialect: choice.dialect,
                         model: choice.default_model,
@@ -405,7 +405,7 @@ impl App {
         self.write_provider_entry_and_refresh(
             NewProviderEntry {
                 id: choice.id,
-                entry_json: entry_json,
+                entry_json,
                 base_url: choice.base_url,
                 dialect: choice.dialect,
                 model: choice.default_model,
