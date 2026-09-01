@@ -308,6 +308,26 @@ fn wire_provider_into_default_chain(
     Ok(role_name)
 }
 
+/// The five fields that identify a provider being written, travelling as
+/// one value rather than five positional parameters.
+///
+/// Introduced because the context-window discovery step pushed
+/// [`App::write_provider_entry_and_refresh`] to eight arguments and clippy's
+/// `too_many_arguments` fired. Grouping beats an `allow`: these five are one
+/// thing -- the provider entry about to be persisted -- and three of them
+/// (`base_url`, `dialect`, `model`) exist solely so discovery can run before
+/// the write. A positional list of five `&str`-ish values, three of them
+/// optional, is also exactly the shape an argument-order mistake hides in.
+struct NewProviderEntry<'a> {
+    id: &'a str,
+    entry_json: String,
+    /// `None` only for a hosted choice with no fixed base URL (`anthropic`),
+    /// which skips discovery entirely.
+    base_url: Option<&'a str>,
+    dialect: Option<&'a str>,
+    model: &'a str,
+}
+
 impl App {
     /// `Enter` on an `add {label}` leaf (`Action::AddProviderChoice`).
     /// Resolves `choice_id` against [`HOSTED_CHOICES`] (an unknown id --
@@ -339,11 +359,13 @@ impl App {
                     &CredentialSource::EnvVar(choice.credential_env.to_string()),
                 );
                 self.write_provider_entry_and_refresh(
-                    choice.id,
-                    entry_json,
-                    choice.base_url,
-                    choice.dialect,
-                    choice.default_model,
+                    NewProviderEntry {
+                        id: choice.id,
+                        entry_json: entry_json,
+                        base_url: choice.base_url,
+                        dialect: choice.dialect,
+                        model: choice.default_model,
+                    },
                     env,
                     cwd,
                 )
@@ -381,11 +403,13 @@ impl App {
         };
         let entry_json = backend_entry_json(choice, &CredentialSource::Literal(secret));
         self.write_provider_entry_and_refresh(
-            choice.id,
-            entry_json,
-            choice.base_url,
-            choice.dialect,
-            choice.default_model,
+            NewProviderEntry {
+                id: choice.id,
+                entry_json: entry_json,
+                base_url: choice.base_url,
+                dialect: choice.dialect,
+                model: choice.default_model,
+            },
             env,
             cwd,
         )
@@ -409,14 +433,17 @@ impl App {
     /// bounded network read.
     async fn write_provider_entry_and_refresh(
         &mut self,
-        id: &str,
-        entry_json: String,
-        base_url: Option<&str>,
-        dialect: Option<&str>,
-        model: &str,
+        provider: NewProviderEntry<'_>,
         env: &HashMap<String, String>,
         cwd: &Path,
     ) {
+        let NewProviderEntry {
+            id,
+            entry_json,
+            base_url,
+            dialect,
+            model,
+        } = provider;
         // Board item (context-window declaration honesty, num_ctx): the
         // DISCOVER half of the operator's "discover, or ask if discovery
         // fails" setup-time ruling, via the SAME shared primitive
@@ -554,7 +581,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::super::fixtures::{echo_conway, minimal_cli};
-    use super::{roles_left_unroutable_by_removing, App};
+    use super::{roles_left_unroutable_by_removing, App, NewProviderEntry};
     use crate::tui::state::Entry;
 
     fn isolated_env(dir: &std::path::Path) -> HashMap<String, String> {
@@ -1118,11 +1145,13 @@ mod tests {
         // than the interactive `run_guided_setup`) for the analogous reason
         // (there, a pty; here, a fixed real base URL).
         app.write_provider_entry_and_refresh(
-            "mock",
-            entry_json,
-            Some(server.uri().as_str()),
-            Some("openai"),
-            "mock-model",
+            NewProviderEntry {
+                id: "mock",
+                entry_json,
+                base_url: Some(server.uri().as_str()),
+                dialect: Some("openai"),
+                model: "mock-model",
+            },
             &env,
             cwd.path(),
         )
@@ -1199,11 +1228,13 @@ mod tests {
         .to_string();
 
         app.write_provider_entry_and_refresh(
-            "mock_ollama",
-            entry_json,
-            Some(server.uri().as_str()),
-            Some("ollama"),
-            "glm-5.2",
+            NewProviderEntry {
+                id: "mock_ollama",
+                entry_json,
+                base_url: Some(server.uri().as_str()),
+                dialect: Some("ollama"),
+                model: "glm-5.2",
+            },
             &env,
             cwd.path(),
         )
@@ -1242,11 +1273,13 @@ mod tests {
         .to_string();
 
         app.write_provider_entry_and_refresh(
-            "mock_anthropic",
-            entry_json,
-            None,
-            None,
-            "claude-sonnet-4-6",
+            NewProviderEntry {
+                id: "mock_anthropic",
+                entry_json,
+                base_url: None,
+                dialect: None,
+                model: "claude-sonnet-4-6",
+            },
             &env,
             cwd.path(),
         )
