@@ -41,18 +41,59 @@
 //! difference is the point: that strictness catches an operator's own typo
 //! in a file conway itself defines the shape of, which this file is not.
 //!
-//! ## Question 3: skills and agents are OUT OF SCOPE, named and reasoned
+//! ## Question 3: skills and agents -- ORIGINALLY out of scope; REVERSED
+//! 2026-08-31 by board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K`
 //!
-//! Neither `skills/<name>/SKILL.md` nor `agents/*.md` is imported by this
-//! item. `crates/conway/src/skills.rs` hardcodes a single `.conway/skills`
-//! root (`builder.rs`); `AgentsConfig::dir` is a single `PathBuf`, not a
-//! list. Making either multi-rooted is a real, separate change (widening a
-//! public config field, touching the loader, its own test coverage) --
-//! "thin demonstrable slices" argues for scoping this item down
-//! to what a directory-read layer can prove out cleanly rather than
-//! shipping a fourth translated kind that is only partially wired. Every
-//! `skills/<name>/SKILL.md` and `agents/*.md` found is still NAMED, in
+//! **The original reasoning, dated and kept rather than deleted** (it was
+//! correct for what was true THEN): neither `skills/<name>/SKILL.md` nor
+//! `agents/*.md` was imported by the item this crate first shipped under.
+//! `crates/conway/src/skills.rs` hardcoded a single `.conway/skills` root
+//! (`builder.rs`); `AgentsConfig::dir` was a single `PathBuf`, not a list.
+//! Making either multi-rooted was judged a real, separate change (widening
+//! a public config field, touching the loader, its own test coverage) --
+//! "thin demonstrable slices" argued for scoping that item down to what a
+//! directory-read layer could prove out cleanly rather than shipping a
+//! fourth translated kind that was only partially wired. Every
+//! `skills/<name>/SKILL.md` and `agents/*.md` found was still NAMED, in
 //! [`ClaudeCompatReport::unsupported`] -- never silently skipped.
+//!
+//! **What changed:** two things this item's own premise no longer held.
+//! First, `crates/conway/src/skills.rs::load_skill_defs_from_roots` and
+//! `crates/conway/src/agents.rs::load_agent_defs_from_roots` are ALREADY
+//! multi-root today (a later, separate item did exactly the "real,
+//! separate change" this doc used to defer) -- and `ConwayBuilder::
+//! with_extra_skill_dir`/`with_extra_agent_dir` already exist as the
+//! documented seam for "a Claude Code compat layer... to hand a plugin's
+//! own directories to a real build," unused by this crate until now.
+//! Second, and the actual trigger: an operator typed `/ideate:refine` (a
+//! real plugin's own documented skill) and got "unknown command" -- skills
+//! are not a nice-to-have alongside hooks/MCP/commands, they are, in the
+//! operator's own words, "critical for using plugins." Ruling, verbatim:
+//! "we should register the skills as slash commands in the same manner
+//! that claude code does... Agents should also be included as plugins;
+//! these are essentially prompts that would be inserted into a session...
+//! This is the most complex of these changes to map so we should consider
+//! carefully."
+//!
+//! **What actually ships now, in one sentence each** (each module's own
+//! doc has the full reasoning): [`skills`] translates `skills/<name>/
+//! SKILL.md` into a real, invokable [`conway_core::ports::Command`] the
+//! identical way [`commands`] already does for `commands/*.md` --
+//! `/<plugin-id>.<skill-name>` resolves and runs (and
+//! `conway_cli::tui::commands::parse` separately accepts the `:` an
+//! operator would actually type, Claude Code's own separator, as an input
+//! alias for conway's own `.`). [`agents`] is audit-only in THIS crate --
+//! the actual translation each `[plugins].claude_compat[]` entry's own
+//! `agents/` directory gets happens through the ALREADY-EXISTING
+//! `with_extra_agent_dir` seam into `conway::agents.rs`'s own (now
+//! Claude-tolerant) lenient loader, so an imported agent def is usable the
+//! SAME way an operator's own `.conway/agents/*.md` already is: `/spawn
+//! @<name>` starts a fresh child whose system prompt is the file's own
+//! body -- "a prompt inserted into a session, like a system prompt" is
+//! exactly what `SpawnSpec.agent_def` already does, not a new mechanism.
+//! [`agents`]'s own module doc carries the safety ruling on `tools:` in
+//! full (keep what resolves to a real conway tool, drop the rest, warn --
+//! never widen).
 //!
 //! **`commands/*.md` was ALSO out of scope, for a different, narrower
 //! reason -- corrected here, by board item `01M0X1G29EZSFEWB1YAG40SE69`.**
@@ -102,12 +143,15 @@
 //!   See [`hooks`]'s own module doc for the full "dispatches, but is not
 //!   the same claim as behaves identically to Claude Code" disclosure.
 
+pub mod agents;
 pub mod commands;
 pub mod error;
+mod frontmatter;
 mod fsutil;
 pub mod hooks;
 pub mod manifest;
 pub mod mcp;
+pub mod skills;
 pub mod unsupported;
 
 use std::path::{Path, PathBuf};
@@ -118,6 +162,7 @@ pub use error::ClaudeCompatError;
 pub use hooks::{HookMapOutcome, HookRegistration, HookTranslation};
 pub use manifest::ClaudePluginManifest;
 pub use mcp::TranslatedMcpServer;
+pub use skills::{SkillMapOutcome, SkillTranslation};
 pub use unsupported::{UnsupportedItem, UnsupportedKind};
 
 /// The full translation result for one Claude Code plugin directory --
@@ -143,10 +188,18 @@ pub struct ClaudeCompatReport {
     /// [`commands`]'s own module doc. [`Self::command_registrations`] is
     /// the ready-to-append real-`Command` form of the `Ready` subset.
     pub commands: Vec<CommandTranslation>,
-    /// Everything found and not used: every unimported skill/agent, every
-    /// unmapped hook event, every malformed `.mcp.json` entry, every
-    /// `commands/*.md` file that did not translate, and every ignored
-    /// `commands/*.md` frontmatter key (even on a file that DID translate)
+    /// Every `skills/<name>/SKILL.md` directory, translated or refused --
+    /// see [`skills`]'s own module doc. [`Self::skill_registrations`] is
+    /// the ready-to-append real-`Command` form of the `Ready` subset,
+    /// mirroring [`Self::command_registrations`]'s own shape exactly.
+    pub skills: Vec<SkillTranslation>,
+    /// Everything found and not used: every `skills/<name>`/`agents/*.md`
+    /// entry that did not translate (and every dropped `agents/*.md` tool
+    /// restriction, even on a file that DID translate -- see [`agents`]'s
+    /// own module doc), every unmapped hook event, every malformed
+    /// `.mcp.json` entry, every `commands/*.md`/`skills/<name>` file that
+    /// did not translate, and every ignored `commands/*.md`/
+    /// `skills/<name>` frontmatter key (even on a file that DID translate)
     /// -- named, with a reason, never silently dropped.
     pub unsupported: Vec<UnsupportedItem>,
 }
@@ -214,6 +267,22 @@ impl ClaudeCompatReport {
             .filter_map(CommandTranslation::command)
             .collect()
     }
+
+    /// Every `Ready` `skills/<name>/SKILL.md` translation, as a real,
+    /// invokable `conway_core::ports::Command` -- mirrors
+    /// [`Self::command_registrations`]'s own shape exactly, and is meant to
+    /// be folded into the SAME `Plugin::commands()` list a caller already
+    /// builds from that method (this item's own decision: a translated
+    /// skill is registered through the identical bare-name +
+    /// host-namespacing scheme `commands/*.md` already uses -- see
+    /// [`skills`]'s own module doc). A `Refused` translation contributes
+    /// nothing here -- it already named itself in [`Self::unsupported`].
+    pub fn skill_registrations(&self) -> Vec<Arc<dyn conway_core::ports::Command>> {
+        self.skills
+            .iter()
+            .filter_map(SkillTranslation::command)
+            .collect()
+    }
 }
 
 /// Reads `dir` as a Claude Code plugin directory, translating what conway
@@ -245,8 +314,8 @@ pub fn discover(dir: &Path) -> Result<ClaudeCompatReport, ClaudeCompatError> {
     let (mcp_servers, mut unsupported) = mcp::read_mcp_servers(dir)?;
     let hooks = hooks::read_hooks(dir, &mut unsupported)?;
     let commands = commands::read_commands(dir, &mut unsupported);
-    unsupported::scan_skills(dir, &mut unsupported);
-    unsupported::scan_agents(dir, &mut unsupported);
+    let skills = skills::read_skills(dir, &mut unsupported);
+    agents::audit_agents(dir, &mut unsupported);
 
     Ok(ClaudeCompatReport {
         id,
@@ -255,6 +324,7 @@ pub fn discover(dir: &Path) -> Result<ClaudeCompatReport, ClaudeCompatError> {
         mcp_servers,
         hooks,
         commands,
+        skills,
         unsupported,
     })
 }
@@ -292,6 +362,8 @@ mod tests {
         assert!(report.hooks.is_empty());
         assert!(report.commands.is_empty());
         assert!(report.command_registrations().is_empty());
+        assert!(report.skills.is_empty());
+        assert!(report.skill_registrations().is_empty());
         assert!(report.unsupported.is_empty());
         // No manifest -- identity falls back to the directory's own name.
         assert!(report.manifest.is_none());
@@ -336,9 +408,17 @@ mod tests {
         // already asserted).
         std::fs::write(root.join("commands").join("review.md"), "").unwrap();
 
+        // Empty body -- refuses to translate under `crate::skills`, exactly
+        // like `commands/review.md` above, still named in `unsupported`
+        // (board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K`: the REASON changed
+        // from a fixed "out of scope" to a real per-file one, but an empty
+        // `SKILL.md` still refuses, so this composition is unchanged).
         std::fs::create_dir_all(root.join("skills").join("triage")).unwrap();
         std::fs::write(root.join("skills").join("triage").join("SKILL.md"), "").unwrap();
 
+        // Empty file -- `crate::agents::audit_agents` (same board item)
+        // reports it as an unusable agent (no frontmatter at all), still
+        // named, for the identical reason.
         std::fs::create_dir_all(root.join("agents")).unwrap();
         std::fs::write(root.join("agents").join("reviewer.md"), "").unwrap();
 
@@ -353,6 +433,11 @@ mod tests {
         assert!(
             report.command_registrations().is_empty(),
             "an empty command body must refuse to translate, not register a no-op command"
+        );
+        assert_eq!(report.skills.len(), 1);
+        assert!(
+            report.skill_registrations().is_empty(),
+            "an empty skill body must refuse to translate, not register a no-op command"
         );
 
         let unsupported_names: Vec<_> =

@@ -131,6 +131,28 @@ pub struct ClaudeCommand {
     prompt: String,
 }
 
+impl ClaudeCommand {
+    /// Constructs a [`ClaudeCommand`] directly, for a caller translating a
+    /// DIFFERENT Claude Code file kind into the same invokable shape --
+    /// `crate::skills::read_skills` (board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K`)
+    /// is the first such caller: a `skills/<name>/SKILL.md` becomes a slash
+    /// command the identical way a `commands/*.md` file already does
+    /// (`read_commands`, above), so it reuses this type rather than
+    /// defining its own near-identical `Command` impl. `translate_one`,
+    /// above, still builds every `commands/*.md`-sourced value through
+    /// [`CommandTranslation::command`] unchanged -- this constructor only
+    /// adds a second entry point, it does not replace that one. Public
+    /// (not `pub(crate)`) so it composes for an embedder outside this
+    /// crate too, the same way every other type here does.
+    pub fn new(name: String, summary: String, prompt: String) -> Self {
+        Self {
+            name,
+            summary,
+            prompt,
+        }
+    }
+}
+
 #[async_trait]
 impl Command for ClaudeCommand {
     fn spec(&self) -> CommandSpec {

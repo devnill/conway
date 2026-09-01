@@ -200,7 +200,11 @@ fn load_skill_defs_lenient(dir: &Path) -> HashMap<String, SkillDef> {
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or_default();
-        match load_one(&skill_md, stem) {
+        // Try the operator-native shape first (a well-formed plugin might
+        // genuinely ship it); fall back to the third-party-tolerant shape
+        // (board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K`) only if that fails --
+        // see `load_one_third_party`'s own doc.
+        match load_one(&skill_md, stem).or_else(|_| load_one_third_party(&skill_md, stem, dir)) {
             Ok(def) => {
                 if defs.contains_key(&def.name) {
                     tracing::warn!(
@@ -222,6 +226,98 @@ fn load_skill_defs_lenient(dir: &Path) -> HashMap<String, SkillDef> {
         }
     }
     defs
+}
+
+/// The third-party-tolerant fallback [`load_skill_defs_lenient`] tries only
+/// AFTER the operator-native shape ([`load_one`]) fails -- see that call
+/// site's own comment. Board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K` added this
+/// so `ConwayBuilder::with_extra_skill_dir` (already documented on that
+/// method as "the seam a Claude Code compat layer... calls to hand a
+/// plugin's own directories to a real build") actually produces usable
+/// skills when handed a REAL third-party `skills/` directory: a real
+/// `SKILL.md` (`ideate` 3.2.2's own, checked directly) commonly carries NO
+/// `name` key at all -- many third-party skill conventions, Claude Code's
+/// own included, treat the containing directory as the skill's own
+/// identity -- and carries frontmatter keys conway's own format never
+/// defined (`user-invocable`, `argument-hint`). Both are tolerated here,
+/// never rejected: identity is ALWAYS `stem` (a frontmatter `name` key, if
+/// present, is simply one more ignored key -- caught by
+/// `ThirdPartyRawFrontmatter`'s own `#[serde(flatten)]`), and every
+/// unrecognized key is likewise ignored rather than a hard parse failure,
+/// the same "not this operator's file to fix" posture
+/// [`load_skill_defs_lenient`]'s own doc already states for a malformed
+/// file in a non-primary root.
+///
+/// **Cross-references.** A real `SKILL.md` this fallback has been checked
+/// against tells its own reader, in PROSE, to open a sibling file
+/// "relative to the plugin root" (`skills/shared/human-presentation.md`,
+/// verbatim) -- not a token this loader could substitute (contrast
+/// `conway_plugin_claude::hooks`'s own `${CLAUDE_PLUGIN_ROOT}`
+/// substitution for `hooks.json`/`.mcp.json` commands, a DIFFERENT file
+/// kind that DOES use that literal token). The resulting body is prefixed
+/// with one line (`plugin_root_note`) naming `skills_root`'s own PARENT
+/// directory -- the plugin's own root, one level above the `skills/`
+/// directory a caller hands `with_extra_skill_dir` -- so a model reading
+/// the injected skill body has the one fact it needs to resolve such a
+/// reference with its own Read tool.
+fn load_one_third_party(path: &Path, stem: &str, skills_root: &Path) -> Result<SkillDef> {
+    let content = fs::read_to_string(path).map_err(|err| FacadeError::SkillDef {
+        path: path.to_path_buf(),
+        message: format!("failed to read file: {err}"),
+    })?;
+    let (yaml_src, body) = split_frontmatter(&content, path)?;
+
+    let raw: ThirdPartyRawFrontmatter =
+        serde_yaml::from_str(yaml_src).map_err(|err| FacadeError::SkillDef {
+            path: path.to_path_buf(),
+            message: format!("invalid YAML frontmatter: {err}"),
+        })?;
+
+    let normalized = normalize_body(body);
+    if normalized.is_empty() {
+        return Err(FacadeError::SkillDef {
+            path: path.to_path_buf(),
+            message: "empty skill body".to_string(),
+        });
+    }
+    let plugin_root = skills_root.parent().unwrap_or(skills_root);
+    let body = format!("{}\n\n{normalized}", plugin_root_note(plugin_root));
+
+    Ok(SkillDef {
+        name: stem.to_string(),
+        description: raw.description,
+        body,
+        always_include: raw.always_include,
+    })
+}
+
+/// The one line prepended to every skill translated by
+/// [`load_one_third_party`] -- see that function's own doc,
+/// "Cross-references".
+fn plugin_root_note(plugin_root: &Path) -> String {
+    format!(
+        "[conway: this skill's own plugin root directory is `{}`. Any reference in the text \
+         below described as \"relative to the plugin root\" resolves against that absolute \
+         path.]",
+        plugin_root.display()
+    )
+}
+
+/// The third-party (lenient-root-only) frontmatter shape -- see
+/// [`load_one_third_party`]'s own doc for why this needs to differ from
+/// [`RawFrontmatter`] (the operator's own, `deny_unknown_fields`-strict
+/// shape, unchanged and still used for `dirs[0]` via [`load_one`]). No
+/// `#[serde(flatten)]` catch-all here (unlike `conway_plugin_claude`'s own
+/// permissive parsers, which capture unrecognized keys to NAME them in a
+/// report): this crate has no such reporting concept, so an unrecognized
+/// key is simply never looked at -- serde's own default (no
+/// `deny_unknown_fields`) already ignores it without this struct needing
+/// to name it.
+#[derive(Deserialize)]
+struct ThirdPartyRawFrontmatter {
+    description: Option<String>,
+    #[serde(default)]
+    always_include: bool,
 }
 
 /// Inserts `def` into `defs`, failing if a skill with the same `name` is
@@ -593,5 +689,118 @@ mod tests {
             }
             other => panic!("expected SkillDef error, got {other:?}"),
         }
+    }
+
+    // -- third-party fallback (board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K`) ------
+
+    /// The headline shape a REAL third-party `SKILL.md` (`ideate` 3.2.2's
+    /// own `refine`, `execute`, ...) has: no `name` key at all, and
+    /// frontmatter keys conway never defined. Must translate via a
+    /// non-primary root even though it would fail `load_skill_defs`'s own
+    /// strict path outright.
+    #[test]
+    fn a_third_party_skill_with_no_name_key_and_unknown_keys_still_loads_from_a_non_primary_root()
+    {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_skill(
+            plugin.path(),
+            "refine",
+            "---\ndescription: Decompose an idea into work.\nuser-invocable: true\n\
+             argument-hint: \"[x]\"\n---\n\nDo the refine thing.\n",
+        );
+
+        let defs = load_skill_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        let def = defs.get("refine").expect("must load via the fallback");
+        assert_eq!(
+            def.description.as_deref(),
+            Some("Decompose an idea into work.")
+        );
+        assert!(def.body.contains("Do the refine thing."));
+    }
+
+    /// The load-bearing cross-reference case: a real skill's own body names
+    /// a sibling "relative to the plugin root" -- the loaded `SkillDef`'s
+    /// own body must carry the plugin's own absolute root so that
+    /// reference, joined against it, resolves to a real file.
+    #[test]
+    fn a_third_party_skills_cross_reference_survives_with_a_resolvable_plugin_root() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        fs::create_dir_all(plugin.path().join("skills").join("shared")).unwrap();
+        fs::write(
+            plugin
+                .path()
+                .join("skills")
+                .join("shared")
+                .join("human-presentation.md"),
+            "Be concise.\n",
+        )
+        .unwrap();
+        write_skill(
+            plugin.path(),
+            "refine",
+            "---\ndescription: refine\n---\n\nSee `skills/shared/human-presentation.md` \
+             (relative to the plugin root). Read it.\n",
+        );
+
+        let defs = load_skill_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        let body = &defs["refine"].body;
+        assert!(body.contains("skills/shared/human-presentation.md"));
+        assert!(
+            body.contains(&plugin.path().display().to_string()),
+            "the plugin's own absolute root must be named so the reference resolves: {body}"
+        );
+        let resolved = plugin.path().join("skills/shared/human-presentation.md");
+        assert!(resolved.is_file(), "the referenced sibling must actually exist on disk");
+    }
+
+    /// A genuinely broken file (no frontmatter delimiter at all) fails
+    /// BOTH the operator-native AND the third-party fallback shape --
+    /// still skipped, not fatal, per `load_skill_defs_lenient`'s own
+    /// contract.
+    #[test]
+    fn a_file_broken_under_both_shapes_is_still_skipped_not_fatal() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_skill(plugin.path(), "broken", "not a valid skill file at all\n");
+
+        let defs = load_skill_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert!(!defs.contains_key("broken"));
+    }
+
+    /// A well-formed OPERATOR-shaped skill (name matches stem, no unknown
+    /// keys) in a non-primary root still loads through `load_one` directly
+    /// -- the fallback is a SECOND attempt, not a replacement.
+    #[test]
+    fn an_operator_shaped_skill_in_a_non_primary_root_never_needs_the_fallback() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_skill(plugin.path(), "ideate", "---\nname: ideate\n---\nBody.\n");
+
+        let defs = load_skill_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert!(defs.contains_key("ideate"));
+        assert!(
+            !defs["ideate"].body.contains("plugin root directory"),
+            "a well-formed operator-shaped skill must not get the fallback's own prepended \
+             note: {}",
+            defs["ideate"].body
+        );
     }
 }

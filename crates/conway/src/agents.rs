@@ -172,7 +172,11 @@ fn load_agent_defs_lenient(dir: &Path) -> HashMap<String, AgentDef> {
 
     let mut defs: HashMap<String, AgentDef> = HashMap::with_capacity(paths.len());
     for path in paths {
-        match load_one(&path) {
+        // Try the operator-native shape first (a well-formed plugin might
+        // genuinely ship it); fall back to the third-party-tolerant shape
+        // (board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K`) only if that fails --
+        // see `load_one_third_party`'s own doc.
+        match load_one(&path).or_else(|_| load_one_third_party(&path)) {
             Ok(def) => {
                 if defs.contains_key(&def.name) {
                     tracing::warn!(
@@ -194,6 +198,204 @@ fn load_agent_defs_lenient(dir: &Path) -> HashMap<String, AgentDef> {
         }
     }
     defs
+}
+
+/// The first-party conway tool names a THIRD-PARTY agent's own `tools:`
+/// declaration is matched against, case-insensitively, in
+/// [`load_one_third_party`] -- kept in sync BY HAND with
+/// `conway_plugin_claude::agents::KNOWN_BUILTIN_TOOL_NAMES` (a different
+/// crate on the other side of a dependency edge this crate does not have --
+/// `conway-tools`, which owns the real registry, is only an OPTIONAL
+/// dependency of THIS crate, behind the `builtin-tools` feature, so a live
+/// query is not available here either). A change to one without the other
+/// is a drift bug; both constants' own doc names the other.
+const KNOWN_BUILTIN_TOOL_NAMES: &[&str] =
+    &["read", "write", "edit", "grep", "glob", "bash", "cd", "report"];
+
+/// The third-party-tolerant fallback [`load_agent_defs_lenient`] tries only
+/// AFTER the operator-native shape ([`load_one`]) fails -- see that call
+/// site's own comment. Board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K` added this
+/// so `ConwayBuilder::with_extra_agent_dir` (already documented on that
+/// method as "the seam a Claude Code compat layer... calls to hand a
+/// plugin's own directories to a real build") actually produces usable
+/// agents when handed a REAL third-party `agents/` directory
+/// (`ideate` 3.2.2's own `agents/*.md`, checked directly):
+///
+/// - **Identity is ALWAYS the file stem**, never the frontmatter `name`
+///   value (real Claude Code agent files this fallback has been checked
+///   against DO set `name` to match the stem, but this fallback does not
+///   depend on that holding -- see `ThirdPartyRawFrontmatter`'s own doc).
+/// - **`tools:` is a comma-separated STRING** in real Claude Code agent
+///   files (`tools: Read, Edit, Write, Bash, Grep, Glob`, a YAML plain
+///   scalar, not a list) as well as a YAML LIST (conway's own convention);
+///   both are accepted (see `ThirdPartyToolsField`).
+/// - **The safety ruling, applied here, verbatim**: "keep the names that
+///   resolve to real conway tools, DROP the rest, and warn naming exactly
+///   what was dropped. NEVER widen." Every declared tool name is
+///   lower-cased and matched against [`KNOWN_BUILTIN_TOOL_NAMES`]; anything
+///   that does not match is dropped (never included in the resulting
+///   `ToolSelector::Only`) and named via `tracing::warn!` -- a `tools:` key
+///   that resolves to ZERO known names still produces
+///   `ToolSelector::Only(vec![])` (no tools at all), NEVER
+///   `ToolSelector::All` -- a restriction this narrow is exactly as safe as
+///   one this loader could not parse the shape of at all, never wider.
+/// - **`model:` is a bare alias** in real Claude Code agent files
+///   (`model: sonnet`, `model: opus`) -- not conway's own `<backend>/
+///   <model>` `ModelRef` wire shape. A value that does not parse as a
+///   `ModelRef` is DROPPED (never guessed at) and named via
+///   `tracing::warn!` -- a model choice is not a permission concern (this
+///   item's own "best effort... not perfect, for FIDELITY" appetite), so
+///   the agent simply falls back to its role's own default model.
+/// - **`${CLAUDE_PLUGIN_ROOT}` is substituted** in the resulting system
+///   prompt with `dir`'s own PARENT directory (the plugin's own root, one
+///   level above the `agents/` directory a caller hands
+///   `with_extra_agent_dir`) -- real Claude Code agent bodies use this
+///   LITERAL token (contrast `crate::skills`'s own third-party fallback,
+///   whose sibling file kind uses prose instead), the same substitution
+///   `conway_plugin_claude::hooks::PLUGIN_ROOT_TOKEN` already performs for
+///   `hooks.json`/`.mcp.json` commands -- this crate does not depend on
+///   `conway_plugin_claude` (a strictly higher layer), so the literal
+///   string is duplicated rather than imported.
+fn load_one_third_party(path: &Path) -> Result<AgentDef> {
+    let content = fs::read_to_string(path).map_err(|err| FacadeError::AgentDef {
+        path: path.to_path_buf(),
+        message: format!("failed to read file: {err}"),
+    })?;
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let (yaml_src, body) = split_frontmatter(&content, path)?;
+
+    let raw: ThirdPartyRawFrontmatter =
+        serde_yaml::from_str(yaml_src).map_err(|err| FacadeError::AgentDef {
+            path: path.to_path_buf(),
+            message: format!("invalid YAML frontmatter: {err}"),
+        })?;
+
+    let normalized = normalize_body(body);
+    if normalized.is_empty() {
+        return Err(FacadeError::AgentDef {
+            path: path.to_path_buf(),
+            message: "empty system prompt".to_string(),
+        });
+    }
+    let agent_dir = path.parent().unwrap_or(path);
+    let plugin_root = agent_dir.parent().unwrap_or(agent_dir);
+    let system_prompt =
+        normalized.replace(CLAUDE_PLUGIN_ROOT_TOKEN, &plugin_root.display().to_string());
+
+    let tools = match raw.tools {
+        Some(declared) => {
+            let names = declared.into_names();
+            let mut kept = Vec::new();
+            let mut dropped = Vec::new();
+            for name in names {
+                let normalized_name = name.trim().to_lowercase();
+                if KNOWN_BUILTIN_TOOL_NAMES.contains(&normalized_name.as_str()) {
+                    kept.push(normalized_name);
+                } else {
+                    dropped.push(name);
+                }
+            }
+            if !dropped.is_empty() {
+                tracing::warn!(
+                    path = %path.display(),
+                    dropped = ?dropped,
+                    "third-party agent definition named tool(s) with no known conway \
+                     counterpart; dropped, never widened to a full grant"
+                );
+            }
+            ToolSelector::Only(kept)
+        }
+        None => ToolSelector::All,
+    };
+
+    let model = raw.model.and_then(|s| match s.parse::<ModelRef>() {
+        Ok(model) => Some(model),
+        Err(_) => {
+            tracing::warn!(
+                path = %path.display(),
+                model = %s,
+                "third-party agent definition named a model reference conway could not parse \
+                 (expected `<backend>/<model>`); ignored, this agent falls back to its role's \
+                 own default model"
+            );
+            None
+        }
+    });
+
+    Ok(AgentDef {
+        name: stem.to_string(),
+        description: raw.description,
+        system_prompt,
+        role: None,
+        model,
+        tools,
+        skills: raw.skills.unwrap_or_default(),
+        max_steps: raw.max_steps,
+        result_contract: None,
+    })
+}
+
+/// The exact token Claude Code substitutes with its own plugin directory
+/// when it spawns a hook command, ALSO used, unmodified, in real Claude
+/// Code `agents/*.md` body text (`ideate` 3.2.2's own `code-reviewer.md`,
+/// `proxy-human.md`, ...) -- mirrors
+/// `conway_plugin_claude::hooks::PLUGIN_ROOT_TOKEN`'s own doc.
+const CLAUDE_PLUGIN_ROOT_TOKEN: &str = "${CLAUDE_PLUGIN_ROOT}";
+
+/// The third-party (lenient-root-only) frontmatter shape -- see
+/// [`load_one_third_party`]'s own doc for why this needs to differ from
+/// [`RawFrontmatter`] (the operator's own, `deny_unknown_fields`-strict
+/// shape, unchanged and still used for `dirs[0]` via [`load_one`]).
+/// `max_steps`/`skills` keep the SAME meaning as the operator-native shape
+/// (an operator-facing concept a foreign file can still opt into
+/// correctly); `name` is deliberately NOT read (this function's own doc:
+/// identity is always the file stem). `role` is not read either -- no real
+/// Claude Code agent file this fallback has been checked against declares
+/// one (`model: sonnet`/`opus` is that ecosystem's own analog, and this
+/// function's own doc already states why that value is dropped rather than
+/// guessed into a `RoleAlias`); [`load_one_third_party`] always constructs
+/// `AgentDef.role: None`.
+/// No `#[serde(flatten)]` catch-all here (unlike `conway_plugin_claude`'s
+/// own permissive parsers, which capture unrecognized keys to NAME them in
+/// a report): this crate has no such reporting concept, so an
+/// unrecognized key is simply never looked at -- serde's own default (no
+/// `deny_unknown_fields`) already ignores it without this struct needing
+/// to name it.
+#[derive(Deserialize)]
+struct ThirdPartyRawFrontmatter {
+    description: Option<String>,
+    tools: Option<ThirdPartyToolsField>,
+    model: Option<String>,
+    max_steps: Option<u32>,
+    skills: Option<Vec<String>>,
+}
+
+/// Claude Code's own `tools:` frontmatter convention is a comma-separated
+/// STRING; conway's own is a YAML LIST -- both accepted. Mirrors
+/// `conway_plugin_claude::agents::ToolsField` exactly (duplicated across
+/// the same crate boundary [`KNOWN_BUILTIN_TOOL_NAMES`]'s own doc already
+/// names).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ThirdPartyToolsField {
+    List(Vec<String>),
+    Csv(String),
+}
+
+impl ThirdPartyToolsField {
+    fn into_names(self) -> Vec<String> {
+        match self {
+            ThirdPartyToolsField::List(names) => names,
+            ThirdPartyToolsField::Csv(csv) => csv
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+        }
+    }
 }
 
 /// Inserts `def` into `defs`, failing if an agent with the same `name` is
@@ -601,5 +803,297 @@ mod tests {
             }
             other => panic!("expected AgentDef error, got {other:?}"),
         }
+    }
+
+    // -- third-party fallback (board item `01M1DG5TTF6NHW2RXJRZ8ZPE7K`) ------
+
+    /// The headline shape a REAL third-party agent file (`ideate` 3.2.2's
+    /// own `worker.md`) has: `tools:` as a comma-separated STRING and
+    /// `model:` as a bare alias -- both would fail the operator-native
+    /// strict shape outright, both must still translate via the fallback.
+    #[test]
+    fn a_claude_shaped_agent_with_csv_tools_and_a_bare_model_alias_loads_from_a_non_primary_root()
+    {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_agent(
+            plugin.path(),
+            "worker",
+            "---\nname: worker\ndescription: Implements one work item.\n\
+             tools: Read, Edit, Write, Bash, Grep, Glob\nmodel: sonnet\n---\n\nYou are the worker.\n",
+        );
+
+        let defs = load_agent_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        let def = defs.get("worker").expect("must load via the fallback");
+        assert_eq!(
+            def.description.as_deref(),
+            Some("Implements one work item.")
+        );
+        assert!(def.system_prompt.contains("You are the worker."));
+        assert_eq!(
+            def.tools,
+            ToolSelector::Only(vec![
+                "read".into(),
+                "edit".into(),
+                "write".into(),
+                "bash".into(),
+                "grep".into(),
+                "glob".into(),
+            ])
+        );
+        // An unparseable `model: sonnet` (no `<backend>/<model>` slash) is
+        // dropped, never guessed at.
+        assert_eq!(def.model, None);
+    }
+
+    /// **The load-bearing safety test.** A `tools:` declaration made ENTIRELY
+    /// of names conway has no counterpart for must degrade to
+    /// `ToolSelector::Only(vec![])` (zero tools) -- NEVER
+    /// `ToolSelector::All`. This is the one invariant the operator's own
+    /// ruling exists to protect: a translation gap must only ever narrow,
+    /// never silently widen, what an agent can do.
+    #[test]
+    fn an_agent_whose_declared_tools_all_fail_to_resolve_is_never_widened_to_all() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_agent(
+            plugin.path(),
+            "worker",
+            "---\nname: worker\ntools: WebSearch, Task, NotebookEdit\n---\n\nBody.\n",
+        );
+
+        let defs = load_agent_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        let def = defs.get("worker").expect("must still load -- only its tools are narrowed");
+        assert_eq!(
+            def.tools,
+            ToolSelector::Only(Vec::new()),
+            "every declared name was unresolvable -- this MUST be an empty restriction, never \
+             ToolSelector::All: {:?}",
+            def.tools
+        );
+        assert_ne!(
+            def.tools,
+            ToolSelector::All,
+            "an unresolvable tools: declaration must never be silently widened to full access"
+        );
+    }
+
+    /// A MIX of resolvable and unresolvable names keeps only the
+    /// resolvable ones -- proves the filter is per-name, not all-or-nothing.
+    #[test]
+    fn an_agent_with_a_mix_of_resolvable_and_unresolvable_tools_keeps_only_the_resolvable_ones() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_agent(
+            plugin.path(),
+            "worker",
+            "---\nname: worker\ntools: Read, WebSearch, Grep\n---\n\nBody.\n",
+        );
+
+        let defs = load_agent_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert_eq!(
+            defs["worker"].tools,
+            ToolSelector::Only(vec!["read".into(), "grep".into()])
+        );
+    }
+
+    /// `${CLAUDE_PLUGIN_ROOT}` in a real agent body is substituted with the
+    /// plugin's own absolute root -- the `agents/` directory's own PARENT.
+    #[test]
+    fn claude_plugin_root_token_is_substituted_in_a_third_party_agents_own_body() {
+        // A REALISTIC nested layout (`<plugin>/agents/*.md`, exactly what
+        // `claude_compat_plugins::install` hands `with_extra_agent_dir` via
+        // `entry.dir.join("agents")`) -- required here, specifically,
+        // because this test asserts against the plugin's own ROOT (one
+        // level above the directory `load_agent_defs_from_roots` is
+        // actually handed), unlike this module's other fallback tests,
+        // which do not depend on that distinction.
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        let agents_dir = plugin.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        write_agent(
+            &agents_dir,
+            "worker",
+            // A comma-separated `tools:` string forces the fallback (the
+            // operator-native strict shape only understands a YAML list) --
+            // otherwise `load_one` would succeed directly and never
+            // perform the substitution this test exists to check.
+            "---\nname: worker\ntools: Read\n---\n\nRun `${CLAUDE_PLUGIN_ROOT}/bin/ideate-work`.\n",
+        );
+
+        let defs =
+            load_agent_defs_from_roots(&[primary.path().to_path_buf(), agents_dir]).unwrap();
+        let prompt = &defs["worker"].system_prompt;
+        assert!(!prompt.contains("${CLAUDE_PLUGIN_ROOT}"), "{prompt}");
+        assert!(
+            prompt.contains(&plugin.path().display().to_string()),
+            "{prompt}"
+        );
+        let resolved = format!("{}/bin/ideate-work", plugin.path().display());
+        assert!(prompt.contains(&resolved), "{prompt}");
+    }
+
+    /// Identity is ALWAYS the file stem for the fallback path, never a
+    /// frontmatter `name` -- a real Claude Code file usually matches
+    /// anyway, but the fallback must not depend on that.
+    #[test]
+    fn the_fallbacks_identity_is_always_the_file_stem() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        // `tools:` as a CSV string forces the fallback (the operator-native
+        // strict shape only understands a YAML list).
+        write_agent(
+            plugin.path(),
+            "worker",
+            "---\nname: someone-else-entirely\ntools: Read\n---\n\nBody.\n",
+        );
+
+        let defs = load_agent_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert!(defs.contains_key("worker"));
+        assert!(!defs.contains_key("someone-else-entirely"));
+    }
+
+    /// No `tools:` key at all still defaults to `ToolSelector::All` -- the
+    /// SAME "absent means unrestricted" rule the operator-native shape
+    /// already has, unchanged by this fallback.
+    #[test]
+    fn the_fallback_still_defaults_absent_tools_to_all() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        // Force the fallback via a `model:` value the strict shape cannot
+        // parse (no `<backend>/<model>` slash).
+        write_agent(
+            plugin.path(),
+            "worker",
+            "---\nname: worker\nmodel: opus\n---\n\nBody.\n",
+        );
+
+        let defs = load_agent_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert_eq!(defs["worker"].tools, ToolSelector::All);
+    }
+
+    /// A well-formed OPERATOR-shaped agent (name matches stem, `tools:` as
+    /// a YAML list, `model:` as `<backend>/<model>`) in a non-primary root
+    /// still loads through `load_one` directly -- the fallback is a SECOND
+    /// attempt, not a replacement.
+    #[test]
+    fn an_operator_shaped_agent_in_a_non_primary_root_never_needs_the_fallback() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_agent(
+            plugin.path(),
+            "worker",
+            "---\nname: worker\ntools: [read, grep]\nmodel: anthropic/claude-sonnet-4-6\n---\n\nBody.\n",
+        );
+
+        let defs = load_agent_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert_eq!(
+            defs["worker"].tools,
+            ToolSelector::Only(vec!["read".into(), "grep".into()])
+        );
+        assert_eq!(
+            defs["worker"].model,
+            Some(ModelRef {
+                backend: BackendId::new("anthropic"),
+                model: ModelId::new("claude-sonnet-4-6"),
+            })
+        );
+    }
+
+    // `ideate` 3.2.2's own real `agents/worker.md`/`agents/code-reviewer.md`
+    // frontmatter, verbatim (the trap named directly, elsewhere in this
+    // item's own instructions: "a test that avoids the path under test
+    // proves nothing") -- checked in verbatim rather than only a synthetic
+    // stand-in with the same shape, so a real ecosystem drift (a tool name
+    // real Claude Code starts or stops using) would actually be caught
+    // here, not merely a drift in this test's own assumptions about it.
+    const IDEATE_WORKER_MD: &str = "---\nname: worker\ndescription: Implements exactly one board work item to completion.\ntools: Read, Edit, Write, Bash, Grep, Glob\nmodel: sonnet\n---\n\nYou are an ideate **worker**. You implement one board work item to completion.\n";
+    const IDEATE_CODE_REVIEWER_MD: &str = "---\nname: code-reviewer\ndescription: Reviews a code change for correctness, security, and quality.\ntools: Read, Grep, Glob, Bash\nmodel: sonnet\n---\n\nYou are the ideate **code-reviewer**. You review a specific change and return findings.\n";
+
+    /// **Real-corpus proof, worker (the only agent WITH edit tools).**
+    /// Every one of its six declared Claude Code tool names resolves --
+    /// this is the exact vocabulary the fallback's own
+    /// `KNOWN_BUILTIN_TOOL_NAMES` exists to cover.
+    #[test]
+    fn ideates_real_worker_agent_resolves_all_six_declared_tools() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_agent(plugin.path(), "worker", IDEATE_WORKER_MD);
+
+        let defs = load_agent_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        let worker = &defs["worker"];
+        assert_eq!(
+            worker.tools,
+            ToolSelector::Only(vec![
+                "read".into(),
+                "edit".into(),
+                "write".into(),
+                "bash".into(),
+                "grep".into(),
+                "glob".into(),
+            ])
+        );
+        assert!(worker.system_prompt.contains("You are an ideate **worker**"));
+    }
+
+    /// **Real-corpus proof, code-reviewer (deliberately narrower).** Its
+    /// own real `tools:` declaration has NO `edit`/`write` -- proving the
+    /// per-agent restriction is genuinely per-agent, not a global set every
+    /// translated agent ends up with.
+    #[test]
+    fn ideates_real_code_reviewer_agent_never_gets_edit_or_write() {
+        let primary = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        write_agent(plugin.path(), "code-reviewer", IDEATE_CODE_REVIEWER_MD);
+
+        let defs = load_agent_defs_from_roots(&[
+            primary.path().to_path_buf(),
+            plugin.path().to_path_buf(),
+        ])
+        .unwrap();
+        let reviewer = &defs["code-reviewer"];
+        assert_eq!(
+            reviewer.tools,
+            ToolSelector::Only(vec!["read".into(), "grep".into(), "glob".into(), "bash".into()])
+        );
+        assert!(
+            !matches!(&reviewer.tools, ToolSelector::Only(names) if names.contains(&"edit".to_string())),
+            "code-reviewer's own real declaration never grants edit: {:?}",
+            reviewer.tools
+        );
+        assert!(
+            !matches!(&reviewer.tools, ToolSelector::Only(names) if names.contains(&"write".to_string())),
+            "code-reviewer's own real declaration never grants write: {:?}",
+            reviewer.tools
+        );
     }
 }
