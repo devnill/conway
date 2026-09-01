@@ -179,7 +179,10 @@ fn translate_one(
     macro_rules! refuse {
         ($reason:expr) => {{
             let reason: String = $reason;
-            unsupported.push(UnsupportedItem::skill(relative_path.clone(), reason.clone()));
+            unsupported.push(UnsupportedItem::skill(
+                relative_path.clone(),
+                reason.clone(),
+            ));
             return SkillTranslation {
                 relative_path,
                 bare_name: bare_name.to_string(),
@@ -328,7 +331,10 @@ mod tests {
         let command = translation.command().expect("Ready must produce a Command");
         let spec = command.spec();
         assert_eq!(spec.name, "refine");
-        assert!(!spec.name.contains('.'), "the bare name must never be pre-namespaced");
+        assert!(
+            !spec.name.contains('.'),
+            "the bare name must never be pre-namespaced"
+        );
 
         let ctx = conway_core::ports::CommandCtx {
             focused_agent: conway_core::ids::AgentId::new(),
@@ -385,7 +391,10 @@ mod tests {
         let root_line_has_path = prompt.contains(&dir.path().display().to_string());
         assert!(root_line_has_path, "{prompt}");
         let resolved = dir.path().join("skills/shared/human-presentation.md");
-        assert!(resolved.is_file(), "the referenced sibling must actually exist on disk");
+        assert!(
+            resolved.is_file(),
+            "the referenced sibling must actually exist on disk"
+        );
     }
 
     #[test]
@@ -464,14 +473,21 @@ mod tests {
     #[test]
     fn unterminated_frontmatter_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_skill(dir.path(), "broken", "---\ndescription: x\nno closing delimiter\n");
+        write_skill(
+            dir.path(),
+            "broken",
+            "---\ndescription: x\nno closing delimiter\n",
+        );
         let mut unsupported = Vec::new();
         let translations = read_skills(dir.path(), &mut unsupported);
         assert!(matches!(
             translations[0].outcome,
             SkillMapOutcome::Refused { .. }
         ));
-        assert!(unsupported[0].reason.contains("unterminated"), "{unsupported:?}");
+        assert!(
+            unsupported[0].reason.contains("unterminated"),
+            "{unsupported:?}"
+        );
     }
 
     #[test]
@@ -491,7 +507,10 @@ mod tests {
         let mut unsupported = Vec::new();
         let translations = read_skills(dir.path(), &mut unsupported);
         assert_eq!(
-            translations.iter().map(|t| t.bare_name.as_str()).collect::<Vec<_>>(),
+            translations
+                .iter()
+                .map(|t| t.bare_name.as_str())
+                .collect::<Vec<_>>(),
             vec!["alpha", "zeta"]
         );
     }

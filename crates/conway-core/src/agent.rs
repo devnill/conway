@@ -968,6 +968,33 @@ impl From<&PermissionDecision> for PermissionDecisionKind {
     }
 }
 
+/// The first-party conway tool names a THIRD-PARTY agent's `tools:`
+/// declaration is matched against, case-insensitively, when importing an
+/// agent from another ecosystem (Claude Code's tool names are not conway's).
+///
+/// **One definition, deliberately.** This lived as two hand-synced copies —
+/// one in `conway::agents`, one in `conway_plugin_claude::agents` — each
+/// documenting that it must be kept in step with the other by hand, on the
+/// stated grounds that "no shared dependency exists to enforce this at
+/// compile time". Both crates depend on `conway-core`, so one did. The set
+/// decides which tools an imported agent may call: drift between two copies
+/// does not fail loudly, it silently changes an agent's permissions, which
+/// is the class of duplication [`ToolSelector`]'s own safety story cannot
+/// tolerate.
+///
+/// Not a live query against `conway-tools`' registry: that crate is an
+/// OPTIONAL dependency behind conway's `builtin-tools` feature, so neither
+/// consumer can assume it is compiled in.
+///
+/// A tool contributed by an MCP server or another plugin is not in this set
+/// either, so an imported agent naming one is also treated as unresolved.
+/// That is a fidelity gap, not a safety one — the invariant this set exists
+/// to protect is **never silently widen**, and treating a real-but-unlisted
+/// tool as unresolved only ever narrows further.
+pub const KNOWN_BUILTIN_TOOL_NAMES: &[&str] = &[
+    "read", "write", "edit", "grep", "glob", "bash", "cd", "report",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

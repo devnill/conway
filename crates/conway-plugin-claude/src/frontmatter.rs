@@ -99,6 +99,9 @@ mod tests {
     fn normalize_body_strips_one_leading_newline_and_trailing_whitespace() {
         assert_eq!(normalize_body("\nbody\n\n"), "body");
         assert_eq!(normalize_body("\r\nbody\r\n"), "body");
-        assert_eq!(normalize_body("line one\n\n  indented\n"), "line one\n\n  indented");
+        assert_eq!(
+            normalize_body("line one\n\n  indented\n"),
+            "line one\n\n  indented"
+        );
     }
 }

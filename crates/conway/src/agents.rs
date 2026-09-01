@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use conway_core::agent::ToolSelector;
+use conway_core::agent::{ToolSelector, KNOWN_BUILTIN_TOOL_NAMES};
 use conway_core::config::AgentDef;
 use conway_core::ids::{ModelRef, RoleAlias};
 use serde::Deserialize;
@@ -199,18 +199,6 @@ fn load_agent_defs_lenient(dir: &Path) -> HashMap<String, AgentDef> {
     }
     defs
 }
-
-/// The first-party conway tool names a THIRD-PARTY agent's own `tools:`
-/// declaration is matched against, case-insensitively, in
-/// [`load_one_third_party`] -- kept in sync BY HAND with
-/// `conway_plugin_claude::agents::KNOWN_BUILTIN_TOOL_NAMES` (a different
-/// crate on the other side of a dependency edge this crate does not have --
-/// `conway-tools`, which owns the real registry, is only an OPTIONAL
-/// dependency of THIS crate, behind the `builtin-tools` feature, so a live
-/// query is not available here either). A change to one without the other
-/// is a drift bug; both constants' own doc names the other.
-const KNOWN_BUILTIN_TOOL_NAMES: &[&str] =
-    &["read", "write", "edit", "grep", "glob", "bash", "cd", "report"];
 
 /// The third-party-tolerant fallback [`load_agent_defs_lenient`] tries only
 /// AFTER the operator-native shape ([`load_one`]) fails -- see that call
@@ -812,8 +800,7 @@ mod tests {
     /// `model:` as a bare alias -- both would fail the operator-native
     /// strict shape outright, both must still translate via the fallback.
     #[test]
-    fn a_claude_shaped_agent_with_csv_tools_and_a_bare_model_alias_loads_from_a_non_primary_root()
-    {
+    fn a_claude_shaped_agent_with_csv_tools_and_a_bare_model_alias_loads_from_a_non_primary_root() {
         let primary = tempfile::tempdir().unwrap();
         let plugin = tempfile::tempdir().unwrap();
         write_agent(
@@ -871,7 +858,9 @@ mod tests {
             plugin.path().to_path_buf(),
         ])
         .unwrap();
-        let def = defs.get("worker").expect("must still load -- only its tools are narrowed");
+        let def = defs
+            .get("worker")
+            .expect("must still load -- only its tools are narrowed");
         assert_eq!(
             def.tools,
             ToolSelector::Only(Vec::new()),
@@ -934,8 +923,7 @@ mod tests {
             "---\nname: worker\ntools: Read\n---\n\nRun `${CLAUDE_PLUGIN_ROOT}/bin/ideate-work`.\n",
         );
 
-        let defs =
-            load_agent_defs_from_roots(&[primary.path().to_path_buf(), agents_dir]).unwrap();
+        let defs = load_agent_defs_from_roots(&[primary.path().to_path_buf(), agents_dir]).unwrap();
         let prompt = &defs["worker"].system_prompt;
         assert!(!prompt.contains("${CLAUDE_PLUGIN_ROOT}"), "{prompt}");
         assert!(
@@ -1062,7 +1050,9 @@ mod tests {
                 "glob".into(),
             ])
         );
-        assert!(worker.system_prompt.contains("You are an ideate **worker**"));
+        assert!(worker
+            .system_prompt
+            .contains("You are an ideate **worker**"));
     }
 
     /// **Real-corpus proof, code-reviewer (deliberately narrower).** Its
@@ -1083,7 +1073,12 @@ mod tests {
         let reviewer = &defs["code-reviewer"];
         assert_eq!(
             reviewer.tools,
-            ToolSelector::Only(vec!["read".into(), "grep".into(), "glob".into(), "bash".into()])
+            ToolSelector::Only(vec![
+                "read".into(),
+                "grep".into(),
+                "glob".into(),
+                "bash".into()
+            ])
         );
         assert!(
             !matches!(&reviewer.tools, ToolSelector::Only(names) if names.contains(&"edit".to_string())),

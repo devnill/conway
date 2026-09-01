@@ -102,10 +102,19 @@ ALLOWLIST: dict[str, str] = {
         "not read as prose",
 }
 _FIXTURE_PREFIX = "crates/conway/tests/fixtures/agents/"
+_IDEATE_CORPUS_PREFIX = "crates/conway-cli/tests/fixtures/claude_compat_ideate/"
 ALLOWLIST_PREFIXES: dict[str, str] = {
     _FIXTURE_PREFIX:
         "agent-definition test fixtures, loaded by load_agent_defs in tests, "
         "not read as prose",
+    _IDEATE_CORPUS_PREFIX:
+        "a vendored copy of a REAL third-party plugin's skills/ and agents/ "
+        "(ideate 3.2.2), checked in so claude_compat's translation is tested "
+        "against the layout it actually meets -- cross-references between "
+        "sibling skills and to shared/ are exactly what a synthetic "
+        "one-skill fixture cannot exercise. Loaded as data by the compat "
+        "tests; these are another project's files, not this project's prose, "
+        "and must not be edited to satisfy a docs check",
 }
 
 

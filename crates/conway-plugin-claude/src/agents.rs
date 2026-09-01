@@ -34,12 +34,17 @@
 //! unsupported`] (already surfaced by `/plugin`'s own listing, acceptance
 //! 5's mechanism) NAMES both, rather than an operator only finding out via
 //! a `tracing::warn!` line that may never reach their terminal. This is
-//! DELIBERATE duplication of a small, closed rule set (not the loader
-//! itself) across a crate boundary that must not grow a new dependency
-//! edge -- `KNOWN_BUILTIN_TOOL_NAMES`, below, is the SAME closed set
-//! `conway::agents.rs`'s own constant of the same name enforces; a change
-//! to one without the other is a drift bug, not a design choice, and both
-//! modules cross-reference the other's doc for this reason.
+//! The closed set of tool names both this module and `conway::agents.rs`
+//! match against is `conway_core::agent::KNOWN_BUILTIN_TOOL_NAMES` -- ONE
+//! definition, imported by both.
+//!
+//! It briefly existed as two hand-synced copies, each documenting that the
+//! other must be updated in step "because no shared dependency exists to
+//! enforce this at compile time". Both crates depend on `conway-core`, so
+//! one did. That set decides which tools an imported agent may call, and
+//! drift between two copies would not fail loudly -- it would silently
+//! change an agent's permissions, which is exactly what the safety ruling
+//! below forbids. A rule that must not drift does not get two homes.
 //!
 //! **The safety ruling, escalated and decided, quoted in full because it
 //! is the one invariant this module (and `conway::agents.rs`'s lenient
@@ -72,23 +77,7 @@ use crate::frontmatter::{normalize_body, split_frontmatter};
 use crate::fsutil::read_bounded;
 use crate::unsupported::UnsupportedItem;
 
-/// The first-party conway tool names a THIRD-PARTY agent's own `tools:`
-/// declaration is matched against, case-insensitively -- see this module's
-/// own top doc, "the safety ruling". Kept in sync BY HAND with
-/// `conway::agents::KNOWN_BUILTIN_TOOL_NAMES` (a different crate; no
-/// shared dependency exists to enforce this at compile time) -- a
-/// deliberate, disclosed simplification, not a live query against
-/// `conway-tools`' own registry (an OPTIONAL dependency behind conway's
-/// `builtin-tools` feature, which neither this crate nor `conway::
-/// agents.rs` can assume is even compiled in). A tool an MCP server or a
-/// different plugin contributes is never in this set either, so a
-/// third-party agent naming one is reported here too, not just a
-/// genuinely nonexistent Claude Code tool name -- a fidelity gap, not a
-/// safety one: the invariant this set protects is "never silently widen,"
-/// and treating an unlisted-but-real tool as unresolved only ever narrows
-/// further.
-pub(crate) const KNOWN_BUILTIN_TOOL_NAMES: &[&str] =
-    &["read", "write", "edit", "grep", "glob", "bash", "cd", "report"];
+use conway_core::agent::KNOWN_BUILTIN_TOOL_NAMES;
 
 /// Reads `<dir>/agents/*.md` (flat, non-recursive; a non-`.md` entry is
 /// ignored entirely, mirroring `conway::agents::load_agent_defs_lenient`'s
@@ -149,8 +138,9 @@ fn audit_one(agents_dir: &Path, file_name: &str, unsupported: &mut Vec<Unsupport
 
     let normalized = normalize_body(body);
     if normalized.is_empty() {
-        refuse!("this agent file's body (its system prompt) is empty -- nothing to submit"
-            .to_string());
+        refuse!(
+            "this agent file's body (its system prompt) is empty -- nothing to submit".to_string()
+        );
     }
 
     let raw: RawFrontmatter = match serde_yaml::from_str(frontmatter_src) {

@@ -699,8 +699,7 @@ mod tests {
     /// non-primary root even though it would fail `load_skill_defs`'s own
     /// strict path outright.
     #[test]
-    fn a_third_party_skill_with_no_name_key_and_unknown_keys_still_loads_from_a_non_primary_root()
-    {
+    fn a_third_party_skill_with_no_name_key_and_unknown_keys_still_loads_from_a_non_primary_root() {
         let primary = tempfile::tempdir().unwrap();
         let plugin = tempfile::tempdir().unwrap();
         write_skill(
@@ -760,7 +759,10 @@ mod tests {
             "the plugin's own absolute root must be named so the reference resolves: {body}"
         );
         let resolved = plugin.path().join("skills/shared/human-presentation.md");
-        assert!(resolved.is_file(), "the referenced sibling must actually exist on disk");
+        assert!(
+            resolved.is_file(),
+            "the referenced sibling must actually exist on disk"
+        );
     }
 
     /// A genuinely broken file (no frontmatter delimiter at all) fails
