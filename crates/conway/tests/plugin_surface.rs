@@ -280,10 +280,10 @@ impl HookRunner for NeverOpinionatedHookRunner {
         // `conway-runtime`'s own `permission::` test suite's job).
         let event: &HookEvent = &invocation.event;
         let _name: &str = &event.name;
-        Ok(HookAnswer {
-            permission: HookPermissionVerdict::NoOpinion,
-            ..HookAnswer::default()
-        })
+        Ok(HookAnswer::new(
+            Default::default(),
+            HookPermissionVerdict::NoOpinion,
+        ))
     }
 }
 

@@ -95,6 +95,12 @@ fn hook_origin_label(origin: &conway_core::hook::HookOrigin) -> String {
     match origin {
         conway_core::hook::HookOrigin::Operator => HOOK_ORIGIN_LABEL.to_string(),
         conway_core::hook::HookOrigin::Plugin(plugin_id) => format!("plugin '{plugin_id}'"),
+        // `HookOrigin` is `#[non_exhaustive]`: a provenance tier this
+        // binary predates is reported honestly rather than guessed at --
+        // this type carries no permission implication (its own doc), so
+        // there is no fail-closed posture to pick here, only an accurate
+        // label.
+        _ => "unrecognized origin".to_string(),
     }
 }
 

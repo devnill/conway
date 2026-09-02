@@ -19,7 +19,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use conway_core::error::HookFailure;
-use conway_core::hook::{ContextDelta, HookAnswer, HookEvent, HookInvocation};
+use conway_core::hook::{
+    ContextDelta, HookAnswer, HookEvent, HookInvocation, HookPermissionVerdict,
+};
 use conway_core::ports::HookRunner;
 use conway_tools::hook_runner::ProcessHookRunner;
 use conway_tools::process::unix::kill_group;
@@ -186,14 +188,7 @@ async fn run_retrying_spawn_race(
 }
 
 fn invocation(command: Vec<String>, timeout_ms: u64, payload: serde_json::Value) -> HookInvocation {
-    HookInvocation {
-        command,
-        timeout_ms,
-        event: HookEvent {
-            name: "pre_tool_use".into(),
-            payload,
-        },
-    }
+    HookInvocation::new(command, timeout_ms, HookEvent::new("pre_tool_use", payload))
 }
 
 /// Asserts `kill(-pgid, 0)` can no longer reach the group -- POLLED, not
@@ -268,13 +263,13 @@ esac
         .expect("hook should succeed");
     assert_eq!(
         answer,
-        HookAnswer {
-            context: ContextDelta {
-                appends: vec![serde_json::json!({"note": "seen"})],
-                excludes: vec!["seg-1".to_string()],
-            },
-            ..HookAnswer::default()
-        }
+        HookAnswer::new(
+            ContextDelta::new(
+                vec![serde_json::json!({"note": "seen"})],
+                vec!["seg-1".to_string()],
+            ),
+            HookPermissionVerdict::default(),
+        )
     );
 }
 
@@ -372,13 +367,13 @@ esac
     .expect("hook should succeed");
     assert_eq!(
         answer,
-        HookAnswer {
-            context: ContextDelta {
-                appends: vec![serde_json::json!({"note": "seen"})],
-                excludes: vec!["seg-1".to_string()],
-            },
-            ..HookAnswer::default()
-        }
+        HookAnswer::new(
+            ContextDelta::new(
+                vec![serde_json::json!({"note": "seen"})],
+                vec!["seg-1".to_string()],
+            ),
+            HookPermissionVerdict::default(),
+        )
     );
 }
 

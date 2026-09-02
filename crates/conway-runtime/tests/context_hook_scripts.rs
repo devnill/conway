@@ -183,10 +183,7 @@ struct ScriptedRunner {
 impl ScriptedRunner {
     fn answering(delta: ContextDelta) -> Arc<Self> {
         Arc::new(Self {
-            answer: Ok(HookAnswer {
-                context: delta,
-                permission: Default::default(),
-            }),
+            answer: Ok(HookAnswer::new(delta, Default::default())),
             seen: Mutex::new(Vec::new()),
         })
     }
@@ -432,10 +429,10 @@ async fn a_request_assembled_script_hook_appends_and_excludes_in_the_sent_reques
 
     let (agent_loop, hooks) = build_loop(session, agent, store, router, backend.clone(), None);
 
-    hooks.set_runner(Some(ScriptedRunner::answering(ContextDelta {
-        appends: vec![serde_json::json!({"role": "system", "text": "APPENDED-BY-SCRIPT"})],
-        excludes: vec![],
-    })));
+    hooks.set_runner(Some(ScriptedRunner::answering(ContextDelta::new(
+        vec![serde_json::json!({"role": "system", "text": "APPENDED-BY-SCRIPT"})],
+        vec![],
+    ))));
     hooks.set_hooks(BTreeMap::from([(
         REQUEST_ASSEMBLED.to_string(),
         vec![hook_spec("annotator")],
@@ -495,10 +492,10 @@ async fn a_request_assembled_script_hook_excludes_a_real_segment_from_the_sent_r
     let backend2 = Arc::new(TrackingBackend::new(vec![text_response("second")]));
     let router2 = Arc::new(SequencedRouter::always(make_route("b", "m")));
     let (agent_loop2, hooks2) = build_loop(session, agent, store, router2, backend2.clone(), None);
-    hooks2.set_runner(Some(ScriptedRunner::answering(ContextDelta {
-        appends: vec![],
-        excludes: vec![target],
-    })));
+    hooks2.set_runner(Some(ScriptedRunner::answering(ContextDelta::new(
+        vec![],
+        vec![target],
+    ))));
     hooks2.set_hooks(BTreeMap::from([(
         REQUEST_ASSEMBLED.to_string(),
         vec![hook_spec("censor")],
@@ -558,10 +555,10 @@ async fn a_rust_context_hook_and_a_script_hook_coexist_on_the_same_turn() {
         backend.clone(),
         Some(Arc::new(AddsMarkerHook) as Arc<dyn ContextHook>),
     );
-    hooks.set_runner(Some(ScriptedRunner::answering(ContextDelta {
-        appends: vec![serde_json::json!({"role": "system", "text": "ADDED-BY-SCRIPT-HOOK"})],
-        excludes: vec![],
-    })));
+    hooks.set_runner(Some(ScriptedRunner::answering(ContextDelta::new(
+        vec![serde_json::json!({"role": "system", "text": "ADDED-BY-SCRIPT-HOOK"})],
+        vec![],
+    ))));
     hooks.set_hooks(BTreeMap::from([(
         REQUEST_ASSEMBLED.to_string(),
         vec![hook_spec("annotator")],
@@ -665,10 +662,10 @@ async fn context_overflow_script_hook_fires_on_context_too_large_and_can_shrink_
         Ok(vec![route]),
     ]));
     let (agent_loop, hooks) = build_loop(session, agent, store, router, backend.clone(), None);
-    let runner = ScriptedRunner::answering(ContextDelta {
-        appends: vec![serde_json::json!({"role": "system", "text": "SHRUNK-BY-SCRIPT"})],
-        excludes: vec![],
-    });
+    let runner = ScriptedRunner::answering(ContextDelta::new(
+        vec![serde_json::json!({"role": "system", "text": "SHRUNK-BY-SCRIPT"})],
+        vec![],
+    ));
     hooks.set_runner(Some(runner.clone()));
     hooks.set_hooks(BTreeMap::from([(
         CONTEXT_OVERFLOW.to_string(),

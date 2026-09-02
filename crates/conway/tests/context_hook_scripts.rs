@@ -131,10 +131,10 @@ fn the_pre_hook_payload_is_reconstructable_from_what_was_persisted() {
         original,
         &[ContextHookAnswer {
             hook_id: "censor".to_string(),
-            delta: conway_core::hook::ContextDelta {
-                appends: vec![serde_json::json!({"role": "system", "text": "why it was hidden"})],
-                excludes: vec![removed_id],
-            },
+            delta: conway_core::hook::ContextDelta::new(
+                vec![serde_json::json!({"role": "system", "text": "why it was hidden"})],
+                vec![removed_id],
+            ),
         }],
     );
 
@@ -204,10 +204,10 @@ fn the_bytes_of_the_prefix_ahead_of_the_hooks_edit_point_are_unchanged() {
         original,
         &[ContextHookAnswer {
             hook_id: "annotator".to_string(),
-            delta: conway_core::hook::ContextDelta {
-                appends: vec![serde_json::json!({"role": "system", "text": "a note"})],
-                excludes: vec![tool_result_id],
-            },
+            delta: conway_core::hook::ContextDelta::new(
+                vec![serde_json::json!({"role": "system", "text": "a note"})],
+                vec![tool_result_id],
+            ),
         }],
     );
 

@@ -513,14 +513,11 @@ impl HookDispatcher {
             .unwrap_or_default();
 
         for hook in hooks.iter().filter(|hook| hook.applies_to(&payload)) {
-            let invocation = HookInvocation {
-                command: hook.command.clone(),
-                timeout_ms: hook.timeout_ms,
-                event: HookEvent {
-                    name: event.to_string(),
-                    payload: payload.clone(),
-                },
-            };
+            let invocation = HookInvocation::new(
+                hook.command.clone(),
+                hook.timeout_ms,
+                HookEvent::new(event, payload.clone()),
+            );
             if let Err(failure) = runner.run(&invocation).await {
                 // The whole failure posture of this tier, in one place: warn
                 // and carry on. Never `?`, never a return value the caller
@@ -569,14 +566,11 @@ impl HookDispatcher {
             .unwrap_or_default();
 
         for hook in &hooks {
-            let invocation = HookInvocation {
-                command: hook.command.clone(),
-                timeout_ms: hook.timeout_ms,
-                event: HookEvent {
-                    name: event.to_string(),
-                    payload: payload.clone(),
-                },
-            };
+            let invocation = HookInvocation::new(
+                hook.command.clone(),
+                hook.timeout_ms,
+                HookEvent::new(event, payload.clone()),
+            );
             match runner.run(&invocation).await {
                 // NOTE the binding: only `answer.permission` is read. There is
                 // deliberately no `answer.context` arm -- see the module doc.
@@ -644,14 +638,11 @@ impl HookDispatcher {
             .unwrap_or_default();
 
         for hook in hooks.iter().filter(|hook| hook.applies_to(&payload)) {
-            let invocation = HookInvocation {
-                command: hook.command.clone(),
-                timeout_ms: hook.timeout_ms,
-                event: HookEvent {
-                    name: event.to_string(),
-                    payload: payload.clone(),
-                },
-            };
+            let invocation = HookInvocation::new(
+                hook.command.clone(),
+                hook.timeout_ms,
+                HookEvent::new(event, payload.clone()),
+            );
             match runner.run(&invocation).await {
                 Ok(answer) => outcome.answers.push(ContextHookAnswer {
                     hook_id: hook.id.clone(),
@@ -919,10 +910,10 @@ mod tests {
     #[async_trait::async_trait]
     impl HookRunner for ScriptedContextRunner {
         async fn run(&self, _invocation: &HookInvocation) -> Result<HookAnswer, HookFailure> {
-            Ok(HookAnswer {
-                context: self.delta.clone(),
-                permission: HookPermissionVerdict::default(),
-            })
+            Ok(HookAnswer::new(
+                self.delta.clone(),
+                HookPermissionVerdict::default(),
+            ))
         }
     }
 
@@ -932,10 +923,10 @@ mod tests {
     #[tokio::test]
     async fn dispatch_context_returns_the_answering_hooks_delta_tagged_with_its_id() {
         let runner = Arc::new(ScriptedContextRunner {
-            delta: ContextDelta {
-                appends: vec![serde_json::json!({"role": "system", "text": "note"})],
-                excludes: vec!["seg-1".to_string()],
-            },
+            delta: ContextDelta::new(
+                vec![serde_json::json!({"role": "system", "text": "note"})],
+                vec!["seg-1".to_string()],
+            ),
         });
         let d = HookDispatcher::new();
         d.set_runner(Some(runner));
@@ -961,10 +952,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_context_collects_every_subscribed_hooks_answer() {
         let runner = Arc::new(ScriptedContextRunner {
-            delta: ContextDelta {
-                appends: vec![],
-                excludes: vec!["shared".to_string()],
-            },
+            delta: ContextDelta::new(vec![], vec!["shared".to_string()]),
         });
         let d = HookDispatcher::new();
         d.set_runner(Some(runner));
