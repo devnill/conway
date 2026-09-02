@@ -691,52 +691,119 @@ fn t11_config_section_literals_spread_defaults() {
 
     /// One config-section literal that neither spreads a default nor
     /// carries the `// full literal:` exception marker.
+    ///
+    /// Handles two shapes, not just the multi-line one: a SINGLE-LINE
+    /// literal (`let cfg = PermissionsConfig { mode: ..., ..Default::default() };`)
+    /// closes on the same line it opens, which `line.trim_end().ends_with(...)`
+    /// alone would miss entirely -- brace-depth-tracked from the opening `{`
+    /// to find its real match, so a nested `{}` (a closure, a block
+    /// expression as a field value) doesn't fool it into stopping early.
+    /// Also excludes a function RETURN TYPE (`fn foo() -> PermissionsConfig
+    /// {`), which ends in the identical `TypeName {` text as a literal's
+    /// own opening line but names no fields at all -- checked by requiring
+    /// the text immediately before the type name not end in `->`.
     fn violations_in(file: &str, text: &str) -> Vec<String> {
         let lines: Vec<&str> = text.lines().collect();
         let mut found = Vec::new();
 
-        for (idx, line) in lines.iter().enumerate() {
-            let Some(&type_name) = SECTION_TYPES
-                .iter()
-                .find(|name| line.trim_end().ends_with(&format!("{name} {{")))
-            else {
-                continue;
-            };
-            let indent = line.len() - line.trim_start().len();
-
-            // The exception marker: walk upward through the contiguous
-            // run of `//` comment lines directly above this one (if any)
-            // and accept a marker anywhere in that run -- a multi-line
-            // reason is normal prose, not just the first line of it.
-            let mut marked = false;
+        // The exception marker: walk upward through the contiguous run of
+        // `//` comment lines directly above `idx` (if any) and accept a
+        // marker anywhere in that run -- a multi-line reason is normal
+        // prose, not just the first line of it.
+        let is_marked = |idx: usize| -> bool {
             let mut above = idx;
             while above > 0 && lines[above - 1].trim_start().starts_with("//") {
                 above -= 1;
                 if lines[above].trim_start().starts_with("// full literal:") {
-                    marked = true;
-                    break;
+                    return true;
                 }
             }
-            if marked {
-                continue;
-            }
+            false
+        };
 
-            // The matching close brace: the next line at this literal's
-            // own indent whose trimmed text starts with `}`.
-            let close = lines[idx + 1..].iter().position(|l| {
-                l.len() - l.trim_start().len() == indent && l.trim_start().starts_with('}')
-            });
-            let spread = match close {
-                Some(offset) => lines[idx + 1..idx + 1 + offset]
-                    .iter()
-                    .any(|l| l.trim_start().starts_with("..")),
-                // No close brace found at all: something about this scan
-                // itself is broken (a malformed file, or the block never
-                // closes) -- report it rather than silently passing.
-                None => false,
-            };
-            if !spread {
-                found.push(format!("{file}:{} ({type_name})", idx + 1));
+        for (idx, line) in lines.iter().enumerate() {
+            for &type_name in SECTION_TYPES {
+                let needle = format!("{type_name} {{");
+                let Some(rel_pos) = line.find(needle.as_str()) else {
+                    continue;
+                };
+                // Not a struct literal at all -- a function's own return
+                // type, spelled identically at the end of its signature
+                // line (`fn foo() -> ModelsConfig {`, or with a
+                // fully-qualified path, `fn foo() -> conway::config::
+                // schema::ModelsConfig {`): the text between the LAST `->`
+                // before this occurrence and the type name itself is
+                // nothing but a bare type path (identifiers/`::`/
+                // whitespace) -- never true for an actual expression
+                // preceding a struct literal.
+                let before = &line[..rel_pos];
+                let is_return_type = before.rfind("->").is_some_and(|arrow| {
+                    before[arrow + 2..]
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == ':' || c.is_whitespace())
+                });
+                if is_return_type {
+                    continue;
+                }
+                let brace_idx = rel_pos + needle.len() - 1; // the `{` itself
+
+                // Case A: closes on this SAME line. Depth-track from the
+                // opening brace so a nested `{}` inside a field value
+                // (a closure, a block expression) doesn't register as
+                // the literal's own close.
+                let rest = &line[brace_idx + 1..];
+                let mut depth = 1i32;
+                let mut same_line_close = None;
+                for (i, ch) in rest.char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                same_line_close = Some(i);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(close_i) = same_line_close {
+                    let body = &rest[..close_i];
+                    if !body.contains("..") && !is_marked(idx) {
+                        found.push(format!("{file}:{} ({type_name}, single-line)", idx + 1));
+                    }
+                    continue;
+                }
+
+                // Case B: a genuine multi-line opening -- only when
+                // `TypeName {` is the trailing text of the line (never a
+                // mid-line match, which Case A's depth-tracking already
+                // ruled out as "doesn't close here").
+                if !line.trim_end().ends_with(needle.as_str()) {
+                    continue;
+                }
+                if is_marked(idx) {
+                    continue;
+                }
+                let indent = line.len() - line.trim_start().len();
+                // The matching close brace: the next line at this
+                // literal's own indent whose trimmed text starts with `}`.
+                let close = lines[idx + 1..].iter().position(|l| {
+                    l.len() - l.trim_start().len() == indent && l.trim_start().starts_with('}')
+                });
+                let spread = match close {
+                    Some(offset) => lines[idx + 1..idx + 1 + offset]
+                        .iter()
+                        .any(|l| l.trim_start().starts_with("..")),
+                    // No close brace found at all: something about this
+                    // scan itself is broken (a malformed file, or the
+                    // block never closes) -- report it rather than
+                    // silently passing.
+                    None => false,
+                };
+                if !spread {
+                    found.push(format!("{file}:{} ({type_name})", idx + 1));
+                }
             }
         }
 
