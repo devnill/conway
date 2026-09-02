@@ -39,8 +39,16 @@ plugin is its first content-bearing occupant beyond a tool's own
 
 Uninstalled, nothing changes: no instruction fragment is contributed, and a
 bare interactive session keeps sending no system-prompt segment at all,
-exactly as before this plugin existed. Opt-in, like every other member of
-the first-party tier.
+exactly as before this plugin existed. Opt-in at the harness level, like
+every other member of the first-party tier — but **installed by default at
+first-run** by the `conway` binary's own guided setup (board item
+`01M1FS34GNZEVZP4ZBVC90VD6J`, decision `01M1FQFP5D0R3M9GC8R8Z24F5N`,
+2026-09-01): a fresh operator gets this fragment without asking for it by
+name, alongside five siblings — see
+[`docs/getting-started.md`](../getting-started.md#installing-a-first-party-plugin)
+for the full set and how to remove any one of them. That is a property of
+the binary's first run, not of `ConwayBuilder::build()` or the harness's
+own defaults, which are unchanged by this item.
 
 ## Where it lands, and why
 

@@ -12,6 +12,18 @@
 //! `01M1A2HKMDGNK961ZFV1EGZDQ0`), prove it with one real completion, offer
 //! to add another, and get out of the way.
 //!
+//! **Once a provider is configured, this module also installs conway's own
+//! opinion set** (board item `01M1FS34GNZEVZP4ZBVC90VD6J`, decision
+//! `01M1FQFP5D0R3M9GC8R8Z24F5N`, 2026-09-01): before this, a fresh operator
+//! walked away with a model that carried no system prompt, no loop guard,
+//! no memory, and no shell, with nothing on screen saying so.
+//! [`apply_opinion_set`] writes [`crate::first_party_plugins::
+//! DEFAULT_OPINION_SET`] into `plugins.install`, [`offer_opinion_set_and_
+//! shell`] prints exactly what was installed and how to remove any single
+//! piece, then asks one plain yes/no about the one member of that set that
+//! is not merely an opinion but a genuine widening of what a session can
+//! reach -- the bash shell tool ([`apply_shell_choice`]).
+//!
 //! # Appetite, restated here because it is easy to over-build this
 //!
 //! **Detect, offer, verify, get out of the way.** No model-pinning
@@ -27,6 +39,13 @@
 //! then nothing preserved that shape on disk. [`ProviderChoice`]'s own doc
 //! states which hosted choices are admissible here, and why that is a
 //! lower bar than "closed at two forever".
+//!
+//! This budget is `run_backend_setup`'s own -- the detect/offer/verify/
+//! add-another loop. The opinion-set install and the shell yes/no
+//! (`offer_opinion_set_and_shell`, above) are a separate, later step,
+//! ruled separately (board item `01M1FS34GNZEVZP4ZBVC90VD6J`) and run
+//! exactly once per whole `run_guided_setup` call, never once per provider
+//! -- see that function's own doc for why.
 //!
 //! # How this is structured for testability without a terminal
 //!
@@ -61,6 +80,16 @@
 //! [`verify_backend`] call alone proves only that ITS OWN throwaway
 //! in-memory config routes, which is precisely the gap this board item
 //! closes.
+//!
+//! [`apply_opinion_set`]/[`apply_shell_choice`] (board item
+//! `01M1FS34GNZEVZP4ZBVC90VD6J`) are `pub` on the identical footing:
+//! disk-only, no terminal, covered directly against a real `settings.json`
+//! in `crates/conway-cli/tests/first_run.rs`. `opinion_set_transcript`
+//! joins the pure-string-formatting bucket alongside
+//! [`context_window_setup_notice`] -- tested by asserting on the returned
+//! `String` directly, since [`run_guided_setup`] (now via its own
+//! `offer_opinion_set_and_shell` step) is still the one caller no
+//! automated test can drive end to end.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -631,6 +660,19 @@ fn read_secret_line() -> Option<String> {
 /// `interactive` computation) -- see this module's own doc for why this
 /// function is the one part of the module no automated test drives
 /// directly.
+///
+/// **Board item `01M1FS34GNZEVZP4ZBVC90VD6J`: the thin outer wrapper.**
+/// `run_backend_setup` below is this function's OLD body, unchanged in
+/// every other respect -- resolving `path` first, then delegating, is what
+/// lets this wrapper run `offer_opinion_set_and_shell` exactly ONCE,
+/// after the backend flow settles on `Configured`, regardless of which of
+/// its several internal return points got there (a single provider
+/// accepted and no "add another," two providers added then declined, the
+/// local-Ollama one-keypress accept). Duplicating the opinion-set/shell
+/// offer at every one of those return points instead would either offer it
+/// more than once in a two-provider run or miss a return point a future
+/// edit adds -- doing it here, once, after the backend flow's own outcome
+/// is already decided, is not reachable by either failure mode.
 pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutcome {
     let Some(path) = conway::config::discovery::user_config_path(env) else {
         println!(
@@ -640,6 +682,17 @@ pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutco
         return GuidedSetupOutcome::Declined;
     };
 
+    let outcome = run_backend_setup(env, &path).await;
+    if outcome == GuidedSetupOutcome::Configured {
+        offer_opinion_set_and_shell(&path);
+    }
+    outcome
+}
+
+/// [`run_guided_setup`]'s own former body: detect, offer, verify, offer to
+/// add another, get out of the way -- see that function's own doc for why
+/// it now takes `path` as a parameter instead of resolving it itself.
+async fn run_backend_setup(env: &HashMap<String, String>, path: &Path) -> GuidedSetupOutcome {
     println!();
     println!("{GUIDED_SETUP_MARKER}.");
     println!("Let's fix that. Press Esc at any point to skip and continue without one.");
@@ -687,7 +740,7 @@ pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutco
                     println!("{}", context_window_setup_notice(&offer.model, window));
                 }
                 match finish_setup(
-                    &path,
+                    path,
                     LOCAL_OLLAMA_ID,
                     &entry_json,
                     &offer.model,
@@ -771,7 +824,7 @@ pub async fn run_guided_setup(env: &HashMap<String, String>) -> GuidedSetupOutco
             }
         }
         match finish_setup(
-            &path,
+            path,
             choice.id,
             &entry_json,
             choice.default_model,
@@ -860,7 +913,7 @@ fn decline_or_keep(chain: &[String]) -> GuidedSetupOutcome {
 /// (the bad entry removed) before re-prompting, so a decline mid-retry
 /// leaves the fleet exactly as it started.
 ///
-/// `chain_so_far` is [`run_guided_setup`]'s own ordered accumulator of
+/// `chain_so_far` is `run_backend_setup`'s own ordered accumulator of
 /// every `"id/model"` entry this RUN has already configured successfully,
 /// threaded through by mutable reference so two providers added in one run
 /// land in the persisted chain in the order they were added (acceptance
@@ -935,6 +988,176 @@ fn persist_chain(path: &Path, chain: &[String]) -> Result<(), String> {
     conway::config::ensure_default_role(path, GUIDED_SETUP_ROLE).map_err(|e| e.to_string())?;
     conway::config::set_role_chain(path, GUIDED_SETUP_ROLE, chain).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------
+// conway's own opinion set + the shell offer -- board item
+// `01M1FS34GNZEVZP4ZBVC90VD6J`, decision `01M1FQFP5D0R3M9GC8R8Z24F5N`
+// (2026-09-01): after `run_guided_setup` gets a working provider, a fresh
+// operator currently gets a model with no system prompt, no loop guard, no
+// memory, and no shell -- and nothing on screen tells them. The two
+// functions below are the pure, TTY-free half of the fix (this module's
+// own "How this is structured for testability" doc); `offer_opinion_set_
+// and_shell`, immediately after, is the thin imperative shell that prints
+// their output and reads the one new keypress.
+// ---------------------------------------------------------------------
+
+/// Installs conway's own default first-run opinion set
+/// ([`crate::first_party_plugins::DEFAULT_OPINION_SET`]) into the settings
+/// file at `settings_path`, one [`conway::config::set_plugin_installed`]
+/// call per id. **Idempotent**: `set_plugin_installed` is itself a no-op
+/// once an id is already present (`conway::config::writer`'s own "Safety
+/// posture" doc), so calling this twice against the same file writes
+/// nothing the second time.
+///
+/// Returns the ids actually applied -- always the full set, in
+/// [`crate::first_party_plugins::DEFAULT_OPINION_SET`]'s own order -- so a
+/// caller can print a transcript table without re-deriving the list
+/// (`offer_opinion_set_and_shell`, below, is the one production caller).
+///
+/// `pub`: covered directly against a real `settings.json` in
+/// `crates/conway-cli/tests/first_run.rs`, mirroring [`finish_setup`]'s own
+/// reason for being `pub` -- this touches disk only, never a terminal, so a
+/// test driving it never touches a pty either.
+pub fn apply_opinion_set(settings_path: &Path) -> Result<Vec<&'static str>, String> {
+    for id in crate::first_party_plugins::DEFAULT_OPINION_SET {
+        conway::config::set_plugin_installed(settings_path, id, true)
+            .map_err(|e| format!("could not install \"{id}\": {e}"))?;
+    }
+    Ok(crate::first_party_plugins::DEFAULT_OPINION_SET.to_vec())
+}
+
+/// Enables (`enabled: true`) or leaves entirely untouched (`enabled:
+/// false`) the `conway.shell` built-in tool, via
+/// [`conway::config::set_builtin_plugins`] -- `tools.builtin_plugins` set
+/// to the harness's own preset list
+/// (`conway::config::schema::ToolsConfig::default`'s three ids: `conway.fs`,
+/// `conway.subagent`, `conway.report`) plus `"conway.shell"` when `enabled`.
+///
+/// **Writes nothing at all when `enabled` is `false`** -- `settings_path` is
+/// left BYTE-IDENTICAL, not merely logically unchanged: a declining
+/// operator is not a state that needs recording, since `tools.
+/// builtin_plugins`'s own absence from the file already means the
+/// harness's unmodified default (fs/subagent/report, no shell) -- adding
+/// that same list as an explicit key would be a no-op with a byte cost, and
+/// this function's own second acceptance criterion (board item
+/// `01M1FS34GNZEVZP4ZBVC90VD6J`) is that it does not pay that cost.
+///
+/// `pub`: covered directly against a real `settings.json` in
+/// `crates/conway-cli/tests/first_run.rs`, on the identical footing
+/// [`apply_opinion_set`]'s own doc states.
+pub fn apply_shell_choice(settings_path: &Path, enabled: bool) -> Result<(), String> {
+    if !enabled {
+        return Ok(());
+    }
+    let mut plugins = conway::config::schema::ToolsConfig::default().builtin_plugins;
+    plugins.push("conway.shell".to_string());
+    conway::config::set_builtin_plugins(settings_path, &plugins)
+        .map_err(|e| format!("could not enable the shell tool: {e}"))?;
+    Ok(())
+}
+
+/// Formats the guided-setup transcript for a just-installed opinion set:
+/// one row per `(id, summary)` in `rows` (`first_party_plugins::
+/// opinion_set_summaries`'s own return shape), followed by exactly ONE
+/// removal sentence naming both routes an operator has to undo any single
+/// entry -- a `conway plugin remove <id>` subcommand (tracked on the board,
+/// not yet landed -- see this function's own inline note) and hand-editing
+/// `plugins.install` in `settings_path` directly.
+///
+/// A pure string formatter, printed verbatim by [`offer_opinion_set_and_
+/// shell`] -- mirrors [`context_window_setup_notice`]'s own "format as a
+/// string, print it, test the string directly" shape (this module's own
+/// top doc, "How this is structured for testability without a terminal").
+/// [`run_guided_setup`] is the one caller no automated test can drive end
+/// to end (no pty, C-04); this function is what a test CAN observe of that
+/// same transcript.
+fn opinion_set_transcript(rows: &[(&str, String)], settings_path: &Path) -> String {
+    let mut out = String::from("Installing conway's own opinion set:\n");
+    for (id, summary) in rows {
+        out.push_str(&format!("  {id:<16} {summary}\n"));
+    }
+    // "(subcommand tracked on the board)": `conway plugin remove <id>`
+    // itself is a sibling board item's own scope, not this one's -- see
+    // this module's own WHAT NOT TO BUILD. Drop the parenthetical the day
+    // that subcommand ships; nothing here re-derives its presence
+    // automatically, so this is a plain, deliberate literal to revisit by
+    // hand.
+    out.push_str(&format!(
+        "Remove any of these with `conway plugin remove <id>` (subcommand tracked on the \
+         board) or by deleting its line from plugins.install in {}.\n",
+        settings_path.display()
+    ));
+    out
+}
+
+/// The two-line caveat printed immediately above the shell y/n prompt --
+/// bash is the one member of this offer that is not merely an opinion but a
+/// genuine widening of what a session can reach, so it gets its own,
+/// unmissable warning rather than folding into the opinion-set table above.
+const SHELL_CAVEAT: &str = "  bash is NOT confined by --root -- a shell command reaches anything \
+                             your user account can.\n  Every bash call still passes the \
+                             permission prompt, same as every other tool.";
+
+/// The imperative shell around [`apply_opinion_set`]/[`apply_shell_choice`]:
+/// prints the opinion-set transcript, installs it, then asks the one new
+/// yes/no question this board item adds. Only reached from [`run_guided_
+/// setup`], after the backend flow itself already settled on `Configured`
+/// -- see that function's own doc for why this runs exactly once per run
+/// regardless of which internal return point reached `Configured`.
+///
+/// `Esc` (or any key other than `y`/`Y`) keeps the SAME skip semantics
+/// every other prompt in this module already has: declining costs nothing
+/// beyond "ask again later" (`docs/getting-started.md`'s own "Enabling
+/// bash" section, printed here as the one-liner to run it later).
+fn offer_opinion_set_and_shell(path: &Path) {
+    match apply_opinion_set(path) {
+        Ok(ids) => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let env: HashMap<String, String> = std::env::vars().collect();
+            let summaries = crate::first_party_plugins::opinion_set_summaries(&cwd, &env);
+            let rows: Vec<(&str, String)> = ids
+                .iter()
+                .map(|&id| {
+                    let summary = summaries
+                        .iter()
+                        .find(|(sid, _)| *sid == id)
+                        .map(|(_, s)| s.clone())
+                        .unwrap_or_default();
+                    (id, summary)
+                })
+                .collect();
+            println!();
+            print!("{}", opinion_set_transcript(&rows, path));
+        }
+        Err(e) => {
+            println!();
+            println!("Could not install conway's own opinion set: {e}");
+        }
+    }
+
+    println!();
+    println!("Enable the bash shell tool? [y/N]");
+    println!("{SHELL_CAVEAT}");
+    match read_single_key() {
+        Some(KeyCode::Char('y')) | Some(KeyCode::Char('Y')) => {
+            match apply_shell_choice(path, true) {
+                Ok(()) => println!(
+                    "Enabled. Disable it later by removing \"conway.shell\" from \
+                     tools.builtin_plugins in {}.",
+                    path.display()
+                ),
+                Err(e) => println!("Could not enable the shell tool: {e}"),
+            }
+        }
+        _ => {
+            println!(
+                "Skipped. Enable it later by adding \"conway.shell\" to tools.builtin_plugins \
+                 in {} -- see docs/getting-started.md#enabling-bash-shell-commands.",
+                path.display()
+            );
+        }
+    }
 }
 
 /// The retry half of [`finish_setup`]: only reachable for a `settings.json`
@@ -1050,6 +1273,84 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(snippet).expect("the printed snippet must itself be valid JSON");
         assert_eq!(parsed["models"]["glm-5.2"]["max_context_tokens"], 1_048_576);
+    }
+
+    // ---- opinion_set_transcript: board item `01M1FS34GNZEVZP4ZBVC90VD6J`, ----
+    // ---- acceptance 5's own observable half (no pty involved) ----
+
+    #[test]
+    fn opinion_set_transcript_lists_every_row_and_exactly_one_removal_sentence() {
+        let path = std::path::Path::new("/home/op/.conway/settings.json");
+        let rows = vec![
+            ("conway.idiom", "a short harness primer".to_string()),
+            ("conway.stepguard", "notices repeated tool calls".to_string()),
+        ];
+        let transcript = opinion_set_transcript(&rows, path);
+
+        for (id, summary) in &rows {
+            assert!(
+                transcript.contains(*id),
+                "transcript must name every installed id: {transcript}"
+            );
+            assert!(
+                transcript.contains(summary.as_str()),
+                "transcript must carry every id's own summary: {transcript}"
+            );
+        }
+        assert_eq!(
+            transcript.matches("conway plugin remove").count(),
+            1,
+            "exactly one removal sentence naming the subcommand route: {transcript}"
+        );
+        assert_eq!(
+            transcript.matches("plugins.install").count(),
+            1,
+            "exactly one removal sentence naming the hand-edit route: {transcript}"
+        );
+        assert!(
+            transcript.contains("/home/op/.conway/settings.json"),
+            "the removal sentence must name the actual settings path: {transcript}"
+        );
+    }
+
+    // ---- apply_shell_choice: pure, no network, no terminal ----
+
+    #[test]
+    fn apply_shell_choice_false_leaves_the_file_byte_identical() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\"backends\": {}}\n").expect("write fixture");
+        let before = std::fs::read_to_string(&path).expect("read before");
+
+        apply_shell_choice(&path, false).expect("declining must never fail");
+
+        let after = std::fs::read_to_string(&path).expect("read after");
+        assert_eq!(
+            before, after,
+            "declining the shell offer must not touch the file at all"
+        );
+    }
+
+    #[test]
+    fn apply_shell_choice_true_adds_conway_shell_alongside_the_preset_ids() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\"backends\": {}}\n").expect("write fixture");
+
+        apply_shell_choice(&path, true).expect("enabling must succeed against a fresh file");
+
+        let text = std::fs::read_to_string(&path).expect("read after");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+        let ids: Vec<String> = value["tools"]["builtin_plugins"]
+            .as_array()
+            .expect("builtin_plugins must be an array")
+            .iter()
+            .map(|v| v.as_str().expect("each id is a string").to_string())
+            .collect();
+        assert!(ids.contains(&"conway.shell".to_string()), "{ids:?}");
+        assert!(ids.contains(&"conway.fs".to_string()), "{ids:?}");
+        assert!(ids.contains(&"conway.subagent".to_string()), "{ids:?}");
+        assert!(ids.contains(&"conway.report".to_string()), "{ids:?}");
     }
 
     // ---- chain_entry: the ONE construction verify_backend and the real ----

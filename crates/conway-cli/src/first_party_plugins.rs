@@ -127,6 +127,32 @@ use conway::plugin::{MemoryStore, Plugin};
 use conway::{BackendFactory, ConwayBuilder, FacadeError, RouterFactory};
 use conway_plugin_names::AgentNames;
 
+/// conway's own opinion set for first-run install -- board item
+/// `01M1FS34GNZEVZP4ZBVC90VD6J`, decision `01M1FQFP5D0R3M9GC8R8Z24F5N`
+/// (recorded 2026-09-01, operator-ruled): the six first-party plugin ids
+/// [`crate::first_run::apply_opinion_set`] writes into a fresh operator's
+/// `plugins.install`, unprompted, the moment guided first-run setup
+/// verifies a working backend. Every id here MUST resolve in `bundle`
+/// below -- proven by this module's own
+/// `default_opinion_set_ids_all_resolve_in_bundle` test -- or a fresh
+/// install would silently write an id that reaches nothing, exactly the
+/// defect this module's own doc names for `conway.trim`'s history.
+///
+/// **Deliberately narrower than [`all_bundle_plugins`]'s full eleven.**
+/// `conway.plugin_skeleton` (a proof-of-mechanism, not a capability),
+/// `conway.path`/`conway.discover` (a tool pair with no operator-facing
+/// value until BOTH are installed together, this module's own doc), and
+/// `conway.trim`/`conway.ui` are not opinions this item's ruling reaches --
+/// see decision `01M1FQFP5D0R3M9GC8R8Z24F5N` for the six that are.
+pub const DEFAULT_OPINION_SET: [&str; 6] = [
+    conway_plugin_idiom::PLUGIN_ID,
+    conway_plugin_stepguard::PLUGIN_ID,
+    conway_plugin_skills::PLUGIN_ID,
+    conway_plugin_memory::PLUGIN_ID,
+    conway_plugin_names::PLUGIN_ID,
+    conway_plugin_history::PLUGIN_ID,
+];
+
 /// Every first-party plugin this binary links, in no particular order.
 /// `Vec<Arc<dyn Plugin>>` rather than a `HashMap` keyed by id: the bundle
 /// is tiny, and resolving by a linear scan over each candidate's own
@@ -412,6 +438,50 @@ pub fn all_bundle_plugins(
     // `None`: a browsing-only re-derivation never needs a live `FormSurface`
     // -- see `bundle`'s own doc, "`form_surface`".
     bundle(cwd, memory_store, browse_names, idiom_plugin, None)
+}
+
+/// Ordered `(id, summary)` pairs for [`DEFAULT_OPINION_SET`], read off each
+/// candidate's own [`Plugin::description`] -- the first-run guided-setup
+/// flow's own transcript table (`crate::first_run`'s "Installing conway's
+/// own opinion set" printout) reads exactly this, one row per id, so an
+/// operator sees what was just installed in the SAME vocabulary the plugin
+/// browser already uses for every other candidate, rather than a second,
+/// independently-worded restatement.
+///
+/// Built from [`all_bundle_plugins`] (the unfiltered read surface, not
+/// `bundle` directly) with a throwaway, non-durable [`MemoryStore`] of its
+/// own -- this is a read-only capability lookup, on the identical footing
+/// `all_bundle_plugins`'s own doc already states for its `browse_names`.
+/// `cwd` only matters here because `conway.skills` is a member of
+/// [`DEFAULT_OPINION_SET`] and `bundle` needs SOME directory to construct
+/// its candidate from (this module's own doc, "`cwd`") -- every plugin's
+/// [`Plugin::description`] is a fixed Rust literal, never data-dependent on
+/// what that directory actually contains, so the exact `cwd` passed here
+/// never changes the summaries returned.
+///
+/// An id in [`DEFAULT_OPINION_SET`] that somehow resolves to nothing in
+/// `all_bundle_plugins` gets an empty summary rather than a panic -- this
+/// function is read-only display plumbing, not the reachability check
+/// (`default_opinion_set_ids_all_resolve_in_bundle`, this module's own
+/// test, is that check, and fails loudly at test time instead).
+pub fn opinion_set_summaries(
+    cwd: &std::path::Path,
+    env: &HashMap<String, String>,
+) -> Vec<(&'static str, String)> {
+    let memory_store: Arc<dyn MemoryStore> =
+        Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+    let candidates = all_bundle_plugins(cwd, memory_store, env);
+    DEFAULT_OPINION_SET
+        .iter()
+        .map(|&id| {
+            let summary = candidates
+                .iter()
+                .find(|p| p.manifest().id == id)
+                .map(|p| p.description().summary)
+                .unwrap_or_default();
+            (id, summary)
+        })
+        .collect()
 }
 
 /// Resolves this process's real `conway.idiom` plugin (board item
@@ -1092,6 +1162,33 @@ mod tests {
             "the tool must reach the SAME surface `bundle`'s caller passed in, not a private \
              fallback -- a wrong wiring would degrade instead"
         );
+    }
+
+    /// Board item `01M1FS34GNZEVZP4ZBVC90VD6J`, acceptance 1: every id in
+    /// [`DEFAULT_OPINION_SET`] must resolve in `bundle` -- otherwise
+    /// `crate::first_run::apply_opinion_set` writes an id into
+    /// `plugins.install` that reaches nothing, the exact `conway.trim`-shaped
+    /// defect board item `01M0TV447NAJ1R06S455DZPP54` closed.
+    #[test]
+    fn default_opinion_set_ids_all_resolve_in_bundle() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let ids: Vec<String> = bundle(
+            &cwd,
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(),
+            None,
+        )
+        .iter()
+        .map(|p| p.manifest().id)
+        .collect();
+        for expected in DEFAULT_OPINION_SET {
+            assert!(
+                ids.contains(&expected.to_string()),
+                "DEFAULT_OPINION_SET id \"{expected}\" is missing from the linked bundle: {ids:?}"
+            );
+        }
     }
 
     /// Same wiring-only check, for `conway_plugin_idiom`: without its

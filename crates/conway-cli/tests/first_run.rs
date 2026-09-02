@@ -48,8 +48,10 @@ mod common;
 use std::time::Instant;
 
 use common::mock_backend::{Chunk, MockBackend, Script};
-use common::write_fixture;
+use common::{open_conway, run_conway, write_fixture, Fixture};
+use conway::SessionFilter;
 use conway_cli::first_run::{self, GUIDED_SETUP_MARKER};
+use conway_core::log::LogRecord;
 
 // ---------------------------------------------------------------------
 // verify_backend: acceptance 3's own mechanism, no terminal involved.
@@ -556,4 +558,146 @@ async fn finish_setup_called_twice_writes_both_backends_and_a_chain_naming_both_
     // JSON shape.
     let status = complete_a_turn_from_the_file_at(dir.path(), &path).await;
     assert_eq!(status, conway::ResultStatus::Completed, "{status:?}");
+}
+
+// ---------------------------------------------------------------------
+// apply_opinion_set / apply_shell_choice / the opinion-set config actually
+// reaching a real turn -- board item `01M1FS34GNZEVZP4ZBVC90VD6J`.
+// ---------------------------------------------------------------------
+
+/// Acceptance 2: after `finish_setup` succeeds against a fresh settings
+/// file, `apply_opinion_set` writes exactly the six ruled ids into
+/// `plugins.install` -- no more, no fewer -- and doing it twice is a no-op
+/// the second time (`set_plugin_installed`'s own "Safety posture": a goal
+/// state already holding never rewrites the file).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_opinion_set_after_finish_setup_writes_exactly_the_six_ruled_ids() {
+    let mock = MockBackend::start(ok_script()).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    let entry_json = openai_compat_entry_json(&mock.base_url, "any-key");
+
+    let mut chain: Vec<String> = Vec::new();
+    let outcome =
+        first_run::finish_setup(&path, "mock", &entry_json, &mock.model, &mut chain).await;
+    assert_eq!(outcome, first_run::GuidedSetupOutcome::Configured);
+
+    let expected = [
+        "conway.idiom",
+        "conway.stepguard",
+        "conway.skills",
+        "conway.memory",
+        "conway.names",
+        "conway.history",
+    ];
+    let applied = first_run::apply_opinion_set(&path).expect("apply_opinion_set must succeed");
+    assert_eq!(
+        applied,
+        expected.to_vec(),
+        "apply_opinion_set must return exactly the six ruled ids, in order"
+    );
+
+    let text = std::fs::read_to_string(&path).expect("read settings.json");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+    let mut ids: Vec<String> = value["plugins"]["install"]
+        .as_array()
+        .expect("plugins.install must be an array")
+        .iter()
+        .map(|v| v.as_str().expect("each id is a string").to_string())
+        .collect();
+    ids.sort();
+    let mut expected_sorted: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+    expected_sorted.sort();
+    assert_eq!(
+        ids, expected_sorted,
+        "settings.json's plugins.install must contain exactly the six ruled ids: {text}"
+    );
+
+    // A second call against the same file must be a no-op -- no rewrite.
+    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    first_run::apply_opinion_set(&path).expect("a second call must also succeed");
+    let after = std::fs::metadata(&path).unwrap().modified().unwrap();
+    assert_eq!(
+        before, after,
+        "a second apply_opinion_set call must not rewrite the file"
+    );
+}
+
+/// Acceptance 4: a session built against the REAL COMPILED BINARY, from the
+/// exact config `finish_setup` + `apply_opinion_set` produce, carries a
+/// non-empty `instruction_fragments` list naming `conway.idiom` on its
+/// first turn's `ContextReportRecord` -- the ruling's own second verify
+/// (this board item's BACKGROUND note: "the operator's real config has no
+/// `plugins.install` at all, so a session's first `context_report` shows
+/// non-empty `instruction_fragments` is currently false for every real
+/// session"), now observably true, through the real binary rather than an
+/// in-process `Conway`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_built_from_the_opinion_set_config_reports_instruction_fragments_naming_idiom() {
+    let mock = MockBackend::start(ok_script()).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let settings_path = dir.path().join("settings.json");
+    let entry_json = openai_compat_entry_json(&mock.base_url, "any-key");
+
+    let mut chain: Vec<String> = Vec::new();
+    let outcome =
+        first_run::finish_setup(&settings_path, "mock", &entry_json, &mock.model, &mut chain)
+            .await;
+    assert_eq!(outcome, first_run::GuidedSetupOutcome::Configured);
+    first_run::apply_opinion_set(&settings_path).expect("apply_opinion_set must succeed");
+
+    let fixture = Fixture {
+        dir,
+        config_path: settings_path,
+    };
+
+    let out = run_conway(&["-p", "Reply with exactly one word: ok"], &fixture);
+    assert!(
+        out.status.success(),
+        "conway -p should succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let conway = open_conway(&fixture).await;
+    let sessions = conway
+        .sessions(SessionFilter::default())
+        .await
+        .expect("list sessions");
+    let root = sessions
+        .iter()
+        .find(|m| m.origin.is_none())
+        .expect("the one-shot run must leave a root session behind");
+
+    let session_path = common::session_dir(&fixture).join(format!("{}.jsonl", root.id));
+    let content = std::fs::read_to_string(&session_path)
+        .unwrap_or_else(|e| panic!("read session jsonl at {}: {e}", session_path.display()));
+    let records: Vec<LogRecord> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str::<LogRecord>(line)
+                .unwrap_or_else(|e| panic!("parse LogRecord: {e}; line: {line}"))
+        })
+        .collect();
+
+    let report = records
+        .iter()
+        .find_map(|r| match r {
+            LogRecord::ContextReportRecord { report, .. } => Some(report),
+            _ => None,
+        })
+        .expect("the turn must have persisted a ContextReportRecord");
+
+    assert!(
+        !report.instruction_fragments.is_empty(),
+        "instruction_fragments must be non-empty once conway.idiom is installed"
+    );
+    assert!(
+        report
+            .instruction_fragments
+            .iter()
+            .any(|f| f.plugin_id == conway_plugin_idiom::PLUGIN_ID),
+        "the first ContextReportRecord must name conway.idiom: {:?}",
+        report.instruction_fragments
+    );
 }
