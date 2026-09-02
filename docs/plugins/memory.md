@@ -108,6 +108,50 @@ unasked.
   characters per entry) — the stored memory itself is never touched by
   that truncation.
 
+## Cache cost
+
+conway's whole prompt-cache economy rests on one premise: each turn's
+request is the previous one plus new material at the end — never
+reordered, never rewritten mid-stream (`crates/conway-runtime/tests/
+prefix_stability.rs` pins this for the ordinary case). `remember` is a
+deliberate, documented exception to it.
+
+Every `remember` — whether the MODEL calls the tool mid-turn, or an
+operator runs `/conway.memory.remember` — shifts the static prefix once,
+on the turn immediately following the write: `MemoryInjectHook::
+before_request` splices the new `Provenance::Memory` segment in at the
+hook's own `insertion_index`, immediately before the request's first
+`Provenance::ToolRegistry` segment — INSIDE the static preamble, ahead of
+the per-session inherited/volatile tail that is normally append-only.
+Every segment from that point on shifts down by one; a provider's prompt
+cache, which keys on exact byte-prefix reuse, cannot reuse anything past
+the insertion point for that one request.
+
+**How to see it.** The TUI status line's `tokens` field
+([`interactive.md`](../interactive.md): `1.4k tok (88% cached)`) dips for
+exactly one turn — the first request built after the write — then
+recovers: the new, longer static prefix (memory segment included) is
+itself stable from that point on, so the very next turn caches normally
+again.
+
+**Why the front of the request, not the tail.** Placed before the tool
+registry so a recalled fact is available to the model BEFORE it reasons
+about the current turn — recall has to precede the conversation it
+informs, the same placement `AgentDef`/`Skill` segments already get.
+Appending to the volatile tail instead (cheaper for the cache — it would
+never touch the static prefix at all) was considered and rejected: it
+would land a memory the model is meant to use for THIS turn's reasoning
+AFTER that reasoning already happened, forcing a re-read backwards for
+context that should have arrived up front.
+
+**Pinned, not just described.** `crates/conway-runtime/tests/
+prefix_stability.rs` proves the general property that this cost is an
+exception to. `crates/conway-plugin-memory/tests/
+remember_prefix_cost.rs` proves this specific exception: the request
+immediately after a `remember` is NOT a plain prefix extension of the one
+before it, and the two diverge at exactly `insertion_index` — not merely
+"somewhere earlier".
+
 ## Installing it
 
 The off-by-default CLI wiring (durable, at `<cwd>/.conway/memory`):
