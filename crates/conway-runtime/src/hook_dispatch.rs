@@ -536,7 +536,11 @@ impl HookDispatcher {
     ///
     /// **Fails CLOSED**, unlike [`Self::dispatch`]: a hook that errors, times
     /// out, or returns an unparseable answer denies, because this fires before
-    /// anything has happened and refusing is the safe direction there.
+    /// anything has happened and refusing is the safe direction there. A
+    /// verdict this build does not recognize denies too, via
+    /// [`conway_core::hook::HookPermissionVerdict::denies`] -- the same
+    /// judgment [`crate::permission::PermissionBroker::pre_tool_use_hook_denial`]
+    /// applies, shared rather than re-derived.
     ///
     /// **Reads only [`HookPermissionVerdict`], which structurally cannot carry
     /// replacement text** -- see the module doc. `HookAnswer::context` is
@@ -574,8 +578,17 @@ impl HookDispatcher {
             match runner.run(&invocation).await {
                 // NOTE the binding: only `answer.permission` is read. There is
                 // deliberately no `answer.context` arm -- see the module doc.
+                // `HookPermissionVerdict::denies` is the single
+                // implementation of the fail-closed-on-unrecognized-variant
+                // judgment (see that method's own doc); this is one of its
+                // two callers, alongside
+                // `permission::PermissionBroker::pre_tool_use_hook_denial`.
                 Ok(answer) => {
-                    if let HookPermissionVerdict::Deny { reason } = answer.permission {
+                    if answer.permission.denies() {
+                        let reason = match &answer.permission {
+                            HookPermissionVerdict::Deny { reason } => reason.clone(),
+                            _ => "unrecognized permission verdict -- fail-closed".to_string(),
+                        };
                         return Some(format!("`{event}` hook `{}`: {reason}", hook.id));
                     }
                 }

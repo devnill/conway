@@ -156,7 +156,10 @@ impl HookAnswer {
     /// [`HookAnswer::default`] directly; `new` is for a `HookRunner`
     /// implementation that has an actual opinion on one or both fields.
     pub fn new(context: ContextDelta, permission: HookPermissionVerdict) -> Self {
-        Self { context, permission }
+        Self {
+            context,
+            permission,
+        }
     }
 }
 
@@ -178,19 +181,21 @@ impl HookAnswer {
 /// correctly.
 ///
 /// `#[non_exhaustive]`: a future variant here is a live safety concern, not
-/// a mere API nicety. The ONE place that decides what an UNRECOGNIZED
-/// variant means is `conway_runtime::permission::
-/// PermissionBroker::pre_tool_use_hook_denial`'s own `match` -- fail
-/// closed, treated the same as [`Self::Deny`] (an unknown answer from a
-/// hook is exactly as untrustworthy as an unreachable one). No other call
-/// site re-derives that judgment; a sibling dispatcher reading this same
-/// type for a different event
-/// (`conway_runtime::hook_dispatch::HookDispatcher::dispatch_deny_only`,
-/// `prompt_submitted` only) is deliberately left as `if let ... Deny`,
-/// unaffected by `#[non_exhaustive]` -- this item's own constraint is that
-/// the fail-closed-on-unknown-variant judgment stays SINGLE-implementation
-/// (`PermissionBroker` only), so extending it to that sibling site rather
-/// than reusing it there is left as a follow-up, not duplicated here.
+/// a mere API nicety. [`Self::denies`] is the ONE place that decides what
+/// an UNRECOGNIZED variant means -- fail closed, treated the same as
+/// [`Self::Deny`] (an unknown answer from a hook is exactly as
+/// untrustworthy as an unreachable one). Every reader of this type that
+/// needs to know whether a verdict blocks a call -- today
+/// `conway_runtime::permission::PermissionBroker::pre_tool_use_hook_denial`
+/// (`pre_tool_use`) and `conway_runtime::hook_dispatch::
+/// HookDispatcher::dispatch_deny_only` (`prompt_submitted` and any other
+/// deny-only event) -- calls [`Self::denies`] rather than re-deriving the
+/// judgment per call site (P-14: single implementation of a safety-critical
+/// classification). The two sites still format their own denial messages
+/// (they differ in wording and in which hook/event they name), and the
+/// `Deny` variant's own `reason` is still theirs to read directly when
+/// present -- only the "does this verdict block the call at all,
+/// including one this build has never seen" question is centralized here.
 #[non_exhaustive]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -207,6 +212,19 @@ pub enum HookPermissionVerdict {
     /// produced it -- mirroring the phrasing its existing deny-pattern
     /// branch already uses for the identical purpose.
     Deny { reason: String },
+}
+
+impl HookPermissionVerdict {
+    /// Whether this verdict blocks the call -- `false` only for
+    /// [`Self::NoOpinion`]; `true` for [`Self::Deny`] AND for any variant
+    /// added after this build shipped. The single implementation of the
+    /// fail-closed-on-unrecognized-variant judgment this type's own doc
+    /// requires (P-14) -- every caller that needs to know whether a
+    /// verdict blocks a call goes through this method rather than
+    /// re-deriving the answer with its own `match`/`if let`.
+    pub fn denies(&self) -> bool {
+        !matches!(self, HookPermissionVerdict::NoOpinion)
+    }
 }
 
 /// A `pre_tool_use` hook registration's own policy for what happens when
@@ -492,6 +510,15 @@ mod tests {
             },
         };
         assert_eq!(via_new, via_literal);
+    }
+
+    #[test]
+    fn denies_is_false_only_for_no_opinion() {
+        assert!(!HookPermissionVerdict::NoOpinion.denies());
+        assert!(HookPermissionVerdict::Deny {
+            reason: "no".into()
+        }
+        .denies());
     }
 
     #[test]

@@ -1701,29 +1701,33 @@ impl PermissionBroker {
                 HookEvent::new("pre_tool_use", payload.clone()),
             );
             match runner.run(&invocation).await {
-                // `HookPermissionVerdict` is `#[non_exhaustive]`: this is
-                // THE ONE place in the workspace that decides what an
-                // unrecognized future variant means, per this type's own
-                // doc -- fail closed (denied), the identical posture
-                // `NoOpinion`/`Deny` already establish for "narrow only,
-                // never widen." No other call site re-derives this; a
-                // sibling dispatcher reading the same type
-                // (`hook_dispatch::HookDispatcher::dispatch_deny_only`,
-                // `prompt_submitted` only) is untouched by this item on
-                // purpose -- see this method's own doc for why growing that
-                // guarantee there is out of scope here.
-                Ok(answer) => match answer.permission {
-                    HookPermissionVerdict::NoOpinion => {
-                        // This hook has nothing to say -- consult the next
-                        // one, if any.
-                    }
-                    HookPermissionVerdict::Deny { reason } => {
+                // `HookPermissionVerdict::denies` is the single
+                // implementation of what an unrecognized future variant
+                // means (fail closed) -- see that method's own doc. This
+                // is one of its two callers; the other is
+                // `hook_dispatch::HookDispatcher::dispatch_deny_only`
+                // (`prompt_submitted` and other deny-only events), which
+                // now shares the identical judgment rather than
+                // re-deriving it.
+                Ok(answer) => {
+                    if answer.permission.denies() {
                         // A hook's own VERDICT -- `on_failure` is never
                         // consulted here: it governs ONLY what happens when
                         // this hook's runner cannot be reached at all, never
                         // a hook that ran and had an opinion. An explicit
                         // `Deny` denies, full stop, regardless of this
-                        // hook's `on_failure` setting.
+                        // hook's `on_failure` setting. A recognized `Deny`
+                        // reports its own `reason`; any other denying
+                        // (i.e. non-`NoOpinion`) variant is one this build
+                        // does not recognize, and is reported as such --
+                        // an operator upgrading `conway` before every hook
+                        // script it drives must never see calls silently
+                        // start passing through a hook that used to guard
+                        // them.
+                        let reason = match &answer.permission {
+                            HookPermissionVerdict::Deny { reason } => reason.clone(),
+                            _ => "unrecognized permission verdict -- fail-closed".to_string(),
+                        };
                         return HookStepOutcome::Denied {
                             rendered_error: format!(
                                 "`{}` is denied by `pre_tool_use` hook `{}`: {reason}",
@@ -1733,25 +1737,10 @@ impl PermissionBroker {
                             cause: HookDenialCause::Verdict,
                         };
                     }
-                    _ => {
-                        // Fail closed: a hook returned a verdict variant
-                        // that predates this build (or is otherwise
-                        // unrecognized), so this call is treated exactly
-                        // as an explicit `Deny` -- an operator upgrading
-                        // `conway` before every hook script it drives
-                        // must never see calls silently start passing
-                        // through a hook that used to guard them.
-                        return HookStepOutcome::Denied {
-                            rendered_error: format!(
-                                "`{}` is denied by `pre_tool_use` hook `{}`: unrecognized \
-                                 permission verdict -- fail-closed",
-                                call.tool.as_str(),
-                                hook.id
-                            ),
-                            cause: HookDenialCause::Verdict,
-                        };
-                    }
-                },
+                    // `NoOpinion` (the only non-denying case `denies()`
+                    // recognizes): this hook has nothing to say -- consult
+                    // the next one, if any.
+                }
                 Err(failure) => match hook.on_failure {
                     HookOnFailure::Deny => {
                         return HookStepOutcome::Denied {
