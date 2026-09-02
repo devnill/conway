@@ -118,7 +118,7 @@
 //! every terminal path OTHER than a natural `Completed`/`Rejected` --
 //! budget-exceeded (all four dimensions), cancellation (graceful and
 //! immediate), a deadline, and a bubbled-up backend/store failure -- called
-//! [`Self::finish`] with a literal `""` trailing text. A run that had
+//! `AgentLoop::finish` with a literal `""` trailing text. A run that had
 //! already done real, disk-visible work then reported
 //! `"(no output; terminal status: <name>)"`, indistinguishable from a run
 //! that had done nothing at all -- the incident this item documents cost an
@@ -126,7 +126,7 @@
 //! hand. `LoopState` gained `last_assistant_text` (the most recent backend
 //! response's own text, captured every turn -- see that field's own doc),
 //! and every one of the ten `""`-passing sites now calls
-//! [`Self::terminal_account`] instead, which resolves that text, or an
+//! `AgentLoop::terminal_account` instead, which resolves that text, or an
 //! explicit "stopped mid-run" marker when there is no text but other
 //! evidence of real work, or `""` (genuinely unchanged) only when NEITHER
 //! holds. See `terminal_account`'s own doc for the full precedence.

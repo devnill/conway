@@ -433,6 +433,15 @@ async fn an_agent_producing_no_text_gets_a_status_naming_summary_not_an_empty_st
     assert!(result.summary.contains("completed"));
 }
 
+/// Pre-dates `AgentLoop::terminal_account` (board item
+/// `01M1FH114QA3A152W8H6E2YMGJ`): this scenario dispatches real tool
+/// calls before hitting `max_steps`, so the summary is no longer the bare
+/// `"(no output; terminal status: budget_exceeded)"` fallback this test
+/// originally asserted -- `terminal_account` now returns the richer
+/// "stopped mid-run, N tool call(s) dispatched" marker for exactly this
+/// case (activity happened, but no final assistant text was captured).
+/// Updated to assert that marker rather than the discarded literal status
+/// name, which the fix intentionally stopped being the whole story.
 #[tokio::test]
 async fn budget_exceeded_also_gets_a_non_empty_status_naming_summary() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
@@ -473,7 +482,12 @@ async fn budget_exceeded_also_gets_a_non_empty_status_naming_summary() {
 
     assert!(matches!(result.status, ResultStatus::BudgetExceeded { .. }));
     assert!(!result.summary.is_empty());
-    assert!(result.summary.contains("budget_exceeded"));
+    assert!(
+        result.summary.contains("tool call"),
+        "with real tool-call activity and no final assistant text, the summary must be \
+         terminal_account's richer marker, not a bare status name: {:?}",
+        result.summary
+    );
 }
 
 // ---------------------------------------------------------------------
