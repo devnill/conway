@@ -2521,7 +2521,15 @@ fn render_instruction_preamble(report: &ContextReport, state: &mut AppState) {
         ),
     );
     for fragment in &report.instruction_fragments {
-        if fragment.unreachable_tool_ids.is_empty() {
+        if fragment.skipped_by_scope {
+            notice(
+                state,
+                format!(
+                    "  {}.{}  {}tok  \u{26a0} scoped away from this agent",
+                    fragment.plugin_id, fragment.name, fragment.tokens_est
+                ),
+            );
+        } else if fragment.unreachable_tool_ids.is_empty() {
             notice(
                 state,
                 format!(
@@ -6164,6 +6172,7 @@ mod tests {
                 name: "when-to-compose".to_string(),
                 tokens_est: 7,
                 unreachable_tool_ids: Vec::new(),
+                skipped_by_scope: false,
             }],
         });
 
@@ -6219,6 +6228,7 @@ mod tests {
                 name: "when-to-compose".to_string(),
                 tokens_est: 7,
                 unreachable_tool_ids: vec![ToolName::new("compose_path")],
+                skipped_by_scope: false,
             }],
         });
 

@@ -100,6 +100,7 @@ use conway_core::error::RuntimeError;
 use conway_core::ids::{AgentId, ModelId, PrefixKey, SegmentId, SeqRange, SessionId, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::path::{NodeStamp, ResolvedPath};
+use conway_core::ports::{FragmentPosition, FragmentScope};
 use conway_core::provenance::{
     ContextReport, ContextReportEntry, InstructionFragmentEntry, Provenance,
 };
@@ -142,16 +143,19 @@ pub struct SkillFragment {
 /// establish); this type is what the facade's `ConwayBuilder::build`
 /// produces once it has paired each declared fragment with its declaring
 /// plugin's `PluginManifest::id`, and it is what every `AgentSpec.skills`
-/// producer (today: `runtime::root::resolve_instructions`; subagents are
-/// not wired -- see that function's own doc) threads into
+/// producer (today: `runtime::root::resolve_instructions`, called
+/// identically for a root, a forked child, and a spawned child -- board
+/// item `01M0VSKA76NSEHDSH25XJGJ2J5`) threads into
 /// [`ContextInput::instructions`].
 ///
-/// **In caller-supplied (stable) order**, the same discipline
+/// **In caller-supplied (install) order**, the same discipline
 /// [`SkillFragment`] already documents for itself -- see
-/// [`ContextBuilder::build`]'s own "Plugin instruction fragments" section
-/// for the fixed cross-source precedence this type's OWN position in
-/// [`ContextInput`] participates in (base idiom, then these, then
-/// operator-authored skills).
+/// [`ContextBuilder::build`]'s own "PluginInstructions*" section for the
+/// fixed cross-source precedence this type's OWN position in
+/// [`ContextInput`] participates in (`BeforeSystemPrompt` fragments, then
+/// `[0] SystemPrompt`, then `AfterSystemPrompt` fragments, then
+/// operator-authored skills), and for how [`Self::position`]/[`Self::order`]
+/// break that install-order tie WITHIN a position.
 #[derive(Clone, Debug)]
 pub struct PluginInstruction {
     pub plugin_id: String,
@@ -162,6 +166,33 @@ pub struct PluginInstruction {
     /// `ContextInput.tools` -- see that method's own doc for why the check
     /// runs at this seam rather than at `ConwayBuilder::build` or in CI.
     pub tool_ids: Vec<ToolName>,
+    /// See `conway_core::ports::plugin::InstructionFragment::position`.
+    /// Default [`FragmentPosition::AfterSystemPrompt`].
+    pub position: FragmentPosition,
+    /// See `conway_core::ports::plugin::InstructionFragment::order`.
+    /// Default `0`.
+    pub order: i16,
+    /// See `conway_core::ports::plugin::InstructionFragment::scope`.
+    /// Default [`FragmentScope::All`].
+    pub scope: FragmentScope,
+    /// See `conway_core::ports::plugin::InstructionFragment::agent_def`.
+    /// Default `None`.
+    pub agent_def: Option<String>,
+}
+
+/// Whether the agent [`ContextBuilder::build`] is assembling context for has
+/// a parent -- the structural fact `InstructionFragment::scope`'s
+/// `RootOnly`/`ChildrenOnly` variants key on. Sourced from `AgentLoop::
+/// parent.is_none()` (`crate::agent_loop`), never inferred from a tool set
+/// or a role: a root agent is, structurally, the one node in an agent tree
+/// with no parent, regardless of what tools it happens to carry or what
+/// `RoleAlias` its `AgentSpec` names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentKind {
+    /// No parent -- the entry point of an agent tree.
+    Root,
+    /// A forked or spawned child -- has a parent.
+    Child,
 }
 
 /// A verbatim prefix inherited from a parent session at fork time
@@ -212,12 +243,18 @@ pub struct ContextInput {
     pub turn: u32,
     pub model: ModelId,
     pub cache_mode: CacheMode,
+    /// Whether this turn's agent has a parent -- see [`AgentKind`]'s own
+    /// doc for the structural fact this is sourced from. Consulted only by
+    /// [`ContextBuilder::build`]'s `FragmentScope::RootOnly`/
+    /// `ChildrenOnly` filtering; every other assembly step ignores it.
+    pub agent_kind: AgentKind,
     pub system_prompt: Option<SystemPromptSpec>,
     /// Plugin-declared instruction fragments (board item
-    /// `01M0K5MD59YZRSHE31JKZKFRMY`), rendered BEFORE `skills` below --
-    /// see [`ContextBuilder::build`]'s own "Plugin instruction fragments"
-    /// section for the precedence argument and the reachability check
-    /// this field's own entries are subject to.
+    /// `01M0K5MD59YZRSHE31JKZKFRMY`), rendered around `[0] SystemPrompt`
+    /// per [`PluginInstruction::position`]/[`PluginInstruction::order`],
+    /// BEFORE `skills` below in every case -- see [`ContextBuilder::build`]'s
+    /// own "PluginInstructions*" section for the precedence argument and the
+    /// reachability/scope checks this field's own entries are subject to.
     pub instructions: Vec<PluginInstruction>,
     pub skills: Vec<SkillFragment>,
     pub tools: Vec<ToolSpec>,
@@ -264,37 +301,34 @@ impl ContextBuilder {
     ) -> Result<(Vec<PromptSegment>, ContextReport), RuntimeError> {
         let mut segments: Vec<PromptSegment> = Vec::new();
 
-        // [0] SystemPrompt
-        if let Some(system_prompt) = &input.system_prompt {
-            segments.push(PromptSegment::new(
-                Role::System,
-                text_block(&system_prompt.text),
-                Provenance::AgentDef {
-                    name: system_prompt.agent_def.clone(),
-                },
-            ));
-        }
-
-        // [1] PluginInstructions* -- board item 01M0K5MD59YZRSHE31JKZKFRMY.
+        // PluginInstructions* -- board item 01M0K5MD59YZRSHE31JKZKFRMY,
+        // extended by the fragment position/order/scope item (process
+        // record 01M1FQ36PCW2J19AP219GKZH3R).
         //
-        // **Precedence, argued.** Positioned AFTER `[0] SystemPrompt` (the
-        // base idiom an `AgentDef` carries) and BEFORE `[1b] SkillFragments*`
-        // (an operator's own, directory-authored skills). The tree already
-        // established this exact "declare a policy once, and let every
-        // installed source layer through it in a fixed order" shape for
-        // hooks and curators (`ConwayBuilder::build`: an embedder's
-        // injected hook/curator first, THEN every plugin's own, in
-        // `with_plugin` order) -- this repeats that shape one level down,
-        // for context CONTENT rather than for a callback. Base-first,
-        // capability-declared-second, operator-authored-last also matches
-        // this item's own illustrative `/context` rendering verbatim
-        // (`conway.idiom` "base" -> `conway.trim`/`conway.memory`
-        // plugin-sourced -> `house-style` "(yours)") -- the spec's example
-        // IS the ordering decision, not merely a picture of it. Multiple
-        // plugins' fragments render in `ContextInput.instructions`' own
-        // (caller-supplied, `with_plugin`/`install_selected`) order, the
-        // SAME "stable caller order" discipline `[1b] SkillFragments*`
-        // already documents for itself.
+        // **Precedence, argued.** Every fragment renders at one of two
+        // positions relative to `[0] SystemPrompt` (the base idiom an
+        // `AgentDef` carries, or a one-shot `--system-prompt`/
+        // `--append-system-prompt` override -- both occupy the same `[0]`
+        // slot): `BeforeSystemPrompt` fragments render AHEAD of `[0]`;
+        // `AfterSystemPrompt` fragments (the default -- every fragment
+        // declared before `InstructionFragment::position` existed keeps
+        // this exact placement) render where they always have, AFTER `[0]`
+        // and BEFORE `[1b] SkillFragments*` (an operator's own,
+        // directory-authored skills). The tree already established this
+        // exact "declare a policy once, and let every installed source
+        // layer through it in a fixed order" shape for hooks and curators
+        // (`ConwayBuilder::build`: an embedder's injected hook/curator
+        // first, THEN every plugin's own, in `with_plugin` order) -- this
+        // repeats that shape one level down, for context CONTENT rather
+        // than for a callback. Within a position, fragments are
+        // STABLE-sorted by `(order, install_index)` -- lower `order` first,
+        // a tie keeping `ContextInput.instructions`' own (caller-supplied,
+        // `with_plugin`/`install_selected`) install order, the SAME "stable
+        // caller order" discipline `[1b] SkillFragments*` already documents
+        // for itself. Deterministic by construction (a plain numeric sort,
+        // no hashing) -- required so the assembled prefix stays
+        // byte-identical turn over turn (prompt-cache economics), not
+        // merely tidy.
         //
         // **The reachability check runs HERE, not at `ConwayBuilder::build`
         // and not in CI** -- per decision `01M0K5K8DCRVR523P54DZF4BY3`:
@@ -306,30 +340,71 @@ impl ContextBuilder {
         // fragment's text is WITHHELD (never pushed as a segment, so the
         // model never reads an instruction naming a tool it cannot call);
         // it is still recorded in `report.instruction_fragments` (built
-        // below, via `instruction_reports`) so `/context`'s preamble
-        // section can render the omission inline rather than only warn once
-        // in a log line. A fragment naming a tool id its OWN declaring
-        // plugin also provides (`Plugin::tools`) can never land here --
-        // both are contributed by the same `with_plugin` call, so they are
-        // reachable by construction; see `Plugin::instructions`'s own doc.
+        // below, via `instruction_reports`, in the SAME install order that
+        // list has always used -- unaffected by the position/order render
+        // sort above) so `/context`'s preamble section can render the
+        // omission inline rather than only warn once in a log line. A
+        // fragment naming a tool id its OWN declaring plugin also provides
+        // (`Plugin::tools`) can never land here -- both are contributed by
+        // the same `with_plugin` call, so they are reachable by
+        // construction; see `Plugin::instructions`'s own doc.
+        //
+        // **The scope check runs alongside it.** `FragmentScope::All` (the
+        // default) never excludes anyone; `RootOnly`/`ChildrenOnly` compare
+        // `input.agent_kind` (a structural fact, `AgentLoop::parent.
+        // is_none()`, never inferred from tools or role); `agent_def`, when
+        // `Some`, additionally requires `[0]`'s own agent-def name to
+        // match. A fragment either check excludes is dropped before
+        // rendering and recorded with `skipped_by_scope: true` -- the SAME
+        // "recorded, never silently withheld" discipline the reachability
+        // check already applies, kept a SEPARATE boolean rather than
+        // overloaded onto `unreachable_tool_ids` because the two answer
+        // different operator questions ("why is a tool missing" vs. "why
+        // doesn't this agent get this text at all").
         let known_tool_ids: HashSet<&ToolName> = input.tools.iter().map(|t| &t.name).collect();
+        let agent_def_name: Option<&str> =
+            input.system_prompt.as_ref().map(|sp| sp.agent_def.as_str());
         let mut instruction_reports: Vec<InstructionFragmentEntry> =
             Vec::with_capacity(input.instructions.len());
-        for instruction in &input.instructions {
+        // Indices into `input.instructions` that will actually render,
+        // split by position -- collected in ORIGINAL (install) order, so
+        // the `sort_by_key` below (stable) breaks an `order` tie by install
+        // order exactly as documented above.
+        let mut before_indices: Vec<usize> = Vec::new();
+        let mut after_indices: Vec<usize> = Vec::new();
+        for (index, instruction) in input.instructions.iter().enumerate() {
             let unreachable_tool_ids: Vec<ToolName> = instruction
                 .tool_ids
                 .iter()
                 .filter(|id| !known_tool_ids.contains(id))
                 .cloned()
                 .collect();
+            let scope_matches = match instruction.scope {
+                FragmentScope::All => true,
+                FragmentScope::RootOnly => input.agent_kind == AgentKind::Root,
+                FragmentScope::ChildrenOnly => input.agent_kind == AgentKind::Child,
+            };
+            let agent_def_matches = match &instruction.agent_def {
+                None => true,
+                Some(name) => agent_def_name == Some(name.as_str()),
+            };
+            let skipped_by_scope = !scope_matches || !agent_def_matches;
+
             if unreachable_tool_ids.is_empty() {
-                segments.push(PromptSegment::new(
-                    Role::System,
-                    text_block(&instruction.text),
-                    Provenance::Skill {
-                        name: instruction.name.clone(),
-                    },
-                ));
+                if skipped_by_scope {
+                    tracing::debug!(
+                        plugin_id = %instruction.plugin_id,
+                        fragment = %instruction.name,
+                        "instruction fragment's scope/agent_def excludes this turn's agent; its \
+                         text is withheld from the assembled context (see /context's preamble \
+                         section)",
+                    );
+                } else {
+                    match instruction.position {
+                        FragmentPosition::BeforeSystemPrompt => before_indices.push(index),
+                        FragmentPosition::AfterSystemPrompt => after_indices.push(index),
+                    }
+                }
             } else {
                 tracing::warn!(
                     plugin_id = %instruction.plugin_id,
@@ -344,7 +419,45 @@ impl ContextBuilder {
                 name: instruction.name.clone(),
                 tokens_est: estimate_tokens(&text_block(&instruction.text)),
                 unreachable_tool_ids,
+                skipped_by_scope,
             });
+        }
+        before_indices.sort_by_key(|&i| input.instructions[i].order);
+        after_indices.sort_by_key(|&i| input.instructions[i].order);
+
+        // [-1] PluginInstructions* (BeforeSystemPrompt)
+        for &i in &before_indices {
+            let instruction = &input.instructions[i];
+            segments.push(PromptSegment::new(
+                Role::System,
+                text_block(&instruction.text),
+                Provenance::Skill {
+                    name: instruction.name.clone(),
+                },
+            ));
+        }
+
+        // [0] SystemPrompt
+        if let Some(system_prompt) = &input.system_prompt {
+            segments.push(PromptSegment::new(
+                Role::System,
+                text_block(&system_prompt.text),
+                Provenance::AgentDef {
+                    name: system_prompt.agent_def.clone(),
+                },
+            ));
+        }
+
+        // [1] PluginInstructions* (AfterSystemPrompt)
+        for &i in &after_indices {
+            let instruction = &input.instructions[i];
+            segments.push(PromptSegment::new(
+                Role::System,
+                text_block(&instruction.text),
+                Provenance::Skill {
+                    name: instruction.name.clone(),
+                },
+            ));
         }
 
         // [1b] SkillFragments*
@@ -1348,6 +1461,7 @@ mod estimator_tests {
             turn: 0,
             model: ModelId::new("m"),
             cache_mode: CacheMode::None,
+            agent_kind: AgentKind::Root,
             system_prompt: None,
             instructions: vec![],
             skills: vec![],
@@ -1398,12 +1512,17 @@ mod estimator_tests {
             turn: 0,
             model: ModelId::new("m"),
             cache_mode: CacheMode::None,
+            agent_kind: AgentKind::Root,
             system_prompt: None,
             instructions: vec![PluginInstruction {
                 plugin_id: "conway.trim".into(),
                 name: "when-to-compose".into(),
                 text: "Compose a focused context before a long task.".into(),
                 tool_ids: vec![tool.name.clone()],
+                position: FragmentPosition::AfterSystemPrompt,
+                order: 0,
+                scope: FragmentScope::All,
+                agent_def: None,
             }],
             skills: vec![],
             tools: vec![tool],
@@ -1455,12 +1574,17 @@ mod estimator_tests {
             turn: 0,
             model: ModelId::new("m"),
             cache_mode: CacheMode::None,
+            agent_kind: AgentKind::Root,
             system_prompt: None,
             instructions: vec![PluginInstruction {
                 plugin_id: "conway.trim".into(),
                 name: "when-to-compose".into(),
                 text: "Compose a focused context before a long task.".into(),
                 tool_ids: vec![conway_core::ids::ToolName::new("compose_path")],
+                position: FragmentPosition::AfterSystemPrompt,
+                order: 0,
+                scope: FragmentScope::All,
+                agent_def: None,
             }],
             skills: vec![],
             tools: vec![], // compose_path is NOT installed
@@ -1512,6 +1636,7 @@ mod estimator_tests {
             turn: 0,
             model: ModelId::new("m"),
             cache_mode: CacheMode::None,
+            agent_kind: AgentKind::Root,
             system_prompt: Some(SystemPromptSpec {
                 agent_def: "reviewer".into(),
                 text: "base idiom".into(),
@@ -1521,6 +1646,10 @@ mod estimator_tests {
                 name: "when-to-compose".into(),
                 text: "plugin instruction".into(),
                 tool_ids: vec![],
+                position: FragmentPosition::AfterSystemPrompt,
+                order: 0,
+                scope: FragmentScope::All,
+                agent_def: None,
             }],
             skills: vec![SkillFragment {
                 name: "house-style".into(),
@@ -1560,6 +1689,182 @@ mod estimator_tests {
             ],
             "base idiom, then plugin instructions, then operator skills, in that order"
         );
+    }
+
+    /// Minimal `ContextInput` for the fragment position/order/scope tests
+    /// below -- every field at a neutral default except the three the
+    /// caller supplies, so each test states only what it is actually
+    /// exercising.
+    fn fragment_position_input(
+        instructions: Vec<PluginInstruction>,
+        system_prompt: Option<SystemPromptSpec>,
+        agent_kind: AgentKind,
+    ) -> ContextInput {
+        ContextInput {
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode: CacheMode::None,
+            agent_kind,
+            system_prompt,
+            instructions,
+            skills: vec![],
+            tools: vec![],
+            path: path_from_legacy(
+                None,
+                &[LogRecord::UserTurn {
+                    seq: LogSeq(0),
+                    ts: Utc::now(),
+                    text: "hi".into(),
+                    prov: Provenance::UserPrompt,
+                }],
+                SessionId::new(),
+            )
+            .unwrap(),
+            cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
+        }
+    }
+
+    fn before_fragment(name: &str, order: i16) -> PluginInstruction {
+        PluginInstruction {
+            plugin_id: "test.before".into(),
+            name: name.into(),
+            text: format!("{name} text"),
+            tool_ids: vec![],
+            position: FragmentPosition::BeforeSystemPrompt,
+            order,
+            scope: FragmentScope::All,
+            agent_def: None,
+        }
+    }
+
+    /// Acceptance 1: with an agent-def system prompt present and one
+    /// `BeforeSystemPrompt` fragment, segment 0 is the fragment and segment
+    /// 1 is `Provenance::AgentDef` -- falsified before this item: every
+    /// fragment rendered at `[1]`, strictly after `[0]`, so this exact
+    /// assertion order failed (the fragment would have been segment 1, the
+    /// agent def segment 0).
+    #[test]
+    fn before_system_prompt_fragment_renders_ahead_of_the_agent_def() {
+        let input = fragment_position_input(
+            vec![before_fragment("idiom-base", -100)],
+            Some(SystemPromptSpec {
+                agent_def: "reviewer".into(),
+                text: "base idiom".into(),
+            }),
+            AgentKind::Root,
+        );
+        let (segments, _report) = ContextBuilder::new().build(&input).unwrap();
+        assert!(
+            matches!(&segments[0].provenance, Provenance::Skill { name } if name == "idiom-base"),
+            "segment 0 must be the BeforeSystemPrompt fragment: {:?}",
+            segments[0].provenance
+        );
+        assert!(
+            matches!(&segments[1].provenance, Provenance::AgentDef { name } if name == "reviewer"),
+            "segment 1 must be the agent def's own system prompt: {:?}",
+            segments[1].provenance
+        );
+    }
+
+    /// The mirror image: with `AfterSystemPrompt`, the order reverses --
+    /// the agent def's own prompt renders first, exactly as it always has.
+    #[test]
+    fn after_system_prompt_fragment_renders_behind_the_agent_def() {
+        let mut fragment = before_fragment("some-fragment", 0);
+        fragment.position = FragmentPosition::AfterSystemPrompt;
+        let input = fragment_position_input(
+            vec![fragment],
+            Some(SystemPromptSpec {
+                agent_def: "reviewer".into(),
+                text: "base idiom".into(),
+            }),
+            AgentKind::Root,
+        );
+        let (segments, _report) = ContextBuilder::new().build(&input).unwrap();
+        assert!(
+            matches!(&segments[0].provenance, Provenance::AgentDef { name } if name == "reviewer"),
+            "segment 0 must be the agent def's own system prompt: {:?}",
+            segments[0].provenance
+        );
+        assert!(
+            matches!(&segments[1].provenance, Provenance::Skill { name } if name == "some-fragment"),
+            "segment 1 must be the AfterSystemPrompt fragment: {:?}",
+            segments[1].provenance
+        );
+    }
+
+    /// Acceptance 2: two `Before` fragments with `order` -100 and 0 render
+    /// in that order regardless of install order.
+    #[test]
+    fn before_fragments_render_in_order_regardless_of_install_order() {
+        // Installed with the HIGHER order first -- a naive "install order
+        // wins" implementation would render them in install order
+        // (`second` then `first`), not by `order`.
+        let input = fragment_position_input(
+            vec![before_fragment("second", 0), before_fragment("first", -100)],
+            None,
+            AgentKind::Root,
+        );
+        let (segments, _report) = ContextBuilder::new().build(&input).unwrap();
+        let names: Vec<&str> = segments
+            .iter()
+            .filter_map(|s| match &s.provenance {
+                Provenance::Skill { name } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["first", "second"]);
+    }
+
+    /// The tie-break half of acceptance 2: equal `order` keeps install
+    /// order.
+    #[test]
+    fn before_fragments_with_equal_order_keep_install_order() {
+        let input = fragment_position_input(
+            vec![before_fragment("one", 0), before_fragment("two", 0)],
+            None,
+            AgentKind::Root,
+        );
+        let (segments, _report) = ContextBuilder::new().build(&input).unwrap();
+        let names: Vec<&str> = segments
+            .iter()
+            .filter_map(|s| match &s.provenance {
+                Provenance::Skill { name } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["one", "two"]);
+    }
+
+    /// Acceptance 3: a `RootOnly` fragment is absent from a `Child`
+    /// assembly and present in a `Root` one, and the report entry carries
+    /// `skipped_by_scope: true` for the absent case.
+    #[test]
+    fn root_only_fragment_is_scoped_to_the_root_agent() {
+        let mut fragment = before_fragment("root-only", 0);
+        fragment.scope = FragmentScope::RootOnly;
+
+        let root_input = fragment_position_input(vec![fragment.clone()], None, AgentKind::Root);
+        let (root_segments, root_report) = ContextBuilder::new().build(&root_input).unwrap();
+        assert!(
+            root_segments.iter().any(
+                |s| matches!(&s.provenance, Provenance::Skill { name } if name == "root-only")
+            ),
+            "a RootOnly fragment must render for a Root agent"
+        );
+        assert!(!root_report.instruction_fragments[0].skipped_by_scope);
+
+        let child_input = fragment_position_input(vec![fragment], None, AgentKind::Child);
+        let (child_segments, child_report) = ContextBuilder::new().build(&child_input).unwrap();
+        assert!(
+            !child_segments.iter().any(
+                |s| matches!(&s.provenance, Provenance::Skill { name } if name == "root-only")
+            ),
+            "a RootOnly fragment must be absent from a Child agent's assembly"
+        );
+        assert!(child_report.instruction_fragments[0].skipped_by_scope);
     }
 }
 
@@ -1617,6 +1922,7 @@ mod own_segment_provenance_tests {
             turn: 1,
             model: ModelId::new("echo-model"),
             cache_mode: CacheMode::None,
+            agent_kind: AgentKind::Root,
             system_prompt: None,
             instructions: vec![],
             skills: vec![],
@@ -1717,6 +2023,7 @@ mod breakpoint_indices_tests {
             turn: 0,
             model: ModelId::new("m"),
             cache_mode: CacheMode::None,
+            agent_kind: AgentKind::Root,
             system_prompt: None,
             instructions: vec![],
             skills: vec![],
@@ -1758,6 +2065,7 @@ mod breakpoint_indices_tests {
             turn: 0,
             model: ModelId::new("m"),
             cache_mode: CacheMode::None,
+            agent_kind: AgentKind::Root,
             system_prompt: None,
             instructions: vec![],
             skills: vec![],
@@ -1858,6 +2166,7 @@ mod tool_call_pairing_tests {
             turn: 0,
             model: ModelId::new("m"),
             cache_mode,
+            agent_kind: AgentKind::Root,
             system_prompt: None,
             instructions: vec![],
             skills: vec![],
@@ -1886,6 +2195,7 @@ mod tool_call_pairing_tests {
             turn: 0,
             model: ModelId::new("m"),
             cache_mode: CacheMode::None,
+            agent_kind: AgentKind::Root,
             system_prompt: None,
             instructions: vec![],
             skills: vec![],

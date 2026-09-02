@@ -13,7 +13,7 @@ pub mod report;
 pub mod script_hook;
 
 pub use builder::{
-    ContextBuilder, ContextInput, InheritedPrefix, PluginInstruction, SkillFragment,
+    AgentKind, ContextBuilder, ContextInput, InheritedPrefix, PluginInstruction, SkillFragment,
     SystemPromptSpec, TOKEN_ESTIMATOR,
 };
 pub use hook_guard::GuardedContextHook;

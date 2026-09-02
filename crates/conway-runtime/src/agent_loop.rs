@@ -157,8 +157,8 @@ use tokio_util::sync::CancellationToken;
 use crate::attempt::{AttemptEngine, AttemptOutcome, AttemptRequest};
 use crate::context::path::resolve_default_path;
 use crate::context::{
-    ContextBuilder, ContextInput, GuardedContextHook, InheritedPrefix, PluginInstruction,
-    SkillFragment, SystemPromptSpec,
+    AgentKind, ContextBuilder, ContextInput, GuardedContextHook, InheritedPrefix,
+    PluginInstruction, SkillFragment, SystemPromptSpec,
 };
 use crate::events::EventBus;
 use crate::mailbox::{self, MailboxReceiver, MailboxSender};
@@ -1152,6 +1152,14 @@ impl AgentLoop {
                 turn: state.turn,
                 model: model_hint,
                 cache_mode: self.spec.cache_mode.clone(),
+                // Structural fact, not an inference from tools/role -- a
+                // root agent is, by construction, the one with no parent
+                // (`Self::parent`'s own doc).
+                agent_kind: if self.parent.is_none() {
+                    AgentKind::Root
+                } else {
+                    AgentKind::Child
+                },
                 system_prompt: self.spec.system_prompt.clone(),
                 instructions: self.spec.instructions.clone(),
                 skills: self.spec.skills.clone(),

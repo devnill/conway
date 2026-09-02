@@ -106,20 +106,51 @@ pub trait Plugin: Send + Sync + 'static {
     /// renders the omission inline rather than only warning once in a log
     /// line that scrolls away.
     ///
-    /// **Precedence.** `ContextBuilder::build` injects a plugin's
-    /// instruction fragments as their own `[1] PluginInstructions*` step,
-    /// positioned AFTER `[0] SystemPrompt` (the agent definition's own
-    /// base idiom) and BEFORE `[1b] SkillFragments*` (the operator's own,
-    /// directory-authored skills, `AgentDef.skills`) -- base, then
-    /// capability-declared, then operator-authored-last, matching this
-    /// item's own illustrative `/context` rendering
-    /// (`conway.idiom` "base" -> `conway.trim`/`conway.memory`
-    /// plugin-sourced -> `house-style` "(yours)"). Multiple plugins'
-    /// fragments are injected in `with_plugin`/`install_selected` install
-    /// order -- the SAME "the seam owns precedence, not its call sites"
-    /// composition shape [`Self::context_hooks`]/[`Self::curators`]
-    /// already establish above, applied here to context CONTENT rather
-    /// than to a hook or curator.
+    /// **Precedence.** `ContextBuilder::build` renders every fragment at
+    /// one of two positions ([`InstructionFragment::position`]):
+    /// [`FragmentPosition::BeforeSystemPrompt`] fragments render AHEAD of
+    /// `[0] SystemPrompt` (the agent definition's own base prompt, or a
+    /// one-shot session's `--system-prompt` override -- both occupy the
+    /// same `[0]` slot); [`FragmentPosition::AfterSystemPrompt`] fragments
+    /// (the default -- every fragment declared before this field existed
+    /// behaves exactly as it always did) render where `[1]
+    /// PluginInstructions*` always has, AFTER `[0]` and BEFORE `[1b]
+    /// SkillFragments*` (the operator's own, directory-authored skills,
+    /// `AgentDef.skills`). Within a position, [`InstructionFragment::order`]
+    /// breaks ties (lower renders first; equal `order` keeps install
+    /// order) -- process record `01M1FQ36PCW2J19AP219GKZH3R` (a plugin that
+    /// wants to speak BEFORE an agent definition's own prompt, e.g.
+    /// `conway.idiom`'s base fragment, had no way to say so before this
+    /// field existed; the module doc on that plugin's own crate is the
+    /// worked example). Multiple plugins' fragments at the SAME position
+    /// are injected in `with_plugin`/`install_selected` install order,
+    /// stable-sorted by `(position, order, install_index)` -- the SAME
+    /// "the seam owns precedence, not its call sites" composition shape
+    /// [`Self::context_hooks`]/[`Self::curators`] already establish above,
+    /// applied here to context CONTENT rather than to a hook or curator.
+    /// The sort is deterministic (no hashing, ties broken by index) so the
+    /// assembled prefix stays byte-identical turn over turn -- required for
+    /// prompt-cache economics, not merely tidy.
+    ///
+    /// **Audience.** [`InstructionFragment::scope`] narrows WHICH agent a
+    /// fragment reaches: [`FragmentScope::All`] (the default) reaches every
+    /// agent, root or child, exactly as every fragment did before this
+    /// field existed; [`FragmentScope::RootOnly`]/[`FragmentScope::ChildrenOnly`]
+    /// restrict it to one or the other, keyed off the
+    /// STRUCTURAL fact of whether an agent has a parent (`AgentLoop::
+    /// parent`), never inferred from its tool set or role. A fragment
+    /// scoped away from this turn's agent is dropped before rendering and
+    /// recorded with `skipped_by_scope: true` in `ContextReport::
+    /// instruction_fragments`, the same "never silently withheld" discipline
+    /// the reachability check below already applies to an unreachable
+    /// `tool_ids` entry. [`InstructionFragment::agent_def`], when `Some`,
+    /// additionally requires `[0]`'s own agent-def name to match -- a
+    /// fragment authored for one specific agent definition, absent for
+    /// every other. There is deliberately no ROLE selector here: nothing
+    /// first-party needs one yet, and threading a role into `ContextInput`
+    /// for a selector with no consumer would be unbuilt theory (see
+    /// `docs/plugins/hooks.md` point 17 for the explicit "not built"
+    /// disclosure).
     ///
     /// **Convention, not enforcement: text lives in a markdown file.**
     /// Nothing in this trait forces a plugin to source `text` from a file
@@ -990,6 +1021,117 @@ pub struct InstructionFragment {
     /// empty for a fragment that names no specific tool (e.g. a general
     /// style note) -- an empty list is trivially always reachable.
     pub tool_ids: Vec<ToolName>,
+    /// Which side of `[0] SystemPrompt` this fragment renders on. Default
+    /// [`FragmentPosition::AfterSystemPrompt`] -- every fragment declared
+    /// before this field existed keeps rendering exactly where it always
+    /// did. See [`Plugin::instructions`]'s own "Precedence" section.
+    pub position: FragmentPosition,
+    /// Render order within [`Self::position`] -- lower renders first; a tie
+    /// (including the default `0` against another default `0`) keeps
+    /// install order. Default `0`, deliberately the same value every
+    /// fragment declared before this field existed implicitly had (nothing
+    /// broke ties before now, so `0` for everyone reproduces "install
+    /// order decides" exactly).
+    pub order: i16,
+    /// Which agent this fragment reaches. Default [`FragmentScope::All`] --
+    /// every fragment declared before this field existed reached every
+    /// agent, root or child, and keeps doing so. See [`Plugin::
+    /// instructions`]'s own "Audience" section for the structural fact this
+    /// is keyed on.
+    pub scope: FragmentScope,
+    /// When `Some`, this fragment renders only when `[0] SystemPrompt`'s
+    /// own agent-def name (`SystemPromptSpec::agent_def`) matches exactly
+    /// -- absent (including when `[0]` carries no agent def at all, e.g. a
+    /// bare interactive session or a one-shot `--system-prompt` override)
+    /// otherwise. `None` (the default) means no such restriction: every
+    /// fragment declared before this field existed renders regardless of
+    /// which agent def, if any, supplied `[0]`.
+    pub agent_def: Option<String>,
+}
+
+impl InstructionFragment {
+    /// Construct a fragment with every optional field at its default:
+    /// [`FragmentPosition::AfterSystemPrompt`], `order: 0`,
+    /// [`FragmentScope::All`], `agent_def: None`, `tool_ids: vec![]` --
+    /// exactly today's (pre-this-field) behavior. Use the `with_*` methods
+    /// below to opt into anything else.
+    pub fn new(name: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            text: text.into(),
+            tool_ids: Vec::new(),
+            position: FragmentPosition::default(),
+            order: 0,
+            scope: FragmentScope::default(),
+            agent_def: None,
+        }
+    }
+
+    /// See [`Self::tool_ids`].
+    pub fn with_tool_ids(mut self, tool_ids: Vec<ToolName>) -> Self {
+        self.tool_ids = tool_ids;
+        self
+    }
+
+    /// See [`Self::position`].
+    pub fn with_position(mut self, position: FragmentPosition) -> Self {
+        self.position = position;
+        self
+    }
+
+    /// See [`Self::order`].
+    pub fn with_order(mut self, order: i16) -> Self {
+        self.order = order;
+        self
+    }
+
+    /// See [`Self::scope`].
+    pub fn with_scope(mut self, scope: FragmentScope) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    /// See [`Self::agent_def`].
+    pub fn with_agent_def(mut self, agent_def: impl Into<String>) -> Self {
+        self.agent_def = Some(agent_def.into());
+        self
+    }
+}
+
+/// [`InstructionFragment::position`]'s vocabulary -- which side of `[0]
+/// SystemPrompt` a fragment renders on (`conway_runtime::context::builder::
+/// ContextBuilder::build`). Exhaustive (no `#[non_exhaustive]`): a new
+/// position is a genuine, rare architectural change (there is exactly one
+/// seam, `[0]`, to be on either side of today), not a vocabulary meant to
+/// grow routinely -- unlike, say, `Then` (`permission_pattern.rs`), which
+/// enumerates an open-ended policy space.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FragmentPosition {
+    /// Renders after `[0] SystemPrompt`, where every `[1] PluginInstructions*`
+    /// fragment has always rendered -- today's behavior, unchanged.
+    #[default]
+    AfterSystemPrompt,
+    /// Renders ahead of `[0] SystemPrompt` -- ahead of an agent
+    /// definition's own prompt (or a one-shot session's
+    /// `--system-prompt`/`--append-system-prompt` override, which also
+    /// occupies `[0]`), and ahead of everything else in the assembled
+    /// context when `[0]` is absent entirely (e.g. a bare interactive
+    /// session with no agent def).
+    BeforeSystemPrompt,
+}
+
+/// [`InstructionFragment::scope`]'s vocabulary -- which agent, keyed on the
+/// structural root/child fact (`conway_runtime::context::builder::AgentKind`,
+/// itself sourced from `AgentLoop::parent`), a fragment reaches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FragmentScope {
+    /// Every agent, root or child -- today's behavior, unchanged.
+    #[default]
+    All,
+    /// Only the root agent (the one with no parent).
+    RootOnly,
+    /// Only a forked or spawned child (any agent with a parent).
+    ChildrenOnly,
 }
 
 /// [`Plugin::description`]'s own return type -- an operator-facing

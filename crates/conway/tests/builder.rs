@@ -145,11 +145,10 @@ impl Plugin for InstructingPlugin {
     }
 
     fn instructions(&self) -> Vec<conway_core::ports::InstructionFragment> {
-        vec![conway_core::ports::InstructionFragment {
-            name: self.1.to_string(),
-            text: "some instruction text".to_string(),
-            tool_ids: vec![],
-        }]
+        vec![conway_core::ports::InstructionFragment::new(
+            self.1,
+            "some instruction text",
+        )]
     }
 }
 
@@ -184,11 +183,48 @@ impl Plugin for InstructingDependentPlugin {
     }
 
     fn instructions(&self) -> Vec<conway_core::ports::InstructionFragment> {
-        vec![conway_core::ports::InstructionFragment {
-            name: self.fragment_name.to_string(),
-            text: "some instruction text".to_string(),
-            tool_ids: vec![],
-        }]
+        vec![conway_core::ports::InstructionFragment::new(
+            self.fragment_name,
+            "some instruction text",
+        )]
+    }
+}
+
+/// A no-op `Plugin` that declares exactly one instruction fragment, at
+/// `FragmentPosition::BeforeSystemPrompt`/`order: -100` -- the exact shape
+/// `conway_plugin_idiom::IdiomPlugin::instructions`'s base fragment declares
+/// (that crate cannot be a dev-dependency here without a cycle: it depends
+/// on `conway` itself), used to prove position/order render correctly
+/// through a REAL facade build, not merely through `conway-runtime`'s own
+/// unit tests.
+#[cfg(feature = "builtin-tools")]
+struct BeforeSystemPromptPlugin(&'static str);
+
+#[cfg(feature = "builtin-tools")]
+impl Plugin for BeforeSystemPromptPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: "test.before_system_prompt".to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![],
+            required_host_caps: vec![],
+            optional_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![]
+    }
+
+    fn instructions(&self) -> Vec<conway_core::ports::InstructionFragment> {
+        vec![conway_core::ports::InstructionFragment::new(
+            self.0,
+            "conway orientation text, rendered ahead of any agent def's own prompt",
+        )
+        .with_position(conway_core::ports::FragmentPosition::BeforeSystemPrompt)
+        .with_order(-100)]
     }
 }
 
@@ -1887,6 +1923,82 @@ async fn a_reachable_plugin_instruction_reaches_a_real_agents_context() {
     assert!(
         entry.unreachable_tool_ids.is_empty(),
         "a fragment naming no tool_ids is trivially reachable"
+    );
+}
+
+/// Acceptance 4 (fragment position/order/scope item): a `BeforeSystemPrompt`
+/// fragment installed via `ConwayBuilder::with_plugin` renders AHEAD of a
+/// real `AgentDef`'s own `[0] SystemPrompt` segment -- proven through the
+/// real facade end to end (`Plugin::instructions()` -> `ConwayBuilder::build`
+/// -> a real agent's assembled context), the same "not merely layer by
+/// layer" discipline `a_reachable_plugin_instruction_reaches_a_real_agents_context`
+/// establishes immediately above.
+#[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
+#[tokio::test]
+async fn a_before_system_prompt_fragment_renders_ahead_of_a_real_agent_defs_prompt() {
+    let root = support::unique_temp_dir("builder-fragment-position");
+    let agents_dir = root.join(".conway").join("agents");
+    fs::create_dir_all(&agents_dir).unwrap();
+    fs::write(
+        agents_dir.join("reviewer.md"),
+        "---\nname: reviewer\n---\nYou are a careful reviewer.\n",
+    )
+    .unwrap();
+
+    let mut cfg = base_config();
+    cfg.cwd = root;
+    let backend = fake_backend("fake");
+    let store = Arc::new(FakeStore::new());
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    let conway: Conway = ConwayBuilder::from_parts(cfg)
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(empty_router())
+        .with_plugin(Arc::new(BeforeSystemPromptPlugin("conway.idiom.base")))
+        .build()
+        .expect("build should succeed with a BeforeSystemPrompt fragment installed");
+
+    let handle = conway
+        .new_session(SessionSpec {
+            agent_def: Some("reviewer".to_string()),
+            ..SessionSpec::default()
+        })
+        .await
+        .expect("new_session naming a real agent def should succeed");
+    let turn = handle.prompt("hello there").await.expect("prompt");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+
+    let report = handle
+        .context_report_current(handle.root())
+        .await
+        .expect("context_report_current should succeed");
+    assert!(
+        report.segments.len() >= 2,
+        "expected at least the fragment and the agent-def system prompt: {:?}",
+        report.segments
+    );
+    assert!(
+        matches!(&report.segments[0].provenance, Provenance::Skill { name } if name == "conway.idiom.base"),
+        "the BeforeSystemPrompt fragment must be the very first segment, ahead of the agent \
+         def's own prompt: {:?}",
+        report
+            .segments
+            .iter()
+            .map(|s| s.provenance.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(&report.segments[1].provenance, Provenance::AgentDef { name } if name == "reviewer"),
+        "the agent def's own prompt must immediately follow the BeforeSystemPrompt fragment: {:?}",
+        report
+            .segments
+            .iter()
+            .map(|s| s.provenance.clone())
+            .collect::<Vec<_>>()
     );
 }
 

@@ -23,44 +23,49 @@
 //! in. Confirmed by reading both sites directly rather than trusted from
 //! the board item's own citation; the premise holds.
 //!
-//! # Determine first #1: what "prepend" means in the assembly order
+//! # Where the base fragment lands: genuinely first (process record
+//! `01M1FQ36PCW2J19AP219GKZH3R`)
 //!
-//! `ContextBuilder::build` assembles `[0] SystemPrompt` (an agent def's own
-//! prompt, or a session's `system_prompt_override`), then `[1]
-//! PluginInstructions*` (every installed plugin's own
-//! `Plugin::instructions()` fragments, in `with_plugin`/`install_selected`
-//! order), then `[1b] SkillFragments*`, then tool schemas and the
-//! conversation. This plugin's one fragment lands in `[1]`.
+//! `ContextBuilder::build` renders every `InstructionFragment` at one of two
+//! positions relative to `[0] SystemPrompt` (an agent def's own prompt, or a
+//! session's `system_prompt_override`/one-shot `--system-prompt`):
+//! `BeforeSystemPrompt` or `AfterSystemPrompt` (the default), then `[1b]
+//! SkillFragments*`, then tool schemas and the conversation --
+//! `conway_core::ports::plugin::InstructionFragment`'s own doc, "Precedence",
+//! has the full ordering argument. [`IdiomPlugin::instructions`]'s base
+//! fragment ([`INSTRUCTION_NAME`]) declares `BeforeSystemPrompt` with
+//! `order: -100`, so it renders AHEAD of `[0]` -- including ahead of a
+//! curated `AgentDef`'s own deliberately-authored prompt.
 //!
-//! **That is where "prepend" lands, and it is the right place.** Against
-//! the conversation -- the actual "instructions vs. transcript" boundary an
-//! operator means by "prepend" -- `[1]` is unambiguously at the front: it
-//! precedes every tool schema and every logged turn. It lands AFTER `[0]`
-//! only when an `agent_def` supplies its own system prompt, which is
-//! exactly the ordering an operator installing this plugin alongside a
-//! curated agent def would want: the agent def's own, deliberately-authored
-//! prompt (the specific job this agent was built for) stays the FIRST thing
-//! the model reads, and conway's own harness orientation follows immediately
-//! after, before anything else. Reversing that -- putting a generic harness
-//! paragraph ahead of an agent def's own carefully-ordered prompt -- would
-//! be surprising for exactly the operator who bothered to author one. For
-//! the plugin's own primary case (the bare interactive TUI session this
-//! item's premise section re-verifies has NO `[0]` segment at all), `[1]`
-//! is not merely "after `[0]`" in the abstract -- it IS the front of the
-//! whole assembled context, because there is nothing at `[0]` to be after.
-//! Multiple plugins' fragments are ordered by `with_plugin`/
-//! `install_selected` install order, so "first among plugin fragments" is
-//! not a property this plugin can guarantee for itself -- see
-//! `first_party_plugins::bundle`'s own doc for where this entry sits in
-//! that list.
+//! **This used to be argued the other way, and that argument no longer
+//! holds.** An earlier version of this plugin placed the base fragment in
+//! `[1]` (after `[0]`) on the theory that an agent def's own prompt -- "the
+//! specific job this agent was built for" -- should stay the first thing the
+//! model reads, with conway's own harness orientation following immediately
+//! after. `InstructionFragment::position` did not exist yet, so `[1]`, not
+//! `[0]`-adjacent-but-first, was the only slot this plugin could occupy at
+//! all -- the prior doc's own "does not change `ContextBuilder::build`'s
+//! assembly order" line named this limitation honestly rather than claim
+//! more than the runtime could deliver. Process record
+//! `01M1FQ36PCW2J19AP219GKZH3R` (a harness gap review, finding 2) argued the
+//! operator's own framing at the top of this module -- "this is a plugin
+//! which prepends a custom system prompt" -- means what it says: the harness
+//! should be able to speak FIRST, before any agent-def-specific prompt, not
+//! merely first among the fragments that follow one. `InstructionFragment::
+//! position` is the runtime change that makes that true rather than merely
+//! stated; conway's own orientation text now precedes an agent def's own
+//! prompt, deliberately, the same way an operator's own `--system-prompt`
+//! text at `[0]` still is NOT preceded (nothing about `[0]`'s own content
+//! changes -- only what renders ahead of it). Multiple plugins' fragments at
+//! the SAME position are still ordered by `with_plugin`/`install_selected`
+//! install order (ties broken by that order, per `order: -100`'s own
+//! precedence doc), so "first among `BeforeSystemPrompt` fragments" remains
+//! not a property this plugin can guarantee for itself against a THIRD-PARTY
+//! plugin that also declares `BeforeSystemPrompt` with a lower `order` -- see
+//! `first_party_plugins::bundle`'s own doc for where this entry sits in that
+//! list.
 //!
-//! **This item does not change `ContextBuilder::build`'s assembly order.**
-//! If an operator's expectation of "prepend" turns out to mean "ahead of an
-//! agent def's own prompt too", that is a runtime change affecting every
-//! consumer of the context builder, out of this item's scope -- filed as a
-//! follow-up in this crate's own completion report, not built here.
-//!
-//! # Determine first #2: the `tool_ids` trap
+//! # The `tool_ids` trap
 //!
 //! [`IdiomPlugin::instructions`] declares `tool_ids: vec![]` -- empty,
 //! deliberately. `ContextBuilder::build`'s reachability check withholds a
@@ -225,7 +230,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use conway::plugin::{InstructionFragment, Plugin, PluginDescription, PluginManifest, Tool};
+use conway::plugin::{
+    FragmentPosition, InstructionFragment, Plugin, PluginDescription, PluginManifest, Tool,
+};
 
 /// This plugin's published manifest id -- a config author (or a first-party
 /// bundle's own linking module) resolves `[plugins].install` entries
@@ -263,11 +270,13 @@ pub const OPERATOR_INSTRUCTIONS_FILENAME: &str = "instructions.md";
 pub const FRAGMENT_TEXT: &str = include_str!("../fragments/idiom.md");
 
 /// The `conway.idiom` plugin: contributes no tool, one shipped instruction
-/// fragment -- conway's own short idioms primer, prepended near the front
-/// of a root session's assembled context (see this crate's own module doc
-/// for the full "prepend"/`tool_ids` argument) -- plus up to two more,
-/// optional fragments sourced from an operator's own `instructions.md`
-/// (see this module's own doc, "Operator instructions").
+/// fragment -- conway's own short idioms primer, rendered genuinely first
+/// in the assembled context, ahead of even an `AgentDef`'s own system
+/// prompt (see this crate's own module doc, "Where the base fragment
+/// lands") -- plus up to two more, optional fragments sourced from an
+/// operator's own `instructions.md` (see this module's own doc, "Operator
+/// instructions"), which stay positioned AFTER `[0]` like every ordinary
+/// fragment.
 ///
 /// `Default`/[`IdiomPlugin::new`] carry no operator fragments at all --
 /// the shape every existing caller of bare `IdiomPlugin` already gets.
@@ -418,15 +427,14 @@ fn read_operator_fragment(
             if text.trim().is_empty() {
                 Ok(None)
             } else {
-                Ok(Some(InstructionFragment {
-                    name: name.to_string(),
-                    text,
-                    // Empty, deliberately, exactly like the shipped
-                    // fragment's own `tool_ids` -- an operator's own prose
-                    // is not tied to any specific tool being reachable
-                    // this turn.
-                    tool_ids: vec![],
-                }))
+                // `tool_ids` stays empty, deliberately, exactly like the
+                // shipped fragment's own -- an operator's own prose is not
+                // tied to any specific tool being reachable this turn.
+                // `position`/`scope` stay at their `AfterSystemPrompt`/`All`
+                // defaults: an operator's own standing instructions follow
+                // an agent def's own prompt, never precede it -- see this
+                // module's own "Where the base fragment lands" doc.
+                Ok(Some(InstructionFragment::new(name, text)))
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -461,11 +469,11 @@ impl Plugin for IdiomPlugin {
                 .to_string(),
             you_get: "one shipped instruction fragment (fork vs. spawn, how an agent ends, \
                       configuration-dependent tools, context scarcity, permissions, budgets, \
-                      steering) injected near the front of the assembled context, ahead of the \
-                      tool schemas and the conversation -- and ahead of the whole context when \
-                      no agent def supplies its own system prompt, which is the ordinary \
-                      interactive-TUI case this plugin exists for. Reaches every forked or \
-                      spawned child too, not the root alone (board item \
+                      steering) injected genuinely first in the assembled context, ahead of \
+                      even an agent def's own system prompt -- and ahead of the whole context \
+                      when no agent def supplies one, which is the ordinary interactive-TUI \
+                      case this plugin exists for. Reaches every forked or spawned child too, \
+                      not the root alone (board item \
                       01M0VSKA76NSEHDSH25XJGJ2J5's ruling: an instruction fragment is harness \
                       configuration, not transcript context, so fork/spawn's inheritance split \
                       does not govern it) -- the ending/permissions/steering bullets it carries \
@@ -490,13 +498,21 @@ impl Plugin for IdiomPlugin {
     }
 
     fn instructions(&self) -> Vec<InstructionFragment> {
-        let mut fragments = vec![InstructionFragment {
-            name: INSTRUCTION_NAME.to_string(),
-            text: FRAGMENT_TEXT.to_string(),
-            // Empty, deliberately -- see this module's own doc, "Determine
-            // first #2: the `tool_ids` trap".
-            tool_ids: vec![],
-        }];
+        let mut fragments = vec![
+            InstructionFragment::new(INSTRUCTION_NAME, FRAGMENT_TEXT)
+                // Empty `tool_ids`, deliberately -- see this module's own
+                // doc, "The `tool_ids` trap".
+                //
+                // `BeforeSystemPrompt`, `order: -100` -- see this module's
+                // own doc, "Where the base fragment lands": conway's own
+                // harness orientation now precedes even an agent
+                // definition's own carefully-authored prompt, the position
+                // this plugin's own premise (a bare interactive session with
+                // no `[0]` at all) never needed but a curated `AgentDef`
+                // always did.
+                .with_position(FragmentPosition::BeforeSystemPrompt)
+                .with_order(-100),
+        ];
         fragments.extend(self.operator_project.clone());
         fragments.extend(self.operator_global.clone());
         fragments
@@ -551,6 +567,42 @@ mod plugin_tests {
         assert_eq!(instructions.len(), 1);
         assert_eq!(instructions[0].name, INSTRUCTION_NAME);
         assert!(instructions[0].tool_ids.is_empty());
+    }
+
+    /// Declaration honesty for this module's own "Where the base fragment
+    /// lands" doc: the base fragment must actually declare
+    /// `BeforeSystemPrompt`/`order: -100`, not merely claim to in prose.
+    /// `tests/idiom_end_to_end.rs`'s `fragment_reaches_a_bare_sessions_wire_request`-
+    /// adjacent test proves the RENDERED effect through a real
+    /// `ContextBuilder::build` pass; this is the declaration-level pin.
+    #[test]
+    fn base_fragment_declares_before_system_prompt_with_negative_order() {
+        let plugin = IdiomPlugin::new();
+        let instructions = plugin.instructions();
+        let base = instructions
+            .iter()
+            .find(|f| f.name == INSTRUCTION_NAME)
+            .expect("base fragment present");
+        assert_eq!(base.position, FragmentPosition::BeforeSystemPrompt);
+        assert_eq!(base.order, -100);
+    }
+
+    /// The operator project/global fragments, by contrast, must stay at the
+    /// `AfterSystemPrompt` default -- an agent def's own prompt still
+    /// precedes an operator's own standing instructions.
+    #[test]
+    fn operator_fragments_stay_after_system_prompt() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("instructions.md");
+        std::fs::write(&path, "Always run tests.\n").expect("write");
+        let plugin = IdiomPlugin::from_operator_files(Some(&path), None).expect("read ok");
+        let operator = plugin
+            .instructions()
+            .into_iter()
+            .find(|f| f.name == OPERATOR_PROJECT_INSTRUCTION_NAME)
+            .expect("operator fragment present");
+        assert_eq!(operator.position, FragmentPosition::AfterSystemPrompt);
+        assert_eq!(operator.order, 0);
     }
 
     // NOTE: there was a `tool_ids_are_trivially_always_reachable` test here.
