@@ -851,6 +851,29 @@ impl Runtime {
         self.registry.resolve(name).map(|r| r.tool.path_args())
     }
 
+    /// The one read surface for "what is registered": every tool's compiled
+    /// [`conway_core::content::ToolSpec`] (name, description, schema,
+    /// category, permission class), sorted by name
+    /// ([`PluginRegistry::specs`]'s own ordering guarantee), unfiltered
+    /// (`selector: None` -- the facade's `Conway::tool_specs` exists so an
+    /// operator-facing subcommand can describe the whole registry, not one
+    /// agent's already-narrowed view of it). Board item (`conway tools
+    /// list`, "the allow-list is self-describing"): a script author writing
+    /// `--allowed-tools`/`--deny-tools` needs the exact names this process
+    /// actually registered, not a name they typed from memory.
+    pub fn tool_specs(&self) -> Vec<conway_core::content::ToolSpec> {
+        self.registry.specs(None)
+    }
+
+    /// The distinct plugin count backing [`Self::tool_specs`]'s result --
+    /// see `PluginRegistry::plugin_count`'s own doc for how it is computed
+    /// (crate-private; not a public intra-doc link target). Paired with
+    /// `tool_specs().len()`, this is the "N tools registered from M
+    /// plugins" line `conway tools list` prints.
+    pub fn tool_plugin_count(&self) -> usize {
+        self.registry.plugin_count()
+    }
+
     /// A4: every registered tool's `(name, category, render_kind)` metadata,
     /// enumerating the whole registry rather than resolving one name. The
     /// broadened `command_prefix`-on-`Structured` registration check uses this
