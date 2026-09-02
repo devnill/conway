@@ -154,6 +154,20 @@ impl ResultBuilder {
             None => Self::from_trailing_text(trailing, self.tool_artifacts.clone(), status),
         }
     }
+
+    /// `true` if this run accumulated ANY evidence of real work -- a tool
+    /// artifact, or a valid `report` call already observed -- independent
+    /// of whether any trailing assistant text exists. Consulted only by
+    /// `AgentLoop::terminal_account`'s "no work at all" vs "stopped before
+    /// reporting" distinction (acceptance criterion 2 of board item
+    /// `01M1FH114QA3A152W8H6E2YMGJ`'s extension): a non-natural termination
+    /// with no captured text but a `true` here must not read the same as
+    /// one with neither. Does not change [`Self::resolve`] itself -- a
+    /// `Some(last_report)` there already always wins over trailing text,
+    /// whether or not this run's trailing text is empty.
+    pub(crate) fn has_activity(&self) -> bool {
+        !self.tool_artifacts.is_empty() || self.last_report.is_some()
+    }
 }
 
 /// A short, human-readable name for a `ResultStatus`. Originally used only

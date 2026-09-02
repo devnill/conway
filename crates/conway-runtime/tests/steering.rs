@@ -80,6 +80,23 @@ fn tool_call_response(call_id: &str, tool: &str) -> conway_core::ports::Generate
     }
 }
 
+/// [`tool_call_response`], but the model also says something alongside the
+/// call -- board item `01M1FH114QA3A152W8H6E2YMGJ`'s extension needs this
+/// shape to prove a cancelled agent reports what it said, not a bare status
+/// name.
+fn tool_call_response_with_text(
+    text: &str,
+    call_id: &str,
+    tool: &str,
+) -> conway_core::ports::GenerateResponse {
+    conway_core::ports::GenerateResponse {
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        ..tool_call_response(call_id, tool)
+    }
+}
+
 fn schema_any_object() -> schemars::schema::RootSchema {
     serde_json::from_value(serde_json::json!({"type": "object"})).unwrap()
 }
@@ -791,6 +808,125 @@ async fn soft_cancel_waits_for_the_inflight_tool_then_stops_at_the_next_boundary
         backend.calls().len(),
         1,
         "the soft cancel must stop the loop before the next turn's backend call"
+    );
+}
+
+/// Board item `01M1FH114QA3A152W8H6E2YMGJ`'s extension, acceptance
+/// criterion 1: before this item, `AgentLoop::finish_cancelled` always
+/// passed `""` as trailing text, so a hard-cancelled agent that had just
+/// said something alongside the tool call the cancel cut off still
+/// reported `"(no output; terminal status: cancelled)"` -- the exact shape
+/// of the incident this item exists to fix, one turn boundary earlier than
+/// the field-observed one (which hit a budget, not a cancel).
+#[tokio::test]
+async fn hard_cancel_reports_the_last_assistant_text_not_a_bare_status_name() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    seed_prompt(&*store, agent, session, "go").await;
+
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(tool_call_response_with_text(
+            "reading the file now",
+            "tc_1",
+            "slow",
+        ))])
+        .with_capabilities(caps_ok()),
+    );
+    let tool: Arc<dyn Tool> = Arc::new(DelayTool {
+        name: ToolName::new("slow"),
+        delay: Duration::from_secs(5),
+    });
+
+    let harness = build_loop(session, agent, store, backend, vec![tool], None);
+    let mailbox_tx = harness.mailbox_tx.clone();
+    let bus = harness.bus.clone();
+    let mut stream = bus.subscribe();
+
+    let handle = tokio::spawn(harness.agent_loop.run());
+    wait_for_tool_call_started(&mut stream).await;
+
+    mailbox_tx.send(AgentMessage::Cancel {
+        from: agent,
+        reason: "urgent stop".to_string(),
+        hard: true,
+    });
+
+    let result = tokio::time::timeout(Duration::from_millis(100), handle)
+        .await
+        .expect("agent loop did not resolve within 100ms of the hard cancel")
+        .expect("agent loop task panicked");
+    assert!(
+        matches!(result.status, ResultStatus::Cancelled { .. }),
+        "expected Cancelled, got {:?}",
+        result.status
+    );
+    assert_eq!(
+        result.summary, "reading the file now",
+        "a hard-cancelled agent must report the last thing it actually \
+         said, not a bare status name"
+    );
+}
+
+/// Companion to the above for the SOFT-cancel path, which resolves through
+/// a different `finish` call site (the top-of-loop `pending_cancel` drain,
+/// not `finish_cancelled`) -- both must carry the fix.
+#[tokio::test]
+async fn soft_cancel_reports_the_last_assistant_text_not_a_bare_status_name() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    seed_prompt(&*store, agent, session, "go").await;
+
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(tool_call_response_with_text(
+                "checking the slow tool's output",
+                "tc_1",
+                "slow",
+            )),
+            ScriptedTurn::Respond(text_response("should never run")),
+        ])
+        .with_capabilities(caps_ok()),
+    );
+    let tool: Arc<dyn Tool> = Arc::new(DelayTool {
+        name: ToolName::new("slow"),
+        delay: Duration::from_millis(150),
+    });
+
+    let harness = build_loop(
+        session,
+        agent,
+        store.clone(),
+        backend.clone(),
+        vec![tool],
+        None,
+    );
+    let mailbox_tx = harness.mailbox_tx.clone();
+    let bus = harness.bus.clone();
+    let mut stream = bus.subscribe();
+
+    let handle = tokio::spawn(harness.agent_loop.run());
+    wait_for_tool_call_started(&mut stream).await;
+
+    mailbox_tx.send(AgentMessage::Cancel {
+        from: agent,
+        reason: "please wrap up".to_string(),
+        hard: false,
+    });
+
+    let result = tokio::time::timeout(Duration::from_secs(2), handle)
+        .await
+        .expect("agent loop did not resolve")
+        .expect("agent loop task panicked");
+    match result.status {
+        ResultStatus::Cancelled { reason } => assert_eq!(reason, "please wrap up"),
+        other => panic!("expected Cancelled, got {other:?}"),
+    }
+    assert_eq!(
+        result.summary, "checking the slow tool's output",
+        "a soft-cancelled agent must report the last thing it actually \
+         said, not a bare status name"
     );
 }
 

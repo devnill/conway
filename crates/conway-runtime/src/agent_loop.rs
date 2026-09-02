@@ -112,6 +112,25 @@
 //! outside this item's original scope: `runtime.rs`, `subagent.rs`, and
 //! existing tests).
 //!
+//! ## Non-natural terminations report what the agent actually did
+//!
+//! Board item `01M1FH114QA3A152W8H6E2YMGJ`'s extension. Before this item,
+//! every terminal path OTHER than a natural `Completed`/`Rejected` --
+//! budget-exceeded (all four dimensions), cancellation (graceful and
+//! immediate), a deadline, and a bubbled-up backend/store failure -- called
+//! [`Self::finish`] with a literal `""` trailing text. A run that had
+//! already done real, disk-visible work then reported
+//! `"(no output; terminal status: <name>)"`, indistinguishable from a run
+//! that had done nothing at all -- the incident this item documents cost an
+//! operator real time finding 69 lines of uncommitted, unreported work by
+//! hand. `LoopState` gained `last_assistant_text` (the most recent backend
+//! response's own text, captured every turn -- see that field's own doc),
+//! and every one of the ten `""`-passing sites now calls
+//! [`Self::terminal_account`] instead, which resolves that text, or an
+//! explicit "stopped mid-run" marker when there is no text but other
+//! evidence of real work, or `""` (genuinely unchanged) only when NEITHER
+//! holds. See `terminal_account`'s own doc for the full precedence.
+//!
 //! `AgentSpec` gained one field this item, `result_contract:
 //! Option<schemars::schema::RootSchema>`, carried through from
 //! `SubagentSpec::result_contract` by `subagent.rs`'s `SubagentHost::start`
@@ -529,10 +548,17 @@ impl Default for ResumeGate {
     }
 }
 
-/// Per-turn accumulator: turns executed and usage accrued so far. `Copy` so
-/// it can be captured into an error tuple without disturbing the loop's own
-/// copy (see [`AgentLoop::run_inner`]'s early-return sites).
-#[derive(Clone, Copy, Debug, Default)]
+/// Per-turn accumulator: turns executed and usage accrued so far. `Clone`
+/// so it can be captured into an error tuple without disturbing the loop's
+/// own copy (see [`AgentLoop::run_inner`]'s early-return sites) --
+/// `last_assistant_text` (below) is a `String`, so this is no longer `Copy`
+/// as of this item; every `try_rt!` site only ever moves `$state` on the
+/// `Err` arm's immediate `return`, so dropping `Copy` needed no call-site
+/// changes there. `check_budget`/`finish_cancelled`/`finish_error` take
+/// `&LoopState` rather than an owned one for the same reason: none of them
+/// need ownership, and several `run_inner` call sites read `state` again
+/// after calling one.
+#[derive(Clone, Debug, Default)]
 struct LoopState {
     turn: u32,
     usage: Usage,
@@ -561,6 +587,22 @@ struct LoopState {
     /// keep-alive session after N total calls rather than bounding each user
     /// turn.
     tool_calls: u32,
+    /// The most recent backend response's own text (`agent_loop::full_text`
+    /// of `outcome.response.content`), overwritten every turn a response
+    /// lands in [`AgentLoop::run_inner`] -- BEFORE that same turn's own
+    /// tool-dispatch/cancel/budget checks, so a termination mid-tool-batch
+    /// still sees the text that accompanied those calls. Empty in
+    /// [`LoopState::default`]: a termination before this agent's very first
+    /// backend response genuinely has none, which
+    /// [`AgentLoop::terminal_account`] (this field's one reader) takes as
+    /// real signal, not an oversight -- see that method's own doc for the
+    /// full precedence it resolves. Never reset at the keep-alive user-turn
+    /// boundary the way `turn_steps`/`tool_calls`/`result_builder` are: a
+    /// keep-alive agent idling between turns (`ResumeGate::awaiting_prompt`)
+    /// that then hits a deadline should still report its last turn's own
+    /// words, not an empty string just because a new user turn had not yet
+    /// produced any of its own.
+    last_assistant_text: String,
 }
 
 /// Bounds how many times [`AgentLoop::route_and_attempt`] will call
@@ -977,7 +1019,7 @@ impl AgentLoop {
     pub async fn run(mut self) -> AgentResult {
         match self.run_inner().await {
             Ok(result) => result,
-            Err((err, state)) => self.finish_error(state, err).await,
+            Err((err, state)) => self.finish_error(&state, err).await,
         }
     }
 
@@ -1033,18 +1075,18 @@ impl AgentLoop {
                 return Ok(self
                     .finish(
                         ResultStatus::Cancelled { reason },
-                        "",
+                        self.terminal_account(&state, &result_builder),
                         state.usage,
                         state.turn,
                         &result_builder,
                     )
                     .await);
             }
-            if let Some(result) = self.check_budget(state, &result_builder).await {
+            if let Some(result) = self.check_budget(&state, &result_builder).await {
                 return Ok(result);
             }
             if self.cancel.is_cancelled() {
-                return Ok(self.finish_cancelled(state, &result_builder).await);
+                return Ok(self.finish_cancelled(&state, &result_builder).await);
             }
 
             // Generalized for keep-alive: a resumed root's very
@@ -1063,12 +1105,12 @@ impl AgentLoop {
                         tokio::select! {
                             biased;
                             () = self.cancel.cancelled() => {
-                                return Ok(self.finish_cancelled(state, &result_builder).await);
+                                return Ok(self.finish_cancelled(&state, &result_builder).await);
                             }
                             () = tokio::time::sleep(remaining) => {
                                 return Ok(self.finish(
                                     ResultStatus::BudgetExceeded { limit: format!("deadline={deadline}") },
-                                    "",
+                                    self.terminal_account(&state, &result_builder),
                                     state.usage,
                                     state.turn,
                                     &result_builder,
@@ -1083,7 +1125,7 @@ impl AgentLoop {
                         tokio::select! {
                             biased;
                             () = self.cancel.cancelled() => {
-                                return Ok(self.finish_cancelled(state, &result_builder).await);
+                                return Ok(self.finish_cancelled(&state, &result_builder).await);
                             }
                             () = self.resume_gate.notify.notified() => {
                                 self.resume_gate.awaiting_prompt = false;
@@ -1367,7 +1409,7 @@ impl AgentLoop {
                         () = tokio::time::sleep(remaining) => {
                             return Ok(self.finish(
                                 ResultStatus::BudgetExceeded { limit: format!("deadline={deadline}") },
-                                "",
+                                self.terminal_account(&state, &result_builder),
                                 state.usage,
                                 state.turn,
                                 &result_builder,
@@ -1379,6 +1421,13 @@ impl AgentLoop {
                 None => route_attempt_fut.await,
             };
             let (outcome, report) = try_rt!(state, route_attempt_result);
+            // Captured BEFORE any of this turn's own tool-dispatch/cancel/
+            // budget checks below, so a termination mid-tool-batch still
+            // sees the text that accompanied those calls, not stale text
+            // from an earlier turn -- see `LoopState::last_assistant_text`'s
+            // own doc, and `AgentLoop::terminal_account` (this field's one
+            // reader).
+            state.last_assistant_text = full_text(&outcome.response.content);
             // The report_slot/persisted report must reflect the FINAL
             // assembly actually sent -- overflow retries (if any) rebuilt
             // `report` after the initial slot update above.
@@ -1601,7 +1650,7 @@ impl AgentLoop {
                 // The batch's outcomes are dropped here, including any calls
                 // that completed real side effects before the cancel fired —
                 // their results never reach the session log.
-                return Ok(self.finish_cancelled(state, &result_builder).await);
+                return Ok(self.finish_cancelled(&state, &result_builder).await);
             }
 
             let calls = outcome.response.tool_calls.clone();
@@ -1707,6 +1756,55 @@ impl AgentLoop {
         }
     }
 
+    /// Synthesizes the `trailing_text` argument every non-natural terminal
+    /// path (budget, cancellation, deadline, backend failure) passes to
+    /// [`Self::finish`] -- every one of those sites used to pass a literal
+    /// `""`, which `ResultBuilder::resolve`'s status-naming fallback then
+    /// turned into `"(no output; terminal status: <name>)"` regardless of
+    /// how much real work the run had already done. After this item, no
+    /// call to `finish(` in this file passes a bare `""` (`grep -n
+    /// 'finish(' agent_loop.rs` finds none) -- this method is what every
+    /// one of those ten sites calls instead.
+    ///
+    /// Precedence:
+    /// 1. `state.last_assistant_text` -- the most recent backend response's
+    ///    own text, captured every turn in [`Self::run_inner`] BEFORE that
+    ///    same turn's own tool-dispatch/cancel/budget checks (see that
+    ///    field's own doc). This is the concrete fix for the incident this
+    ///    item exists to close: a turn that dispatched tool calls and was
+    ///    then cut off -- by a budget check, a cancel, or a deadline --
+    ///    before reaching a LATER turn's natural completion still reports
+    ///    whatever the model said alongside those calls, not `""`.
+    /// 2. An explicit "stopped mid-run" marker, used only when there is no
+    ///    captured text but other evidence shows real work happened this
+    ///    run anyway (`state.turn > 0`, `state.tool_calls > 0`, or
+    ///    `builder.has_activity()` -- a tool artifact or a `report` call
+    ///    already observed). This is acceptance criterion 2, "distinguishes
+    ///    'no work' from 'stopped before reporting'": a run that dispatched
+    ///    tool calls with no accompanying assistant text (a model that only
+    ///    ever emits tool calls, never prose) is not a run that did
+    ///    nothing, and must not read like one.
+    /// 3. `""`, unchanged, when NEITHER of the above holds -- a termination
+    ///    before this agent's very first turn ever produced anything at
+    ///    all. That really is "no work", and `ResultBuilder::resolve`'s
+    ///    status-naming fallback remains the correct, honest summary for
+    ///    it -- this method does not touch that fallback, only makes sure
+    ///    it is reached by a run that actually earns it.
+    fn terminal_account(&self, state: &LoopState, builder: &ResultBuilder) -> String {
+        if !state.last_assistant_text.trim().is_empty() {
+            return state.last_assistant_text.clone();
+        }
+        if state.turn > 0 || state.tool_calls > 0 || builder.has_activity() {
+            return format!(
+                "(stopped after {} turn(s), {} tool call(s) dispatched this run, \
+                 before producing a final report -- no assistant text was \
+                 captured for the in-progress turn)",
+                state.turn, state.tool_calls
+            );
+        }
+        String::new()
+    }
+
     /// Checks every configured budget dimension at the top of a turn,
     /// returning `Some(result)` the first exceeded dimension produces. All
     /// four of `Budget`'s dimensions are enforced here; a dimension a caller
@@ -1736,7 +1834,7 @@ impl AgentLoop {
     ///
     /// Non-`keep_alive` behavior is byte-for-byte unchanged: `state.turn`
     /// gates `max_steps` exactly as before this field existed.
-    async fn check_budget(&self, state: LoopState, builder: &ResultBuilder) -> Option<AgentResult> {
+    async fn check_budget(&self, state: &LoopState, builder: &ResultBuilder) -> Option<AgentResult> {
         let budget = &self.spec.budget;
         let steps_this_turn = if self.spec.keep_alive {
             state.turn_steps
@@ -1757,7 +1855,7 @@ impl AgentLoop {
                     ResultStatus::BudgetExceeded {
                         limit: format!("max_steps={}", budget.max_steps),
                     },
-                    "",
+                    self.terminal_account(state, builder),
                     state.usage,
                     state.turn,
                     builder,
@@ -1772,7 +1870,7 @@ impl AgentLoop {
                         ResultStatus::BudgetExceeded {
                             limit: format!("deadline={deadline}"),
                         },
-                        "",
+                        self.terminal_account(state, builder),
                         state.usage,
                         state.turn,
                         builder,
@@ -1789,7 +1887,7 @@ impl AgentLoop {
                         ResultStatus::BudgetExceeded {
                             limit: format!("max_tokens={max_tokens}"),
                         },
-                        "",
+                        self.terminal_account(state, builder),
                         state.usage,
                         state.turn,
                         builder,
@@ -1805,7 +1903,7 @@ impl AgentLoop {
                         ResultStatus::BudgetExceeded {
                             limit: format!("max_tool_calls={max_tool_calls}"),
                         },
-                        "",
+                        self.terminal_account(state, builder),
                         state.usage,
                         state.turn,
                         builder,
@@ -1836,7 +1934,12 @@ impl AgentLoop {
     /// (`supervisor.rs`'s deadline arm calls `cancel.cancel()` directly, with
     /// no reason at all -- `check_budget` normally catches a deadline first,
     /// but this fallback keeps that race harmless either way).
-    async fn finish_cancelled(&self, state: LoopState, builder: &ResultBuilder) -> AgentResult {
+    ///
+    /// Reports [`Self::terminal_account`] as its trailing text, not `""` --
+    /// a cancellation is exactly the non-natural termination this item's
+    /// fix targets: a cancelled agent that had already written real work
+    /// (files, a partial reply) must not read as though it did nothing.
+    async fn finish_cancelled(&self, state: &LoopState, builder: &ResultBuilder) -> AgentResult {
         let reason = self
             .deps
             .tree
@@ -1844,7 +1947,7 @@ impl AgentLoop {
             .unwrap_or_else(|| "cancelled".to_string());
         self.finish(
             ResultStatus::Cancelled { reason },
-            "",
+            self.terminal_account(state, builder),
             state.usage,
             state.turn,
             builder,
@@ -1861,12 +1964,19 @@ impl AgentLoop {
     /// Only called from [`Self::run`]'s catch of [`Self::run_inner`]'s `Err`
     /// path, after the turn loop's own `ResultBuilder` has already gone out
     /// of scope with it -- this constructs a fresh, empty one instead. That
-    /// loses any artifacts/report accumulated in earlier turns of a run
-    /// that then hit a late I/O error, which is an accepted trade-off: no
-    /// criterion here requires facts/artifacts fidelity on a `Failed`
-    /// result, only a non-empty summary (which `ResultBuilder::resolve`'s
-    /// status-naming fallback still provides from a fresh builder) and
-    /// correct `usage`/`steps_taken`/`transcript_ref`.
+    /// still loses any artifacts/report accumulated in earlier turns of a
+    /// run that then hit a late I/O error (no criterion here requires
+    /// facts/artifacts fidelity on a `Failed` result) -- but summary
+    /// fidelity is a DIFFERENT trade-off, and this item withdraws the
+    /// acceptance an earlier revision of this doc made of losing it too:
+    /// `state` -- the `(RuntimeError, LoopState)` error tuple every
+    /// `try_rt!` site threads all the way out of `run_inner` -- still
+    /// carries `last_assistant_text` from whatever turn last completed
+    /// before the failure, and [`Self::terminal_account`] (not `""`) is
+    /// what this fn now passes as trailing text, so a late I/O error no
+    /// longer discards the agent's own account of what it said just because
+    /// the fresh `ResultBuilder` it discards along with it holds no report
+    /// or tool artifacts of its own.
     ///
     /// ## The third `RuntimeError::Cancelled` site
     ///
@@ -1894,7 +2004,7 @@ impl AgentLoop {
     /// only by an ancestor's cancellation propagating structurally --
     /// `AgentTree::cancel`'s own doc) falls back to `err`'s own reason,
     /// unchanged, exactly as before this item.
-    async fn finish_error(&self, state: LoopState, err: RuntimeError) -> AgentResult {
+    async fn finish_error(&self, state: &LoopState, err: RuntimeError) -> AgentResult {
         let builder = ResultBuilder::new();
         if let RuntimeError::Cancelled { reason, .. } = err {
             let reason = self
@@ -1905,7 +2015,7 @@ impl AgentLoop {
             return self
                 .finish(
                     ResultStatus::Cancelled { reason },
-                    "",
+                    self.terminal_account(state, &builder),
                     state.usage,
                     state.turn,
                     &builder,
@@ -1924,7 +2034,7 @@ impl AgentLoop {
             ResultStatus::Failed {
                 error: err.to_string(),
             },
-            "",
+            self.terminal_account(state, &builder),
             state.usage,
             state.turn,
             &builder,
@@ -2122,8 +2232,11 @@ fn segment_metadata_json(segments: &[PromptSegment]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// Concatenates every `ContentBlock::Text` in `blocks`, in order — the
-/// `Completed` terminal summary source (trailing assistant text).
+/// Concatenates every `ContentBlock::Text` in `blocks`, in order --
+/// the `Completed`/`Rejected` terminal summary source (trailing assistant
+/// text), and, as of `LoopState::last_assistant_text`'s own doc, ALSO run
+/// over every turn's response (not only the final one) to seed the account
+/// a non-natural termination reports via `AgentLoop::terminal_account`.
 fn full_text(blocks: &[ContentBlock]) -> String {
     blocks
         .iter()
