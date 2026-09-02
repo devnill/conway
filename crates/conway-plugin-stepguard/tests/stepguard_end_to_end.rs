@@ -53,7 +53,7 @@ use conway::{
     backend::{BackendId, GenerateResponse, StopReason, Usage},
     Conway, Provenance, RoleAlias, SessionSpec, SessionStore,
 };
-use conway_plugin_stepguard::{StepGuardPlugin, NOTE_REASON};
+use conway_plugin_stepguard::{StepGuardPlugin, NOTE_REASON, NOTICE_AT};
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
 fn base_config(cwd: std::path::PathBuf) -> ConwayConfig {
@@ -304,50 +304,70 @@ async fn differing_arguments_never_produce_a_note() {
         .await
         .expect("read back session log");
     assert!(
-        !records.iter().any(|r| matches!(r, conway::LogRecord::SystemNote { .. })),
+        !records.iter().any(
+            |r| matches!(r, conway::LogRecord::SystemNote { reason, .. } if reason == NOTE_REASON)
+        ),
         "distinct arguments must never be conflated into a repeated-step note: {records:#?}"
     );
 
+    // Scoped to stepguard's own reason, not "any SystemNote": the context
+    // assembler also emits unrelated `SystemNote { reason: "assistant_turn" }`
+    // turn-boundary markers on every turn, which are not this plugin's
+    // concern and must not make this assertion fail.
     let report = session
         .context_report(session.root())
         .await
         .expect("context_report");
     assert!(
-        !report
-            .segments
-            .iter()
-            .any(|entry| matches!(&entry.provenance, Provenance::SystemNote { .. })),
-        "no SystemNote segment should ever reach a turn's context here: {:?}",
+        !report.segments.iter().any(|entry| matches!(
+            &entry.provenance,
+            Provenance::SystemNote { reason } if reason == NOTE_REASON
+        )),
+        "no stepguard SystemNote segment should ever reach a turn's context here: {:?}",
         report.segments
     );
 }
 
-/// The threshold boundary, pinned directly: TWO identical calls (one short
-/// of `NOTICE_AT == 3`) must produce zero notes -- the same script shape as
-/// the headline test above, with the repeat count held below the
-/// threshold. See this file's own module doc for why this is the durable
-/// stand-in for the item's own "run with the threshold set so it should
-/// NOT fire" instruction.
+/// The threshold boundary, pinned directly against the plugin's own
+/// `NOTICE_AT` constant rather than a guessed repeat count: `NOTICE_AT - 1`
+/// identical calls must produce zero notes -- the same script shape as the
+/// headline test above, with the repeat count held one short of the real
+/// threshold. Built from the constant (not a hardcoded literal) so a
+/// future change to `NOTICE_AT` makes this test exercise the new boundary
+/// automatically instead of silently testing a stale one. See this file's
+/// own module doc for why this is the durable stand-in for the item's own
+/// "run with the threshold set so it should NOT fire" instruction.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn two_identical_calls_do_not_reach_the_threshold() {
+async fn calls_one_short_of_notice_at_do_not_reach_the_threshold() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(FakeStore::new());
     let same_args = serde_json::json!({ "path": "a.txt" });
-    let backend = Arc::new(
-        ScriptedBackend::new(vec![
-            ScriptedTurn::Respond(tool_call_response("tc1", "probe", same_args.clone())),
-            ScriptedTurn::Respond(tool_call_response("tc2", "probe", same_args.clone())),
-            ScriptedTurn::Respond(text_response("done")),
-        ])
-        .with_id(BackendId::new("fake")),
+    let repeat_count = usize::from(NOTICE_AT - 1);
+    assert!(
+        repeat_count >= 1,
+        "NOTICE_AT must be at least 2 for a one-short-of-threshold script to make sense"
     );
+    let mut turns: Vec<ScriptedTurn> = (0..repeat_count)
+        .map(|i| {
+            ScriptedTurn::Respond(tool_call_response(
+                &format!("tc{i}"),
+                "probe",
+                same_args.clone(),
+            ))
+        })
+        .collect();
+    turns.push(ScriptedTurn::Respond(text_response("done")));
+    let backend = Arc::new(ScriptedBackend::new(turns).with_id(BackendId::new("fake")));
     let conway = stepguard_conway(tmp.path().to_path_buf(), backend.clone(), store.clone());
 
     let session = conway
         .new_session(SessionSpec::default())
         .await
         .expect("new_session");
-    let turn = session.prompt("read a.txt twice please").await.expect("prompt");
+    let turn = session
+        .prompt("read a.txt repeatedly please")
+        .await
+        .expect("prompt");
     turn.result().await.expect("turn completes naturally");
 
     let records = store
@@ -355,7 +375,10 @@ async fn two_identical_calls_do_not_reach_the_threshold() {
         .await
         .expect("read back session log");
     assert!(
-        !records.iter().any(|r| matches!(r, conway::LogRecord::SystemNote { .. })),
-        "two identical calls is one short of NOTICE_AT == 3 and must not fire: {records:#?}"
+        !records.iter().any(
+            |r| matches!(r, conway::LogRecord::SystemNote { reason, .. } if reason == NOTE_REASON)
+        ),
+        "{repeat_count} identical calls is one short of NOTICE_AT == {NOTICE_AT} and must not \
+         fire: {records:#?}"
     );
 }
