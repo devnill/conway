@@ -93,9 +93,10 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use conway_core::agent::Fact;
 use conway_core::canon::canonical_json_bytes;
 use conway_core::capabilities::CacheMode;
-use conway_core::content::{ContentBlock, Role, ToolResult, ToolSpec};
+use conway_core::content::{Artifact, ArtifactKind, ContentBlock, Role, ToolResult, ToolSpec};
 use conway_core::error::RuntimeError;
 use conway_core::ids::{AgentId, ModelId, PrefixKey, SegmentId, SeqRange, SessionId, ToolName};
 use conway_core::log::LogRecord;
@@ -926,13 +927,94 @@ pub(crate) fn check_tool_call_coherence(segments: &[PromptSegment]) -> Vec<ToolC
 /// a parent's context actually carries -- shared by [`record_role_and_content`]
 /// (inherited pass-through) and [`own_segment`] (this agent's own volatile
 /// records) so the two never drift apart on wording.
+///
+/// Replays the WHOLE `AgentResult`, not only `summary`: a summary line,
+/// then one `facts:`/`artifacts:`/`structured:` section per non-empty
+/// field, in that fixed order. A `report` call with typed facts, artifacts,
+/// or structured output used to disappear the moment it crossed into the
+/// parent's context -- this function is the one place that lift happens, so
+/// it is the one place that reassembly had to be built. An empty section is
+/// omitted entirely, never rendered as an empty header.
+///
+/// No truncation is applied here: `report`'s own argument bounds
+/// (`MAX_SUMMARY_CHARS`, `MAX_STRUCTURED_BYTES`) are what keep a single
+/// child's result from being unboundedly large, enforced at the producer
+/// (the `report` tool) with a typed refusal the child sees -- never a trim
+/// applied here at the renderer. See `report_tool.rs`'s module doc.
 fn child_result_text(result: &conway_core::agent::AgentResult) -> String {
-    format!(
+    let mut text = format!(
         "child agent {} finished ({}): {}",
         result.agent_id,
         crate::result::status_label(&result.status),
         result.summary
-    )
+    );
+
+    if !result.facts.is_empty() {
+        text.push_str("\nfacts:");
+        for fact in &result.facts {
+            text.push('\n');
+            text.push_str(&fact_line(fact));
+        }
+    }
+
+    if !result.artifacts.is_empty() {
+        text.push_str("\nartifacts:");
+        for artifact in &result.artifacts {
+            text.push('\n');
+            text.push_str(&artifact_line(artifact));
+        }
+    }
+
+    if let Some(structured) = &result.structured {
+        text.push_str("\nstructured: ");
+        // Canonical bytes (`conway_core::canon`), so a parent reading its
+        // own context sees the identical byte-for-byte encoding another
+        // consumer (e.g. a hash) would see -- not `serde_json`'s
+        // insertion-order default, which the report tool never guarantees.
+        let bytes = canonical_json_bytes(structured);
+        text.push_str(&String::from_utf8_lossy(&bytes));
+    }
+
+    text
+}
+
+/// One `facts:` line: `key`, then `value` (bare for a JSON string, else its
+/// compact JSON form), then `source` when the child gave one. `Fact`'s
+/// three fields (`key`/`value`/`source`) are the type as it stands today --
+/// not the `kind`/`text` shape an earlier draft of this rendering assumed.
+fn fact_line(fact: &Fact) -> String {
+    let value = match &fact.value {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    match &fact.source {
+        Some(source) => format!("- {}: {value} (source: {source})", fact.key),
+        None => format!("- {}: {value}", fact.key),
+    }
+}
+
+/// One `artifacts:` line: kind, then id, then path when the child gave one.
+fn artifact_line(artifact: &Artifact) -> String {
+    let kind = artifact_kind_label(artifact.kind);
+    match &artifact.path {
+        Some(path) => format!("- {kind}: {} ({})", artifact.id, path.display()),
+        None => format!("- {kind}: {}", artifact.id),
+    }
+}
+
+/// `ArtifactKind`'s wire vocabulary (`report_tool.rs`'s `parse_artifact_kind`
+/// accepts exactly these four strings on the way in); `#[non_exhaustive]`
+/// so a future variant renders as `"unknown"` rather than failing to
+/// compile.
+fn artifact_kind_label(kind: ArtifactKind) -> &'static str {
+    match kind {
+        ArtifactKind::File => "file",
+        ArtifactKind::Diff => "diff",
+        ArtifactKind::Value => "value",
+        ArtifactKind::Log => "log",
+        ArtifactKind::EphemeralSessionRef => "ephemeral_session_ref",
+        _ => "unknown",
+    }
 }
 
 /// Generic `(role, content)` extraction used for inherited records, whose
@@ -1865,6 +1947,79 @@ mod estimator_tests {
             "a RootOnly fragment must be absent from a Child agent's assembly"
         );
         assert!(child_report.instruction_fragments[0].skipped_by_scope);
+    }
+}
+
+#[cfg(test)]
+mod child_result_text_tests {
+    use super::*;
+    use conway_core::agent::{AgentResult, ResultStatus};
+    use conway_core::ids::SessionId;
+    use std::path::PathBuf;
+
+    fn base_result() -> AgentResult {
+        AgentResult::new(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV".parse().unwrap(),
+            SessionId::new(),
+            ResultStatus::Completed,
+            "did the thing",
+        )
+    }
+
+    /// Acceptance 1 (a): a result with one fact, one artifact, and
+    /// `structured: {"k": 1}` renders all three sections, in order, after
+    /// the summary line.
+    #[test]
+    fn renders_facts_artifacts_and_structured_sections() {
+        let mut result = base_result();
+        result.facts.push(Fact {
+            key: "files_changed".into(),
+            value: serde_json::Value::String("3".into()),
+            source: Some("git diff --stat".into()),
+        });
+        result.artifacts.push(Artifact {
+            id: "tc_1-artifact-0".into(),
+            kind: ArtifactKind::File,
+            path: Some(PathBuf::from("src/lib.rs")),
+            media_type: None,
+            bytes: None,
+            label: "the fix".into(),
+        });
+        result.structured = Some(serde_json::json!({"k": 1}));
+
+        let text = child_result_text(&result);
+
+        assert!(text.starts_with(
+            "child agent 01ARZ3NDEKTSV4RRFFQ69G5FAV finished (completed): did the thing"
+        ));
+        let facts_pos = text.find("facts:").expect("facts section present");
+        let artifacts_pos = text.find("artifacts:").expect("artifacts section present");
+        let structured_pos = text
+            .find("structured:")
+            .expect("structured section present");
+        assert!(
+            facts_pos < artifacts_pos && artifacts_pos < structured_pos,
+            "sections must appear in order facts, artifacts, structured: {text:?}"
+        );
+        assert!(text.contains("files_changed: 3 (source: git diff --stat)"));
+        assert!(text.contains("file: tc_1-artifact-0 (src/lib.rs)"));
+        // Canonical JSON: object keys sorted, no insignificant whitespace.
+        assert!(text.ends_with(r#"structured: {"k":1}"#));
+    }
+
+    /// Acceptance 1 (b): a result with none of the three renders only the
+    /// summary line -- no empty `facts:`/`artifacts:`/`structured:` headers.
+    #[test]
+    fn empty_sections_render_only_the_summary_line() {
+        let result = base_result();
+        let text = child_result_text(&result);
+        assert_eq!(
+            text,
+            "child agent 01ARZ3NDEKTSV4RRFFQ69G5FAV finished (completed): did the thing"
+        );
+        assert!(!text.contains("facts:"));
+        assert!(!text.contains("artifacts:"));
+        assert!(!text.contains("structured:"));
     }
 }
 

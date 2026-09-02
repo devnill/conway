@@ -126,6 +126,41 @@ or not. See [`agents.md`](agents.md#a-model-tool-call) for the full
 fork-vs-spawn semantics, result contracts, and what a subtree can and can't
 reach.
 
+### `conway_steer`, `conway_await`, and what a parent sees when a child reports
+
+A `conway_steer` message is delivered at the child's **next turn
+boundary**: it is persisted the moment the call returns, but the child only
+reads it back on its own next re-read of the session, at the top of its
+turn loop — a steer never interrupts a tool call the child already has in
+flight. Use `conway_cancel` instead when the child should stop entirely
+rather than continue on new information.
+
+`conway_await` blocks the calling turn until the named child reaches a
+terminal result — `Completed`, `Failed`, `Cancelled`, or `BudgetExceeded` —
+and if the child already finished before the call, it returns that same
+result immediately (`AgentTree::await_result` checks the child's current
+state before it ever waits). What comes back is the child's whole
+`AgentResult`, not only its summary: `summary`, `facts`, `artifacts`,
+`structured`, and `status`, exactly as the child's own `report` call (or
+its terminal-status fallback) produced them — see the `report` tool below.
+To fan several children out cheaply, issue every `conway_fork`/
+`conway_spawn` call in the same reply with `await: false`, then `conway_await`
+each one only once its result is actually needed, rather than awaiting each
+in turn as it starts.
+
+The same replay happens wherever a child's result crosses into a parent's
+context — both when `conway_await` returns it directly, and when a child
+finishes on its own and the parent later re-reads its session (the
+non-blocking notification path, `LogRecord::ChildResultRecord`). The
+rendered text is: a `child agent <id> finished (<status>): <summary>` line,
+then a `facts:` section (one line per fact: key, value, and source when
+given), an `artifacts:` section (one line per artifact: kind, id, and path
+when given), and a `structured:` section (the structured value as
+canonical JSON) — each section omitted entirely when empty. Nothing here is
+truncated at render time: `report`'s own argument bounds (below) are what
+keep a single child's result bounded, enforced at the producer, not by
+trimming what a parent's context replays.
+
 ## The `report` tool (`conway.report`, on by default)
 
 | Tool | Does | Category | Path arguments confinable | Truncation | Permission class |
@@ -140,6 +175,13 @@ either; `report` declares `Unconfinable` with nothing checkable, and a call
 always falls through to your permission gate. That artifact path is
 metadata the agent asserts about its own output — `report` itself never
 reads or writes it.
+
+`summary` is capped at 2000 characters and `structured` at 65,536 bytes of
+canonical JSON (`conway_core::canon::canonical_json_bytes` — object keys
+sorted, no insignificant whitespace); either call over its bound returns a
+tool error naming the bound rather than being silently trimmed. `facts` and
+`artifacts` carry no size bound of their own beyond `report`'s ordinary
+argument size handling.
 
 ## Truncation policies
 
