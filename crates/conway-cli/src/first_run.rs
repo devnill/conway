@@ -739,14 +739,8 @@ async fn run_backend_setup(env: &HashMap<String, String>, path: &Path) -> Guided
                     println!();
                     println!("{}", context_window_setup_notice(&offer.model, window));
                 }
-                match finish_setup(
-                    path,
-                    LOCAL_OLLAMA_ID,
-                    &entry_json,
-                    &offer.model,
-                    &mut chain,
-                )
-                .await
+                match finish_setup(path, LOCAL_OLLAMA_ID, &entry_json, &offer.model, &mut chain)
+                    .await
                 {
                     GuidedSetupOutcome::Configured => {
                         if !prompt_add_another() {
@@ -1283,7 +1277,10 @@ mod tests {
         let path = std::path::Path::new("/home/op/.conway/settings.json");
         let rows = vec![
             ("conway.idiom", "a short harness primer".to_string()),
-            ("conway.stepguard", "notices repeated tool calls".to_string()),
+            (
+                "conway.stepguard",
+                "notices repeated tool calls".to_string(),
+            ),
         ];
         let transcript = opinion_set_transcript(&rows, path);
 

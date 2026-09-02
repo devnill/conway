@@ -277,9 +277,7 @@ impl AppState {
             }
         }
         self.transcript.push(Entry::Notice {
-            text: format!(
-                "stream restarted (attempt {attempt}); partial output above discarded"
-            ),
+            text: format!("stream restarted (attempt {attempt}); partial output above discarded"),
         });
     }
 
@@ -994,7 +992,11 @@ mod tests {
             },
         ));
 
-        assert_eq!(state.transcript.len(), 2, "the assistant entry plus one notice");
+        assert_eq!(
+            state.transcript.len(),
+            2,
+            "the assistant entry plus one notice"
+        );
         match &state.transcript[0] {
             Entry::Assistant { text, .. } => assert_eq!(
                 text, "hello ",
@@ -1004,8 +1006,14 @@ mod tests {
         }
         match &state.transcript[1] {
             Entry::Notice { text } => {
-                assert!(text.contains("attempt 2"), "notice names the attempt: {text:?}");
-                assert!(text.contains("discarded"), "notice says discarded: {text:?}");
+                assert!(
+                    text.contains("attempt 2"),
+                    "notice names the attempt: {text:?}"
+                );
+                assert!(
+                    text.contains("discarded"),
+                    "notice says discarded: {text:?}"
+                );
             }
             other => panic!("expected Entry::Notice, got {other:?}"),
         }

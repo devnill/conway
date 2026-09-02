@@ -583,7 +583,10 @@ mod tests {
         .unwrap();
         let generated =
             to_generate_response_native(response, &Dialect::Ollama.profile(), &[]).unwrap();
-        assert_eq!(generated.usage.cache_accounting, CacheAccounting::NotReported);
+        assert_eq!(
+            generated.usage.cache_accounting,
+            CacheAccounting::NotReported
+        );
     }
 
     /// Same rationale as the non-streaming test above, for the NDJSON
@@ -593,10 +596,7 @@ mod tests {
     fn process_native_line_marks_cache_accounting_not_reported() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut state = NativeDriverState {
-            accumulator: ToolCallAccumulator::new(
-                Dialect::Ollama.profile().tool_call_style,
-                &[],
-            ),
+            accumulator: ToolCallAccumulator::new(Dialect::Ollama.profile().tool_call_style, &[]),
             text_buffer: String::new(),
             usage: Usage::default(),
             done_reason: None,

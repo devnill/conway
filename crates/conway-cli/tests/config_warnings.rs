@@ -220,9 +220,12 @@ async fn root_plus_bash_warning_is_visible_on_stderr_for_one_shot_print() {
     // turn dials the mock for real, the same way
     // `misconfigured_headroom_is_visible_on_stderr_for_one_shot_print`
     // above does.
-    let out = command(&["--root", &fixture.dir.path().to_string_lossy(), "-p", "hi"], &fixture)
-        .output()
-        .expect("run conway binary");
+    let out = command(
+        &["--root", &fixture.dir.path().to_string_lossy(), "-p", "hi"],
+        &fixture,
+    )
+    .output()
+    .expect("run conway binary");
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(

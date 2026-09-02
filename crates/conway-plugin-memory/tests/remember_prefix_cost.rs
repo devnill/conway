@@ -104,7 +104,10 @@ async fn run_prompt(session: &SessionHandle, text: &str) {
 /// `Provenance`, which is local-only bookkeeping never serialized to a
 /// backend).
 fn wire_identity(segments: &[PromptSegment]) -> Vec<(Role, Vec<ContentBlock>)> {
-    segments.iter().map(|s| (s.role, s.content.clone())).collect()
+    segments
+        .iter()
+        .map(|s| (s.role, s.content.clone()))
+        .collect()
 }
 
 /// Mirrors `MemoryInjectHook::insertion_index` (private to
@@ -203,10 +206,7 @@ async fn a_mid_session_remember_shifts_the_prefix_at_exactly_the_insertion_index
     // `after` merely `before` plus new material at the end (the ordinary,
     // undisturbed case), `.position` below would find no differing pair at
     // all within `before`'s own length and return `None`.
-    let divergence = before
-        .iter()
-        .zip(after.iter())
-        .position(|(b, a)| b != a);
+    let divergence = before.iter().zip(after.iter()).position(|(b, a)| b != a);
     assert_eq!(
         divergence,
         Some(insertion_index),

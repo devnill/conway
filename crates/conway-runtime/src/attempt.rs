@@ -461,7 +461,8 @@ impl AttemptEngine {
                                 && stream_retry_count < MAX_RETRIES
                                 && matches!(
                                     err,
-                                    BackendError::Transport { .. } | BackendError::ServerError { .. }
+                                    BackendError::Transport { .. }
+                                        | BackendError::ServerError { .. }
                                 );
 
                             if same_candidate_retry_eligible {

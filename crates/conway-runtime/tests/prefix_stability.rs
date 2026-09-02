@@ -259,7 +259,14 @@ fn content_identity(
 ) -> Vec<(Role, Vec<ContentBlock>, Provenance, Option<u32>)> {
     segments
         .iter()
-        .map(|s| (s.role, s.content.clone(), s.provenance.clone(), s.tokens_est))
+        .map(|s| {
+            (
+                s.role,
+                s.content.clone(),
+                s.provenance.clone(),
+                s.tokens_est,
+            )
+        })
         .collect()
 }
 
@@ -269,7 +276,10 @@ fn content_identity(
 /// a fork boundary legitimately changes `Provenance` for otherwise
 /// byte-identical content.
 fn wire_identity(segments: &[PromptSegment]) -> Vec<(Role, Vec<ContentBlock>)> {
-    segments.iter().map(|s| (s.role, s.content.clone())).collect()
+    segments
+        .iter()
+        .map(|s| (s.role, s.content.clone()))
+        .collect()
 }
 
 /// Asserts `before` is an exact leading prefix of `after` -- same length or
@@ -409,10 +419,7 @@ async fn a_fork_childs_first_request_extends_the_parents_last_request_as_a_wire_
     ]);
 
     let mut stream = runtime.subscribe();
-    let root = runtime
-        .start_root(root_spec("investigate"))
-        .await
-        .unwrap();
+    let root = runtime.start_root(root_spec("investigate")).await.unwrap();
     wait_for_agent_finished(&mut stream, root).await;
 
     let calls_before_fork = backend.calls();

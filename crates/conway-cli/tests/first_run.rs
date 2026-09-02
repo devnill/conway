@@ -641,8 +641,7 @@ async fn a_session_built_from_the_opinion_set_config_reports_instruction_fragmen
 
     let mut chain: Vec<String> = Vec::new();
     let outcome =
-        first_run::finish_setup(&settings_path, "mock", &entry_json, &mock.model, &mut chain)
-            .await;
+        first_run::finish_setup(&settings_path, "mock", &entry_json, &mock.model, &mut chain).await;
     assert_eq!(outcome, first_run::GuidedSetupOutcome::Configured);
     first_run::apply_opinion_set(&settings_path).expect("apply_opinion_set must succeed");
 

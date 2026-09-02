@@ -232,13 +232,11 @@ impl Plugin for PathPlugin {
     }
 
     fn instructions(&self) -> Vec<conway::plugin::InstructionFragment> {
-        vec![
-            conway::plugin::InstructionFragment::new(
-                INSTRUCTION_NAME,
-                include_str!("../fragments/when_to_compose.md"),
-            )
-            .with_tool_ids(vec![ToolName::new(COMPOSE_TOOL_NAME)]),
-        ]
+        vec![conway::plugin::InstructionFragment::new(
+            INSTRUCTION_NAME,
+            include_str!("../fragments/when_to_compose.md"),
+        )
+        .with_tool_ids(vec![ToolName::new(COMPOSE_TOOL_NAME)])]
     }
 }
 

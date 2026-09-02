@@ -393,12 +393,6 @@ pub mod plugin {
     /// declares, the SAME "declare, host attributes/checks it" shape
     /// [`EventDecl`]/[`CommandSpec`] establish immediately above and below.
     pub use conway_core::ports::InstructionFragment;
-    /// [`InstructionFragment::position`]/[`InstructionFragment::scope`]'s
-    /// own vocabulary -- re-exported alongside [`InstructionFragment`]
-    /// itself for the same reason: an author who cannot name the type
-    /// cannot call `InstructionFragment::with_position`/`with_scope`
-    /// without depending on `conway-core` directly.
-    pub use conway_core::ports::{FragmentPosition, FragmentScope};
     /// V2c: what a plugin author writes to declare a permission mode --
     /// a name plus the closed core mode it narrows. Re-exported into the
     /// authoring surface for the same reason `Tool`/`Command` are: an
@@ -444,6 +438,12 @@ pub mod plugin {
         CapabilityCallError, CapabilityCallHandle, CapabilityError, CapabilityHost,
         CapabilityProvider, CapabilityRegistration, CapabilityRegistry,
     };
+    /// [`InstructionFragment::position`]/[`InstructionFragment::scope`]'s
+    /// own vocabulary -- re-exported alongside [`InstructionFragment`]
+    /// itself for the same reason: an author who cannot name the type
+    /// cannot call `InstructionFragment::with_position`/`with_scope`
+    /// without depending on `conway-core` directly.
+    pub use conway_core::ports::{FragmentPosition, FragmentScope};
     pub use conway_core::provenance::Provenance;
     pub use conway_core::segment::PromptSegment;
     /// The memoised effective-transcript resolver a [`CurateCtx`] carries

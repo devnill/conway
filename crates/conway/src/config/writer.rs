@@ -3428,7 +3428,12 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&text).expect("still valid json");
         assert_eq!(
             value["tools"]["builtin_plugins"],
-            serde_json::json!(["conway.fs", "conway.subagent", "conway.report", "conway.shell"]),
+            serde_json::json!([
+                "conway.fs",
+                "conway.subagent",
+                "conway.report",
+                "conway.shell"
+            ]),
             "{text}"
         );
         // `backends` must be untouched.
@@ -3453,7 +3458,12 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(
             value["tools"]["builtin_plugins"],
-            serde_json::json!(["conway.fs", "conway.subagent", "conway.report", "conway.shell"]),
+            serde_json::json!([
+                "conway.fs",
+                "conway.subagent",
+                "conway.report",
+                "conway.shell"
+            ]),
             "{text}"
         );
     }
@@ -3513,7 +3523,12 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&new_text).expect("still valid json");
         assert_eq!(
             value["tools"]["builtin_plugins"],
-            serde_json::json!(["conway.fs", "conway.subagent", "conway.report", "conway.shell"])
+            serde_json::json!([
+                "conway.fs",
+                "conway.subagent",
+                "conway.report",
+                "conway.shell"
+            ])
         );
         assert!(new_text
             .contains("\"//\": \"operator note: do not touch the backends section by hand\""));
