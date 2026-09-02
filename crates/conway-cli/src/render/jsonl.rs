@@ -96,6 +96,41 @@ mod tests {
         }
     }
 
+    /// Board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`: `jsonl` needs no dedicated
+    /// arm for `Event::StreamRestarted` -- it forwards every envelope
+    /// uniformly already (this file's own module doc) -- but this pins that
+    /// the new variant round-trips through the SAME serializer every other
+    /// event does, rather than being silently dropped by some future
+    /// per-variant filter.
+    #[test]
+    fn stream_restarted_is_forwarded_like_any_other_event() {
+        let writer = RecordingWriter::default();
+        let mut renderer = JsonlRenderer::new(Box::new(writer.clone()));
+        let session = SessionId::new();
+        let agent = AgentId::new();
+
+        renderer
+            .on_event(&Envelope {
+                seq: 0,
+                ts: Utc::now(),
+                session,
+                agent,
+                event: Event::StreamRestarted {
+                    agent_id: agent,
+                    attempt: 2,
+                    discarded_text_chars: 11,
+                    discarded_thinking_chars: 0,
+                },
+            })
+            .unwrap();
+
+        let text = String::from_utf8(writer.contents()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(text.trim_end()).unwrap();
+        assert_eq!(value["event"], "stream_restarted");
+        assert_eq!(value["attempt"], 2);
+        assert_eq!(value["discarded_text_chars"], 11);
+    }
+
     #[test]
     fn finish_writes_no_additional_line() {
         let writer = RecordingWriter::default();

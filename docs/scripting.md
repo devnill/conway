@@ -247,6 +247,28 @@ produces it, so a consumer reading either as a pipe sees output before the
 run finishes. `json` is not streaming in this sense at all — nothing reaches
 stdout until the terminal `AgentResult` is available, by design (see above).
 
+**A mid-stream failure can discard and retry, not just append.** If a
+connection drops or a stream ends without ever reaching a terminal chunk
+after part of the reply already streamed to you, conway retries the SAME
+model rather than either switching models mid-task or ending the turn (see
+[`docs/providers.md`'s "Retries and
+backoff"](providers.md#retries-and-backoff) for the full policy) — and it
+marks the discard with a `stream_restarted` event rather than silently
+splicing the retry's text onto the discarded partial reply. In `jsonl`,
+that is one more line, like any other event, carrying `attempt` (the
+retry's own 1-based ordinal) and `discarded_text_chars`/
+`discarded_thinking_chars` (how much of the partial reply the retry threw
+away). In `text`, already-flushed stdout bytes cannot be unprinted — the
+best conway can do live is print a newline to mark the boundary and a
+`conway: warning: stream restarted (attempt N); partial output above
+discarded` line on stderr, then resume flushing the retry's own text right
+after. **A script that parses `text`'s stdout as one clean answer, and
+cannot tolerate an occasional discarded-then-restarted fragment ahead of
+the real one, should use `--output-format json` instead** — it withholds
+everything until the terminal `AgentResult`, so a same-candidate retry
+during the run is invisible to it: only the final, successful attempt's
+text ever reaches that object.
+
 ## Being something other than a coding agent
 
 Everything above works whether or not you write code — `-p` is a fast path

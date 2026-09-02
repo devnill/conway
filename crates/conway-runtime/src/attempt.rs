@@ -54,6 +54,29 @@
 //! required to agree: the router's
 //! estimate over a declared window and `admit`'s measure of the actual
 //! serialized wire body are different questions asked at different times.
+//!
+//! **Same-candidate stream retry (board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`).**
+//! `conway_plugin_backends::http::HttpClient::send_with_retry` only ever
+//! retries the INITIAL response of a request -- a mid-stream drop used to
+//! either advance the fallback chain immediately (silently changing models
+//! mid-task) or, on the last candidate, fail the whole turn. `run_stream`
+//! now distinguishes a failure raised before the stream ever opened (kept
+//! exactly as before: classify, record health if eligible, advance the
+//! chain) from one raised AFTER it opened -- `BackendError::Transport`/
+//! `ServerError` mid-stream, or a stream that ends with no `Done` chunk.
+//! For that second case, `execute`'s per-candidate loop retries the SAME
+//! candidate up to twice more (three attempts total, `conway_core::retry`'s
+//! shared `MAX_RETRIES`/`max_jitter` -- the identical policy
+//! `send_with_retry` uses, so the two can never drift), emitting
+//! `Event::StreamRestarted` before each retry so a renderer can discard the
+//! partial deltas already on the bus (the assistant record itself was never
+//! at risk: it is only persisted after a `Done`). Each failed attempt --
+//! retried or not -- records a health `Observation` exactly as before
+//! (`record_failure_observation`, shared by both this retry and the
+//! eventual chain-advancing failure); the chain advances only once the
+//! same-candidate budget is exhausted. `RateLimit`, `RequestIncompatible`,
+//! `Fatal`, and any pre-stream failure are untouched by this -- they keep
+//! today's immediate chain-advance (or abort, for `Fatal`) behavior.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -68,9 +91,11 @@ use conway_core::ids::{
     AgentId, BackendId, EndpointId, ModelId, ModelRef, PrefixKey, RoleAlias, SessionId,
 };
 use conway_core::ports::{Backend, GenerateRequest, GenerateResponse, HealthRegistry, StreamChunk};
+use conway_core::retry::{max_jitter, MAX_RETRIES};
 use conway_core::routing::{BreakerState, Observation, Route, RoutingReason};
 use conway_core::segment::{CacheTtl, PromptSegment};
 use futures::StreamExt;
+use rand::RngExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::context::builder::{attach_cache_hints, breakpoint_indices};
@@ -306,6 +331,12 @@ impl AttemptEngine {
             let endpoint = endpoint_of(&route.backend);
             let mut strategy = strategy_for(&caps, has_tools);
             let mut toolparse_retried = false;
+            // Same-candidate stream retry (see this fn's module doc): how
+            // many of the (up to `MAX_RETRIES`) mid-stream retries THIS
+            // candidate has already used. Reset per candidate -- a fresh
+            // route gets its own full budget, mirroring `toolparse_retried`
+            // just above.
+            let mut stream_retry_count: u32 = 0;
 
             loop {
                 self.bus.emit(
@@ -321,6 +352,7 @@ impl AttemptEngine {
                 attempt += 1;
 
                 let start = Instant::now();
+                let mut stream_failure = StreamFailure::default();
                 let result = match strategy {
                     Strategy::Stream => {
                         self.run_stream(
@@ -329,6 +361,7 @@ impl AttemptEngine {
                             &*backend,
                             gen_req.clone(),
                             &req.cancel,
+                            &mut stream_failure,
                         )
                         .await
                     }
@@ -409,23 +442,83 @@ impl AttemptEngine {
                             });
                         }
                         FailureClass::FailoverRetryable | FailureClass::RequestIncompatible => {
-                            if let Some(obs) = observation_for(&err) {
-                                let before = self.health.state(&endpoint);
-                                self.health.record(&endpoint, obs);
-                                if let (BreakerState::Closed, BreakerState::Open { until, kind }) =
-                                    (before, self.health.state(&endpoint))
-                                {
-                                    self.bus.emit(
-                                        req.session,
-                                        req.agent_id,
-                                        Event::BackendDegraded {
-                                            endpoint: endpoint.clone(),
-                                            breaker: kind,
-                                            until,
-                                        },
-                                    );
+                            // Same-candidate stream retry (module doc):
+                            // eligible only for a `Transport`/`ServerError`
+                            // raised AFTER at least one real chunk was read
+                            // off the stream (`stream_failure.stream_opened`,
+                            // set in `run_stream` -- a pre-stream failure,
+                            // an immediate error/end with zero content read,
+                            // or the `Strategy::Generate` path, which never
+                            // sets it, all keep today's immediate-advance
+                            // behavior), and only while THIS candidate's
+                            // budget remains. `RateLimit` and
+                            // `RequestIncompatible` (`ContextOverflow`/
+                            // `ContextTooLarge`/`BadRequest`) never match
+                            // the `Transport | ServerError` guard below, so
+                            // they always fall through to the unconditional
+                            // record-and-advance path exactly as before.
+                            let same_candidate_retry_eligible = stream_failure.stream_opened
+                                && stream_retry_count < MAX_RETRIES
+                                && matches!(
+                                    err,
+                                    BackendError::Transport { .. } | BackendError::ServerError { .. }
+                                );
+
+                            if same_candidate_retry_eligible {
+                                // This attempt failed but does NOT advance
+                                // the chain -- record its health
+                                // observation now (T-2: "each failed
+                                // attempt records exactly as today"); the
+                                // eventual chain-advancing failure (below,
+                                // once the budget is exhausted) records its
+                                // own separately.
+                                self.record_failure_observation(
+                                    req.session,
+                                    req.agent_id,
+                                    &endpoint,
+                                    &err,
+                                );
+
+                                stream_retry_count += 1;
+                                // 1-based ordinal of the UPCOMING retry:
+                                // `attempt` (the `u8` "total calls made"
+                                // counter above) already equals the ordinal
+                                // of the call that just failed (it was
+                                // incremented past it at this loop
+                                // iteration's top, before the call ran), so
+                                // the NEXT call's ordinal is one more.
+                                self.bus.emit(
+                                    req.session,
+                                    req.agent_id,
+                                    Event::StreamRestarted {
+                                        agent_id: req.agent_id,
+                                        attempt: u32::from(attempt) + 1,
+                                        discarded_text_chars: stream_failure.discarded_text_chars,
+                                        discarded_thinking_chars: stream_failure
+                                            .discarded_thinking_chars,
+                                    },
+                                );
+
+                                let sleep_for = jittered_backoff(stream_retry_count - 1);
+                                tokio::select! {
+                                    biased;
+                                    () = req.cancel.cancelled() => {
+                                        return Err(RuntimeError::Cancelled {
+                                            agent: req.agent_id,
+                                            reason: "attempt cancelled".to_string(),
+                                        });
+                                    }
+                                    () = tokio::time::sleep(sleep_for) => {}
                                 }
+                                continue;
                             }
+
+                            self.record_failure_observation(
+                                req.session,
+                                req.agent_id,
+                                &endpoint,
+                                &err,
+                            );
                             considered.push((model_ref.clone(), err.to_string()));
                             break;
                         }
@@ -548,6 +641,23 @@ impl AttemptEngine {
     /// Drives a streamed backend call, mapping `TextDelta`/`ThinkingDelta`
     /// chunks to bus events immediately as they arrive, and accumulating
     /// into the final `Done(GenerateResponse)`.
+    ///
+    /// `failure` is an out-parameter, written only on an `Err` return (left
+    /// at its `Default` -- `stream_opened: false`, zero counts -- on `Ok`,
+    /// where nothing reads it): `stream_opened` flips to `true` on the
+    /// first chunk this attempt actually reads off the stream, success or
+    /// error -- NOT merely on `backend.stream()` itself returning `Ok`. A
+    /// connection that opens at the HTTP layer and then fails before a
+    /// single `StreamChunk` is read (a proxy that accepts the socket while
+    /// the real upstream is down, an immediate reset) is indistinguishable
+    /// from a pre-open failure and must fail over immediately, exactly like
+    /// one -- the caller's "did this failure happen after the stream
+    /// opened" question (module doc) means "did real content start
+    /// arriving," not "did the initial handshake succeed."
+    /// `discarded_text_chars`/`discarded_thinking_chars` accumulate this
+    /// ONE attempt's own deltas -- already forwarded to the bus below as
+    /// they arrive -- so a caller that decides to retry can tell a
+    /// renderer exactly how much to discard via `Event::StreamRestarted`.
     async fn run_stream(
         &self,
         session: SessionId,
@@ -555,6 +665,7 @@ impl AttemptEngine {
         backend: &dyn Backend,
         req: GenerateRequest,
         cancel: &CancellationToken,
+        failure: &mut StreamFailure,
     ) -> Result<GenerateResponse, BackendError> {
         let mut stream = tokio::select! {
             biased;
@@ -569,16 +680,28 @@ impl AttemptEngine {
                 next = stream.next() => {
                     match next {
                         Some(Ok(StreamChunk::TextDelta(text))) => {
+                            failure.stream_opened = true;
+                            failure.discarded_text_chars += text.chars().count();
                             self.bus.emit(session, agent, Event::TextDelta { text });
                         }
                         Some(Ok(StreamChunk::ThinkingDelta(text))) => {
+                            failure.stream_opened = true;
+                            failure.discarded_thinking_chars += text.chars().count();
                             self.bus.emit(session, agent, Event::ThinkingDelta { text });
                         }
                         Some(Ok(StreamChunk::Done(response))) => return Ok(response),
                         // `ToolCallDelta` and any future non-exhaustive
                         // variant carry nothing this engine's stream
-                        // contract needs to forward.
-                        Some(Ok(_)) => {}
+                        // contract needs to forward, but reading one
+                        // successfully is still real content arriving.
+                        Some(Ok(_)) => {
+                            failure.stream_opened = true;
+                        }
+                        // No chunk was ever successfully read -- an error
+                        // (or immediate end) right after `stream()` opened
+                        // the connection is not distinguishable from a
+                        // pre-open failure, so `stream_opened` stays
+                        // `false` and the caller fails over immediately.
                         Some(Err(err)) => return Err(err),
                         None => {
                             return Err(BackendError::Transport {
@@ -590,4 +713,62 @@ impl AttemptEngine {
             }
         }
     }
+
+    /// This module's ONE place a failed attempt's health `Observation` is
+    /// recorded (T-2): shared by the same-candidate stream retry (a failure
+    /// that does NOT yet advance the chain) and the eventual chain-
+    /// advancing failure, so both apply the identical Closed->Open edge
+    /// detection and `Event::BackendDegraded` emission. `observation_for`
+    /// returning `None` (a `RequestIncompatible`/`Fatal`-class error) is a
+    /// documented no-op -- both call sites only ever pass an err whose
+    /// class is `FailoverRetryable` or `RequestIncompatible`, so this
+    /// silently does nothing for the latter, exactly as before this was
+    /// factored out.
+    fn record_failure_observation(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        endpoint: &EndpointId,
+        err: &BackendError,
+    ) {
+        if let Some(obs) = observation_for(err) {
+            let before = self.health.state(endpoint);
+            self.health.record(endpoint, obs);
+            if let (BreakerState::Closed, BreakerState::Open { until, kind }) =
+                (before, self.health.state(endpoint))
+            {
+                self.bus.emit(
+                    session,
+                    agent,
+                    Event::BackendDegraded {
+                        endpoint: endpoint.clone(),
+                        breaker: kind,
+                        until,
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// The information [`AttemptEngine::run_stream`] hands back to its caller on
+/// an `Err` return, via an out-parameter (see that method's own doc for
+/// why): whether the failure happened after the stream opened, and how much
+/// of THIS attempt's own content already reached the bus.
+#[derive(Debug, Default, Clone, Copy)]
+struct StreamFailure {
+    stream_opened: bool,
+    discarded_text_chars: usize,
+    discarded_thinking_chars: usize,
+}
+
+/// Draws this same-candidate stream retry's backoff sleep from
+/// `conway_core::retry`'s shared full-jitter window -- the identical policy
+/// `conway_plugin_backends::http::HttpClient::send_with_retry` draws from,
+/// so the two can never quietly disagree. `retry_index` is zero-based (`0`
+/// for the first retry -> `250ms` window, `1` for the second -> `500ms`).
+fn jittered_backoff(retry_index: u32) -> Duration {
+    let max_jitter_ms = max_jitter(retry_index).as_millis() as u64;
+    let millis = rand::rng().random_range(0..=max_jitter_ms);
+    Duration::from_millis(millis)
 }

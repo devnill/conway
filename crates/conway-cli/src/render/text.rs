@@ -80,6 +80,23 @@ impl Renderer for TextRenderer {
         match &env.event {
             Event::TextDelta { text } => self.write_delta(text)?,
             Event::ThinkingDelta { .. } => {}
+            // A mid-stream failure discarded whatever partial text this
+            // attempt had already streamed to stdout -- board item
+            // `01M1FSJ4E2S5M9KBSBJAAPJQ48`. Unlike every other diagnostic in
+            // this file, this one MUST touch stdout too: partial text
+            // already written there cannot be unprinted, so the newline
+            // marks the discard boundary before the retry's own text
+            // starts, and `docs/scripting.md`'s "Streaming" section tells a
+            // script that needs clean stdout to use `--output-format json`
+            // instead (non-streaming, so this never fires there).
+            Event::StreamRestarted { attempt, .. } => {
+                self.out.write_all(b"\n")?;
+                self.out.flush()?;
+                self.ends_with_newline = Some(true);
+                diag::warn(format!(
+                    "stream restarted (attempt {attempt}); partial output above discarded"
+                ));
+            }
             // A tool call going normally is not a warning, and the level
             // here is load-bearing rather than cosmetic. Emitting the whole
             // lifecycle at warning level did two things, and the second is
@@ -239,6 +256,54 @@ mod tests {
 
         assert_eq!(writer.contents(), b"");
         assert_eq!(writer.flush_count(), 0);
+    }
+
+    /// Board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`: partial stdout text from a
+    /// discarded stream attempt cannot be unprinted, so `StreamRestarted`
+    /// marks the discard boundary with a newline (distinct from
+    /// `ThinkingDelta`'s pure suppression above) rather than dropping it
+    /// silently. The stderr diagnostic itself is not captured here (`diag`
+    /// writes to the real process stderr, not this renderer's `out`) --
+    /// only the stdout-visible half of the contract is asserted.
+    #[test]
+    fn stream_restarted_writes_a_newline_to_stdout() {
+        let writer = RecordingWriter::default();
+        let mut renderer = TextRenderer::new(Box::new(writer.clone()));
+        let session = SessionId::new();
+        let agent = AgentId::new();
+
+        renderer
+            .on_event(&envelope(
+                session,
+                agent,
+                Event::TextDelta {
+                    text: "partial".into(),
+                },
+            ))
+            .unwrap();
+        renderer
+            .on_event(&envelope(
+                session,
+                agent,
+                Event::StreamRestarted {
+                    agent_id: agent,
+                    attempt: 2,
+                    discarded_text_chars: 7,
+                    discarded_thinking_chars: 0,
+                },
+            ))
+            .unwrap();
+        renderer
+            .on_event(&envelope(
+                session,
+                agent,
+                Event::TextDelta {
+                    text: "retried".into(),
+                },
+            ))
+            .unwrap();
+
+        assert_eq!(writer.contents(), b"partial\nretried");
     }
 
     #[test]

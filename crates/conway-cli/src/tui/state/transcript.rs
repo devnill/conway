@@ -235,6 +235,54 @@ impl AppState {
         }
     }
 
+    /// Board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`: `Event::StreamRestarted`
+    /// discarded a mid-stream failure's partial deltas -- already appended
+    /// to the transcript by `append_assistant_text`/`append_reasoning_text`
+    /// as they streamed in (T4's own doc) -- and this truncates the
+    /// in-progress entries back to their pre-delta content before appending
+    /// a visible discard notice, so the retry's own deltas resume on a
+    /// clean bubble rather than silently splicing onto the discarded
+    /// partial text.
+    ///
+    /// Bounded below by `turn_transcript_start` (mirrors
+    /// `stamp_turn_summary`'s own bound, same reasoning): only the CURRENT
+    /// turn's own last Assistant/Reasoning entry is ever a same-candidate
+    /// retry's target, never a previous turn's already-settled bubble.
+    /// Either scan is a no-op if its own discarded count is `0` (the common
+    /// case for a text-only or thinking-only partial reply) or if no
+    /// matching entry exists in that window.
+    pub(super) fn apply_stream_restarted(
+        &mut self,
+        attempt: u32,
+        discarded_text_chars: usize,
+        discarded_thinking_chars: usize,
+    ) {
+        let start = self.turn_transcript_start.min(self.transcript.len());
+        if discarded_text_chars > 0 {
+            if let Some(Entry::Assistant { text, .. }) = self.transcript[start..]
+                .iter_mut()
+                .rev()
+                .find(|e| matches!(e, Entry::Assistant { .. }))
+            {
+                truncate_tail_chars(text, discarded_text_chars);
+            }
+        }
+        if discarded_thinking_chars > 0 {
+            if let Some(Entry::Reasoning { text, .. }) = self.transcript[start..]
+                .iter_mut()
+                .rev()
+                .find(|e| matches!(e, Entry::Reasoning { .. }))
+            {
+                truncate_tail_chars(text, discarded_thinking_chars);
+            }
+        }
+        self.transcript.push(Entry::Notice {
+            text: format!(
+                "stream restarted (attempt {attempt}); partial output above discarded"
+            ),
+        });
+    }
+
     /// T4: toggle the `show_reasoning` flag. V4: the one caller of this is
     /// now the `/settings` menu's `Enter` key on the "show reasoning traces"
     /// leaf (`input::handle_settings_key`) -- the standalone `/thinking`
@@ -312,6 +360,28 @@ impl AppState {
             }
         }
     }
+}
+
+/// Removes up to `chars_to_remove` characters from the END of `text`,
+/// char-boundary safe (`String::truncate` panics on a non-char-boundary
+/// byte index, which a naive `text.len() - chars_to_remove` would risk the
+/// moment any multi-byte character is involved). `chars_to_remove` larger
+/// than `text`'s own char count truncates to empty rather than panicking or
+/// going negative -- `Event::StreamRestarted`'s discarded-char counts are
+/// this attempt's own running total and are always `<=` what was actually
+/// appended to the matching entry, but this stays defensive rather than
+/// trusting that invariant across the bus.
+fn truncate_tail_chars(text: &mut String, chars_to_remove: usize) {
+    if chars_to_remove == 0 {
+        return;
+    }
+    let keep = text.chars().count().saturating_sub(chars_to_remove);
+    let new_len = text
+        .char_indices()
+        .nth(keep)
+        .map(|(byte_index, _)| byte_index)
+        .unwrap_or(0);
+    text.truncate(new_len);
 }
 
 /// T5's valid range for `tool_preview_lines` (`1..=200`), factored out as a
@@ -886,6 +956,100 @@ mod tests {
             state.show_reasoning,
             "show_reasoning defaults true (EXPANDED by default)"
         );
+    }
+
+    /// Board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`, acceptance criterion 4:
+    /// `Event::StreamRestarted` truncates the in-progress `Entry::Assistant`
+    /// back to its pre-delta content ("hello world" minus the discarded
+    /// "world") and appends a visible discard notice naming the retry
+    /// attempt.
+    #[test]
+    fn stream_restarted_truncates_the_in_progress_assistant_entry_and_appends_a_notice() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::TextDelta {
+                text: "hello ".to_string(),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::TextDelta {
+                text: "world".to_string(),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::StreamRestarted {
+                agent_id: root,
+                attempt: 2,
+                discarded_text_chars: "world".chars().count(),
+                discarded_thinking_chars: 0,
+            },
+        ));
+
+        assert_eq!(state.transcript.len(), 2, "the assistant entry plus one notice");
+        match &state.transcript[0] {
+            Entry::Assistant { text, .. } => assert_eq!(
+                text, "hello ",
+                "truncated back to the content before the discarded delta"
+            ),
+            other => panic!("expected Entry::Assistant, got {other:?}"),
+        }
+        match &state.transcript[1] {
+            Entry::Notice { text } => {
+                assert!(text.contains("attempt 2"), "notice names the attempt: {text:?}");
+                assert!(text.contains("discarded"), "notice says discarded: {text:?}");
+            }
+            other => panic!("expected Entry::Notice, got {other:?}"),
+        }
+    }
+
+    /// The reasoning-side mirror of the test above: a `ThinkingDelta`
+    /// in-progress `Entry::Reasoning` is truncated by
+    /// `discarded_thinking_chars`, independent of (and without touching) any
+    /// `Entry::Assistant`.
+    #[test]
+    fn stream_restarted_truncates_the_in_progress_reasoning_entry() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ThinkingDelta {
+                text: "pondering ".to_string(),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ThinkingDelta {
+                text: "deeply".to_string(),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::StreamRestarted {
+                agent_id: root,
+                attempt: 2,
+                discarded_text_chars: 0,
+                discarded_thinking_chars: "deeply".chars().count(),
+            },
+        ));
+
+        match &state.transcript[0] {
+            Entry::Reasoning { text, .. } => assert_eq!(text, "pondering "),
+            other => panic!("expected Entry::Reasoning, got {other:?}"),
+        }
     }
 
     /// `ToolProgress` notes append to the matching in-flight `Entry::Tool`
