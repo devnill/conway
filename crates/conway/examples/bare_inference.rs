@@ -126,8 +126,7 @@ fn config_with_tools(tools: ToolsConfig) -> ConwayConfig {
         // allow-list is interpreted. Either is correct here.
         permissions: PermissionsConfig {
             mode: PermissionMode::Deny,
-            allowed_tools: Vec::new(),
-            denied_tools: Vec::new(),
+            ..PermissionsConfig::default()
         },
         backends: BTreeMap::new(),
         routing: RoutingSection::default(),
@@ -154,6 +153,8 @@ fn config_with_tools(tools: ToolsConfig) -> ConwayConfig {
 /// this composition surface already gets "no tools" right: it does not
 /// require a code-level override, only a value the schema already accepts.
 fn bare_inference_config() -> ConwayConfig {
+    // full literal: `ToolsConfig` has exactly one field, emptied here -- see
+    // this function's own doc for why.
     config_with_tools(ToolsConfig {
         builtin_plugins: Vec::new(),
     })

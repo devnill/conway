@@ -606,3 +606,163 @@ fn t10_every_slash_command_variant_reaches_the_palette() {
          `01M0RW29F2ATVGCV0R8H0GQEYH` closed for `/trust` and `/tree`."
     );
 }
+
+// ------------------------------------------------------------------- T11 ---
+
+/// T11: no test or example fixture spells out every field of a `[section]`
+/// config struct.
+///
+/// Commit `a0adeae` fixed five `RoutingSection` literals across three test
+/// files that broke the moment `RoutingSection` grew one field neither
+/// literal cared about -- and the compiler reported only two of the five,
+/// because the other three sat in functions never exercised by the change
+/// under review. A fixture that names every field proves nothing extra
+/// about the field(s) it actually tests, and it pays for that with a
+/// compile break on every unrelated addition to the struct -- exactly the
+/// defect class a `..Type::default()` spread exists to prevent, for any of
+/// the nine `[section]` structs that carry a `Default` impl
+/// (`RoutingSection`/`HealthSection`/`LimitsConfig`/`SessionConfig`/
+/// `PermissionsConfig`/`ModelsConfig`/`AgentsConfig`/`ToolsConfig`/
+/// `PluginsConfig`).
+///
+/// Same instrument as T9/T10: no compile-time construction proves this (a
+/// struct literal that names every field is exactly as valid Rust as one
+/// that spreads a default), so this reads source and asserts the property
+/// directly.
+///
+/// A literal is exempt if the line immediately above its comment block (the
+/// contiguous run of `//` lines directly above the opening `Type {` line, if
+/// any) starts with `// full literal: <reason>` -- for the rare case where
+/// every field genuinely is load-bearing and a spread would be pure noise
+/// (or, in production code, a deliberate pin against drift). Used sparingly:
+/// see `crates/conway/src/presets.rs`'s `default_permissions_for_one_shot`
+/// for the one production instance, and a handful of two-field
+/// `ModelsConfig`/one-field `ToolsConfig` literals in this crate's own
+/// tests where a spread would leave nothing to spread FROM.
+///
+/// Pinned as: **empty**. Every offender named in this item's own BACKGROUND
+/// is fixed; a new one -- in an existing file or a brand new test/example --
+/// fails this guard immediately rather than waiting for the next unrelated
+/// field addition to break it at compile time.
+#[test]
+fn t11_config_section_literals_spread_defaults() {
+    /// The nine `[section]` config struct names this guard polices -- every
+    /// one has a `Default` impl (`crates/conway/src/config/schema.rs`), so a
+    /// fixture that only cares about a couple of fields never needs to spell
+    /// out the rest.
+    const SECTION_TYPES: &[&str] = &[
+        "RoutingSection",
+        "HealthSection",
+        "LimitsConfig",
+        "SessionConfig",
+        "PermissionsConfig",
+        "ModelsConfig",
+        "AgentsConfig",
+        "ToolsConfig",
+        "PluginsConfig",
+    ];
+
+    /// `.rs` files under `dir` (repo-root-relative), recursively.
+    fn rs_files_under(dir: &str) -> Vec<String> {
+        fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+            entries.sort();
+            for path in entries {
+                if path.is_dir() {
+                    walk(&path, root, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(
+                        path.strip_prefix(root)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+            }
+        }
+        let root = repo_root();
+        let mut out = Vec::new();
+        walk(&root.join(dir), &root, &mut out);
+        out
+    }
+
+    /// One config-section literal that neither spreads a default nor
+    /// carries the `// full literal:` exception marker.
+    fn violations_in(file: &str, text: &str) -> Vec<String> {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut found = Vec::new();
+
+        for (idx, line) in lines.iter().enumerate() {
+            let Some(&type_name) = SECTION_TYPES
+                .iter()
+                .find(|name| line.trim_end().ends_with(&format!("{name} {{")))
+            else {
+                continue;
+            };
+            let indent = line.len() - line.trim_start().len();
+
+            // The exception marker: walk upward through the contiguous
+            // run of `//` comment lines directly above this one (if any)
+            // and accept a marker anywhere in that run -- a multi-line
+            // reason is normal prose, not just the first line of it.
+            let mut marked = false;
+            let mut above = idx;
+            while above > 0 && lines[above - 1].trim_start().starts_with("//") {
+                above -= 1;
+                if lines[above].trim_start().starts_with("// full literal:") {
+                    marked = true;
+                    break;
+                }
+            }
+            if marked {
+                continue;
+            }
+
+            // The matching close brace: the next line at this literal's
+            // own indent whose trimmed text starts with `}`.
+            let close = lines[idx + 1..].iter().position(|l| {
+                l.len() - l.trim_start().len() == indent && l.trim_start().starts_with('}')
+            });
+            let spread = match close {
+                Some(offset) => lines[idx + 1..idx + 1 + offset]
+                    .iter()
+                    .any(|l| l.trim_start().starts_with("..")),
+                // No close brace found at all: something about this scan
+                // itself is broken (a malformed file, or the block never
+                // closes) -- report it rather than silently passing.
+                None => false,
+            };
+            if !spread {
+                found.push(format!("{file}:{} ({type_name})", idx + 1));
+            }
+        }
+
+        found
+    }
+
+    let mut violations = Vec::new();
+    for rel in rs_files_under("crates/conway/tests") {
+        violations.extend(violations_in(&rel, &read(&rel)));
+    }
+    for rel in rs_files_under("crates/conway/examples") {
+        violations.extend(violations_in(&rel, &read(&rel)));
+    }
+
+    assert!(
+        violations.is_empty(),
+        "T11 CHANGED: {} config-section literal(s) spell out every field \
+         instead of spreading `..Type::default()` -- {violations:?}.\n\
+         A fixture that names every field of a `[section]` config struct \
+         breaks on every unrelated field addition to that struct (see \
+         commit a0adeae, which this guard exists to keep from recurring). \
+         Keep only the field(s) the literal actually sets/asserts on and \
+         close it with `..Type::default()`. If every field genuinely IS \
+         load-bearing here, say so with a `// full literal: <reason>` \
+         comment directly above the literal instead of leaving the missing \
+         spread unexplained.",
+        violations.len()
+    );
+}

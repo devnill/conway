@@ -336,6 +336,10 @@ fn facade_only_config(
         roles,
         health: HealthSection::default(),
         agents: AgentsConfig::default(),
+        // full literal: `ModelsConfig` has exactly two fields and both are
+        // load-bearing here -- `metadata_path` is this fixture's own JSON
+        // file and `probe_on_startup: false` keeps the startup probe out of
+        // this facade-registration scenario.
         models: ModelsConfig {
             metadata_path,
             probe_on_startup: false,

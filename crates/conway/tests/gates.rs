@@ -292,7 +292,7 @@ async fn from_config_allowlist_mode_builds_allow_list_gate() {
     let config = PermissionsConfig {
         mode: PermissionMode::Allowlist,
         allowed_tools: vec!["read".to_string()],
-        denied_tools: vec![],
+        ..PermissionsConfig::default()
     };
     let gate = gates::from_config(&config, None).expect("allowlist mode never needs a handler");
     // Behavioral check: an AllowListGate for "read" allows "read".
@@ -306,8 +306,7 @@ async fn from_config_allowlist_mode_builds_allow_list_gate() {
 async fn from_config_deny_mode_builds_deny_all_gate() {
     let config = PermissionsConfig {
         mode: PermissionMode::Deny,
-        allowed_tools: vec![],
-        denied_tools: vec![],
+        ..PermissionsConfig::default()
     };
     let gate = gates::from_config(&config, None).expect("deny mode never needs a handler");
     let decision = gate
@@ -325,8 +324,7 @@ async fn from_config_deny_mode_builds_deny_all_gate() {
 async fn from_config_prompt_mode_with_handler_builds_prompting_gate() {
     let config = PermissionsConfig {
         mode: PermissionMode::Prompt,
-        allowed_tools: vec![],
-        denied_tools: vec![],
+        ..PermissionsConfig::default()
     };
     let handler: gates::PromptHandler =
         Arc::new(|_req| Box::pin(async { PermissionDecision::AllowOnce }));
@@ -341,8 +339,7 @@ async fn from_config_prompt_mode_with_handler_builds_prompting_gate() {
 fn from_config_prompt_mode_without_handler_errors() {
     let config = PermissionsConfig {
         mode: PermissionMode::Prompt,
-        allowed_tools: vec![],
-        denied_tools: vec![],
+        ..PermissionsConfig::default()
     };
     let err = match gates::from_config(&config, None) {
         Ok(_) => panic!("expected an error when mode = prompt and no handler is supplied"),

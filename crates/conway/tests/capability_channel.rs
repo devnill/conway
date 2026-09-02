@@ -103,19 +103,19 @@ fn base_config() -> ConwayConfig {
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
         tools: ToolsConfig::default(),
+        // `default_backends` is deliberately empty here (the schema default
+        // is `["anthropic", "openai-compat"]`): every test in this file
+        // attaches its own fake backend via `.with_backend()`, and a real
+        // `BackendFactory` resolving `default_backends` would fight that.
+        // Every other field is left at its default via the spread below --
+        // that is what this item (fixture fields track only what a test
+        // depends on, close with `..Default::default()`) replaces the old
+        // "spell out every field so a new one can't sneak past" comment
+        // with; `t11_config_section_literals_spread_defaults` is the guard
+        // that now protects this instead.
         plugins: PluginsConfig {
-            install: vec![],
             default_backends: vec![],
-            subprocess: vec![],
-            mcp: vec![],
-            claude_compat: vec![],
-            // Board item 01M0X500861X9035QJEA82F94K: `PluginsConfig` grew
-            // this field after this literal was written -- `..Default::
-            // default()` is deliberately not used here (this literal
-            // predates that field and every field above it was already
-            // spelled out explicitly), so the new field is spelled out too
-            // rather than silently inheriting a default this test never
-            // chose.
+            ..PluginsConfig::default()
         },
         hooks: HooksConfig::default(),
     }
