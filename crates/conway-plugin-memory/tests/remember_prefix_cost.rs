@@ -84,12 +84,20 @@ fn remember_call_response(call_id: &str, text: &str) -> GenerateResponse {
     }
 }
 
+/// `TurnHandle::result()` is deliberately NOT used here: per `AgentLoop`'s
+/// own doc (see `crates/conway/tests/keep_alive.rs`'s module doc, the
+/// established precedent for this exact gotcha), a keep-alive turn's
+/// completion does not emit `Event::AgentFinished` -- that only ever fires
+/// once, at the session's real end (cancel/deadline/budget) -- so awaiting
+/// `result()` after every prompt on this session (`keep_alive: true`)
+/// would hang forever past the first turn. `text()` resolves on the
+/// per-turn `TurnFinished` a keep-alive session actually emits.
 async fn run_prompt(session: &SessionHandle, text: &str) {
     let turn = session.prompt(text).await.expect("prompt");
-    tokio::time::timeout(Duration::from_secs(5), turn.result())
+    tokio::time::timeout(Duration::from_secs(5), turn.text())
         .await
-        .expect("result() must not hang")
-        .expect("result() should succeed");
+        .expect("text() must not hang")
+        .expect("text() should succeed");
 }
 
 /// `(role, content)` -- the projection that actually reaches the wire (never
