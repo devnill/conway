@@ -1834,7 +1834,11 @@ impl AgentLoop {
     ///
     /// Non-`keep_alive` behavior is byte-for-byte unchanged: `state.turn`
     /// gates `max_steps` exactly as before this field existed.
-    async fn check_budget(&self, state: &LoopState, builder: &ResultBuilder) -> Option<AgentResult> {
+    async fn check_budget(
+        &self,
+        state: &LoopState,
+        builder: &ResultBuilder,
+    ) -> Option<AgentResult> {
         let budget = &self.spec.budget;
         let steps_this_turn = if self.spec.keep_alive {
             state.turn_steps
