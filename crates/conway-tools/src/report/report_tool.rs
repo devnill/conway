@@ -14,6 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use conway_core::agent::Fact;
+use conway_core::canon::canonical_json_bytes;
 use conway_core::content::{
     Artifact, ArtifactKind, PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy,
 };
@@ -24,6 +25,25 @@ use conway_core::ports::{PathArgs, RenderKind, Tool, ToolCtx, ToolOutput};
 use crate::common::{check_cancel, error_text, parse_args, text_output};
 
 const MAX_SUMMARY_CHARS: usize = 2000;
+
+/// Ceiling on `structured`'s canonical-JSON size (`conway_core::canon::
+/// canonical_json_bytes`, the same encoding `child_result_text` in
+/// `conway-runtime`'s `context/builder.rs` replays it through, so the bound
+/// enforced here is measured on exactly the bytes that later land in a
+/// parent's context). `structured` had no bound at all before this: the
+/// only bound on this tool's whole argument set was `MAX_SUMMARY_CHARS`
+/// (2000 chars, a short prose line), which says nothing about a field
+/// meant to carry real typed output.
+///
+/// 64 KiB matches `fs::read`'s own bound on a single file read
+/// (`crates/conway-tools/src/fs/read.rs`'s `TruncationPolicy::Head {
+/// max_bytes: 65_536 }`) -- the largest single-item content bound already
+/// established in this crate, and `structured` plays the same role
+/// `fs::read`'s content does: one bounded chunk of real output, not a
+/// summary. Bounding here, at the producer, with a typed refusal the child
+/// sees (never a silent trim), is the constraint this board item requires:
+/// core must never trim or substitute what a report carries.
+const MAX_STRUCTURED_BYTES: usize = 65_536;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -137,6 +157,16 @@ impl Tool for ReportTool {
 
         if args.summary.chars().count() > MAX_SUMMARY_CHARS {
             return Ok(error_text("summary exceeds 2000 characters".into()));
+        }
+
+        if let Some(structured) = &args.structured {
+            let bytes = canonical_json_bytes(structured).len();
+            if bytes > MAX_STRUCTURED_BYTES {
+                return Ok(error_text(format!(
+                    "structured exceeds {MAX_STRUCTURED_BYTES} bytes of canonical JSON \
+                     (got {bytes})"
+                )));
+            }
         }
 
         let facts: Vec<Fact> = args.facts.into_iter().map(to_fact).collect();
@@ -308,6 +338,56 @@ mod tests {
         };
         assert!(text.contains("summary exceeds 2000 characters"));
         assert!(out.artifacts.is_empty());
+    }
+
+    /// Acceptance 4: `structured` over `MAX_STRUCTURED_BYTES` of canonical
+    /// JSON is refused with a typed error naming the bound -- never
+    /// silently trimmed. The bound is enforced HERE, at the producer, so a
+    /// downstream renderer (`conway-runtime`'s `child_result_text`) never
+    /// has to trim what it replays.
+    #[tokio::test]
+    async fn structured_over_limit_is_error_naming_the_bound() {
+        let (ctx, _h) = test_ctx(PathBuf::from("/tmp/x"));
+        // A single big string field comfortably clears MAX_STRUCTURED_BYTES
+        // once wrapped in canonical JSON.
+        let big = "x".repeat(MAX_STRUCTURED_BYTES + 1);
+        let out = ReportTool::new()
+            .invoke(
+                call(serde_json::json!({
+                    "summary": "s",
+                    "structured": {"blob": big}
+                })),
+                ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        let text = match &out.blocks[0] {
+            conway_core::content::ContentBlock::Text { text } => text.clone(),
+            other => panic!("expected a text block, got {other:?}"),
+        };
+        assert!(
+            text.contains(&MAX_STRUCTURED_BYTES.to_string()),
+            "error must name the bound: {text:?}"
+        );
+        assert!(out.artifacts.is_empty());
+    }
+
+    /// `structured` at or under the bound is accepted unchanged.
+    #[tokio::test]
+    async fn structured_within_limit_is_accepted() {
+        let (ctx, _h) = test_ctx(PathBuf::from("/tmp/x"));
+        let out = ReportTool::new()
+            .invoke(
+                call(serde_json::json!({
+                    "summary": "s",
+                    "structured": {"k": 1}
+                })),
+                ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error);
     }
 
     #[tokio::test]

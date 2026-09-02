@@ -105,7 +105,15 @@ impl Tool for SteerTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_steer"),
-            description: "Send a steering message to a running child agent".into(),
+            description: "Send `text` to a running child agent, to redirect it or hand it \
+                information it did not have when it started. `agent_id` must be the id a \
+                prior `conway_fork`/`conway_spawn` call returned -- there is no other way \
+                to name a child. The message is delivered at the child's next turn \
+                boundary: it is queued, not injected immediately, so it never interrupts a \
+                tool call already in flight (a child mid-`bash` finishes that call first). \
+                Prefer `conway_cancel` instead when the child should stop entirely rather \
+                than keep going on new information."
+                .into(),
             schema: schemars::schema_for!(SteerArgs),
             category: ToolCategory::Delegate,
             permission: PermissionClass::RequiresApproval,
@@ -151,7 +159,15 @@ impl Tool for AwaitTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_await"),
-            description: "Block for a child agent's terminal result".into(),
+            description: "Blocks this turn until the named child agent finishes, then \
+                returns its terminal result: summary, any typed facts and artifacts it \
+                reported, any structured output, and its terminal status (completed, \
+                failed, cancelled, or budget-exceeded). If the child already finished \
+                before this call, it returns immediately with that same result -- waiting \
+                never blocks longer than the child actually ran. To fan out several \
+                children, keep working (or fire more forks/spawns) instead of awaiting \
+                each one right away; await each only once you actually need its result."
+                .into(),
             schema: schemars::schema_for!(AwaitArgs),
             category: ToolCategory::Delegate,
             permission: PermissionClass::Safe,
@@ -222,5 +238,58 @@ impl Tool for CancelTool {
             format!("cancelled agent {target}: {reason}"),
             TRUNCATION,
         ))
+    }
+}
+
+#[cfg(test)]
+mod description_tests {
+    use super::*;
+
+    /// GP-14 (declaration honesty): `conway_steer`'s description must say
+    /// the message lands at the child's next turn boundary, never mid-tool-
+    /// call, and must point at `conway_cancel` as the alternative when the
+    /// child should stop rather than continue. Both facts are verified
+    /// against the runtime (`AgentLoop::run_inner`'s `drain_inbox` call at
+    /// the top of its turn loop, before any tool dispatch) before being
+    /// promised here.
+    #[test]
+    fn steer_description_names_turn_boundary_and_cancel_alternative() {
+        let description = SteerTool::new().spec().description;
+        assert!(
+            description.contains("turn boundary"),
+            "description must state delivery happens at the next turn boundary: {description:?}"
+        );
+        assert!(
+            description.contains("conway_cancel"),
+            "description must point at conway_cancel as the alternative: {description:?}"
+        );
+    }
+
+    /// GP-14: `conway_await`'s description must say it blocks, and must
+    /// name every part of the terminal result it hands back (facts,
+    /// artifacts, structured output) -- not just the summary line the old
+    /// one-sentence description implied. "Returns immediately for an
+    /// already-finished child" is verified against `AgentTree::await_result`
+    /// (its `watch::Receiver::borrow()` check before ever awaiting
+    /// `changed()`).
+    #[test]
+    fn await_description_names_blocks_and_result_shape() {
+        let description = AwaitTool::new().spec().description;
+        assert!(
+            description.contains("blocks") || description.contains("waits"),
+            "description must say it blocks/waits: {description:?}"
+        );
+        assert!(
+            description.contains("facts"),
+            "description must mention facts: {description:?}"
+        );
+        assert!(
+            description.contains("artifacts"),
+            "description must mention artifacts: {description:?}"
+        );
+        assert!(
+            description.contains("structured"),
+            "description must mention structured output: {description:?}"
+        );
     }
 }

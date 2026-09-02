@@ -10,9 +10,11 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use conway_core::agent::{AgentResult, Fact, ResultStatus};
 use conway_core::capabilities::CacheMode;
 use conway_core::content::{
-    ContentBlock, PermissionClass, Role, StopReason, ToolCategory, ToolResult, ToolSpec, Usage,
+    Artifact, ArtifactKind, ContentBlock, PermissionClass, Role, StopReason, ToolCategory,
+    ToolResult, ToolSpec, Usage,
 };
 use conway_core::ids::{AgentId, LogSeq, ModelId, SeqRange, SessionId, ToolName};
 use conway_core::log::LogRecord;
@@ -335,6 +337,74 @@ fn steer_and_toolresults_input() -> ContextInput {
     }
 }
 
+fn child_result_input() -> ContextInput {
+    let child = agent_spawn_child();
+    let result = {
+        let mut r = AgentResult::new(
+            child,
+            session_parent(),
+            ResultStatus::Completed,
+            "reviewed the diff, found one race",
+        );
+        r.facts.push(Fact {
+            key: "files_reviewed".into(),
+            value: serde_json::Value::String("3".into()),
+            source: Some("git diff --stat".into()),
+        });
+        r.artifacts.push(Artifact {
+            id: "tc_9-artifact-0".into(),
+            kind: ArtifactKind::File,
+            path: Some(std::path::PathBuf::from("src/lib.rs")),
+            media_type: None,
+            bytes: None,
+            label: "the fix".into(),
+        });
+        r.structured = Some(serde_json::json!({"races_found": 1}));
+        r
+    };
+    let own_records: Vec<LogRecord> = vec![LogRecord::ChildResultRecord {
+        seq: LogSeq(1),
+        ts: ts(),
+        result,
+        prov: Provenance::ChildResult { from: child },
+    }];
+    let mut nodes = vec![path_node(
+        session_self(),
+        LogSeq(0),
+        NodeStamp::Head,
+        LogRecord::UserTurn {
+            seq: LogSeq(0),
+            ts: ts(),
+            text: "Please review src/lib.rs".into(),
+            prov: Provenance::UserPrompt,
+        },
+    )];
+    for r in own_records {
+        let seq = r.seq().unwrap();
+        nodes.push(path_node(session_self(), seq, NodeStamp::Own, r));
+    }
+    ContextInput {
+        agent_id: agent_root(),
+        turn: 1,
+        model: ModelId::new("claude-sonnet-4-6"),
+        cache_mode: CacheMode::None,
+        agent_kind: AgentKind::Root,
+        system_prompt: Some(SystemPromptSpec {
+            agent_def: "reviewer".into(),
+            text: "You are a careful reviewer.".into(),
+        }),
+        instructions: vec![],
+        skills: vec![SkillFragment {
+            name: "diff-review".into(),
+            text: "Review diffs for races.".into(),
+        }],
+        tools: vec![sample_tool("read"), sample_tool("write")],
+        path: ResolvedPath { nodes },
+        cache_ttl: CacheTtl::FiveMinutes,
+        curator_failed: None,
+    }
+}
+
 // ---------------------------------------------------------------------
 // Golden-file harness
 // ---------------------------------------------------------------------
@@ -390,6 +460,7 @@ fn discriminant(provenance: &Provenance) -> &'static str {
         Provenance::ParentSteer { .. } => "parent_steer",
         Provenance::ToolResult { .. } => "tool_result",
         Provenance::SystemNote { .. } => "system_note",
+        Provenance::ChildResult { .. } => "child_result",
         _ => "unknown",
     }
 }
@@ -508,6 +579,38 @@ fn context_with_steer_and_toolresults() {
     assert_golden("context_with_steer_and_toolresults", &segments);
 }
 
+/// A `ChildResultRecord` with facts, an artifact, and structured output all
+/// reaches the parent's context, not just its summary — see
+/// `context/builder.rs`'s `child_result_text`.
+#[test]
+fn context_child_result() {
+    let input = child_result_input();
+    let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+    let order: Vec<&str> = segments
+        .iter()
+        .map(|s| discriminant(&s.provenance))
+        .collect();
+    assert_eq!(
+        order,
+        vec!["agent_def", "skill", "tool_registry", "user_prompt", "child_result"]
+    );
+    assert_eq!(report.segments.len(), segments.len());
+
+    let content = &segments.last().unwrap().content;
+    let text = match &content[0] {
+        ContentBlock::Text { text } => text.clone(),
+        other => panic!("expected a text block, got {other:?}"),
+    };
+    assert!(text.contains("facts:"));
+    assert!(text.contains("files_reviewed: 3 (source: git diff --stat)"));
+    assert!(text.contains("artifacts:"));
+    assert!(text.contains("file: tc_9-artifact-0 (src/lib.rs)"));
+    assert!(text.contains(r#"structured: {"races_found":1}"#));
+
+    assert_golden("context_child_result", &segments);
+}
+
 // ---------------------------------------------------------------------
 // Behavioral tests
 // ---------------------------------------------------------------------
@@ -619,6 +722,7 @@ fn cache_neutrality_holds_for_every_golden_case() {
         fork_inherited_input(),
         spawn_clean_input(),
         steer_and_toolresults_input(),
+        child_result_input(),
     ] {
         let (mut with_cache, _) = ContextBuilder::new().build(&input).unwrap();
         conway_core::segment::strip_cache_hints(&mut with_cache);
