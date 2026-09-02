@@ -16,6 +16,7 @@
 !**/.conway/permissions.json
 !**/.conway/settings.json
 !**/.conway/agents/
+!**/.conway/instructions.md
 
 # ideate metadata — local-only tooling state (not tracked)
 .ideate/
