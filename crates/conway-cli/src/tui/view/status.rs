@@ -364,7 +364,11 @@ fn resolve_fields(
         // than rendering a blank line (bad input never produces a
         // broken UI -- it falls back to defaults). The Lean order already
         // includes `mode`, so the forced-in step below is a no-op here.
-        return resolve_fields(&StatusLineConfig::default(), permission_mode, has_contributions);
+        return resolve_fields(
+            &StatusLineConfig::default(),
+            permission_mode,
+            has_contributions,
+        );
     }
     if permission_mode != PermissionMode::Prompt && !parsed.contains(&StatusLineField::Mode) {
         parsed.push(StatusLineField::Mode);
@@ -735,10 +739,7 @@ fn mode_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
             vec![
                 Span::raw(ui),
                 Span::raw(" · "),
-                Span::styled(
-                    state.permission_mode.label().to_string(),
-                    theme.fatal_error,
-                ),
+                Span::styled(state.permission_mode.label().to_string(), theme.fatal_error),
             ],
             vec![Span::styled(
                 state.permission_mode.label().to_string(),
