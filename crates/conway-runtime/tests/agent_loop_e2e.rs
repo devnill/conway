@@ -97,6 +97,25 @@ fn tool_call_response(call_id: &str, tool: &str, args: serde_json::Value) -> Gen
     }
 }
 
+/// [`tool_call_response`], but the model also says something alongside the
+/// call -- the shape a budget/cancel/deadline termination mid-tool-batch
+/// needs to prove it reports (board item `01M1FQ3TGHMRC9EECN4JX0MXM3`'s
+/// extension): a turn that dispatches a tool call is not necessarily a turn
+/// with no text.
+fn tool_call_response_with_text(
+    text: &str,
+    call_id: &str,
+    tool: &str,
+    args: serde_json::Value,
+) -> GenerateResponse {
+    GenerateResponse {
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        ..tool_call_response(call_id, tool, args)
+    }
+}
+
 // ---------------------------------------------------------------------
 // A local scripted `Backend` double that records every request and,
 // optionally, appends a marker to a shared ordering log on every call --
@@ -1142,6 +1161,232 @@ async fn budget_max_tool_calls_exceeded_stops_the_loop() {
         other => panic!("expected BudgetExceeded, got {other:?}"),
     }
     assert_eq!(backend.calls().len(), 2);
+}
+
+/// Board item `01M1FQ3TGHMRC9EECN4JX0MXM3`'s extension, acceptance
+/// criterion 1: before this item, every `check_budget` dimension passed
+/// `""` as trailing text, so a budget-exceeded agent that had just SAID
+/// something (alongside the tool call its next turn never got to make)
+/// still reported `"(no output; terminal status: budget_exceeded)"` --
+/// indistinguishable from an agent that produced nothing at all. This pins
+/// that the most recent turn's own text now survives onto the terminal
+/// result.
+#[tokio::test]
+async fn budget_max_steps_exceeded_reports_the_last_assistant_text() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (session, agent) = seed_prompt(&*store, "planner", "hello").await;
+    let backend = Arc::new(TrackingBackend::new(
+        "b",
+        vec![
+            tool_call_response_with_text(
+                "first, let me look at the file",
+                "tc_1",
+                "read",
+                serde_json::json!({}),
+            ),
+            tool_call_response_with_text(
+                "now checking a second one",
+                "tc_2",
+                "read",
+                serde_json::json!({}),
+            ),
+        ],
+    ));
+    let router = Arc::new(CapturingRouter::ok(vec![make_route("b", "m")]));
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let tool: Arc<dyn Tool> = Arc::new(RecordingTool {
+        name: ToolName::new("read"),
+        output: "ok".to_string(),
+        order: None,
+    });
+
+    let budget = Budget {
+        max_steps: 2,
+        ..Budget::default()
+    };
+    let harness = build_loop(
+        session,
+        agent,
+        store,
+        router,
+        backend.clone(),
+        vec![tool],
+        gate,
+        budget,
+        HeadroomPolicy::default(),
+        None,
+        "planner",
+    );
+
+    let result = harness.agent_loop.run().await;
+    assert!(matches!(result.status, ResultStatus::BudgetExceeded { .. }));
+    assert_eq!(
+        result.summary, "now checking a second one",
+        "the budget-exceeded summary must be the most recent turn's own text, \
+         not a bare status name"
+    );
+}
+
+/// Companion to the above: a model that only ever emits tool calls, never
+/// prose, still did real work -- acceptance criterion 2, "distinguishes
+/// 'no work' from 'stopped before reporting'". The terminal summary must
+/// name that work happened, not fall through to the SAME
+/// "(no output; ...)" wording a genuinely idle agent gets.
+#[tokio::test]
+async fn budget_max_tool_calls_exceeded_with_no_text_reports_a_stopped_mid_run_marker() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (session, agent) = seed_prompt(&*store, "planner", "hello").await;
+    let backend = Arc::new(TrackingBackend::new(
+        "b",
+        vec![
+            tool_call_response("tc_1", "read", serde_json::json!({})),
+            tool_call_response("tc_2", "read", serde_json::json!({})),
+            tool_call_response("tc_3", "read", serde_json::json!({})),
+        ],
+    ));
+    let router = Arc::new(CapturingRouter::ok(vec![make_route("b", "m")]));
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let tool: Arc<dyn Tool> = Arc::new(RecordingTool {
+        name: ToolName::new("read"),
+        output: "ok".to_string(),
+        order: None,
+    });
+
+    let budget = Budget {
+        max_tool_calls: Some(2),
+        ..Budget::default()
+    };
+    let harness = build_loop(
+        session,
+        agent,
+        store,
+        router,
+        backend.clone(),
+        vec![tool],
+        gate,
+        budget,
+        HeadroomPolicy::default(),
+        None,
+        "planner",
+    );
+
+    let result = harness.agent_loop.run().await;
+    assert!(matches!(result.status, ResultStatus::BudgetExceeded { .. }));
+    assert!(
+        !result.summary.contains("no output"),
+        "a run that dispatched tool calls must not read like one that did \
+         nothing: {:?}",
+        result.summary
+    );
+    assert!(
+        result.summary.contains("tool call"),
+        "the stopped-mid-run marker must name that tool calls were \
+         dispatched: {:?}",
+        result.summary
+    );
+}
+
+/// The other half of criterion 2: a termination before this agent's very
+/// first turn ever ran really is "no work" -- `ResultBuilder::resolve`'s
+/// status-naming fallback is still the correct, honest summary for it, and
+/// this item must not paper over that with a misleading "stopped mid-run"
+/// marker when nothing had actually started.
+#[tokio::test]
+async fn budget_deadline_already_elapsed_with_no_turns_run_names_the_status_not_a_marker() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (session, agent) = seed_prompt(&*store, "planner", "hello").await;
+    let backend = Arc::new(TrackingBackend::new("b", vec![text_response("hi")]));
+    let router = Arc::new(CapturingRouter::ok(vec![make_route("b", "m")]));
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    let budget = Budget {
+        deadline: Some(Utc::now() - chrono::Duration::seconds(5)),
+        ..Budget::default()
+    };
+    let harness = build_loop(
+        session,
+        agent,
+        store,
+        router,
+        backend.clone(),
+        vec![],
+        gate,
+        budget,
+        HeadroomPolicy::default(),
+        None,
+        "planner",
+    );
+
+    let result = harness.agent_loop.run().await;
+    assert!(matches!(result.status, ResultStatus::BudgetExceeded { .. }));
+    assert_eq!(backend.calls().len(), 0);
+    assert_eq!(
+        result.summary, "(no output; terminal status: budget_exceeded)",
+        "a termination before any turn ran must still name the status, not \
+         a stopped-mid-run marker: {:?}",
+        result.summary
+    );
+}
+
+/// Acceptance criterion 1's third named terminal path, `finish_error`'s
+/// `Failed` arm: a backend failure that ends the run entirely still lands
+/// through `AgentLoop::run`'s `(RuntimeError, LoopState)` error tuple, not
+/// through `check_budget`/`finish_cancelled` -- proving `last_assistant_text`
+/// survives THAT path too, not just the two already covered above. The
+/// first turn succeeds and says something; the second turn's backend call
+/// fails outright (`TrackingBackend`'s script is exhausted), which
+/// `AttemptEngine::execute` reports as its "every candidate failed, none
+/// left to try" error, ending the whole run `Failed` with no candidate
+/// left standing.
+#[tokio::test]
+async fn backend_failure_after_a_successful_turn_reports_the_last_assistant_text() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (session, agent) = seed_prompt(&*store, "planner", "hello").await;
+    // Only one scripted response: the first turn succeeds and dispatches a
+    // tool call; the second turn's `generate` call finds the script
+    // exhausted and fails outright.
+    let backend = Arc::new(TrackingBackend::new(
+        "b",
+        vec![tool_call_response_with_text(
+            "investigating the read tool's output",
+            "tc_1",
+            "read",
+            serde_json::json!({}),
+        )],
+    ));
+    let router = Arc::new(CapturingRouter::ok(vec![make_route("b", "m")]));
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let tool: Arc<dyn Tool> = Arc::new(RecordingTool {
+        name: ToolName::new("read"),
+        output: "ok".to_string(),
+        order: None,
+    });
+
+    let harness = build_loop(
+        session,
+        agent,
+        store,
+        router,
+        backend.clone(),
+        vec![tool],
+        gate,
+        Budget::default(),
+        HeadroomPolicy::default(),
+        None,
+        "planner",
+    );
+
+    let result = harness.agent_loop.run().await;
+    assert!(
+        matches!(result.status, ResultStatus::Failed { .. }),
+        "expected Failed, got {:?}",
+        result.status
+    );
+    assert_eq!(
+        result.summary, "investigating the read tool's output",
+        "a late backend failure must still report the last turn's own \
+         text, not a bare status name"
+    );
 }
 
 #[tokio::test]
