@@ -23,7 +23,7 @@ use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use conway_core::content::{ContentBlock, StopReason, ToolSpec, Usage};
+use conway_core::content::{CacheAccounting, ContentBlock, StopReason, ToolSpec, Usage};
 use conway_core::error::BackendError;
 use conway_core::ports::{BoxStream, GenerateResponse, StreamChunk};
 use eventsource_stream::Eventsource;
@@ -109,7 +109,13 @@ async fn drive(
     let mut text_buffer = String::new();
     let mut thinking_buffer = String::new();
     let mut signature_buffer = String::new();
-    let mut usage = Usage::default();
+    // Neutral sentinel until a real `usage` frame arrives (see the same
+    // seed in openai_compat/stream.rs for why `Usage::default()` alone is
+    // no longer safe here).
+    let mut usage = Usage {
+        cache_accounting: CacheAccounting::NotReported,
+        ..Usage::default()
+    };
     let mut stop = StopReason::EndTurn;
 
     loop {
