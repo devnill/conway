@@ -592,15 +592,24 @@ async fn three_consecutive_mid_stream_failures_advance_the_chain_naming_the_last
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
         100,
         vec![
-            Turn::Fail(BackendError::Transport {
-                detail: "first".into(),
-            }),
-            Turn::Fail(BackendError::Transport {
-                detail: "second".into(),
-            }),
-            Turn::Fail(BackendError::Transport {
-                detail: "third".into(),
-            }),
+            Turn::FailAfterDeltas(
+                vec!["one ".into()],
+                BackendError::Transport {
+                    detail: "first".into(),
+                },
+            ),
+            Turn::FailAfterDeltas(
+                vec!["two ".into()],
+                BackendError::Transport {
+                    detail: "second".into(),
+                },
+            ),
+            Turn::FailAfterDeltas(
+                vec!["three ".into()],
+                BackendError::Transport {
+                    detail: "third".into(),
+                },
+            ),
         ],
     ));
     let b = Arc::new(RecordingBackend::new(
@@ -670,7 +679,10 @@ async fn cancellation_during_same_candidate_backoff_sleep_returns_cancelled_prom
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
         100,
         vec![
-            Turn::Fail(BackendError::Transport { detail: "1".into() }),
+            Turn::FailAfterDeltas(
+                vec!["partial".into()],
+                BackendError::Transport { detail: "1".into() },
+            ),
             Turn::Fail(BackendError::Transport { detail: "2".into() }),
         ],
     ));
@@ -775,15 +787,13 @@ async fn model_decision_before_every_call_with_monotonic_attempt() {
 // Health recording per T-2 class
 // ---------------------------------------------------------------------
 
-// `RecordingBackend::stream()` always returns `Ok(_)` for the outer
-// `backend.stream()` call -- a `Turn::Fail` only ever fails the FIRST chunk
-// of an already-open stream (`decompose`/the `stream()` impl above), never
-// the initial `backend.stream()` response itself. So every `Turn::Fail`
-// used with `Strategy::Stream` in this file is, by construction, a
-// mid-stream failure eligible for the same-candidate stream retry (board
-// item `01M1FSJ4E2S5M9KBSBJAAPJQ48`) when it classifies `Transport`/
-// `ServerError` -- this test now exercises the retry-then-advance shape:
-// three consecutive mid-stream `Transport` failures on route `a` (its whole
+// Same-candidate stream retry (board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`) is
+// eligible only once at least one real chunk was read off the stream --
+// `Turn::Fail` fails the stream's very FIRST poll with zero content, which
+// must fail over immediately (indistinguishable from a pre-open failure);
+// `Turn::FailAfterDeltas` genuinely opens the stream first, which is what
+// this test needs to exercise the retry-then-advance shape: three
+// consecutive mid-stream `Transport` failures on route `a` (its whole
 // same-candidate budget) before the chain advances to route `b`.
 #[tokio::test(start_paused = true)]
 async fn health_records_transport_error_retries_same_candidate_then_advances() {
@@ -792,9 +802,18 @@ async fn health_records_transport_error_retries_same_candidate_then_advances() {
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
         100,
         vec![
-            Turn::Fail(BackendError::Transport { detail: "1".into() }),
-            Turn::Fail(BackendError::Transport { detail: "2".into() }),
-            Turn::Fail(BackendError::Transport { detail: "3".into() }),
+            Turn::FailAfterDeltas(
+                vec!["one".into()],
+                BackendError::Transport { detail: "1".into() },
+            ),
+            Turn::FailAfterDeltas(
+                vec!["two".into()],
+                BackendError::Transport { detail: "2".into() },
+            ),
+            Turn::FailAfterDeltas(
+                vec!["three".into()],
+                BackendError::Transport { detail: "3".into() },
+            ),
         ],
     ));
     let b = Arc::new(RecordingBackend::new(
@@ -1432,49 +1451,27 @@ async fn max_tokens_defaults_to_headroom_and_override_passes_through_unclamped()
 
 #[tokio::test(start_paused = true)]
 async fn exhausting_all_routes_returns_no_candidate_enumerating_failures() {
-    // Three identical `Turn::Fail`s per route, not one: board item
-    // `01M1FSJ4E2S5M9KBSBJAAPJQ48`'s same-candidate stream retry now
-    // retries a mid-stream `Transport`/`ServerError` on the SAME candidate
-    // twice more before advancing (`RecordingBackend::stream()` always
-    // "opens" -- see `health_records_transport_error_retries_same_
-    // candidate_then_advances`'s own comment -- so every `Turn::Fail` here
-    // is mid-stream and eligible). `considered` still names each route's
-    // LAST error, so repeating the identical message keeps this test's own
-    // assertions unchanged.
+    // A single `Turn::Fail` per route: `Turn::Fail` fails the stream's very
+    // FIRST poll with zero content, which board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`'s
+    // same-candidate stream retry deliberately does NOT retry (indistinguishable
+    // from a pre-open failure -- see `run_stream`'s own doc), so each route
+    // is exhausted after exactly one call, same as before that item.
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
         100,
-        vec![
-            Turn::Fail(BackendError::Transport {
-                detail: "a down".into(),
-            }),
-            Turn::Fail(BackendError::Transport {
-                detail: "a down".into(),
-            }),
-            Turn::Fail(BackendError::Transport {
-                detail: "a down".into(),
-            }),
-        ],
+        vec![Turn::Fail(BackendError::Transport {
+            detail: "a down".into(),
+        })],
     ));
     let b = Arc::new(RecordingBackend::new(
         "b",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
         100,
-        vec![
-            Turn::Fail(BackendError::ServerError {
-                status: 503,
-                detail: "b down".into(),
-            }),
-            Turn::Fail(BackendError::ServerError {
-                status: 503,
-                detail: "b down".into(),
-            }),
-            Turn::Fail(BackendError::ServerError {
-                status: 503,
-                detail: "b down".into(),
-            }),
-        ],
+        vec![Turn::Fail(BackendError::ServerError {
+            status: 503,
+            detail: "b down".into(),
+        })],
     ));
     let fx = fixture(backends_map(vec![
         ("a", a as Arc<dyn Backend>),

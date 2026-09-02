@@ -444,11 +444,12 @@ impl AttemptEngine {
                         FailureClass::FailoverRetryable | FailureClass::RequestIncompatible => {
                             // Same-candidate stream retry (module doc):
                             // eligible only for a `Transport`/`ServerError`
-                            // raised AFTER `backend.stream()` itself
-                            // returned `Ok` (`stream_failure.stream_opened`
-                            // -- a pre-stream failure, or the
-                            // `Strategy::Generate` path, which never sets
-                            // it, keeps today's immediate-advance
+                            // raised AFTER at least one real chunk was read
+                            // off the stream (`stream_failure.stream_opened`,
+                            // set in `run_stream` -- a pre-stream failure,
+                            // an immediate error/end with zero content read,
+                            // or the `Strategy::Generate` path, which never
+                            // sets it, all keep today's immediate-advance
                             // behavior), and only while THIS candidate's
                             // budget remains. `RateLimit` and
                             // `RequestIncompatible` (`ContextOverflow`/
@@ -643,15 +644,20 @@ impl AttemptEngine {
     ///
     /// `failure` is an out-parameter, written only on an `Err` return (left
     /// at its `Default` -- `stream_opened: false`, zero counts -- on `Ok`,
-    /// where nothing reads it): `stream_opened` flips to `true` the moment
-    /// `backend.stream()` itself returns `Ok` (i.e. BEFORE the loop below
-    /// ever runs), which is exactly the caller's "did this failure happen
-    /// after the stream opened" question for same-candidate retry
-    /// eligibility (module doc). `discarded_text_chars`/
-    /// `discarded_thinking_chars` accumulate this ONE attempt's own deltas
-    /// -- already forwarded to the bus below as they arrive -- so a caller
-    /// that decides to retry can tell a renderer exactly how much to
-    /// discard via `Event::StreamRestarted`.
+    /// where nothing reads it): `stream_opened` flips to `true` on the
+    /// first chunk this attempt actually reads off the stream, success or
+    /// error -- NOT merely on `backend.stream()` itself returning `Ok`. A
+    /// connection that opens at the HTTP layer and then fails before a
+    /// single `StreamChunk` is read (a proxy that accepts the socket while
+    /// the real upstream is down, an immediate reset) is indistinguishable
+    /// from a pre-open failure and must fail over immediately, exactly like
+    /// one -- the caller's "did this failure happen after the stream
+    /// opened" question (module doc) means "did real content start
+    /// arriving," not "did the initial handshake succeed."
+    /// `discarded_text_chars`/`discarded_thinking_chars` accumulate this
+    /// ONE attempt's own deltas -- already forwarded to the bus below as
+    /// they arrive -- so a caller that decides to retry can tell a
+    /// renderer exactly how much to discard via `Event::StreamRestarted`.
     async fn run_stream(
         &self,
         session: SessionId,
@@ -666,7 +672,6 @@ impl AttemptEngine {
             () = cancel.cancelled() => return Err(BackendError::Cancelled),
             res = backend.stream(req) => res?,
         };
-        failure.stream_opened = true;
 
         loop {
             tokio::select! {
@@ -675,18 +680,28 @@ impl AttemptEngine {
                 next = stream.next() => {
                     match next {
                         Some(Ok(StreamChunk::TextDelta(text))) => {
+                            failure.stream_opened = true;
                             failure.discarded_text_chars += text.chars().count();
                             self.bus.emit(session, agent, Event::TextDelta { text });
                         }
                         Some(Ok(StreamChunk::ThinkingDelta(text))) => {
+                            failure.stream_opened = true;
                             failure.discarded_thinking_chars += text.chars().count();
                             self.bus.emit(session, agent, Event::ThinkingDelta { text });
                         }
                         Some(Ok(StreamChunk::Done(response))) => return Ok(response),
                         // `ToolCallDelta` and any future non-exhaustive
                         // variant carry nothing this engine's stream
-                        // contract needs to forward.
-                        Some(Ok(_)) => {}
+                        // contract needs to forward, but reading one
+                        // successfully is still real content arriving.
+                        Some(Ok(_)) => {
+                            failure.stream_opened = true;
+                        }
+                        // No chunk was ever successfully read -- an error
+                        // (or immediate end) right after `stream()` opened
+                        // the connection is not distinguishable from a
+                        // pre-open failure, so `stream_opened` stays
+                        // `false` and the caller fails over immediately.
                         Some(Err(err)) => return Err(err),
                         None => {
                             return Err(BackendError::Transport {
