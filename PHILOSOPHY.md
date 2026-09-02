@@ -631,17 +631,6 @@ and that is the whole distinction: it is what lets conway be agnostic in the
 harness and usable on the first run of the binary, without either fact
 costing the other.
 
-> **Where the tree is today.** The binary does not yet turn on anything
-> beyond the harness's own default set described above. `conway.routing`,
-> `conway.stepguard`, `conway.skills`, `conway.memory`, `conway.path`,
-> `conway.discover`, `conway.trim`, `conway.names`, and MCP client support
-> all exist and install, but ship off; compaction is the one first-party
-> capability not written yet — see the note under
-> [First-party plugins](#first-party-plugins-and-why-they-are-not-defaults)
-> for exactly what exists. Becoming the opinionated, fully-equipped binary
-> this section describes is tracked work, not a description of what
-> installing conway gives you today.
-
 **Why it has to become that**, in increasing order of importance. It is the
 clearest demonstration that capability composes granularly at all — a real
 application, assembled from pieces you can each see and switch off, is more
