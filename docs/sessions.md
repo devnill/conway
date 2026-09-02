@@ -409,3 +409,21 @@ that exclusion applies fresh to that one request, is not itself persisted
 as a `context_mask` record, and is a Rust extension point for a host
 application to program, not a slash command or CLI flag available in this
 build today.
+
+**Forking at a clean point is a lever on what gets SENT going forward, not a
+discount on what a fork child itself pays.** A forked child's assembled
+context is its parent's entire inherited prefix, unbounded, plus its own
+new turns (`crates/conway-runtime/src/context/path.rs`'s fork-origin branch
+walks the parent's ancestry with no truncation) — so "fork instead of
+continuing to grow one session" trades one session's ever-larger resend for
+a fresh session that itself resends that same accumulated prefix, in full,
+on every one of its own turns. This is genuinely cheaper only when the
+provider actually reuses the shared byte-prefix across requests — on a
+provider that reports no cache accounting, or genuinely does none, a fork
+child pays for its whole inherited history again on every turn it takes,
+exactly like the un-forked session it was meant to relieve. See
+[`agents.md`](agents.md#fork-and-spawn-the-two-primitives) for the fork-cost
+model this applies to, and
+[`providers.md`](providers.md#does-ollama-cloud-actually-cache-prefixes) for
+which providers' caching is actually confirmed versus assumed — Ollama
+Cloud, as of this writing, is the latter.

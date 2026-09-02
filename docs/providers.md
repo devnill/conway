@@ -540,6 +540,109 @@ context ceiling comes from"](#where-a-context-ceiling-comes-from) below for
 the full precedence story and why this matters even before you've written a
 `models.json` entry of your own.
 
+### Does Ollama Cloud actually cache prefixes?
+
+A real session against `ollama_cloud/glm-5.2` (2026-09-01, agent
+`01M1F6102TXRAW2GA7JVYY34N7`) reported `input_tokens: 9,749,245`,
+`cache_read_tokens: 0`, `cache_write_tokens: 0` across 81 turns — a
+~120K-token resend on every single step. Before treating that as a missed
+optimization, this section establishes what's actually known, code-level,
+about whether there's anything to hit:
+
+**Established, by reading the decoders, not by guessing:**
+
+- **The native `/api/chat` path (governs whenever a real context window is
+  resolved — true for `glm-5.2`, so true of the 9.7M-token session above)
+  carries no cache field in its wire format at all.** Confirmed by reading
+  `crates/conway-plugin-backends/src/openai_compat/ollama_native.rs`:
+  the non-streaming response struct and the NDJSON streaming chunk struct
+  each expose only `prompt_eval_count`/`eval_count` — there is no field to
+  read even if the server wanted to report one. `cache_read_tokens`/
+  `cache_write_tokens` are hardcoded `0` with `cache_accounting:
+  CacheAccounting::NotReported` (both the non-streaming mapper and the
+  streaming sentinel) for exactly this reason — not a bug where conway
+  fails to read a field that's there, but an accurate reflection of a wire
+  format with nothing to read. This answers, for the native path, the
+  question of whether `cache_read_tokens` reads zero because nothing was
+  cached or because conway never reads the field: it's neither — the field
+  doesn't exist on the wire, so there is nothing *to* read, reported or
+  not. See the "native `/api/chat` path carries no cache accounting" note
+  above, and `docs/interactive.md`'s `tokens` status-line field for how
+  `NotReported` renders.
+- **The OpenAI-compatible `/v1/chat/completions` path's decoder (`wire.rs`
+  `map_usage`) is generic and already reads a cache field if one is
+  present** — `usage.prompt_tokens_details.cached_tokens` (OpenAI's shape)
+  or `usage.cached_tokens` (Kimi's shape), either one, and sets
+  `cache_accounting: Reported` whenever either is `Some` (even `Some(0)`,
+  the provider explicitly reporting zero hits) and `NotReported` only when
+  neither shape appears in the response at all. So on this path the same
+  question is also answered in code: there is no unread-field bug here
+  either — whatever the server sends, conway surfaces it.
+- **`glm-5.2` sessions never exercise that compat-path decoder for
+  `cache_read_tokens`, because a resolved window routes them to the native
+  endpoint instead** (`use_native_ollama_chat`,
+  `crates/conway-plugin-backends/src/openai_compat/mod.rs`). A model with no
+  resolved window (`Unverified`) stays on the OpenAI-compatible path and
+  *would* surface a `cached_tokens` field if Ollama Cloud's OpenAI-compatible
+  surface sends one — but this documentation set has not observed a real
+  response from that surface to say whether it does.
+
+**Not established — and not guessable from source alone:** whether Ollama
+Cloud's inference service performs prefix caching *at all*, server-side,
+independent of whether either wire format has a place to report it. The
+`"ollama"` profile's `[profile.cache] kind = "implicit_prefix",
+min_prefix_tokens = 0` declaration is inherited from local Ollama's
+documented behavior (llama.cpp-family servers implicitly cache a matched
+KV-cache prefix) and has **not** been re-confirmed against the Cloud
+deployment specifically — Cloud is a different scale and possibly a
+different inference stack behind the same wire protocol, and "the local
+binary does X" is not evidence about what a hosted multi-tenant service
+does. This is genuinely two different questions with two different fixes:
+an *absent* capability (Cloud never caches — nothing to build, only to
+document and stop assuming) versus a *missed* one (Cloud caches, but
+conway's requests don't hit it, or conway never surfaces the hit).
+
+**This item did not resolve it empirically.** The direct test — send the
+same long prefix to Ollama Cloud twice in a row and compare latency and any
+reported accounting between the two calls — requires a live network call
+against `https://ollama.com` with a real `OLLAMA_API_KEY`; neither was
+available in the environment this documentation was written in (no
+egress-capable credential, and reading one from outside this repository's
+worktree was out of scope for a docs change). **This is a disclosed gap,
+not a finding of "no caching."** An operator with real access can complete
+it directly against the raw wire, independent of conway, with:
+
+```console
+# Two byte-identical requests, timed, against the OpenAI-compatible surface.
+# Compare wall-clock time and grep the raw JSON for any cache-shaped field
+# ("cached", "cache_read", "prompt_eval_duration", etc.) neither UsageWire
+# nor this doc currently expects.
+BODY='{"model":"glm-5.2","messages":[{"role":"user","content":"<paste a long, ~4K+ token prefix here, identical both times>"}]}'
+time curl -sS https://ollama.com/v1/chat/completions \
+  -H "Authorization: Bearer $OLLAMA_API_KEY" -H 'Content-Type: application/json' \
+  -d "$BODY" | tee /tmp/ollama-cache-probe-1.json | python3 -m json.tool
+time curl -sS https://ollama.com/v1/chat/completions \
+  -H "Authorization: Bearer $OLLAMA_API_KEY" -H 'Content-Type: application/json' \
+  -d "$BODY" | tee /tmp/ollama-cache-probe-2.json | python3 -m json.tool
+diff /tmp/ollama-cache-probe-1.json /tmp/ollama-cache-probe-2.json
+```
+
+A materially faster second call with no field to explain it is evidence of
+a caching layer conway currently has no way to see or report (an *absent
+visibility* bug, worth its own follow-up item); two calls of comparable
+latency is evidence there's nothing here for conway to be missing at all.
+Either result belongs recorded on whichever board item runs this, not
+guessed at in advance.
+
+**Until that measurement exists, `cache_read_tokens`/`cache_write_tokens`
+reading `0` — or `cache: not reported` — for Ollama Cloud is not presented
+as a conway shortfall.** Contrast with Kimi's platform API just below,
+which *does* publicly document automatic prompt caching above a 256-token
+prompt — a provider-sourced claim conway has something concrete to hold
+itself to. Ollama Cloud has made no such documented claim as of this
+writing; treat its `implicit_prefix` profile entry as an inherited
+assumption pending live confirmation, not a provider guarantee.
+
 ### Kimi (Moonshot platform API)
 
 `kimi` names Moonshot's platform API (`https://api.moonshot.ai/v1`) — a

@@ -22,6 +22,25 @@ forked at the same point share an identical prefix, and because it's a
 literal byte-prefix, a backend that does prompt-caching reuses it — the
 economics get better with more forking, not worse.
 
+**That last sentence is conditional, and stated honestly here rather than
+left implicit: "cheap" describes what forking costs conway to set up (a
+reference, not a copy) and what it costs to SEND on a provider whose cache
+is actually working. It says nothing about a provider that reports no
+caching, or genuinely does none.** A forked child's context is assembled by
+walking its ancestry and inheriting the parent's ENTIRE resolved prefix,
+unbounded (`conway_runtime::context::path`'s fork-origin branch calls
+`resolve_prefix` with no truncation) — every one of that child's own turns
+resends that whole inherited prefix over the wire again, in full, exactly
+as if it had been typed there directly. On a backend with a working prefix
+cache, most of those bytes are billed once and reused; on one without, they
+are billed in full on every single turn, at every fork depth, for every
+sibling — the "economics get better with more forking" claim above inverts
+into "the bill multiplies with more forking" the moment the cache isn't
+real. See [`providers.md`](providers.md#does-ollama-cloud-actually-cache-prefixes)
+for which providers' caching is actually confirmed rather than assumed,
+and [`sessions.md`](sessions.md#conway-does-not-compact-context) for the
+same caveat applied to a single session's own turn-over-turn growth.
+
 **"The same point" means the same assistant turn.** N sibling forks
 requested as N tool calls in ONE reply all read the parent's transcript
 before any of them is dispatched, so they open with byte-identical bytes and

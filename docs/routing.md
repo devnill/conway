@@ -672,7 +672,15 @@ just a claim:
   set at all. `cache_hint_never_changes_the_serialized_request_body`
   (`conway-plugin-backends/src/openai_compat/wire.rs`) pins the stronger claim:
   this adapter never reads a cache hint in the first place, so a marked
-  segment and an unmarked one serialize identically.
+  segment and an unmarked one serialize identically. This describes the
+  *mechanism* conway assumes (no request-side hint, so a prefix either
+  matches byte-for-byte or it doesn't) — it is not itself a claim that
+  every dialect's live server actually runs a caching layer behind that
+  mechanism. Kimi's platform API documents that it does; whether Ollama
+  Cloud's hosted deployment does is unconfirmed — see
+  [`providers.md`'s "Does Ollama Cloud actually cache
+  prefixes?"](providers.md#does-ollama-cloud-actually-cache-prefixes) for
+  what's established versus assumed there.
 
 A profile's `cache` field (see [`providers.md`](providers.md)) is
 informational for exactly this reason — it tells `conway-runtime`
