@@ -29,4 +29,14 @@ blake3 = { workspace = true }
 lru = { workspace = true }
 
 [dev-dependencies]
+# Board item 01M0TV8MSFRHHQ5BNZV3NHZCEW: this crate's `tests/` reach
+# `conway::test_support` (the shared `test_builder` wiring), which is
+# behind the facade's off-by-default `test-support` feature. Dev-only:
+# nothing in `src/` may name it.
+conway = { path = "../conway", features = ["test-support"] }
+# Test-only: builds a real, in-memory `Conway` (fake backend/gate/router)
+# to drive `StepGuardPlugin` through a real turn end to end, mirroring
+# `conway-plugin-idiom`/`conway-plugin-path`'s own `tests/` precedent.
+conway-testkit = { path = "../conway-testkit" }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
