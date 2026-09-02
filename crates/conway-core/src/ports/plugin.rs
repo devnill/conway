@@ -47,6 +47,47 @@ use crate::segment::PromptSegment;
 /// design specifies a real handshake with a
 /// defined failure mode — that, not a resurrected no-op, is the shape to
 /// build.
+///
+/// **There is no `permission_modes` method either, deliberately, removed
+/// for the same reason.** This trait carried `fn permission_modes(&self)
+/// -> Vec<PluginDeclaredMode>` (board item `01M0X4YDNVP7TZ0PVSRJ0388SS`) — a
+/// NAME plus one of the closed core `crate::permission_mode::PermissionMode`
+/// variants a plugin could layer over Shift+Tab's mode
+/// cycle. It was fully built and wired end to end (`ModeCycle`,
+/// `PermissionBroker::active_declared_mode`/`select_mode_cycle_entry`,
+/// `Action::CyclePermissionMode` resolving against a real plugin's declared
+/// modes) for exactly one designed-for consumer, `conway.permissions`, a
+/// `pre_tool_use` hook that judged a tool call by calling a local model.
+/// That consumer was cancelled outright (decision record
+/// `01M128AP39WXE01BBZV4RENC4M`, 2026-08-27; see
+/// `docs/vision/DESIGN-permission-modes.md`): tested against a 48-case
+/// corpus, a local model missed the paradigm case — telling a scratch `git
+/// reset --hard` from a real one via `cwd` — 100% of the time at both
+/// tested sizes, and the finding was explicit that scaling does not fix
+/// it. With the one consumer gone and none other ever declaring a mode
+/// (`grep -rn permission_modes crates` found only a test fixture), the
+/// method was a seam built for a hypothetical that did not materialize —
+/// the same defect a silently-unwired hook has, one level up: not
+/// unreachable code, but reachable code with categorically no reachable
+/// caller. Operator ruling, harness gap review 2026-09-01 finding 9: "delete
+/// permission_modes." Removed along with it: `PluginDeclaredMode`, the
+/// `conway-core::mode_cycle` module (`ModeCycle`/`ModeCycleEntry`/
+/// `DeclaredModeRef`/`DeclaredModeCollision`), the broker's
+/// `active_declared_mode`/`set_active_declared_mode`/
+/// `select_mode_cycle_entry`, and the facade/TUI wiring that gathered and
+/// rendered a declared mode. `Action::CyclePermissionMode` and
+/// `PermissionBroker::mode`/`set_mode` are untouched — Shift+Tab still
+/// cycles the exact same three closed core modes, in the exact same order,
+/// through the exact same field `PermissionBroker::decide` has always
+/// read.
+///
+/// If a plugin ever again wants to contribute a NAME over a core mode, the
+/// narrowing itself still has a home that was never removed:
+/// [`Self::permission_rules`] today, and a plugin's own `pre_tool_use` hook
+/// via [`Self::hooks`]. A resurrected `permission_modes` should not be
+/// built speculatively — it should be built against a real, shipping
+/// consumer that needs the display-name layer specifically, not merely the
+/// narrowing.
 pub trait Plugin: Send + Sync + 'static {
     /// This plugin's static identity: id, semver, provided tools, required
     /// host capabilities.
@@ -606,28 +647,6 @@ pub trait Plugin: Send + Sync + 'static {
         Vec::new()
     }
 
-    /// Zero or more permission modes this plugin declares -- a NAME plus
-    /// the closed core [`crate::permission_mode::PermissionMode`] each one
-    /// narrows (board item `01M0X4YDNVP7TZ0PVSRJ0388SS`, design
-    /// `docs/vision/DESIGN-permission-modes.md` §2c/§3b/§3d/§6b,
-    /// `docs/plugins/permission-modes.md`). The default returns none, the
-    /// SAME zero-cost-default precedent [`Self::commands`]/[`Self::events`]/
-    /// [`Self::observers`]/[`Self::narrowable_keys`]/[`Self::context_hooks`]/
-    /// [`Self::permission_rules`]/[`Self::status_contributions`] establish
-    /// above: every existing `Plugin` implementor keeps compiling
-    /// unmodified, and a build with no mode-declaring plugin installed
-    /// cycles only the three closed core modes exactly as it always has.
-    ///
-    /// **Structurally cannot be more permissive than the base it names --
-    /// see [`PluginDeclaredMode`]'s own doc.** The registry/cycle logic
-    /// that consumes this list (deterministic ordering, name-collision
-    /// handling, and the uninstall-safety reconciliation) lives entirely
-    /// in `conway_runtime::permission_mode` -- ONE implementation, per
-    /// steering P-14, never duplicated per plugin or per host surface.
-    fn permission_modes(&self) -> Vec<PluginDeclaredMode> {
-        Vec::new()
-    }
-
     /// Zero or more hook rules this plugin registers directly -- the
     /// registration surface board item `01M129QW0GV90QTQS6B3BY3DAR` builds,
     /// closing the gap `ConwayBuilder::config_mut`'s own doc named: before
@@ -867,57 +886,6 @@ pub enum PluginPermissionVerdict {
     /// operator's own `permissions.json`/`PermissionMode` decides alone.
     /// Installs nothing.
     Abstain,
-}
-
-/// One permission mode a plugin declares via [`Plugin::permission_modes`] --
-/// a NAME plus the closed core [`crate::permission_mode::PermissionMode`] it
-/// narrows (board item `01M0X4YDNVP7TZ0PVSRJ0388SS`, design
-/// `docs/vision/DESIGN-permission-modes.md` §2c). See
-/// `conway_runtime::permission_mode`'s own module doc for the registry/cycle
-/// logic (deterministic ordering, collision handling, uninstall-safety
-/// reconciliation) that consumes this list -- this type is only the DATA a
-/// plugin returns.
-///
-/// **Carries exactly one field bearing on enforcement: [`Self::base`].**
-/// There is no second field a plugin could populate with anything wider
-/// than `base` already permits -- no override list, no extra allowed
-/// category, nothing. `PermissionBroker::decide`
-/// (`conway_runtime::permission`) never reads a declared mode's name, only
-/// its `base` (via `conway_runtime::permission_mode::ModeCycleEntry::
-/// base`), so there is no representable way for a declared mode to be more
-/// permissive than the base it names -- the SAME "no field to hold a
-/// widening" shape [`HookOnFailure`](crate::hook::HookOnFailure) and
-/// [`PluginPermissionVerdict`] above use (neither has an `Allow` variant),
-/// applied one level up: here there is no representable "allow more than
-/// `base`" at all, because nothing on this struct is ever consulted for
-/// permission except `base` itself.
-///
-/// Any REAL narrowing a plugin wants to add beyond `base`'s own semantics
-/// is not this type's job to carry -- it is expressed through the SAME
-/// mechanisms every other plugin already narrows with:
-/// [`Plugin::permission_rules`] today (`PluginPermissionVerdict`, no
-/// `Allow`), and a plugin's own `pre_tool_use` hooks once `Plugin::hooks()`
-/// lands (design §6c: a separate item's job) --
-/// [`HookPermissionVerdict`](crate::hook::HookPermissionVerdict)/
-/// [`HookOnFailure`](crate::hook::HookOnFailure), neither with an `Allow`
-/// either. This type never duplicates that enforcement; it only names
-/// which base a mode narrows.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PluginDeclaredMode {
-    /// This mode's display name, e.g. `"auto-gated"`. Bare -- **not**
-    /// prefixed with this plugin's own [`PluginManifest::id`] the way
-    /// [`NarrowingRule::key`]/[`EventDecl::name`] are: a declared mode is a
-    /// name an operator picks from a cycle by eye, not a namespaced wire
-    /// identifier, matching the board item's own "familiar, not identical"
-    /// requirement. Two plugins declaring the identical name is a
-    /// collision, handled deterministically by
-    /// `conway_runtime::permission_mode::ModeCycle::build` (both excluded
-    /// from the cycle, never one silently picked) rather than avoided by
-    /// forced namespacing.
-    pub name: String,
-    /// The closed core mode this declared mode narrows -- the field this
-    /// struct's own doc argues makes widening unrepresentable.
-    pub base: crate::permission_mode::PermissionMode,
 }
 
 /// One [`PluginConfig`] key a plugin declares narrowable in per-agent
@@ -1969,6 +1937,14 @@ pub struct PluginManifest {
     /// Edge B (plugin -> plugin). An empty vec (the common case) means
     /// "nothing about this plugin degrades based on a host capability's
     /// absence".
+    ///
+    /// **Label (operator ruling, harness gap review 2026-09-01 finding 9):
+    /// carried on the wire and honoured (degrade-and-announce), no
+    /// first-party producer today.** Every shipped first-party plugin sets
+    /// this to an empty `vec![]`; the field, the subprocess wire
+    /// (`conway-plugin-subprocess`'s `WireManifest::optional_host_caps`),
+    /// and the degrade-and-announce loop below are all real and exercised
+    /// by tests, waiting for a real producer rather than dead.
     ///
     /// **Absence never fails `build()`.** Same posture as [`Self::optional`]:
     /// a missing optional cap loads this plugin anyway, degraded -- and the
@@ -3431,60 +3407,6 @@ mod tests {
     fn default_commands_is_empty() {
         let plugin = NoCommandsPlugin;
         assert!(plugin.commands().is_empty());
-    }
-
-    // ---- Plugin::permission_modes (board item 01M0X4YDNVP7TZ0PVSRJ0388SS)
-    // ----
-
-    /// Acceptance 1's "zero-cost default" half: an existing `Plugin`
-    /// implementor that never overrides `permission_modes` keeps compiling
-    /// and declares nothing -- the same proof shape
-    /// `default_commands_is_empty` establishes immediately above, reused
-    /// for this trait method instead of restated.
-    #[test]
-    fn default_permission_modes_is_empty() {
-        let plugin = NoCommandsPlugin;
-        assert!(plugin.permission_modes().is_empty());
-    }
-
-    /// A plugin declaring a mode is ordinary data -- constructing it names
-    /// exactly one enforcement-bearing field, `base`.
-    struct OneDeclaredModePlugin;
-
-    impl Plugin for OneDeclaredModePlugin {
-        fn manifest(&self) -> PluginManifest {
-            PluginManifest {
-                id: "acme.permissions".into(),
-                version: "0.1.0".into(),
-                tools: vec![],
-                required_host_caps: vec![],
-                optional_host_caps: vec![],
-                requires: vec![],
-                optional: vec![],
-            }
-        }
-
-        fn tools(&self) -> Vec<Arc<dyn Tool>> {
-            vec![]
-        }
-
-        fn permission_modes(&self) -> Vec<PluginDeclaredMode> {
-            vec![PluginDeclaredMode {
-                name: "auto-gated".into(),
-                base: crate::permission_mode::PermissionMode::AutoAllow,
-            }]
-        }
-    }
-
-    #[test]
-    fn a_declared_mode_names_exactly_its_base() {
-        let modes = OneDeclaredModePlugin.permission_modes();
-        assert_eq!(modes.len(), 1);
-        assert_eq!(modes[0].name, "auto-gated");
-        assert_eq!(
-            modes[0].base,
-            crate::permission_mode::PermissionMode::AutoAllow
-        );
     }
 
     /// A greeting command whose `invoke` echoes its `args` back -- the

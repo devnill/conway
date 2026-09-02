@@ -93,6 +93,17 @@ states it is consumed and open ("consulted at registration, never implied
 by trust alone"). This is no longer a declared field with zero consumers;
 it is a capability gate wired into the build.
 
+**`optional_host_caps` -- label: carried on the wire and honoured
+(degrade-and-announce), no first-party producer today** (operator ruling,
+harness gap review 2026-09-01 finding 9). The sibling field rides the SAME
+per-plugin loop right after the check above: a cap the host does NOT offer
+never refuses the build -- the plugin loads degraded, and the degradation
+is always announced (`ConfigWarning { code: OptionalHostCapabilityMissing }`
+plus a `tracing::warn!`, naming both). See
+[`subprocess-plugins.md`](subprocess-plugins.md)'s "Host capabilities"
+section for the full mechanism; no shipped plugin, first-party or
+otherwise, sets it to a non-empty list today.
+
 ### 2. Tool execution — `Tool::invoke`
 
 | Field | Value |

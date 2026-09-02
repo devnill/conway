@@ -485,6 +485,21 @@ correct independently of what any particular guard decides. What is in
 question is `conway.permissions` itself — the one guard this design was
 written to carry.
 
+**Second correction, added 2026-09-02: the sentence above ("the mechanism
+still stands") no longer holds either, and this is not a silent
+contradiction of it — it is a later, separate ruling.** With
+`conway.permissions` cancelled and grep over the whole workspace finding no
+other producer, ever, the mode-declaration mechanism itself (the trait
+method, its data type, the mode cycle, and the broker-side bookkeeping) was
+removed on 2026-09-02 (operator ruling, harness gap review 2026-09-01
+finding 9) rather than kept standing for a consumer that never arrived —
+see `docs/plugins/permission-modes.md`'s own ABANDONED header for the full
+account. The three closed core modes, Shift+Tab, and
+`PermissionBroker::decide` are entirely untouched by this: every session
+cycles the identical three modes, in the identical order, through the
+identical field `decide()` has always read. Only the layer that let a
+plugin name a fourth, narrower display identity over one of them is gone.
+
 **A hybrid is a different proposal, not a rescue.** Pattern rules as the
 gate with the model as an additional deny-only narrowing layer may well be
 worth building, but it inherits none of this design's evidence and needs

@@ -285,35 +285,6 @@ pub struct PluginBrowserEntry {
     pub description: conway::plugin::PluginDescription,
 }
 
-/// V2c: one plugin-declared permission mode as the TUI display layer sees
-/// it -- board item `01M0X4YDNVP7TZ0PVSRJ0388SS`,
-/// `docs/plugins/permission-modes.md`.
-///
-/// **A deliberately narrower mirror, not a re-export.** The real type is
-/// `conway::ModeCycleEntry::Declared`, and the real
-/// cycle-order/collision/uninstall-reconciliation algorithm that consumes
-/// it is `conway::ModeCycle` -- ONE implementation, per steering P-14.
-/// This crate could name those directly (the facade re-exports both), and
-/// deliberately does not: `AppState` is a RENDER model, and the fields it
-/// carries are the ones a frame needs. Mirroring the two identifying
-/// strings keeps the status line's dependency on the cycle vocabulary to
-/// what it actually draws, the same way `permission_mode` below mirrors
-/// the broker's mode rather than borrowing the broker.
-///
-/// Populated at TUI startup from `Conway::mode_cycle`, and kept in step
-/// by the `Action::CyclePermissionMode` handler, which mirrors whatever
-/// entry `Conway::cycle_permission_mode` moved to rather than recomputing
-/// it -- the same "both are written here, together" discipline
-/// `permission_mode` below already follows, for the same reason: the
-/// broker is the authority, this is a display copy, and the way the two
-/// drift is a caller deriving the answer a second time.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DeclaredModeMirror {
-    pub plugin_id: String,
-    pub name: String,
-    pub base: PermissionMode,
-}
-
 /// The TUI's whole render model. Every mutation goes through [`Self::apply`]
 /// (event-driven) or the app loop's direct field writes for input-driven
 /// state (`input`, `mode`, `scroll`) -- see `input.rs`/`app.rs`.
@@ -351,25 +322,6 @@ pub struct AppState {
     /// disagree the broker wins, and the visible consequence is a stale
     /// label -- which is why `/settings` writes both together.
     pub permission_mode: PermissionMode,
-    /// V2c: every plugin-declared mode currently installed, mirrored the
-    /// same way [`Self::permission_mode`] above is -- see
-    /// [`DeclaredModeMirror`]'s own doc for why this stays a NARROW display
-    /// mirror rather than a re-exported `conway_runtime::permission_mode`
-    /// type. Empty -- which is what every build with no mode-declaring
-    /// plugin installed produces -- cycles `Action::CyclePermissionMode`
-    /// through the three core modes exactly as it always has.
-    pub declared_modes: Vec<DeclaredModeMirror>,
-    /// V2c: which entry of [`Self::declared_modes`] (if any) is the
-    /// CURRENTLY SELECTED one -- `(plugin_id, name)`, matching a
-    /// `DeclaredModeMirror`'s own two identifying fields. `None` means the
-    /// operator is in a plain core mode. Modeled as `Option<(String, String)>`
-    /// rather than `Option<DeclaredModeMirror>` deliberately: identity (
-    /// which mode is selected) and the mode's own data (its `base`) are
-    /// separate questions -- the SAME distinction
-    /// `conway_runtime::permission_mode::DeclaredModeRef` draws one layer
-    /// down, so an uninstalled plugin's stale entry can be recognized by
-    /// identity without needing its (now possibly gone) `base` to compare.
-    pub active_declared_mode: Option<(String, String)>,
     /// V2b: where a newly-granted pattern is persisted, in precedence
     /// order (project first, then global). Resolved once at `App::new`.
     /// Empty when neither scope resolves, in which case a grant applies
@@ -1161,8 +1113,6 @@ impl AppState {
             cursor: 0,
             mode: Mode::Normal,
             permission_mode: PermissionMode::default(),
-            declared_modes: Vec::new(),
-            active_declared_mode: None,
             permission_paths: Vec::new(),
             permission_grants: Vec::new(),
             structured_allow_rules: Vec::new(),
