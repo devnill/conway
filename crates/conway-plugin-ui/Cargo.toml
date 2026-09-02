@@ -37,10 +37,18 @@ serde_json = { workspace = true }
 schemars = { workspace = true }
 
 [dev-dependencies]
+# Board item 01M0TV8MSFRHHQ5BNZV3NHZCEW: `tests/ask_question_end_to_end.rs`
+# reaches `conway::test_support` (the shared `test_builder` wiring), which
+# is behind the facade's off-by-default `test-support` feature -- the same
+# pattern `conway-plugin-idiom`/`conway-plugin-path` already carry.
+# Dev-only: nothing in `src/` may name it.
+conway = { path = "../conway", features = ["test-support"] }
 # `ask_question`'s own `Tool::invoke` tests need a real `ToolCtx` (`ToolCtx::
 # for_test`'s own two doubles) -- the identical dev-dependency
 # `conway-plugin-skeleton`'s Cargo.toml already carries for the same reason.
+# Also drives the end-to-end suite's `ScriptedBackend`/`FakeStore`.
 conway-testkit = { path = "../conway-testkit" }
+tempfile = { workspace = true }
 # Test-only: `semver::VersionReq`/`semver::Version` for the
 # version-negotiation tests (decision `01M189XS6Z9VKYENAHNY1B54CM`) against
 # the real Edge B channel (`CapabilityRegistry`, `CapabilityCallHandle`)

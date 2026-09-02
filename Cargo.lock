@@ -826,8 +826,10 @@ dependencies = [
  "async-trait",
  "blake3",
  "conway",
+ "conway-testkit",
  "lru",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -871,6 +873,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
