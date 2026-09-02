@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use conway_core::capabilities::{
@@ -44,6 +45,15 @@ use tokio_util::sync::CancellationToken;
 enum Turn {
     Respond(GenerateResponse),
     Fail(BackendError),
+    /// Streams the given text deltas, then fails with `err` BEFORE ever
+    /// reaching `Done` -- board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`'s
+    /// same-candidate stream retry tests need this exact "genuine partial
+    /// reply, then a mid-stream drop" shape, which plain `Turn::Fail` alone
+    /// cannot produce (`decompose`'s `Fail` arm fails on the very FIRST
+    /// chunk, zero deltas). Meaningless for `generate()` (there is no
+    /// "mid-response" for a single non-streamed call); the `Backend` impl's
+    /// `generate()` arm just returns `err` unmodified.
+    FailAfterDeltas(Vec<String>, BackendError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +175,7 @@ impl Backend for RecordingBackend {
         match self.next_turn() {
             Turn::Respond(r) => Ok(r),
             Turn::Fail(e) => Err(e),
+            Turn::FailAfterDeltas(_, e) => Err(e),
         }
     }
 
@@ -176,6 +187,14 @@ impl Backend for RecordingBackend {
         match self.next_turn() {
             Turn::Respond(r) => Ok(stream::iter(decompose(r)).boxed()),
             Turn::Fail(e) => Ok(stream::iter(vec![Err(e)]).boxed()),
+            Turn::FailAfterDeltas(deltas, e) => {
+                let mut chunks: Vec<Result<StreamChunk, BackendError>> = deltas
+                    .into_iter()
+                    .map(|text| Ok(StreamChunk::TextDelta(text)))
+                    .collect();
+                chunks.push(Err(e));
+                Ok(stream::iter(chunks).boxed())
+            }
         }
     }
 
@@ -479,16 +498,243 @@ async fn toolparse_triggers_one_retry_then_advances_chain() {
 }
 
 // ---------------------------------------------------------------------
+// Same-candidate stream retry (board item 01M1FSJ4E2S5M9KBSBJAAPJQ48):
+// mid-stream failures are never silently switched to the next candidate,
+// nor left to end the turn -- the SAME candidate retries a bounded number
+// of times, discarding the partial answer visibly, before the chain ever
+// advances.
+// ---------------------------------------------------------------------
+
+/// Acceptance criterion 1 (board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`): a
+/// two-candidate chain whose first backend streams two text deltas then
+/// `Err(Transport)`, then succeeds on its second stream, names the FIRST
+/// candidate (never falls over to the second), makes exactly two attempts,
+/// and emits exactly one `StreamRestarted { attempt: 2, discarded_text_chars
+/// > 0 }`.
+#[tokio::test(start_paused = true)]
+async fn mid_stream_transport_failure_retries_the_same_candidate_and_succeeds() {
+    let a = Arc::new(RecordingBackend::new(
+        "a",
+        caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
+        vec![
+            Turn::FailAfterDeltas(
+                vec!["hello ".to_string(), "world".to_string()],
+                BackendError::Transport {
+                    detail: "dropped".into(),
+                },
+            ),
+            Turn::Respond(text_response("hello again")),
+        ],
+    ));
+    let b = Arc::new(RecordingBackend::new(
+        "b",
+        caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
+        vec![Turn::Respond(text_response("must not be reached"))],
+    ));
+    let fx = fixture(backends_map(vec![
+        ("a", a.clone() as Arc<dyn Backend>),
+        ("b", b.clone() as Arc<dyn Backend>),
+    ]));
+    let mut sub = fx.bus.subscribe();
+    let segments = vec![a_segment()];
+    let tools: Vec<ToolSpec> = vec![];
+    let routes = vec![
+        route("a", "m1", primary("planner")),
+        route("b", "m1", fallback(1)),
+    ];
+    let req = base_request(routes, &segments, &tools, 100, 4_096);
+
+    let outcome = fx
+        .engine
+        .execute(req)
+        .await
+        .expect("should succeed via route a's own retry");
+
+    assert_eq!(
+        outcome.route.backend,
+        BackendId::new("a"),
+        "must name the FIRST candidate -- a same-candidate retry is not a \
+         fallback to a different model"
+    );
+    assert_eq!(outcome.attempts, 2);
+    assert_eq!(a.stream_count(), 2);
+    assert_eq!(b.stream_count(), 0, "route b must never be reached");
+
+    let events = drain(&mut sub);
+    let restarts: Vec<(u32, usize)> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::StreamRestarted {
+                attempt,
+                discarded_text_chars,
+                ..
+            } => Some((*attempt, *discarded_text_chars)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(restarts.len(), 1, "exactly one StreamRestarted");
+    let (attempt, discarded_text_chars) = restarts[0];
+    assert_eq!(attempt, 2);
+    assert!(discarded_text_chars > 0);
+}
+
+/// Acceptance criterion 2: three consecutive mid-stream failures on the
+/// first candidate exhaust its same-candidate retry budget and advance the
+/// chain to the second candidate; `considered` names the FIRST candidate
+/// with its LAST error (not its first or second), and three health
+/// observations were recorded for the first candidate's endpoint.
+#[tokio::test(start_paused = true)]
+async fn three_consecutive_mid_stream_failures_advance_the_chain_naming_the_last_error() {
+    let a = Arc::new(RecordingBackend::new(
+        "a",
+        caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
+        vec![
+            Turn::Fail(BackendError::Transport {
+                detail: "first".into(),
+            }),
+            Turn::Fail(BackendError::Transport {
+                detail: "second".into(),
+            }),
+            Turn::Fail(BackendError::Transport {
+                detail: "third".into(),
+            }),
+        ],
+    ));
+    let b = Arc::new(RecordingBackend::new(
+        "b",
+        caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
+        vec![Turn::Fail(BackendError::RateLimit {
+            retry_after_secs: None,
+        })],
+    ));
+    let fx = fixture(backends_map(vec![
+        ("a", a.clone() as Arc<dyn Backend>),
+        ("b", b.clone() as Arc<dyn Backend>),
+    ]));
+    let segments = vec![a_segment()];
+    let tools: Vec<ToolSpec> = vec![];
+    let routes = vec![
+        route("a", "m1", primary("planner")),
+        route("b", "m1", fallback(1)),
+    ];
+    let req = base_request(routes, &segments, &tools, 100, 4_096);
+
+    let err = fx
+        .engine
+        .execute(req)
+        .await
+        .expect_err("both candidates exhausted");
+    match err {
+        RuntimeError::Routing(RoutingError::NoCandidate { considered, .. }) => {
+            assert_eq!(considered.len(), 2, "both candidates considered");
+            assert_eq!(considered[0].0, model_ref("a", "m1"));
+            assert!(
+                considered[0].1.contains("third"),
+                "must name the LAST error from a's exhausted retry budget, not \
+                 an earlier one: {}",
+                considered[0].1
+            );
+            assert_eq!(considered[1].0, model_ref("b", "m1"));
+        }
+        other => panic!("expected NoCandidate, got {other:?}"),
+    }
+
+    assert_eq!(a.stream_count(), 3, "a's whole same-candidate retry budget");
+    assert_eq!(b.stream_count(), 1, "chain advanced to b");
+
+    let obs = fx.health.observations();
+    let a_obs: Vec<_> = obs
+        .iter()
+        .filter(|(ep, _)| *ep == EndpointId::new("a"))
+        .collect();
+    assert_eq!(a_obs.len(), 3, "three health observations for a's endpoint");
+    for (_, o) in &a_obs {
+        assert!(matches!(
+            o,
+            conway_core::routing::Observation::TransportError
+        ));
+    }
+}
+
+/// Acceptance criterion 3: cancellation during a same-candidate backoff
+/// sleep returns `Cancelled` promptly -- well under the backoff window
+/// (`250ms`-`500ms`), not after it elapses.
+#[tokio::test]
+async fn cancellation_during_same_candidate_backoff_sleep_returns_cancelled_promptly() {
+    let a = Arc::new(RecordingBackend::new(
+        "a",
+        caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
+        vec![
+            Turn::Fail(BackendError::Transport { detail: "1".into() }),
+            Turn::Fail(BackendError::Transport { detail: "2".into() }),
+        ],
+    ));
+    let fx = fixture(backends_map(vec![("a", a as Arc<dyn Backend>)]));
+    let mut sub = fx.bus.subscribe();
+    let segments = vec![a_segment()];
+    let tools: Vec<ToolSpec> = vec![];
+    let routes = vec![route("a", "m1", primary("planner"))];
+    let cancel = CancellationToken::new();
+    let mut req = base_request(routes, &segments, &tools, 100, 4_096);
+    req.cancel = cancel.clone();
+
+    // Cancel the instant the retry's own `StreamRestarted` is observed --
+    // i.e. right as the engine is about to enter its backoff sleep.
+    let watcher_cancel = cancel.clone();
+    let watcher = tokio::spawn(async move {
+        loop {
+            let envelope = sub.next().await.expect("bus open");
+            if matches!(envelope.event, Event::StreamRestarted { .. }) {
+                watcher_cancel.cancel();
+                break;
+            }
+        }
+    });
+
+    let start = std::time::Instant::now();
+    let err = fx
+        .engine
+        .execute(req)
+        .await
+        .expect_err("cancelled mid-backoff");
+    let elapsed = start.elapsed();
+    watcher.await.unwrap();
+
+    assert!(matches!(err, RuntimeError::Cancelled { .. }), "{err:?}");
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "cancellation during backoff must return promptly, took {elapsed:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
 // ModelDecision ordering and monotonic attempt counter
 // ---------------------------------------------------------------------
 
 #[tokio::test]
 async fn model_decision_before_every_call_with_monotonic_attempt() {
+    // `RateLimit`, not `Transport`: this test is about the `ModelDecision`
+    // counter across CANDIDATES, one call per route -- board item
+    // `01M1FSJ4E2S5M9KBSBJAAPJQ48`'s same-candidate stream retry now
+    // retries a mid-stream `Transport`/`ServerError` on the SAME candidate
+    // before advancing (covered by its own tests below), which would make
+    // route `a` here consume more than one attempt. `RateLimit` stays
+    // `FailureClass::FailoverRetryable` (chain still advances, health still
+    // records) but is never eligible for that retry, so this keeps
+    // exercising exactly the one-call-per-candidate shape this test is
+    // named for.
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
         100,
-        vec![Turn::Fail(BackendError::Transport { detail: "x".into() })],
+        vec![Turn::Fail(BackendError::RateLimit {
+            retry_after_secs: None,
+        })],
     ));
     let b = Arc::new(RecordingBackend::new(
         "b",
@@ -529,13 +775,27 @@ async fn model_decision_before_every_call_with_monotonic_attempt() {
 // Health recording per T-2 class
 // ---------------------------------------------------------------------
 
-#[tokio::test]
-async fn health_records_transport_error_and_advances() {
+// `RecordingBackend::stream()` always returns `Ok(_)` for the outer
+// `backend.stream()` call -- a `Turn::Fail` only ever fails the FIRST chunk
+// of an already-open stream (`decompose`/the `stream()` impl above), never
+// the initial `backend.stream()` response itself. So every `Turn::Fail`
+// used with `Strategy::Stream` in this file is, by construction, a
+// mid-stream failure eligible for the same-candidate stream retry (board
+// item `01M1FSJ4E2S5M9KBSBJAAPJQ48`) when it classifies `Transport`/
+// `ServerError` -- this test now exercises the retry-then-advance shape:
+// three consecutive mid-stream `Transport` failures on route `a` (its whole
+// same-candidate budget) before the chain advances to route `b`.
+#[tokio::test(start_paused = true)]
+async fn health_records_transport_error_retries_same_candidate_then_advances() {
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
         100,
-        vec![Turn::Fail(BackendError::Transport { detail: "x".into() })],
+        vec![
+            Turn::Fail(BackendError::Transport { detail: "1".into() }),
+            Turn::Fail(BackendError::Transport { detail: "2".into() }),
+            Turn::Fail(BackendError::Transport { detail: "3".into() }),
+        ],
     ));
     let b = Arc::new(RecordingBackend::new(
         "b",
@@ -544,7 +804,7 @@ async fn health_records_transport_error_and_advances() {
         vec![Turn::Respond(text_response("ok"))],
     ));
     let fx = fixture(backends_map(vec![
-        ("a", a as Arc<dyn Backend>),
+        ("a", a.clone() as Arc<dyn Backend>),
         ("b", b as Arc<dyn Backend>),
     ]));
     let segments = vec![a_segment()];
@@ -560,14 +820,17 @@ async fn health_records_transport_error_and_advances() {
         .await
         .expect("should succeed via route b");
 
+    assert_eq!(a.stream_count(), 3, "route a's whole same-candidate budget");
     let obs = fx.health.observations();
-    assert_eq!(obs.len(), 2); // transport error on a, Ok on b
+    assert_eq!(obs.len(), 4); // three transport errors on a, then Ok on b
+    for o in &obs[..3] {
+        assert!(matches!(
+            o,
+            (ref ep, conway_core::routing::Observation::TransportError) if *ep == EndpointId::new("a")
+        ));
+    }
     assert!(matches!(
-        obs[0],
-        (ref ep, conway_core::routing::Observation::TransportError) if *ep == EndpointId::new("a")
-    ));
-    assert!(matches!(
-        obs[1],
+        obs[3],
         (ref ep, conway_core::routing::Observation::Ok { .. }) if *ep == EndpointId::new("b")
     ));
 }
@@ -714,13 +977,25 @@ async fn t2_auth_produces_zero_health_records_and_aborts_chain() {
 
 #[tokio::test]
 async fn breaker_closed_to_open_emits_exactly_one_backend_degraded() {
+    // `RateLimit`, not `Transport`: this fixture (a single-candidate chain,
+    // two `execute()` calls) tests the breaker edge across TWO SEPARATE
+    // calls, one failure each -- `RateLimit` stays `FailoverRetryable`
+    // (health still records, `BackendDegraded` edge-detection still
+    // applies) but, unlike `Transport`/`ServerError`, is never eligible for
+    // board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`'s same-candidate stream
+    // retry, so each `execute()` call still makes exactly the one attempt
+    // this fixture's two-call structure depends on.
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
         100,
         vec![
-            Turn::Fail(BackendError::Transport { detail: "1".into() }),
-            Turn::Fail(BackendError::Transport { detail: "2".into() }),
+            Turn::Fail(BackendError::RateLimit {
+                retry_after_secs: None,
+            }),
+            Turn::Fail(BackendError::RateLimit {
+                retry_after_secs: None,
+            }),
         ],
     ));
     let health = Arc::new(FakeHealth::new());
@@ -801,13 +1076,22 @@ impl HealthRegistry for TrippingHealth {
 
 #[tokio::test]
 async fn breaker_edge_triggers_exactly_one_backend_degraded() {
+    // `RateLimit`, not `Transport` -- see `breaker_closed_to_open_emits_
+    // exactly_one_backend_degraded`'s own comment: this fixture's two-call,
+    // one-attempt-each shape depends on the failure NOT being eligible for
+    // board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`'s same-candidate stream
+    // retry.
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
         100,
         vec![
-            Turn::Fail(BackendError::Transport { detail: "1".into() }),
-            Turn::Fail(BackendError::Transport { detail: "2".into() }),
+            Turn::Fail(BackendError::RateLimit {
+                retry_after_secs: None,
+            }),
+            Turn::Fail(BackendError::RateLimit {
+                retry_after_secs: None,
+            }),
         ],
     ));
     let health = Arc::new(TrippingHealth::default());
@@ -1146,24 +1430,51 @@ async fn max_tokens_defaults_to_headroom_and_override_passes_through_unclamped()
 // Exhausting all routes -> NoCandidate
 // ---------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn exhausting_all_routes_returns_no_candidate_enumerating_failures() {
+    // Three identical `Turn::Fail`s per route, not one: board item
+    // `01M1FSJ4E2S5M9KBSBJAAPJQ48`'s same-candidate stream retry now
+    // retries a mid-stream `Transport`/`ServerError` on the SAME candidate
+    // twice more before advancing (`RecordingBackend::stream()` always
+    // "opens" -- see `health_records_transport_error_retries_same_
+    // candidate_then_advances`'s own comment -- so every `Turn::Fail` here
+    // is mid-stream and eligible). `considered` still names each route's
+    // LAST error, so repeating the identical message keeps this test's own
+    // assertions unchanged.
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
         100,
-        vec![Turn::Fail(BackendError::Transport {
-            detail: "a down".into(),
-        })],
+        vec![
+            Turn::Fail(BackendError::Transport {
+                detail: "a down".into(),
+            }),
+            Turn::Fail(BackendError::Transport {
+                detail: "a down".into(),
+            }),
+            Turn::Fail(BackendError::Transport {
+                detail: "a down".into(),
+            }),
+        ],
     ));
     let b = Arc::new(RecordingBackend::new(
         "b",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
         100,
-        vec![Turn::Fail(BackendError::ServerError {
-            status: 503,
-            detail: "b down".into(),
-        })],
+        vec![
+            Turn::Fail(BackendError::ServerError {
+                status: 503,
+                detail: "b down".into(),
+            }),
+            Turn::Fail(BackendError::ServerError {
+                status: 503,
+                detail: "b down".into(),
+            }),
+            Turn::Fail(BackendError::ServerError {
+                status: 503,
+                detail: "b down".into(),
+            }),
+        ],
     ));
     let fx = fixture(backends_map(vec![
         ("a", a as Arc<dyn Backend>),

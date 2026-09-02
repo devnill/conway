@@ -1819,6 +1819,23 @@ impl AppState {
             Event::AgentProgress { note } => {
                 self.transcript.push(Entry::Notice { text: note.clone() });
             }
+            // Board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`: a same-candidate
+            // stream retry discarded the current attempt's partial deltas.
+            // `apply_stream_restarted` truncates the in-progress Assistant/
+            // Reasoning entries back to their pre-delta content and appends
+            // a visible discard notice -- see that method's own doc.
+            Event::StreamRestarted {
+                attempt,
+                discarded_text_chars,
+                discarded_thinking_chars,
+                ..
+            } => {
+                self.apply_stream_restarted(
+                    *attempt,
+                    *discarded_text_chars,
+                    *discarded_thinking_chars,
+                );
+            }
             _ => {}
         }
     }

@@ -15,18 +15,12 @@
 use std::time::Duration;
 
 use conway_core::error::BackendError;
+use conway_core::retry::{max_jitter, MAX_RETRIES};
 use rand::RngExt;
 use reqwest::{RequestBuilder, Response};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::classify;
-
-/// Maximum number of retries after the initial attempt — three attempts
-/// total, per the module boundary rule ("at most two retries").
-const MAX_RETRIES: u32 = 2;
-
-/// Base of the full-jitter exponential backoff: `250ms`, then `500ms`.
-const BASE_BACKOFF: Duration = Duration::from_millis(250);
 
 /// Cap on the sleep applied when a `RateLimit`'s `retry_after` is honored.
 const MAX_RATE_LIMIT_SLEEP: Duration = Duration::from_secs(30);
@@ -72,11 +66,20 @@ impl HttpClient {
     /// backoff), and aborting immediately with `BackendError::Cancelled` on
     /// cancellation during either an in-flight request or a backoff sleep.
     /// After the retry budget is exhausted, returns the last classified
-    /// error unchanged.
+    /// error unchanged. `MAX_RETRIES`/the jitter formula are
+    /// `conway_core::retry`'s, shared with `conway-runtime::attempt`'s
+    /// same-candidate stream retry (see this fn's own doc just below), so
+    /// the two policies cannot drift.
     ///
     /// Streaming requests use this helper only for the *initial* response;
     /// mid-stream failures are never retried here (a partially consumed
     /// stream is not idempotent) — that is the caller's responsibility.
+    /// As of board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`, that caller is
+    /// `conway_runtime::attempt::AttemptEngine::execute`, whose per-
+    /// candidate loop retries a mid-stream `Transport`/`ServerError` on the
+    /// SAME candidate (discarding the partial deltas via
+    /// `Event::StreamRestarted`) using this module's own `conway_core::
+    /// retry` constants before ever advancing the fallback chain.
     pub(crate) async fn send_with_retry<F>(
         &self,
         make: F,
@@ -133,7 +136,7 @@ impl HttpClient {
                     retry_after_secs: Some(secs),
                 } => Duration::from_secs(*secs).min(MAX_RATE_LIMIT_SLEEP),
                 _ => {
-                    let max_jitter_ms = (BASE_BACKOFF.as_millis() as u64) * (1u64 << attempt);
+                    let max_jitter_ms = max_jitter(attempt).as_millis() as u64;
                     let millis = rand::rng().random_range(0..=max_jitter_ms);
                     Duration::from_millis(millis)
                 }

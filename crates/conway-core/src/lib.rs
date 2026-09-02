@@ -34,6 +34,7 @@ pub mod permission_mode;
 pub mod permission_pattern;
 pub mod ports;
 pub mod provenance;
+pub mod retry;
 pub mod routing;
 pub mod segment;
 pub mod text;

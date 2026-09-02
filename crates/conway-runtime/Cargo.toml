@@ -37,6 +37,12 @@ chrono = { workspace = true }
 # `result::validate_result_contract` names that type directly to validate a
 # `structured` result against it -- no longer test-only.
 schemars = { workspace = true }
+# Board item 01M1FSJ4E2S5M9KBSBJAAPJQ48: `attempt.rs`'s same-candidate
+# stream retry draws its backoff sleep from the same full-jitter window
+# `conway-plugin-backends`'s `HttpClient::send_with_retry` already draws
+# from (`conway_core::retry::max_jitter`) -- already in `Cargo.lock` via
+# that crate, so this adds no new lock entry.
+rand = { workspace = true }
 
 [dev-dependencies]
 conway-testkit = { path = "../conway-testkit" }

@@ -138,6 +138,36 @@ pub enum Event {
     ThinkingDelta {
         text: String,
     },
+    /// A mid-stream `Transport`/`ServerError` (or a stream that ended
+    /// without a `Done` chunk) discarded a partial reply and is about to
+    /// retry the SAME candidate (board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`;
+    /// `conway_runtime::attempt::AttemptEngine::execute`'s per-candidate
+    /// loop, before it ever advances the fallback chain — a pre-stream
+    /// failure, `RateLimit`, or a `Fatal`/`RequestIncompatible` class never
+    /// produces this event; those keep advancing the chain as before).
+    /// Emitted BEFORE the retry's own `Event::ModelDecision`, so a
+    /// subscriber sees this first. `attempt` is the 1-based ordinal of the
+    /// upcoming retry (`2` for the first retry, `3` for the second and
+    /// last), matching `Event::ModelDecision::attempt`'s own counting
+    /// convention one step later in the same sequence.
+    /// `discarded_text_chars`/`discarded_thinking_chars` are this failed
+    /// attempt's own running totals (already emitted to the bus as
+    /// `TextDelta`/`ThinkingDelta`, never persisted — the assistant record
+    /// is only written after a `Done`) so a renderer can truncate its
+    /// in-progress view back to before this attempt's own deltas: the TUI
+    /// (`conway-cli`'s `AppState::apply`) truncates the in-progress
+    /// assistant/reasoning entry and appends a discard notice; the `text`
+    /// one-shot renderer prints a newline plus a stderr diagnostic (partial
+    /// stdout text cannot be unprinted — `docs/scripting.md`'s "Streaming"
+    /// section says so, and points a script that needs clean stdout at
+    /// `--output-format json` instead); `jsonl` needs no dedicated arm, it
+    /// forwards every envelope uniformly already.
+    StreamRestarted {
+        agent_id: AgentId,
+        attempt: u32,
+        discarded_text_chars: usize,
+        discarded_thinking_chars: usize,
+    },
     TurnFinished {
         usage: Usage,
         stop: StopReason,
@@ -308,6 +338,15 @@ mod tests {
                 "thinking_delta",
             ),
             (
+                Event::StreamRestarted {
+                    agent_id: AgentId::new(),
+                    attempt: 2,
+                    discarded_text_chars: 11,
+                    discarded_thinking_chars: 0,
+                },
+                "stream_restarted",
+            ),
+            (
                 Event::TurnFinished {
                     usage: Usage::default(),
                     stop: StopReason::EndTurn,
@@ -413,11 +452,12 @@ mod tests {
         // the count), plus `Lagged`, `SteerDropped`, `AgentPromoted` and
         // `UserTurn`, minus `RepeatedStep` -- retired when repeated-step
         // detection moved to `conway-plugin-stepguard`, since the core event
-        // vocabulary keeps no variant the core cannot produce.
+        // vocabulary keeps no variant the core cannot produce -- plus
+        // `StreamRestarted` (board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`).
         //
         // This assertion exists precisely so nobody adds or removes a variant
         // without saying so here (see this file's module doc).
-        assert_eq!(variants.len(), 23);
+        assert_eq!(variants.len(), 24);
         for (event, expected_tag) in variants {
             let value = serde_json::to_value(&event).unwrap();
             assert_eq!(value["event"], expected_tag, "tag for {event:?}");

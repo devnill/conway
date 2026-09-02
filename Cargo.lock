@@ -886,6 +886,7 @@ dependencies = [
  "conway-testkit",
  "futures",
  "jsonschema",
+ "rand 0.10.2",
  "schemars",
  "serde",
  "serde_json",

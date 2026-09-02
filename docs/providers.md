@@ -297,6 +297,50 @@ backend is a config error naming the backend. An `api_key_env` naming a
 variable that isn't set at startup is also a named, fail-loud error;
 conway never silently falls back to "no credential."
 
+## Retries and backoff
+
+A transient failure is retried before conway ever gives up on an endpoint
+or changes which model is answering. Two independent retry loops cover the
+two places a request can fail, both sharing the identical bounded policy —
+at most two retries (three attempts total), full-jitter exponential backoff
+(`sleep(rand in 0..=250ms * 2^attempt)`) — so neither is tuned separately
+from the other:
+
+- **Before a response starts** (every request, streamed or not): the whole
+  request is retried, fresh, up to twice on `Transport`/`ServerError`/
+  `RateLimit`. A `RateLimit` honors the provider's own `Retry-After` header
+  (capped at 30s) instead of the jitter backoff; the other two classes use
+  the jitter window. A `400`-class request error is never retried — it
+  would fail identically a second time.
+- **After a stream has already started** (board item
+  `01M1FSJ4E2S5M9KBSBJAAPJQ48`): a dropped connection or a stream that ends
+  without ever reaching a terminal chunk is a DIFFERENT failure from the
+  one above — some of the reply already streamed to you before it broke.
+  Silently switching to the next model in your fallback chain here would
+  change which model answered your prompt mid-task; silently ending the
+  turn would throw away a request that was, moments earlier, working. So
+  conway instead retries the SAME candidate, up to twice more, discarding
+  the partial reply visibly rather than either of those: the TUI truncates
+  the in-progress reply back to before the discarded text and shows "stream
+  restarted (attempt *N*); partial output above discarded"; a one-shot
+  `text` run prints a newline plus a matching stderr diagnostic (see
+  [`docs/scripting.md`'s "Streaming"](scripting.md#streaming) section for
+  what this means for a script parsing stdout); `jsonl` emits the
+  `stream_restarted` event like any other. Only `Transport`/`ServerError`
+  raised AFTER the stream opened are eligible — a `RateLimit` this late is
+  vanishingly rare and isn't retried this way, and a failure before the
+  stream ever opened is already covered by the bullet above. Every failed
+  attempt, retried or not, still feeds the endpoint's health `Observation`
+  exactly as before (see ["Health and
+  failover"](routing.md#health-and-failover)); the fallback chain only
+  advances to the next candidate once this budget is exhausted.
+
+Neither retry loop is configurable today — there is no `settings.json` knob
+for the attempt count or the backoff base. What the endpoint's circuit
+breaker does with the resulting `Observation`s (`[health]`'s
+`failure_threshold`/`cooldown_secs`) is a separate, configurable layer —
+see ["Health and failover"](routing.md#health-and-failover).
+
 ## Managing providers from the TUI
 
 Everything above is a `settings.json` edit. The interactive TUI's
