@@ -1128,9 +1128,16 @@ pub enum FragmentScope {
     /// Every agent, root or child -- today's behavior, unchanged.
     #[default]
     All,
-    /// Only the root agent (the one with no parent).
+    /// Only the root agent (the one with no parent). The builder honors
+    /// this fully -- `ContextBuilder::build` filters on it exactly like
+    /// [`Self::All`] -- but not yet implemented: no first-party plugin
+    /// constructs it, so this is a forward declaration until one does.
     RootOnly,
-    /// Only a forked or spawned child (any agent with a parent).
+    /// Only a forked or spawned child (any agent with a parent). The
+    /// builder honors this fully -- `ContextBuilder::build` filters on it
+    /// exactly like [`Self::All`] -- but not yet implemented: no
+    /// first-party plugin constructs it, so this is a forward declaration
+    /// until one does.
     ChildrenOnly,
 }
 

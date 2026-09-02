@@ -231,7 +231,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use conway::plugin::{
-    FragmentPosition, InstructionFragment, Plugin, PluginDescription, PluginManifest, Tool,
+    FragmentPosition, FragmentScope, InstructionFragment, Plugin, PluginDescription,
+    PluginManifest, Tool,
 };
 
 /// This plugin's published manifest id -- a config author (or a first-party
@@ -430,11 +431,18 @@ fn read_operator_fragment(
                 // `tool_ids` stays empty, deliberately, exactly like the
                 // shipped fragment's own -- an operator's own prose is not
                 // tied to any specific tool being reachable this turn.
-                // `position`/`scope` stay at their `AfterSystemPrompt`/`All`
-                // defaults: an operator's own standing instructions follow
-                // an agent def's own prompt, never precede it -- see this
-                // module's own "Where the base fragment lands" doc.
-                Ok(Some(InstructionFragment::new(name, text)))
+                // `position`/`scope` are spelled out explicitly, even
+                // though both equal `InstructionFragment::new`'s own
+                // defaults, so this reads as a deliberate choice rather
+                // than an accident of construction order: an operator's
+                // own standing instructions follow an agent def's own
+                // prompt, never precede it, and reach every agent -- see
+                // this module's own "Where the base fragment lands" doc.
+                Ok(Some(
+                    InstructionFragment::new(name, text)
+                        .with_position(FragmentPosition::AfterSystemPrompt)
+                        .with_scope(FragmentScope::All),
+                ))
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -498,21 +506,19 @@ impl Plugin for IdiomPlugin {
     }
 
     fn instructions(&self) -> Vec<InstructionFragment> {
-        let mut fragments = vec![
-            InstructionFragment::new(INSTRUCTION_NAME, FRAGMENT_TEXT)
-                // Empty `tool_ids`, deliberately -- see this module's own
-                // doc, "The `tool_ids` trap".
-                //
-                // `BeforeSystemPrompt`, `order: -100` -- see this module's
-                // own doc, "Where the base fragment lands": conway's own
-                // harness orientation now precedes even an agent
-                // definition's own carefully-authored prompt, the position
-                // this plugin's own premise (a bare interactive session with
-                // no `[0]` at all) never needed but a curated `AgentDef`
-                // always did.
-                .with_position(FragmentPosition::BeforeSystemPrompt)
-                .with_order(-100),
-        ];
+        let mut fragments = vec![InstructionFragment::new(INSTRUCTION_NAME, FRAGMENT_TEXT)
+            // Empty `tool_ids`, deliberately -- see this module's own
+            // doc, "The `tool_ids` trap".
+            //
+            // `BeforeSystemPrompt`, `order: -100` -- see this module's
+            // own doc, "Where the base fragment lands": conway's own
+            // harness orientation now precedes even an agent
+            // definition's own carefully-authored prompt, the position
+            // this plugin's own premise (a bare interactive session with
+            // no `[0]` at all) never needed but a curated `AgentDef`
+            // always did.
+            .with_position(FragmentPosition::BeforeSystemPrompt)
+            .with_order(-100)];
         fragments.extend(self.operator_project.clone());
         fragments.extend(self.operator_global.clone());
         fragments
@@ -572,8 +578,9 @@ mod plugin_tests {
     /// Declaration honesty for this module's own "Where the base fragment
     /// lands" doc: the base fragment must actually declare
     /// `BeforeSystemPrompt`/`order: -100`, not merely claim to in prose.
-    /// `tests/idiom_end_to_end.rs`'s `fragment_reaches_a_bare_sessions_wire_request`-
-    /// adjacent test proves the RENDERED effect through a real
+    /// `crates/conway/tests/builder.rs`'s
+    /// `a_before_system_prompt_fragment_renders_ahead_of_a_real_agent_defs_prompt`
+    /// proves the RENDERED effect through a real `AgentDef` and a real
     /// `ContextBuilder::build` pass; this is the declaration-level pin.
     #[test]
     fn base_fragment_declares_before_system_prompt_with_negative_order() {
