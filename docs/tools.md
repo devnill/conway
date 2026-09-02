@@ -91,7 +91,10 @@ root like any other. `--root` plus a tool set that excludes `bash` is the
 real, load-bearing guarantee here — see
 [`permissions.md`](permissions.md#confinement) for the full boundary and a
 live example denying a `read` outside a root, which is the shape of
-guarantee `bash`'s presence in the tool set breaks.
+guarantee `bash`'s presence in the tool set breaks. conway warns at startup
+when both are set — `--root` (or `ConwayBuilder::with_root`) alongside
+`bash` among the registered tools — rather than leaving this only as prose
+on this page.
 
 ## The `subagent` tools (`conway.subagent`, on by default)
 

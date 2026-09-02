@@ -467,6 +467,15 @@ existed. Set `--root` whenever you want a hard guarantee that conway
 cannot touch anything outside a directory tree, regardless of what a tool
 call asks for or what permission you grant it.
 
+**`--root` confines path arguments, not shell commands.** `bash` runs a
+free-form command verbatim, and a shell command can reach any path via
+redirection, substitution, `cd`, or a subprocess — no root check can
+statically confine it (see `docs/tools.md`'s shell section for the exact
+reasoning). If `--root` is set and `bash` (`conway.shell`) is among the
+tools available, conway warns at startup that the root does not confine
+what `bash` can do; drop `conway.shell` from `tools.builtin_plugins` if
+you need the guarantee `--root` alone implies.
+
 **When you set `--root`, also pass `--cwd` as an absolute path.** conway
 must be able to verify the agent's own working directory sits inside the
 root before it will start; a relative `--cwd` (or no `--cwd` at all, which

@@ -1095,6 +1095,92 @@ fn explicit_opt_in_via_only_naming_shell_registers_the_bash_tool() {
     );
 }
 
+/// The `--root`/`with_root` startup warning (harness gap review
+/// 2026-09-01, finding 10): an operator who sets a confinement root
+/// reasonably believes nothing can touch files outside it, but `bash`
+/// (`conway.shell`) runs a shell command verbatim, which reaches any path
+/// it likes -- `with_root`'s own doc names this exception in prose only.
+/// With BOTH a root and `conway.shell` selected, `Conway::warnings()`
+/// carries exactly one `ConfigWarning` naming `bash` and `--root`. Written
+/// FIRST against the current tree (checks shown to fail): before this
+/// item's `ConwayBuilder::build` change, `warnings()` here is empty.
+#[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
+#[test]
+fn root_plus_bash_selected_warns_exactly_once_naming_both() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let conway = test_builder_without_router(base_config())
+        .with_backend(fake_backend("fake"))
+        .with_router(empty_router())
+        .with_root(root.path())
+        .with_builtin_plugins(PluginSelection::All)
+        .build()
+        .expect("build should succeed with root set and bash selected");
+
+    let matches: Vec<_> = conway
+        .warnings()
+        .iter()
+        .filter(|w| w.message.contains("bash") && w.message.contains("--root"))
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one root/bash warning, got: {:?}",
+        conway.warnings()
+    );
+    assert!(
+        matches[0].message.contains("conway.shell"),
+        "the warning must name the config key that turns bash off: {:?}",
+        matches[0].message
+    );
+}
+
+/// BREAK-THE-GUARD (half 1): a root WITHOUT `conway.shell` selected must
+/// print no root/bash warning at all -- the default, bash-excluded builtin
+/// set is exactly the safe composition `with_root`'s own doc already
+/// describes as a real guarantee.
+#[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
+#[test]
+fn root_without_bash_selected_warns_of_nothing() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let conway = test_builder_without_router(base_config())
+        .with_backend(fake_backend("fake"))
+        .with_router(empty_router())
+        .with_root(root.path())
+        // No `with_builtin_plugins` call at all: the restrictive DEFAULT
+        // selection, which excludes `conway.shell` -- see
+        // `default_build_registers_every_builtin_except_bash` above.
+        .build()
+        .expect("build should succeed with root set and bash NOT selected");
+
+    assert!(
+        conway.warnings().is_empty(),
+        "a root with no unconfinable shell tool registered must print no warning, got: {:?}",
+        conway.warnings()
+    );
+}
+
+/// BREAK-THE-GUARD (half 2): `conway.shell` selected but NO root set must
+/// also print nothing -- the warning is about the COMBINATION, not either
+/// setting alone (an unrooted `bash` selection is this crate's own
+/// long-standing default-off-but-selectable behavior, unrelated to this
+/// item).
+#[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
+#[test]
+fn bash_selected_without_root_warns_of_nothing() {
+    let conway = test_builder_without_router(base_config())
+        .with_backend(fake_backend("fake"))
+        .with_router(empty_router())
+        .with_builtin_plugins(PluginSelection::All)
+        .build()
+        .expect("build should succeed with bash selected and no root");
+
+    assert!(
+        conway.warnings().is_empty(),
+        "bash selected with no root set must print no warning, got: {:?}",
+        conway.warnings()
+    );
+}
+
 /// A typo in `tools.builtin_plugins` must FAIL THE BUILD, not silently
 /// leave the tool off.
 ///

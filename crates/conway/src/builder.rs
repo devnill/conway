@@ -132,10 +132,10 @@ use conway_core::permission_pattern::{PatternOrigin, Rule, Select, Then, When};
 use conway_core::ports::CapabilityIndex;
 use conway_core::ports::{
     Backend, BackendBuildContext, BackendFactory, CapabilityRegistration, CapabilityRegistry,
-    ContextHook, CurateOutcome, Curator, HealthRegistry, HookRunner, PathStore, PermissionGate,
-    Plugin, PluginHookRule, PluginManifest, PluginPermissionRule, PluginPermissionVerdict,
-    PluginStatusContribution, Router, RouterBuildContext, RouterBundle, RouterFactory,
-    RoutingExplainer, SessionStore,
+    ContextHook, CurateOutcome, Curator, HealthRegistry, HookRunner, PathArgs, PathStore,
+    PermissionGate, Plugin, PluginHookRule, PluginManifest, PluginPermissionRule,
+    PluginPermissionVerdict, PluginStatusContribution, RenderKind, Router, RouterBuildContext,
+    RouterBundle, RouterFactory, RoutingExplainer, SessionStore,
 };
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::context::PluginInstruction;
@@ -1178,6 +1178,13 @@ impl ConwayBuilder {
     /// could give it) -- excluding it from the tool set is the actual
     /// guarantee an operator relying on `--root` needs, not this method
     /// alone. See `docs/tools.md` and `docs/plugins/trust-and-security.md`.
+    /// This is no longer prose alone: [`Self::build`] itself checks it --
+    /// a root set here alongside `bash` (`conway.shell`) among the final
+    /// installed tools earns exactly one [`crate::config::ConfigWarning`]
+    /// (`crate::config::WarningCode::RootWithUnconfinableTool`) on
+    /// [`crate::Conway::warnings()`], surfaced on startup the same way
+    /// every other build-time warning is (`conway-cli`'s `diag::warn`, or
+    /// the TUI's own transcript).
     pub fn with_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.root = Some(root.into());
         self
@@ -1692,6 +1699,53 @@ impl ConwayBuilder {
                      installed; '{plugin}' will load degraded"
                 ),
             });
+        }
+
+        // 10a2b. Board item (harness gap review 2026-09-01, finding 10):
+        //        `with_root`/`--root` confines PATH ARGUMENTS only. A tool
+        //        whose `Tool::path_args` declares `PathArgs::Unconfinable`
+        //        AND whose `Tool::render_kind` declares
+        //        `RenderKind::ShellCommand` hands its call straight to a
+        //        shell, which can reach any path the root would otherwise
+        //        confine (`bash`'s own `path_args` doc pairs exactly this
+        //        pair of facts, for exactly this reason). Computed here
+        //        from that STRUCTURAL pair on each installed tool -- never
+        //        `if manifest.id == "conway.shell"` or a bare-name check on
+        //        `bash` -- so a future tool making the identical two claims
+        //        about itself earns the identical warning with no edit to
+        //        this call site (safety is a mechanism, not an opinion).
+        //        `report` also declares `Unconfinable` (its artifact path
+        //        is nested, outside `PathArgs::Named`'s vocabulary) but is
+        //        excluded here for the same structural reason, not a name
+        //        check either: its `render_kind` is `Structured`, never a
+        //        shell command (`report`'s own `path_args`/`render_kind`
+        //        docs). Runs after `resolved_plugins` is the FULL final
+        //        installed set (10a2's own comment), so a plugin
+        //        `with_plugin`-injected after `with_builtin_plugins` is
+        //        seen exactly like a built-in.
+        if root.is_some() {
+            let unconfinable_shell_tool = resolved_plugins.iter().find_map(|plugin| {
+                let manifest = plugin.manifest();
+                plugin.tools().into_iter().find_map(|tool| {
+                    let unconfinable = matches!(tool.path_args(), PathArgs::Unconfinable { .. });
+                    let shell_command = tool.render_kind() == RenderKind::ShellCommand;
+                    if unconfinable && shell_command {
+                        Some((tool.spec().name.as_str().to_string(), manifest.id.clone()))
+                    } else {
+                        None
+                    }
+                })
+            });
+            if let Some((tool_name, plugin_id)) = unconfinable_shell_tool {
+                warnings.push(ConfigWarning {
+                    code: WarningCode::RootWithUnconfinableTool,
+                    message: format!(
+                        "--root confines path arguments, but tool {tool_name} ({plugin_id}) \
+                         runs shell commands the root cannot confine; remove {plugin_id} from \
+                         tools.builtin_plugins for a real boundary"
+                    ),
+                });
+            }
         }
 
         // 10a3. The runtime CALL half of Edge B (board item
