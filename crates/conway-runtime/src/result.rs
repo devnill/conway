@@ -160,7 +160,7 @@ impl ResultBuilder {
     /// of whether any trailing assistant text exists. Consulted only by
     /// `AgentLoop::terminal_account`'s "no work at all" vs "stopped before
     /// reporting" distinction (acceptance criterion 2 of board item
-    /// `01M1FQ3TGHMRC9EECN4JX0MXM3`'s extension): a non-natural termination
+    /// `01M1FH114QA3A152W8H6E2YMGJ`'s extension): a non-natural termination
     /// with no captured text but a `true` here must not read the same as
     /// one with neither. Does not change [`Self::resolve`] itself -- a
     /// `Some(last_report)` there already always wins over trailing text,

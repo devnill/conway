@@ -81,7 +81,7 @@ fn tool_call_response(call_id: &str, tool: &str) -> conway_core::ports::Generate
 }
 
 /// [`tool_call_response`], but the model also says something alongside the
-/// call -- board item `01M1FQ3TGHMRC9EECN4JX0MXM3`'s extension needs this
+/// call -- board item `01M1FH114QA3A152W8H6E2YMGJ`'s extension needs this
 /// shape to prove a cancelled agent reports what it said, not a bare status
 /// name.
 fn tool_call_response_with_text(
@@ -811,7 +811,7 @@ async fn soft_cancel_waits_for_the_inflight_tool_then_stops_at_the_next_boundary
     );
 }
 
-/// Board item `01M1FQ3TGHMRC9EECN4JX0MXM3`'s extension, acceptance
+/// Board item `01M1FH114QA3A152W8H6E2YMGJ`'s extension, acceptance
 /// criterion 1: before this item, `AgentLoop::finish_cancelled` always
 /// passed `""` as trailing text, so a hard-cancelled agent that had just
 /// said something alongside the tool call the cancel cut off still

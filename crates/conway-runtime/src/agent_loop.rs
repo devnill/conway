@@ -114,7 +114,7 @@
 //!
 //! ## Non-natural terminations report what the agent actually did
 //!
-//! Board item `01M1FQ3TGHMRC9EECN4JX0MXM3`'s extension. Before this item,
+//! Board item `01M1FH114QA3A152W8H6E2YMGJ`'s extension. Before this item,
 //! every terminal path OTHER than a natural `Completed`/`Rejected` --
 //! budget-exceeded (all four dimensions), cancellation (graceful and
 //! immediate), a deadline, and a bubbled-up backend/store failure -- called

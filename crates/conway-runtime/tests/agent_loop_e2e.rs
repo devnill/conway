@@ -99,7 +99,7 @@ fn tool_call_response(call_id: &str, tool: &str, args: serde_json::Value) -> Gen
 
 /// [`tool_call_response`], but the model also says something alongside the
 /// call -- the shape a budget/cancel/deadline termination mid-tool-batch
-/// needs to prove it reports (board item `01M1FQ3TGHMRC9EECN4JX0MXM3`'s
+/// needs to prove it reports (board item `01M1FH114QA3A152W8H6E2YMGJ`'s
 /// extension): a turn that dispatches a tool call is not necessarily a turn
 /// with no text.
 fn tool_call_response_with_text(
@@ -1163,7 +1163,7 @@ async fn budget_max_tool_calls_exceeded_stops_the_loop() {
     assert_eq!(backend.calls().len(), 2);
 }
 
-/// Board item `01M1FQ3TGHMRC9EECN4JX0MXM3`'s extension, acceptance
+/// Board item `01M1FH114QA3A152W8H6E2YMGJ`'s extension, acceptance
 /// criterion 1: before this item, every `check_budget` dimension passed
 /// `""` as trailing text, so a budget-exceeded agent that had just SAID
 /// something (alongside the tool call its next turn never got to make)
