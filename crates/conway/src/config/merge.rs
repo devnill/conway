@@ -406,11 +406,11 @@ fn resolve_metadata_path(config: &ConwayConfig, cwd: &std::path::Path) -> PathBu
     }
 }
 
-/// The built-in, lowest-precedence layer. Matches the documented config
-/// defaults exactly (the implementation notes / the headroom
-/// amendment), except `routing.default_headroom_tokens`: see
-/// `schema::DEFAULT_HEADROOM_TOKENS`'s doc comment for why `8_192` (not the
-/// amendment's literal `16000`) is used.
+/// The built-in, lowest-precedence layer -- derived, not hand-maintained.
+/// See `routing.default_headroom_tokens`'s treatment in
+/// `schema::DEFAULT_HEADROOM_TOKENS`'s own doc comment for why `8_192` (not
+/// the headroom amendment's literal `16000`) is what a role with no
+/// override resolves to.
 ///
 /// `roles.default` (an empty chain, no headroom override) is baked in so
 /// that `default_role = "default"` — itself a baked-in default — passes
@@ -467,56 +467,39 @@ fn resolve_metadata_path(config: &ConwayConfig, cwd: &std::path::Path) -> PathBu
 /// parses at all" is still correct and still needed; relying on it for
 /// "the document routes anywhere" -- guided setup's old, accidental use --
 /// is the defect that board item fixed.
-const BASELINE_ROLE_NAME: &str = "default";
+pub(crate) const BASELINE_ROLE_NAME: &str = "default";
 
+/// The built-in, lowest-precedence layer, as raw JSON --
+/// `serde_json::to_value(ConwayConfig::baseline())`, nothing more. There is
+/// exactly one place a section's default value is stated: its own `impl
+/// Default` in `schema.rs`. This function used to be a second one -- a
+/// hand-maintained `serde_json::json!` literal, required to name the exact
+/// same values `schema.rs` already named, with nothing enforcing that it
+/// did. It drifted more than once (`LimitsConfig`'s `max_tool_calls` and
+/// `RoutingSection`'s `headroom_fraction` were both missing here while
+/// present in their own `Default` impls; the `max_steps` fix, commit
+/// `a0f560d`, had to change both files by hand and its own commit message
+/// said so). Deserializing this value back into each section's own
+/// type and comparing it against that section's `Default::default()` -- the
+/// round-trip `crates/conway/tests/config_defaults_single_source.rs`
+/// performs -- can no longer fail: there is only one value to disagree with
+/// itself.
+///
+/// **No `session.root` special case any more.** `SessionConfig::default()`
+/// leaves `root: None`, which `Serialize` writes as `"root": null` here;
+/// `Option<PathBuf>`'s `Deserialize` reads an explicit `null` identically to
+/// the key being absent altogether, so the two are equivalent through this
+/// merge (`merge_values`, below, replaces `null` with an overlay's value the
+/// same way it replaces an absent key) and `load_impl`'s own
+/// `config.session.root.is_none()` check downstream sees the identical
+/// `None` either way. An earlier version of this function special-cased
+/// `root` out of the literal to avoid asserting a value here; deriving from
+/// `ConwayConfig::baseline()` makes that unreachable by construction instead
+/// of by a hand-maintained omission -- see `SessionConfig`'s own doc for why
+/// `None` and `Some` mean genuinely different things, unaffected by this.
 fn default_document() -> Value {
-    serde_json::json!({
-        "default_role": BASELINE_ROLE_NAME,
-        "cwd": ".",
-        "session": {
-            // No "root" key: `SessionConfig`'s own container-level
-            // `#[serde(default)]` fills it from `SessionConfig::default()`
-            // (`None`) when absent, exactly like every other layer that
-            // never names it -- `load_impl` resolves the central default
-            // afterward. See `SessionConfig`'s own doc for why `None` here
-            // and `Some` mean genuinely different things.
-            "fsync": "interval",
-            "fsync_interval_ms": 200,
-        },
-        "limits": {
-            // `0` = unlimited. See `LimitsConfig::max_steps`'s own doc for
-            // why the baked-in default no longer caps a root session: a
-            // fixed step ceiling terminated an interactive coding turn
-            // mid-task and reported no output.
-            "max_steps": 0,
-            "max_tokens": 0,
-            "deadline_secs": 0,
-            "max_parallel_tools": 4,
-        },
-        "permissions": {
-            "mode": "prompt",
-            "allowed_tools": [],
-            "denied_tools": [],
-        },
-        "backends": {},
-        "routing": {
-            "default_headroom_tokens": crate::config::schema::DEFAULT_HEADROOM_TOKENS,
-        },
-        "roles": {
-            (BASELINE_ROLE_NAME): { "chain": [], "headroom_tokens": null },
-        },
-        "health": {
-            "transport_failures_to_open": 3,
-            "open_duration_secs": 30,
-        },
-        "agents": {
-            "dir": ".conway/agents",
-        },
-        "models": {
-            "metadata_path": ".conway/models.json",
-            "probe_on_startup": false,
-        },
-    })
+    serde_json::to_value(ConwayConfig::baseline())
+        .expect("ConwayConfig::baseline() is plain data with no non-serializable field")
 }
 
 /// True when `(name, entry)` is exactly `default_document`'s own baked-in
