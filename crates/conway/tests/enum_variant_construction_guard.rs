@@ -233,6 +233,22 @@ const WATCHED_ENUMS: &[WatchedEnum] = &[
               given route has a real caller at all, which is exactly the \
               claim REC-1 found stale for Operator",
     },
+    WatchedEnum {
+        name: "FragmentPosition",
+        decl_file: "crates/conway-core/src/ports/plugin.rs",
+        why: "each variant changes WHERE an instruction fragment renders \
+              relative to [0] SystemPrompt -- ahead of it or after it -- a \
+              real ordering effect a plugin author picks deliberately, not \
+              a data label",
+    },
+    WatchedEnum {
+        name: "FragmentScope",
+        decl_file: "crates/conway-core/src/ports/plugin.rs",
+        why: "each variant changes WHICH agent an instruction fragment \
+              reaches (every agent, only the root, only a child) -- a \
+              reachability effect exactly like PathArgs' security-relevant \
+              behavior above, not a data label",
+    },
 ];
 
 /// A watched enum's variant that is deliberately allowlisted: nothing in
@@ -373,6 +389,29 @@ const ALLOWLIST: &[Allowlisted] = &[
                  ContextHook over a MemoryStore port instead, per DESIGN \
                  section 11.7's amendment). conway-core/session/runtime \
                  never construct it.",
+    },
+    // -- FragmentScope (harness gap review finding 2): the builder side of
+    // RootOnly/ChildrenOnly is fully wired and tested
+    // (ContextBuilder::build filters on either exactly like All) -- what's
+    // missing is a first-party plugin that ever sets scope away from the
+    // All default. Same shape as PathOp::Restamp above, and the same
+    // TEMPORARY allowance: the first first-party plugin (or operator
+    // config) that constructs one in production must remove the matching
+    // entry below AND the "not yet implemented" marker on that variant's
+    // own doc comment.
+    Allowlisted {
+        enum_name: "FragmentScope",
+        variant: "RootOnly",
+        reason: "Builder-side filtering is fully implemented and covered by \
+                 crates/conway-runtime/src/context/builder.rs's own tests; \
+                 no first-party plugin scopes a fragment away from All yet.",
+    },
+    Allowlisted {
+        enum_name: "FragmentScope",
+        variant: "ChildrenOnly",
+        reason: "Builder-side filtering is fully implemented and covered by \
+                 crates/conway-runtime/src/context/builder.rs's own tests; \
+                 no first-party plugin scopes a fragment away from All yet.",
     },
 ];
 

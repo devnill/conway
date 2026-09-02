@@ -39,7 +39,7 @@ use conway_core::ports::{Backend, HealthRegistry, Plugin, Router, SessionStore};
 use conway_core::provenance::Provenance;
 use conway_core::segment::CacheTtl;
 use conway_runtime::context::path::path_from_legacy;
-use conway_runtime::context::{ContextBuilder, ContextInput, SkillFragment};
+use conway_runtime::context::{AgentKind, ContextBuilder, ContextInput, SkillFragment};
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_testkit::{
@@ -254,6 +254,7 @@ fn skill_body_is_carried_verbatim_into_assembled_segment() {
         turn: 0,
         model: ModelId::new("m"),
         cache_mode: CacheMode::None,
+        agent_kind: AgentKind::Root,
         system_prompt: None,
         instructions: vec![],
         skills: vec![fragment],

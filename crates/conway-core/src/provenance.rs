@@ -285,16 +285,34 @@ pub struct InstructionFragmentEntry {
     /// This fragment's estimated token cost, using the SAME
     /// `heuristic-chars4` estimator (`ContextReport::tokenizer`) every
     /// other entry in this report uses -- computed even for a withheld
-    /// (unreachable) fragment, from its own text, since
+    /// (unreachable or scope-skipped) fragment, from its own text, since
     /// [`ContextReport::segments`] carries no segment to source the
     /// estimate from in that case.
     pub tokens_est: u32,
     /// Tool ids this fragment's [`crate::ports::InstructionFragment::tool_ids`]
     /// named that no tool in this turn's assembled tool set provides.
     /// Empty -- the common case -- means the fragment's text WAS injected
-    /// as a segment; non-empty means it was withheld, and this names
-    /// exactly why.
+    /// as a segment (subject also to [`Self::skipped_by_scope`] below);
+    /// non-empty means it was withheld, and this names exactly why.
     pub unreachable_tool_ids: Vec<ToolName>,
+    /// `true` when this fragment's [`crate::ports::InstructionFragment::scope`]
+    /// (or [`crate::ports::InstructionFragment::agent_def`]) excluded it
+    /// from THIS turn's agent -- e.g. a `RootOnly` fragment considered for a
+    /// forked/spawned child. A scope-skipped fragment never appears in
+    /// [`ContextReport::segments`], the same "recorded, never silently
+    /// withheld" discipline [`Self::unreachable_tool_ids`] already applies
+    /// to reachability -- distinct from it (never overloaded onto the same
+    /// field) because the two causes answer different operator questions:
+    /// "why is a tool missing" vs. "why doesn't this agent get this text at
+    /// all". `false` -- the common case -- for every fragment declared
+    /// before [`crate::ports::InstructionFragment::scope`] existed, since
+    /// [`crate::ports::FragmentScope::All`] (the default) never skips
+    /// anyone.
+    ///
+    /// `#[serde(default)]`: every session log written before this field
+    /// existed still decodes, with no fragment recorded as scope-skipped.
+    #[serde(default)]
+    pub skipped_by_scope: bool,
 }
 
 /// Appends `report` as an ordinary `LogRecord::ContextReportRecord` through
@@ -569,6 +587,7 @@ mod tests {
                 name: "when-to-compose".into(),
                 tokens_est: 7,
                 unreachable_tool_ids: vec![ToolName::new("compose_path")],
+                skipped_by_scope: false,
             }],
         };
         let json = serde_json::to_string(&report).unwrap();

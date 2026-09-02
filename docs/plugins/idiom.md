@@ -52,26 +52,38 @@ own defaults, which are unchanged by this item.
 
 ## Where it lands, and why
 
-`ContextBuilder::build` assembles `[0] SystemPrompt` (an agent def's own
-prompt, or a session's `system_prompt_override`), then `[1]
-PluginInstructions*` (every installed plugin's own fragments, in install
-order), then `[1b] SkillFragments*`, then tool schemas and the
-conversation. This plugin's fragment lands in `[1]` — ahead of every tool
-schema and every logged turn, which is what "prepend" means against the
-conversation. It lands after `[0]` only when an agent def supplies its own
-system prompt, which keeps that def's own, deliberately-authored prompt
-first and this plugin's generic harness orientation immediately after —
-for the plugin's own primary case, a bare interactive session with no `[0]`
-segment at all, `[1]` **is** the front of the whole assembled context.
-Installing more than one instruction-declaring plugin orders their
-fragments by `[plugins].install`/`with_plugin` order; nothing here
-guarantees this fragment renders first among several.
+`ContextBuilder::build` renders every `InstructionFragment` at one of two
+positions relative to `[0] SystemPrompt` (an agent def's own prompt, or a
+session's `system_prompt_override`/one-shot `--system-prompt` override):
+`BeforeSystemPrompt` or `AfterSystemPrompt` (`hooks.md` point 17 has the
+full ordering contract). This plugin's shipped base fragment
+(`conway.idiom.base`) declares `BeforeSystemPrompt` with `order: -100` —
+it renders **genuinely first**, ahead of even a curated `AgentDef`'s own,
+deliberately-authored prompt, and ahead of everything else in the
+assembled context when there is no `[0]` at all (a bare interactive
+session, this plugin's own primary case). Installing more than one
+`BeforeSystemPrompt`-declaring plugin orders their fragments by `order`
+first, then `[plugins].install`/`with_plugin` install order for a tie;
+nothing here guarantees `conway.idiom.base` renders first among several
+against a third-party plugin that also declares `BeforeSystemPrompt` with
+a lower `order`.
 
-This item does not change `ContextBuilder::build`'s assembly order. If an
-operator's own sense of "prepend" turns out to mean ahead of an agent def's
-own system prompt too, that is a runtime change affecting every consumer
-of the context builder — a follow-up, not something this plugin does by
-reordering itself.
+The operator's own project/global fragments (`conway.idiom.operator.
+project`/`conway.idiom.operator.global`, described below) stay at the
+`AfterSystemPrompt` default — an agent def's own prompt still precedes an
+operator's own standing instructions, which is the ordering an operator
+authoring both would expect.
+
+**This used to be argued the other way.** Before `InstructionFragment::
+position` existed, every fragment rendered at a single fixed slot after
+`[0]`, so the base fragment's own doc argued (correctly, for what the
+runtime could deliver at the time) that landing there was "the right
+place" and that landing ahead of an agent def's own prompt "does not change
+`ContextBuilder::build`'s assembly order... a follow-up, not something this
+plugin does by reordering itself." The fragment position/order/scope item
+(process record `01M1FQ36PCW2J19AP219GKZH3R`) is that follow-up: the
+runtime now lets a fragment say which side of `[0]` it wants, and this
+plugin's base fragment says "ahead."
 
 ## What the fragment covers, and what it deliberately does not name as a tool dependency
 

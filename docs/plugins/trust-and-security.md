@@ -589,7 +589,16 @@ mechanism and obligations in [`hooks.md`](hooks.md) point 17) is a new
 extension point, and it is worth naming carefully: it is the first
 `Plugin` contribution whose entire effect is putting a paragraph of TEXT
 directly into the model's context, as its own `Role::System` segment,
-positioned ahead of an operator's own directory-authored skills.
+positioned ahead of an operator's own directory-authored skills in every
+case. WHERE relative to `[0] SystemPrompt` is now position-dependent
+(`InstructionFragment::position`, process record
+`01M1FQ36PCW2J19AP219GKZH3R`): `AfterSystemPrompt` (the default) renders
+after an agent def's own prompt, exactly as every fragment always has;
+`BeforeSystemPrompt` renders ahead of it — a plugin can now put text ahead
+of even a curated `AgentDef`'s own, deliberately-authored prompt. Neither
+position changes the trust posture argued below: this is still static
+text, not a call, and installing the plugin is still the entire control
+regardless of which side of `[0]` it lands on.
 
 **Installing the plugin is still the entire control — nothing new is
 gated.** A tool call is proposed by the model and passes through

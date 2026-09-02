@@ -19,7 +19,9 @@ use conway_core::log::LogRecord;
 use conway_core::path::{NodeProvenance, NodeStamp, PathNode, RecordRef, ResolvedPath, Selector};
 use conway_core::provenance::Provenance;
 use conway_core::segment::{CacheTtl, PromptSegment};
-use conway_runtime::context::{ContextBuilder, ContextInput, SkillFragment, SystemPromptSpec};
+use conway_runtime::context::{
+    AgentKind, ContextBuilder, ContextInput, SkillFragment, SystemPromptSpec,
+};
 
 // ---------------------------------------------------------------------
 // Fixed identifiers (never `AgentId::new()`/`SessionId::new()`): these
@@ -107,6 +109,7 @@ fn root_simple_input() -> ContextInput {
         turn: 0,
         model: ModelId::new("claude-sonnet-4-6"),
         cache_mode: CacheMode::None,
+        agent_kind: AgentKind::Root,
         system_prompt: Some(SystemPromptSpec {
             agent_def: "reviewer".into(),
             text: "You are a careful reviewer.".into(),
@@ -199,6 +202,7 @@ fn fork_inherited_input() -> ContextInput {
             max_breakpoints: 4,
             ttls: vec![CacheTtl::FiveMinutes],
         },
+        agent_kind: AgentKind::Root,
         system_prompt: Some(SystemPromptSpec {
             agent_def: "reviewer".into(),
             text: "You are a careful reviewer.".into(),
@@ -221,6 +225,7 @@ fn spawn_clean_input() -> ContextInput {
         turn: 0,
         model: ModelId::new("claude-sonnet-4-6"),
         cache_mode: CacheMode::None,
+        agent_kind: AgentKind::Root,
         system_prompt: Some(SystemPromptSpec {
             agent_def: "triage".into(),
             text: "You triage failing CI jobs.".into(),
@@ -313,6 +318,7 @@ fn steer_and_toolresults_input() -> ContextInput {
             max_breakpoints: 1,
             ttls: vec![CacheTtl::FiveMinutes],
         },
+        agent_kind: AgentKind::Root,
         system_prompt: Some(SystemPromptSpec {
             agent_def: "reviewer".into(),
             text: "You are a careful reviewer.".into(),

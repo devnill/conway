@@ -3983,6 +3983,10 @@ fn general_instruction_fragment() -> conway_runtime::context::PluginInstruction 
         name: "general-orientation".to_string(),
         text: "General harness orientation text.".to_string(),
         tool_ids: vec![],
+        position: conway_core::ports::FragmentPosition::AfterSystemPrompt,
+        order: 0,
+        scope: conway_core::ports::FragmentScope::All,
+        agent_def: None,
     }
 }
 
@@ -3996,6 +4000,10 @@ fn secret_tool_instruction_fragment() -> conway_runtime::context::PluginInstruct
         name: "secret-tool-note".to_string(),
         text: "How to use the secret tool.".to_string(),
         tool_ids: vec![secret_tool_spec().name],
+        position: conway_core::ports::FragmentPosition::AfterSystemPrompt,
+        order: 0,
+        scope: conway_core::ports::FragmentScope::All,
+        agent_def: None,
     }
 }
 

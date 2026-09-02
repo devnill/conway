@@ -328,6 +328,18 @@ session's system prompt is fixed by the session it continues, not by the
 invocation that resumes or forks it, so combining them is a usage error
 naming both flags rather than a silent drop.
 
+**A plugin's `BeforeSystemPrompt` instruction fragment still renders ahead
+of whatever text either flag produces.** Both flags replace/append the
+content of `[0] SystemPrompt` (`SessionSpec::system_prompt_override`) —
+they do not change ITS POSITION in the assembled context.
+`InstructionFragment::position: BeforeSystemPrompt` (e.g.
+`conway.idiom`'s shipped base fragment, when that plugin is installed)
+renders ahead of `[0]` regardless of what occupies it: an `--agent`'s own
+def, `--system-prompt`'s replacement text, or `--append-system-prompt`'s
+addition all sit at the same `[0]` slot, and a `BeforeSystemPrompt`
+fragment lands ahead of all three identically (see
+[`docs/plugins/idiom.md`](plugins/idiom.md) "Where it lands, and why").
+
 ## Budget flags
 
 The runtime always enforces a turn/token/wall-clock budget (`exit 5`,

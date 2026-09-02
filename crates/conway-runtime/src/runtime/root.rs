@@ -149,14 +149,20 @@ pub(crate) fn resolve_skills(
 ///
 /// Skills (`resolve_skills` above) reach this same conclusion by a
 /// DIFFERENT mechanism, not this one: an instruction fragment is
-/// install-time, plugin-scoped, and has no per-agent-def selector at all
-/// (every fragment reaches every eligible agent, filtered only by
-/// `tool_ids`); a skill is name-scoped through `AgentDef.skills`, so a
-/// child's own skills are whatever ITS OWN resolved `agent_def` names --
-/// already exactly what `resolve_skills` computes, given that def. Both
-/// were zeroed by the same `Vec::new()` line in `subagent.rs`; both are now
-/// resolved through their own pre-existing function, called with the
-/// child's own already-resolved `agent_def`.
+/// install-time, plugin-scoped, and (as of the fragment position/order/
+/// scope item, process record `01M1FQ36PCW2J19AP219GKZH3R`) has a coarse,
+/// STRUCTURAL per-agent selector (`InstructionFragment::scope`'s
+/// `RootOnly`/`ChildrenOnly`, keyed on whether an agent has a parent -- see
+/// `context/builder.rs`'s `AgentKind`) but no per-agent-DEF selector beyond
+/// `InstructionFragment::agent_def`'s exact-name match against `[0]`'s own
+/// agent def -- every fragment still reaches every eligible agent by
+/// default (`FragmentScope::All`), filtered by `tool_ids` reachability
+/// exactly as before this item; a skill is name-scoped through
+/// `AgentDef.skills`, so a child's own skills are whatever ITS OWN resolved
+/// `agent_def` names -- already exactly what `resolve_skills` computes,
+/// given that def. Both were zeroed by the same `Vec::new()` line in
+/// `subagent.rs`; both are now resolved through their own pre-existing
+/// function, called with the child's own already-resolved `agent_def`.
 pub(crate) fn resolve_instructions(
     instructions: &[crate::context::PluginInstruction],
 ) -> Vec<crate::context::PluginInstruction> {

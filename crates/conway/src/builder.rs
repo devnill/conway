@@ -2056,6 +2056,10 @@ impl ConwayBuilder {
                     name: fragment.name,
                     text: fragment.text,
                     tool_ids: fragment.tool_ids,
+                    position: fragment.position,
+                    order: fragment.order,
+                    scope: fragment.scope,
+                    agent_def: fragment.agent_def,
                 });
             }
         }

@@ -149,11 +149,13 @@ impl Plugin for EchoPlugin {
     /// declares via `Self::tools` above -- the structurally-reachable case
     /// that method's own doc argues can never fail the assembly-time check.
     fn instructions(&self) -> Vec<InstructionFragment> {
-        vec![InstructionFragment {
-            name: "when-to-echo".to_string(),
-            text: "Call echo when the operator asks you to repeat something verbatim.".to_string(),
-            tool_ids: vec![ToolName::new("echo")],
-        }]
+        vec![
+            InstructionFragment::new(
+                "when-to-echo",
+                "Call echo when the operator asks you to repeat something verbatim.",
+            )
+            .with_tool_ids(vec![ToolName::new("echo")]),
+        ]
     }
 
     /// F8 liveness for Edge B's capability channel (board item

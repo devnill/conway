@@ -122,11 +122,13 @@ impl Plugin for DiscoverPlugin {
     }
 
     fn instructions(&self) -> Vec<conway::plugin::InstructionFragment> {
-        vec![conway::plugin::InstructionFragment {
-            name: INSTRUCTION_NAME.to_string(),
-            text: include_str!("../fragments/when_to_search.md").to_string(),
-            tool_ids: vec![ToolName::new(SEARCH_TOOL_NAME)],
-        }]
+        vec![
+            conway::plugin::InstructionFragment::new(
+                INSTRUCTION_NAME,
+                include_str!("../fragments/when_to_search.md"),
+            )
+            .with_tool_ids(vec![ToolName::new(SEARCH_TOOL_NAME)]),
+        ]
     }
 }
 
