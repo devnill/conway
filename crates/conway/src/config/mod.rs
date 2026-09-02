@@ -135,6 +135,24 @@ pub enum WarningCode {
     /// this host cannot read at all (still `FacadeError::Build`,
     /// unchanged).
     McpServerFailed,
+    /// `ConwayBuilder::with_root` set a confinement root, and the final
+    /// installed tool set (built-ins filtered by `tools.builtin_plugins` ++
+    /// anything `with_plugin`-injected) includes at least one tool whose
+    /// `conway_core::ports::PathArgs` declares itself `Unconfinable` AND
+    /// whose `conway_core::ports::RenderKind` declares its rendering
+    /// `ShellCommand` -- the SAME pair of structural facts
+    /// `crates/conway-tools/src/shell/bash.rs`'s own `path_args`/
+    /// `render_kind` docs pair for exactly this reason: a root confines
+    /// path *arguments*, not what a shell command reachable from the tool
+    /// set does. Raised by `ConwayBuilder::build`, once the final
+    /// installed plugin set is known (mirrors
+    /// [`Self::OptionalPluginDependencyMissing`]'s own build-time-not-
+    /// load-time timing, a few variants above, for the identical reason:
+    /// which tools actually made it into the final set is not known until
+    /// then). Computed from the structural declaration, never from a
+    /// hardcoded tool-name check -- see `ConwayBuilder::build`'s own
+    /// comment at this warning's call site.
+    RootWithUnconfinableTool,
 }
 
 #[cfg(test)]

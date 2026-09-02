@@ -187,3 +187,78 @@ fn a_healthy_headroom_prints_no_warning() {
         "a healthy headroom must print no warning at all, got: {stderr:?}"
     );
 }
+
+/// The `--root`-vs-`bash` startup warning (harness gap review 2026-09-01,
+/// finding 10; `crates/conway/src/builder.rs`'s "10a2b" comment). An
+/// operator who sets `--root` reasonably believes nothing can touch files
+/// outside it -- one-shot `-p` (`main.rs`'s own `build_conway`, `is_tui ==
+/// false`) unconditionally selects `PluginSelection::All` regardless of
+/// `tools.builtin_plugins` (the doc comment on that call site: "one-shot's
+/// `--allowed-tools` allow-list... is, and always was, the thing that
+/// actually keeps bash from running unattended, not registration"), so
+/// `bash` is ALWAYS among the registered tools for `-p` -- this test varies
+/// `--root` (present vs. absent) rather than `tools.builtin_plugins`, which
+/// (for this one dispatch target only) has no effect on registration to
+/// vary. `crates/conway/tests/builder.rs`'s own
+/// `root_plus_bash_selected_warns_exactly_once_naming_both`/
+/// `root_without_bash_selected_warns_of_nothing` cover the
+/// `tools.builtin_plugins` axis directly against `ConwayBuilder` itself,
+/// where it IS honored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn root_plus_bash_warning_is_visible_on_stderr_for_one_shot_print() {
+    use common::mock_backend::{Chunk, MockBackend, Script};
+
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
+    let fixture = common::write_fixture(&mock, 10);
+
+    // `--root` resolves relative to the process's OWN working directory
+    // (`build_conway`'s own doc), which `common::command` already points at
+    // `fixture.dir.path()` -- naming that same directory here confines the
+    // root agent to exactly the directory it already starts in, so
+    // `new_session`'s own "cwd must fall inside root" check passes and the
+    // turn dials the mock for real, the same way
+    // `misconfigured_headroom_is_visible_on_stderr_for_one_shot_print`
+    // above does.
+    let out = command(&["--root", &fixture.dir.path().to_string_lossy(), "-p", "hi"], &fixture)
+        .output()
+        .expect("run conway binary");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("conway: warning:"),
+        "expected the standard diag::warn prefix on stderr, got: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("bash") && stderr.contains("--root"),
+        "expected the warning to name both bash and --root, got: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("conway.shell"),
+        "expected the warning to name the config key that turns bash off, got: {stderr:?}"
+    );
+}
+
+/// BREAK-THE-GUARD: the identical fixture and mock, with `--root` simply
+/// omitted, must print no root/bash warning -- `bash` is still registered
+/// (one-shot always selects it), but with no root set there is nothing for
+/// it to be unconfinable RELATIVE TO, so the warning must not fire on
+/// either fact alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_root_no_bash_warning_on_stderr_for_one_shot_print() {
+    use common::mock_backend::{Chunk, MockBackend, Script};
+
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
+    let fixture = common::write_fixture(&mock, 10);
+
+    let out = command(&["-p", "hi"], &fixture)
+        .output()
+        .expect("run conway binary");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !(stderr.contains("bash") && stderr.contains("--root")),
+        "no --root set must print no root/bash warning, got: {stderr:?}"
+    );
+}
