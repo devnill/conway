@@ -101,7 +101,7 @@ pub use conway_core::ports::PluginDeclaredMode;
 pub mod permission_pattern {
     pub use conway_core::permission_pattern::*;
 }
-pub use conway_core::content::{ToolCategory, Usage};
+pub use conway_core::content::{CacheAccounting, ToolCategory, Usage};
 pub use conway_core::event::{Envelope, Event};
 pub use conway_core::ids::{
     AgentId, LogSeq, MemoryId, ModelRef, RoleAlias, SegmentId, SessionId, ToolName,
@@ -657,6 +657,10 @@ pub mod plugin {
 ///   is self-sufficient on its own, the same choice already made for
 ///   `Provenance` (re-exported at both the root and inside `pub mod
 ///   plugin` above).
+/// - `CacheAccounting` — `Usage::cache_accounting`'s type; a `Backend`
+///   decoding a wire response cannot honestly populate `Usage` without
+///   naming it (`Reported` when the wire carried a cache field, even a
+///   zero one; `NotReported` when it carried none at all).
 /// - `StreamChunk`, `BoxStream` — `Backend::stream`'s item and return
 ///   types.
 /// - `ProbeReport` — `Backend::probe`'s `Ok` type.
@@ -701,7 +705,7 @@ pub mod backend {
         CacheMode, Capabilities, ProbeReport, ReliabilityTier, StructuredOutput, ToolCallSupport,
     };
     pub use conway_core::content::{
-        ContentBlock, SamplingParams, StopReason, ToolCall, ToolSpec, Usage,
+        CacheAccounting, ContentBlock, SamplingParams, StopReason, ToolCall, ToolSpec, Usage,
     };
     pub use conway_core::error::BackendError;
     pub use conway_core::ids::{BackendId, ModelId, PrefixKey};

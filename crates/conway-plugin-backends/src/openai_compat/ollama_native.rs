@@ -76,7 +76,7 @@
 //!   [`crate::profile::Profile::sends_num_ctx`], so no other dialect's
 //!   request path is touched at all.
 
-use conway_core::content::{ContentBlock, StopReason, ToolSpec, Usage};
+use conway_core::content::{CacheAccounting, ContentBlock, StopReason, ToolSpec, Usage};
 use conway_core::error::BackendError;
 use conway_core::ports::{BoxStream, GenerateRequest, GenerateResponse, StreamChunk};
 use futures_core::Stream;
@@ -263,6 +263,10 @@ pub(crate) fn to_generate_response_native(
             cache_read_tokens: 0,
             cache_write_tokens: 0,
             reasoning_tokens: 0,
+            // Ollama's native `/api/chat` response carries no cache field
+            // at all -- see this module's own doc. `0` here is a
+            // zero-filled placeholder, not an observation.
+            cache_accounting: CacheAccounting::NotReported,
         },
     })
 }
@@ -481,6 +485,9 @@ fn process_native_line(
         cache_read_tokens: 0,
         cache_write_tokens: 0,
         reasoning_tokens: 0,
+        // Same rationale as the non-streaming path above: native Ollama's
+        // NDJSON frames never carry a cache field.
+        cache_accounting: CacheAccounting::NotReported,
     };
     state.done_reason = chunk.done_reason.or_else(|| state.done_reason.clone());
     true
@@ -557,6 +564,54 @@ mod tests {
             generated.content,
             vec![ContentBlock::Text { text: "hi".into() }]
         );
+    }
+
+    /// Ollama's native `/api/chat` response carries no cache field at all
+    /// (see this module's own doc). The non-streaming decode path must
+    /// mark `cache_accounting` `NotReported`, not silently claim the
+    /// zero-filled `cache_read_tokens`/`cache_write_tokens` are real
+    /// observations.
+    #[test]
+    fn to_generate_response_native_marks_cache_accounting_not_reported() {
+        let response: NativeChatResponse = serde_json::from_value(json!({
+            "message": {"role": "assistant", "content": "hi"},
+            "done": true,
+            "done_reason": "stop",
+            "prompt_eval_count": 18,
+            "eval_count": 4
+        }))
+        .unwrap();
+        let generated =
+            to_generate_response_native(response, &Dialect::Ollama.profile(), &[]).unwrap();
+        assert_eq!(generated.usage.cache_accounting, CacheAccounting::NotReported);
+    }
+
+    /// Same rationale as the non-streaming test above, for the NDJSON
+    /// streaming path: `process_native_line` must mark `cache_accounting`
+    /// `NotReported` on every line that carries usage stats.
+    #[test]
+    fn process_native_line_marks_cache_accounting_not_reported() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = NativeDriverState {
+            accumulator: ToolCallAccumulator::new(
+                Dialect::Ollama.profile().tool_call_style,
+                &[],
+            ),
+            text_buffer: String::new(),
+            usage: Usage::default(),
+            done_reason: None,
+            saw_tool_calls: false,
+        };
+        let line = json!({
+            "message": {"role": "assistant", "content": "hi"},
+            "done": true,
+            "done_reason": "stop",
+            "prompt_eval_count": 18,
+            "eval_count": 4
+        })
+        .to_string();
+        assert!(process_native_line(&line, &tx, &mut state));
+        assert_eq!(state.usage.cache_accounting, CacheAccounting::NotReported);
     }
 
     fn get_weather_tool() -> ToolSpec {

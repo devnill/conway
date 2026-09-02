@@ -24,6 +24,7 @@ pub mod input;
 pub mod state;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub(crate) mod usage_format;
 pub mod view;
 
 use conway::{Conway, FacadeError};

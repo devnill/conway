@@ -18,7 +18,7 @@
 //! [`BreakpointTarget::Tools`] instead of a `System`/`Message` placement.
 //! See `cache.rs` for where that target actually attaches `cache_control`.
 
-use conway_core::content::{ContentBlock, Role, StopReason, ToolSpec, Usage};
+use conway_core::content::{CacheAccounting, ContentBlock, Role, StopReason, ToolSpec, Usage};
 use conway_core::error::BackendError;
 use conway_core::ports::{GenerateRequest, GenerateResponse};
 use conway_core::provenance::Provenance;
@@ -405,6 +405,15 @@ pub(crate) fn map_stop_reason(reason: Option<&str>) -> StopReason {
 
 /// `input_tokens`/`output_tokens`/`cache_read_input_tokens`/
 /// `cache_creation_input_tokens` → `Usage`.
+///
+/// Unlike the OpenAI-compatible dialect, `UsageWire`'s two cache fields are
+/// plain `u32`, not `Option<u32>`: Anthropic's Messages API contract always
+/// includes `cache_read_input_tokens`/`cache_creation_input_tokens` in
+/// `usage` (zeroed when caching was not used), never omits them, so field
+/// PRESENCE carries no information here -- `#[serde(default)]` exists only
+/// to tolerate a malformed/partial payload, not to encode "not reported".
+/// `cache_accounting` is therefore `Reported` whenever a `usage` object was
+/// present at all, `NotReported` only when the whole object is absent.
 pub(crate) fn map_usage(usage: Option<UsageWire>) -> Usage {
     match usage {
         Some(usage) => Usage {
@@ -413,8 +422,12 @@ pub(crate) fn map_usage(usage: Option<UsageWire>) -> Usage {
             cache_read_tokens: usage.cache_read_input_tokens,
             cache_write_tokens: usage.cache_creation_input_tokens,
             reasoning_tokens: 0,
+            cache_accounting: CacheAccounting::Reported,
         },
-        None => Usage::default(),
+        None => Usage {
+            cache_accounting: CacheAccounting::NotReported,
+            ..Usage::default()
+        },
     }
 }
 
@@ -783,6 +796,36 @@ mod tests {
         assert_eq!(usage.output_tokens, 5);
         assert_eq!(usage.cache_read_tokens, 3);
         assert_eq!(usage.cache_write_tokens, 2);
-        assert_eq!(map_usage(None), Usage::default());
+        assert_eq!(
+            map_usage(None),
+            Usage {
+                cache_accounting: CacheAccounting::NotReported,
+                ..Usage::default()
+            }
+        );
+    }
+
+    /// Anthropic's `usage` object always carries both cache fields
+    /// (zeroed, never omitted) once caching went GA -- unlike the
+    /// OpenAI-compatible dialect, field presence is not the honesty
+    /// signal here. `cache_accounting` is `Reported` whenever `usage`
+    /// itself was present, including an all-zero usage (no caching used
+    /// this turn, but the wire still reported that fact); `NotReported`
+    /// only when the whole `usage` object is missing from the response.
+    #[test]
+    fn map_usage_marks_cache_accounting_reported_whenever_usage_object_present() {
+        let zeroed = map_usage(Some(UsageWire {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+        }));
+        assert_eq!(zeroed.cache_read_tokens, 0);
+        assert_eq!(zeroed.cache_accounting, CacheAccounting::Reported);
+
+        assert_eq!(
+            map_usage(None).cache_accounting,
+            CacheAccounting::NotReported
+        );
     }
 }

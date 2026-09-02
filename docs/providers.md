@@ -741,6 +741,17 @@ doc for the full reasoning and cost. A session with no resolved window
 pre-existing OpenAI-compatible path governs, exactly as before this item,
 and no `options` field is ever sent for a window conway never established.
 
+**The native `/api/chat` path carries no cache accounting.** Neither its
+non-streaming response nor its NDJSON streaming frames carry a cache field
+of any kind — no equivalent of the OpenAI-compatible dialect's
+`prompt_tokens_details.cached_tokens`. Rather than reporting a silent `0`
+indistinguishable from "the provider said zero cache hits," conway shows
+`cache: not reported` (interactive TUI: the status line's `tokens` field
+and the turn-end summary; see [interactive.md](interactive.md)) whenever
+this endpoint served the response. This is scoped to exactly the native
+path — the ordinary OpenAI-compatible path (a session with no resolved
+window) reads whatever `cached_tokens` the server actually sends, if any.
+
 **`probe_on_startup` (`[models]` config, default `false`) stays opt-in.**
 Considered and rejected: flipping the default to `true` so every session
 verifies its own context windows live. Rejected because a live network
