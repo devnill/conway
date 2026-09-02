@@ -2114,24 +2114,6 @@ impl ConwayBuilder {
         // `ToolBatchCtx` and every one of their existing construction
         // sites.
         let live_plugins: Vec<Arc<dyn Plugin>> = resolved_plugins.clone();
-        // Collected here, beside the status snapshot above, for the same
-        // reason and at the same moment: `PluginRegistry` consumes
-        // `resolved_plugins` a few lines down, so this is the last point at
-        // which `Plugin::permission_modes()` is reachable at all. Each entry
-        // is paired with its declaring plugin's manifest id, because a name
-        // collision between two plugins must be reported naming BOTH of them
-        // (`ModeCycle::build`'s own contract) and the id is not recoverable
-        // from the `PluginDeclaredMode` afterwards.
-        let declared_permission_modes: Vec<(String, conway_core::ports::PluginDeclaredMode)> =
-            resolved_plugins
-                .iter()
-                .flat_map(|p| {
-                    let plugin_id = p.manifest().id;
-                    p.permission_modes()
-                        .into_iter()
-                        .map(move |mode| (plugin_id.clone(), mode))
-                })
-                .collect();
         let observe_sinks: Vec<conway_core::ports::EventSinkHandle> = resolved_plugins
             .iter()
             .filter_map(|p| p.observe_sink())
@@ -2409,7 +2391,6 @@ impl ConwayBuilder {
             metadata,
             root,
             plugin_status_contributions,
-            declared_permission_modes,
             live_plugins,
         ))
     }

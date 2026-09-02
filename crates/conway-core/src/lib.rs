@@ -28,7 +28,6 @@ pub mod failure;
 pub mod hook;
 pub mod ids;
 pub mod log;
-pub mod mode_cycle;
 pub mod path;
 pub mod permission_mode;
 pub mod permission_pattern;

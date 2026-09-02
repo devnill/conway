@@ -19,6 +19,13 @@
 //! ([`HostCaps::check_manifest`]); an OPTIONAL one
 //! ([`HostCaps::missing_optional`]) degrades the plugin instead -- see that
 //! method's own doc.
+//!
+//! **Label (operator ruling, harness gap review 2026-09-01 finding 9):
+//! [`HostCaps::missing_optional`]'s consumer,
+//! `PluginManifest::optional_host_caps`, is carried on the wire and
+//! honoured (degrade-and-announce) with no first-party producer today.**
+//! This module's own degrade path is real and tested; it has simply never
+//! been exercised by a shipped plugin.
 
 use std::collections::HashSet;
 

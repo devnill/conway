@@ -353,7 +353,6 @@ fn resolve_fields(
     config: &StatusLineConfig,
     permission_mode: PermissionMode,
     has_contributions: bool,
-    in_declared_mode: bool,
 ) -> Vec<StatusLineField> {
     let mut parsed: Vec<StatusLineField> = config
         .fields
@@ -365,21 +364,9 @@ fn resolve_fields(
         // than rendering a blank line (bad input never produces a
         // broken UI -- it falls back to defaults). The Lean order already
         // includes `mode`, so the forced-in step below is a no-op here.
-        return resolve_fields(
-            &StatusLineConfig::default(),
-            permission_mode,
-            has_contributions,
-            in_declared_mode,
-        );
+        return resolve_fields(&StatusLineConfig::default(), permission_mode, has_contributions);
     }
-    // V2c extends the same force-in rule to a plugin-declared mode. A
-    // declared mode based on `Prompt` carries information the bare core
-    // mode does not -- the operator chose a named, narrowed mode, and a
-    // `fields` list that omits `mode` would hide the fact that they are in
-    // it. The gate stays "appears exactly when it carries information."
-    if (permission_mode != PermissionMode::Prompt || in_declared_mode)
-        && !parsed.contains(&StatusLineField::Mode)
-    {
+    if permission_mode != PermissionMode::Prompt && !parsed.contains(&StatusLineField::Mode) {
         parsed.push(StatusLineField::Mode);
     }
     if has_contributions && !parsed.contains(&StatusLineField::Contributions) {
@@ -413,7 +400,6 @@ pub fn status_line_spans(state: &AppState, theme: &Theme, width: u16) -> Line<'s
         &state.status_line_config,
         state.permission_mode,
         !state.plugin_status_contributions.is_empty(),
-        state.active_declared_mode.is_some(),
     );
     // This item: `hint`'s own `focused: <id>` note is suppressed whenever
     // `lineage` is part of the resolved field list, so the two never say the
@@ -743,34 +729,14 @@ fn mode_label(mode: &Mode) -> String {
 /// (see `view/theme.rs`'s module doc).
 fn mode_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
     let ui = mode_label(&state.mode);
-    // V2c: a plugin-declared mode adds a NAME in front of the core label
-    // it is layered on -- it never REPLACES that label. An inference-gated
-    // mode is full permission filtered by a model: less safe than deciding
-    // each call by hand, justified only because approval fatigue at volume
-    // produces bad judgement. So `AUTO-ALLOW` stays exactly as loud with a
-    // guard running as without one, and the declared name is the addition,
-    // not the substitution.
-    //
-    // The name is also the FIRST thing dropped: every rung below the top
-    // one carries the core label alone. Under width pressure the warning
-    // survives and the friendly name does not, which is the only ordering
-    // that stays honest when the status line is squeezed.
-    let declared = state
-        .active_declared_mode
-        .as_ref()
-        .map(|(_, name)| format!("{name} "));
-    let named = |label: String| match &declared {
-        Some(prefix) => format!("{prefix}({label})"),
-        None => label,
-    };
     match state.permission_mode {
-        PermissionMode::Prompt if declared.is_none() => vec![vec![Span::raw(ui)]],
+        PermissionMode::Prompt => vec![vec![Span::raw(ui)]],
         PermissionMode::AutoAllow => vec![
             vec![
                 Span::raw(ui),
                 Span::raw(" · "),
                 Span::styled(
-                    named(state.permission_mode.label().to_string()),
+                    state.permission_mode.label().to_string(),
                     theme.fatal_error,
                 ),
             ],
@@ -783,7 +749,7 @@ fn mode_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
             vec![
                 Span::raw(ui),
                 Span::raw(" · "),
-                Span::styled(named(other.label().to_string()), theme.emphasized),
+                Span::styled(other.label().to_string(), theme.emphasized),
             ],
             vec![Span::styled(other.label().to_string(), theme.emphasized)],
         ],
@@ -1846,94 +1812,6 @@ mod tests {
             status_line(&state).contains("plan"),
             "plan mode must be visible: {}",
             status_line(&state)
-        );
-    }
-
-    /// V2c, and the most important assertion in this module. An
-    /// inference-gated mode is FULL PERMISSION filtered by a model -- less
-    /// safe than deciding each call by hand, justified only because
-    /// approval fatigue at volume produces bad judgement. So a declared
-    /// mode ADDS its name in front of `AUTO-ALLOW`; it never replaces it,
-    /// and it never downgrades the style. A build that softened this would
-    /// be telling an operator a gated session is safer than a bare
-    /// auto-allow one, which is backwards.
-    #[test]
-    fn a_declared_mode_names_itself_without_softening_the_auto_allow_warning() {
-        let theme = Theme::default();
-        let mut state = AppState::new(AgentId::new());
-        state.permission_mode = PermissionMode::AutoAllow;
-        state.active_declared_mode =
-            Some(("conway.permissions".to_string(), "auto-gated".to_string()));
-
-        let line = status_line(&state);
-        assert!(
-            line.contains("auto-gated"),
-            "the operator's chosen mode is named: {line}"
-        );
-        assert!(
-            line.contains("AUTO-ALLOW"),
-            "and the core warning survives beside it: {line}"
-        );
-
-        let spans = status_line_spans(&state, &theme, WIDE).spans;
-        let warning = spans
-            .iter()
-            .find(|s| s.content.contains("AUTO-ALLOW"))
-            .expect("the AUTO-ALLOW span must still be present");
-        assert_eq!(
-            warning.style, theme.fatal_error,
-            "a running classifier does not earn a quieter style: {:?}",
-            warning.style
-        );
-    }
-
-    /// The declared NAME is the first thing width pressure takes away, and
-    /// the core label is the last. Any other ordering would leave a
-    /// squeezed status line showing a friendly mode name with no warning
-    /// attached -- the exact reading that makes an operator relax.
-    #[test]
-    fn width_pressure_drops_the_declared_name_before_the_auto_allow_label() {
-        let mut state = AppState::new(AgentId::new());
-        state.permission_mode = PermissionMode::AutoAllow;
-        state.active_declared_mode =
-            Some(("conway.permissions".to_string(), "auto-gated".to_string()));
-
-        let ladder = mode_ladder(&state, &Theme::default());
-        let last: String = ladder
-            .last()
-            .expect("the ladder always has at least one rung")
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert!(
-            last.contains("AUTO-ALLOW"),
-            "the shortest rung keeps the warning: {last}"
-        );
-        assert!(
-            !last.contains("auto-gated"),
-            "and gives up the name to do it: {last}"
-        );
-    }
-
-    /// A `Prompt`-based declared mode carries information a bare `Prompt`
-    /// does not -- the operator chose a named, narrowed mode. A `fields`
-    /// list that omits `mode` would otherwise hide that they are in it,
-    /// which is the same "silently drops the one signal that mattered"
-    /// defect `resolve_fields`' original force-in rule exists to prevent.
-    #[test]
-    fn a_prompt_based_declared_mode_forces_the_mode_field_in() {
-        let config = StatusLineConfig {
-            fields: vec!["tokens".to_string()],
-        };
-        assert!(
-            !resolve_fields(&config, PermissionMode::Prompt, false, false)
-                .contains(&StatusLineField::Mode),
-            "an ordinary prompt-mode session still renders exactly as configured"
-        );
-        assert!(
-            resolve_fields(&config, PermissionMode::Prompt, false, true)
-                .contains(&StatusLineField::Mode),
-            "but a declared mode layered on Prompt forces the field in"
         );
     }
 

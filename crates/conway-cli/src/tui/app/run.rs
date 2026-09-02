@@ -525,21 +525,17 @@ impl App {
                                 // line can never disagree with what
                                 // actually gates calls.
                                 Action::CyclePermissionMode => {
-                                    // The cycle is the three closed core
-                                    // modes plus whatever installed plugins
-                                    // declared, so this is no longer a
-                                    // three-way switch. `Conway::
-                                    // cycle_permission_mode` writes the
-                                    // enforced mode and the display identity
-                                    // together and hands back the entry it
-                                    // moved to -- mirrored rather than
-                                    // recomputed here, because computing the
-                                    // answer a second time is how the status
-                                    // line and the broker drift apart.
-                                    let entry = self.conway.cycle_permission_mode();
-                                    self.state.permission_mode = entry.base();
-                                    self.state.active_declared_mode =
-                                        entry.declared_ref().map(|r| (r.plugin_id, r.name));
+                                    let next = match self.conway.permission_mode() {
+                                        conway::PermissionMode::Prompt => {
+                                            conway::PermissionMode::Plan
+                                        }
+                                        conway::PermissionMode::Plan => {
+                                            conway::PermissionMode::AutoAllow
+                                        }
+                                        _ => conway::PermissionMode::Prompt,
+                                    };
+                                    self.conway.set_permission_mode(next);
+                                    self.state.permission_mode = next;
                                 }
                                 Action::RevokePermissionGrants => {
                                     self.conway.revoke_permission_grants();

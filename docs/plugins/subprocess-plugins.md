@@ -62,7 +62,10 @@ each disclosed rather than silently assumed:
   open vocabulary, board item `01M0WWKA8K1E7JPK87J6RRQMZF` -- and is
   refused (required) or degraded-and-announced (optional) instead, per
   "Host capabilities" below), and the `conway` builder consults them at
-  registration. `PluginManifest::requires`/`optional` carry
+  registration. **Label: `optional_host_caps` is carried on the wire and
+  honoured (degrade-and-announce), with no first-party producer today**
+  (operator ruling, harness gap review 2026-09-01 finding 9).
+  `PluginManifest::requires`/`optional` carry
   the same way (board item `01M0XCD3P8S3VR0T1H0KNG5TMD` --
   `WireManifest::requires`/`optional`, both `#[serde(default)]`, name-only
   plugin-id lists): a subprocess plugin can declare a dependency on another

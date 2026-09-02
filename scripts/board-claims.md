@@ -241,3 +241,11 @@ claim: the trust page documents capability-edge versioning by name, naming Capab
 paths: docs/plugins/trust-and-security.md
 present: VersionMismatch
 -->
+
+<!-- claim-check
+why: PluginManifest::optional_host_caps is labeled "carried on the wire and honoured (degrade-and-announce), no first-party producer today" at every site that documents it (the field's own doc, host_caps.rs, subprocess-plugins.md, hooks.md point 1, conway-plugin-subprocess's module doc) -- operator ruling, harness gap review 2026-09-01 finding 9 (GP-14 declaration honesty). That label is false the day any first-party plugin actually populates the field, and nothing else here would notice a producer landing quietly.
+note: added 2026-09-02 alongside the permission_modes deletion this same ruling covers. Pinned to a non-empty vec![ literal in each conway-plugin-* crate's own src/ -- never tests/, which may legitimately construct a non-empty manifest fixture to exercise the existing degrade-and-announce path without that being a real producer.
+claim: no first-party conway-plugin-* crate declares a non-empty optional_host_caps in its own manifest -- every one still writes vec![]
+paths: crates/conway-plugin-backends/src crates/conway-plugin-claude/src crates/conway-plugin-discover/src crates/conway-plugin-history/src crates/conway-plugin-idiom/src crates/conway-plugin-marketplace/src crates/conway-plugin-mcp/src crates/conway-plugin-memory/src crates/conway-plugin-names/src crates/conway-plugin-path/src crates/conway-plugin-routing/src crates/conway-plugin-skeleton/src crates/conway-plugin-skills/src crates/conway-plugin-statusline/src crates/conway-plugin-stepguard/src crates/conway-plugin-subprocess/src crates/conway-plugin-trim/src crates/conway-plugin-ui/src
+absent: optional_host_caps: vec!\[[^]]
+-->

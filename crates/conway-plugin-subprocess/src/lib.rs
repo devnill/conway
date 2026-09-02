@@ -27,7 +27,12 @@
 //! the matching `PluginManifest` fields here and consulted by the `conway`
 //! builder at registration -- a missing required cap refuses the plugin, a
 //! missing optional one loads it degraded and announced; an unknown cap tag
-//! fails closed at parse either way). The SAME item added `WireManifest::
+//! fails closed at parse either way). **Label: `optional_host_caps` is
+//! carried on the wire and honoured (degrade-and-announce) with no
+//! first-party producer today** (operator ruling, harness gap review
+//! 2026-09-01 finding 9) -- the mechanism above is real and tested; no
+//! subprocess plugin in this workspace sets it to a non-empty list. The
+//! SAME item added `WireManifest::
 //! provides` and the `capability/1` call kind: a subprocess plugin
 //! declaring a capability name there gets a REAL `CapabilityProvider`
 //! registered through `Plugin::capabilities`, forwarding calls over
