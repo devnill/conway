@@ -190,8 +190,8 @@ impl HookAnswer {
 /// (`pre_tool_use`) and `conway_runtime::hook_dispatch::
 /// HookDispatcher::dispatch_deny_only` (`prompt_submitted` and any other
 /// deny-only event) -- calls [`Self::denies`] rather than re-deriving the
-/// judgment per call site (P-14: single implementation of a safety-critical
-/// classification). The two sites still format their own denial messages
+/// judgment per call site: a safety-critical classification with exactly
+/// one implementation. The two sites still format their own denial messages
 /// (they differ in wording and in which hook/event they name), and the
 /// `Deny` variant's own `reason` is still theirs to read directly when
 /// present -- only the "does this verdict block the call at all,
@@ -219,7 +219,8 @@ impl HookPermissionVerdict {
     /// [`Self::NoOpinion`]; `true` for [`Self::Deny`] AND for any variant
     /// added after this build shipped. The single implementation of the
     /// fail-closed-on-unrecognized-variant judgment this type's own doc
-    /// requires (P-14) -- every caller that needs to know whether a
+    /// requires -- a safety-critical classification with exactly one
+    /// implementation -- every caller that needs to know whether a
     /// verdict blocks a call goes through this method rather than
     /// re-deriving the answer with its own `match`/`if let`.
     pub fn denies(&self) -> bool {

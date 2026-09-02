@@ -183,6 +183,7 @@ PENDING_AFTER = re.compile(
 ALLOWLIST = {
     "01ARZ3NDEKTSV4RRFFQ69G5FAV": "the ULID spec's own well-known example id, used as test data",
     "01KZWT0ET8E669YPNQWXB3GQZA": "a conway *session* id in a recorded walkthrough transcript, not a board item",
+    "01M1F6102TXRAW2GA7JVYY34N7": "a conway *agent* id in a real dogfooding session's usage record, cited as evidence in docs/providers.md, not a board item",
 }
 
 # Internal governance shorthand from `.ideate/steering/` -- unresolvable for

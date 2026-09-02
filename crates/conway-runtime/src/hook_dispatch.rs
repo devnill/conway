@@ -539,8 +539,8 @@ impl HookDispatcher {
     /// anything has happened and refusing is the safe direction there. A
     /// verdict this build does not recognize denies too, via
     /// [`conway_core::hook::HookPermissionVerdict::denies`] -- the same
-    /// judgment [`crate::permission::PermissionBroker::pre_tool_use_hook_denial`]
-    /// applies, shared rather than re-derived.
+    /// judgment `PermissionBroker::pre_tool_use_hook_denial` applies,
+    /// shared rather than re-derived.
     ///
     /// **Reads only [`HookPermissionVerdict`], which structurally cannot carry
     /// replacement text** -- see the module doc. `HookAnswer::context` is
