@@ -161,9 +161,9 @@ box, and none of them grants arbitrary execution. See
 ### First-party plugins
 
 conway ships a second tier of plugins, maintained in this repository and
-shipped alongside it, but *not* registered by default: dynamic routing
-(fallback chains, health tracking, circuit breaking), context compaction,
-memory, skills, and MCP support are the ones named in
+shipped alongside it. The **harness** never registers any of them on its
+own: dynamic routing (fallback chains, health tracking, circuit breaking),
+context compaction, memory, skills, and MCP support are the ones named in
 [`PHILOSOPHY.md`](PHILOSOPHY.md#first-party-plugins-and-why-they-are-not-defaults),
 and each lands as its own crate under `crates/` as it is built — a capability
 being common does not make it neutral, so conway ships these as things you
@@ -171,6 +171,17 @@ install rather than behavior you inherit. Routing, the provider adapters,
 session rewind/mask/checkout, step-guarding, skills, memory, and MCP support
 (plus the out-of-process subprocess plugin host, which the list above does
 not name) are the occupants today; compaction remains unbuilt.
+
+**The `conway` binary is a different case.** Its guided first-run setup
+installs six of these — `conway.idiom`, `conway.stepguard`, `conway.skills`,
+`conway.memory`, `conway.names`, `conway.history` — into a fresh
+`plugins.install` the moment it verifies a working provider, and prints
+exactly what it installed and how to remove any one of them (`conway plugin
+remove <id>`, or hand-editing `plugins.install`). This is a property of the
+*binary's* first run, not of the harness or of `ConwayBuilder::build()` — a
+library embedder, and the harness's own defaults, are unaffected. See
+[`docs/getting-started.md`](docs/getting-started.md#installing-a-first-party-plugin)
+for the exact `settings.json` shape this leaves you with.
 
 **The tier's shape is settled and demonstrated, with eighteen members shipping
 today:** `crates/conway-plugin-skeleton`, a plugin that registers a single

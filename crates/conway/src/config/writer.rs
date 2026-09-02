@@ -1,20 +1,25 @@
 //! A config **writer** -- the missing half `crate::config::merge`'s own
 //! module doc names ("a layered read with no writer outside test
-//! fixtures"). Four public writers, all against a real `settings.json`,
-//! resolved to decision `01M0K8BAXJ6THVJAPK0JZ17VV6`'s user layer
-//! (`~/.conway/settings.json`, or `$CONWAY_CONFIG_DIR/settings.json` --
-//! see [`super::discovery::user_config_path`], this module's own caller),
-//! and each a materially different SHAPE of the one thing being edited:
-//! [`set_plugin_installed`] edits `plugins.install`, an array of strings;
-//! [`set_claude_compat_entry`] edits `plugins.claude_compat`, an array of
-//! objects, matched by an `id` member; [`set_backend_provider`] (board item
-//! `01M11XTB238YHXV01FWF8SFZH2`) edits `backends`, a **map** from provider
-//! id to an open-ended entry -- a named table (`[backends.<id>]` in the
-//! operator-facing notation `docs/providers.md` uses), not an array at
-//! all; [`set_default_role`] (board item `01M18Q7P25DTSKQJDJJCC3E800`)
-//! edits `default_role`, a bare top-level **scalar** -- the one shape none
-//! of the other three cover, and the only writer here that refuses a
-//! missing key rather than inventing one (see its own doc for why).
+//! fixtures"). Its original four public writers, all against a real
+//! `settings.json`, resolved to decision `01M0K8BAXJ6THVJAPK0JZ17VV6`'s
+//! user layer (`~/.conway/settings.json`, or `$CONWAY_CONFIG_DIR/
+//! settings.json` -- see [`super::discovery::user_config_path`], this
+//! module's own caller), and each a materially different SHAPE of the one
+//! thing being edited: [`set_plugin_installed`] edits `plugins.install`,
+//! an array of strings; [`set_claude_compat_entry`] edits `plugins.
+//! claude_compat`, an array of objects, matched by an `id` member;
+//! [`set_backend_provider`] (board item `01M11XTB238YHXV01FWF8SFZH2`)
+//! edits `backends`, a **map** from provider id to an open-ended entry --
+//! a named table (`[backends.<id>]` in the operator-facing notation
+//! `docs/providers.md` uses), not an array at all; [`set_default_role`]
+//! (board item `01M18Q7P25DTSKQJDJJCC3E800`) edits `default_role`, a bare
+//! top-level **scalar** -- the one shape none of the other three cover,
+//! and the only writer here that refuses a missing key rather than
+//! inventing one (see its own doc for why). More have landed since --
+//! [`ensure_default_role`]/[`set_role_chain`] (board item
+//! `01M1A2HKMDGNK961ZFV1EGZDQ0`) and [`set_builtin_plugins`] (board item
+//! `01M1FS34GNZEVZP4ZBVC90VD6J`) -- each documented at its own definition
+//! rather than restated here a second time.
 //!
 //! # Why this is a hand-rolled text patch, not a parse/mutate/reserialize
 //!
@@ -1587,6 +1592,137 @@ fn patch_role_chain(
             role_close,
             "chain",
             chain_json,
+        ))),
+    }
+}
+
+/// Replaces the top-level `tools.builtin_plugins` array wholesale with
+/// `plugins` -- the writer half of board item `01M1FS34GNZEVZP4ZBVC90VD6J`'s
+/// first-run shell offer (`conway_cli::first_run::apply_shell_choice`, a
+/// sibling crate, named here only in prose): "enable bash" means the
+/// operator's preset list (`conway::config::schema::ToolsConfig::default`'s
+/// own three ids) plus `"conway.shell"`, and that caller builds exactly that
+/// `Vec` before calling this function -- this writer never adds
+/// `"conway.shell"` itself, and never reads the default list on its own,
+/// mirroring [`set_role_chain`]'s own "caller formats, this function only
+/// splices" division of labor.
+///
+/// Two levels deep (`tools` -> `builtin_plugins`), the direct sibling of
+/// `patch_default_role`'s single-level shape one level further in --
+/// each level patched independently, re-scanning from scratch, exactly like
+/// `patch_role_chain`'s own three-level version of the same idea (see
+/// that function's own doc for why re-scanning beats composing stale byte
+/// offsets across levels).
+///
+/// Returns `Ok(true)` if a write happened, `Ok(false)` if `plugins` already
+/// matched the current value byte-for-byte -- the property `conway_cli::
+/// first_run::apply_shell_choice(path, false)` depends on to leave a
+/// declining operator's file untouched (that caller never calls this
+/// function at all when declining, so the byte-identical guarantee holds
+/// even before reaching this writer, but a caller that DID call this with
+/// the value already present gets the identical no-write guarantee every
+/// other writer in this module gives). A missing FILE is refused (this
+/// writer never invents a document -- by the time an operator is offered
+/// the shell prompt, [`set_backend_provider`] has already created one);
+/// a document that is not valid JSON is refused, never blindly rewritten.
+pub fn set_builtin_plugins(path: &Path, plugins: &[String]) -> Result<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(FacadeError::Config {
+                path: Some(path.to_path_buf()),
+                message: format!(
+                    "{} does not exist; write a backend provider first \
+                     (`set_backend_provider`), which creates the file",
+                    path.display()
+                ),
+            });
+        }
+        Err(e) => return Err(FacadeError::Io(e)),
+    };
+    if let Err(e) = serde_json::from_str::<serde_json::Value>(&text) {
+        return Err(FacadeError::Config {
+            path: Some(path.to_path_buf()),
+            message: format!(
+                "{} is not valid JSON, refusing to rewrite it blindly: {e}",
+                path.display()
+            ),
+        });
+    }
+    let plugins_json =
+        serde_json::to_string(plugins).expect("&[String] always serializes to a JSON array");
+
+    match patch_builtin_plugins(&text, &plugins_json) {
+        Ok(Some(patched)) => {
+            write_atomically(path, &patched)?;
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(msg) => Err(FacadeError::Config {
+            path: Some(path.to_path_buf()),
+            message: format!("{}: {msg}", path.display()),
+        }),
+    }
+}
+
+/// The two-level insert-or-patch [`set_builtin_plugins`] itself is a thin
+/// wrapper over: locates (inserting if absent) `tools`, then
+/// `tools.builtin_plugins`, replacing only the array's own value span in the
+/// innermost case -- exactly [`patch_role_chain`]'s own shape with the
+/// deepest (`chain`) level removed.
+fn patch_builtin_plugins(
+    text: &str,
+    plugins_json: &str,
+) -> std::result::Result<Option<String>, String> {
+    let bytes = text.as_bytes();
+    let root_open = skip_ws(bytes, 0);
+    if bytes.get(root_open) != Some(&b'{') {
+        return Err("the top-level JSON value must be an object".to_string());
+    }
+    let (root_members, root_close) = scan_object_members(text, root_open)?;
+
+    let Some(tools_member) = root_members.iter().rev().find(|m| m.key == "tools") else {
+        let value = format!("{{\"builtin_plugins\": {plugins_json}}}");
+        return Ok(Some(insert_member(
+            text,
+            root_open,
+            &root_members,
+            root_close,
+            "tools",
+            &value,
+        )));
+    };
+
+    if bytes.get(tools_member.value_start) != Some(&b'{') {
+        return Err("\"tools\" must be a JSON object".to_string());
+    }
+    let (tools_members, tools_close) = scan_object_members(text, tools_member.value_start)?;
+
+    match tools_members
+        .iter()
+        .rev()
+        .find(|m| m.key == "builtin_plugins")
+    {
+        Some(member) => {
+            let current_raw = &text[member.value_start..member.value_end];
+            if current_raw == plugins_json {
+                Ok(None)
+            } else {
+                Ok(Some(format!(
+                    "{}{}{}",
+                    &text[..member.value_start],
+                    plugins_json,
+                    &text[member.value_end..]
+                )))
+            }
+        }
+        None => Ok(Some(insert_member(
+            text,
+            tools_member.value_start,
+            &tools_members,
+            tools_close,
+            "builtin_plugins",
+            plugins_json,
         ))),
     }
 }
@@ -3256,6 +3392,128 @@ mod tests {
         assert_eq!(
             value["roles"]["coder"]["chain"],
             serde_json::json!(["anthropic/claude-sonnet-4-6"])
+        );
+        assert!(new_text
+            .contains("\"//\": \"operator note: do not touch the backends section by hand\""));
+        assert!(new_text.contains("\"zebra_first_key\": \"kept exactly as-is\""));
+        assert!(new_text.contains("\"apple_last_key\": 42"));
+        assert!(new_text
+            .contains("\"anthropic\": { \"kind\": \"anthropic\", \"api_key\": \"sk-unused\" }"));
+        assert!(new_text.contains("\"_comment_plugins\": \"toggle plugins here\""));
+    }
+
+    // ---- set_builtin_plugins: board item `01M1FS34GNZEVZP4ZBVC90VD6J`'s ----
+    // ---- first-run shell offer ----
+
+    fn preset_plugins() -> Vec<String> {
+        vec![
+            "conway.fs".to_string(),
+            "conway.subagent".to_string(),
+            "conway.report".to_string(),
+        ]
+    }
+
+    #[test]
+    fn set_builtin_plugins_inserts_the_tools_section_when_entirely_missing() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, fresh_guided_setup_document()).unwrap();
+
+        let mut plugins = preset_plugins();
+        plugins.push("conway.shell".to_string());
+        let wrote = set_builtin_plugins(&path, &plugins).expect("write");
+        assert!(wrote);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).expect("still valid json");
+        assert_eq!(
+            value["tools"]["builtin_plugins"],
+            serde_json::json!(["conway.fs", "conway.subagent", "conway.report", "conway.shell"]),
+            "{text}"
+        );
+        // `backends` must be untouched.
+        assert_eq!(value["backends"]["local"]["dialect"], "ollama");
+    }
+
+    #[test]
+    fn set_builtin_plugins_replaces_an_existing_array_wholesale() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"tools": {"builtin_plugins": ["conway.fs", "conway.subagent", "conway.report"]}}"#,
+        )
+        .unwrap();
+
+        let mut plugins = preset_plugins();
+        plugins.push("conway.shell".to_string());
+        assert!(set_builtin_plugins(&path, &plugins).expect("write"));
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value["tools"]["builtin_plugins"],
+            serde_json::json!(["conway.fs", "conway.subagent", "conway.report", "conway.shell"]),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn set_builtin_plugins_is_a_no_op_when_the_array_already_matches() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, fresh_guided_setup_document()).unwrap();
+        let mut plugins = preset_plugins();
+        plugins.push("conway.shell".to_string());
+        assert!(set_builtin_plugins(&path, &plugins).expect("write"));
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        let wrote = set_builtin_plugins(&path, &plugins).expect("no-op");
+        assert!(!wrote);
+
+        let after = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn set_builtin_plugins_refuses_a_missing_file() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        assert!(!path.exists());
+
+        let err = set_builtin_plugins(&path, &preset_plugins())
+            .expect_err("a missing file must be refused, not silently created");
+        assert!(!path.exists());
+        let _ = err;
+    }
+
+    #[test]
+    fn set_builtin_plugins_refuses_invalid_json() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        let err = set_builtin_plugins(&path, &preset_plugins())
+            .expect_err("invalid JSON must be refused, not blindly rewritten");
+        assert!(err.to_string().contains("not valid JSON"), "{err}");
+    }
+
+    #[test]
+    fn set_builtin_plugins_preserves_comments_and_unrelated_sections_byte_for_byte() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, hand_edited_fixture()).unwrap();
+
+        let mut plugins = preset_plugins();
+        plugins.push("conway.shell".to_string());
+        let wrote = set_builtin_plugins(&path, &plugins).expect("write");
+        assert!(wrote);
+
+        let new_text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&new_text).expect("still valid json");
+        assert_eq!(
+            value["tools"]["builtin_plugins"],
+            serde_json::json!(["conway.fs", "conway.subagent", "conway.report", "conway.shell"])
         );
         assert!(new_text
             .contains("\"//\": \"operator note: do not touch the backends section by hand\""));

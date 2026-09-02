@@ -274,29 +274,43 @@ file: `ConwayBuilder::with_builtin_plugins(PluginSelection::All)` (or an
 ## Installing a first-party plugin
 
 conway also ships a small, separate tier of plugins that live in this
-repository but are never registered, even by default — see `README.md`'s
-"First-party plugins" section and
+repository — see `README.md`'s "First-party plugins" section and
 [`PHILOSOPHY.md`](../PHILOSOPHY.md#first-party-plugins-and-why-they-are-not-defaults)
-for what that tier is for. Turn one on with a distinct `plugins` key (not
-`tools.builtin_plugins`, which names only the four built-ins above):
+for what that tier is for. The *harness* never registers any of them on its
+own — that stays true regardless of what follows. The `conway` *binary*'s
+guided first-run setup does turn six of them on, unprompted, the moment it
+verifies a working provider (see "Your first session" below); every member
+of the tier, installed by first-run or by hand, shares the same `plugins`
+key (not `tools.builtin_plugins`, which names only the four built-ins
+above):
 
 ```json
 // .conway/settings.json
-{ "plugins": { "install": ["conway.plugin_skeleton", "conway.history", "conway.stepguard"] } }
+{
+  "plugins": {
+    "install": [
+      "conway.idiom",
+      "conway.stepguard",
+      "conway.skills",
+      "conway.memory",
+      "conway.names",
+      "conway.history"
+    ]
+  }
+}
 ```
+
+That is exactly what a fresh first-run leaves you with — see "Your first
+session" for what each one is. Remove any single entry with `conway plugin
+remove <id>` (subcommand tracked on the board) or by deleting its line from
+the array above and saving the file — dropping `"conway.history"`, for
+example, turns `/conway.history.rewind` back off with no other change.
 
 `conway.plugin_skeleton` is the tier's own worked example
 (`crates/conway-plugin-skeleton`): it registers one `skeleton_ping` tool
-and does nothing else. `conway.history` (`crates/conway-plugin-history`) is `/conway.history.rewind
-<seq>`: starts a new agent from an explicit, persisted sequence number
-(never free text — see that crate's own module doc for why) and switches the
-TUI to drive it, with the original agent's own log untouched. Once installed, the status line's `session <id>`
-field grows to `session <id>@<seq>` so there is something to type.
-`conway.stepguard` (`crates/conway-plugin-stepguard`) notices when an agent
-calls the same tool with the same arguments three times and writes a note
-saying so — the harness holds no such policy of its own, because when a loop
-is a loop depends on what you are doing. Naming
-an id here that the `conway` binary does not recognize is a hard config
+and does nothing else, and is *not* part of the default first-run set
+above — install it the same way, by adding its id to the array. Naming an
+id here that the `conway` binary does not recognize is a hard config
 error, not a silent no-op. See
 [`docs/embedding.md`](embedding.md#first-party-plugin-tier) for the full
 mechanism, including the library-embedder equivalent.
@@ -308,6 +322,30 @@ Run `conway` with no arguments to start the interactive TUI:
 ```console
 conway
 ```
+
+**If guided first-run setup just configured a provider for you** (the
+"Configure a provider" section above), it also installed six first-party
+plugins into `plugins.install` and printed a table naming each one and how
+to remove it, then asked whether to enable bash — see "Installing a
+first-party plugin" above for the exact `settings.json` shape this leaves
+you with. What each one does: `conway.idiom` prepends a short
+conway-idioms instruction fragment near the front of the session's
+context — fork vs. spawn, how an agent ends, the tool set being
+configuration-dependent — the closest thing this binary ships to a system
+prompt. `conway.stepguard` notices when an agent calls the same tool with
+the same arguments three times and writes a note saying so. `conway.skills`
+narrows full skill bodies (`.conway/skills`) to a one-line index until the
+model asks to read one. `conway.memory` gives the model three tools to
+write something down and recall it in a later session. `conway.names` lets
+you name an agent and steer it by that name. `conway.history` is
+`/conway.history.rewind <seq>`: starts a new agent from an explicit,
+persisted sequence number (never free text — see that crate's own module
+doc for why) and switches the TUI to drive it, with the original agent's
+own log untouched; once installed, the status line's `session <id>` field
+grows to `session <id>@<seq>` so there is something to type. None of this
+runs if you configured `settings.json` by hand instead of going through
+guided setup — see "Installing a first-party plugin" above to opt in
+yourself.
 
 You'll see an empty input box at the bottom of the screen (with the
 placeholder text `Type a message, or / for commands`) and a status line
