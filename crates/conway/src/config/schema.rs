@@ -112,6 +112,47 @@ fn default_cwd() -> PathBuf {
 }
 
 impl ConwayConfig {
+    /// The single authoritative statement of "nothing configured": every
+    /// section at its own `Default`, `default_role` set to
+    /// `crate::config::merge::BASELINE_ROLE_NAME` (`"default"`), and a
+    /// matching `roles.default` entry (an empty chain, no overrides) so the
+    /// result validates on its own — `default_role` must name a `[roles]`
+    /// entry, and an unmodified default has nothing else to name.
+    ///
+    /// `crate::config::merge::default_document` is `serde_json::to_value`
+    /// of exactly this value, nothing else (see that function's own doc) —
+    /// there is no second, hand-maintained JSON literal for it to drift
+    /// from any more.
+    /// Changing what an unconfigured `settings.json` resolves to is now ONE
+    /// edit — a section's own `impl Default`, here in this file — with a
+    /// compile error on omission if this struct literal ever misses a
+    /// field, rather than two edits — that same `Default` impl plus a JSON
+    /// blob in a different file — with no compiler check that they still
+    /// agree.
+    pub fn baseline() -> ConwayConfig {
+        let mut roles = BTreeMap::new();
+        roles.insert(
+            crate::config::merge::BASELINE_ROLE_NAME.to_string(),
+            RoleEntry::default(),
+        );
+        ConwayConfig {
+            default_role: RoleAlias::new(crate::config::merge::BASELINE_ROLE_NAME),
+            cwd: default_cwd(),
+            session: SessionConfig::default(),
+            limits: LimitsConfig::default(),
+            permissions: PermissionsConfig::default(),
+            backends: BTreeMap::new(),
+            routing: RoutingSection::default(),
+            roles,
+            health: HealthSection::default(),
+            agents: AgentsConfig::default(),
+            models: ModelsConfig::default(),
+            tools: ToolsConfig::default(),
+            plugins: PluginsConfig::default(),
+            hooks: HooksConfig::default(),
+        }
+    }
+
     /// The role's effective headroom: its own override if present,
     /// otherwise `routing.default_headroom_tokens`. Unknown roles get the
     /// global default rather than erroring — mirrors
@@ -302,6 +343,13 @@ pub struct LimitsConfig {
     /// there, the human is the guard, and a fixed number can only be wrong
     /// in one of two directions. `Budget::default()`'s `40` is unchanged, so
     /// a spawned agent that names no budget of its own still gets one.
+    ///
+    /// **This `Default` impl is the only place this value lives.**
+    /// `crate::config::merge::default_document` (the baked-in,
+    /// lowest-precedence layer `load` actually reads) is derived from
+    /// [`ConwayConfig::baseline`], which builds this struct via
+    /// `Self::default()` — changing this value changes what a bare
+    /// `settings.json` resolves to with no second edit anywhere else.
     pub max_steps: u32,
     /// `0` = unlimited.
     pub max_tokens: u32,
