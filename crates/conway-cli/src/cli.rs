@@ -16,6 +16,7 @@ use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 use crate::commands::routes::RoutesArgs;
 use crate::commands::sessions::SessionsArgs;
+use crate::commands::tools::ToolsArgs;
 
 /// Adding a flag here? It does **not** reach a running `conway` through
 /// `conway::config::merge::CliOverrides` — that struct is an embedder-facing
@@ -210,6 +211,9 @@ pub enum Command {
     Sessions(SessionsArgs),
     /// Inspect routing decisions.
     Routes(RoutesArgs),
+    /// List every tool this process has registered -- the vocabulary
+    /// `--allowed-tools`/`--deny-tools` accepts, self-described headlessly.
+    Tools(ToolsArgs),
     /// Anything that is not one of the built-in subcommands above falls
     /// through here instead of failing to parse -- clap's own
     /// `external_subcommand` idiom (the same shape `cargo` uses to dispatch

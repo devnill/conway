@@ -202,4 +202,18 @@ impl PluginRegistry {
             .map(|r| (r.spec.name.clone(), r.spec.category, r.tool.render_kind()))
             .collect()
     }
+
+    /// Distinct plugin ids that registered at least one tool -- the
+    /// denominator `conway tools list`'s trailing "N tools registered from
+    /// M plugins" line reads (`Runtime::tool_plugin_count`,
+    /// `Conway::tool_plugin_count`). Computed from the same
+    /// `RegisteredTool::plugin_id` this struct already captured at
+    /// construction (`from_plugins`), not a second registration pass or a
+    /// second source of truth.
+    pub(crate) fn plugin_count(&self) -> usize {
+        let mut ids: Vec<&str> = self.tools.values().map(|r| r.plugin_id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.len()
+    }
 }

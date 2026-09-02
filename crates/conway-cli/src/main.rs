@@ -203,9 +203,9 @@ async fn main() -> std::process::ExitCode {
 ///
 /// `is_tui` (bash opt-in bash ships on by default and cannot be
 /// declined) selects which built-in plugins `build()` registers.
-/// Every non-interactive CLI target (`sessions`, `routes`, one-shot `-p`)
-/// keeps this crate's pre-item behavior UNCHANGED -- every built-in,
-/// `conway.shell`/bash included, is always registered
+/// Every non-interactive CLI target (`sessions`, `routes`, `tools`,
+/// one-shot `-p`) keeps this crate's pre-item behavior UNCHANGED -- every
+/// built-in, `conway.shell`/bash included, is always registered
 /// (`PluginSelection::All`) exactly as `ConwayBuilder::build`'s own
 /// pre-item default did; one-shot's `--allowed-tools` allow-list (default:
 /// empty -- see `oneshot::build_gate`) is, and always was, the thing that
@@ -215,6 +215,18 @@ async fn main() -> std::process::ExitCode {
 /// default: every built-in except bash) -- an operator turns bash on for
 /// the TUI by adding `"conway.shell"` to that `settings.json` array (see
 /// `docs/interactive.md`).
+///
+/// **`conway tools list` inherits this, deliberately, rather than reading
+/// `tools.builtin_plugins` a second, config-only way**: it renders whatever
+/// THIS process actually registered (`Conway::tool_specs`), the exact
+/// surface a `-p --allowed-tools`/`--deny-tools` script gets, one command
+/// dispatched through the identical choke point immediately below. A
+/// second, config-derived answer that disagreed with the real registered
+/// set would tell a script author `bash` is unavailable when their own `-p`
+/// invocation would in fact register it -- see `commands::tools`' own
+/// module doc for the full "registration vs. confinement" framing this
+/// mirrors. `tools.builtin_plugins` therefore governs `conway tools list`'s
+/// output ONLY through the same path it always has: the TUI.
 ///
 /// **DISCLOSED, PROMINENTLY FLAGGED: now `async fn`** (board item
 /// `01KZY8PATND84AKY0J376E3DWV`, the subprocess plugin host). The one new
@@ -370,8 +382,8 @@ async fn build_conway(
     // First-party plugin tier:
     // `[plugins].install` names ids against the small bundle this binary
     // links (`first_party_plugins::bundle`) -- every dispatch target
-    // (TUI, one-shot `-p`, `sessions`, `routes`) shares this single
-    // `build_conway` choke point, so all four see the same installed set
+    // (TUI, one-shot `-p`, `sessions`, `routes`, `tools`) shares this single
+    // `build_conway` choke point, so all five see the same installed set
     // from the same config, with no target-specific carve-out the way
     // `is_tui`'s built-in selection above has one.
     //
@@ -426,7 +438,7 @@ async fn build_conway(
     Ok((conway, memory_store, agent_names))
 }
 
-/// If `command.is_some()` -> `commands::{sessions,routes}::run`; else if
+/// If `command.is_some()` -> `commands::{sessions,routes,tools}::run`; else if
 /// `print.is_some()` -> `oneshot::run`; else -> `tui::run` (module notes).
 /// `tui_gate_rx` is `Some` exactly when the `None` (tui) arm below is the
 /// one taken -- see `main`'s comment. `tui_form_rx` (board item
@@ -444,6 +456,9 @@ async fn dispatch(
     match &cli.command {
         Some(Command::Sessions(args)) => commands::sessions::run(args, &conway).await,
         Some(Command::Routes(args)) => commands::routes::run(args, &conway).await,
+        Some(Command::Tools(args)) => {
+            commands::tools::run(args, &conway, cli.root.as_deref()).await
+        }
         // **Disclosed reconciliation, out of this arm's own owning
         // item's paths but unavoidable and unclaimed:** dispatching
         // `Command::External` -- the plugin-contributed-subcommand half of

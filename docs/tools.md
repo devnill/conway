@@ -30,6 +30,15 @@ bash either way — it's always gated by `--allowed-tools`). Every table below
 still lists `bash`; "registered by default" and "safe to run" are different
 questions, and this page answers neither by omission.
 
+Run `conway tools list` to see yours, headlessly, without opening the
+interactive screen: name, category, permission class, and a first-sentence
+description for every tool this process actually registered, plus
+`--json` for the full `ToolSpec` list and (under `--root`) a footnote
+naming which of the listed tools are path-confinable. Like `-p` one-shot
+mode (and unlike the TUI), it is unaffected by `tools.builtin_plugins`'s
+default — `bash` is always in its output, the same "always registered,
+gated by `--allowed-tools`" story described above.
+
 ## The `fs` tools (`conway.fs`, on by default)
 
 | Tool | Does | Category | Path arguments confinable | Truncation | Permission class |

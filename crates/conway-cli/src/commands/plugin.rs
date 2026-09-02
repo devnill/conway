@@ -1,5 +1,5 @@
 //! Plugin-contributed subcommands: anything typed on the command line that
-//! is not a built-in subcommand (`sessions`, `routes`) falls through
+//! is not a built-in subcommand (`sessions`, `routes`, `tools`) falls through
 //! clap's own `external_subcommand` catch-all (`cli::Command::External`,
 //! `cli.rs`'s own doc on that variant) and is resolved here, against every
 //! installed plugin's own [`conway::plugin::Plugin::commands`] --
@@ -104,7 +104,7 @@ pub async fn run(
     let Some(command) = registry.resolve(full_name) else {
         diag::error(format!(
             "unknown subcommand `{full_name}`: not a built-in subcommand (`sessions`, \
-             `routes`), and no installed plugin declares it"
+             `routes`, `tools`), and no installed plugin declares it"
         ));
         return Ok(ExitCode::Usage);
     };

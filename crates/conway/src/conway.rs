@@ -572,6 +572,24 @@ impl Conway {
         self.rt.tool_path_args(name)
     }
 
+    /// The one read surface for "what is registered": every tool's compiled
+    /// [`conway_core::content::ToolSpec`], sorted by name. `conway tools
+    /// list` is the operator-facing renderer over this -- a script author
+    /// writing `--allowed-tools`/`--deny-tools` has nowhere else, outside
+    /// the interactive TUI, to see the exact names this process actually
+    /// registered. Reads the already-compiled registry
+    /// (`PluginRegistry::specs`); no new resolution path.
+    pub fn tool_specs(&self) -> Vec<conway_core::content::ToolSpec> {
+        self.rt.tool_specs()
+    }
+
+    /// The distinct plugin count backing [`Self::tool_specs`]'s result --
+    /// paired with `tool_specs().len()`, the "N tools registered from M
+    /// plugins" line `conway tools list` prints.
+    pub fn tool_plugin_count(&self) -> usize {
+        self.rt.tool_plugin_count()
+    }
+
     /// Every active PROMPT rule, paired with its origin -- the prompt
     /// half's own review list, mirroring
     /// [`Self::active_deny_permission_patterns`].
