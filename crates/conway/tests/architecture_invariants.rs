@@ -606,3 +606,230 @@ fn t10_every_slash_command_variant_reaches_the_palette() {
          `01M0RW29F2ATVGCV0R8H0GQEYH` closed for `/trust` and `/tree`."
     );
 }
+
+// ------------------------------------------------------------------- T11 ---
+
+/// T11: no test or example fixture spells out every field of a `[section]`
+/// config struct.
+///
+/// Commit `a0adeae` fixed five `RoutingSection` literals across three test
+/// files that broke the moment `RoutingSection` grew one field neither
+/// literal cared about -- and the compiler reported only two of the five,
+/// because the other three sat in functions never exercised by the change
+/// under review. A fixture that names every field proves nothing extra
+/// about the field(s) it actually tests, and it pays for that with a
+/// compile break on every unrelated addition to the struct -- exactly the
+/// defect class a `..Type::default()` spread exists to prevent, for any of
+/// the nine `[section]` structs that carry a `Default` impl
+/// (`RoutingSection`/`HealthSection`/`LimitsConfig`/`SessionConfig`/
+/// `PermissionsConfig`/`ModelsConfig`/`AgentsConfig`/`ToolsConfig`/
+/// `PluginsConfig`).
+///
+/// Same instrument as T9/T10: no compile-time construction proves this (a
+/// struct literal that names every field is exactly as valid Rust as one
+/// that spreads a default), so this reads source and asserts the property
+/// directly.
+///
+/// A literal is exempt if the line immediately above its comment block (the
+/// contiguous run of `//` lines directly above the opening `Type {` line, if
+/// any) starts with `// full literal: <reason>` -- for the rare case where
+/// every field genuinely is load-bearing and a spread would be pure noise
+/// (or, in production code, a deliberate pin against drift). Used sparingly:
+/// see `crates/conway/src/presets.rs`'s `default_permissions_for_one_shot`
+/// for the one production instance, and a handful of two-field
+/// `ModelsConfig`/one-field `ToolsConfig` literals in this crate's own
+/// tests where a spread would leave nothing to spread FROM.
+///
+/// Pinned as: **empty**. Every offender named in this item's own BACKGROUND
+/// is fixed; a new one -- in an existing file or a brand new test/example --
+/// fails this guard immediately rather than waiting for the next unrelated
+/// field addition to break it at compile time.
+#[test]
+fn t11_config_section_literals_spread_defaults() {
+    /// The nine `[section]` config struct names this guard polices -- every
+    /// one has a `Default` impl (`crates/conway/src/config/schema.rs`), so a
+    /// fixture that only cares about a couple of fields never needs to spell
+    /// out the rest.
+    const SECTION_TYPES: &[&str] = &[
+        "RoutingSection",
+        "HealthSection",
+        "LimitsConfig",
+        "SessionConfig",
+        "PermissionsConfig",
+        "ModelsConfig",
+        "AgentsConfig",
+        "ToolsConfig",
+        "PluginsConfig",
+    ];
+
+    /// `.rs` files under `dir` (repo-root-relative), recursively.
+    fn rs_files_under(dir: &str) -> Vec<String> {
+        fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+            entries.sort();
+            for path in entries {
+                if path.is_dir() {
+                    walk(&path, root, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(
+                        path.strip_prefix(root)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+            }
+        }
+        let root = repo_root();
+        let mut out = Vec::new();
+        walk(&root.join(dir), &root, &mut out);
+        out
+    }
+
+    /// One config-section literal that neither spreads a default nor
+    /// carries the `// full literal:` exception marker.
+    ///
+    /// Handles two shapes, not just the multi-line one: a SINGLE-LINE
+    /// literal (`let cfg = PermissionsConfig { mode: ..., ..Default::default() };`)
+    /// closes on the same line it opens, which `line.trim_end().ends_with(...)`
+    /// alone would miss entirely -- brace-depth-tracked from the opening `{`
+    /// to find its real match, so a nested `{}` (a closure, a block
+    /// expression as a field value) doesn't fool it into stopping early.
+    /// Also excludes a function RETURN TYPE (`fn foo() -> PermissionsConfig
+    /// {`), which ends in the identical `TypeName {` text as a literal's
+    /// own opening line but names no fields at all -- checked by requiring
+    /// the text immediately before the type name not end in `->`.
+    fn violations_in(file: &str, text: &str) -> Vec<String> {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut found = Vec::new();
+
+        // The exception marker: walk upward through the contiguous run of
+        // `//` comment lines directly above `idx` (if any) and accept a
+        // marker anywhere in that run -- a multi-line reason is normal
+        // prose, not just the first line of it.
+        let is_marked = |idx: usize| -> bool {
+            let mut above = idx;
+            while above > 0 && lines[above - 1].trim_start().starts_with("//") {
+                above -= 1;
+                if lines[above].trim_start().starts_with("// full literal:") {
+                    return true;
+                }
+            }
+            false
+        };
+
+        for (idx, line) in lines.iter().enumerate() {
+            for &type_name in SECTION_TYPES {
+                let needle = format!("{type_name} {{");
+                let Some(rel_pos) = line.find(needle.as_str()) else {
+                    continue;
+                };
+                // Not a struct literal at all -- a function's own return
+                // type, spelled identically at the end of its signature
+                // line (`fn foo() -> ModelsConfig {`, or with a
+                // fully-qualified path, `fn foo() -> conway::config::
+                // schema::ModelsConfig {`): the text between the LAST `->`
+                // before this occurrence and the type name itself is
+                // nothing but a bare type path (identifiers/`::`/
+                // whitespace) -- never true for an actual expression
+                // preceding a struct literal.
+                let before = &line[..rel_pos];
+                let is_return_type = before.rfind("->").is_some_and(|arrow| {
+                    before[arrow + 2..]
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == ':' || c.is_whitespace())
+                });
+                if is_return_type {
+                    continue;
+                }
+                let brace_idx = rel_pos + needle.len() - 1; // the `{` itself
+
+                // Case A: closes on this SAME line. Depth-track from the
+                // opening brace so a nested `{}` inside a field value
+                // (a closure, a block expression) doesn't register as
+                // the literal's own close.
+                let rest = &line[brace_idx + 1..];
+                let mut depth = 1i32;
+                let mut same_line_close = None;
+                for (i, ch) in rest.char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                same_line_close = Some(i);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(close_i) = same_line_close {
+                    let body = &rest[..close_i];
+                    if !body.contains("..") && !is_marked(idx) {
+                        found.push(format!("{file}:{} ({type_name}, single-line)", idx + 1));
+                    }
+                    continue;
+                }
+
+                // Case B: a genuine multi-line opening -- only when
+                // `TypeName {` is the trailing text of the line (never a
+                // mid-line match, which Case A's depth-tracking already
+                // ruled out as "doesn't close here").
+                if !line.trim_end().ends_with(needle.as_str()) {
+                    continue;
+                }
+                if is_marked(idx) {
+                    continue;
+                }
+                let indent = line.len() - line.trim_start().len();
+                // The matching close brace: the next line at this
+                // literal's own indent whose trimmed text starts with `}`.
+                let close = lines[idx + 1..].iter().position(|l| {
+                    l.len() - l.trim_start().len() == indent && l.trim_start().starts_with('}')
+                });
+                let spread = match close {
+                    Some(offset) => lines[idx + 1..idx + 1 + offset]
+                        .iter()
+                        .any(|l| l.trim_start().starts_with("..")),
+                    // No close brace found at all: something about this
+                    // scan itself is broken (a malformed file, or the
+                    // block never closes) -- report it rather than
+                    // silently passing.
+                    None => false,
+                };
+                if !spread {
+                    found.push(format!("{file}:{} ({type_name})", idx + 1));
+                }
+            }
+        }
+
+        found
+    }
+
+    let mut violations = Vec::new();
+    for rel in rs_files_under("crates/conway/tests") {
+        violations.extend(violations_in(&rel, &read(&rel)));
+    }
+    for rel in rs_files_under("crates/conway/examples") {
+        violations.extend(violations_in(&rel, &read(&rel)));
+    }
+
+    assert!(
+        violations.is_empty(),
+        "T11 CHANGED: {} config-section literal(s) spell out every field \
+         instead of spreading `..Type::default()` -- {violations:?}.\n\
+         A fixture that names every field of a `[section]` config struct \
+         breaks on every unrelated field addition to that struct (see \
+         commit a0adeae, which this guard exists to keep from recurring). \
+         Keep only the field(s) the literal actually sets/asserts on and \
+         close it with `..Type::default()`. If every field genuinely IS \
+         load-bearing here, say so with a `// full literal: <reason>` \
+         comment directly above the literal instead of leaving the missing \
+         spread unexplained.",
+        violations.len()
+    );
+}

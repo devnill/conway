@@ -53,6 +53,8 @@ fn config_with_one_shot_preset() -> ConwayConfig {
         health: HealthSection::default(),
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
+        // full literal: `ToolsConfig` has exactly one field, emptied here so
+        // this test drives a turn with no tool wiring in the way.
         tools: ToolsConfig {
             builtin_plugins: Vec::new(),
         },

@@ -68,6 +68,9 @@ pub fn builtin_plugin_ids() -> Vec<String> {
 /// asserted: `tests/preset_one_shot_permissions_build.rs` builds a `Conway`
 /// from this exact value and drives a turn through it.
 pub fn default_permissions_for_one_shot() -> PermissionsConfig {
+    // full literal: this preset's whole point is pinning every field of the
+    // shipped one-shot combination, deliberately, not inheriting whatever
+    // `PermissionsConfig::default()` happens to be today.
     PermissionsConfig {
         mode: PermissionMode::Allowlist,
         allowed_tools: Vec::new(),

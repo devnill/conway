@@ -109,6 +109,11 @@ fn base_config(
         roles,
         health: HealthSection::default(),
         agents: AgentsConfig::default(),
+        // full literal: `ModelsConfig` has exactly two fields and both are
+        // load-bearing here -- `metadata_path` is this fixture's own JSON
+        // file (or a nonexistent one, per the caller's comment) and
+        // `probe_on_startup: false` keeps the startup probe out of this
+        // file's router-configuration scenarios.
         models: ModelsConfig {
             metadata_path,
             probe_on_startup: false,

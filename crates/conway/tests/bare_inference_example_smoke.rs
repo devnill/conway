@@ -52,8 +52,7 @@ fn config_with_tools(tools: ToolsConfig) -> ConwayConfig {
         // fails `config::merge::validate`'s own check unconditionally).
         permissions: PermissionsConfig {
             mode: PermissionMode::Deny,
-            allowed_tools: Vec::new(),
-            denied_tools: Vec::new(),
+            ..PermissionsConfig::default()
         },
         backends: BTreeMap::new(),
         routing: RoutingSection::default(),
@@ -96,6 +95,8 @@ async fn default_tools_config_registers_report_tool() {
 async fn bare_inference_config_registers_no_tools_and_still_completes_one_turn() {
     let store = Arc::new(FakeStore::new());
     let conway = build(
+        // full literal: `ToolsConfig` has exactly one field, and this test's
+        // whole premise is that field emptied.
         config_with_tools(ToolsConfig {
             builtin_plugins: Vec::new(),
         }),

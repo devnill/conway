@@ -675,8 +675,7 @@ fn injected_permission_gate_overrides_config_derived_selection() {
     let mut cfg = base_config();
     cfg.permissions = PermissionsConfig {
         mode: PermissionMode::Prompt,
-        allowed_tools: vec![],
-        denied_tools: vec![],
+        ..PermissionsConfig::default()
     };
     let backend = fake_backend("fake");
     let store = Arc::new(FakeStore::new());
@@ -721,8 +720,7 @@ fn with_prompt_handler_satisfies_prompt_mode_with_no_injected_gate() {
     let mut cfg = base_config();
     cfg.permissions = PermissionsConfig {
         mode: PermissionMode::Prompt,
-        allowed_tools: vec![],
-        denied_tools: vec![],
+        ..PermissionsConfig::default()
     };
     let handler: conway::gates::PromptHandler =
         Arc::new(|_req| Box::pin(async { PermissionDecision::AllowOnce }));
@@ -749,8 +747,7 @@ fn with_permission_gate_wins_over_with_prompt_handler() {
     let mut cfg = base_config();
     cfg.permissions = PermissionsConfig {
         mode: PermissionMode::Prompt,
-        allowed_tools: vec![],
-        denied_tools: vec![],
+        ..PermissionsConfig::default()
     };
     let denying_handler: conway::gates::PromptHandler = Arc::new(|_req| {
         Box::pin(async {

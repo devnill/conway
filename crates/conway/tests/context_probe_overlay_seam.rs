@@ -269,6 +269,10 @@ fn config_naming(base_url: String, metadata_path: PathBuf) -> ConwayConfig {
         roles,
         health: HealthSection::default(),
         agents: AgentsConfig::default(),
+        // full literal: `ModelsConfig` has exactly two fields and this test
+        // depends on both -- `metadata_path` points at this fixture's own
+        // JSON file and `probe_on_startup: true` is the behaviour this
+        // whole file exercises. There is no third field to default away.
         models: ModelsConfig {
             metadata_path,
             probe_on_startup: true,
@@ -736,6 +740,10 @@ fn t1_backstop_config(metadata_path: PathBuf) -> ConwayConfig {
         roles,
         health: HealthSection::default(),
         agents: AgentsConfig::default(),
+        // full literal: `ModelsConfig` has exactly two fields and both are
+        // load-bearing here -- `metadata_path` points at this fixture's own
+        // JSON file and `probe_on_startup: false` is this test's own
+        // divergence point, spelled out above in this function's doc.
         models: ModelsConfig {
             metadata_path,
             probe_on_startup: false,

@@ -199,6 +199,10 @@ fn config_naming(headroom: u32, metadata_path: PathBuf) -> ConwayConfig {
         roles,
         health: HealthSection::default(),
         agents: AgentsConfig::default(),
+        // full literal: `ModelsConfig` has exactly two fields and both are
+        // load-bearing here -- `metadata_path` points at this fixture's own
+        // JSON file and `probe_on_startup: false` keeps the startup probe
+        // out of this file's admission-seam scenarios.
         models: ModelsConfig {
             metadata_path,
             probe_on_startup: false,
@@ -428,6 +432,10 @@ fn two_candidate_config(headroom: u32, metadata_path: PathBuf) -> ConwayConfig {
         roles,
         health: HealthSection::default(),
         agents: AgentsConfig::default(),
+        // full literal: `ModelsConfig` has exactly two fields and both are
+        // load-bearing here -- `metadata_path` points at this fixture's own
+        // JSON file and `probe_on_startup: false` keeps the startup probe
+        // out of this file's admission-seam scenarios.
         models: ModelsConfig {
             metadata_path,
             probe_on_startup: false,

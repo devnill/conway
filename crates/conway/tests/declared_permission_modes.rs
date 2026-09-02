@@ -85,16 +85,13 @@ fn base_config() -> ConwayConfig {
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
         tools: ToolsConfig::default(),
+        // `default_backends` is deliberately empty here (the schema default
+        // is `["anthropic", "openai-compat"]`): every test in this file
+        // attaches its own fake backend via `.with_backend()` -- see
+        // `capability_channel.rs`'s identical note.
         plugins: PluginsConfig {
-            install: vec![],
             default_backends: vec![],
-            subprocess: vec![],
-            mcp: vec![],
-            claude_compat: vec![],
-            // Board item 01M0X500861X9035QJEA82F94K: `PluginsConfig` grew
-            // this field after this literal was written -- spelled out
-            // explicitly for the same reason every field above it already
-            // is (see `capability_channel.rs`'s identical note).
+            ..PluginsConfig::default()
         },
         hooks: HooksConfig::default(),
     }
