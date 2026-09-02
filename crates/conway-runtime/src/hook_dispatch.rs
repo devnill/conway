@@ -513,14 +513,11 @@ impl HookDispatcher {
             .unwrap_or_default();
 
         for hook in hooks.iter().filter(|hook| hook.applies_to(&payload)) {
-            let invocation = HookInvocation {
-                command: hook.command.clone(),
-                timeout_ms: hook.timeout_ms,
-                event: HookEvent {
-                    name: event.to_string(),
-                    payload: payload.clone(),
-                },
-            };
+            let invocation = HookInvocation::new(
+                hook.command.clone(),
+                hook.timeout_ms,
+                HookEvent::new(event, payload.clone()),
+            );
             if let Err(failure) = runner.run(&invocation).await {
                 // The whole failure posture of this tier, in one place: warn
                 // and carry on. Never `?`, never a return value the caller
@@ -539,7 +536,11 @@ impl HookDispatcher {
     ///
     /// **Fails CLOSED**, unlike [`Self::dispatch`]: a hook that errors, times
     /// out, or returns an unparseable answer denies, because this fires before
-    /// anything has happened and refusing is the safe direction there.
+    /// anything has happened and refusing is the safe direction there. A
+    /// verdict this build does not recognize denies too, via
+    /// [`conway_core::hook::HookPermissionVerdict::denies`] -- the same
+    /// judgment [`crate::permission::PermissionBroker::pre_tool_use_hook_denial`]
+    /// applies, shared rather than re-derived.
     ///
     /// **Reads only [`HookPermissionVerdict`], which structurally cannot carry
     /// replacement text** -- see the module doc. `HookAnswer::context` is
@@ -569,19 +570,25 @@ impl HookDispatcher {
             .unwrap_or_default();
 
         for hook in &hooks {
-            let invocation = HookInvocation {
-                command: hook.command.clone(),
-                timeout_ms: hook.timeout_ms,
-                event: HookEvent {
-                    name: event.to_string(),
-                    payload: payload.clone(),
-                },
-            };
+            let invocation = HookInvocation::new(
+                hook.command.clone(),
+                hook.timeout_ms,
+                HookEvent::new(event, payload.clone()),
+            );
             match runner.run(&invocation).await {
                 // NOTE the binding: only `answer.permission` is read. There is
                 // deliberately no `answer.context` arm -- see the module doc.
+                // `HookPermissionVerdict::denies` is the single
+                // implementation of the fail-closed-on-unrecognized-variant
+                // judgment (see that method's own doc); this is one of its
+                // two callers, alongside
+                // `permission::PermissionBroker::pre_tool_use_hook_denial`.
                 Ok(answer) => {
-                    if let HookPermissionVerdict::Deny { reason } = answer.permission {
+                    if answer.permission.denies() {
+                        let reason = match &answer.permission {
+                            HookPermissionVerdict::Deny { reason } => reason.clone(),
+                            _ => "unrecognized permission verdict -- fail-closed".to_string(),
+                        };
                         return Some(format!("`{event}` hook `{}`: {reason}", hook.id));
                     }
                 }
@@ -644,14 +651,11 @@ impl HookDispatcher {
             .unwrap_or_default();
 
         for hook in hooks.iter().filter(|hook| hook.applies_to(&payload)) {
-            let invocation = HookInvocation {
-                command: hook.command.clone(),
-                timeout_ms: hook.timeout_ms,
-                event: HookEvent {
-                    name: event.to_string(),
-                    payload: payload.clone(),
-                },
-            };
+            let invocation = HookInvocation::new(
+                hook.command.clone(),
+                hook.timeout_ms,
+                HookEvent::new(event, payload.clone()),
+            );
             match runner.run(&invocation).await {
                 Ok(answer) => outcome.answers.push(ContextHookAnswer {
                     hook_id: hook.id.clone(),
@@ -919,10 +923,10 @@ mod tests {
     #[async_trait::async_trait]
     impl HookRunner for ScriptedContextRunner {
         async fn run(&self, _invocation: &HookInvocation) -> Result<HookAnswer, HookFailure> {
-            Ok(HookAnswer {
-                context: self.delta.clone(),
-                permission: HookPermissionVerdict::default(),
-            })
+            Ok(HookAnswer::new(
+                self.delta.clone(),
+                HookPermissionVerdict::default(),
+            ))
         }
     }
 
@@ -932,10 +936,10 @@ mod tests {
     #[tokio::test]
     async fn dispatch_context_returns_the_answering_hooks_delta_tagged_with_its_id() {
         let runner = Arc::new(ScriptedContextRunner {
-            delta: ContextDelta {
-                appends: vec![serde_json::json!({"role": "system", "text": "note"})],
-                excludes: vec!["seg-1".to_string()],
-            },
+            delta: ContextDelta::new(
+                vec![serde_json::json!({"role": "system", "text": "note"})],
+                vec!["seg-1".to_string()],
+            ),
         });
         let d = HookDispatcher::new();
         d.set_runner(Some(runner));
@@ -961,10 +965,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_context_collects_every_subscribed_hooks_answer() {
         let runner = Arc::new(ScriptedContextRunner {
-            delta: ContextDelta {
-                appends: vec![],
-                excludes: vec!["shared".to_string()],
-            },
+            delta: ContextDelta::new(vec![], vec!["shared".to_string()]),
         });
         let d = HookDispatcher::new();
         d.set_runner(Some(runner));

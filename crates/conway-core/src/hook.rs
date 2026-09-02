@@ -21,7 +21,16 @@ use serde::{Deserialize, Serialize};
 
 /// The event name plus payload one hook invocation carries -- independent
 /// of how it is delivered (module doc).
+///
+/// `#[non_exhaustive]`, with [`Self::new`] as the construction path. The
+/// decision (board item finding 9, harness gap review 2026-09-01): this
+/// type has only two fields, so a constructor costs the same one line a
+/// literal would have, and it is nested inside [`HookInvocation`] at
+/// nearly every external construction site already -- paying for growth
+/// room here is the same payment [`HookInvocation`] itself has to make, not
+/// an extra one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct HookEvent {
     /// E.g. `"pre_tool_use"`, or a plugin-namespaced `"myplugin.foo"` --
     /// `crate::event_name::validate_event_name`'s vocabulary. **Not
@@ -38,17 +47,54 @@ pub struct HookEvent {
     pub payload: serde_json::Value,
 }
 
+impl HookEvent {
+    /// Construct one directly -- the ONLY way from outside this crate, now
+    /// that `#[non_exhaustive]` forbids the struct-literal form (including
+    /// `..` functional-update syntax) across the crate boundary. Two
+    /// fields, positional, no builder: see the type's own doc for why that
+    /// is enough here.
+    pub fn new(name: impl Into<String>, payload: serde_json::Value) -> Self {
+        Self {
+            name: name.into(),
+            payload,
+        }
+    }
+}
+
 /// What one hook invocation spawns and how long it is allowed to run.
 ///
 /// `command` is an argv vector (program, then its arguments) -- never a
 /// single shell string, matching `crates/conway/src/config/schema.rs`'s
 /// `HookEntry::command` shape exactly, so no shell-quoting ambiguity exists
 /// between config and what actually gets spawned.
+///
+/// `#[non_exhaustive]`, with [`Self::new`] as the construction path -- the
+/// same decision [`HookEvent`]'s own doc explains, for the same reason:
+/// three fields is still cheap for a constructor to name positionally, and
+/// this is the type external `HookRunner` implementors build most often
+/// (once per invocation), so the growth-room protection matters here more
+/// than almost anywhere else in this module -- a hidden field added later
+/// would otherwise break every third-party `HookRunner`'s call site, not
+/// merely its own definition.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct HookInvocation {
     pub command: Vec<String>,
     pub timeout_ms: u64,
     pub event: HookEvent,
+}
+
+impl HookInvocation {
+    /// Construct one directly -- the ONLY way from outside this crate, now
+    /// that `#[non_exhaustive]` forbids the struct-literal form. Three
+    /// fields, positional, no builder.
+    pub fn new(command: Vec<String>, timeout_ms: u64, event: HookEvent) -> Self {
+        Self {
+            command,
+            timeout_ms,
+            event,
+        }
+    }
 }
 
 /// One hook's answer to an invocation that succeeded (fail-closed:
@@ -79,12 +125,42 @@ pub struct HookInvocation {
 /// zero exit (see the implementing crate's parse rule) -- and is
 /// indistinguishable from a hook that explicitly returned
 /// `{"context":{},"permission":"no_opinion"}`.
+///
+/// `#[non_exhaustive]`, with [`Self::new`] as the construction path --
+/// this is the type most likely to grow a THIRD axis someday (the module
+/// doc above already frames `context`/`permission` as two independent
+/// axes; a later one is exactly the kind of change this attribute exists
+/// to make non-breaking for an external `HookRunner` implementor). This
+/// changes only Rust-side struct-literal construction, not the wire
+/// format: `Deserialize` is untouched by `#[non_exhaustive]`, so a hook
+/// script's stdout keeps parsing exactly as before -- absent/partial JSON
+/// still resolves through each field's own `#[serde(default)]` (or the
+/// whole-struct `Default` for empty stdout), and an unknown JSON key is
+/// still silently ignored (serde's ordinary non-`deny_unknown_fields`
+/// leniency, see `an_unknown_replace_shaped_key_is_ignored_not_interpreted_as_a_replacement`
+/// below).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct HookAnswer {
     #[serde(default)]
     pub context: ContextDelta,
     #[serde(default)]
     pub permission: HookPermissionVerdict,
+}
+
+impl HookAnswer {
+    /// Construct one directly -- the ONLY way from outside this crate to
+    /// build a non-default value, now that `#[non_exhaustive]` forbids the
+    /// struct-literal form (including `..HookAnswer::default()` functional
+    /// update). For the common "everything defaulted" case, prefer
+    /// [`HookAnswer::default`] directly; `new` is for a `HookRunner`
+    /// implementation that has an actual opinion on one or both fields.
+    pub fn new(context: ContextDelta, permission: HookPermissionVerdict) -> Self {
+        Self {
+            context,
+            permission,
+        }
+    }
 }
 
 /// A `pre_tool_use` hook's opinion on whether the call it was invoked for
@@ -103,6 +179,24 @@ pub struct HookAnswer {
 /// `PermissionBroker::decide` structurally cannot treat a hook's answer as
 /// a grant, independent of whether every call site keeps checking that
 /// correctly.
+///
+/// `#[non_exhaustive]`: a future variant here is a live safety concern, not
+/// a mere API nicety. [`Self::denies`] is the ONE place that decides what
+/// an UNRECOGNIZED variant means -- fail closed, treated the same as
+/// [`Self::Deny`] (an unknown answer from a hook is exactly as
+/// untrustworthy as an unreachable one). Every reader of this type that
+/// needs to know whether a verdict blocks a call -- today
+/// `conway_runtime::permission::PermissionBroker::pre_tool_use_hook_denial`
+/// (`pre_tool_use`) and `conway_runtime::hook_dispatch::
+/// HookDispatcher::dispatch_deny_only` (`prompt_submitted` and any other
+/// deny-only event) -- calls [`Self::denies`] rather than re-deriving the
+/// judgment per call site (P-14: single implementation of a safety-critical
+/// classification). The two sites still format their own denial messages
+/// (they differ in wording and in which hook/event they name), and the
+/// `Deny` variant's own `reason` is still theirs to read directly when
+/// present -- only the "does this verdict block the call at all,
+/// including one this build has never seen" question is centralized here.
+#[non_exhaustive]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HookPermissionVerdict {
@@ -118,6 +212,19 @@ pub enum HookPermissionVerdict {
     /// produced it -- mirroring the phrasing its existing deny-pattern
     /// branch already uses for the identical purpose.
     Deny { reason: String },
+}
+
+impl HookPermissionVerdict {
+    /// Whether this verdict blocks the call -- `false` only for
+    /// [`Self::NoOpinion`]; `true` for [`Self::Deny`] AND for any variant
+    /// added after this build shipped. The single implementation of the
+    /// fail-closed-on-unrecognized-variant judgment this type's own doc
+    /// requires (P-14) -- every caller that needs to know whether a
+    /// verdict blocks a call goes through this method rather than
+    /// re-deriving the answer with its own `match`/`if let`.
+    pub fn denies(&self) -> bool {
+        !matches!(self, HookPermissionVerdict::NoOpinion)
+    }
 }
 
 /// A `pre_tool_use` hook registration's own policy for what happens when
@@ -148,6 +255,15 @@ pub enum HookPermissionVerdict {
 /// `PermissionBroker::decide`'s own ordering doc for exactly why the
 /// existing step order makes that hold by construction, not merely by
 /// convention).
+///
+/// `#[non_exhaustive]`, the same reasoning [`HookPermissionVerdict`] gets:
+/// this is an outage-classification type a hook script's REGISTRATION
+/// picks, so a future variant is exactly as safety-relevant as a future
+/// verdict. `conway_runtime::permission::
+/// PermissionBroker::pre_tool_use_hook_denial` is the one cross-crate
+/// exhaustive `match` on this type, and its wildcard arm fails closed
+/// (treated as [`Self::Deny`]) for the identical reason.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HookOnFailure {
@@ -193,6 +309,15 @@ pub enum HookOnFailure {
 /// type carries provenance only, never a verdict; `HookPermissionVerdict`/
 /// `HookOnFailure` (both above) are what a hook or its outage may narrow,
 /// and this type is orthogonal to both.
+///
+/// `#[non_exhaustive]`: a third provenance tier is plausible (e.g. a
+/// remote/marketplace source distinct from a locally installed plugin),
+/// and this is a pure labeling type -- no permission implication rides on
+/// a variant here, so the one cross-crate exhaustive `match` this attribute
+/// forces a wildcard onto (`conway`'s own `conway.rs::hook_origin_label`)
+/// renders an honest "unrecognized origin" label rather than guessing --
+/// never a security decision.
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HookOrigin {
     /// This rule reached dispatch from the operator's own merged
@@ -224,7 +349,18 @@ impl Default for HookOrigin {
 /// identifiers to exclude. **There is no "replace" variant anywhere in this
 /// type** -- see [`HookAnswer`]'s own doc for why that omission is the
 /// point, not an oversight.
+///
+/// `#[non_exhaustive]`, with [`Self::new`] as the construction path. This
+/// is the type most likely to grow a THIRD axis alongside
+/// `appends`/`excludes` (an ordering hint, a per-append target segment,
+/// etc., as the design matures past "prove the shape is representable")
+/// and it already has nine external construction sites across the
+/// workspace's own test suites -- exactly the case a two-argument
+/// constructor exists to make cheap. Unaffected: `Deserialize`, which
+/// keeps accepting a partial/absent JSON object via each field's own
+/// `#[serde(default)]`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ContextDelta {
     /// Opaque content this hook is appending. Left untyped here
     /// (`serde_json::Value`): the concrete per-item shape (`{role,
@@ -240,6 +376,15 @@ pub struct ContextDelta {
     /// recorded here only as the shape that composition needs.
     #[serde(default)]
     pub excludes: Vec<String>,
+}
+
+impl ContextDelta {
+    /// Construct one directly -- the ONLY way from outside this crate, now
+    /// that `#[non_exhaustive]` forbids the struct-literal form. Two
+    /// fields, positional, no builder.
+    pub fn new(appends: Vec<serde_json::Value>, excludes: Vec<String>) -> Self {
+        Self { appends, excludes }
+    }
 }
 
 /// Whether `tool` satisfies a `pre_tool_use`/`post_tool_use` rule's `match`
@@ -344,6 +489,38 @@ mod tests {
         assert_eq!(invocation, back);
     }
 
+    /// `#[non_exhaustive]` forbids struct-literal construction from
+    /// outside this crate -- `HookEvent::new`/`HookInvocation::new` are the
+    /// replacement, and this pins that each produces the byte-identical
+    /// value the old literal did (same JSON, same equality), not merely
+    /// that it compiles.
+    #[test]
+    fn hook_event_and_invocation_constructors_match_the_equivalent_literal() {
+        let via_new = HookInvocation::new(
+            vec!["/usr/bin/env".into(), "true".into()],
+            5_000,
+            HookEvent::new("pre_tool_use", serde_json::json!(null)),
+        );
+        let via_literal = HookInvocation {
+            command: vec!["/usr/bin/env".into(), "true".into()],
+            timeout_ms: 5_000,
+            event: HookEvent {
+                name: "pre_tool_use".into(),
+                payload: serde_json::json!(null),
+            },
+        };
+        assert_eq!(via_new, via_literal);
+    }
+
+    #[test]
+    fn denies_is_false_only_for_no_opinion() {
+        assert!(!HookPermissionVerdict::NoOpinion.denies());
+        assert!(HookPermissionVerdict::Deny {
+            reason: "no".into()
+        }
+        .denies());
+    }
+
     #[test]
     fn default_hook_answer_has_an_empty_context_delta() {
         let answer = HookAnswer::default();
@@ -363,6 +540,28 @@ mod tests {
         let json = serde_json::to_string(&answer).unwrap();
         let back: HookAnswer = serde_json::from_str(&json).unwrap();
         assert_eq!(answer, back);
+    }
+
+    /// The same equivalence pin as
+    /// `hook_event_and_invocation_constructors_match_the_equivalent_literal`,
+    /// for `HookAnswer::new`/`ContextDelta::new`.
+    #[test]
+    fn hook_answer_and_context_delta_constructors_match_the_equivalent_literal() {
+        let via_new = HookAnswer::new(
+            ContextDelta::new(
+                vec![serde_json::json!({"role": "system", "text": "note"})],
+                vec!["seg-1".to_string()],
+            ),
+            HookPermissionVerdict::default(),
+        );
+        let via_literal = HookAnswer {
+            context: ContextDelta {
+                appends: vec![serde_json::json!({"role": "system", "text": "note"})],
+                excludes: vec!["seg-1".to_string()],
+            },
+            permission: HookPermissionVerdict::default(),
+        };
+        assert_eq!(via_new, via_literal);
     }
 
     /// The structural proof behind "cannot express wholesale replacement":

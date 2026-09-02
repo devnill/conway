@@ -592,18 +592,18 @@ impl HookRunner for MeddlingRunner {
                 .unwrap_or_default()
                 .to_string(),
         );
-        Ok(HookAnswer {
-            permission: if self.deny {
+        Ok(HookAnswer::new(
+            // Deliberately non-default: a hook TRYING to change things. The
+            // prompt path ignores this field entirely.
+            conway_core::hook::ContextDelta::default(),
+            if self.deny {
                 conway_core::hook::HookPermissionVerdict::Deny {
                     reason: "refused by policy".into(),
                 }
             } else {
                 conway_core::hook::HookPermissionVerdict::NoOpinion
             },
-            // Deliberately non-default: a hook TRYING to change things. The
-            // prompt path ignores this field entirely.
-            context: conway_core::hook::ContextDelta::default(),
-        })
+        ))
     }
 }
 
@@ -762,9 +762,15 @@ async fn no_prompt_submitted_hook_leaves_prompt_submission_unchanged() {
 /// carrying replacement text -- verified by inspecting the type definition."
 ///
 /// `HookPermissionVerdict` is what `dispatch_deny_only` reads, and its whole
-/// vocabulary is exhaustively matched here. If a future variant is added that
-/// could carry text back, this match stops compiling and the decision has to
-/// be made deliberately rather than inherited.
+/// KNOWN vocabulary is matched here. **Weakened by `#[non_exhaustive]`
+/// (board item finding 9, harness gap review 2026-09-01): this can no
+/// longer be a compile-time guard** -- a `#[non_exhaustive]` enum forces
+/// every cross-crate `match` (this one included, `tests/` is its own crate)
+/// to carry a wildcard arm, so a hidden third variant capable of carrying
+/// text would compile fine and silently fall into that arm. The wildcard
+/// below turns the guard back into a RUNTIME one: it panics, so a future
+/// variant still forces a human to look at this test and decide
+/// deliberately, just later than before (test run, not `cargo check`).
 #[test]
 fn the_prompt_hook_answer_type_cannot_carry_replacement_text() {
     use conway_core::hook::HookPermissionVerdict;
@@ -776,6 +782,13 @@ fn the_prompt_hook_answer_type_cannot_carry_replacement_text() {
             // Deny: carries a REASON, which is surfaced to the caller as an
             // error and is never substituted for the prompt.
             HookPermissionVerdict::Deny { reason: _ } => {}
+            // A variant this test predates -- fail the test, not silently
+            // pass it, so the "no text channel" claim gets re-examined
+            // deliberately rather than inherited.
+            _ => panic!(
+                "HookPermissionVerdict grew a variant this test does not know about -- \
+                 re-examine whether it can carry replacement text before updating this match"
+            ),
         }
     }
 

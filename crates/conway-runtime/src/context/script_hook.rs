@@ -253,7 +253,7 @@ mod tests {
     ) -> ContextHookAnswer {
         ContextHookAnswer {
             hook_id: hook_id.to_string(),
-            delta: conway_core::hook::ContextDelta { appends, excludes },
+            delta: conway_core::hook::ContextDelta::new(appends, excludes),
         }
     }
 

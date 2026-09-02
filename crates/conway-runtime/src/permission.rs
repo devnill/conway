@@ -1695,23 +1695,39 @@ impl PermissionBroker {
                 conway_core::hook::tool_matcher_matches(pattern, call.tool.as_str())
             })
         }) {
-            let invocation = HookInvocation {
-                command: hook.command.clone(),
-                timeout_ms: hook.timeout_ms,
-                event: HookEvent {
-                    name: "pre_tool_use".to_string(),
-                    payload: payload.clone(),
-                },
-            };
+            let invocation = HookInvocation::new(
+                hook.command.clone(),
+                hook.timeout_ms,
+                HookEvent::new("pre_tool_use", payload.clone()),
+            );
             match runner.run(&invocation).await {
+                // `HookPermissionVerdict::denies` is the single
+                // implementation of what an unrecognized future variant
+                // means (fail closed) -- see that method's own doc. This
+                // is one of its two callers; the other is
+                // `hook_dispatch::HookDispatcher::dispatch_deny_only`
+                // (`prompt_submitted` and other deny-only events), which
+                // now shares the identical judgment rather than
+                // re-deriving it.
                 Ok(answer) => {
-                    if let HookPermissionVerdict::Deny { reason } = answer.permission {
+                    if answer.permission.denies() {
                         // A hook's own VERDICT -- `on_failure` is never
                         // consulted here: it governs ONLY what happens when
                         // this hook's runner cannot be reached at all, never
                         // a hook that ran and had an opinion. An explicit
                         // `Deny` denies, full stop, regardless of this
-                        // hook's `on_failure` setting.
+                        // hook's `on_failure` setting. A recognized `Deny`
+                        // reports its own `reason`; any other denying
+                        // (i.e. non-`NoOpinion`) variant is one this build
+                        // does not recognize, and is reported as such --
+                        // an operator upgrading `conway` before every hook
+                        // script it drives must never see calls silently
+                        // start passing through a hook that used to guard
+                        // them.
+                        let reason = match &answer.permission {
+                            HookPermissionVerdict::Deny { reason } => reason.clone(),
+                            _ => "unrecognized permission verdict -- fail-closed".to_string(),
+                        };
                         return HookStepOutcome::Denied {
                             rendered_error: format!(
                                 "`{}` is denied by `pre_tool_use` hook `{}`: {reason}",
@@ -1721,8 +1737,9 @@ impl PermissionBroker {
                             cause: HookDenialCause::Verdict,
                         };
                     }
-                    // `HookPermissionVerdict::NoOpinion`: this hook has
-                    // nothing to say -- consult the next one, if any.
+                    // `NoOpinion` (the only non-denying case `denies()`
+                    // recognizes): this hook has nothing to say -- consult
+                    // the next one, if any.
                 }
                 Err(failure) => match hook.on_failure {
                     HookOnFailure::Deny => {
@@ -1741,6 +1758,23 @@ impl PermissionBroker {
                         // short-circuit the remaining hooks. See this
                         // method's own doc.
                         must_reach_gate = true;
+                    }
+                    // `HookOnFailure` is `#[non_exhaustive]` too: an
+                    // unrecognized outage policy fails closed exactly like
+                    // its own documented default (`Deny`) -- an operator
+                    // who set a since-removed/newer variant this binary
+                    // does not know about gets the safe behavior, not a
+                    // silently widened one.
+                    _ => {
+                        return HookStepOutcome::Denied {
+                            rendered_error: format!(
+                                "`{}` is denied: `pre_tool_use` hook `{}` failed ({failure}) \
+                                 -- unrecognized on_failure policy, fail-closed",
+                                call.tool.as_str(),
+                                hook.id
+                            ),
+                            cause: HookDenialCause::Outage,
+                        };
                     }
                 },
             }
@@ -2123,7 +2157,7 @@ mod tests {
 
     use conway_core::agent::PermissionRequest;
     use conway_core::error::HookFailure;
-    use conway_core::hook::HookAnswer;
+    use conway_core::hook::{ContextDelta, HookAnswer};
     use conway_core::permission_pattern::{PatternOrigin, PatternRule, Select};
 
     use super::*;
@@ -2188,12 +2222,12 @@ mod tests {
         }
 
         fn deny(reason: &str) -> Arc<Self> {
-            Self::answer(HookAnswer {
-                permission: HookPermissionVerdict::Deny {
+            Self::answer(HookAnswer::new(
+                ContextDelta::default(),
+                HookPermissionVerdict::Deny {
                     reason: reason.to_string(),
                 },
-                ..HookAnswer::default()
-            })
+            ))
         }
 
         fn answer(answer: HookAnswer) -> Arc<Self> {
@@ -3154,12 +3188,12 @@ mod tests {
             ),
             (
                 "hook-b",
-                Ok(HookAnswer {
-                    permission: HookPermissionVerdict::Deny {
+                Ok(HookAnswer::new(
+                    ContextDelta::default(),
+                    HookPermissionVerdict::Deny {
                         reason: "hook B refuses outright".to_string(),
                     },
-                    ..HookAnswer::default()
-                }),
+                )),
             ),
         ]);
         broker.set_hook_runner(Some(runner.clone()));
