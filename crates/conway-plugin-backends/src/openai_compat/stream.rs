@@ -16,7 +16,7 @@ use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use conway_core::content::{ContentBlock, StopReason, ToolSpec, Usage};
+use conway_core::content::{CacheAccounting, ContentBlock, StopReason, ToolSpec, Usage};
 use conway_core::error::BackendError;
 use conway_core::ports::{BoxStream, GenerateResponse, StreamChunk};
 use eventsource_stream::Eventsource;
@@ -75,7 +75,15 @@ async fn drive(
     let mut accumulator = ToolCallAccumulator::new(profile.tool_call_style, &tools);
     let mut text_buffer = String::new();
     let mut stop = None;
-    let mut usage = Usage::default();
+    // Neutral sentinel until a real `usage` frame arrives: dialects with
+    // `supports_stream_options = false` (vllm_hermes, lm_studio,
+    // llama_cpp_server) may never send one, and `Usage::default()`'s
+    // `cache_accounting` now defaults to `Reported` -- leaving it there
+    // would persist a false "provider reported zero cache" fact.
+    let mut usage = Usage {
+        cache_accounting: CacheAccounting::NotReported,
+        ..Usage::default()
+    };
 
     loop {
         let next = tokio::select! {

@@ -31,7 +31,7 @@ impl AppState {
             .turn_started_at
             .map(|t| t.elapsed().as_secs())
             .unwrap_or(0);
-        let summary = format_turn_summary(elapsed_secs, usage);
+        let summary = format_turn_summary(elapsed_secs, usage, self.focused_model.as_deref());
         // Clamp defensively: a `TurnFinished` with no preceding `TurnStarted`
         // (or a transcript cleared mid-turn) must never index out of range.
         let start = self.turn_transcript_start.min(self.transcript.len());
@@ -62,16 +62,19 @@ fn compact_tokens(n: u64) -> String {
     format!("{k}.{tenths}k")
 }
 
-/// T4: format the turn-end summary line (`1m 6s · 1.4k tok (88% cached)`)
-/// from the elapsed seconds (read from `turn_started_at` before
-/// `clear_turn_state` zeroes it) and the turn's `Usage`. Elapsed is `1m 6s`
-/// for >= 60s, else `{secs}s`. Tokens is the sum of every `Usage` field
-/// (matching [`crate::tui::view::status::spent_tokens`]); the cache hit
-/// rate is `cache_read / (input + cache_read + cache_write)`, omitted when
-/// the denominator is zero or no cache read occurred (same formula as the
-/// status line's `tokens` field). Never panics on untrusted input: no division by zero
-/// -- the cache % is only computed when `denom != 0`.
-fn format_turn_summary(elapsed_secs: u64, usage: &Usage) -> String {
+/// T4: format the turn-end summary line (`1m 6s · 1.4k tok (88% cached)`,
+/// or `1m 6s · 1.4k tok (cache: not reported by ollama)` when the backend's
+/// wire format carries no cache field at all) from the elapsed seconds
+/// (read from `turn_started_at` before `clear_turn_state` zeroes it), the
+/// turn's `Usage`, and the focused agent's `"backend/model"` string (for
+/// naming the backend in the not-reported form; `None` renders the generic
+/// `cache: not reported`). Elapsed is `1m 6s` for >= 60s, else `{secs}s`.
+/// Tokens is the sum of every `Usage` field (matching
+/// [`crate::tui::view::status::spent_tokens`]); the cache suffix itself is
+/// [`crate::tui::usage_format::cache_suffix`] -- see its own doc for the
+/// `Reported`/`NotReported` rule this shares with the status line's
+/// `tokens` field.
+fn format_turn_summary(elapsed_secs: u64, usage: &Usage, focused_model: Option<&str>) -> String {
     let elapsed = if elapsed_secs >= 60 {
         let m = elapsed_secs / 60;
         let s = elapsed_secs % 60;
@@ -84,22 +87,15 @@ fn format_turn_summary(elapsed_secs: u64, usage: &Usage) -> String {
         + u64::from(usage.cache_read_tokens)
         + u64::from(usage.cache_write_tokens)
         + u64::from(usage.reasoning_tokens);
-    let denom = u64::from(usage.input_tokens)
-        + u64::from(usage.cache_read_tokens)
-        + u64::from(usage.cache_write_tokens);
-    if denom == 0 || usage.cache_read_tokens == 0 {
-        format!("{elapsed} · {} tok", compact_tokens(total))
-    } else {
-        let pct = (u64::from(usage.cache_read_tokens) * 100) / denom;
-        format!("{elapsed} · {} tok ({pct}% cached)", compact_tokens(total))
-    }
+    let suffix = crate::tui::usage_format::cache_suffix(usage, focused_model);
+    format!("{elapsed} · {} tok{suffix}", compact_tokens(total))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tui::state::fixtures::envelope;
-    use conway::{SessionId, ToolName};
+    use conway::{CacheAccounting, SessionId, ToolName};
 
     /// `TurnFinished` stamps a turn-end summary onto the last
     /// `Entry::Assistant` (or `Entry::Reasoning` if that was the last
@@ -129,6 +125,7 @@ mod tests {
                     cache_read_tokens: 800,
                     cache_write_tokens: 100,
                     reasoning_tokens: 0,
+                    ..Usage::default()
                 },
                 stop: conway_core::content::StopReason::EndTurn,
             },
@@ -171,6 +168,7 @@ mod tests {
                     cache_read_tokens: 0,
                     cache_write_tokens: 0,
                     reasoning_tokens: 0,
+                    ..Usage::default()
                 },
                 stop: conway_core::content::StopReason::EndTurn,
             },
@@ -180,10 +178,16 @@ mod tests {
             Some(Entry::Reasoning { summary, .. }) => {
                 let s = summary.as_ref().expect("summary stamped");
                 assert!(s.contains("5s"), "elapsed in seconds form: {s}");
-                // No cache read -> no "(n% cached)" suffix.
+                // Board item: a provider that REPORTS a genuine zero cache
+                // hit rate must still show `0% cached` -- omitting it here
+                // (the pre-existing behavior this assertion inverts) made
+                // "zero percent cached" indistinguishable from "this
+                // backend doesn't report caching at all". `Usage::default`
+                // (via `..Usage::default()` above) is `CacheAccounting`'s
+                // own default, `Reported`.
                 assert!(
-                    !s.contains("cached"),
-                    "no cache pct when no cache read: {s}"
+                    s.contains("0% cached"),
+                    "a Reported zero cache-read rate must still render 0%: {s}"
                 );
             }
             other => panic!("expected a Reasoning entry, got {other:?}"),
@@ -312,8 +316,8 @@ mod tests {
     }
 
     /// `format_turn_summary` formats elapsed >= 60s as `1m 6s` and < 60s
-    /// as `{n}s`; cache pct only when `cache_read > 0` and the denominator
-    /// is non-zero.
+    /// as `{n}s`; `Reported` always renders a cache pct (including `0%`),
+    /// `NotReported` renders `cache: not reported[ by <backend>]` instead.
     #[test]
     fn format_turn_summary_shapes() {
         let with_cache = Usage {
@@ -322,25 +326,47 @@ mod tests {
             cache_read_tokens: 800,
             cache_write_tokens: 100,
             reasoning_tokens: 0,
+            ..Usage::default()
         };
         // 800 / (100+800+100) = 80%.
         assert_eq!(
-            format_turn_summary(66, &with_cache),
+            format_turn_summary(66, &with_cache, None),
             "1m 6s · 1.4k tok (80% cached)"
         );
         assert_eq!(
-            format_turn_summary(5, &with_cache),
+            format_turn_summary(5, &with_cache, None),
             "5s · 1.4k tok (80% cached)"
         );
 
-        let no_cache = Usage {
+        let zero_cache_reported = Usage {
             input_tokens: 100,
             output_tokens: 400,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
             reasoning_tokens: 0,
+            ..Usage::default()
         };
-        assert_eq!(format_turn_summary(5, &no_cache), "5s · 500 tok");
+        assert_eq!(
+            format_turn_summary(5, &zero_cache_reported, None),
+            "5s · 500 tok (0% cached)"
+        );
+
+        let not_reported = Usage {
+            input_tokens: 100,
+            output_tokens: 400,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            cache_accounting: CacheAccounting::NotReported,
+        };
+        assert_eq!(
+            format_turn_summary(5, &not_reported, None),
+            "5s · 500 tok (cache: not reported)"
+        );
+        assert_eq!(
+            format_turn_summary(5, &not_reported, Some("ollama/gemma4:e4b")),
+            "5s · 500 tok (cache: not reported by ollama)"
+        );
     }
 
     /// `compact_tokens` mirrors the status line's helper: `<1000` as-is,

@@ -14,7 +14,7 @@
 //! `anthropic::wire`'s `BreakpointTarget::Tools`), so this is a pure size
 //! reduction: one fewer `system` message, nothing else changes.
 
-use conway_core::content::{ContentBlock, Role, StopReason, ToolSpec, Usage};
+use conway_core::content::{CacheAccounting, ContentBlock, Role, StopReason, ToolSpec, Usage};
 use conway_core::error::BackendError;
 use conway_core::ports::{GenerateRequest, GenerateResponse};
 use conway_core::provenance::Provenance;
@@ -376,6 +376,11 @@ pub(crate) fn map_finish_reason(reason: Option<&str>) -> StopReason {
 /// not `Option<u32>`). Either-shape rather than a per-profile flag: this is
 /// strictly more permissive (a server that only ever sends one shape is
 /// unaffected either way) and needs no per-provider knowledge to get right.
+///
+/// `cache_accounting` is `Reported` when EITHER shape's `cached_tokens`
+/// `Option` is `Some` (present, even if the value itself is `0` — the
+/// server said zero), `NotReported` when both are `None` (the wire carried
+/// no cache field at all) or when the whole `usage` object is absent.
 pub(crate) fn map_usage(usage: Option<UsageWire>) -> Usage {
     match usage {
         Some(usage) => {
@@ -383,15 +388,24 @@ pub(crate) fn map_usage(usage: Option<UsageWire>) -> Usage {
                 .prompt_tokens_details
                 .as_ref()
                 .and_then(|details| details.cached_tokens);
+            let cached = nested.or(usage.cached_tokens);
             Usage {
                 input_tokens: usage.prompt_tokens,
                 output_tokens: usage.completion_tokens,
-                cache_read_tokens: nested.or(usage.cached_tokens).unwrap_or(0),
+                cache_read_tokens: cached.unwrap_or(0),
                 cache_write_tokens: 0,
                 reasoning_tokens: 0,
+                cache_accounting: if cached.is_some() {
+                    CacheAccounting::Reported
+                } else {
+                    CacheAccounting::NotReported
+                },
             }
         }
-        None => Usage::default(),
+        None => Usage {
+            cache_accounting: CacheAccounting::NotReported,
+            ..Usage::default()
+        },
     }
 }
 
@@ -824,7 +838,57 @@ mod tests {
         }));
         assert_eq!(usage_no_details.cache_read_tokens, 0);
 
-        assert_eq!(map_usage(None), Usage::default());
+        assert_eq!(
+            map_usage(None),
+            Usage {
+                cache_accounting: CacheAccounting::NotReported,
+                ..Usage::default()
+            }
+        );
+    }
+
+    /// Declaration honesty: `cache_accounting` is `Reported` only when the
+    /// wire actually carried a `cached_tokens` field (in EITHER shape),
+    /// including a present-and-zero value, and `NotReported` when neither
+    /// shape's `Option` is `Some` -- a server that never sends the field at
+    /// all must not be indistinguishable from one that sent `0`.
+    #[test]
+    fn map_usage_marks_cache_accounting_from_field_presence_not_value() {
+        let present_and_zero = map_usage(Some(UsageWire {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: Some(0),
+            }),
+            cached_tokens: None,
+        }));
+        assert_eq!(present_and_zero.cache_read_tokens, 0);
+        assert_eq!(present_and_zero.cache_accounting, CacheAccounting::Reported);
+
+        let absent = map_usage(Some(UsageWire {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            prompt_tokens_details: None,
+            cached_tokens: None,
+        }));
+        assert_eq!(absent.cache_read_tokens, 0);
+        assert_eq!(absent.cache_accounting, CacheAccounting::NotReported);
+
+        let top_level_present = map_usage(Some(UsageWire {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            prompt_tokens_details: None,
+            cached_tokens: Some(3),
+        }));
+        assert_eq!(
+            top_level_present.cache_accounting,
+            CacheAccounting::Reported
+        );
+
+        assert_eq!(
+            map_usage(None).cache_accounting,
+            CacheAccounting::NotReported
+        );
     }
 
     /// The `cached_tokens` either-shape fix: OpenAI nests it under

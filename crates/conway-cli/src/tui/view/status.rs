@@ -72,8 +72,19 @@
 //!   `<total> tok (<n%> cached)`, where `total` is the sum of every
 //!   `Usage` field (input + output + both cache dimensions + reasoning)
 //!   and `n%` is the cache hit rate `cache_read / (input + cache_read +
-//!   cache_write)`. The parenthetical is omitted when its denominator is 0
-//!   (no cache activity yet) -- the field then reads `<total> tok`.
+//!   cache_write)`. **Declaration honesty (board item)**: the percentage
+//!   renders whenever the backend actually reported cache figures
+//!   (`Usage::cache_accounting == Reported`), INCLUDING a genuine `0%` --
+//!   only the denominator being 0 (no cache-relevant tokens processed at
+//!   all yet) omits the parenthetical, leaving bare `<total> tok`. When the
+//!   backend's wire format carries no cache field at all
+//!   (`NotReported` -- e.g. Ollama's native `/api/chat` endpoint), the
+//!   field instead reads `<total> tok (cache: not reported by <backend>)`
+//!   (or the generic `cache: not reported` if the backend id is not at
+//!   hand) rather than a percentage that would misrepresent an
+//!   unobserved figure as a real zero. See
+//!   `crate::tui::usage_format::cache_suffix`, shared with the turn-end
+//!   summary line.
 //! - `activity` -- T2's working indicator: a braille spinner glyph plus the
 //!   activity word plus live elapsed plus new-segment tokens added this
 //!   turn, e.g. `⠋ thinking… 12s · +45 tok`, pulsing through
@@ -928,22 +939,19 @@ pub(super) fn ctx_label(state: &AppState) -> String {
     }
 }
 
-/// The `tokens` field's text: `<total> tok (<n%> cached)` when the cache
-/// denominator is non-zero, else `<total> tok`. `total` is the sum of
-/// every `Usage` field (input + output + both cache dimensions +
-/// reasoning); the cache hit rate is `cache_read / (input + cache_read +
-/// cache_write)`.
+/// The `tokens` field's text: `<total> tok (<n%> cached)` -- ALWAYS shown,
+/// including `0% cached`, when `usage.cache_accounting` is `Reported` and
+/// the cache denominator is non-zero; `<total> tok (cache: not reported[ by
+/// <backend>])` when the backend's wire format carries no cache field at
+/// all (`NotReported`). `total` is the sum of every `Usage` field (input +
+/// output + both cache dimensions + reasoning). The suffix itself is
+/// [`crate::tui::usage_format::cache_suffix`] -- shared with the turn-end
+/// summary's own cache text so the two can never render this differently.
 fn tokens_label(state: &AppState) -> String {
     let usage = &state.focused_agent_usage;
     let total = spent_tokens(usage);
-    let denom = u64::from(usage.input_tokens)
-        + u64::from(usage.cache_read_tokens)
-        + u64::from(usage.cache_write_tokens);
-    if denom == 0 || usage.cache_read_tokens == 0 {
-        return format!("{total} tok");
-    }
-    let pct = (u64::from(usage.cache_read_tokens) * 100) / denom;
-    format!("{total} tok ({pct}% cached)")
+    let suffix = crate::tui::usage_format::cache_suffix(usage, state.focused_model.as_deref());
+    format!("{total} tok{suffix}")
 }
 
 /// The `activity` field's ladder (T2; ladder shape added by this item's
@@ -1369,6 +1377,7 @@ mod tests {
             cache_read_tokens: 2,
             cache_write_tokens: 0,
             reasoning_tokens: 5,
+            ..Default::default()
         };
         // 100 + 23 + 2 + 0 + 5
         assert!(status_line(&state).contains("130 tok"));
@@ -1570,6 +1579,7 @@ mod tests {
             cache_read_tokens: 300,
             cache_write_tokens: 100,
             reasoning_tokens: 0,
+            ..Default::default()
         };
         // total = 100 + 50 + 300 + 100 + 0 = 550
         // cache% = 300 / (100 + 300 + 100) = 300 / 500 = 60%
@@ -1580,8 +1590,12 @@ mod tests {
         );
     }
 
+    /// Board item: a `Reported` zero cache-read rate must still render
+    /// `0% cached`, not be omitted -- omission (this test's pre-existing,
+    /// now-inverted assertion) made "the provider said zero" indistinguishable
+    /// from "the provider never reports caching at all".
     #[test]
-    fn tokens_field_without_cache_data_renders_bare_total() {
+    fn tokens_field_with_reported_zero_cache_renders_zero_percent() {
         let mut state = AppState::new(AgentId::new());
         state.focused_agent_usage = conway::Usage {
             input_tokens: 100,
@@ -1589,23 +1603,20 @@ mod tests {
             cache_read_tokens: 0,
             cache_write_tokens: 0,
             reasoning_tokens: 5,
+            ..Default::default()
         };
-        // No cache denominator -> bare total, no parenthetical.
         let line = status_line(&state);
         assert!(
-            line.contains("128 tok"),
-            "tokens field must render bare total: {line}"
-        );
-        assert!(
-            !line.contains("cached"),
-            "no `cached` parenthetical without cache activity: {line}"
+            line.contains("128 tok (0% cached)"),
+            "a Reported zero cache-read rate must still render 0%: {line}"
         );
     }
 
     #[test]
-    fn tokens_field_cache_only_write_still_no_parenthetical() {
-        // cache_write but no cache_read -> cache_read is 0, so the
-        // parenthetical is suppressed (no hits to report a rate from).
+    fn tokens_field_cache_only_write_renders_zero_percent() {
+        // cache_write but no cache_read -> a real (nonzero) denominator,
+        // 0% cached -- rendered, not suppressed (see the item's own
+        // declaration-honesty rule: `Reported` always shows a percentage).
         let mut state = AppState::new(AgentId::new());
         state.focused_agent_usage = conway::Usage {
             input_tokens: 100,
@@ -1613,11 +1624,31 @@ mod tests {
             ..Default::default()
         };
         let line = status_line(&state);
-        assert!(line.contains("300 tok"), "total renders: {line}");
         assert!(
-            !line.contains("cached"),
-            "no `cached` parenthetical when cache_read is 0: {line}"
+            line.contains("300 tok (0% cached)"),
+            "cache_write with no cache_read still renders 0% cached: {line}"
         );
+    }
+
+    /// The status-line `tokens` field's `NotReported` half: no percentage
+    /// at all, `cache: not reported by <backend>` when the focused model
+    /// is known, else the generic `cache: not reported`.
+    #[test]
+    fn tokens_field_not_reported_renders_backend_named_text() {
+        let mut state = AppState::new(AgentId::new());
+        state.focused_agent_usage = conway::Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_accounting: conway::CacheAccounting::NotReported,
+            ..Default::default()
+        };
+        state.focused_model = Some("ollama/gemma4:e4b".to_string());
+        let line = status_line(&state);
+        assert!(
+            line.contains("150 tok (cache: not reported by ollama)"),
+            "NotReported must name the backend, not a percentage: {line}"
+        );
+        assert!(!line.contains("% cached"), "{line}");
     }
 
     #[test]

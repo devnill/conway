@@ -199,7 +199,59 @@ pub enum ArtifactKind {
     EphemeralSessionRef,
 }
 
+/// Whether a [`Usage`]'s cache figures (`cache_read_tokens`/
+/// `cache_write_tokens`) came from a wire response that actually reported
+/// caching, or are a zero-filled placeholder because the backend's wire
+/// format carries no cache field at all.
+///
+/// This is a per-response fact, not a backend capability declaration (that
+/// is [`crate::capabilities::CacheMode`]): the SAME backend profile can
+/// speak two different wire dialects with different cache-reporting
+/// honesty (e.g. Ollama's OpenAI-compatible endpoint vs. its native
+/// `/api/chat` endpoint), so this lives on `Usage` itself, set by whichever
+/// decoder actually read the response.
+///
+/// Without this distinction, "the provider reported zero cache hits" and
+/// "the provider's wire format has no cache field" are indistinguishable:
+/// both render as `cache_read_tokens: 0`, which either looks like caching
+/// genuinely isn't happening (worth investigating) or silently hides that
+/// caching can't be observed at all (nothing to investigate, but the
+/// operator has no way to know that).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheAccounting {
+    /// The wire response carried a cache field (present, possibly zero).
+    #[default]
+    Reported,
+    /// The wire response carried no cache field at all; `cache_read_tokens`/
+    /// `cache_write_tokens` are zero-filled placeholders, not observations.
+    NotReported,
+}
+
+impl CacheAccounting {
+    /// Aggregation rule for [`Add`]/[`AddAssign`]: `NotReported` is sticky.
+    /// Once any summand's cache figures are unobservable, the aggregate's
+    /// are too -- a mix of `Reported`+`NotReported` cannot honestly claim
+    /// `Reported` (the reported half's percentage would understate the
+    /// true cache-hit rate by folding in tokens the other half's provider
+    /// never accounted for).
+    fn combine(self, rhs: Self) -> Self {
+        if self == CacheAccounting::NotReported || rhs == CacheAccounting::NotReported {
+            CacheAccounting::NotReported
+        } else {
+            CacheAccounting::Reported
+        }
+    }
+}
+
 /// Token usage accounting. Addable for aggregation across turns and agents.
+///
+/// `cache_accounting` records whether `cache_read_tokens`/
+/// `cache_write_tokens` are real observations (`Reported`, the default --
+/// old logs without this field decode as `Reported`, which for pre-existing
+/// zero-filled Ollama-native records renders as `0% cached`; see
+/// CHANGELOG) or zero-filled placeholders because the backend's wire format
+/// has no cache field (`NotReported`). See [`CacheAccounting`]'s own doc.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: u32,
@@ -207,6 +259,8 @@ pub struct Usage {
     pub cache_read_tokens: u32,
     pub cache_write_tokens: u32,
     pub reasoning_tokens: u32,
+    #[serde(default)]
+    pub cache_accounting: CacheAccounting,
 }
 
 impl Add for Usage {
@@ -221,6 +275,7 @@ impl Add for Usage {
                 .cache_write_tokens
                 .saturating_add(rhs.cache_write_tokens),
             reasoning_tokens: self.reasoning_tokens.saturating_add(rhs.reasoning_tokens),
+            cache_accounting: self.cache_accounting.combine(rhs.cache_accounting),
         }
     }
 }
@@ -304,6 +359,57 @@ mod tests {
         assert_eq!(c.input_tokens, 11);
         assert_eq!(c.output_tokens, 5);
         assert_eq!(c.reasoning_tokens, 7);
+    }
+
+    /// Old logs (and any wire decoder that never learned about this field)
+    /// decode as `Reported` -- `#[serde(default)]` plus `CacheAccounting`'s
+    /// own `#[default]` variant. Stated in CHANGELOG: for pre-existing
+    /// zero-filled Ollama-native records this renders as `0% cached`, not
+    /// `not reported` -- honest enough for a field that did not exist yet.
+    #[test]
+    fn usage_without_cache_accounting_field_decodes_as_reported() {
+        let json = serde_json::json!({
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        });
+        let usage: Usage = serde_json::from_value(json).unwrap();
+        assert_eq!(usage.cache_accounting, CacheAccounting::Reported);
+    }
+
+    /// `NotReported` is sticky under aggregation: a session that mixes a
+    /// cache-reporting turn with a non-reporting one (e.g. a model switch
+    /// mid-session) cannot honestly claim its aggregate cache percentage
+    /// is real -- the non-reporting turn's true cache usage, if any, is
+    /// unknown and would silently understate the aggregate rate.
+    #[test]
+    fn cache_accounting_not_reported_is_sticky_under_add() {
+        let reported = Usage {
+            cache_accounting: CacheAccounting::Reported,
+            ..Default::default()
+        };
+        let not_reported = Usage {
+            cache_accounting: CacheAccounting::NotReported,
+            ..Default::default()
+        };
+        assert_eq!(
+            (reported + not_reported).cache_accounting,
+            CacheAccounting::NotReported
+        );
+        assert_eq!(
+            (not_reported + reported).cache_accounting,
+            CacheAccounting::NotReported
+        );
+        assert_eq!(
+            (reported + reported).cache_accounting,
+            CacheAccounting::Reported
+        );
+        assert_eq!(
+            (not_reported + not_reported).cache_accounting,
+            CacheAccounting::NotReported
+        );
     }
 
     #[test]
