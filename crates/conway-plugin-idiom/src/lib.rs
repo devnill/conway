@@ -224,7 +224,7 @@
 //!   stamped `Provenance::PluginInstruction { plugin_id: "conway.idiom",
 //!   name }`.
 //! - An operator's own project/global text ([`OPERATOR_PROJECT_INSTRUCTION_NAME`]/
-//!   [`OPERATOR_GLOBAL_INSTRUCTION_NAME`], built by [`read_operator_fragment`]
+//!   [`OPERATOR_GLOBAL_INSTRUCTION_NAME`], built by `read_operator_fragment`
 //!   below) sets `authored_by: FragmentAuthor::Operator { path }` -- the
 //!   operator wrote it, in a file this plugin merely reads, so it is
 //!   stamped `Provenance::Operator { name, path }` instead, naming the
@@ -676,8 +676,8 @@ mod plugin_tests {
         let global_path = tmp.path().join("global-instructions.md");
         std::fs::write(&project_path, "Project convention.\n").expect("write");
         std::fs::write(&global_path, "House-wide preference.\n").expect("write");
-        let plugin =
-            IdiomPlugin::from_operator_files(Some(&project_path), Some(&global_path)).expect("read ok");
+        let plugin = IdiomPlugin::from_operator_files(Some(&project_path), Some(&global_path))
+            .expect("read ok");
         let instructions = plugin.instructions();
 
         let project = instructions

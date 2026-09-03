@@ -373,8 +373,11 @@ async fn context_report_segments_carry_plugin_and_operator_provenance() {
     let instructions_dir = tmp.path().join(".conway");
     std::fs::create_dir_all(&instructions_dir).expect("mkdir");
     let instructions_path = instructions_dir.join("instructions.md");
-    std::fs::write(&instructions_path, "Always run tests before reporting done.\n")
-        .expect("write operator instructions");
+    std::fs::write(
+        &instructions_path,
+        "Always run tests before reporting done.\n",
+    )
+    .expect("write operator instructions");
 
     let store = Arc::new(FakeStore::new());
     let backend = Arc::new(

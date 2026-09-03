@@ -133,8 +133,8 @@ pub enum Provenance {
     /// for conway-originated content that merely LOOKS like one of those.
     CommandPrompt { command: String },
     /// A `crate::ports::plugin::Plugin::instructions()` fragment whose
-    /// [`crate::ports::plugin::InstructionFragment::authored_by`] is
-    /// [`crate::ports::plugin::FragmentAuthor::Plugin`] (the default) --
+    /// [`crate::ports::InstructionFragment::authored_by`] is
+    /// [`crate::ports::FragmentAuthor::Plugin`] (the default) --
     /// text the DECLARING PLUGIN itself wrote (a Rust string literal or an
     /// `include_str!`'d file it ships), as opposed to text an operator
     /// wrote in a file the plugin merely reads (see
@@ -158,8 +158,8 @@ pub enum Provenance {
     /// fragments alone, board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`.
     PluginInstruction { plugin_id: String, name: String },
     /// A `crate::ports::plugin::Plugin::instructions()` fragment whose
-    /// [`crate::ports::plugin::InstructionFragment::authored_by`] is
-    /// [`crate::ports::plugin::FragmentAuthor::Operator`] -- text an
+    /// [`crate::ports::InstructionFragment::authored_by`] is
+    /// [`crate::ports::FragmentAuthor::Operator`] -- text an
     /// OPERATOR wrote themselves, in a file some plugin merely reads and
     /// forwards (e.g. `conway.idiom`'s `.conway/instructions.md` /
     /// `<home>/.conway/instructions.md`). `name` is the fragment's own bare
@@ -596,7 +596,8 @@ mod tests {
 
     #[test]
     fn deserializes_plugin_instruction_example() {
-        let json = r#"{"type":"plugin_instruction","plugin_id":"conway.trim","name":"when-to-compose"}"#;
+        let json =
+            r#"{"type":"plugin_instruction","plugin_id":"conway.trim","name":"when-to-compose"}"#;
         let prov: Provenance = serde_json::from_str(json).unwrap();
         match prov {
             Provenance::PluginInstruction { plugin_id, name } => {

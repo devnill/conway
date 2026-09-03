@@ -1913,7 +1913,9 @@ mod estimator_tests {
         let skill_segment = segments
             .iter()
             .find(|s| matches!(&s.provenance, Provenance::Skill { name } if name == "house-style"))
-            .expect("an ordinary skill fragment must still be stamped Provenance::Skill, unchanged");
+            .expect(
+                "an ordinary skill fragment must still be stamped Provenance::Skill, unchanged",
+            );
         assert_eq!(
             skill_segment.provenance,
             Provenance::Skill {
