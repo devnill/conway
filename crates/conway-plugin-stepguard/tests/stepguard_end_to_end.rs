@@ -176,7 +176,10 @@ impl Tool for ProbeTool {
 
 #[test]
 fn manifest_id_matches_the_published_constant() {
-    assert_eq!(StepGuardPlugin::new().manifest().id, conway_plugin_stepguard::PLUGIN_ID);
+    assert_eq!(
+        StepGuardPlugin::new().manifest().id,
+        conway_plugin_stepguard::PLUGIN_ID
+    );
 }
 
 /// Acceptance 2: the THIRD identical `probe` call appends exactly one
@@ -204,7 +207,10 @@ async fn the_third_identical_call_appends_one_note_that_reaches_the_next_turns_c
         .new_session(SessionSpec::default())
         .await
         .expect("new_session");
-    let turn = session.prompt("read a.txt three times please").await.expect("prompt");
+    let turn = session
+        .prompt("read a.txt three times please")
+        .await
+        .expect("prompt");
     turn.result().await.expect("turn completes naturally");
 
     // (a) exactly one SystemNote, reason == NOTE_REASON, appended after the
@@ -237,7 +243,12 @@ async fn the_third_identical_call_appends_one_note_that_reaches_the_next_turns_c
     match &records[note_index] {
         conway::LogRecord::SystemNote { reason, prov, .. } => {
             assert_eq!(reason, NOTE_REASON);
-            assert_eq!(prov, &Provenance::SystemNote { reason: NOTE_REASON.to_string() });
+            assert_eq!(
+                prov,
+                &Provenance::SystemNote {
+                    reason: NOTE_REASON.to_string()
+                }
+            );
         }
         other => panic!("expected SystemNote at index {note_index}, got {other:?}"),
     }

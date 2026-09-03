@@ -342,13 +342,20 @@ mod tests {
         inputs.total_tokens_est = 3_200;
         inputs.max_context_tokens = Some(4_000);
         let notes = notes_for_turn(&mut tracker, &inputs);
-        assert_eq!(notes.len(), 1, "one note even though two thresholds cleared at once");
+        assert_eq!(
+            notes.len(),
+            1,
+            "one note even though two thresholds cleared at once"
+        );
         assert!(notes[0].contains("80%"), "{}", notes[0]);
 
         // Same size again: no NEW threshold crossed (80% < 90%, and 50/75
         // are already recorded) -- no note.
         let notes = notes_for_turn(&mut tracker, &inputs);
-        assert!(notes.is_empty(), "must not repeat an already-announced threshold: {notes:?}");
+        assert!(
+            notes.is_empty(),
+            "must not repeat an already-announced threshold: {notes:?}"
+        );
 
         // A later turn crossing 90% DOES get its own note -- a higher
         // threshold is a genuinely new crossing, not a repeat.
@@ -405,7 +412,11 @@ mod tests {
         tracker.reset_turn_scoped();
         inputs.steps_this_turn = 4;
         let notes = notes_for_turn(&mut tracker, &inputs);
-        assert_eq!(notes.len(), 1, "a fresh user turn can trip the same dimension again");
+        assert_eq!(
+            notes.len(),
+            1,
+            "a fresh user turn can trip the same dimension again"
+        );
     }
 
     #[test]

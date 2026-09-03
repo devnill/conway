@@ -593,7 +593,13 @@ fn context_child_result() {
         .collect();
     assert_eq!(
         order,
-        vec!["agent_def", "skill", "tool_registry", "user_prompt", "child_result"]
+        vec![
+            "agent_def",
+            "skill",
+            "tool_registry",
+            "user_prompt",
+            "child_result"
+        ]
     );
     assert_eq!(report.segments.len(), segments.len());
 

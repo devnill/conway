@@ -380,7 +380,11 @@ async fn max_steps_warning_fires_after_step_four_of_five() {
         .into_iter()
         .filter(|t| t.contains("max_steps"))
         .collect();
-    assert_eq!(notes.len(), 1, "exactly one max_steps runway note: {notes:?}");
+    assert_eq!(
+        notes.len(),
+        1,
+        "exactly one max_steps runway note: {notes:?}"
+    );
     assert!(notes[0].contains("4 of 5"), "{}", notes[0]);
     assert!(notes[0].contains("max_steps"), "{}", notes[0]);
 }

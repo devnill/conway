@@ -166,7 +166,12 @@ async fn a_wired_surface_answers_with_its_chosen_option_and_nothing_else() {
     let plugin = ConwayUiPlugin::new(Some(Arc::new(FixedAnswerSurface {
         answer: "blue".to_string(),
     })));
-    let conway = ui_conway(tmp.path().to_path_buf(), backend.clone(), store.clone(), plugin);
+    let conway = ui_conway(
+        tmp.path().to_path_buf(),
+        backend.clone(),
+        store.clone(),
+        plugin,
+    );
 
     let session = conway
         .new_session(SessionSpec::default())
@@ -196,7 +201,12 @@ async fn no_surface_degrades_to_the_typed_no_surface_error_text() {
         .with_id(BackendId::new("fake")),
     );
     let plugin = ConwayUiPlugin::new(None);
-    let conway = ui_conway(tmp.path().to_path_buf(), backend.clone(), store.clone(), plugin);
+    let conway = ui_conway(
+        tmp.path().to_path_buf(),
+        backend.clone(),
+        store.clone(),
+        plugin,
+    );
 
     let session = conway
         .new_session(SessionSpec::default())
