@@ -876,18 +876,26 @@ A files-beside-the-plugin convention keeps every fragment removable with no
 UI at all — the file IS the control surface — which is why it is the
 recommended shape even though `include_str!` remains legal.
 
-**Relationship to point 3's `conway.skills` — not folded together.**
-`conway.skills` narrows a `Provenance::Skill` segment `AgentDef.skills`
-already put there (operator-authored, loaded from a directory,
-`crates/conway/src/skills.rs`); this point AUTHORS a `Provenance::Skill`
-segment in the first place, sourced from a plugin. They share the
-rendering machinery (`conway_runtime::context::SkillFragment`,
-`Provenance::Skill`) once resolved — both are, at that point, "a named text
-fragment injected into context" — but the SOURCING differs
-(capability-authored vs. operator-authored) and so does the LIFETIME: a
-skill outlives any plugin (it is the operator's own file); an instruction
-fragment does not (it ships and leaves with `with_plugin`). This is a
-deliberate non-merge, argued rather than assumed.
+**Relationship to point 3's `conway.skills` — not folded together, and no
+longer sharing a provenance tag either (board item
+`01M1FSNBRE5XJ0GQ04RT5HZ1PS`).** `conway.skills` narrows a
+`Provenance::Skill` segment `AgentDef.skills` already put there
+(operator-authored, loaded from a directory, `crates/conway/src/
+skills.rs`); this point AUTHORS an instruction fragment, stamped by its own
+`InstructionFragment::authored_by` — `Provenance::PluginInstruction {
+plugin_id, name }` when the declaring plugin wrote the text itself (the
+ordinary case), or `Provenance::Operator { name, path }` when the text is
+an operator's own, read from a file the plugin merely forwards (e.g.
+`conway.idiom`'s `.conway/instructions.md` — see that plugin's own module
+doc). Before this item both cases were stamped `Provenance::Skill`, the
+SAME tag point 3's actual skills get; that conflation is what this board
+item closed, and the SOURCING argument below is exactly why: a skill
+outlives any plugin (it is the operator's own file, resolved once via
+`AgentDef.skills`); a plugin-authored instruction fragment does not (it
+ships and leaves with `with_plugin`); an operator-authored instruction
+fragment is the operator's own words but arrives through a plugin's own
+declared list, not `AgentDef.skills` — three distinct provenances, now
+three distinct stamps, not two collapsed into one.
 
 **Trust posture: see `docs/plugins/trust-and-security.md`'s "Instruction
 fragments" section.** Short version: installing the plugin is still the

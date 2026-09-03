@@ -111,6 +111,15 @@ impl From<&Provenance> for SegmentKind {
         match provenance {
             Provenance::AgentDef { .. } => SegmentKind::SystemPrompt,
             Provenance::Skill { .. } => SegmentKind::SkillFragment,
+            // A plugin instruction fragment occupies the exact same
+            // architecture §5.3 slot a `Skill`-stamped fragment used to
+            // (board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS` only changed WHICH
+            // `Provenance` tag these carry, never where `ContextBuilder::
+            // build` places them) -- so both new variants map to the same
+            // `SkillFragment` kind `Skill` already does, keeping this
+            // enum's positional meaning unchanged.
+            Provenance::PluginInstruction { .. } => SegmentKind::SkillFragment,
+            Provenance::Operator { .. } => SegmentKind::SkillFragment,
             Provenance::ToolRegistry { .. } => SegmentKind::ToolSchemas,
             Provenance::Inherited { .. } => SegmentKind::InheritedPrefix,
             Provenance::ForkDirective { .. } | Provenance::UserPrompt => SegmentKind::Directive,

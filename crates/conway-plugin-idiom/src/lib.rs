@@ -210,29 +210,51 @@
 //! never silently dropped: a file the operator wrote and conway silently
 //! ignored is exactly the failure mode this project cares most about.
 //!
-//! # The provenance limitation, restated for the operator-file case
+//! # Provenance: the shipped fragment and an operator's own text are
+//! tagged apart (board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`)
 //!
-//! Every fragment this plugin contributes -- the shipped base AND now an
-//! operator's own project/global text -- is stamped `Provenance::Skill {
-//! name }` once assembled (`crates/conway-runtime/src/context/builder.rs`),
-//! the SAME stamp an operator-authored `.conway/skills` body gets. Plugin
-//! attribution lives only in the parallel `ContextReport::
-//! instruction_fragments` list, a side-channel, not durable provenance. So
-//! text an operator wrote themselves, in a file this plugin merely reads,
-//! is attributed in the durable log to "a skill" and in `/context`'s
-//! report to `conway.idiom` -- wrong in both directions, and now true for
-//! operator-authored content specifically, not only for this plugin's own
-//! shipped paragraph. Not fixed here: a `Provenance::Operator` variant is
-//! a persisted wire-format change (precedent: `Provenance::CommandPrompt`,
-//! added the same day for a different feature) and is its own decision,
-//! filed rather than built as part of this item.
+//! Every fragment this plugin contributes is stamped by
+//! `authored_by` (`InstructionFragment::authored_by`), and
+//! `ContextBuilder::build` (`crates/conway-runtime/src/context/builder.rs`)
+//! reads that field to choose the assembled segment's own
+//! `conway_core::provenance::Provenance`:
+//!
+//! - [`FRAGMENT_TEXT`] ([`INSTRUCTION_NAME`]) leaves `authored_by` at its
+//!   default, [`FragmentAuthor::Plugin`] -- this crate wrote it, so it is
+//!   stamped `Provenance::PluginInstruction { plugin_id: "conway.idiom",
+//!   name }`.
+//! - An operator's own project/global text ([`OPERATOR_PROJECT_INSTRUCTION_NAME`]/
+//!   [`OPERATOR_GLOBAL_INSTRUCTION_NAME`], built by [`read_operator_fragment`]
+//!   below) sets `authored_by: FragmentAuthor::Operator { path }` -- the
+//!   operator wrote it, in a file this plugin merely reads, so it is
+//!   stamped `Provenance::Operator { name, path }` instead, naming the
+//!   exact file (`.conway/instructions.md` or `<home>/.conway/
+//!   instructions.md`) an operator can go edit.
+//!
+//! This used to be a single, uniform `Provenance::Skill { name }` stamp for
+//! every fragment this plugin contributed -- the SAME stamp an
+//! operator-authored `.conway/skills` body gets, even though a shipped
+//! plugin fragment, an operator's own standing instructions, and a
+//! directory-authored skill share nothing but the segment slot they render
+//! in. Attribution used to live only in the parallel `ContextReport::
+//! instruction_fragments` list, a side-channel that named which PLUGIN
+//! declared a fragment but had no way to say a fragment's WORDS were never
+//! the plugin's own. That made the durable log lie in both directions at
+//! once: an operator's own prose read back as "a skill" it categorically
+//! was not, and this crate's own shipped paragraph was indistinguishable
+//! from operator prose in the one place -- per-segment `Provenance` -- a
+//! session's durable record actually lives. Fixed here, board item
+//! `01M1FSNBRE5XJ0GQ04RT5HZ1PS`; see `conway_core::provenance::Provenance`'s
+//! own doc for the two new variants and their wire-format argument, and
+//! `docs/plugins/idiom.md`'s "Seeing it in /context" section for the
+//! operator-facing render this closes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use conway::plugin::{
-    FragmentPosition, FragmentScope, InstructionFragment, Plugin, PluginDescription,
-    PluginManifest, Tool,
+    FragmentAuthor, FragmentPosition, FragmentScope, InstructionFragment, Plugin,
+    PluginDescription, PluginManifest, Tool,
 };
 
 /// This plugin's published manifest id -- a config author (or a first-party
@@ -438,10 +460,23 @@ fn read_operator_fragment(
                 // own standing instructions follow an agent def's own
                 // prompt, never precede it, and reach every agent -- see
                 // this module's own "Where the base fragment lands" doc.
+                //
+                // `authored_by: FragmentAuthor::Operator { path }` -- board
+                // item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`: this text is the
+                // OPERATOR'S OWN, not this plugin's, so `ContextBuilder::
+                // build` must stamp the resulting segment
+                // `Provenance::Operator { name, path }`, never
+                // `Provenance::PluginInstruction { plugin_id: "conway.idiom",
+                // .. }` -- see this module's own doc, "Provenance: the
+                // shipped fragment and an operator's own text are tagged
+                // apart".
                 Ok(Some(
                     InstructionFragment::new(name, text)
                         .with_position(FragmentPosition::AfterSystemPrompt)
-                        .with_scope(FragmentScope::All),
+                        .with_scope(FragmentScope::All)
+                        .with_authored_by(FragmentAuthor::Operator {
+                            path: path.to_path_buf(),
+                        }),
                 ))
             }
         }
@@ -610,6 +645,62 @@ mod plugin_tests {
             .expect("operator fragment present");
         assert_eq!(operator.position, FragmentPosition::AfterSystemPrompt);
         assert_eq!(operator.order, 0);
+    }
+
+    /// Board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`: the shipped base fragment
+    /// declares no `authored_by` override, so it stays at
+    /// `InstructionFragment::new`'s own default, `FragmentAuthor::Plugin`
+    /// -- `ContextBuilder::build` stamps it `Provenance::PluginInstruction`,
+    /// never `Provenance::Operator`, since this crate (not an operator)
+    /// wrote every word of it.
+    #[test]
+    fn base_fragment_is_authored_by_the_plugin() {
+        let plugin = IdiomPlugin::new();
+        let instructions = plugin.instructions();
+        let base = instructions
+            .iter()
+            .find(|f| f.name == INSTRUCTION_NAME)
+            .expect("base fragment present");
+        assert_eq!(base.authored_by, FragmentAuthor::Plugin);
+    }
+
+    /// The operator project/global fragments, by contrast, must declare
+    /// `FragmentAuthor::Operator { path }` naming exactly the file this
+    /// plugin read the text from -- `ContextBuilder::build` stamps these
+    /// `Provenance::Operator`, so an operator's own words are never
+    /// durably attributed to `conway.idiom` itself.
+    #[test]
+    fn operator_fragments_are_authored_by_the_operator_naming_their_own_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_path = tmp.path().join("project-instructions.md");
+        let global_path = tmp.path().join("global-instructions.md");
+        std::fs::write(&project_path, "Project convention.\n").expect("write");
+        std::fs::write(&global_path, "House-wide preference.\n").expect("write");
+        let plugin =
+            IdiomPlugin::from_operator_files(Some(&project_path), Some(&global_path)).expect("read ok");
+        let instructions = plugin.instructions();
+
+        let project = instructions
+            .iter()
+            .find(|f| f.name == OPERATOR_PROJECT_INSTRUCTION_NAME)
+            .expect("operator project fragment present");
+        assert_eq!(
+            project.authored_by,
+            FragmentAuthor::Operator {
+                path: project_path.clone()
+            }
+        );
+
+        let global = instructions
+            .iter()
+            .find(|f| f.name == OPERATOR_GLOBAL_INSTRUCTION_NAME)
+            .expect("operator global fragment present");
+        assert_eq!(
+            global.authored_by,
+            FragmentAuthor::Operator {
+                path: global_path.clone()
+            }
+        );
     }
 
     // NOTE: there was a `tool_ids_are_trivially_always_reachable` test here.

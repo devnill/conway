@@ -625,10 +625,16 @@ is a NARROWER, declarative way to do one specific thing `before_request`
 could already do arbitrarily. Trust-wise, a plugin author who could already
 inject arbitrary text via a hook gains nothing new here; what changes is
 legibility (`/context`'s preamble section names which plugin a paragraph
-came from) and structural reachability (the text ships and leaves with
-`with_plugin`, per that method's own doc) — properties for the OPERATOR
-inspecting what is installed, not new restrictions on what an installed
-plugin's text may say.
+came from, and — board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS` — the assembled
+segment's own durable `Provenance` now says so too:
+`Provenance::PluginInstruction { plugin_id, name }` for a fragment the
+declaring plugin wrote itself, `Provenance::Operator { name, path }` for
+one an operator wrote in a file the plugin merely reads and forwards
+(`InstructionFragment::authored_by`) — never both collapsed into the
+`Provenance::Skill` stamp an actual directory-authored skill gets) and
+structural reachability (the text ships and leaves with `with_plugin`, per
+that method's own doc) — properties for the OPERATOR inspecting what is
+installed, not new restrictions on what an installed plugin's text may say.
 
 ## Plugin-to-plugin capability calls: a name is trusted, not an implementation
 

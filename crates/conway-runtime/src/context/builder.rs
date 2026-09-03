@@ -101,7 +101,7 @@ use conway_core::error::RuntimeError;
 use conway_core::ids::{AgentId, ModelId, PrefixKey, SegmentId, SeqRange, SessionId, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::path::{NodeStamp, ResolvedPath};
-use conway_core::ports::{FragmentPosition, FragmentScope};
+use conway_core::ports::{FragmentAuthor, FragmentPosition, FragmentScope};
 use conway_core::provenance::{
     ContextReport, ContextReportEntry, InstructionFragmentEntry, Provenance,
 };
@@ -179,6 +179,13 @@ pub struct PluginInstruction {
     /// See `conway_core::ports::plugin::InstructionFragment::agent_def`.
     /// Default `None`.
     pub agent_def: Option<String>,
+    /// See `conway_core::ports::plugin::InstructionFragment::authored_by`.
+    /// Default [`FragmentAuthor::Plugin`]. `ContextBuilder::build` reads
+    /// this to decide which `Provenance` a rendered segment gets --
+    /// [`FragmentAuthor::Plugin`] stamps `Provenance::PluginInstruction`,
+    /// [`FragmentAuthor::Operator`] stamps `Provenance::Operator` -- see
+    /// that method's own "PluginInstructions*" section.
+    pub authored_by: FragmentAuthor,
 }
 
 /// Whether the agent [`ContextBuilder::build`] is assembling context for has
@@ -432,9 +439,7 @@ impl ContextBuilder {
             segments.push(PromptSegment::new(
                 Role::System,
                 text_block(&instruction.text),
-                Provenance::Skill {
-                    name: instruction.name.clone(),
-                },
+                provenance_for_instruction(instruction),
             ));
         }
 
@@ -455,9 +460,7 @@ impl ContextBuilder {
             segments.push(PromptSegment::new(
                 Role::System,
                 text_block(&instruction.text),
-                Provenance::Skill {
-                    name: instruction.name.clone(),
-                },
+                provenance_for_instruction(instruction),
             ));
         }
 
@@ -1235,6 +1238,30 @@ fn derive_segment_id(
     SegmentId(ulid::Ulid::from(u128::from_be_bytes(bytes)))
 }
 
+/// Stamps a `PluginInstruction` fragment's rendered segment by
+/// [`PluginInstruction::authored_by`] -- board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`.
+/// [`FragmentAuthor::Plugin`] (every fragment's own default, and every
+/// fragment declared before this field existed) yields
+/// `Provenance::PluginInstruction { plugin_id, name }`, replacing what used
+/// to be an unconditional `Provenance::Skill { name }` stamp here.
+/// [`FragmentAuthor::Operator`] yields `Provenance::Operator { name, path }`
+/// -- an operator's own words, sourced from a file some plugin merely read,
+/// are never durably attributed to that plugin or misfiled as a skill. Both
+/// call sites of this helper ([-1]/[1] `PluginInstructions*` above) share
+/// it so the stamping rule is written once, not duplicated per position.
+fn provenance_for_instruction(instruction: &PluginInstruction) -> Provenance {
+    match &instruction.authored_by {
+        FragmentAuthor::Plugin => Provenance::PluginInstruction {
+            plugin_id: instruction.plugin_id.clone(),
+            name: instruction.name.clone(),
+        },
+        FragmentAuthor::Operator { path } => Provenance::Operator {
+            name: instruction.name.clone(),
+            path: path.clone(),
+        },
+    }
+}
+
 fn provenance_discriminant(provenance: &Provenance) -> &'static str {
     match provenance {
         Provenance::UserPrompt => "user_prompt",
@@ -1250,6 +1277,8 @@ fn provenance_discriminant(provenance: &Provenance) -> &'static str {
         Provenance::ChildResult { .. } => "child_result",
         Provenance::Memory { .. } => "memory",
         Provenance::CommandPrompt { .. } => "command_prompt",
+        Provenance::PluginInstruction { .. } => "plugin_instruction",
+        Provenance::Operator { .. } => "operator",
         _ => "unknown",
     }
 }
@@ -1583,9 +1612,11 @@ mod estimator_tests {
     /// Board item `01M0K5MD59YZRSHE31JKZKFRMY`: a `PluginInstruction`
     /// naming a tool id that IS present in `ContextInput.tools` is fully
     /// reachable -- its text is injected as its own `Role::System` segment
-    /// (`Provenance::Skill { name }`, tagged with the fragment's own bare
-    /// name) AND recorded in `report.instruction_fragments` with the
-    /// declaring plugin's id and an empty `unreachable_tool_ids`.
+    /// (`Provenance::PluginInstruction { plugin_id, name }`, board item
+    /// `01M1FSNBRE5XJ0GQ04RT5HZ1PS` -- previously `Provenance::Skill { name
+    /// }`, the misattribution that item closed) AND recorded in
+    /// `report.instruction_fragments` with the declaring plugin's id and an
+    /// empty `unreachable_tool_ids`.
     #[test]
     fn reachable_plugin_instruction_is_injected_and_reported() {
         let tool = sample_tool("compose_path");
@@ -1605,6 +1636,7 @@ mod estimator_tests {
                 order: 0,
                 scope: FragmentScope::All,
                 agent_def: None,
+                authored_by: FragmentAuthor::Plugin,
             }],
             skills: vec![],
             tools: vec![tool],
@@ -1626,7 +1658,9 @@ mod estimator_tests {
 
         let injected = segments
             .iter()
-            .find(|s| matches!(&s.provenance, Provenance::Skill { name } if name == "when-to-compose"))
+            .find(|s| {
+                matches!(&s.provenance, Provenance::PluginInstruction { name, .. } if name == "when-to-compose")
+            })
             .expect("a reachable instruction fragment must be injected as its own segment");
         assert_eq!(
             injected.content,
@@ -1667,6 +1701,7 @@ mod estimator_tests {
                 order: 0,
                 scope: FragmentScope::All,
                 agent_def: None,
+                authored_by: FragmentAuthor::Plugin,
             }],
             skills: vec![],
             tools: vec![], // compose_path is NOT installed
@@ -1687,9 +1722,10 @@ mod estimator_tests {
         let (segments, report) = ContextBuilder::new().build(&input).unwrap();
 
         assert!(
-            !segments.iter().any(
-                |s| matches!(&s.provenance, Provenance::Skill { name } if name == "when-to-compose")
-            ),
+            !segments.iter().any(|s| matches!(
+                &s.provenance,
+                Provenance::PluginInstruction { name, .. } if name == "when-to-compose"
+            )),
             "an unreachable fragment's text must never reach the model"
         );
 
@@ -1732,6 +1768,7 @@ mod estimator_tests {
                 order: 0,
                 scope: FragmentScope::All,
                 agent_def: None,
+                authored_by: FragmentAuthor::Plugin,
             }],
             skills: vec![SkillFragment {
                 name: "house-style".into(),
@@ -1758,6 +1795,7 @@ mod estimator_tests {
             .iter()
             .filter_map(|s| match &s.provenance {
                 Provenance::AgentDef { name } => Some(format!("agentdef:{name}")),
+                Provenance::PluginInstruction { name, .. } => Some(format!("plugin:{name}")),
                 Provenance::Skill { name } => Some(format!("skill:{name}")),
                 _ => None,
             })
@@ -1766,10 +1804,121 @@ mod estimator_tests {
             names,
             vec![
                 "agentdef:reviewer".to_string(),
-                "skill:when-to-compose".to_string(),
+                "plugin:when-to-compose".to_string(),
                 "skill:house-style".to_string(),
             ],
             "base idiom, then plugin instructions, then operator skills, in that order"
+        );
+    }
+
+    /// Board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`, acceptance 2: a
+    /// `PluginInstruction` fragment's rendered `Provenance` follows its own
+    /// `authored_by`, not a single shared stamp for every instruction
+    /// fragment. `authored_by: FragmentAuthor::Plugin` (the default) yields
+    /// `Provenance::PluginInstruction { plugin_id, name }`;
+    /// `FragmentAuthor::Operator { path }` yields `Provenance::Operator {
+    /// name, path }`; an ordinary `ContextInput::skills` entry (never
+    /// routed through `authored_by` at all) still yields `Provenance::
+    /// Skill { name }`, unaffected -- this item is scoped to instruction
+    /// fragments, not skills. Observed failing before `provenance_for_instruction`
+    /// existed: every `PluginInstruction` unconditionally stamped
+    /// `Provenance::Skill { name }` regardless of `authored_by`, so an
+    /// operator-authored fragment's segment carried `Skill`, not
+    /// `Operator` -- confirmed by temporarily hardcoding
+    /// `provenance_for_instruction` to always return
+    /// `Provenance::PluginInstruction` (the pre-`authored_by`-aware shape)
+    /// and re-running this test: the `Operator` assertion below failed with
+    /// `Skill`/`PluginInstruction` found instead.
+    #[test]
+    fn instruction_fragment_provenance_follows_authored_by() {
+        let operator_path = std::path::PathBuf::from("/repo/.conway/instructions.md");
+        let input = ContextInput {
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode: CacheMode::None,
+            agent_kind: AgentKind::Root,
+            system_prompt: None,
+            instructions: vec![
+                PluginInstruction {
+                    plugin_id: "conway.idiom".into(),
+                    name: "conway.idiom.base".into(),
+                    text: "shipped plugin text".into(),
+                    tool_ids: vec![],
+                    position: FragmentPosition::AfterSystemPrompt,
+                    order: 0,
+                    scope: FragmentScope::All,
+                    agent_def: None,
+                    authored_by: FragmentAuthor::Plugin,
+                },
+                PluginInstruction {
+                    plugin_id: "conway.idiom".into(),
+                    name: "conway.idiom.operator.project".into(),
+                    text: "operator's own words".into(),
+                    tool_ids: vec![],
+                    position: FragmentPosition::AfterSystemPrompt,
+                    order: 0,
+                    scope: FragmentScope::All,
+                    agent_def: None,
+                    authored_by: FragmentAuthor::Operator {
+                        path: operator_path.clone(),
+                    },
+                },
+            ],
+            skills: vec![SkillFragment {
+                name: "house-style".into(),
+                text: "directory-authored skill".into(),
+            }],
+            tools: vec![],
+            path: path_from_legacy(
+                None,
+                &[LogRecord::UserTurn {
+                    seq: LogSeq(0),
+                    ts: Utc::now(),
+                    text: "hi".into(),
+                    prov: Provenance::UserPrompt,
+                }],
+                SessionId::new(),
+            )
+            .unwrap(),
+            cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
+        };
+        let (segments, _report) = ContextBuilder::new().build(&input).unwrap();
+
+        let plugin_segment = segments
+            .iter()
+            .find(|s| matches!(&s.provenance, Provenance::PluginInstruction { name, .. } if name == "conway.idiom.base"))
+            .expect("the plugin-authored fragment must be stamped Provenance::PluginInstruction");
+        assert_eq!(
+            plugin_segment.provenance,
+            Provenance::PluginInstruction {
+                plugin_id: "conway.idiom".into(),
+                name: "conway.idiom.base".into(),
+            }
+        );
+
+        let operator_segment = segments
+            .iter()
+            .find(|s| matches!(&s.provenance, Provenance::Operator { name, .. } if name == "conway.idiom.operator.project"))
+            .expect("the operator-authored fragment must be stamped Provenance::Operator");
+        assert_eq!(
+            operator_segment.provenance,
+            Provenance::Operator {
+                name: "conway.idiom.operator.project".into(),
+                path: operator_path,
+            }
+        );
+
+        let skill_segment = segments
+            .iter()
+            .find(|s| matches!(&s.provenance, Provenance::Skill { name } if name == "house-style"))
+            .expect("an ordinary skill fragment must still be stamped Provenance::Skill, unchanged");
+        assert_eq!(
+            skill_segment.provenance,
+            Provenance::Skill {
+                name: "house-style".into()
+            }
         );
     }
 
@@ -1818,6 +1967,7 @@ mod estimator_tests {
             order,
             scope: FragmentScope::All,
             agent_def: None,
+            authored_by: FragmentAuthor::Plugin,
         }
     }
 
@@ -1839,7 +1989,7 @@ mod estimator_tests {
         );
         let (segments, _report) = ContextBuilder::new().build(&input).unwrap();
         assert!(
-            matches!(&segments[0].provenance, Provenance::Skill { name } if name == "idiom-base"),
+            matches!(&segments[0].provenance, Provenance::PluginInstruction { name, .. } if name == "idiom-base"),
             "segment 0 must be the BeforeSystemPrompt fragment: {:?}",
             segments[0].provenance
         );
@@ -1871,7 +2021,7 @@ mod estimator_tests {
             segments[0].provenance
         );
         assert!(
-            matches!(&segments[1].provenance, Provenance::Skill { name } if name == "some-fragment"),
+            matches!(&segments[1].provenance, Provenance::PluginInstruction { name, .. } if name == "some-fragment"),
             "segment 1 must be the AfterSystemPrompt fragment: {:?}",
             segments[1].provenance
         );
@@ -1893,7 +2043,7 @@ mod estimator_tests {
         let names: Vec<&str> = segments
             .iter()
             .filter_map(|s| match &s.provenance {
-                Provenance::Skill { name } => Some(name.as_str()),
+                Provenance::PluginInstruction { name, .. } => Some(name.as_str()),
                 _ => None,
             })
             .collect();
@@ -1913,7 +2063,7 @@ mod estimator_tests {
         let names: Vec<&str> = segments
             .iter()
             .filter_map(|s| match &s.provenance {
-                Provenance::Skill { name } => Some(name.as_str()),
+                Provenance::PluginInstruction { name, .. } => Some(name.as_str()),
                 _ => None,
             })
             .collect();
@@ -1932,7 +2082,7 @@ mod estimator_tests {
         let (root_segments, root_report) = ContextBuilder::new().build(&root_input).unwrap();
         assert!(
             root_segments.iter().any(
-                |s| matches!(&s.provenance, Provenance::Skill { name } if name == "root-only")
+                |s| matches!(&s.provenance, Provenance::PluginInstruction { name, .. } if name == "root-only")
             ),
             "a RootOnly fragment must render for a Root agent"
         );
@@ -1942,7 +2092,7 @@ mod estimator_tests {
         let (child_segments, child_report) = ContextBuilder::new().build(&child_input).unwrap();
         assert!(
             !child_segments.iter().any(
-                |s| matches!(&s.provenance, Provenance::Skill { name } if name == "root-only")
+                |s| matches!(&s.provenance, Provenance::PluginInstruction { name, .. } if name == "root-only")
             ),
             "a RootOnly fragment must be absent from a Child agent's assembly"
         );

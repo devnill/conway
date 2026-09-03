@@ -3987,6 +3987,7 @@ fn general_instruction_fragment() -> conway_runtime::context::PluginInstruction 
         order: 0,
         scope: conway_core::ports::FragmentScope::All,
         agent_def: None,
+        authored_by: conway_core::ports::FragmentAuthor::Plugin,
     }
 }
 
@@ -4004,6 +4005,7 @@ fn secret_tool_instruction_fragment() -> conway_runtime::context::PluginInstruct
         order: 0,
         scope: conway_core::ports::FragmentScope::All,
         agent_def: None,
+        authored_by: conway_core::ports::FragmentAuthor::Plugin,
     }
 }
 
@@ -4065,7 +4067,7 @@ fn build_runtime_with_two_tools_defs_and_instructions(
 /// **Break-the-guard expectation** (reverting `subagent.rs`'s `instructions
 /// = resolve_instructions(...)` back to `instructions: Vec::new()`): both
 /// `report.segments` assertions below fail, because the child's assembled
-/// context carries no `Provenance::Skill` segment for either fragment name
+/// context carries no `Provenance::PluginInstruction` segment for either fragment name
 /// at all -- confirmed by hand before this test was written to rely on it.
 #[tokio::test]
 async fn fork_child_inherits_plugin_instruction_fragments() {
@@ -4094,7 +4096,7 @@ async fn fork_child_inherits_plugin_instruction_fragments() {
     let report = runtime.context_report(child).unwrap();
     assert!(
         report.segments.iter().any(
-            |e| matches!(&e.provenance, Provenance::Skill { name } if name == "general-orientation")
+            |e| matches!(&e.provenance, Provenance::PluginInstruction { name, .. } if name == "general-orientation")
         ),
         "a forked child must carry the general instruction fragment in its own assembled \
          context, got: {:?}",
@@ -4102,7 +4104,7 @@ async fn fork_child_inherits_plugin_instruction_fragments() {
     );
     assert!(
         report.segments.iter().any(
-            |e| matches!(&e.provenance, Provenance::Skill { name } if name == "secret-tool-note")
+            |e| matches!(&e.provenance, Provenance::PluginInstruction { name, .. } if name == "secret-tool-note")
         ),
         "a forked child that holds the `secret` tool must also carry the fragment naming it, \
          got: {:?}",
@@ -4174,7 +4176,7 @@ async fn spawn_child_inherits_plugin_instruction_fragments_still_gated_by_tool_i
     let report = runtime.context_report(child).unwrap();
     assert!(
         report.segments.iter().any(
-            |e| matches!(&e.provenance, Provenance::Skill { name } if name == "general-orientation")
+            |e| matches!(&e.provenance, Provenance::PluginInstruction { name, .. } if name == "general-orientation")
         ),
         "a spawned child must still carry the general (tool_ids-empty) instruction fragment, \
          got: {:?}",
@@ -4182,7 +4184,7 @@ async fn spawn_child_inherits_plugin_instruction_fragments_still_gated_by_tool_i
     );
     assert!(
         !report.segments.iter().any(
-            |e| matches!(&e.provenance, Provenance::Skill { name } if name == "secret-tool-note")
+            |e| matches!(&e.provenance, Provenance::PluginInstruction { name, .. } if name == "secret-tool-note")
         ),
         "a spawned child restricted to the `marker` tool must NOT have the `secret`-tool \
          fragment's text injected -- the pre-existing tool_ids withholding must still apply, \

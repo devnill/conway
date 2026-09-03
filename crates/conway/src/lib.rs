@@ -422,12 +422,18 @@ pub mod plugin {
         CapabilityCallError, CapabilityCallHandle, CapabilityError, CapabilityHost,
         CapabilityProvider, CapabilityRegistration, CapabilityRegistry,
     };
-    /// [`InstructionFragment::position`]/[`InstructionFragment::scope`]'s
-    /// own vocabulary -- re-exported alongside [`InstructionFragment`]
-    /// itself for the same reason: an author who cannot name the type
-    /// cannot call `InstructionFragment::with_position`/`with_scope`
-    /// without depending on `conway-core` directly.
-    pub use conway_core::ports::{FragmentPosition, FragmentScope};
+    /// [`InstructionFragment::position`]/[`InstructionFragment::scope`]/
+    /// [`InstructionFragment::authored_by`]'s own vocabulary --
+    /// re-exported alongside [`InstructionFragment`] itself for the same
+    /// reason: an author who cannot name the type cannot call
+    /// `InstructionFragment::with_position`/`with_scope`/`with_authored_by`
+    /// without depending on `conway-core` directly. `FragmentAuthor` in
+    /// particular is what a plugin resolving an OPERATOR'S OWN file into a
+    /// fragment (`conway_plugin_idiom`'s worked example) needs to name, so
+    /// its own text is stamped `Provenance::Operator` rather than
+    /// misattributed to the plugin that merely read the file (board item
+    /// `01M1FSNBRE5XJ0GQ04RT5HZ1PS`).
+    pub use conway_core::ports::{FragmentAuthor, FragmentPosition, FragmentScope};
     pub use conway_core::provenance::Provenance;
     pub use conway_core::segment::PromptSegment;
     /// The memoised effective-transcript resolver a [`CurateCtx`] carries

@@ -2824,6 +2824,13 @@ fn provenance_kind_label(p: &Provenance) -> String {
         Provenance::MergedAsk { .. } => "merged /ask".to_string(),
         Provenance::ChildResult { .. } => "child result".to_string(),
         Provenance::CommandPrompt { .. } => "command prompt".to_string(),
+        // Board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`: a plugin-authored
+        // instruction fragment and an operator-authored one used to both
+        // collapse into the `Skill` row above (the misattribution that
+        // item closed) -- each now groups under its own kind label, same
+        // "group on the variant" discipline every other row here follows.
+        Provenance::PluginInstruction { .. } => "plugin instruction".to_string(),
+        Provenance::Operator { .. } => "operator".to_string(),
         _ => "unknown provenance".to_string(),
     }
 }
@@ -2939,6 +2946,20 @@ fn provenance_label(p: &Provenance) -> String {
         Provenance::MergedAsk { from } => format!("merged /ask from {from}"),
         Provenance::ChildResult { from } => format!("child result from {from}"),
         Provenance::CommandPrompt { command } => format!("submitted by /{command}"),
+        // Board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`: `plugin:<plugin_id>/<name>`
+        // names exactly which plugin wrote this fragment's text;
+        // `operator:<basename>` names the operator's own file, by its bare
+        // filename (the full path is already visible in `Provenance::
+        // Operator { path, .. }` for a caller that needs it, e.g. a JSON
+        // export -- this rendered line stays short, matching every other
+        // arm here).
+        Provenance::PluginInstruction { plugin_id, name } => format!("plugin:{plugin_id}/{name}"),
+        Provenance::Operator { path, .. } => format!(
+            "operator:{}",
+            path.file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string())
+        ),
         _ => "unknown provenance".to_string(),
     }
 }
@@ -6883,6 +6904,62 @@ mod tests {
             state.transcript.last(),
             Some(Entry::Notice { text }) if text == "empty context"
         ));
+    }
+
+    /// Board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`, acceptance-level: `/context`
+    /// renders `Provenance::PluginInstruction`/`Provenance::Operator` with
+    /// their own labels -- `plugin:<plugin_id>/<name>` and
+    /// `operator:<path basename>` -- rather than falling through to
+    /// `provenance_label`'s `_ => "unknown provenance"` wildcard arm (the
+    /// arm every match on `Provenance` outside `conway-core` must carry,
+    /// since the enum is `#[non_exhaustive]` -- so the compiler alone does
+    /// NOT force this site to handle a newly-added variant; this test is
+    /// the guard that a future variant addition here does not silently
+    /// fall through unnoticed). Observed failing before `provenance_label`
+    /// gained its own arms for these two variants: both assertions below
+    /// produced `"unknown provenance"`, confirmed by temporarily deleting
+    /// this function's `PluginInstruction`/`Operator` arms and re-running
+    /// this test.
+    #[test]
+    fn provenance_label_names_plugin_and_operator_instruction_fragments() {
+        assert_eq!(
+            provenance_label(&Provenance::PluginInstruction {
+                plugin_id: "conway.idiom".into(),
+                name: "conway.idiom.base".into(),
+            }),
+            "plugin:conway.idiom/conway.idiom.base"
+        );
+        assert_eq!(
+            provenance_label(&Provenance::Operator {
+                name: "conway.idiom.operator.project".into(),
+                path: std::path::PathBuf::from("/repo/.conway/instructions.md"),
+            }),
+            "operator:instructions.md",
+            "must name the file's own basename, not its full path"
+        );
+    }
+
+    /// The kind-grouping label (`/context`'s summary table) gets its own
+    /// row for each of the two new variants too, distinct from `"skill"` --
+    /// see [`provenance_kind_label`]'s own doc for why plugin- and
+    /// operator-authored fragments must not collapse into the row a
+    /// directory-authored skill occupies.
+    #[test]
+    fn provenance_kind_label_names_plugin_and_operator_instruction_fragments() {
+        assert_eq!(
+            provenance_kind_label(&Provenance::PluginInstruction {
+                plugin_id: "conway.idiom".into(),
+                name: "conway.idiom.base".into(),
+            }),
+            "plugin instruction"
+        );
+        assert_eq!(
+            provenance_kind_label(&Provenance::Operator {
+                name: "conway.idiom.operator.project".into(),
+                path: std::path::PathBuf::from("/repo/.conway/instructions.md"),
+            }),
+            "operator"
+        );
     }
 
     /// Builds a fixture `ContextReport` with one segment per
