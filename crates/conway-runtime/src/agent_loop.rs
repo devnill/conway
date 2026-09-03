@@ -154,7 +154,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use conway_core::agent::{AgentMessage, AgentResult, Budget, ResultStatus, ToolSelector};
 use conway_core::capabilities::{CacheMode, HeadroomPolicy, RequiredCaps, ToolCallSupport};
 use conway_core::content::{ContentBlock, ToolResult, ToolSpec, Usage};
@@ -182,6 +182,7 @@ use crate::context::{
 use crate::events::EventBus;
 use crate::mailbox::{self, MailboxReceiver, MailboxSender};
 use crate::result::{validate_result_contract, ContractOutcome, ResultBuilder};
+use crate::runway;
 use crate::tools::{PluginRegistry, ToolBatchCtx, ToolRunner};
 use crate::tree::AgentTree;
 
@@ -603,6 +604,21 @@ struct LoopState {
     /// words, not an empty string just because a new user turn had not yet
     /// produced any of its own.
     last_assistant_text: String,
+    /// Which runway (`crate::runway`) window-fill thresholds and budget
+    /// dimensions have already produced a model-facing `SystemNote` this
+    /// run -- see [`runway::RunwayTracker`]'s own doc. Reset for the
+    /// turn-scoped dimensions at the SAME keep-alive user-turn boundary
+    /// `turn_steps`/`tool_calls` reset at, immediately below.
+    runway: runway::RunwayTracker,
+    /// When this agent's run began -- `Some` from immediately after
+    /// `LoopState::default()` in `run_inner` onward; `None` only in the
+    /// (never actually observed) construction-to-first-use gap, so
+    /// `runway`'s deadline-progress note falls back to treating "just now"
+    /// as the start rather than panicking or guessing further back.
+    /// `Option<DateTime<Utc>>` rather than a bare `DateTime<Utc>` only
+    /// because `chrono::DateTime` has no `Default` impl and this struct
+    /// derives one -- not a meaningful optionality.
+    started_at: Option<DateTime<Utc>>,
 }
 
 /// Bounds how many times [`AgentLoop::route_and_attempt`] will call
@@ -1024,7 +1040,10 @@ impl AgentLoop {
     }
 
     async fn run_inner(&mut self) -> Result<AgentResult, (RuntimeError, LoopState)> {
-        let mut state = LoopState::default();
+        let mut state = LoopState {
+            started_at: Some(Utc::now()),
+            ..LoopState::default()
+        };
         let mut seen_segments = HashSet::new();
         // both are turn-loop-local, not `AgentLoop` fields -- see
         // `result.rs`'s module doc for why (both structs are constructed
@@ -1597,6 +1616,7 @@ impl AgentLoop {
                     state.tool_calls = 0;
                     result_builder = ResultBuilder::new();
                     contract_retried = false;
+                    state.runway.reset_turn_scoped();
                     self.resume_gate.awaiting_prompt = true;
                     continue;
                 }
@@ -1751,6 +1771,64 @@ impl AgentLoop {
                 }
             }
 
+            // `crate::runway`: proactive, model-facing notes for the SAME
+            // budget/window-fill numbers `check_budget`/`ContextReport`
+            // already compute every turn -- see that module's own doc for
+            // the incident this closes. Placed here, after this turn's
+            // tool results are appended (immediately above) and before the
+            // next iteration's own assembly, with `state.turn_steps`/
+            // `state.tool_calls` already reflecting THIS turn's dispatch
+            // (incremented immediately below) -- so a note that names "N of
+            // limit" names the count the NEXT `check_budget` call will
+            // itself gate on. `report`/`headroom`/`outcome` are the exact
+            // values this turn's own request was built from and sent with
+            // (route_and_attempt's return, already used for the report_slot
+            // update and the persisted `ContextReportRecord` above) -- never
+            // a second, independent re-estimate.
+            let model_ref = ModelRef {
+                backend: outcome.route.backend.clone(),
+                model: outcome.route.model.clone(),
+            };
+            let runway_inputs = runway::TurnInputs {
+                total_tokens_est: report.total_tokens_est,
+                headroom,
+                max_context_tokens: outcome.max_context_tokens,
+                model: &model_ref,
+                budget: &self.spec.budget,
+                keep_alive: self.spec.keep_alive,
+                steps_this_turn: if self.spec.keep_alive {
+                    state.turn_steps + 1
+                } else {
+                    state.turn + 1
+                },
+                tool_calls: state.tool_calls,
+                tokens_spent: u64::from(state.usage.input_tokens)
+                    + u64::from(state.usage.output_tokens),
+                started_at: state.started_at.unwrap_or_else(Utc::now),
+                now: Utc::now(),
+            };
+            for text in runway::notes_for_turn(&mut state.runway, &runway_inputs) {
+                let note_seq = try_rt!(state, self.deps.store.head(&self.session).await);
+                try_rt!(
+                    state,
+                    self.deps
+                        .store
+                        .append(
+                            &self.session,
+                            LogRecord::SystemNote {
+                                seq: note_seq,
+                                ts: Utc::now(),
+                                text,
+                                reason: "runway".to_string(),
+                                prov: Provenance::SystemNote {
+                                    reason: "runway".to_string(),
+                                },
+                            },
+                        )
+                        .await
+                );
+            }
+
             state.turn += 1;
             state.turn_steps += 1;
         }
@@ -1810,7 +1888,10 @@ impl AgentLoop {
     /// four of `Budget`'s dimensions are enforced here; a dimension a caller
     /// sets must bind, since the whole reason to set one is to bound cost or
     /// blast radius, and a ceiling that silently does nothing is worse than
-    /// no field at all.
+    /// no field at all. This method's own hard trip is never the model's
+    /// first warning: `crate::runway` computes these same numbers earlier
+    /// and proactively, at `BUDGET_WARN_FRACTION` of each limit, and tells
+    /// the model directly.
     ///
     /// **`max_steps` and `max_tool_calls` for a `keep_alive` agent** gate on
     /// turn-scoped counters (`state.turn_steps`, `state.tool_calls`)

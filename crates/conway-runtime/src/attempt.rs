@@ -143,6 +143,19 @@ pub struct AttemptOutcome {
     /// Candidates `Backend::admit` refused before any network call, each
     /// with a `CapabilitySkip` reason carrying that refusal's own message.
     pub skipped: Vec<(ModelRef, RoutingReason)>,
+    /// The winning route's own resolved context window ceiling
+    /// (`caps.max_context_tokens`, the SAME `Capabilities` this fn already
+    /// resolved via `backend.capabilities(&route.model)` for this
+    /// candidate -- never a second, independent lookup). `crate::runway`
+    /// reads this to compute the window-fill note.
+    ///
+    /// `None` only for the one sentinel value no real backend/dialect ever
+    /// legitimately returns, `u32::MAX` -- see `crate::runway`'s own module
+    /// doc ("The 'is the window even known' gap, disclosed") for why this
+    /// crate cannot yet see `conway-plugin-backends`'
+    /// `ContextTokensSource::Unverified` directly, and why this sentinel is
+    /// today's honestly-scoped stand-in for it rather than a full wire-up.
+    pub max_context_tokens: Option<u32>,
 }
 
 /// Which shape of backend call one attempt uses, resolved from the
@@ -165,6 +178,14 @@ fn strategy_for(caps: &Capabilities, has_tools: bool) -> Strategy {
         ToolCallSupport::Streaming { validated: true } => Strategy::Stream,
         _ => Strategy::Generate,
     }
+}
+
+/// `caps.max_context_tokens`, unless it is the `u32::MAX` sentinel --
+/// `crate::runway`'s honestly-scoped stand-in for "this crate cannot see
+/// `ContextTokensSource::Unverified`" (see `AttemptOutcome::
+/// max_context_tokens`'s own doc).
+fn window_of(caps: &Capabilities) -> Option<u32> {
+    (caps.max_context_tokens != u32::MAX).then_some(caps.max_context_tokens)
 }
 
 /// Concatenates every `ContentBlock::Text` in `blocks`, in order — used to
@@ -392,6 +413,7 @@ impl AttemptEngine {
                             attempts: attempt,
                             latency,
                             skipped: skipped.clone(),
+                            max_context_tokens: window_of(&caps),
                         });
                     }
                     Err(err) => match classify(&err) {
