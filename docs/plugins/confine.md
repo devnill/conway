@@ -166,6 +166,18 @@ per-agent `conway.fs.root` config key so the two tools can never disagree
 about the boundary. A call with no root configured for its agent is refused
 outright.
 
+**This reuses `conway.fs`'s own key, not a separate one — which means
+`conway.fs` must stay in `tools.builtin_plugins` for `confined_bash` to see
+a root at all.** That key is populated only when `conway.fs`'s own
+`narrowable_keys()` declaration is present in the registry; `conway.fs`
+ships on by default, so this does not bite in the ordinary case, but an
+operator who narrows `tools.builtin_plugins` to exclude `conway.fs` while
+installing `conway.confine` gets every `confined_bash` call refused with
+"no confinement root for this agent" even though `--root` genuinely was
+passed — fails closed (never silently unconfined), just a confusing
+message pointing at the wrong cause. Keep `conway.fs` enabled alongside
+`conway.confine`.
+
 First-run guided setup offers `confined_bash` FIRST, ahead of the plain
 `bash` question, whenever it detects a containment primitive already
 installed on your machine — see `docs/getting-started.md`'s own "Enabling
