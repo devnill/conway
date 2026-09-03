@@ -378,10 +378,6 @@ pub mod plugin {
     /// declares, the SAME "declare, host attributes/checks it" shape
     /// [`EventDecl`]/[`CommandSpec`] establish immediately above and below.
     pub use conway_core::ports::InstructionFragment;
-    /// [`Plugin::description`]'s own return type -- see that method's own
-    /// doc for why this is a distinct type from [`InstructionFragment`],
-    /// argued rather than assumed (two audiences, two cardinalities).
-    pub use conway_core::ports::PluginDescription;
     /// [`Plugin::narrowable_keys`]'s own return-type element -- a plugin
     /// author constructs one of these per per-agent-configurable key it
     /// declares narrowable, pairing the bare key name with the pure
@@ -394,6 +390,10 @@ pub mod plugin {
     /// "What else a plugin can declare" section named this as a facade
     /// parity gap; closed here rather than only noted).
     pub use conway_core::ports::NarrowingRule;
+    /// [`Plugin::description`]'s own return type -- see that method's own
+    /// doc for why this is a distinct type from [`InstructionFragment`],
+    /// argued rather than assumed (two audiences, two cardinalities).
+    pub use conway_core::ports::PluginDescription;
     pub use conway_core::ports::{
         ArtifactWriteHandle, ArtifactWriter, CancellationToken, Command, CommandCtx,
         CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, CurateCtx,
