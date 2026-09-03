@@ -54,6 +54,16 @@
 //!
 //! **HTTP+SSE MCP transport is a SEPARATE item -- do NOT fold it in.** This
 //! crate is stdio only.
+//!
+//! **No MCP prompts or resources.** This crate performs `initialize`,
+//! `tools/list`, and `tools/call` only -- MCP's `prompts` methods (`list`,
+//! `get`) and `resources` methods (`list`, `read`) are never called (see
+//! `docs/plugins/mcp.md`'s own "No MCP prompts or resources" bullet for the
+//! exact wire-form names and the grep that confirms it). A prompt would map
+//! onto a namespaced slash command (`Plugin::commands()`); a resource onto
+//! a read-only `Tool` or a `Plugin::instructions()` fragment. Neither is
+//! built or scheduled -- forward-declared here, not tracked, since no item
+//! exists to build one.
 
 use std::sync::Arc;
 

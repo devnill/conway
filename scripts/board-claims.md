@@ -263,3 +263,19 @@ claim: hooks.md point 7 no longer says there is no Plugin::rules() method or equ
 paths: docs/plugins/hooks.md
 absent: there is no .Plugin::rules\(\). method
 -->
+
+<!-- claim-check
+why: subprocess-plugins.md and this crate's own module doc label instructions/commands/events/hooks/curators/narrowable_keys/context_hooks as forward-declared with no wire projection -- a subprocess plugin brings tools, a permission policy, an observer sink, status text and capabilities, nothing else. The label must be deleted, not left stale, in the same change that gives a subprocess plugin a way to declare an instruction fragment (the point 17 ceiling this predicate watches most directly).
+note: added alongside the MCP prompts/resources predicate below, same item -- both name a ceiling this document set now states explicitly rather than leaving an author to find out by failing.
+claim: no subprocess plugin can declare an instruction fragment -- instructions/1 does not exist on the wire
+paths: crates/conway-plugin-subprocess/src
+absent: "instructions/1"
+-->
+
+<!-- claim-check
+why: mcp.md and conway-plugin-mcp's own module doc label prompts/resources as never called and not scheduled -- verified 2026-09-03 with `grep -rn 'prompts/\|resources/' crates/conway-plugin-mcp/src`, which matched nothing. The label must be deleted, not left stale, in the same change that makes this crate call either MCP primitive.
+note: added alongside the subprocess instructions/1 predicate above, same item.
+claim: this crate never calls MCP's prompts or resources primitives -- tools only
+paths: crates/conway-plugin-mcp/src
+absent: (prompts/(list|get)|resources/(list|read))
+-->
