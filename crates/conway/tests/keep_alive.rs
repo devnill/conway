@@ -37,7 +37,7 @@ use conway::{Plugin, SessionSpec, Tool};
 use conway_core::agent::{Budget, ResultStatus};
 use conway_core::content::ContentBlock;
 use conway_core::event::Event;
-use conway_core::ids::{BackendId, RoleAlias, SeqRange};
+use conway_core::ids::{BackendId, SeqRange};
 use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, SessionStore};
 use conway_testkit::{
