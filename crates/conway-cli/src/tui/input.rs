@@ -1678,7 +1678,7 @@ mod tests {
     #[test]
     fn palette_down_autofills_successive_matches_without_collapsing() {
         let mut state = AppState::new(AgentId::new());
-        type_str(&mut state, "/a"); // matches [/ask, /agents]
+        type_str(&mut state, "/a"); // matches [/ask, /agents, /await]
                                     // First Down lands on the first match and autofills it.
         handle_key(&mut state, key(KeyCode::Down));
         assert_eq!(state.input, "/ask");
@@ -1688,6 +1688,10 @@ mod tests {
         handle_key(&mut state, key(KeyCode::Down));
         assert_eq!(state.input, "/agents");
         assert_eq!(state.palette_selected, Some(1));
+        // Third Down advances to the third match.
+        handle_key(&mut state, key(KeyCode::Down));
+        assert_eq!(state.input, "/await");
+        assert_eq!(state.palette_selected, Some(2));
         // Wraps back to the top.
         handle_key(&mut state, key(KeyCode::Down));
         assert_eq!(state.input, "/ask");
@@ -1698,8 +1702,8 @@ mod tests {
         let mut state = AppState::new(AgentId::new());
         type_str(&mut state, "/a");
         handle_key(&mut state, key(KeyCode::Up));
-        assert_eq!(state.input, "/agents");
-        assert_eq!(state.palette_selected, Some(1));
+        assert_eq!(state.input, "/await");
+        assert_eq!(state.palette_selected, Some(2));
     }
 
     #[test]
@@ -1938,7 +1942,7 @@ mod tests {
                 ts: None,
             });
         }
-        type_str(&mut state, "/a"); // matches [/ask, /agents]; palette active
+        type_str(&mut state, "/a"); // matches [/ask, /agents, /await]; palette active
 
         let action = press_key(&mut state, KeyCode::Down);
 
@@ -3565,12 +3569,12 @@ mod tests {
     fn history_recall_does_not_fire_while_the_palette_is_open() {
         let mut state = AppState::new(AgentId::new());
         state.push_history("should not appear".to_string());
-        type_str(&mut state, "/a"); // opens the palette (matches /ask, /agents)
+        type_str(&mut state, "/a"); // opens the palette (matches /ask, /agents, /await)
 
         handle_key(&mut state, key(KeyCode::Up));
 
         assert_eq!(
-            state.input, "/agents",
+            state.input, "/await",
             "with the palette open, Up must navigate the palette, not recall history"
         );
     }

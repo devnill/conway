@@ -122,6 +122,15 @@ impl App {
             .provider_status_rx
             .take()
             .expect("provider_status_rx is set in App::new and taken exactly once, here");
+        // `/await` (INTENT.md §7a): mirrors `plugin_cmd_rx`/
+        // `provider_status_rx` exactly, same reasoning -- see
+        // `app/await_cmd.rs`'s own module doc for why the completion notice
+        // travels over its OWN dedicated channel rather than `modal_ask_rx`
+        // or the `AgentFinished` event stream below.
+        let mut await_rx = self
+            .await_rx
+            .take()
+            .expect("await_rx is set in App::new and taken exactly once, here");
 
         loop {
             tokio::select! {
@@ -340,6 +349,21 @@ impl App {
                 maybe_provider_status = provider_status_rx.recv() => {
                     if let Some(done) = maybe_provider_status {
                         self.apply_provider_status_done(done);
+                        dirty = true;
+                    }
+                }
+                // The reply side of `Effect::RunAwait`'s spawned task
+                // (`App::spawn_await`) -- mirrors `plugin_cmd_rx.recv()`
+                // above in every structural respect (a spawned task's
+                // eventual reply, never awaited directly here), and is
+                // drained unconditionally, with no `state.mode` check --
+                // see `app/await_cmd.rs`'s own module doc for why that is
+                // exactly what keeps a completion notice from being lost
+                // when the operator has since focused elsewhere or opened
+                // some other modal-bearing surface.
+                maybe_await = await_rx.recv() => {
+                    if let Some(done) = maybe_await {
+                        self.apply_await_done(done);
                         dirty = true;
                     }
                 }
@@ -976,6 +1000,15 @@ impl App {
                                             Effect::RunModalAsk { question } => {
                                                 self.spawn_modal_ask(question);
                                             }
+                                            // Structurally unreachable from
+                                            // `apply_model_switch` for the
+                                            // same reason `RunModalAsk` just
+                                            // above is (this arm's own
+                                            // comment). Handled correctly
+                                            // anyway, mirroring it exactly.
+                                            Effect::RunAwait { agent } => {
+                                                self.spawn_await(agent);
+                                            }
                                             Effect::RunMarketplaceInstall {
                                                 marketplace_url,
                                                 plugin_id,
@@ -1086,6 +1119,18 @@ impl App {
                                         // `RunPluginCommand`'s own comment.
                                         Effect::RunModalAsk { question } => {
                                             self.spawn_modal_ask(question);
+                                        }
+                                        // Structurally unreachable from THIS
+                                        // call site for the same reason
+                                        // `RunPluginCommand`/`RunModalAsk`
+                                        // just above are: `execute_intent_
+                                        // confirm` only ever returns `None`/
+                                        // `FocusNewSession`, never a
+                                        // `SlashCommand::Await`. Handled
+                                        // correctly anyway, mirroring both
+                                        // comments just above.
+                                        Effect::RunAwait { agent } => {
+                                            self.spawn_await(agent);
                                         }
                                         // Structurally unreachable from THIS
                                         // call site for the same reason

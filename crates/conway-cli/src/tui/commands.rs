@@ -118,6 +118,25 @@ pub enum SlashCommand {
         target: String,
         reason: Option<String>,
     },
+    /// `/await <agent>` (INTENT.md §7a parity: the model's `conway_await`
+    /// tool already blocks a turn until a child finishes and hands back its
+    /// result -- the operator had no counterpart, only staring at the
+    /// `/agents` panel). `target` resolves through the SAME `resolve_agent`
+    /// every other agent-targeted command uses. Awaiting the session's own
+    /// ROOT agent is refused by `execute` before any facade call, exactly
+    /// like [`SlashCommand::Cancel`]'s own root refusal -- there is nothing
+    /// useful to hand back for the agent this whole TUI session IS; `/quit`
+    /// is the way out. A second `/await` on an agent already being awaited
+    /// (by the operator) is also refused -- see `AppState::awaiting_agents`'
+    /// own doc: one operator-side waiter per agent.
+    ///
+    /// **`execute` never calls `Host::await_agent` itself** -- see
+    /// [`Effect::RunAwait`]'s own doc for why (the identical hang-safety
+    /// reasoning [`Effect::RunModalAsk`]'s doc gives for `/ask`, since a
+    /// live child can run for an unbounded time before finishing).
+    Await {
+        target: String,
+    },
     Tree,
     /// `agent` is `None` for a bare `/context` (board item
     /// `01M0RWKJD04JBR5NCVKBQXYHV4`: the only way to learn an id from the
@@ -386,6 +405,11 @@ pub fn describe(cmd: &SlashCommand) -> CommandSpec {
             usage: "/cancel <agent> [<reason>]",
             description: "cancel a running agent immediately (does not end the session)",
         },
+        SlashCommand::Await { .. } => CommandSpec {
+            name: "/await",
+            usage: "/await <agent>",
+            description: "post a notice when a running agent finishes, without blocking input",
+        },
         SlashCommand::Context { .. } => CommandSpec {
             name: "/context",
             usage: "/context [<agent>]",
@@ -491,6 +515,9 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
             target: String::new(),
             reason: None,
         },
+        SlashCommand::Await {
+            target: String::new(),
+        },
         SlashCommand::Context { agent: None },
         SlashCommand::Tree,
         SlashCommand::Why,
@@ -568,6 +595,10 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
         "/cancel" => {
             let (target, reason) = parse_cancel(rest, "/cancel <agent> [<reason>]")?;
             Ok(SlashCommand::Cancel { target, reason })
+        }
+        "/await" => {
+            let target = parse_one_arg(rest, "/await <agent>")?;
+            Ok(SlashCommand::Await { target })
         }
         "/tree" => {
             // Item A3 introduced `/tree` as an alias for the `/agents`
@@ -1013,6 +1044,29 @@ pub enum Effect {
     /// doc names). The caller (`App::submit`, via `App::spawn_modal_ask`)
     /// does the actual `tokio::spawn`.
     RunModalAsk { question: String },
+    /// `/await <agent>` (INTENT.md §7a parity with the model's
+    /// `conway_await` tool) validated -- `execute` has already resolved
+    /// `agent`, refused it if it names the session's own root, refused it if
+    /// the operator already has an `/await` outstanding on it
+    /// (`state.awaiting_agents`), and posted the immediate "awaiting..."
+    /// notice. **`execute` never calls `Host::await_agent` (or awaits
+    /// anything) itself** -- the same reasoning [`Self::RunModalAsk`]'s own
+    /// doc gives, sharpened: unlike an `/ask` child (never `keep_alive`, so
+    /// its single turn is bounded), an awaited agent can be `keep_alive` and
+    /// idle indefinitely, so `SessionHandle::await_agent`'s own documented
+    /// hazard ("hangs for the lifetime of the session" on such an agent) is
+    /// squarely in play here -- awaiting it inline on `execute` would freeze
+    /// the whole TUI for as long as the target agent runs, exactly the
+    /// property `commands::tests::execute_never_awaits_a_hanging_await`
+    /// pins (demonstrated failing first against a scratch version that
+    /// called `host.await_agent(agent).await` directly inside this arm,
+    /// per this item's own verification instruction). The caller
+    /// (`App::submit`, via `App::spawn_await`) does the actual
+    /// `tokio::spawn`, mirroring `App::spawn_modal_ask`'s shape exactly
+    /// (its own dedicated channel, not `modal_ask_tx` -- see
+    /// `app/await_cmd.rs`'s module doc for why a shared channel with `/ask`
+    /// was considered and rejected).
+    RunAwait { agent: AgentId },
     /// `/plugin install <url> <id>` validated -- **`execute` never fetches
     /// anything itself.** `App::apply_marketplace_install` needs `env`
     /// (to resolve `settings.json`'s path via `CONWAY_CONFIG_DIR`) and
@@ -1100,6 +1154,21 @@ pub trait Host {
     /// like every other facade call so `execute`'s `SlashCommand::Cancel`
     /// arm is unit-testable against `tests::FakeHost`.
     async fn cancel(&self, target: AgentId, reason: String) -> conway::Result<()>;
+    /// `/await <agent>` (INTENT.md §7a): a thin passthrough to
+    /// `SessionHandle::await_agent`, the SAME facade method the model-facing
+    /// `conway_await` tool's convenience wrapper reduces to internally --
+    /// both ultimately reach `Runtime::await_result` on the one shared
+    /// `Runtime`, so an operator await and a model await of the same agent
+    /// resolve against the identical terminal `AgentResult`. Routed through
+    /// this trait like every other facade call so `execute`'s
+    /// `SlashCommand::Await` arm's VALIDATION is unit-testable against
+    /// `tests::FakeHost` -- **not** so `execute` itself calls this method;
+    /// see [`Effect::RunAwait`]'s own doc for why it must not, and
+    /// `tests::execute_never_awaits_a_hanging_await` for the direct proof
+    /// (a `FakeHost::await_agent` that never resolves is exactly what makes
+    /// that test fail against a naive inline-await implementation and pass
+    /// against the real one).
+    async fn await_agent(&self, target: AgentId) -> conway::Result<conway::AgentResult>;
     async fn resume(&self, sid: SessionId) -> conway::Result<SessionHandle>;
     /// The `/ask` modal's three fates (B5) -- one facade op each: promote
     /// (B3, `[f]` keep), pull_in (B4, `[p]` merge into the parent), purge
@@ -1223,6 +1292,10 @@ impl Host for LiveHost<'_> {
 
     async fn cancel(&self, target: AgentId, reason: String) -> conway::Result<()> {
         self.handle.cancel(target, &reason).await
+    }
+
+    async fn await_agent(&self, target: AgentId) -> conway::Result<conway::AgentResult> {
+        self.handle.await_agent(target).await
     }
 
     async fn resume(&self, sid: SessionId) -> conway::Result<SessionHandle> {
@@ -1753,6 +1826,38 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             }
             Effect::None
         }
+        // INTENT.md §7a parity: the operator's counterpart to the model's
+        // `conway_await` tool. See `SlashCommand::Await`'s own doc for the
+        // root/duplicate refusals, and `Effect::RunAwait`'s for why this
+        // arm never calls `host.await_agent` itself.
+        SlashCommand::Await { target } => match resolve_agent(state, &target) {
+            Ok(agent) if agent == state.root_agent() => {
+                notice(
+                    state,
+                    format!(
+                        "cannot await {agent}: it is this session's own root agent -- \
+                             use /quit instead"
+                    ),
+                );
+                Effect::None
+            }
+            Ok(agent) if state.awaiting_agents.contains(&agent) => {
+                notice(state, format!("already awaiting {agent}"));
+                Effect::None
+            }
+            Ok(agent) => {
+                state.awaiting_agents.insert(agent);
+                notice(
+                    state,
+                    format!("awaiting {agent}; a keep_alive agent ends only on /cancel"),
+                );
+                Effect::RunAwait { agent }
+            }
+            Err(e) => {
+                notice(state, e);
+                Effect::None
+            }
+        },
         SlashCommand::Tree => {
             // Item A3: no facade call -- the alias renders from
             // `state.tree` (the panel's own view), so its labels, recipe
@@ -2997,6 +3102,22 @@ mod tests {
     }
 
     #[test]
+    fn await_parses_agent() {
+        assert_eq!(
+            parse("/await a7"),
+            Ok(SlashCommand::Await {
+                target: "a7".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn await_missing_agent_is_a_parse_error_naming_the_form() {
+        let err = parse("/await").unwrap_err();
+        assert!(err.to_string().contains("/await <agent>"));
+    }
+
+    #[test]
     fn tree_parses() {
         assert_eq!(parse("/tree"), Ok(SlashCommand::Tree));
     }
@@ -3480,6 +3601,7 @@ mod tests {
             let example = match row.name {
                 "/steer" => "/steer a1 hello".to_string(),
                 "/cancel" => "/cancel a1".to_string(),
+                "/await" => "/await a1".to_string(),
                 "/context" => "/context a1".to_string(),
                 "/fork" => "/fork".to_string(),
                 "/spawn" => "/spawn".to_string(),
@@ -3817,6 +3939,19 @@ mod tests {
             } else {
                 Err(fake_error())
             }
+        }
+
+        /// Deliberately hangs forever -- mirrors `tests::HangingCommand`'s
+        /// own doc exactly. `execute`'s `SlashCommand::Await` arm must never
+        /// reach this call (see `Effect::RunAwait`'s own doc); this is what
+        /// makes `execute_never_awaits_a_hanging_await` fail against a
+        /// scratch implementation that calls `host.await_agent(agent).await`
+        /// inline inside that arm, and pass against the real one, which
+        /// never gets near it.
+        async fn await_agent(&self, _target: AgentId) -> conway::Result<conway::AgentResult> {
+            self.calls.lock().unwrap().push("await_agent");
+            std::future::pending::<()>().await;
+            unreachable!("pending() never resolves")
         }
 
         async fn resume(&self, _sid: SessionId) -> conway::Result<SessionHandle> {
@@ -4317,6 +4452,225 @@ mod tests {
             "the refusal must name the reason and point at /quit: {:?}",
             notice_lines(&state)
         );
+    }
+
+    // ---------------------------------------------------------------
+    // execute() -- SlashCommand::Await (INTENT.md §7a parity)
+    // ---------------------------------------------------------------
+
+    /// Acceptance 1: `/await <child>` on a running child posts the
+    /// immediate "awaiting..." notice and returns `Effect::RunAwait` --
+    /// never `Effect::None`, and never a `host.await_agent` call (that would
+    /// break hang-safety; see `Effect::RunAwait`'s own doc).
+    #[tokio::test]
+    async fn await_a_running_non_focused_subagent_posts_the_immediate_notice_and_returns_run_await()
+    {
+        let root = AgentId::new();
+        let child = AgentId::new();
+        let mut state = AppState::new(root);
+        state.tree.nodes.push(TreeNode {
+            agent_id: child,
+            parent: Some(root),
+            agent_def: None,
+            status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
+        });
+        assert_ne!(state.focused_agent, child);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Await {
+                target: child.to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        match effect {
+            Effect::RunAwait { agent } => assert_eq!(agent, child),
+            _ => panic!("expected Effect::RunAwait, got a different effect"),
+        }
+        assert!(
+            host.calls().is_empty(),
+            "execute must never call host.await_agent itself -- that is App's job, off this \
+             loop: {:?}",
+            host.calls()
+        );
+        assert!(
+            state.awaiting_agents.contains(&child),
+            "the agent must be recorded as awaited so a second /await is refused"
+        );
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains("awaiting") && line.contains(&child.to_string())),
+            "the immediate notice must be posted at submit time, not deferred: {:?}",
+            notice_lines(&state)
+        );
+    }
+
+    /// Acceptance 2: `/await <root>` is refused with a message naming
+    /// `/quit`, before any facade call and before `Effect::RunAwait` is ever
+    /// produced -- mirrors `cancel_targeting_the_session_root_is_refused_
+    /// before_any_facade_call` exactly.
+    #[tokio::test]
+    async fn await_targeting_the_session_root_is_refused_before_any_facade_call() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Await {
+                target: root.to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            host.calls().is_empty(),
+            "the root guard must fire before host.await_agent is ever called"
+        );
+        assert!(
+            !state.awaiting_agents.contains(&root),
+            "a refused await must never be recorded as pending"
+        );
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains("cannot await") && line.contains("/quit")),
+            "the refusal must name the reason and point at /quit: {:?}",
+            notice_lines(&state)
+        );
+    }
+
+    /// Acceptance 3: a second `/await` on the same agent is refused while
+    /// the first is still pending -- one operator-side waiter per agent
+    /// (`AppState::awaiting_agents`' own doc).
+    #[tokio::test]
+    async fn a_second_await_on_the_same_agent_is_refused_while_the_first_is_pending() {
+        let root = AgentId::new();
+        let child = AgentId::new();
+        let mut state = AppState::new(root);
+        state.tree.nodes.push(TreeNode {
+            agent_id: child,
+            parent: Some(root),
+            agent_def: None,
+            status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
+        });
+        let host = FakeHost::new(root);
+
+        let first = execute(
+            SlashCommand::Await {
+                target: child.to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+        assert!(matches!(first, Effect::RunAwait { .. }));
+
+        let second = execute(
+            SlashCommand::Await {
+                target: child.to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(
+            matches!(second, Effect::None),
+            "a duplicate await must not produce a second Effect::RunAwait"
+        );
+        assert!(host.calls().is_empty());
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains("already awaiting") && line.contains(&child.to_string())),
+            "the refusal must be visible in the transcript: {:?}",
+            notice_lines(&state)
+        );
+    }
+
+    /// Unknown-ref parity with `/cancel`'s own equivalent test.
+    #[tokio::test]
+    async fn await_an_unknown_ref_is_a_typed_error_and_nothing_dies() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Await {
+                target: "not-a-real-agent".to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(host.calls().is_empty(), "no facade call may be made");
+        assert!(
+            notice_lines(&state)
+                .iter()
+                .any(|line| line.contains("no agent matches")),
+            "the failure must be a named, typed notice: {:?}",
+            notice_lines(&state)
+        );
+    }
+
+    /// **Hang-safety, direct proof (P-15).** `execute` must return promptly
+    /// even though `FakeHost::await_agent` never resolves -- `execute`'s
+    /// `SlashCommand::Await` arm never calls it at all (see `Effect::
+    /// RunAwait`'s own doc). Written and run against a scratch version of
+    /// this arm that called `host.await_agent(agent).await` directly inline
+    /// FIRST, per this item's own verification instruction: that version
+    /// hangs and this test times out against it, demonstrating the check
+    /// actually catches the regression it exists to catch; restoring the
+    /// real arm (which only returns `Effect::RunAwait`, deferring the
+    /// facade call to `App::spawn_await`) makes it pass.
+    #[tokio::test]
+    async fn execute_never_awaits_a_hanging_await() {
+        let root = AgentId::new();
+        let child = AgentId::new();
+        let mut state = AppState::new(root);
+        state.tree.nodes.push(TreeNode {
+            agent_id: child,
+            parent: Some(root),
+            agent_def: None,
+            status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
+        });
+        let host = FakeHost::new(root);
+
+        let effect = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            execute(
+                SlashCommand::Await {
+                    target: child.to_string(),
+                },
+                &mut state,
+                &host,
+            ),
+        )
+        .await
+        .expect(
+            "execute must return promptly, even though host.await_agent would hang forever if \
+             called",
+        );
+
+        assert!(matches!(effect, Effect::RunAwait { agent } if agent == child));
     }
 
     // ---------------------------------------------------------------
