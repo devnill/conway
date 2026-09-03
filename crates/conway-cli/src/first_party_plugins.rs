@@ -220,6 +220,7 @@ fn bundle(
     memory_store: Arc<dyn MemoryStore>,
     agent_names: Arc<dyn AgentNames>,
     idiom_plugin: Arc<dyn Plugin>,
+    confine_plugin: Arc<dyn Plugin>,
     form_surface: Option<Arc<dyn conway_plugin_ui::FormSurface>>,
 ) -> Vec<Arc<dyn Plugin>> {
     let skills_plugin =
@@ -390,6 +391,21 @@ fn bundle(
         // naming `"conway.ui"` in `[plugins].install` never depends on
         // which host it ends up running under.
         Arc::new(conway_plugin_ui::ConwayUiPlugin::new(form_surface)),
+        // `conway.confine` -- harness gap review 2026-09-01, decision
+        // `01M1FQG08GDQ71984T0W0RJ019`: a bash-equivalent tool
+        // (`confined_bash`) whose every command runs inside this OS's own
+        // containment primitive (`sandbox-exec` on macOS, `bwrap` on
+        // Linux), so `--root` is a real write boundary for a session that
+        // installs this instead of (or alongside) `conway.shell`. Resolved
+        // by the caller via [`resolve_confine_plugin`], never constructed
+        // bare here -- see that function's own doc for why [`install`]'s
+        // strict resolution and [`all_bundle_plugins`]/[`installed_plugins`]'s
+        // graceful (`ConfinePlugin::unchecked`) fallback differ, mirroring
+        // `idiom_plugin`'s own identical split immediately above. Opt-in
+        // like every other member of this bundle: naming
+        // `"conway.confine"` in `[plugins].install` is the whole of the
+        // wiring. See `docs/plugins/confine.md`.
+        confine_plugin,
     ]
 }
 
@@ -435,9 +451,26 @@ pub fn all_bundle_plugins(
         Arc::new(conway_plugin_names::InMemoryAgentNames::new());
     let idiom_plugin = resolve_idiom_plugin(cwd, env)
         .unwrap_or_else(|_| Arc::new(conway_plugin_idiom::IdiomPlugin::new()) as Arc<dyn Plugin>);
+    // Unconditionally `unchecked` here (never `resolve_confine_plugin`):
+    // this function returns EVERY linked candidate regardless of
+    // selection (its own doc, "unfiltered"), so there is no `install_ids`
+    // list to test membership against in the first place -- the identical
+    // reason `browse_names` immediately above is always the throwaway
+    // in-memory store rather than a selection-conditional real one.
+    let confine_plugin: Arc<dyn Plugin> =
+        Arc::new(conway_plugin_confine::ConfinePlugin::unchecked(
+            conway_plugin_confine::default_primitive_path(),
+        ));
     // `None`: a browsing-only re-derivation never needs a live `FormSurface`
     // -- see `bundle`'s own doc, "`form_surface`".
-    bundle(cwd, memory_store, browse_names, idiom_plugin, None)
+    bundle(
+        cwd,
+        memory_store,
+        browse_names,
+        idiom_plugin,
+        confine_plugin,
+        None,
+    )
 }
 
 /// Ordered `(id, summary)` pairs for [`DEFAULT_OPINION_SET`], read off each
@@ -526,6 +559,53 @@ fn resolve_idiom_plugin(
     let plugin =
         conway_plugin_idiom::IdiomPlugin::from_operator_files(Some(&project), global.as_deref())?;
     Ok(Arc::new(plugin))
+}
+
+/// Resolves this process's real `conway.confine` plugin (harness gap review
+/// 2026-09-01, decision `01M1FQG08GDQ71984T0W0RJ019`).
+///
+/// **Only actually checks for the primitive when `"conway.confine"` is
+/// named in `install_ids`** -- the SAME "only opens/checks its dependency
+/// when selected" posture [`resolve_memory_store`]/[`resolve_agent_names`]
+/// already establish for their own durable stores, applied here because
+/// `bundle` includes a `conway.confine` candidate UNCONDITIONALLY (exactly
+/// like every other entry -- `install_selected` is what actually filters).
+/// Checking the primitive's existence unconditionally would mean an
+/// operator who has never named `"conway.confine"` in `[plugins].install`
+/// at all could still have the CLI refuse to start on a machine with no
+/// `sandbox-exec`/`bwrap` installed -- exactly the invisible-limitation
+/// defect `resolve_memory_store`'s own doc names for the identical shape of
+/// mistake. An unselected build gets `ConfinePlugin::unchecked` instead --
+/// unused, no I/O beyond one `is_file()` this crate never even calls in
+/// that branch, matching `resolve_agent_names`'s "unused, cheap, no I/O"
+/// precedent for anyone who never asked for the capability.
+///
+/// **Failure posture when it IS selected: fail closed, no silent
+/// fallback**, the same posture every other "selected but broken" resolver
+/// in this module already takes. `ConfinePlugin::new`'s `Err` (naming the
+/// missing binary) propagates to [`install`]'s own caller -- WHAT TO BUILD
+/// point 2: "Primitive missing at plugin construction →
+/// `ConwayBuilder::build` config error naming the binary."
+///
+/// [`installed_plugins`] calls this with the SAME `install_ids` it already
+/// reads for its own `idiom_plugin` resolution, falling back to
+/// `ConfinePlugin::unchecked` on error rather than propagating (a
+/// read-only re-derivation for display, not a second enforcement point --
+/// `install` already failed the real build first for a genuinely selected,
+/// broken configuration). [`all_bundle_plugins`] does not call this at
+/// all: it returns every linked candidate UNFILTERED (its own doc), so
+/// there is no `install_ids` membership to test in the first place, and it
+/// constructs `ConfinePlugin::unchecked` directly instead.
+fn resolve_confine_plugin(install_ids: &[String]) -> conway::Result<Arc<dyn Plugin>> {
+    if !install_ids
+        .iter()
+        .any(|id| id == conway_plugin_confine::PLUGIN_ID)
+    {
+        return Ok(Arc::new(conway_plugin_confine::ConfinePlugin::unchecked(
+            conway_plugin_confine::default_primitive_path(),
+        )));
+    }
+    conway_plugin_confine::ConfinePlugin::new().map(|p| Arc::new(p) as Arc<dyn Plugin>)
 }
 
 /// Every first-party `RouterFactory` this binary links, in no particular
@@ -789,11 +869,13 @@ pub async fn install(
     let memory_store = resolve_memory_store(&cwd, &builder.config().plugins.install).await?;
     let agent_names = resolve_agent_names(&builder.config().plugins.install)?;
     let idiom_plugin = resolve_idiom_plugin(&cwd, env)?;
+    let confine_plugin = resolve_confine_plugin(&builder.config().plugins.install)?;
     let plugins = bundle(
         &cwd,
         memory_store.clone(),
         agent_names.clone(),
         idiom_plugin,
+        confine_plugin,
         form_surface,
     );
     let builder = builder.install_selected(plugins, router_bundle(), backend_bundle())?;
@@ -876,14 +958,25 @@ pub fn installed_plugins(
     let cwd = conway.config().cwd.clone();
     let idiom_plugin = resolve_idiom_plugin(&cwd, env)
         .unwrap_or_else(|_| Arc::new(conway_plugin_idiom::IdiomPlugin::new()) as Arc<dyn Plugin>);
+    let confine_plugin = resolve_confine_plugin(install).unwrap_or_else(|_| {
+        Arc::new(conway_plugin_confine::ConfinePlugin::unchecked(
+            conway_plugin_confine::default_primitive_path(),
+        )) as Arc<dyn Plugin>
+    });
     // `None`: this re-derivation feeds the command registry/plugin browser
     // only, never a live turn's actual dispatch -- see `bundle`'s own doc,
     // "`form_surface`".
-    let mut plugins: Vec<Arc<dyn Plugin>> =
-        bundle(&cwd, memory_store, agent_names, idiom_plugin, None)
-            .into_iter()
-            .filter(|plugin| install.contains(&plugin.manifest().id))
-            .collect();
+    let mut plugins: Vec<Arc<dyn Plugin>> = bundle(
+        &cwd,
+        memory_store,
+        agent_names,
+        idiom_plugin,
+        confine_plugin,
+        None,
+    )
+    .into_iter()
+    .filter(|plugin| install.contains(&plugin.manifest().id))
+    .collect();
     plugins.extend(crate::claude_compat_plugins::command_plugins(
         conway.config(),
     )?);
@@ -952,6 +1045,19 @@ mod tests {
         Arc::new(conway_plugin_idiom::IdiomPlugin::new())
     }
 
+    /// The `conway.confine` candidate every wiring-only check here passes
+    /// to `bundle` -- `ConfinePlugin::unchecked` (no primitive-existence
+    /// check), the same "satisfies `bundle`'s signature, performs no I/O"
+    /// footing [`test_idiom_plugin`]/[`test_agent_names`] already establish
+    /// for their own arguments. None of this module's own tests exercise
+    /// primitive resolution itself (that is `conway-plugin-confine`'s own
+    /// coverage).
+    fn test_confine_plugin() -> Arc<dyn Plugin> {
+        Arc::new(conway_plugin_confine::ConfinePlugin::unchecked(
+            conway_plugin_confine::default_primitive_path(),
+        ))
+    }
+
     /// The bundle is what `install_selected` resolves against, so an empty
     /// or mis-keyed bundle would turn every `[plugins].install` entry into
     /// an unknown-id error. This checks the wiring only; it makes no claim
@@ -969,6 +1075,7 @@ mod tests {
             memory_store,
             test_agent_names(),
             test_idiom_plugin(),
+            test_confine_plugin(),
             None,
         )
         .iter()
@@ -993,6 +1100,7 @@ mod tests {
             memory_store,
             test_agent_names(),
             test_idiom_plugin(),
+            test_confine_plugin(),
             None,
         )
         .iter()
@@ -1030,12 +1138,39 @@ mod tests {
             conway_plugin_trim::PLUGIN_ID,
             conway_plugin_names::PLUGIN_ID,
             conway_plugin_ui::PLUGIN_ID,
+            conway_plugin_confine::PLUGIN_ID,
         ] {
             assert!(
                 ids.contains(&expected.to_string()),
                 "missing {expected} in {ids:?}"
             );
         }
+    }
+
+    /// Same wiring-only check, for `conway_plugin_confine`: without its
+    /// published id present in `bundle`, `[plugins].install =
+    /// ["conway.confine"]` resolves to an unknown-id error -- acceptance 5's
+    /// own "`bundle()` id test lists the new id."
+    #[test]
+    fn bundle_carries_the_confine_plugin_under_its_published_id() {
+        let cwd = std::env::temp_dir().join("conway-first-party-plugins-bundle-test");
+        let memory_store = Arc::new(conway_plugin_memory::InMemoryMemoryStore::new());
+        let found = bundle(
+            &cwd,
+            memory_store,
+            test_agent_names(),
+            test_idiom_plugin(),
+            test_confine_plugin(),
+            None,
+        )
+        .iter()
+        .any(|p| p.manifest().id == conway_plugin_confine::PLUGIN_ID);
+        assert!(
+            found,
+            "the linked bundle must contain the confine plugin under its published id, \
+             otherwise `[plugins].install = [\"{}\"]` resolves to an unknown-id error",
+            conway_plugin_confine::PLUGIN_ID
+        );
     }
 
     /// Same wiring-only check, for `conway_plugin_trim`: without its
@@ -1052,6 +1187,7 @@ mod tests {
             memory_store,
             test_agent_names(),
             test_idiom_plugin(),
+            test_confine_plugin(),
             None,
         )
         .iter()
@@ -1080,6 +1216,7 @@ mod tests {
             memory_store,
             test_agent_names(),
             test_idiom_plugin(),
+            test_confine_plugin(),
             None,
         )
         .iter()
@@ -1122,6 +1259,7 @@ mod tests {
             memory_store,
             test_agent_names(),
             test_idiom_plugin(),
+            test_confine_plugin(),
             Some(surface),
         );
         let ui_plugin = plugins
@@ -1178,6 +1316,7 @@ mod tests {
             memory_store,
             test_agent_names(),
             test_idiom_plugin(),
+            test_confine_plugin(),
             None,
         )
         .iter()
@@ -1205,6 +1344,7 @@ mod tests {
             memory_store,
             test_agent_names(),
             test_idiom_plugin(),
+            test_confine_plugin(),
             None,
         )
         .iter()
@@ -1374,6 +1514,7 @@ mod tests {
             memory_store,
             test_agent_names(),
             test_idiom_plugin(),
+            test_confine_plugin(),
             None,
         )
         .iter()
@@ -1423,6 +1564,7 @@ mod tests {
             memory_store,
             agent_names.clone(),
             test_idiom_plugin(),
+            test_confine_plugin(),
             None,
         );
         let names_plugin = plugins

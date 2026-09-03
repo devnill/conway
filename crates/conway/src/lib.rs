@@ -507,6 +507,32 @@ pub mod plugin {
         ChildSession, ChildSessionError, NotificationRoute, PendingGuard,
     };
 
+    /// The `bash` tool's own run loop -- streamed stdout/stderr, process-
+    /// group cancellation/timeout, truncation -- reused verbatim by a
+    /// plugin that wants a bash-equivalent tool launched differently, via
+    /// [`BashTool::with_launcher`].
+    ///
+    /// **The one shipped consumer: `conway-plugin-confine`'s own
+    /// `ConfinedBashTool`** (board item, harness gap review 2026-09-01,
+    /// question 6/decision `01M1FQG08GDQ71984T0W0RJ019`): its `Tool::invoke`
+    /// resolves this agent's `conway.fs` root, builds a [`Launcher`] that
+    /// wraps `/bin/bash -c <command>` in an OS containment primitive
+    /// (`sandbox-exec`/`bwrap`), constructs a fresh `BashTool::
+    /// with_launcher` with it, and delegates to that instance's own
+    /// `invoke` -- so the streaming/cancellation/timeout mechanics stay ONE
+    /// implementation, never a second copy, while `ConfinedBashTool` answers
+    /// every OTHER `Tool` method (`spec`, `path_args`, `render_kind`,
+    /// `confined_by_tool`) independently, under its own name.
+    ///
+    /// Gated `cfg(all(unix, feature = "builtin-tools"))`, the identical
+    /// footing [`kill_group`] above already has and for the identical
+    /// reason: `BashTool`'s only real implementation is `#[cfg(unix)]`
+    /// (`conway-tools`' own `shell::bash::unix` module), and this whole
+    /// type only exists in a build where the optional, default-on
+    /// `builtin-tools` feature pulls `conway-tools` in at all.
+    #[cfg(all(unix, feature = "builtin-tools"))]
+    pub use conway_tools::shell::{BashTool, Launcher};
+
     /// Applied when a plugin-host spec (`conway_plugin_mcp::McpPluginSpec`,
     /// `conway_plugin_subprocess::SubprocessPluginSpec`) does not name its
     /// own `timeout_ms`: long enough for a typical local plugin process

@@ -1051,6 +1051,29 @@ pub fn apply_shell_choice(settings_path: &Path, enabled: bool) -> Result<(), Str
     Ok(())
 }
 
+/// [`apply_shell_choice`]'s sibling for `conway.confine` (harness gap review
+/// 2026-09-01, decision `01M1FQG08GDQ71984T0W0RJ019`, question 6): enables
+/// (`enabled: true`) or leaves entirely untouched (`enabled: false`) the
+/// `confined_bash` tool. Unlike `conway.shell` (a compiled-in BUILT-IN,
+/// toggled through `tools.builtin_plugins`), `conway.confine` is a
+/// first-party PLUGIN, resolved the same way every other member of
+/// [`crate::first_party_plugins::DEFAULT_OPINION_SET`] is --
+/// [`conway::config::set_plugin_installed`], not `set_builtin_plugins`.
+///
+/// **Writes nothing at all when `enabled` is `false`**, the identical
+/// byte-cost discipline [`apply_shell_choice`]'s own doc states.
+///
+/// `pub`: covered directly against a real `settings.json`, on the identical
+/// footing [`apply_shell_choice`]'s own doc states.
+pub fn apply_confine_choice(settings_path: &Path, enabled: bool) -> Result<(), String> {
+    if !enabled {
+        return Ok(());
+    }
+    conway::config::set_plugin_installed(settings_path, conway_plugin_confine::PLUGIN_ID, true)
+        .map_err(|e| format!("could not enable the confined shell tool: {e}"))?;
+    Ok(())
+}
+
 /// Formats the guided-setup transcript for a just-installed opinion set:
 /// one row per `(id, summary)` in `rows` (`first_party_plugins::
 /// opinion_set_summaries`'s own return shape), followed by exactly ONE
@@ -1093,17 +1116,29 @@ const SHELL_CAVEAT: &str = "  bash is NOT confined by --root -- a shell command 
                              your user account can.\n  Every bash call still passes the \
                              permission prompt, same as every other tool.";
 
-/// The imperative shell around [`apply_opinion_set`]/[`apply_shell_choice`]:
-/// prints the opinion-set transcript, installs it, then asks the one new
-/// yes/no question this board item adds. Only reached from [`run_guided_
-/// setup`], after the backend flow itself already settled on `Configured`
-/// -- see that function's own doc for why this runs exactly once per run
-/// regardless of which internal return point reached `Configured`.
-///
-/// `Esc` (or any key other than `y`/`Y`) keeps the SAME skip semantics
-/// every other prompt in this module already has: declining costs nothing
-/// beyond "ask again later" (`docs/getting-started.md`'s own "Enabling
-/// bash" section, printed here as the one-liner to run it later).
+/// Detects `conway.confine`'s own OS containment primitive
+/// (`sandbox-exec`/`bwrap`) at its default path -- the DETECT half of
+/// question 6's "detect the primitive; offer the confined shell first"
+/// (harness gap review 2026-09-01, decision `01M1FQG08GDQ71984T0W0RJ019`).
+/// `Some` only when the primitive genuinely exists on THIS machine, never
+/// merely "this OS usually has one" -- [`offer_opinion_set_and_shell`]
+/// falls back to the plain, unconfined `bash` question when this returns
+/// `None`, exactly the pre-existing behavior for every operator on a
+/// machine (or a target this crate implements no primitive for at all)
+/// where the confined tool could not actually run.
+fn detect_confine_primitive() -> Option<std::path::PathBuf> {
+    let path = conway_plugin_confine::default_primitive_path();
+    path.is_file().then_some(path)
+}
+
+/// The imperative shell around [`apply_opinion_set`]/[`apply_shell_choice`]/
+/// [`apply_confine_choice`]: prints the opinion-set transcript, installs it,
+/// then asks the shell question this board item's own ruling shapes
+/// (question 6: "detect the primitive; offer the confined shell first").
+/// Only reached from [`run_guided_setup`], after the backend flow itself
+/// already settled on `Configured` -- see that function's own doc for why
+/// this runs exactly once per run regardless of which internal return point
+/// reached `Configured`.
 fn offer_opinion_set_and_shell(path: &Path) {
     match apply_opinion_set(path) {
         Ok(ids) => {
@@ -1130,6 +1165,56 @@ fn offer_opinion_set_and_shell(path: &Path) {
         }
     }
 
+    // Question 6: when this machine actually has a containment primitive,
+    // the confined shell is offered FIRST, defaulting to yes -- it is the
+    // strictly safer of the two (every write outside `--root` is refused
+    // by the OS itself), so accepting it needs no caveat the way plain
+    // `bash` does. Declining it (or `Esc`) falls through to the ORIGINAL
+    // plain-bash question below, unchanged -- an operator who genuinely
+    // wants the unconfined tool still gets it, on the identical terms as
+    // before this item. A machine with no primitive at all skips straight
+    // to the plain-bash question, exactly the pre-existing behavior.
+    if let Some(primitive) = detect_confine_primitive() {
+        println!();
+        println!(
+            "This machine has an OS containment primitive ({}). Enable conway.confine's \
+             confined shell tool? Every command it runs is refused if it tries to write \
+             outside this session's --root; reads and network are unaffected. [Y/n]",
+            primitive.display()
+        );
+        match read_single_key() {
+            Some(KeyCode::Char('n')) | Some(KeyCode::Char('N')) => {
+                offer_plain_shell(path);
+            }
+            _ => match apply_confine_choice(path, true) {
+                Ok(()) => {
+                    println!(
+                        "Enabled. Disable it later by removing \"conway.confine\" from \
+                         plugins.install in {}.",
+                        path.display()
+                    );
+                }
+                Err(e) => {
+                    println!("Could not enable the confined shell tool: {e}");
+                    offer_plain_shell(path);
+                }
+            },
+        }
+    } else {
+        offer_plain_shell(path);
+    }
+}
+
+/// The original, unconfined-`bash` question -- unchanged from before this
+/// item, factored out so [`offer_opinion_set_and_shell`] can reach it both
+/// as the ordinary path (no containment primitive detected) and as the
+/// fallback after an operator declines the confined offer.
+///
+/// `Esc` (or any key other than `y`/`Y`) keeps the SAME skip semantics
+/// every other prompt in this module already has: declining costs nothing
+/// beyond "ask again later" (`docs/getting-started.md`'s own "Enabling
+/// bash" section, printed here as the one-liner to run it later).
+fn offer_plain_shell(path: &Path) {
     println!();
     println!("Enable the bash shell tool? [y/N]");
     println!("{SHELL_CAVEAT}");
@@ -1348,6 +1433,67 @@ mod tests {
         assert!(ids.contains(&"conway.fs".to_string()), "{ids:?}");
         assert!(ids.contains(&"conway.subagent".to_string()), "{ids:?}");
         assert!(ids.contains(&"conway.report".to_string()), "{ids:?}");
+    }
+
+    // ---- apply_confine_choice: pure, no network, no terminal ----
+
+    #[test]
+    fn apply_confine_choice_false_leaves_the_file_byte_identical() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\"backends\": {}}\n").expect("write fixture");
+        let before = std::fs::read_to_string(&path).expect("read before");
+
+        apply_confine_choice(&path, false).expect("declining must never fail");
+
+        let after = std::fs::read_to_string(&path).expect("read after");
+        assert_eq!(
+            before, after,
+            "declining the confine offer must not touch the file at all"
+        );
+    }
+
+    #[test]
+    fn apply_confine_choice_true_adds_conway_confine_to_plugins_install() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\"backends\": {}}\n").expect("write fixture");
+
+        apply_confine_choice(&path, true).expect("enabling must succeed against a fresh file");
+
+        let text = std::fs::read_to_string(&path).expect("read after");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+        let ids: Vec<String> = value["plugins"]["install"]
+            .as_array()
+            .expect("plugins.install must be an array")
+            .iter()
+            .map(|v| v.as_str().expect("each id is a string").to_string())
+            .collect();
+        assert!(
+            ids.contains(&conway_plugin_confine::PLUGIN_ID.to_string()),
+            "{ids:?}"
+        );
+    }
+
+    /// `conway.confine` is a first-party PLUGIN (`plugins.install`), never a
+    /// built-in (`tools.builtin_plugins`) -- the exact distinction
+    /// [`apply_confine_choice`]'s own doc draws against `apply_shell_choice`.
+    /// This regression-guards that the two writers never converge on the
+    /// same key by accident.
+    #[test]
+    fn apply_confine_choice_never_touches_tools_builtin_plugins() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\"backends\": {}}\n").expect("write fixture");
+
+        apply_confine_choice(&path, true).expect("enabling must succeed against a fresh file");
+
+        let text = std::fs::read_to_string(&path).expect("read after");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+        assert!(
+            value.get("tools").is_none(),
+            "apply_confine_choice must never write tools.builtin_plugins: {value}"
+        );
     }
 
     // ---- chain_entry: the ONE construction verify_backend and the real ----

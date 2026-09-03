@@ -105,6 +105,31 @@ when both are set — `--root` (or `ConwayBuilder::with_root`) alongside
 `bash` among the registered tools — rather than leaving this only as prose
 on this page.
 
+## `confined_bash` (`conway.confine`, first-party plugin, opt-in)
+
+| Tool | Does | Category | Path arguments confinable | Truncation | Permission class |
+| --- | --- | --- | --- | --- | --- |
+| `confined_bash` | Executes a command with `bash -c`, identically to `bash` above, but every call runs inside this operating system's own containment primitive (`sandbox-exec` on macOS, `bwrap` on Linux). | Execute | **No — see below** | HeadTail (15,000 + 15,000 bytes) | Dangerous |
+
+**Same `Unconfinable`/`cwd`-checkable shape `bash` declares, and for the
+identical reason** — `command` is still a free-form string handed to a real
+shell, so the permission broker's own STATIC root check can never clear it
+either. What differs is a THIRD, later mechanism: `confined_bash`'s own
+`Tool::invoke` resolves this agent's confinement root and launches the
+command through the OS primitive, which refuses any filesystem WRITE
+outside it at RUN time — a guarantee the broker's static check has nothing
+to do with. This tool declares `Tool::confined_by_tool() == true`, the
+structural flag that keeps the root+unconfinable-shell-tool warning above
+from firing for it: it is the remedy the warning's own message names, not a
+second instance of the gap. **Reads and network reachability are not
+confined by this tool — only writes**; see
+[`docs/plugins/confine.md`](plugins/confine.md) for the full boundary and
+exactly which OS this guarantee is verified on. Unlike `bash`
+(`conway.shell`, a compiled-in built-in), `confined_bash` is a first-party
+PLUGIN — install it with `[plugins].install = ["conway.confine"]`, not
+`tools.builtin_plugins` — and it requires `--root`: a call with no root
+configured for its agent is refused outright, never run unconfined.
+
 ## The `subagent` tools (`conway.subagent`, on by default)
 
 | Tool | Does | Category | Path arguments confinable | Truncation | Permission class |

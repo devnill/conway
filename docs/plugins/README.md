@@ -35,6 +35,7 @@ a summary pointing somewhere else.
 | [`permission-modes.md`](permission-modes.md) — plugin-declared permission modes (ABANDONED) | Why was the mechanism that let a plugin name its own mode over one of the three closed core modes removed, and what would a real consumer need before it comes back? | **Retired design record, not a plan** — built, tested, and wired end to end for exactly one designed-for consumer (`conway.permissions`), which was cancelled for want of a reliable local-model judge; with no other producer ever landing, the mechanism itself was removed rather than kept standing for a consumer that never arrived. Read it before proposing a plugin-declared mode again. |
 | [`statusline.md`](statusline.md) — `conway.statusline` | How do I show a shell command's output on the status line, since conway's own status line is a closed vocabulary? How often does it actually spawn, and what does a slow or failing command do to the UI? | You are migrating a Claude Code `statusLine.command`, or evaluating what naming a command in `[tui.status_line_command]` actually trusts and costs. |
 | [`cookbook.md`](cookbook.md) — worked examples | What does a real hook look like end to end — spilling bulky output to a file, compaction, a permission guardrail, progressive skill disclosure, a status-line observer? | You learn faster from a worked example than from a contract. Five examples, each labeled implementable-today, partially-implementable, or blocked, with two treated explicitly as the architecture's own acceptance tests. |
+| [`confine.md`](confine.md) — `conway.confine` | What does the `confined_bash` tool confine, and what does it not (reads/network unaffected — writes only)? Which exact OS command does it invoke, and on which OS is that guarantee actually verified in this tree? | You want a shell tool `--root` genuinely confines, not merely a convention `bash` has always been outside of — or you're evaluating whether blanket approval of a confined shell is actually safe. |
 
 ## Start here: a working hook, honestly scoped
 
@@ -65,7 +66,7 @@ full design describes (a persistent connection, `permission.policy/1`,
 `context.hook/1`, `observe/1`, a `plugin` trust subject) is not, and that
 page's own "What's left" section names each gap.
 
-## Eleven shipped first-party plugins
+## Twelve shipped first-party plugins
 
 **The membership rule for this section:** every id
 [`first_party_plugins::bundle()`](../../crates/conway-cli/src/first_party_plugins.rs)
@@ -107,7 +108,7 @@ example, not a commitment to any of its members individually" — the list
 below decides which plugins ship, not what an operator may tune about any
 one of them from outside code.
 
-Eleven capabilities beyond the mechanism itself now ship, each installable
+Twelve capabilities beyond the mechanism itself now ship, each installable
 with a one-line `settings.json` edit and no rebuild:
 
 - [`memory.md`](memory.md) — `conway.memory`, a mutable store the model can
@@ -181,6 +182,13 @@ with a one-line `settings.json` edit and no rebuild:
   `sessions`, `routes`) refuses immediately instead of blocking, and a
   caller (the model, or another plugin) degrades from that refusal rather
   than failing.
+- [`confine.md`](confine.md) — `conway.confine`, `confined_bash`: the SAME
+  `bash -c <command>` `conway.shell`'s own `bash` runs, but launched through
+  this operating system's own containment primitive (`sandbox-exec` on
+  macOS, `bwrap` on Linux), so `--root` refuses a write outside it rather
+  than merely being unable to check the command at all. Reads and network
+  are not confined — writes only. Requires `--root`; a call with none
+  configured refuses outright rather than running unconfined.
 
 ## A status-line command — first-party, but not a `[plugins].install` id either
 

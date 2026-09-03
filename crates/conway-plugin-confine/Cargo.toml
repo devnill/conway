@@ -1,0 +1,46 @@
+[package]
+name = "conway-plugin-confine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin: conway.confine, a bash-equivalent tool whose every command runs inside the operating system's own containment primitive (sandbox-exec on macOS, bwrap on Linux), so a session root is a real write boundary rather than a path-argument convention"
+
+# Versioned WITH the workspace, the same footing every other first-party
+# plugin's own Cargo.toml doc comment establishes (see
+# `conway-plugin-stepguard`'s own comment for the full argument): this
+# crate is a consumer of `conway::plugin`, not a thing granting
+# `conway-core`'s own strict-semver stability promise.
+
+[dependencies]
+# The public facade, `default-features = true` (deliberately, unlike
+# `conway-plugin-subprocess`'s own identical comment on this point): this
+# crate's own `Tool::invoke` delegates to `conway::plugin::BashTool::
+# with_launcher`, which is only reachable when the default-on `builtin-tools`
+# feature pulls `conway-tools` in (see that re-export's own doc,
+# `crates/conway/src/lib.rs`). Everything else this crate touches
+# (`Plugin`, `Tool`, `ToolCtx`, `PathArgs`, `RenderKind`, `PluginDescription`,
+# `FacadeError`) is the identical `conway::plugin` surface every other
+# first-party plugin gets.
+conway = { path = "../conway" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+# `tokio::process::Command` -- the return type of `conway::plugin::Launcher`
+# (`Fn(&str, &Path) -> Command`), which this crate's own `launcher` module
+# builds two instances of (`sandbox_exec_launcher`/`bwrap_launcher`).
+# Already a workspace dependency; not a new one (C-04).
+tokio = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+# Board item 01M0TV8MSFRHHQ5BNZV3NHZCEW: this crate's `tests/` reach
+# `conway::test_support` (the shared `test_builder` wiring), behind the
+# facade's off-by-default `test-support` feature. Dev-only: nothing in
+# `src/` may name it.
+conway = { path = "../conway", features = ["test-support"] }
+conway-core = { path = "../conway-core" }
+conway-testkit = { path = "../conway-testkit" }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

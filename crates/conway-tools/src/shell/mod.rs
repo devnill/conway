@@ -7,7 +7,7 @@ use conway_core::ports::{Plugin, PluginManifest, Tool};
 
 pub mod bash;
 
-pub use bash::BashTool;
+pub use bash::{BashTool, Launcher};
 
 /// The `shell` plugin: `bash`.
 pub struct ShellPlugin {

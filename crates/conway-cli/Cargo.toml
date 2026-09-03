@@ -197,6 +197,16 @@ conway-plugin-names = { path = "../conway-plugin-names" }
 # shape `first_party_plugins::bundle()`'s ten entries use) -- NOT installed
 # via `[plugins].install` at all.
 conway-plugin-statusline = { path = "../conway-plugin-statusline" }
+# Harness gap review 2026-09-01, decision `01M1FQG08GDQ71984T0W0RJ019`:
+# `conway.confine`, a bash-equivalent tool (`confined_bash`) whose every
+# command runs inside this OS's own containment primitive (`sandbox-exec`
+# on macOS, `bwrap` on Linux), so a session `--root` is a real write
+# boundary rather than a path-argument convention `conway.shell`'s own
+# `bash` has always been outside of. Resolved through the SAME
+# `[plugins].install`/`src/first_party_plugins.rs` choke point every other
+# tool-contributing entry above uses; NOT installed by default. See
+# `docs/plugins/confine.md`.
+conway-plugin-confine = { path = "../conway-plugin-confine" }
 clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }

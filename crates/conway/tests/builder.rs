@@ -1214,6 +1214,89 @@ fn bash_selected_without_root_warns_of_nothing() {
     );
 }
 
+/// The root+unconfinable-shell-tool warning's own structural escape hatch
+/// (harness gap review 2026-09-01, decision `01M1FQG08GDQ71984T0W0RJ019`):
+/// a tool that is `PathArgs::Unconfinable` AND `RenderKind::ShellCommand`
+/// (`bash`'s own pair) but ALSO answers `Tool::confined_by_tool() == true`
+/// must NOT earn `WarningCode::RootWithUnconfinableTool` -- it is,
+/// structurally, the remedy the warning's own message now names
+/// ("...or install conway.confine"), not a second instance of the gap.
+/// Never `if manifest.id == "test.confined_echo"` -- the exclusion in
+/// `ConwayBuilder::build` is computed from the SAME three structural facts
+/// on each tool this test's fixture declares.
+#[cfg(all(feature = "builtin-tools", feature = "jsonl-store"))]
+#[test]
+fn a_tool_declaring_confined_by_tool_suppresses_the_root_warning() {
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    struct ConfinedEchoArgs {}
+
+    struct ConfinedEchoTool;
+    #[async_trait::async_trait]
+    impl Tool for ConfinedEchoTool {
+        fn spec(&self) -> conway_core::content::ToolSpec {
+            conway_core::content::ToolSpec {
+                name: ToolName::new("test_confined_echo"),
+                description: "a fixture tool claiming its own containment".to_string(),
+                schema: schemars::schema_for!(ConfinedEchoArgs),
+                category: conway_core::content::ToolCategory::Execute,
+                permission: conway_core::content::PermissionClass::Dangerous,
+            }
+        }
+        async fn invoke(
+            &self,
+            _call: conway_core::content::ToolCall,
+            _ctx: conway_core::ports::ToolCtx,
+        ) -> Result<conway_core::ports::ToolOutput, conway_core::error::ToolError> {
+            unreachable!("not invoked by this test")
+        }
+        fn path_args(&self) -> conway_core::ports::PathArgs {
+            conway_core::ports::PathArgs::Unconfinable { checkable: &[] }
+        }
+        fn render_kind(&self) -> RenderKind {
+            RenderKind::ShellCommand
+        }
+        fn confined_by_tool(&self) -> bool {
+            true
+        }
+    }
+    struct ConfinedEchoPlugin;
+    impl Plugin for ConfinedEchoPlugin {
+        fn manifest(&self) -> PluginManifest {
+            PluginManifest {
+                id: "test.confined_echo".to_string(),
+                version: "0.0.0".to_string(),
+                tools: vec![ToolName::new("test_confined_echo")],
+                required_host_caps: vec![],
+                optional_host_caps: vec![],
+                requires: vec![],
+                optional: vec![],
+            }
+        }
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            vec![Arc::new(ConfinedEchoTool)]
+        }
+    }
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let conway = test_builder_without_router(base_config())
+        .with_backend(fake_backend("fake"))
+        .with_router(empty_router())
+        .with_root(root.path())
+        .with_plugin(Arc::new(ConfinedEchoPlugin))
+        // Default selection: `conway.shell` (the real, unconfined `bash`)
+        // stays OFF, so any warning observed can only come from the
+        // injected fixture tool above, isolating the property under test.
+        .build()
+        .expect("build should succeed with root set and a self-confining tool installed");
+
+    assert!(
+        conway.warnings().is_empty(),
+        "a tool declaring confined_by_tool() == true must not earn the root+unconfinable-shell-\
+         tool warning, got: {:?}",
+        conway.warnings()
+    );
+}
+
 /// A typo in `tools.builtin_plugins` must FAIL THE BUILD, not silently
 /// leave the tool off.
 ///

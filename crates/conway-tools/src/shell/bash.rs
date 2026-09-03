@@ -1,9 +1,13 @@
 //! `BashTool`: the `bash` tool — streamed, cancellable, process-group-killing
 //! command execution (architecture "Module: conway-tools").
 
+use std::path::Path;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tokio::process::Command;
 
 use conway_core::content::{PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy};
 use conway_core::error::ToolError;
@@ -13,6 +17,32 @@ use conway_core::ports::{PathArgs, RenderKind, Tool, ToolCtx, ToolOutput};
 #[cfg(not(unix))]
 use crate::common::error_text;
 use crate::common::{check_cancel, parse_args};
+
+/// Builds the argv this tool spawns and streams, given the shell command
+/// text (verbatim, untouched -- never parsed) and the resolved working
+/// directory. [`BashTool::new`]'s own launcher ([`default_launcher`]) is
+/// `/bin/bash -c <command>`, `current_dir(cwd)`; the run loop
+/// ([`unix::run`]) wires stdin/stdout/stderr and the process group onto
+/// whatever [`Command`] this returns, uniformly, regardless of which
+/// launcher built it.
+///
+/// **Why this seam exists.** `conway-plugin-confine`'s own bash-equivalent
+/// tool needs the IDENTICAL streaming/cancellation/timeout run loop this
+/// module already implements, wrapping the SAME `/bin/bash -c <command>`
+/// invocation in an OS containment primitive (`sandbox-exec` on macOS,
+/// `bwrap` on Linux) rather than running it bare. [`BashTool::with_launcher`]
+/// is the seam that makes that ONE implementation, not a second copy of the
+/// run loop -- see that constructor's own doc.
+pub type Launcher = Arc<dyn Fn(&str, &Path) -> Command + Send + Sync>;
+
+/// The default [`Launcher`]: plain `/bin/bash -c <command>` in `cwd`, no
+/// containment of any kind -- byte-for-byte what this tool did before
+/// [`Launcher`] existed.
+fn default_launcher(command: &str, cwd: &Path) -> Command {
+    let mut cmd = Command::new("/bin/bash");
+    cmd.arg("-c").arg(command).current_dir(cwd);
+    cmd
+}
 
 /// Applied when the caller omits `timeout_ms`.
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -50,13 +80,64 @@ struct BashArgs {
 ///
 /// No sandboxing, no command allow/deny list, no argument sanitization
 /// (process-group setup here is execution plumbing, not a security
-/// boundary; the `PermissionGate` is the control point).
-#[derive(Debug, Default)]
-pub struct BashTool;
+/// boundary; the `PermissionGate` is the control point) -- for [`Self::new`]
+/// specifically. [`Self::with_launcher`] is the seam a caller substitutes a
+/// containment-wrapping [`Launcher`] through instead; see that
+/// constructor's own doc.
+pub struct BashTool {
+    launcher: Launcher,
+}
+
+impl std::fmt::Debug for BashTool {
+    /// `launcher` is an `Arc<dyn Fn>`, which carries no useful `Debug`
+    /// representation -- named but not printed, mirroring how this crate's
+    /// other closure-carrying fields are handled elsewhere.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BashTool")
+            .field("launcher", &"<fn>")
+            .finish()
+    }
+}
 
 impl BashTool {
+    /// Plain, unconfined `bash` -- [`default_launcher`]. Byte-for-byte the
+    /// pre-[`Launcher`] behavior of this tool.
     pub fn new() -> Self {
-        Self
+        Self {
+            launcher: Arc::new(default_launcher),
+        }
+    }
+
+    /// Builds a bash-equivalent tool with the SAME streaming/cancellation/
+    /// timeout run loop [`Self::new`] uses, launched through `launcher`
+    /// instead of a plain `/bin/bash -c`.
+    ///
+    /// **Deliberately does not also let a caller override this tool's own
+    /// name, description, `path_args`, `render_kind`, or
+    /// `confined_by_tool` answer.** Those stay exactly what [`Self::new`]'s
+    /// tool already declares (`"bash"`, `PathArgs::Unconfinable`,
+    /// `RenderKind::ShellCommand`, `confined_by_tool() == false`) --
+    /// correct answers for THIS type regardless of which launcher builds
+    /// its argv, since none of them describe the launcher, they describe
+    /// the tool's OWN call shape (a free-form shell command, checkable only
+    /// via `cwd`). A caller that wants a differently-NAMED, differently-
+    /// DESCRIBED tool whose `confined_by_tool()` answers `true` (the
+    /// structural flag the root+unconfinable-shell-tool warning consults --
+    /// see `Tool::confined_by_tool`'s own doc) constructs its own `Tool`
+    /// wrapping a `BashTool::with_launcher` instance and delegates `invoke`
+    /// to it, exactly as `conway-plugin-confine`'s own `ConfinedBashTool`
+    /// does -- see that crate's module doc for why delegating `invoke`
+    /// alone (not the whole `Tool` impl) is what keeps the run loop a
+    /// single implementation while still letting the two tools answer every
+    /// OTHER `Tool` method independently and honestly.
+    pub fn with_launcher(launcher: Launcher) -> Self {
+        Self { launcher }
+    }
+}
+
+impl Default for BashTool {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -127,7 +208,7 @@ impl Tool for BashTool {
         let args: BashArgs = parse_args(&call)?;
 
         #[cfg(unix)]
-        return unix::run(&call.call_id, args, ctx).await;
+        return unix::run(&call.call_id, args, ctx, self.launcher.clone()).await;
 
         #[cfg(not(unix))]
         {
@@ -158,7 +239,6 @@ mod unix {
     use std::process::{ExitStatus, Stdio};
 
     use tokio::io::{AsyncBufReadExt, BufReader};
-    use tokio::process::Command;
     use tokio::time::{Duration, Instant};
 
     use conway_core::content::ContentBlock;
@@ -168,7 +248,7 @@ mod unix {
 
     use crate::process::unix::kill_group;
 
-    use super::{BashArgs, TRUNCATION};
+    use super::{BashArgs, Launcher, TRUNCATION};
 
     /// How often the run loop wakes up (absent stdout/stderr/exit activity)
     /// to re-check cancellation and the deadline.
@@ -184,17 +264,23 @@ mod unix {
         call_id: &str,
         args: BashArgs,
         ctx: ToolCtx,
+        launcher: Launcher,
     ) -> Result<ToolOutput, ToolError> {
         let cwd = match &args.cwd {
             Some(c) => crate::common::resolve_path(&ctx, c)?,
             None => ctx.cwd.clone(),
         };
 
-        let mut command = Command::new("/bin/bash");
+        // Built by `launcher`, not a hardcoded `Command::new("/bin/bash")`
+        // -- `BashTool::new`'s own default launcher reproduces that
+        // literally; `BashTool::with_launcher` substitutes an alternate
+        // argv (e.g. `conway-plugin-confine`'s `sandbox-exec`/`bwrap`
+        // wrapping of the identical `/bin/bash -c` invocation). Every step
+        // below -- stdio wiring, the process group, streaming, cancellation,
+        // the timeout deadline -- runs identically regardless of which
+        // launcher built this `Command`.
+        let mut command = launcher(&args.command, &cwd);
         command
-            .arg("-c")
-            .arg(&args.command)
-            .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -400,5 +486,55 @@ mod tests {
             let rendered = BashTool::new().render(&bad);
             assert!(rendered.starts_with("bash("), "{rendered:?}");
         }
+    }
+
+    // ---- confined_by_tool / the trait default ----
+
+    /// `BashTool` never overrides `Tool::confined_by_tool` -- it stays the
+    /// trait's own `false` default, regardless of which launcher built it,
+    /// per `with_launcher`'s own doc: the launcher changes HOW the command
+    /// runs, not what this TYPE claims about itself. A tool that wants to
+    /// claim `true` wraps `BashTool::with_launcher` and delegates only
+    /// `invoke` -- see `conway-plugin-confine`'s own `ConfinedBashTool`.
+    #[test]
+    fn confined_by_tool_is_false_regardless_of_launcher() {
+        assert!(!BashTool::new().confined_by_tool());
+        let alt = BashTool::with_launcher(Arc::new(default_launcher));
+        assert!(!alt.confined_by_tool());
+    }
+
+    // ---- with_launcher: the pluggable-launcher seam ----
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn with_launcher_routes_through_the_supplied_launcher_not_the_default() {
+        use conway_core::content::ContentBlock;
+
+        use crate::testing::test_ctx;
+
+        // A launcher that ignores the real command entirely and always
+        // spawns something else -- the discriminating property: if
+        // `with_launcher`'s own launcher were silently ignored (this seam's
+        // own regression), this test would observe the ORIGINAL command's
+        // output instead of this marker.
+        let launcher: Launcher = Arc::new(|_command: &str, cwd: &Path| {
+            let mut cmd = Command::new("/bin/bash");
+            cmd.arg("-c").arg("echo launcher-marker").current_dir(cwd);
+            cmd
+        });
+        let tool = BashTool::with_launcher(launcher);
+        let (ctx, _handles) = test_ctx(std::env::temp_dir());
+        let call = ToolCall {
+            call_id: "tc_launcher".into(),
+            name: ToolName::new("bash"),
+            arguments: serde_json::json!({"command": "echo should-not-run"}),
+        };
+        let out = tool.invoke(call, ctx).await.unwrap();
+        let text = match &out.blocks[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("expected a text block, got {other:?}"),
+        };
+        assert!(text.contains("launcher-marker"), "{text:?}");
+        assert!(!text.contains("should-not-run"), "{text:?}");
     }
 }

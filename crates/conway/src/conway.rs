@@ -1115,6 +1115,33 @@ impl Conway {
             .role
             .unwrap_or_else(|| self.config.default_role.clone());
         let cwd = spec.cwd.unwrap_or_else(|| self.config.cwd.clone());
+        // `config.cwd`'s own default is the literal `.` (`schema::
+        // default_cwd`, deliberately environment-independent -- see
+        // `config::merge::default_document`'s own doc for why it must stay
+        // that way: a real `std::env::current_dir()` baked in there would
+        // reintroduce the exact "default_document and ConwayConfig::
+        // baseline() silently disagree" drift that item eliminated), and
+        // `SessionMeta.cwd` is asserted elsewhere (`crates/conway/tests/
+        // builder.rs`'s `new_session_with_default_spec_resolves_role_and_
+        // cwd_from_config`) to stay exactly `.` for an UNCONFINED session --
+        // so this only absolutizes when `self.root` is actually set. A
+        // relative `cwd` resolves correctly against the process's real
+        // working directory for every OTHER consumer (`std::fs`-backed path
+        // resolution treats a relative path as OS-cwd-relative automatically),
+        // but `CanonicalRoot::contains` (below, via `RootSpec.root`)
+        // deliberately refuses to resolve a relative candidate at all --
+        // `Undecidable`, not `Inside`/`Outside` -- so an un-absolutized
+        // `cwd` here fails root containment even when the agent's real
+        // working directory IS inside `--root`. Absolutize here, once,
+        // right before it becomes `RootSpec.cwd`, only in the one case
+        // where anything downstream actually resolves it against a root.
+        let cwd = if self.root.is_some() && cwd.is_relative() {
+            std::env::current_dir()
+                .map(|base| base.join(&cwd))
+                .unwrap_or(cwd)
+        } else {
+            cwd
+        };
         let budget = spec.budget.unwrap_or_else(|| self.default_budget());
         let agent_def = spec.agent_def.map(AgentDefRef);
 
