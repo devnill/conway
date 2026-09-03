@@ -472,7 +472,13 @@ pub(crate) const BASELINE_ROLE_NAME: &str = "default";
 /// The built-in, lowest-precedence layer, as raw JSON --
 /// `serde_json::to_value(ConwayConfig::baseline())`, nothing more. There is
 /// exactly one place a section's default value is stated: its own `impl
-/// Default` in `schema.rs`. This function used to be a second one -- a
+/// Default` in `schema.rs`. In particular, `["limits"]["max_steps"]` here is
+/// whatever `LimitsConfig::default().max_steps` says (currently `0`,
+/// unlimited) -- NOT `conway_core::agent::Budget::default().max_steps`
+/// (`40`), a deliberately different third site for the same-named field;
+/// see `LimitsConfig`'s own doc and `Budget`'s own doc for why a root
+/// session's default and a bare subagent's default disagree on purpose.
+/// This function used to be a second one -- a
 /// hand-maintained `serde_json::json!` literal, required to name the exact
 /// same values `schema.rs` already named, with nothing enforcing that it
 /// did. It drifted more than once (`LimitsConfig`'s `max_tool_calls` and

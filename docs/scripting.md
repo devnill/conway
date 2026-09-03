@@ -80,7 +80,7 @@ entry point.
 | 1 | AgentFailed | The catch-all: a `Failed` terminal status whose cause is not a routing rejection, a `Rejected` or `Cancelled`-without-SIGINT status, or a `FacadeError::Io`/`Backend`/`Store` (or any other unclassified) error. |
 | 2 | Usage | A malformed or conflicting flag, an empty/unreadable prompt, an unknown `--session`/`--resume` id, a malformed `--model`/`--fork-from` reference, or any `FacadeError::Config`/`AgentDef`/`Build`/`UnsupportedFeature`. |
 | 4 | NoHealthyBackend | Routing could not supply any model for the turn: the role is unknown (e.g. `--role-override` naming a role the config does not define), no candidate in the role's chain was admissible (an unregistered `backend/model` pair, a health-open breaker, every fallback entry exhausted against a live backend), or the assembled context exceeds every candidate's window (`RoutingError::ContextTooLarge` — no truncation or escalation is performed). |
-| 5 | BudgetExceeded | The root agent's turn finished with `ResultStatus::BudgetExceeded` (e.g. `limits.max_steps` reached). |
+| 5 | BudgetExceeded | The root agent's turn finished with `ResultStatus::BudgetExceeded` (e.g. `limits.max_steps` reached). The `limit` string names which dimension tripped AND its scope — a `-p`/scripted run is never a keep-alive session, so `limit` here always reads `"max_steps=40 (this session)"` (the whole run); a keep-alive interactive session (the TUI) instead reads `"…(this turn)"` (per user turn) — see `json`'s `steps_taken`/`steps_this_turn` fields, immediately below, for the two counters that scope distinguishes. |
 | 130 | Interrupted | A SIGINT was observed (once, or twice for an immediate hard exit) and the run's terminal status is `Cancelled`. |
 
 Code 3 is unassigned. There is no permission-denied exit code, and that is
@@ -146,9 +146,12 @@ $ conway -p "reply with exactly the word pong and nothing else" --output-format 
     "cache_write_tokens": 0,
     "reasoning_tokens": 0
   },
-  "steps_taken": 4
+  "steps_taken": 4,
+  "steps_this_turn": 4
 }
 ```
+
+**Two step counters, two scopes.** `steps_taken` is session-lifetime — never reset, so it keeps growing across every turn of a keep-alive session. `steps_this_turn` is scoped to the current user turn — reset to `0` at each keep-alive turn boundary, and therefore equal to `steps_taken` for an ordinary (non-keep-alive) run like the one above, where there is only ever one "turn" to speak of. The two diverge only for a keep-alive session that has already completed at least one prior turn: `steps_taken` keeps the whole run's total, `steps_this_turn` resets for the new turn. This is also what a `BudgetExceeded` `limit` string's `(this turn)`/`(this session)` suffix (see the exit-code table above) is telling you which of these two counts it gated on. `steps_this_turn` decodes as `0` from any session log written before this field existed.
 
 **Two fields here are id-shaped, and only one of them is a session handle.**
 `transcript_ref` is what `--session`, `--resume`, and `--fork-from` (see

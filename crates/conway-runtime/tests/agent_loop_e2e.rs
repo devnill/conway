@@ -1028,8 +1028,26 @@ async fn budget_max_steps_exceeded_after_exactly_two_turns() {
     );
 
     let result = harness.agent_loop.run().await;
-    assert!(matches!(result.status, ResultStatus::BudgetExceeded { .. }));
+    match &result.status {
+        ResultStatus::BudgetExceeded { limit } => {
+            // Non-`keep_alive`: the trip is labelled session-scoped, never
+            // turn-scoped -- board item `01M1FS8R09PGF9HHV95B7A6RMH`. Before
+            // that item, `limit` was the bare `"max_steps=2"`, with no scope
+            // word at all.
+            assert_eq!(limit, "max_steps=2 (this session)");
+        }
+        other => panic!("expected BudgetExceeded, got {other:?}"),
+    }
     assert_eq!(backend.calls().len(), 2, "exactly two turns must have run");
+    // Non-`keep_alive`: `steps_this_turn` tracks `steps_taken` in lockstep
+    // (never reset), so the two agree here -- unlike a `keep_alive` agent's
+    // trip mid-turn, where `steps_taken` (session-lifetime) legitimately
+    // exceeds `steps_this_turn` (this-turn only). See
+    // `crates/conway/tests/keep_alive.rs`'s
+    // `keep_alive_max_steps_trip_labels_the_limit_this_turn_and_reports_both_step_counts`
+    // for that divergent case.
+    assert_eq!(result.steps_taken, 2);
+    assert_eq!(result.steps_this_turn, 2);
 }
 
 #[tokio::test]
@@ -1156,7 +1174,12 @@ async fn budget_max_tool_calls_exceeded_stops_the_loop() {
     let result = harness.agent_loop.run().await;
     match &result.status {
         ResultStatus::BudgetExceeded { limit } => {
-            assert_eq!(limit, "max_tool_calls=2", "the tripped dimension is named");
+            // Non-`keep_alive`: session-scoped, same as `max_steps` -- board
+            // item `01M1FS8R09PGF9HHV95B7A6RMH`.
+            assert_eq!(
+                limit, "max_tool_calls=2 (this session)",
+                "the tripped dimension is named and scoped"
+            );
         }
         other => panic!("expected BudgetExceeded, got {other:?}"),
     }

@@ -208,6 +208,32 @@ warning) — you see exactly what the model was told, not a summary of it.
 No note is ever sent for a window whose size conway does not actually
 know; the harness says nothing rather than guess.
 
+### When the root session itself ends
+
+The interactive TUI's root session is always **keep-alive**: it survives an
+unbounded number of prompts, so nothing else in the transcript tells you
+when it stops responding for good (cancel, a deadline, or a budget dimension
+tripping) — it would otherwise look exactly like a hang. When that happens,
+a `session ended: …` notice appears, naming the terminal reason. For a
+budget trip it names both step counters, each labelled with the scope it
+counts:
+
+```
+session ended: budget exceeded (max_steps=40 (this turn); steps_taken=81
+(this session), steps_this_turn=40 (this turn))
+```
+
+Read literally: this session's WHOLE lifetime (`steps_taken`, every turn
+since it started) reached 81 steps, but the `max_steps=40` ceiling that
+actually tripped is scoped to the CURRENT user turn alone
+(`steps_this_turn`, reset at every turn boundary) — which had itself just
+reached 40. Before both counters were labelled this way, the notice showed
+only the bare limit next to a step count that silently meant something
+different, and looked like the ceiling had failed to hold when it had not.
+`max_tool_calls` is labelled the same way; `max_tokens` and `deadline` are
+always session-lifetime (there is no per-turn counterpart for either), so
+neither carries a scope suffix.
+
 Tool calls appear inline in the transcript as they're proposed, run, and
 finish, each tagged with its state (`proposed`, `awaiting permission`,
 `running`, `done`, `failed`). A settled tool call's output is folded to its first few

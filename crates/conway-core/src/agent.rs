@@ -129,7 +129,38 @@ pub struct AgentResult {
     /// source open will actually look.
     pub transcript_ref: SessionId,
     pub usage: Usage,
+    /// Steps since the agent's whole life began -- session-lifetime, never
+    /// reset. For a `keep_alive` agent this keeps accruing across every
+    /// user turn, so it is NOT the count [`ResultStatus::BudgetExceeded`]'s
+    /// `max_steps`/`max_tool_calls` dimensions gate such an agent on -- see
+    /// `steps_this_turn`, immediately below, for that number, and see
+    /// `BudgetExceeded`'s own doc for why the two can legitimately disagree
+    /// by a wide margin without the limit having failed to hold.
     pub steps_taken: u32,
+    /// Steps since the last keep-alive user-turn boundary --
+    /// `conway_runtime::agent_loop::LoopState::turn_steps` at the moment
+    /// this result was built. Equal to `steps_taken` for a non-`keep_alive`
+    /// agent (that counter is never reset for one, so the two stay in
+    /// lockstep for its entire life); strictly smaller than `steps_taken`
+    /// for a `keep_alive` agent once it has completed at least one prior
+    /// user turn, since only this field resets to `0` at each such
+    /// boundary.
+    ///
+    /// This is the number `AgentLoop::check_budget` actually gates
+    /// `Budget::max_steps`/`max_tool_calls` on for a `keep_alive` agent, so
+    /// it is what a renderer should show alongside
+    /// `ResultStatus::BudgetExceeded`'s `max_steps=N (this turn)`/`(this
+    /// session)` label. Board item `01M1FS8R09PGF9HHV95B7A6RMH` added this
+    /// field for exactly that: a real session ended `budget_exceeded
+    /// max_steps=40` with `steps_taken 81` and nothing said the two numbers
+    /// counted different things, reading as though the limit had failed to
+    /// hold.
+    ///
+    /// `#[serde(default)]` so a session log written before this field
+    /// existed still decodes -- as `0`, the honest answer for a result that
+    /// predates this counter.
+    #[serde(default)]
+    pub steps_this_turn: u32,
 }
 
 impl AgentResult {
@@ -154,6 +185,7 @@ impl AgentResult {
             transcript_ref,
             usage: Usage::default(),
             steps_taken: 0,
+            steps_this_turn: 0,
         }
     }
 
@@ -185,6 +217,21 @@ pub enum ResultStatus {
         reason: String,
     },
     /// The agent hit its [`Budget`] before finishing.
+    ///
+    /// `limit` is a `dimension=value` string (e.g. `max_tokens=4000`,
+    /// `deadline=2026-01-01T00:00:00Z`). For the two dimensions a
+    /// `keep_alive` agent gates on a per-turn counter instead of a
+    /// session-lifetime one (`max_steps`, `max_tool_calls` --
+    /// `conway_runtime::agent_loop::AgentLoop::check_budget`'s own doc), the
+    /// string is suffixed `" (this turn)"` or `" (this session)"` so it
+    /// reads correctly next to `AgentResult::steps_taken` (always
+    /// session-lifetime) and `AgentResult::steps_this_turn` (turn-scoped
+    /// for `keep_alive`, equal to `steps_taken` otherwise) -- e.g.
+    /// `max_steps=40 (this turn)` beside `steps_taken: 81,
+    /// steps_this_turn: 40`. Board item `01M1FS8R09PGF9HHV95B7A6RMH`: a
+    /// real session reported `budget_exceeded max_steps=40` with
+    /// `steps_taken 81` and no label distinguishing the two, reading as
+    /// though the limit had failed to hold when it had not.
     BudgetExceeded {
         limit: String,
     },
@@ -207,6 +254,29 @@ pub struct Fact {
 /// A hard resource ceiling on a subagent's run. `max_steps` is deliberately
 /// not optional: §6.4 requires every child to have a step budget so a
 /// parent's pending tool call can never hang.
+///
+/// ## `Default::max_steps` is `40` here, `0` (unlimited) for a config-loaded
+/// root session -- three sites, deliberately disagreeing
+///
+/// This `Budget::default()` is one of three places a `max_steps` default is
+/// stated: this `impl Default`, `conway::config::schema::LimitsConfig`'s
+/// `impl Default` (`0`), and `conway::config::merge::default_document`
+/// (also `0`, and mechanically derived from `LimitsConfig::default()` --
+/// not a fourth independent value). The two `0`s are one source, not two
+/// that happen to agree.
+///
+/// The disagreement between this `40` and that `0` is intentional, not
+/// drift: `LimitsConfig`'s own doc comment records the reasoning in full
+/// (an interactive root session is watched by the human running it, who can
+/// read the transcript and interrupt, so an arbitrary fixed ceiling can
+/// only be wrong; a step ceiling earns its keep on a subagent, which no one
+/// is watching). This `40` is the floor a subagent gets when nothing
+/// (config or caller) names a budget of its own -- see
+/// `Conway::default_budget`, which maps a config `0` in the other three
+/// `[limits]` dimensions to `None` (unlimited) but passes `max_steps`
+/// through as a hard `u32`, so a `0` here would mean "no subagent step
+/// ceiling exists unless every caller remembers to set one" -- the opposite
+/// of §6.4's guarantee.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Budget {
     pub max_steps: u32,
@@ -218,6 +288,9 @@ pub struct Budget {
 impl Default for Budget {
     fn default() -> Self {
         Self {
+            // See this struct's own doc for why this deliberately does NOT
+            // match `LimitsConfig::default().max_steps` /
+            // `default_document()["limits"]["max_steps"]` (both `0`).
             max_steps: 40,
             deadline: None,
             max_tokens: None,

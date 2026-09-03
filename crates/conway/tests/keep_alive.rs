@@ -678,6 +678,125 @@ async fn keep_alive_single_turn_runaway_tool_loop_still_hits_max_steps() {
     );
 }
 
+/// Board item `01M1FS8R09PGF9HHV95B7A6RMH`: the fix for a real session that
+/// ended `budget_exceeded max_steps=40` with `steps_taken 81` and nothing
+/// saying the two numbers counted different things. Two ordinary turns run
+/// to completion first (2 steps each, `NORMAL_TURNS * 2 = 4` steps accrued
+/// session-lifetime), THEN a third turn's tool loop never completes
+/// naturally and trips `max_steps=3` on ITS OWN step count alone --
+/// reproducing the shape of the real incident (`steps_taken` far exceeding
+/// the `max_steps` that tripped) at a scale a test can assert on exactly.
+///
+/// **Shown to fail first (P-15):** before this item, `ResultStatus::
+/// BudgetExceeded { limit }` was the bare `"max_steps=3"` (no scope word at
+/// all) and `AgentResult` had no `steps_this_turn` field, so this test does
+/// not even compile against the unfixed tree -- the strongest possible
+/// "observed failing first".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keep_alive_max_steps_trip_labels_the_limit_this_turn_and_reports_both_step_counts() {
+    const NORMAL_TURNS: usize = 2;
+
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let mut script = Vec::new();
+    for i in 1..=NORMAL_TURNS {
+        script.push(ScriptedTurn::Respond(tool_call_response(
+            &format!("tc_{i}"),
+            "probe",
+            serde_json::json!({}),
+        )));
+        script.push(ScriptedTurn::Respond(text_response(&format!(
+            "turn-{i}-response"
+        ))));
+    }
+    // The third, final prompt: a runaway tool loop that never completes
+    // naturally. Only 3 of these are ever reached if the per-turn budget
+    // trips where it should (max_steps=3); the rest exist only so an
+    // unfixed/regressed loop that keeps going has script entries to consume
+    // instead of panicking on exhaustion.
+    for i in 1..=5 {
+        script.push(ScriptedTurn::Respond(tool_call_response(
+            &format!("runaway_{i}"),
+            "probe",
+            serde_json::json!({}),
+        )));
+    }
+    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
+    let conway = test_builder(base_config())
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_plugin(Arc::new(FixtureToolsPlugin))
+        .build()
+        .expect("build should succeed with every port injected");
+
+    let spec = SessionSpec {
+        keep_alive: true,
+        budget: Some(Budget {
+            max_steps: 3,
+            deadline: None,
+            max_tokens: None,
+            max_tool_calls: None,
+        }),
+        ..SessionSpec::default()
+    };
+    let handle = conway
+        .new_session(spec)
+        .await
+        .expect("new_session should succeed");
+    tokio::time::sleep(SETTLE).await;
+
+    let mut events = handle.events();
+    for i in 1..=NORMAL_TURNS {
+        let _turn = handle
+            .prompt(format!("turn {i} text"))
+            .await
+            .unwrap_or_else(|_| panic!("prompt for turn {i} should succeed"));
+        let text = tokio::time::timeout(
+            Duration::from_secs(5),
+            drain_n_turn_finished(&mut events, 2),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("turn {i} must not hang"));
+        assert_eq!(text, format!("turn-{i}-response"));
+    }
+
+    let _turn = handle
+        .prompt("go wild")
+        .await
+        .expect("third prompt should succeed");
+    let result = tokio::time::timeout(Duration::from_secs(5), next_agent_finished(&mut events))
+        .await
+        .expect("the runaway third turn must still hit max_steps and terminate")
+        .expect("the event stream must yield AgentFinished before ending");
+
+    match &result.status {
+        ResultStatus::BudgetExceeded { limit } => {
+            assert_eq!(
+                limit, "max_steps=3 (this turn)",
+                "a keep_alive trip must be labelled turn-scoped, not session-scoped"
+            );
+        }
+        other => panic!("expected BudgetExceeded, got {other:?}"),
+    }
+    assert_eq!(
+        result.steps_this_turn, 3,
+        "the THIRD turn's own runaway loop must have taken exactly max_steps=3 steps of ITS \
+         OWN before tripping"
+    );
+    assert_eq!(
+        result.steps_taken,
+        (NORMAL_TURNS as u32) * 2 + 3,
+        "steps_taken is session-lifetime: {NORMAL_TURNS} prior turns * 2 steps each, plus this \
+         turn's own 3 steps"
+    );
+    assert!(
+        result.steps_taken > result.steps_this_turn,
+        "session-lifetime steps_taken ({}) must exceed this-turn steps_this_turn ({}) -- proving \
+         the two numbers count different things, exactly the real incident this item fixes",
+        result.steps_taken,
+        result.steps_this_turn
+    );
+}
+
 // ---------------------------------------------------------------------
 // Significant fix: the terminal `AgentResult` reflects the LAST turn, not
 // whole-session-accumulated `report`/tool-artifact history.
