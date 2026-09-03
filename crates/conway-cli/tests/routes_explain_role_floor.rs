@@ -62,6 +62,14 @@ fn unknown_role_error_lists_only_operator_declared_roles() {
     // own config. `--config` sets only the project layer; the user layer is
     // separate and is what `CONWAY_CONFIG_DIR` relocates.
     let isolated = tempfile::tempdir().expect("isolated config dir");
+    // Silence the unrelated no-plugins-installed notice: this isolated
+    // user-config dir has no settings.json at all, which would otherwise
+    // trip it and pollute the stderr this test asserts against.
+    std::fs::write(
+        isolated.path().join("settings.json"),
+        r#"{"plugins": {"install": []}}"#,
+    )
+    .expect("write settings.json");
     let output = Command::new(assert_cmd::cargo::cargo_bin("conway"))
         .current_dir(dir.path())
         .env("CONWAY_CONFIG_DIR", isolated.path())

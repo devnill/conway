@@ -320,10 +320,15 @@ above):
 ```
 
 That is exactly what a fresh first-run leaves you with — see "Your first
-session" for what each one is. Remove any single entry with `conway plugin
-remove <id>` (subcommand tracked on the board) or by deleting its line from
-the array above and saving the file — dropping `"conway.history"`, for
-example, turns `/conway.history.rewind` back off with no other change.
+session" for what each one is. List the whole table (on or off, every
+compiled-in candidate, with a one-line summary) with `conway plugin list`;
+turn any of them on or off with `conway plugin install <id>`/`conway plugin
+remove <id>`, or by editing the array above by hand and saving the file —
+dropping `"conway.history"`, for example, turns `/conway.history.rewind`
+back off with no other change. `conway plugin install --defaults` installs
+exactly the six ids above in one step, the same set guided first-run setup
+installs unprompted. See [`docs/scripting.md`](scripting.md#conway-plugin)
+for the full `list`/`install`/`remove` reference.
 
 `conway.plugin_skeleton` is the tier's own worked example
 (`crates/conway-plugin-skeleton`): it registers one `skeleton_ping` tool

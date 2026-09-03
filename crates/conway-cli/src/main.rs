@@ -459,6 +459,16 @@ async fn dispatch(
         Some(Command::Tools(args)) => {
             commands::tools::run(args, &conway, cli.root.as_deref()).await
         }
+        // Board item `01M1FSDRF20E2EGHCG3RK28DKH`: `conway plugin
+        // list|install|remove`, a BUILT-IN clap subcommand matched here
+        // before `Command::External`'s own catch-all ever sees the word
+        // `plugin` -- see `commands::plugin`'s own module doc, section 2,
+        // for the full surface. `memory_store` is moved (not cloned): this
+        // arm is mutually exclusive with every other one below, so there is
+        // no second destination competing for it in the same dispatch.
+        Some(Command::Plugin(args)) => {
+            commands::plugin::run_admin(args, &conway, memory_store, env).await
+        }
         // **Disclosed reconciliation, out of this arm's own owning
         // item's paths but unavoidable and unclaimed:** dispatching
         // `Command::External` -- the plugin-contributed-subcommand half of

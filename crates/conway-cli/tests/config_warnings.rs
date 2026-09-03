@@ -171,6 +171,16 @@ fn a_healthy_headroom_prints_no_warning() {
         serde_json::to_vec(&value).expect("serialize fixture config"),
     )
     .expect("rewrite fixture config");
+    // Silence the unrelated no-plugins-installed notice this fixture would
+    // otherwise also trip, since this test asserts NO warning at all --
+    // the notice reads the USER-scope settings.json (`CONWAY_CONFIG_DIR`,
+    // pointed at this same fixture dir by `command()`), a different file
+    // from `fixture.config_path` (the project `conway.json`).
+    std::fs::write(
+        fixture.dir.path().join("settings.json"),
+        r#"{"plugins": {"install": []}}"#,
+    )
+    .expect("write settings.json");
 
     let out = command(&["sessions", "list"], &fixture)
         .output()

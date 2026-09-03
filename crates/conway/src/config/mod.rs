@@ -24,8 +24,8 @@ pub use merge::{
 pub use model_metadata::ModelMetadata;
 pub use schema::ConwayConfig;
 pub use writer::{
-    ensure_default_role, set_backend_provider, set_builtin_plugins, set_claude_compat_entry,
-    set_default_role, set_plugin_installed, set_role_chain,
+    ensure_default_role, plugin_install_key_present, set_backend_provider, set_builtin_plugins,
+    set_claude_compat_entry, set_default_role, set_plugin_installed, set_role_chain,
 };
 
 /// The result of [`load`]: the validated config plus any non-fatal
@@ -153,6 +153,22 @@ pub enum WarningCode {
     /// hardcoded tool-name check -- see `ConwayBuilder::build`'s own
     /// comment at this warning's call site.
     RootWithUnconfinableTool,
+    /// The user-scope settings document (`crate::config::discovery::
+    /// user_config_path`'s own file -- `~/.conway/settings.json`, or
+    /// `$CONWAY_CONFIG_DIR/settings.json` when set) names no `plugins.
+    /// install` key AT ALL: not an empty array, genuinely absent (see
+    /// [`crate::config::plugin_install_key_present`]'s own doc for why
+    /// that distinction matters and how it is checked). Board item
+    /// `01M1FSDRF20E2EGHCG3RK28DKH`: an existing operator's settings can
+    /// predate this binary's own opinion about which first-party plugins
+    /// to run by default -- this tells them, once, rather than leaving
+    /// them to discover it by reading a changelog. NOT produced by
+    /// `config::load` (this checks one raw document `load`'s own five-
+    /// source merge never singles out) -- raised by `conway-cli`'s own
+    /// `first_party_plugins::install`, on the same "raised in conway-cli,
+    /// before `ConwayBuilder::build`, via `ConwayBuilder::with_warning`"
+    /// footing [`Self::McpServerFailed`] already documents.
+    NoFirstPartyPluginsInstalled,
 }
 
 #[cfg(test)]

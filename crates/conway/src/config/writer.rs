@@ -204,6 +204,71 @@ pub fn set_plugin_installed(path: &Path, plugin_id: &str, installed: bool) -> Re
     Ok(true)
 }
 
+/// Whether the JSON document at `path` names a `plugins.install` key AT
+/// ALL -- `Ok(true)` even when the array is empty (`"install": []`, an
+/// explicit "keep none" this deliberately treats the same as non-empty:
+/// PRESENCE, not content, is the question), `Ok(false)` when `plugins`, or
+/// `install` within it, is missing entirely, or the file itself does not
+/// exist.
+///
+/// Board item `01M1FSDRF20E2EGHCG3RK28DKH`'s own read half of a startup
+/// notice: an ABSENT key means this document predates conway's own opinion
+/// about which first-party plugins to run at all; an EMPTY array means an
+/// operator already made (and recorded) the "none" decision. The two must
+/// not collapse to the same answer, which is exactly why this reads the
+/// raw document with the same targeted scanner [`set_plugin_installed`]
+/// already uses, rather than `ConwayConfig::plugins.install.is_empty()` --
+/// that merged, five-source value cannot distinguish "absent here, present
+/// at a lower layer" from "explicitly empty here", and this question is
+/// specifically about the one document `/plugin`'s own writer (and
+/// `set_plugin_installed` above) targets, not the effective config.
+///
+/// A missing file answers `Ok(false)` -- there being no document at all is
+/// the most literal case of "does not name this key", mirroring
+/// [`set_plugin_installed`]'s own "nothing to remove" shape for a file that
+/// does not exist. A file that fails to parse as JSON, or has a `plugins`
+/// member that is not an object, also answers `Ok(false)` rather than
+/// erroring: by the time this is ever called, the SAME file has already
+/// been loaded successfully by `config::load` (this exists to answer a
+/// narrower question about a document already known to parse), so either
+/// case would mean the file changed out from under the process between
+/// those two reads -- not a race this read-only helper needs to fail a
+/// build over.
+pub fn plugin_install_key_present(path: &Path) -> Result<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(FacadeError::Io(e)),
+    };
+    if text.trim().is_empty() {
+        return Ok(false);
+    }
+    if serde_json::from_str::<serde_json::Value>(&text).is_err() {
+        return Ok(false);
+    }
+    let bytes = text.as_bytes();
+    let root_open = skip_ws(bytes, 0);
+    if bytes.get(root_open) != Some(&b'{') {
+        return Ok(false);
+    }
+    let Ok((root_members, _)) = scan_object_members(&text, root_open) else {
+        return Ok(false);
+    };
+    // LAST match, mirroring `patch_install_array`'s own "duplicate key,
+    // last wins" reasoning -- an earlier `"plugins"` block that a later one
+    // shadows is not the block `serde_json`/`config::load` actually see.
+    let Some(plugins_member) = root_members.iter().rev().find(|m| m.key == "plugins") else {
+        return Ok(false);
+    };
+    if bytes.get(plugins_member.value_start) != Some(&b'{') {
+        return Ok(false);
+    }
+    let Ok((plugins_members, _)) = scan_object_members(&text, plugins_member.value_start) else {
+        return Ok(false);
+    };
+    Ok(plugins_members.iter().rev().any(|m| m.key == "install"))
+}
+
 /// Create `path`'s parent directories if needed, then write `contents`
 /// durably: to a sibling `path.json.tmp` first, then `rename` over `path`.
 /// `rename` replaces the target as a single filesystem operation on every
@@ -2138,6 +2203,80 @@ mod tests {
         let path = dir.join("settings.json");
         set_plugin_installed(&path, "conway.memory", true).expect("write");
         assert!(path.exists());
+    }
+
+    // ---- `plugin_install_key_present`: board item
+    // `01M1FSDRF20E2EGHCG3RK28DKH`'s own read half. ----
+
+    #[test]
+    fn a_missing_file_has_no_install_key() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        assert!(!path.exists());
+        assert!(!plugin_install_key_present(&path).expect("check"));
+    }
+
+    #[test]
+    fn a_document_with_no_plugins_section_at_all_has_no_install_key() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"default_role": "default"}"#).expect("write");
+        assert!(!plugin_install_key_present(&path).expect("check"));
+    }
+
+    #[test]
+    fn a_plugins_section_with_no_install_member_has_no_install_key() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"plugins": {"claude_compat": []}}"#).expect("write");
+        assert!(!plugin_install_key_present(&path).expect("check"));
+    }
+
+    /// PRESENCE, not content -- an explicitly empty array is still a
+    /// PRESENT key. This is the exact distinction the startup notice this
+    /// function backs depends on: an absent key predates conway's own
+    /// opinion, an empty array is a recorded "none" decision, and the two
+    /// must never read the same.
+    #[test]
+    fn an_explicit_empty_install_array_counts_as_present() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"plugins": {"install": []}}"#).expect("write");
+        assert!(plugin_install_key_present(&path).expect("check"));
+    }
+
+    #[test]
+    fn a_populated_install_array_counts_as_present() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"plugins": {"install": ["conway.memory"]}}"#).expect("write");
+        assert!(plugin_install_key_present(&path).expect("check"));
+    }
+
+    /// The exact document [`set_plugin_installed`] itself writes for a
+    /// fresh file must read back as present -- the two functions must
+    /// never disagree about what "present" means for the file they share.
+    #[test]
+    fn round_trips_with_set_plugin_installed_own_fresh_document() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        set_plugin_installed(&path, "conway.memory", true).expect("write");
+        assert!(plugin_install_key_present(&path).expect("check"));
+    }
+
+    /// LAST match wins, mirroring `patch_install_array`'s own duplicate-key
+    /// reasoning -- a hand-edited file with two `"plugins"` blocks is
+    /// judged by the one `serde_json`/`config::load` actually see.
+    #[test]
+    fn a_duplicate_plugins_key_is_judged_by_the_last_one() {
+        let dir = tempfile_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"plugins": {"install": ["a"]}, "other": 1, "plugins": {"claude_compat": []}}"#,
+        )
+        .expect("write");
+        assert!(!plugin_install_key_present(&path).expect("check"));
     }
 
     // ---- `set_claude_compat_entry`: the array-of-OBJECTS writer (board

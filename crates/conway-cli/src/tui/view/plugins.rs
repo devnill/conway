@@ -3,6 +3,19 @@
 //! can run today, in one place, each row naming where it came from and
 //! honestly stating what it can contribute.
 //!
+//! **The row model itself -- `PluginRow`/`PluginOrigin`/`PluginToggle`, and
+//! every `rows_from_*` builder -- lives in [`crate::plugin_rows`] now**
+//! (board item `01M1FSDRF20E2EGHCG3RK28DKH`, `conway plugin list`): that
+//! module holds no ratatui dependency at all, so `commands::plugin`'s
+//! headless `list`/`install`/`remove` can call the identical builders this
+//! file renders, with no TUI type anywhere on its own call stack. What
+//! stays HERE is everything that genuinely needs ratatui -- `build_tree`,
+//! `plugin_row_node`, `selected_plugin_row`, `draw`, `draw_plugin_detail`,
+//! `modal_rect` -- plus [`group_rows_by_origin`], which is pure but has no
+//! reason to live anywhere else since only this file's own `build_tree`
+//! calls it. See [`crate::plugin_rows`]'s own module doc for the full "why
+//! this seam, not some other one" reasoning.
+//!
 //! ## The gap this closes
 //!
 //! Before this item, the only plugin listing in the TUI was `/settings`'
@@ -48,8 +61,9 @@
 //! fixed list of expected labels), and print it. The one thing that DOES
 //! vary by kind -- whether a row is toggleable -- is carried explicitly on
 //! the row itself ([`PluginRow::toggle`]), decided once when the row is
-//! BUILT (by [`rows_from_plugin_browser`]/[`rows_from_subprocess`]/
-//! [`rows_from_mcp`]), not by the renderer branching on origin later.
+//! BUILT (by `crate::plugin_rows::rows_from_plugin_browser`/
+//! `rows_from_subprocess`/`rows_from_mcp`), not by the renderer branching
+//! on origin later.
 //!
 //! **What the Claude-compat item (a separate, later board item) has to do
 //! to register its kind into this listing:** write one `rows_from_*`
@@ -113,309 +127,8 @@ use ratatui::Frame;
 use super::menu::{self, MenuNode, MenuState};
 use super::modal;
 use super::theme::Theme;
-use crate::tui::state::{
-    AppState, ClaudeCompatPluginEntry, ConfiguredPluginEntry, PluginBrowserEntry,
-};
-
-/// An open set of plugin sources -- see this module's own doc, "The row
-/// model", for why this is a label wrapper rather than a closed enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct PluginOrigin(&'static str);
-
-impl PluginOrigin {
-    /// `first_party_plugins::all_bundle_plugins` -- compiled into this
-    /// binary, selected via `[plugins].install`.
-    pub(crate) const COMPILED_IN: PluginOrigin = PluginOrigin("compiled-in");
-    /// `[plugins].subprocess[]` -- an operator-named command speaking
-    /// conway's own wire protocol.
-    pub(crate) const SUBPROCESS: PluginOrigin = PluginOrigin("subprocess");
-    /// `[plugins].mcp[]` -- an operator-named command speaking MCP
-    /// (JSON-RPC 2.0) as a client.
-    pub(crate) const MCP: PluginOrigin = PluginOrigin("mcp");
-    /// `[plugins].claude_compat[]` -- a Claude Code plugin directory read
-    /// off disk and translated (board item `01M0VR89FB1F3Q4FQ8852K2A5E`).
-    /// The fourth source this module's own doc anticipated: one new
-    /// `rows_from_*` fn ([`rows_from_claude_compat`]) plus this one new
-    /// const, and one new call in [`all_plugin_rows`] -- nothing else in
-    /// this module changed to add it.
-    pub(crate) const CLAUDE_COMPAT: PluginOrigin = PluginOrigin("claude-compat");
-
-    pub(crate) fn label(self) -> &'static str {
-        self.0
-    }
-}
-
-/// Whether a [`PluginRow`] responds to `Enter` at all, and if not, why --
-/// acceptance 6: whatever cannot be toggled says so visibly rather than
-/// silently offering nothing.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum PluginToggle {
-    /// A compiled-in plugin's own `[plugins].install` membership --
-    /// `installed` is the CURRENT state, mirroring [`PluginBrowserEntry::
-    /// installed`].
-    Toggleable { installed: bool },
-    /// No control exists here for this row -- `reason` is shown on the row
-    /// itself, not just in the detail panel, so the absence of a control is
-    /// visible without having to select the row first.
-    ReadOnly { reason: &'static str },
-}
-
-/// One row of the `/plugin` listing: `(identity, origin, what it can
-/// contribute, is it active)` -- see this module's own doc, "The row
-/// model", for why `origin` is an open set and `contributes` is honest
-/// per-kind rather than padded to look uniform.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PluginRow {
-    pub(crate) id: String,
-    pub(crate) origin: PluginOrigin,
-    /// A one-line, honest statement of what this plugin contributes --
-    /// verbatim for a compiled-in plugin's own `PluginDescription::summary`
-    /// (curated by that plugin's own author), or the closed wire
-    /// vocabulary its transport bridges for kinds 2/3 (see this module's
-    /// own doc for the exact citations).
-    pub(crate) contributes: String,
-    /// Whether this plugin is currently running in this process. Always
-    /// `true` for subprocess/MCP (installed unconditionally, no candidate
-    /// set); mirrors [`PluginBrowserEntry::installed`] for compiled-in.
-    pub(crate) active: bool,
-    pub(crate) toggle: PluginToggle,
-    /// The full "you get"/"you lose"/"costs" breakdown, when one exists --
-    /// only a compiled-in plugin carries a real [`conway::plugin::
-    /// PluginDescription`] to show one from; `None` for subprocess/MCP
-    /// rows, whose [`Self::contributes`] is already the whole story.
-    pub(crate) description: Option<conway::plugin::PluginDescription>,
-}
-
-const READ_ONLY_SUBPROCESS_REASON: &str =
-    "installed unconditionally from [plugins].subprocess in settings.json -- \
-     no per-entry control here; edit settings.json to remove it";
-const READ_ONLY_MCP_REASON: &str = "installed unconditionally from [plugins].mcp in settings.json \
-     -- no per-entry control here; edit settings.json to remove it";
-/// Board item `01M0VR89FB1F3Q4FQ8852K2A5E`: a claude-compat directory is
-/// re-read fresh every startup (read-at-runtime, never written to config)
-/// -- there is nothing here TO toggle, the same "no candidate set" shape
-/// `READ_ONLY_SUBPROCESS_REASON`/`READ_ONLY_MCP_REASON` already state, for
-/// the same reason.
-const READ_ONLY_CLAUDE_COMPAT_REASON: &str =
-    "read-at-runtime from a directory named in [plugins].claude_compat in settings.json -- \
-     no per-entry control here; run `/plugin uninstall <id>` (or edit settings.json directly) \
-     to remove it";
-
-/// Subprocess wire vocabulary, cited from `conway_plugin_subprocess::
-/// wire`'s own `initialize` point list (`crates/conway-plugin-subprocess/
-/// src/wire.rs`): `tool/1`, `permission.policy/1`, `observe/1`,
-/// `status.declare/1`. Stated as a compile-time constant, not discovered by
-/// spawning the entry -- this listing never spawns anything (out of
-/// scope).
-const SUBPROCESS_CONTRIBUTES: &str =
-    "tools, permission policy, observation, status (the wire points a subprocess plugin may bridge)";
-
-/// MCP bridges tools only -- `conway_plugin_mcp::McpPlugin`'s `Plugin` impl
-/// has exactly one non-manifest method, `tools()`; no `commands`,
-/// `permission_evaluator`, or hook override.
-const MCP_CONTRIBUTES: &str = "tools only";
-
-fn rows_from_plugin_browser(entries: &[PluginBrowserEntry]) -> Vec<PluginRow> {
-    entries
-        .iter()
-        .map(|entry| PluginRow {
-            id: entry.id.clone(),
-            origin: PluginOrigin::COMPILED_IN,
-            contributes: non_empty_or(&entry.description.summary, "(no description)").to_string(),
-            active: entry.installed,
-            toggle: PluginToggle::Toggleable {
-                installed: entry.installed,
-            },
-            description: Some(entry.description.clone()),
-        })
-        .collect()
-}
-
-fn rows_from_subprocess(entries: &[ConfiguredPluginEntry]) -> Vec<PluginRow> {
-    entries
-        .iter()
-        .map(|entry| PluginRow {
-            id: entry.id.clone(),
-            origin: PluginOrigin::SUBPROCESS,
-            contributes: SUBPROCESS_CONTRIBUTES.to_string(),
-            active: true,
-            toggle: PluginToggle::ReadOnly {
-                reason: READ_ONLY_SUBPROCESS_REASON,
-            },
-            description: None,
-        })
-        .collect()
-}
-
-fn rows_from_mcp(entries: &[ConfiguredPluginEntry]) -> Vec<PluginRow> {
-    entries
-        .iter()
-        .map(|entry| PluginRow {
-            id: entry.id.clone(),
-            origin: PluginOrigin::MCP,
-            contributes: MCP_CONTRIBUTES.to_string(),
-            active: true,
-            toggle: PluginToggle::ReadOnly {
-                reason: READ_ONLY_MCP_REASON,
-            },
-            description: None,
-        })
-        .collect()
-}
-
-/// Board item `01M0VR89FB1F3Q4FQ8852K2A5E`: the fourth source, exactly as
-/// this module's own doc anticipated -- one `rows_from_*` fn, no match arm,
-/// no renderer edit.
-///
-/// **Acceptance 5's naming lives ON THE ROW itself, not in
-/// [`PluginRow::description`].** A claude-compat row is
-/// [`PluginToggle::ReadOnly`], and `plugin_row_node`'s own doc already
-/// establishes that a `ReadOnly` row is rendered [`menu::MenuNode::
-/// Static`], which [`MenuState::selected_index`][sel] can never land the
-/// cursor on -- so its detail panel is UNREACHABLE today (the exact
-/// "forward declaration" `draw_plugin_detail`'s own `ReadOnly` arm already
-/// documents for `reason`). Putting the full unsupported-items list only
-/// there would be exactly the "claims to be reached but isn't" failure
-/// GP-14 forbids, one layer down. So [`Self::contributes`] -- via
-/// [`plugin_row_node`], which prints it verbatim on the row -- names every
-/// unmapped hook event and every unsupported item directly, bounded by
-/// [`MAX_NAMED_ITEMS`] with an honest "+N more" tail rather than silently
-/// truncating past a terminal's own width with no indication anything was
-/// cut. `description` is still populated (the same richer breakdown a
-/// compiled-in row's detail panel shows) so this row is ready the moment a
-/// future item makes `ReadOnly` rows selectable -- not because it is
-/// reachable now.
-///
-/// [sel]: super::menu::MenuState::selected_index
-fn rows_from_claude_compat(entries: &[ClaudeCompatPluginEntry]) -> Vec<PluginRow> {
-    entries
-        .iter()
-        .map(|entry| {
-            let total_hooks = entry.mapped_hook_count + entry.unmapped_hook_names.len();
-            let mut contributes = format!(
-                "{} mcp server(s) translated (tools only)",
-                entry.mcp_server_count
-            );
-            if total_hooks > 0 {
-                // Board item `01M0XRD8VMWD273W0W51T8ECCM`: this used to say
-                // "(not wired)" -- true when written, false since board item
-                // `01M0XBZNBPXEESX8VNTJDKNG0J` made every mapped hook a
-                // real, dispatchable `[hooks].rules[]` entry and never
-                // touched this row. Stale in the UNDERSTATING direction,
-                // about a permission boundary -- the more dangerous one
-                // (this item's own spec). Now says it dispatches, and
-                // distinguishes deny-capable (`entry.deny_capable_hook_count`,
-                // `conway::DENY_CAPABLE_EVENTS`) from observation-only --
-                // acceptance 4.
-                let observation_only_hooks =
-                    entry.mapped_hook_count - entry.deny_capable_hook_count;
-                contributes.push_str(&format!(
-                    "; hooks {}/{} mapped and dispatching ({} deny-capable, {} observation-only)",
-                    entry.mapped_hook_count,
-                    total_hooks,
-                    entry.deny_capable_hook_count,
-                    observation_only_hooks
-                ));
-            }
-            if !entry.unmapped_hook_names.is_empty() {
-                contributes.push_str(&format!(
-                    "; unmapped hooks: {}",
-                    bounded_name_list(&entry.unmapped_hook_names)
-                ));
-            }
-            if !entry.unsupported_names.is_empty() {
-                contributes.push_str(&format!(
-                    "; not imported: {}",
-                    bounded_name_list(&entry.unsupported_names)
-                ));
-            }
-            let you_get = if entry.mcp_server_count == 0 {
-                "no .mcp.json server declarations found -- nothing translated".to_string()
-            } else {
-                format!(
-                    "{} mcp server(s) translated into real, running plugins (tools only)",
-                    entry.mcp_server_count
-                )
-            };
-            let you_lose =
-                if entry.unmapped_hook_names.is_empty() && entry.unsupported_names.is_empty() {
-                    "nothing else found in this directory".to_string()
-                } else {
-                    let mut parts = Vec::new();
-                    if !entry.unmapped_hook_names.is_empty() {
-                        parts.push(format!(
-                            "hook event(s) with no conway counterpart: {}",
-                            entry.unmapped_hook_names.join(", ")
-                        ));
-                    }
-                    if !entry.unsupported_names.is_empty() {
-                        parts.push(format!(
-                            "not imported: {}",
-                            entry.unsupported_names.join(", ")
-                        ));
-                    }
-                    parts.join("; ")
-                };
-            let costs = format!(
-                "everything under {} runs/reads with your own privileges, unsandboxed \
-                 (same trust footing as [plugins].mcp/[plugins].subprocess)",
-                entry.source_dir.display()
-            );
-            PluginRow {
-                id: entry.id.clone(),
-                origin: PluginOrigin::CLAUDE_COMPAT,
-                contributes,
-                active: true,
-                toggle: PluginToggle::ReadOnly {
-                    reason: READ_ONLY_CLAUDE_COMPAT_REASON,
-                },
-                description: Some(conway::plugin::PluginDescription {
-                    summary: format!(
-                        "Claude Code plugin directory: {}",
-                        entry.source_dir.display()
-                    ),
-                    you_get,
-                    you_lose,
-                    costs,
-                }),
-            }
-        })
-        .collect()
-}
-
-/// The most names [`rows_from_claude_compat`] prints verbatim on a row
-/// before falling back to a "+N more" tail -- see that function's own doc
-/// for why the full list must be reachable on the row rather than deferred
-/// to an unreachable detail panel. 4 is small enough that an ordinary
-/// plugin directory's own unsupported list fits without a tail at all,
-/// while still bounding a pathological directory (hundreds of `commands/
-/// *.md` files) to one line.
-const MAX_NAMED_ITEMS: usize = 4;
-
-fn bounded_name_list(names: &[String]) -> String {
-    if names.len() <= MAX_NAMED_ITEMS {
-        names.join(", ")
-    } else {
-        format!(
-            "{}, +{} more",
-            names[..MAX_NAMED_ITEMS].join(", "),
-            names.len() - MAX_NAMED_ITEMS
-        )
-    }
-}
-
-/// Every plugin this binary can run today, from every source -- **the one
-/// place a future source registers itself** (see this module's own doc,
-/// "The row model", for exactly what the Claude-compat item does here: one
-/// new `rows_from_*` fn, one new call, nothing else).
-pub(crate) fn all_plugin_rows(state: &AppState) -> Vec<PluginRow> {
-    let mut rows = Vec::new();
-    rows.extend(rows_from_plugin_browser(&state.plugin_browser));
-    rows.extend(rows_from_subprocess(&state.subprocess_plugins));
-    rows.extend(rows_from_mcp(&state.mcp_plugins));
-    rows.extend(rows_from_claude_compat(&state.claude_compat_plugins));
-    rows
-}
+use crate::plugin_rows::{all_plugin_rows, non_empty_or, PluginOrigin, PluginRow, PluginToggle};
+use crate::tui::state::AppState;
 
 /// Groups `rows` by [`PluginRow::origin`], in the FIRST-SEEN order of
 /// origins in `rows` itself (so a caller that orders [`all_plugin_rows`]'s
@@ -424,6 +137,20 @@ pub(crate) fn all_plugin_rows(state: &AppState) -> Vec<PluginRow> {
 /// exactly the thing this module's whole design exists to avoid (see this
 /// module's own doc). Within a group, rows keep [`all_plugin_rows`]'s own
 /// order (already per-source, e.g. `plugin_browser`'s sort order).
+/// Adapts [`crate::plugin_rows::all_plugin_rows`]'s four-slice signature to
+/// this module's own `&AppState` call sites -- the one place `AppState`'s
+/// four plugin-source fields are unpacked into that pure function's own
+/// parameters, so every caller below stays a one-line `rows_for(state)`
+/// rather than repeating the four-field destructure at each of them.
+fn rows_for(state: &AppState) -> Vec<PluginRow> {
+    all_plugin_rows(
+        &state.plugin_browser,
+        &state.subprocess_plugins,
+        &state.mcp_plugins,
+        &state.claude_compat_plugins,
+    )
+}
+
 fn group_rows_by_origin(rows: &[PluginRow]) -> Vec<(PluginOrigin, Vec<&PluginRow>)> {
     let mut groups: Vec<(PluginOrigin, Vec<&PluginRow>)> = Vec::new();
     for row in rows {
@@ -452,7 +179,7 @@ pub(crate) const LEAF_TOGGLE_PLUGIN_PREFIX: &str = "toggle_plugin:";
 /// tree's own navigation as simple as the old settings plugin section's
 /// was.
 pub(crate) fn build_tree(state: &AppState) -> MenuState {
-    let rows = all_plugin_rows(state);
+    let rows = rows_for(state);
     let mut nodes = Vec::new();
     for (origin, members) in group_rows_by_origin(&rows) {
         nodes.push(MenuNode::static_row(format!(
@@ -579,14 +306,6 @@ fn draw_plugin_detail(frame: &mut Frame, area: Rect, row: &PluginRow, theme: &Th
     frame.render_widget(paragraph, inner);
 }
 
-fn non_empty_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
-    if value.is_empty() {
-        fallback
-    } else {
-        value
-    }
-}
-
 const FOOTER_ROWS: u16 = 3;
 /// The `/plugin` listing's own cap denominator.
 ///
@@ -637,7 +356,7 @@ const TOGGLE_NOTE: &str = "compiled-in toggles: Enter, written to disk, applied 
 pub(crate) fn modal_rect(state: &AppState, transcript_area: Rect) -> Rect {
     let tree = build_tree(state);
     let content_rows = tree.rows().len().min(u16::MAX as usize) as u16;
-    let rows = all_plugin_rows(state);
+    let rows = rows_for(state);
     let detail_rows = if selected_plugin_row(&tree, &rows).is_some() {
         DETAIL_ROWS
     } else {
@@ -657,7 +376,7 @@ pub(crate) fn modal_rect(state: &AppState, transcript_area: Rect) -> Rect {
 pub fn draw(frame: &mut Frame, transcript_area: Rect, state: &AppState, theme: &Theme) {
     let tree = build_tree(state);
 
-    let rows = all_plugin_rows(state);
+    let rows = rows_for(state);
     let detail_row = selected_plugin_row(&tree, &rows);
     let detail_rows = if detail_row.is_some() { DETAIL_ROWS } else { 0 };
     // `modal_rect` re-derives the SAME `Rect` from the SAME tree/detail
@@ -705,6 +424,8 @@ mod tests {
     use conway::AgentId;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    use crate::tui::state::{ConfiguredPluginEntry, PluginBrowserEntry};
 
     fn render(state: &AppState, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
@@ -968,7 +689,7 @@ mod tests {
             vec!["commands/review.md", "skills/triage"],
         )];
 
-        let raw_rows = all_plugin_rows(&state);
+        let raw_rows = rows_for(&state);
         let raw = raw_rows
             .iter()
             .find(|r| r.id == "acme-tools")
@@ -1018,7 +739,7 @@ mod tests {
             vec![],
         )];
 
-        let raw_rows = all_plugin_rows(&state);
+        let raw_rows = rows_for(&state);
         let raw = raw_rows
             .iter()
             .find(|r| r.id == "acme-tools")
@@ -1046,7 +767,7 @@ mod tests {
     }
 
     /// A pathological directory (more unsupported items than
-    /// [`MAX_NAMED_ITEMS`]) still names the first few AND says how many
+    /// `crate::plugin_rows`'s own `MAX_NAMED_ITEMS`) still names the first few AND says how many
     /// more there are -- never a silent, unbounded row nor a bare count
     /// with no names at all.
     #[test]
@@ -1058,7 +779,7 @@ mod tests {
             vec![],
             vec!["a.md", "b.md", "c.md", "d.md", "e.md", "f.md"],
         )];
-        let rows = all_plugin_rows(&state);
+        let rows = rows_for(&state);
         let row = rows.iter().find(|r| r.id == "acme-tools").unwrap();
         assert!(row.contributes.contains("a.md"), "{}", row.contributes);
         assert!(

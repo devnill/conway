@@ -879,7 +879,60 @@ pub async fn install(
         form_surface,
     );
     let builder = builder.install_selected(plugins, router_bundle(), backend_bundle())?;
+    let builder = warn_if_no_plugin_opinion(builder, env);
     Ok((builder, memory_store, agent_names))
+}
+
+/// Board item `01M1FSDRF20E2EGHCG3RK28DKH`: the startup notice for a config
+/// that predates conway's own opinion about which first-party plugins to
+/// run. Pushed HERE -- [`install`]'s own single choke point, run by every
+/// dispatch target `main.rs::build_conway` builds (TUI, one-shot `-p`,
+/// `sessions`, `routes`, `tools`, `plugin`) -- via [`ConwayBuilder::
+/// with_warning`], on the identical footing `WarningCode::McpServerFailed`
+/// already documents (raised in `conway-cli`, before `build()`, never by
+/// `config::load` itself).
+///
+/// **Reads the user-scope settings DOCUMENT, not the merged config.**
+/// [`conway::config::plugin_install_key_present`] answers "does
+/// `~/.conway/settings.json` (or `$CONWAY_CONFIG_DIR/settings.json`) name a
+/// `plugins.install` key AT ALL" -- deliberately not `builder.config().
+/// plugins.install.is_empty()`, which cannot distinguish "this document
+/// never mentioned it" from "a project layer, or this same document,
+/// explicitly set it to `[]`" (that helper's own doc has the full
+/// argument). Called by THIS name, at THIS point, so the check runs after
+/// any guided first-run setup already ran (`main.rs::build_conway`'s own
+/// call order: guided setup, then `first_party_plugins::install`) -- a
+/// fresh operator who just accepted the guided opinion set has that exact
+/// key written to that exact file moments earlier, so this reads back
+/// `Ok(true)` and stays silent, with no separate "did guided setup just
+/// run" flag needed at all.
+///
+/// A missing home directory (`user_config_path` returns `None`) or an
+/// unreadable document (`plugin_install_key_present`'s own doc: treated as
+/// `Ok(false)`, defensively, never observed in practice since `config::
+/// load` already parsed this same file moments earlier) both fall through
+/// to "warn" rather than silently skip -- the honest default when this
+/// function cannot positively confirm an opinion was already recorded.
+fn warn_if_no_plugin_opinion(
+    builder: ConwayBuilder,
+    env: &HashMap<String, String>,
+) -> ConwayBuilder {
+    let Some(path) = conway::config::discovery::user_config_path(env) else {
+        return builder;
+    };
+    let present = conway::config::plugin_install_key_present(&path).unwrap_or(false);
+    if present {
+        return builder;
+    }
+    let ids = DEFAULT_OPINION_SET.join(", ");
+    builder.with_warning(conway::config::ConfigWarning {
+        code: conway::config::WarningCode::NoFirstPartyPluginsInstalled,
+        message: format!(
+            "no first-party plugins are installed; the conway binary's default set is {ids} -- \
+             run `conway plugin install --defaults`, or set plugins.install to [] to keep none \
+             and silence this"
+        ),
+    })
 }
 
 /// The subset of `bundle` actually selected by `conway`'s own

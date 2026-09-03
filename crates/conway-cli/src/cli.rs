@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
+use crate::commands::plugin::PluginArgs;
 use crate::commands::routes::RoutesArgs;
 use crate::commands::sessions::SessionsArgs;
 use crate::commands::tools::ToolsArgs;
@@ -214,6 +215,16 @@ pub enum Command {
     /// List every tool this process has registered -- the vocabulary
     /// `--allowed-tools`/`--deny-tools` accepts, self-described headlessly.
     Tools(ToolsArgs),
+    /// `conway plugin list|install|remove` (board item
+    /// `01M1FSDRF20E2EGHCG3RK28DKH`): the headless half of the interactive
+    /// `/plugin` command -- the same compiled-in-plugin table, and the
+    /// same `~/.conway/settings.json` writer, reachable from a script or a
+    /// terminal with no TUI in sight. A BUILT-IN clap subcommand, unlike
+    /// every plugin-contributed one below: `plugin` is matched here,
+    /// before `External`'s own catch-all ever sees it, exactly like
+    /// `sessions`/`routes`/`tools` above. See `commands::plugin`'s own
+    /// module doc for the `list`/`install`/`remove` surface itself.
+    Plugin(PluginArgs),
     /// Anything that is not one of the built-in subcommands above falls
     /// through here instead of failing to parse -- clap's own
     /// `external_subcommand` idiom (the same shape `cargo` uses to dispatch
