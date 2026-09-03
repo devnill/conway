@@ -60,7 +60,12 @@ async fn list_with_no_install_key_shows_every_bundle_member_off() {
 
     // A handful of known first-party ids, each present and off -- proves
     // this is the real bundle, not an empty or stubbed listing.
-    for id in ["conway.memory", "conway.history", "conway.idiom", "conway.confine"] {
+    for id in [
+        "conway.memory",
+        "conway.history",
+        "conway.idiom",
+        "conway.confine",
+    ] {
         assert!(
             stdout.contains(&format!("[ ] {id} ")),
             "expected an off row for {id}, got stdout:\n{stdout}"
@@ -175,6 +180,52 @@ async fn remove_takes_out_only_the_named_id() {
         assert!(
             installed.iter().any(|installed_id| installed_id == id),
             "{id} must survive the removal of a DIFFERENT id: {installed:?}"
+        );
+    }
+}
+
+/// `remove` validates ids the same way `install`/`list` do -- a typo or an
+/// unknown id must never print a success-shaped "was not installed" that
+/// an operator could mistake for confirmation a REAL, misspelled id is
+/// gone. Review finding on this item's own diff: `remove` originally had
+/// no such check at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_unknown_id_exits_usage_and_names_a_known_id() {
+    let mock = MockBackend::start(Script(vec![])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    command(&["plugin", "install", "--defaults"], &fixture)
+        .output()
+        .expect("run conway binary");
+
+    let out = command(&["plugin", "remove", "conway.nope"], &fixture)
+        .output()
+        .expect("run conway binary");
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("conway.nope"), "{stderr}");
+    assert!(
+        stderr.contains("conway.memory"),
+        "expected at least one known id named in the error: {stderr}"
+    );
+
+    // BREAK-THE-GUARD: nothing was disturbed for the unknown id -- every
+    // default id installed above is still installed.
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(settings_path(&fixture)).expect("read settings.json"),
+    )
+    .expect("settings.json must be valid JSON");
+    let installed: Vec<String> = settings["plugins"]["install"]
+        .as_array()
+        .expect("plugins.install must be an array")
+        .iter()
+        .map(|v| v.as_str().expect("id must be a string").to_string())
+        .collect();
+    for id in DEFAULT_IDS {
+        assert!(
+            installed.iter().any(|installed_id| installed_id == id),
+            "{id} must be untouched by a refused unknown-id remove: {installed:?}"
         );
     }
 }

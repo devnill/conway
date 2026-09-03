@@ -377,7 +377,7 @@ pub async fn run_admin(
         PluginAction::Install { ids, defaults } => {
             install(conway, memory_store, env, ids, *defaults)
         }
-        PluginAction::Remove { ids } => remove(env, ids),
+        PluginAction::Remove { ids } => remove(conway, memory_store, env, ids),
     }
 }
 
@@ -522,10 +522,29 @@ fn install(
     Ok(ExitCode::Completed)
 }
 
-fn remove(env: &HashMap<String, String>, ids: &[String]) -> conway::Result<ExitCode> {
+fn remove(
+    conway: &Conway,
+    memory_store: Arc<dyn MemoryStore>,
+    env: &HashMap<String, String>,
+    ids: &[String],
+) -> conway::Result<ExitCode> {
     if ids.is_empty() {
         diag::error("conway plugin remove: name at least one <id>");
         return Ok(ExitCode::Usage);
+    }
+
+    // Same validation `install`/`list` already do (this module's own doc
+    // says "an id this binary does not link is a usage error" for the
+    // whole surface): without it, an unknown or mistyped id here is a
+    // silent, exit-0 no-op ("was not installed") indistinguishable from
+    // successfully removing an id that was, in fact, never installed --
+    // an operator who typos a real id could believe it's gone.
+    let entries = browser_entries(conway, memory_store, env);
+    for id in ids {
+        if !entries.iter().any(|e| &e.id == id) {
+            diag::error(unknown_id_message(id, &entries));
+            return Ok(ExitCode::Usage);
+        }
     }
 
     let Some(path) = conway::config::discovery::user_config_path(env) else {
