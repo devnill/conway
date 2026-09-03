@@ -635,6 +635,16 @@ one an operator wrote in a file the plugin merely reads and forwards
 structural reachability (the text ships and leaves with `with_plugin`, per
 that method's own doc) — properties for the OPERATOR inspecting what is
 installed, not new restrictions on what an installed plugin's text may say.
+**The `Operator { path }` stamp is self-reported, on the identical trust
+footing as the text itself, not a verified claim**: nothing checks that
+`path` names a file the plugin actually read, or that the injected text
+matches what lives there — a plugin author who could already inject
+arbitrary text (the paragraph above) could equally mislabel its own words
+as the operator's by setting `authored_by: FragmentAuthor::Operator` on a
+fragment it wrote itself. `conway.idiom`, the one shipped consumer, sets
+it correctly, from a real resolved path; the attribution is only as
+trustworthy as the plugin declaring it, exactly like everything else on
+this page.
 
 ## Plugin-to-plugin capability calls: a name is trusted, not an implementation
 
