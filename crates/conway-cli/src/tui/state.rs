@@ -608,6 +608,21 @@ pub struct AppState {
     /// instead of opening the answer modal over a question nobody is
     /// waiting on any more. Cleared alongside `ask_in_flight`/`ask_child`.
     pub ask_abandoned: bool,
+    /// The set of agents the OPERATOR (not the model) currently has an
+    /// `/await` outstanding on -- one waiter per agent from this surface
+    /// (`commands::execute`'s `SlashCommand::Await` arm refuses a second
+    /// `/await` on an agent already in this set, rather than queueing or
+    /// silently replacing the first waiter). Populated the moment `/await`
+    /// is accepted (the same submit-time stamping `ask_in_flight`'s own doc
+    /// describes for `/ask`), removed once the spawned wait task's result
+    /// arrives (`App`'s own `await_rx.recv()` arm, mirroring `plugin_cmd_rx`'s
+    /// shape -- see `app/await_cmd.rs`'s module doc). Deliberately NOT
+    /// `Mode`-scoped and NOT keyed to `focused_agent`: an `/await` outlives
+    /// whatever the operator focuses next, so its completion notice must
+    /// still land in the transcript regardless of what is on screen when it
+    /// arrives -- this set exists only to refuse a duplicate `/await`, never
+    /// to gate whether/where the notice is shown.
+    pub awaiting_agents: HashSet<AgentId>,
     /// The shared modal body-scroll offset (V1; originated as the
     /// permission-overlay-only `permission_scroll`, bug fix
     ///: "no way to see the entire command" for a
@@ -1153,6 +1168,7 @@ impl AppState {
             ask_child: None,
             ask_started_at: None,
             ask_abandoned: false,
+            awaiting_agents: HashSet::new(),
             modal_scroll: 0,
             pending_intent_confirm: None,
             pending_trust_preview: None,

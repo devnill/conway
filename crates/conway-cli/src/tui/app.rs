@@ -44,6 +44,7 @@ use crate::tui::state::{AppState, Entry};
 use crate::tui::view::Theme;
 
 mod ask;
+mod await_cmd;
 mod defaults;
 mod focus;
 mod marketplace;
@@ -105,6 +106,12 @@ pub struct App {
     /// criterion.
     plugin_cmd_tx: mpsc::UnboundedSender<PluginCommandDone>,
     plugin_cmd_rx: Option<mpsc::UnboundedReceiver<PluginCommandDone>>,
+    /// `/await <agent>` (INTENT.md §7a): mirrors `plugin_cmd_tx`/
+    /// `plugin_cmd_rx` exactly, same reasoning -- see `app/await_cmd.rs`'s
+    /// own module doc for why this is its OWN dedicated channel rather than
+    /// a variant folded into `modal_ask_tx`/`modal_ask_rx`.
+    await_tx: mpsc::UnboundedSender<await_cmd::AwaitDone>,
+    await_rx: Option<mpsc::UnboundedReceiver<await_cmd::AwaitDone>>,
     /// Board item `01M11XWB4T8ZADNDB4M8R482MA`: mirrors `plugin_cmd_tx`/
     /// `plugin_cmd_rx` exactly, same reasoning, for the providers section's
     /// own background classification -- see `provider_status.rs`'s own
@@ -391,6 +398,18 @@ impl App {
                         // `Self::spawn_modal_ask`'s.
                         Effect::RunModalAsk { question } => {
                             self.spawn_modal_ask(question);
+                        }
+                        // `execute`'s `SlashCommand::Await` arm has already
+                        // validated, recorded `agent` in `state.
+                        // awaiting_agents`, and posted the immediate
+                        // "awaiting..." notice -- THIS is where the actual
+                        // `tokio::spawn` runs, mirroring `RunModalAsk`'s own
+                        // arm exactly (only `App` owns the live
+                        // `SessionHandle`/`await_tx` this needs). See
+                        // `Effect::RunAwait`'s own doc and `Self::
+                        // spawn_await`'s.
+                        Effect::RunAwait { agent } => {
+                            self.spawn_await(agent);
                         }
                         // Board item `01M0WB5W5DX844HSJQG3JP23X0`: `execute`
                         // cannot reach `App::apply_marketplace_install`
