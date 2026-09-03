@@ -458,15 +458,78 @@ per-call parameter of any kind to carry a result-contract override on
 "no facade parameter" restriction `--system-prompt`/the budget flags have
 with BOTH `--resume` and `--fork-from`.
 
+## `conway plugin`
+
+`conway plugin list|install|remove` is the headless equivalent of the
+interactive `/plugin` command (see [`interactive.md`](interactive.md#the-plugin-command))
+— the same table, and the same file, reachable from a script or a
+terminal with no TUI in sight.
+
+`conway plugin list` prints one row per compiled-in first-party plugin this
+binary links, `[x]`/`[ ]` for whether it's currently in `plugins.install`,
+its id, and a one-line summary:
+
+```console
+$ conway plugin list
+[ ] conway.plugin_skeleton -- a worked example proving the plugin install mechanism
+[x] conway.history -- rewind, mask, and check out session history
+[x] conway.memory -- notes that survive a restart
+...
+```
+
+`--verbose` prints the full "you get / you lose / costs" breakdown for
+every row instead of the one-line summary; `conway plugin list <id>`
+prints that breakdown for exactly one id (a usage error, exit 2, naming
+every id this binary links, if `<id>` isn't one of them).
+
+`conway plugin install <id>...` turns one or more ids on;
+`conway plugin install --defaults` installs conway's own six-id default
+opinion set in one step (the same set guided first-run setup installs
+unprompted the moment it verifies a working provider — see
+[`getting-started.md`](getting-started.md#installing-a-first-party-plugin)).
+`conway plugin remove <id>...` turns one or more ids off. Both write
+`plugins.install` in `~/.conway/settings.json` (or
+`$CONWAY_CONFIG_DIR/settings.json` when that's set) — the SAME file, and
+the SAME writer, the interactive `/plugin` command's own toggle uses.
+**There is no project-scope (`.conway/settings.json`) target for this
+command** — it writes exactly the user-scope file `/plugin` writes,
+nothing else. Like every `/plugin` toggle, a write here applies on your
+*next* restart, never to the invocation that made it. Naming an id this
+binary does not link is a usage error (exit 2) naming every id it does.
+
+`conway plugin` with no subcommand prints help and exits 2.
+
+| Code | When |
+| --- | --- |
+| 0 | `list`/`install`/`remove` completed (including a no-op: an id already installed, or already absent). |
+| 2 | No subcommand given; `install`/`remove` named zero ids and no `--defaults`; an id this binary does not link. |
+
+**The startup notice.** A settings document that has never named
+`plugins.install` at all (the key is absent — an explicit `"install": []`
+is a recorded "none" decision and stays silent) predates conway's own
+opinion about which first-party plugins to run. Every dispatch target
+prints one warning about it, once, naming the exact remedy:
+
+```
+conway: warning: no first-party plugins are installed; the conway binary's default set is \
+conway.idiom, conway.stepguard, conway.skills, conway.memory, conway.names, conway.history -- \
+run `conway plugin install --defaults`, or set plugins.install to [] to keep none and silence this
+```
+
+Run `conway plugin install --defaults`, or set `plugins.install` to `[]`
+by hand (or via `conway plugin install`/`remove` on any single id, which
+records SOME opinion either way), to silence it.
+
 ## Plugin-contributed subcommands
 
 A plugin can add a slash command to the interactive TUI (see
 [`docs/plugins/authoring.md`](plugins/authoring.md)) — and, as of this
 release, the same declared command is also reachable as a subcommand on the
 `conway` binary itself, with no separate registration: anything typed that
-is not a built-in subcommand (`sessions`, `routes`) is resolved against
-every installed plugin's own commands, namespaced `<plugin-id>.<command-name>`
-— the identical scheme the TUI's `/`-prefixed dispatch already uses.
+is not a built-in subcommand (`sessions`, `routes`, `tools`, `plugin`) is
+resolved against every installed plugin's own commands, namespaced
+`<plugin-id>.<command-name>` — the identical scheme the TUI's `/`-prefixed
+dispatch already uses.
 
 ```console
 $ conway conway.history.rewind 12

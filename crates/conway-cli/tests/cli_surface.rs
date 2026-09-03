@@ -39,12 +39,27 @@ fn bin() -> Command {
 /// Writes `MINIMAL_CONFIG` into a fresh temp dir and returns (the dir, the
 /// config path) -- the dir must stay alive for the whole test (it also
 /// backs `session.root`/`agents.dir`'s relative defaults).
+///
+/// Also writes an explicit `{"plugins": {"install": []}}` `settings.json`
+/// alongside it -- this same directory doubles as `CONWAY_CONFIG_DIR` at
+/// every call site below, so absent this, board item
+/// `01M1FSDRF20E2EGHCG3RK28DKH`'s own startup notice ("no first-party
+/// plugins are installed...") would fire on stderr for every test in this
+/// file, which is unrelated noise this suite's own fixture should not
+/// carry. An explicit empty array is the documented way to silence it
+/// (`conway::config::plugin_install_key_present`'s own doc), and is
+/// honest here: this fixture never installs a plugin on purpose.
 fn minimal_config_dir() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("conway.json");
     let mut f = std::fs::File::create(&path).expect("create conway.json");
     f.write_all(MINIMAL_CONFIG.as_bytes())
         .expect("write conway.json");
+    std::fs::write(
+        dir.path().join("settings.json"),
+        r#"{"plugins": {"install": []}}"#,
+    )
+    .expect("write settings.json");
     (dir, path)
 }
 

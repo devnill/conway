@@ -27,6 +27,7 @@ pub mod first_run;
 pub mod mcp_plugins;
 mod model_pin;
 pub mod oneshot;
+mod plugin_rows;
 pub mod render;
 pub mod session_names;
 pub mod session_ref;

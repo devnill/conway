@@ -1078,9 +1078,9 @@ pub fn apply_confine_choice(settings_path: &Path, enabled: bool) -> Result<(), S
 /// one row per `(id, summary)` in `rows` (`first_party_plugins::
 /// opinion_set_summaries`'s own return shape), followed by exactly ONE
 /// removal sentence naming both routes an operator has to undo any single
-/// entry -- a `conway plugin remove <id>` subcommand (tracked on the board,
-/// not yet landed -- see this function's own inline note) and hand-editing
-/// `plugins.install` in `settings_path` directly.
+/// entry -- `conway plugin remove <id>` (board item
+/// `01M1FSDRF20E2EGHCG3RK28DKH`, `commands::plugin::PluginAction::Remove`)
+/// and hand-editing `plugins.install` in `settings_path` directly.
 ///
 /// A pure string formatter, printed verbatim by [`offer_opinion_set_and_
 /// shell`] -- mirrors [`context_window_setup_notice`]'s own "format as a
@@ -1094,15 +1094,9 @@ fn opinion_set_transcript(rows: &[(&str, String)], settings_path: &Path) -> Stri
     for (id, summary) in rows {
         out.push_str(&format!("  {id:<16} {summary}\n"));
     }
-    // "(subcommand tracked on the board)": `conway plugin remove <id>`
-    // itself is a sibling board item's own scope, not this one's -- see
-    // this module's own WHAT NOT TO BUILD. Drop the parenthetical the day
-    // that subcommand ships; nothing here re-derives its presence
-    // automatically, so this is a plain, deliberate literal to revisit by
-    // hand.
     out.push_str(&format!(
-        "Remove any of these with `conway plugin remove <id>` (subcommand tracked on the \
-         board) or by deleting its line from plugins.install in {}.\n",
+        "Remove any of these with `conway plugin remove <id>` or by deleting its line from \
+         plugins.install in {}.\n",
         settings_path.display()
     ));
     out

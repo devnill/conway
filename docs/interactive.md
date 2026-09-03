@@ -572,6 +572,12 @@ before this command existed, `/settings`' own plugins section showed only
 compiled-in plugins, so a configured MCP server had no listing anywhere in
 the interface.
 
+The compiled-in half of this same table — list, on/off, `you get`/`you
+lose`/`costs` — is also reachable headless: `conway plugin list`, with no
+TUI in sight. See [`scripting.md`](scripting.md#conway-plugin) for the full
+`list`/`install`/`remove` reference (subprocess/MCP/claude-compat rows stay
+TUI-only, unchanged by that command).
+
 Three origins exist today, grouped under their own header row (row count
 included):
 
