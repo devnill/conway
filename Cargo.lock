@@ -549,6 +549,7 @@ dependencies = [
  "conway-core",
  "conway-plugin-backends",
  "conway-plugin-claude",
+ "conway-plugin-confine",
  "conway-plugin-discover",
  "conway-plugin-history",
  "conway-plugin-idiom",
@@ -647,6 +648,21 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "conway-plugin-confine"
+version = "0.9.0"
+dependencies = [
+ "async-trait",
+ "conway",
+ "conway-core",
+ "conway-testkit",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 

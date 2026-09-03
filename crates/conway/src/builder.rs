@@ -1723,13 +1723,24 @@ impl ConwayBuilder {
         //        installed set (10a2's own comment), so a plugin
         //        `with_plugin`-injected after `with_builtin_plugins` is
         //        seen exactly like a built-in.
+        //        Extended (board item, harness gap review 2026-09-01,
+        //        decision `01M1FQG08GDQ71984T0W0RJ019`) with a third
+        //        structural test: `Tool::confined_by_tool`. A tool that
+        //        answers `true` there is, itself, an OS-enforced remedy for
+        //        exactly the gap this warning exists to name (see that
+        //        method's own doc) -- `conway-plugin-confine`'s own
+        //        bash-equivalent tool is the one shipped example. Excluding
+        //        it is still computed from a STRUCTURAL declaration, never
+        //        `if manifest.id == "conway.confine"`, matching this
+        //        block's own pre-existing discipline for `unconfinable`/
+        //        `shell_command` immediately below.
         if root.is_some() {
             let unconfinable_shell_tool = resolved_plugins.iter().find_map(|plugin| {
                 let manifest = plugin.manifest();
                 plugin.tools().into_iter().find_map(|tool| {
                     let unconfinable = matches!(tool.path_args(), PathArgs::Unconfinable { .. });
                     let shell_command = tool.render_kind() == RenderKind::ShellCommand;
-                    if unconfinable && shell_command {
+                    if unconfinable && shell_command && !tool.confined_by_tool() {
                         Some((tool.spec().name.as_str().to_string(), manifest.id.clone()))
                     } else {
                         None
@@ -1742,7 +1753,7 @@ impl ConwayBuilder {
                     message: format!(
                         "--root confines path arguments, but tool {tool_name} ({plugin_id}) \
                          runs shell commands the root cannot confine; remove {plugin_id} from \
-                         tools.builtin_plugins for a real boundary"
+                         tools.builtin_plugins for a real boundary, or install conway.confine"
                     ),
                 });
             }

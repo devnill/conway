@@ -277,6 +277,19 @@ built-in except bash), so the snippet above is that default plus
 file: `ConwayBuilder::with_builtin_plugins(PluginSelection::All)` (or an
 `Only`/`AllExcept` selection naming `"conway.shell"`) before `.build()`.
 
+**If your machine already has an OS containment primitive
+(`sandbox-exec`/`bwrap`), consider `conway.confine` instead of, or alongside,
+plain bash.** Its `confined_bash` tool runs the identical `bash -c <command>`
+but wrapped in that primitive, so a write outside `--root` is refused by the
+OS itself — see [`docs/plugins/confine.md`](plugins/confine.md). Guided
+first-run setup detects the primitive and offers this one FIRST, before the
+plain-bash question below; installing it by hand instead of through first-run
+is the same `[plugins].install` mechanism the next section describes:
+
+```json
+{ "plugins": { "install": ["conway.confine"] } }
+```
+
 ## Installing a first-party plugin
 
 conway also ships a small, separate tier of plugins that live in this

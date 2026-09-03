@@ -183,7 +183,7 @@ library embedder, and the harness's own defaults, are unaffected. See
 [`docs/getting-started.md`](docs/getting-started.md#installing-a-first-party-plugin)
 for the exact `settings.json` shape this leaves you with.
 
-**The tier's shape is settled and demonstrated, with eighteen members shipping
+**The tier's shape is settled and demonstrated, with nineteen members shipping
 today:** `crates/conway-plugin-skeleton`, a plugin that registers a single
 `skeleton_ping` tool and does nothing else — it exists to prove the `Plugin`/
 `Tool` mechanism below, not to be useful on its own — `crates/conway-plugin-routing`,
@@ -247,7 +247,16 @@ another installed plugin can call into over the plugin-to-plugin capability
 channel — the first member on the PROVIDING end of that channel, where
 every other member above is a leaf consumer of host services only. The
 interactive TUI wires a real, live answering surface for both; every other
-dispatch target refuses immediately instead of blocking.
+dispatch target refuses immediately instead of blocking. One more member
+ships alongside those eighteen: `crates/conway-plugin-confine`
+(`conway.confine`), a bash-equivalent tool (`confined_bash`) whose every
+command runs inside this operating system's own containment primitive
+(`sandbox-exec` on macOS, `bwrap` on Linux), so `--root` is a real write
+boundary rather than a path-argument convention plain `bash` (`conway.shell`)
+has always been outside of — see `docs/plugins/confine.md`. Reads and
+network are not confined by it, only writes, and it refuses to run at all
+without a configured `--root` or a present primitive binary — never a
+silent fall-through to an unconfined command.
 Compaction remains the one first-party-plugin-tier capability still unbuilt
 (`/checkout`/`ContextMask` are built, above, in `conway-plugin-history`);
 conway-plugin-routing is not

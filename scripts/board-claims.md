@@ -246,7 +246,7 @@ present: VersionMismatch
 why: PluginManifest::optional_host_caps is labeled "carried on the wire and honoured (degrade-and-announce), no first-party producer today" at every site that documents it (the field's own doc, host_caps.rs, subprocess-plugins.md, hooks.md point 1, conway-plugin-subprocess's module doc) -- operator ruling, harness gap review 2026-09-01 finding 9 (GP-14 declaration honesty). That label is false the day any first-party plugin actually populates the field, and nothing else here would notice a producer landing quietly.
 note: added 2026-09-02 alongside the permission_modes deletion this same ruling covers. Pinned to a non-empty vec![ literal in each conway-plugin-* crate's own src/ -- never tests/, which may legitimately construct a non-empty manifest fixture to exercise the existing degrade-and-announce path without that being a real producer.
 claim: no first-party conway-plugin-* crate declares a non-empty optional_host_caps in its own manifest -- every one still writes vec![]
-paths: crates/conway-plugin-backends/src crates/conway-plugin-claude/src crates/conway-plugin-discover/src crates/conway-plugin-history/src crates/conway-plugin-idiom/src crates/conway-plugin-marketplace/src crates/conway-plugin-mcp/src crates/conway-plugin-memory/src crates/conway-plugin-names/src crates/conway-plugin-path/src crates/conway-plugin-routing/src crates/conway-plugin-skeleton/src crates/conway-plugin-skills/src crates/conway-plugin-statusline/src crates/conway-plugin-stepguard/src crates/conway-plugin-subprocess/src crates/conway-plugin-trim/src crates/conway-plugin-ui/src
+paths: crates/conway-plugin-backends/src crates/conway-plugin-claude/src crates/conway-plugin-confine/src crates/conway-plugin-discover/src crates/conway-plugin-history/src crates/conway-plugin-idiom/src crates/conway-plugin-marketplace/src crates/conway-plugin-mcp/src crates/conway-plugin-memory/src crates/conway-plugin-names/src crates/conway-plugin-path/src crates/conway-plugin-routing/src crates/conway-plugin-skeleton/src crates/conway-plugin-skills/src crates/conway-plugin-statusline/src crates/conway-plugin-stepguard/src crates/conway-plugin-subprocess/src crates/conway-plugin-trim/src crates/conway-plugin-ui/src
 absent: optional_host_caps: vec!\[[^]]
 -->
 
@@ -262,4 +262,18 @@ why: regression guard pinning the exact stale phrasing removed from hooks.md poi
 claim: hooks.md point 7 no longer says there is no Plugin::rules() method or equivalent
 paths: docs/plugins/hooks.md
 absent: there is no .Plugin::rules\(\). method
+-->
+
+<!-- claim-check
+why: P-14 (the containment guarantee comes from the OS primitive, never from conway reading a command) -- conway.confine (harness gap review 2026-09-01, decision 01M1FQG08GDQ71984T0W0RJ019) exists specifically so a confined bash tool's safety claim rests on the kernel, not on this crate's own logic; a refactor that quietly dropped the sandbox-exec invocation and left the rest of the launcher (argv shape, error text) intact would otherwise ship a bash tool that LOOKS confined and runs bare, the exact "declared but unenforced" defect this project's own trust discipline exists to catch. Pinned to the literal invocation token this crate's own macOS launcher passes to Command::new, not to a type or constant name, since a type/constant could survive a rewrite that stopped actually invoking the primitive.
+claim: conway.confine's bash tool runs every command under an OS containment primitive -- its macOS launcher invokes sandbox-exec directly
+paths: crates/conway-plugin-confine/src/launcher.rs
+present: sandbox-exec
+-->
+
+<!-- claim-check
+why: same finding, the Linux half -- a refactor that quietly dropped the bwrap invocation from the Linux launcher while leaving its own argv-building scaffolding (--ro-bind, --bind, the rest) intact would ship the identical unenforced-confinement defect the sandbox-exec predicate above guards against, on the other OS.
+claim: conway.confine's Linux launcher invokes bwrap directly, not merely a bind-mount argv shape that resembles one
+paths: crates/conway-plugin-confine/src/launcher.rs
+present: bwrap
 -->

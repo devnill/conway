@@ -473,8 +473,26 @@ redirection, substitution, `cd`, or a subprocess — no root check can
 statically confine it (see `docs/tools.md`'s shell section for the exact
 reasoning). If `--root` is set and `bash` (`conway.shell`) is among the
 tools available, conway warns at startup that the root does not confine
-what `bash` can do; drop `conway.shell` from `tools.builtin_plugins` if
-you need the guarantee `--root` alone implies.
+what `bash` can do; drop `conway.shell` from `tools.builtin_plugins`, or
+install `conway.confine` (below) instead, if you need the guarantee
+`--root` alone implies.
+
+**`conway.confine` closes that gap with an OS-enforced boundary instead of
+a convention.** It is a first-party plugin (`[plugins].install =
+["conway.confine"]`, not a `tools.builtin_plugins` entry — `bash` and
+`confined_bash` are different plugins on different install surfaces) whose
+one tool, `confined_bash`, runs every command through this operating
+system's own containment primitive (`sandbox-exec` on macOS, `bwrap` on
+Linux): a write outside `--root` is refused by the kernel, not by conway
+reading the command text (P-14 — this is a mechanism, never a policy that
+inspects `command` to decide anything). It requires `--root`; a call with
+none configured is refused rather than run unconfined. Reads and network
+reachability are **not** confined — only writes; see
+[`docs/plugins/confine.md`](plugins/confine.md) for the full boundary,
+including which OS this guarantee is actually verified on. Because
+`confined_bash` declares its own containment structurally
+(`Tool::confined_by_tool`), the root+unconfinable-shell-tool warning above
+does not fire for it the way it fires for plain `bash`.
 
 **When you set `--root`, also pass `--cwd` as an absolute path.** conway
 must be able to verify the agent's own working directory sits inside the

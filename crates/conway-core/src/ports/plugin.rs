@@ -1664,6 +1664,43 @@ pub trait Tool: Send + Sync + 'static {
     fn render_kind(&self) -> RenderKind {
         RenderKind::default()
     }
+
+    /// Declares whether THIS tool's own mechanism already confines every
+    /// call it dispatches to an operator-set root, independent of
+    /// [`Self::path_args`]/[`Self::render_kind`] -- the structural flag
+    /// `crate::builder`'s root+unconfinable-shell-tool warning
+    /// (`WarningCode::RootWithUnconfinableTool`) consults so it does not
+    /// fire for a tool that is, itself, the remedy.
+    ///
+    /// **Why a third flag, not a reuse of `path_args`/`render_kind`.**
+    /// `bash`'s own pair (`PathArgs::Unconfinable` + `RenderKind::
+    /// ShellCommand`) is exactly correct for `bash` itself: its `command`
+    /// argument genuinely cannot be statically confined to a root, and its
+    /// render output genuinely is a shell command. A tool that wraps an
+    /// identical shell command in an OS containment primitive (`conway.
+    /// confine`'s own bash-equivalent tool) has NO reason to change either
+    /// answer -- its `command` argument is still, honestly, unconfinable by
+    /// STATIC path-argument analysis (the broker still cannot look at the
+    /// string and know what it touches), and its render output is still a
+    /// shell command a `PatternRule` should still metacharacter-gate. What
+    /// changes is a THIRD, orthogonal fact: whether a root passed to this
+    /// tool is actually enforced by something other than the operator's
+    /// gate. Reusing either existing flag to signal that would corrupt the
+    /// meaning the warning-independent consumers of `path_args`/
+    /// `render_kind` (the permission broker's own root-containment walk,
+    /// `PatternRule`'s metacharacter gate) still need answered honestly.
+    ///
+    /// **The default is `false`** -- every tool declared before this method
+    /// existed, including `bash` itself, keeps behaving exactly as before:
+    /// the root+unconfinable-shell-tool warning still fires for it. A tool
+    /// author sets this to `true` only when they can back the claim with a
+    /// real, OS-enforced containment mechanism -- see `conway-plugin-
+    /// confine`'s own module doc for the one shipped example, and P-14
+    /// (the containment guarantee comes from the OS primitive, never from
+    /// this crate reading the call).
+    fn confined_by_tool(&self) -> bool {
+        false
+    }
 }
 
 /// Declarative metadata: whether a [`Tool`]'s [`Tool::render`] output can be

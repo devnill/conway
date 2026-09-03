@@ -852,6 +852,34 @@ not paste an unfamiliar command into `[hooks]` should not paste one into
 `[tui.status_line_command].command` either, and should additionally weigh
 that this one keeps running whether or not anything is watching it.
 
+## `conway.confine`: a bash tool the OS itself confines, not conway reading it
+
+[`docs/plugins/confine.md`](confine.md) is `conway.confine`'s own page
+(`ConfinePlugin`/`ConfinedBashTool`, `crates/conway-plugin-confine`) and
+states its full boundary directly — read it, not a summary of it. This
+entry exists so this page names the surface too, matching every other
+extension point above.
+
+`confined_bash` is a genuinely different trust shape from every other entry
+on this page: it is the ONE surface here whose safety claim rests on the
+OPERATING SYSTEM, not on conway. Every other control on this page —
+the permission gate, a `deny` pattern, `PluginManifest::required_host_caps`
+— is enforced by conway's own code, running with the operator's own
+privileges, and is only as trustworthy as that code. `confined_bash`'s
+containment (a write outside `--root` refused) is enforced by `sandbox-exec`/
+`bwrap`, a mechanism conway invokes but does not implement — P-14: this
+plugin never reads the command text to decide anything, so a defect in
+conway's own logic cannot silently widen what a confined write can reach
+the way it could for any policy-based control. **This does not extend to
+reads or network** — `confined_bash` leaves both exactly as reachable as
+plain `bash` does; see `confine.md`'s own "What this confines, and what it
+does not" for the full, stated boundary. And it does not extend to
+`conway.confine` AS A PLUGIN: this page's own "conway does not sandbox the
+plugin process" statement (below) applies to `conway-plugin-confine`'s own
+code on the identical footing as any other trusted plugin — installing it
+trusts the CRATE, same as any other first-party or third-party plugin;
+what changes is what the TOOL it registers does once invoked.
+
 ## What conway DOES ship
 
 "No complex sandboxing" is not "no isolation." conway does not acquire
@@ -893,7 +921,12 @@ executes outside the root. `bash`'s `command` remains outside every root
 check, harness- or plugin-level (see below); its OWN `cwd` argument is
 still checked directly by `PermissionBroker`, ahead of the gate, because
 `bash` belongs to a different plugin with no containment mechanism of its
-own to delegate to.
+own to delegate to. **`conway.confine`'s own `confined_bash` tool is the
+answer for an operator who needs a shell WITH the guarantee `bash` cannot
+give**: rather than a root check on the command text (impossible, per the
+paragraph above), it hands the whole command to this operating system's own
+containment primitive — see "`conway.confine`" below for the full trust
+statement.
 
 **One more limit worth naming plainly, because it bears directly on the
 "full privileges" statement above: confinement narrows what a call can
