@@ -1,6 +1,6 @@
-//! The below-chat agent-tree panel (criterion 4): shown on demand
-//! (toggled by `/agents`, handled in `app.rs` since `commands.rs` is out of
-//! this item's file scope) rather than as an always-on side pane. Ordinary
+//! The below-chat agent-tree panel: shown on demand
+//! (toggled by `/agents`, handled in `app.rs` rather than `commands.rs`)
+//! rather than as an always-on side pane. Ordinary
 //! subagent lifecycle is ALSO surfaced inline in the conversation stream
 //! itself (`transcript.rs`'s `Entry::Agent` handling) -- this panel is for
 //! browsing the whole tree at a glance, not the only place activity shows.
@@ -62,7 +62,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
             // name for this agent, when `conway.names` is installed and
             // they gave it one. `agent_name` returns `None` for every row
             // when the plugin is absent, so an uninstalled build draws the
-            // identical row it drew before this item.
+            // identical row it always drew.
             //
             // Placed BETWEEN the short id and the `agent_def` label, and
             // the label is dimmed to annotation when a name is present:
@@ -338,7 +338,7 @@ fn status_marker(status: NodeStatus) -> &'static str {
 }
 
 fn status_style(status: NodeStatus, theme: &Theme) -> Style {
-    // Parity pin (T1 review finding 1): pre-T1 the agent panel used
+    // Parity pin: the agent panel used to use
     // `Style::default()` (unstyled, terminal default fg) for `Starting`,
     // while the transcript's inline `Entry::Agent` line used `Color::Gray`.
     // The two call sites genuinely differed, so delegating `Starting` to
@@ -1095,7 +1095,7 @@ mod tests {
         );
     }
 
-    /// The uninstalled case, which is half of this item's deliverable: with
+    /// The uninstalled case: with
     /// no store on `AppState` (what every `AppState::new` produces), the
     /// panel draws exactly what it drew before the name existed.
     #[test]

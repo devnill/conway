@@ -1,4 +1,4 @@
-//! The bottom status line (T3): a single, always-visible plain line -- no
+//! The bottom status line: a single, always-visible plain line -- no
 //! border -- summarizing the focused agent's turn at a glance. The line is
 //! an ordered, configurable set of fields driven by `[tui.status_line]` in
 //! `settings.json` (schema: `crate::tui::config::StatusLineConfig`).
@@ -9,22 +9,23 @@
 //! Default Lean line: `session | lineage | mode | model | ctx | tokens |
 //! activity | hint`.
 //!
-//! - `session` -- **NEW** (this item, correcting a T6 requirement miss --
+//! - `session` -- **NEW** (correcting a requirement miss in the
+//!   scroll-triggered sticky-header work --
 //!   see `view/header.rs`'s module doc for the full story): `session <id>`,
 //!   the session's own root agent's short id. This is application chrome
 //!   ("what session am I in"), unconditional (always renders), which is
 //!   exactly why it belongs HERE and not on the scroll-triggered sticky
-//!   overlay T6 originally misfiled it onto -- chrome that flickers with
+//!   overlay it was originally misfiled onto -- chrome that flickers with
 //!   scroll position is noise, and this field never has. **Widened (board
 //!   item) to `session <id>@<seq>`** once
 //!   `AppState::session_head_seq` is known: this session's own persisted
 //!   log head, in the exact `<session-id>[@<seq>]` notation
 //!   `session_ref.rs`'s `--fork-from` flag already established -- the
 //!   number `/conway.history.rewind <seq>` (`conway-plugin-history`) takes.
-//!   Before this item, nothing in the TUI showed an operator ANY `LogSeq`
+//!   Nothing in the TUI used to show an operator ANY `LogSeq`
 //!   at all; degrades to the bare `session <id>` form (unchanged from
-//!   before this item) whenever the head is not yet known.
-//! - `lineage` -- **NEW** (this item; V5's content, relocated). Off-root,
+//!   before) whenever the head is not yet known.
+//! - `lineage` -- **NEW** (V5's content, relocated). Off-root,
 //!   `agent <id>` growing a `via` clause naming how the focused agent came
 //!   to be: `agent <id> via root → fork @seq 3 → @reviewer`. Empty (omitted)
 //!   while the transcript shows the session's own root -- the common
@@ -37,7 +38,7 @@
 //!   to sidestep.
 //! - `mode` -- `ready`/`awaiting permission`/`ask`/`intent` (the TUI's
 //!   current top-level mode).
-//! - `plugins` -- **NEW** (this item, board `01M0X1B7Z41J57N6YP2JFZ2AZW`;
+//! - `plugins` -- **NEW** (board `01M0X1B7Z41J57N6YP2JFZ2AZW`;
 //!   design `docs/vision/DESIGN-permission-modes.md` §3d/§6b). Renders
 //!   `AppState::plugin_status_contributions`'s
 //!   `PluginStatusContribution`s (`{ key, status, value }`) as
@@ -58,8 +59,7 @@
 //!   out; the rest fold into a visible `+N more` marker rather than being
 //!   dropped with no sign anything was cut. See [`contributions_ladder`]
 //!   for the width-degrade shape and `drop_priority`'s own doc for why this
-//!   field can NEVER displace `mode` -- the safety property this item
-//!   exists to protect.
+//!   field can NEVER displace `mode` -- the safety property that guards.
 //! - `model` -- the focused agent's serving model display name from
 //!   `Event::ModelDecision` (e.g. `anthropic/claude-sonnet-4-6`); omitted
 //!   before the first turn routes.
@@ -157,7 +157,7 @@
 //!    about the CURRENT state, but `hint` is the only field that tells a
 //!    reader how to get UNSTUCK (find more bindings, toggle the agent
 //!    view) -- it earns the second-to-last slot, not the first to go.
-//! 6. `plugins` -- **NEW** (this item). Plugin-authored, not conway's own
+//! 6. `plugins` -- **NEW**. Plugin-authored, not conway's own
 //!    computed state, and (per `PluginStatusContribution`'s own doc) a
 //!    polled snapshot that can go stale -- useful, but strictly less
 //!    load-bearing than the safety signal `mode` carries. Placed directly
@@ -258,18 +258,18 @@ fn flatten(line: &Line) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
-/// One orderable status-line field (T3). The configured `fields` list
+/// One orderable status-line field. The configured `fields` list
 /// (from `[tui.status_line]`) is parsed into this enum at render time;
 /// unknown names are dropped (never a panic on untrusted config).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StatusLineField {
-    /// **NEW** (this item). `session <id>` -- see this module's own doc.
+    /// `session <id>` -- see this module's own doc.
     Session,
-    /// **NEW** (this item; V5's content relocated). The off-root lineage
+    /// V5's content relocated. The off-root lineage
     /// breadcrumb -- see this module's own doc and [`agent_field`].
     Lineage,
     Mode,
-    /// **NEW** (this item, board `01M0X1B7Z41J57N6YP2JFZ2AZW`). Renders
+    /// Board `01M0X1B7Z41J57N6YP2JFZ2AZW`. Renders
     /// `AppState::plugin_status_contributions` -- see this module's own
     /// doc and [`contributions_ladder`].
     Contributions,
@@ -382,10 +382,10 @@ fn resolve_fields(
     parsed
 }
 
-/// Builds the status line as a styled [`Line`] (T3): an ordered,
+/// Builds the status line as a styled [`Line`]: an ordered,
 /// configurable field set joined by ` | `, each field rendered only when
 /// present+enabled, all under the `theme.status_mode` base style. The
-/// `activity` field (T2) overlays its spinner pulse color and dim
+/// `activity` field overlays its spinner pulse color and dim
 /// elapsed/tokens tail; the `hint` field overlays `theme.status_dim`.
 ///
 /// **Width-aware assembly (review finding -- see this module's own doc for
@@ -600,7 +600,7 @@ fn truncate_to_width(s: &str, target: usize) -> String {
 /// (0-4); orientation (`session`/`lineage`) next (5-6); the liveness signal
 /// `activity` after that (7); `hint` -- discoverability -- second-to-last
 /// but one (8); `plugins` -- plugin-authored, polled, and strictly less
-/// load-bearing than the safety signal below it (this item, board
+/// load-bearing than the safety signal below it (board
 /// `01M0X1B7Z41J57N6YP2JFZ2AZW`) -- second-to-last (9); `mode` last (10),
 /// and `mode`'s own ladder (`mode_ladder`) never drops to nothing, so
 /// `AUTO-ALLOW` is the one thing guaranteed to survive as long as anything
@@ -709,8 +709,8 @@ fn mode_label(mode: &Mode) -> String {
     }
 }
 
-/// The `mode` field's ladder (V2/V7, ladder shape added by this item's
-/// width-aware assembly). While `Prompt` (the default) there is no
+/// The `mode` field's ladder (V2/V7, ladder shape added by the
+/// width-aware assembly below). While `Prompt` (the default) there is no
 /// non-default label to preserve, so the ladder is a single rung: the UI
 /// word alone (`ready`/`awaiting permission`/…) -- naming the ordinary case
 /// every frame would train the operator to ignore the field, so it is
@@ -762,7 +762,7 @@ fn mode_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
 }
 
 /// The most `plugins` will ever spell out individually on the status line
-/// (this item, board `01M0X1B7Z41J57N6YP2JFZ2AZW`). `PluginStatusContribution`
+/// (board `01M0X1B7Z41J57N6YP2JFZ2AZW`). `PluginStatusContribution`
 /// is an unbounded `Vec` -- a status line is one line -- so this caps the
 /// SPELLED-OUT count independent of terminal width (the width-degrade
 /// ladder below handles width; this handles count). The rest fold into a
@@ -796,7 +796,7 @@ fn contribution_style(status: &ResultStatus, theme: &Theme) -> Style {
     }
 }
 
-/// The `plugins` field's ladder (this item, board `01M0X1B7Z41J57N6YP2JFZ2AZW`;
+/// The `plugins` field's ladder (board `01M0X1B7Z41J57N6YP2JFZ2AZW`;
 /// design `DESIGN-permission-modes.md` §3d resolves the "a live guard and a
 /// dead guard look identical" hazard by pointing at exactly this type --
 /// `PluginStatusContribution::status` already expresses healthy-versus-failed,
@@ -804,7 +804,8 @@ fn contribution_style(status: &ResultStatus, theme: &Theme) -> Style {
 ///
 /// Empty contributions -> a single empty rung (the omitted state, matching
 /// every other optional field's shape here) -- this is what makes "zero
-/// contributions renders byte-identically to before this item" true: an
+/// contributions renders byte-identically to a build with no `plugins`
+/// field at all" true: an
 /// empty ladder contributes no spans and is skipped by the assembly loop
 /// exactly like `git` outside a repo or `model` before the first
 /// `ModelDecision`.
@@ -888,12 +889,12 @@ fn contributions_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static
 /// a bug to the user. The tradeoff is that this CAN hide a genuine overshoot
 /// -- an agent whose context really has grown past its declared max still
 /// reads `ctx 100%`, not `ctx 137%`. That is accepted here: the authoritative
-/// token total lands via the turn-end summary (T4), and a proper re-fetch of
+/// token total lands via the turn-end summary, and a proper re-fetch of
 /// the runtime's true context total on focus is tracked as a separate
 /// follow-up No behavior change vs. the original cap -- only the
 /// intent is now documented.
 ///
-/// `pub(super)` (T6): the sticky context header (`view/header.rs`) shows the
+/// `pub(super)`: the sticky context header (`view/header.rs`) shows the
 /// same `ctx%`/raw-tokens figure and reuses this function directly rather
 /// than recomputing the percentage formula a second time, so the header and
 /// the status line's `ctx` field can never drift apart on the cap/fallback
@@ -925,8 +926,8 @@ fn tokens_label(state: &AppState) -> String {
     format!("{total} tok{suffix}")
 }
 
-/// The `activity` field's ladder (T2; ladder shape added by this item's
-/// width-aware assembly): spinner glyph + activity word in the current
+/// The `activity` field's ladder (ladder shape added by the
+/// width-aware assembly below): spinner glyph + activity word in the current
 /// pulse color, plus live elapsed + new-segment tokens added this turn
 /// (dim) while active; just `idle` while idle. The first degrade step
 /// (while active) drops the elapsed/token tail and keeps the glyph+phrase
@@ -944,7 +945,7 @@ fn activity_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
     // this field over outright, rather than being folded in alongside
     // whatever the FOCUSED agent's own `activity` happens to be. The ask's
     // ephemeral child is never the focused agent (`Activity`'s own doc:
-    // scoped to focused-agent events only), so before this item there was
+    // scoped to focused-agent events only), so there used to be
     // no reader of `ask_in_flight` anywhere in `view/` at all -- an ask
     // that needed a tool call and a plain "the focused agent is idle" read
     // identically on screen. Reusing the SAME spinner glyph/elapsed-seconds
@@ -1015,8 +1016,8 @@ fn ask_activity_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>
     ]
 }
 
-/// The `hint` field's ladder (T3; ladder shape added by this item's
-/// width-aware assembly): a persistent keybinding/affordance hint, rendered
+/// The `hint` field's ladder (ladder shape added by the
+/// width-aware assembly below): a persistent keybinding/affordance hint, rendered
 /// dim. The full rung includes the `/agents` toggle affordance and, when
 /// the transcript is focused on a non-root agent AND `lineage` is not part
 /// of the resolved field list, a `focused: <id>` note. Degrades through
@@ -1033,7 +1034,7 @@ fn hint_ladder(state: &AppState, theme: &Theme, lineage_present: bool) -> Vec<Ve
     // V6: the footer names KEYS, not commands. It used to enumerate
     // `/help`, `/thinking`, and `/timestamps`; the user's note was that a
     // footer should not be a command list. `/help` stays as the single
-    // pointer -- it is the keybinding overlay (T7), so it is where the rest
+    // pointer -- it is the keybinding overlay, so it is where the rest
     // of this information actually lives -- and the display toggles move to
     // the settings menu (V4). `/agents` keeps its affordance because it is a
     // stateful toggle whose current state the hint reports.
@@ -1042,12 +1043,12 @@ fn hint_ladder(state: &AppState, theme: &Theme, lineage_present: bool) -> Vec<Ve
     // it is not the root -- the root case stays silent (an always-on
     // "focused: root" would be noise for the overwhelmingly common case).
     //
-    // This item: `lineage` already names the focused agent off-root (and,
+    // `lineage` already names the focused agent off-root (and,
     // where relevant, its whole lineage) -- appending this note too would
     // say the same fact twice on the default line. It survives only when
     // `lineage` is NOT in the resolved field list, so an older pinned
-    // `[tui.status_line] fields` config (from before this item added
-    // `lineage`) does not silently lose "which agent is this?" entirely.
+    // `[tui.status_line] fields` config (from before `lineage` was added)
+    // does not silently lose "which agent is this?" entirely.
     if !state.is_root_focused() && !lineage_present {
         full.push_str(&format!(" · focused: {}", state.focused_agent));
     }
@@ -1061,8 +1062,8 @@ fn hint_ladder(state: &AppState, theme: &Theme, lineage_present: bool) -> Vec<Ve
 }
 
 /// The `lineage` field's ladder (V5's content, relocated from
-/// `view/header.rs`, ladder shape added by this item's width-aware
-/// assembly). Empty (a single empty rung) while the transcript shows the
+/// `view/header.rs`, ladder shape added by the width-aware
+/// assembly below). Empty (a single empty rung) while the transcript shows the
 /// session's own root -- the common single-agent case stays uncluttered,
 /// unchanged from the pre-move behavior. Off-root, the ladder is
 /// [`LineageDetail`]'s own Full -> Compact -> Bare -- `Bare` is the floor
@@ -1102,7 +1103,7 @@ enum LineageDetail {
 }
 
 /// Builds the off-root `agent` field at `detail`'s verbosity (V5, relocated
-/// here by this item -- see the module doc). `Bare` never touches the tree at
+/// here -- see the module doc). `Bare` never touches the tree at
 /// all (guaranteed cheap, and the guaranteed-fits fallback). `Full`/ `Compact`
 /// walk [`agents::ancestor_chain`] (bounded, so untrusted depth cannot run
 /// away) and label each hop with [`agents::hop_label`] -- the SAME provenance
@@ -1284,7 +1285,7 @@ mod tests {
     }
 
     /// An older pinned `[tui.status_line] fields` config that predates
-    /// `lineage` (this item) must not silently lose "which agent is this?"
+    /// `lineage` must not silently lose "which agent is this?"
     /// entirely -- `hint`'s own `focused: <id>` note survives as a fallback
     /// exactly when `lineage` is absent from the configured list.
     #[test]
@@ -2498,14 +2499,14 @@ mod tests {
         );
     }
 
-    // ---- This item (board `01M0X1B7Z41J57N6YP2JFZ2AZW`): render
+    // ---- Board `01M0X1B7Z41J57N6YP2JFZ2AZW`: render
     // `AppState::plugin_status_contributions` in the status line's `plugins`
     // field (design `DESIGN-permission-modes.md` §3d/§6b). ----
 
-    /// Acceptance criterion 5, and the regression this item is most likely
-    /// to ship by accident: with zero contributions (the `AppState::new`
+    /// The regression most likely to ship by accident here: with zero
+    /// contributions (the `AppState::new`
     /// default -- and the overwhelmingly common case), the assembled line
-    /// must be EXACTLY what it was before this item existed, not merely
+    /// must be EXACTLY what it was before this field existed, not merely
     /// "doesn't visibly contain the word plugin". Pinned byte-for-byte so a
     /// stray extra separator or an empty-but-present span would be caught,
     /// not just a literal `"plugins"` substring.

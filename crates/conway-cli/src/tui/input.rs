@@ -108,7 +108,7 @@ pub enum Action {
     /// has to re-derive "on or off" from state that may have changed by
     /// the time it acts.
     TogglePlugin(String, bool),
-    /// `End` (T6): snap the transcript straight to its own tail --
+    /// `End`: snap the transcript straight to its own tail --
     /// re-engages `follow_tail`. Fires only while the input line is empty
     /// (mirroring the dual-meaning precedent `Enter`'s empty-input arm
     /// already sets for this same key range -- see `handle_normal_key`'s own
@@ -117,7 +117,7 @@ pub enum Action {
     /// while the user is mid-edit and stealing the key would break basic
     /// line editing.
     JumpToTail,
-    /// `Home`'s counterpart to [`Action::JumpToTail`] (T6): jump the
+    /// `Home`'s counterpart to [`Action::JumpToTail`]: jump the
     /// transcript straight to its own top. Same empty-input gating.
     JumpToTop,
     /// Switch the transcript pane to `AgentId`'s own conversation.
@@ -229,14 +229,14 @@ pub enum Action {
 /// directly for plain editing and returning an [`Action`] for anything the
 /// app loop must act on.
 ///
-/// T7: the `/help` overlay is checked FIRST, ahead of the `mode` match --
+/// The `/help` overlay is checked FIRST, ahead of the `mode` match --
 /// but only while `mode` is `Normal` (`state.help_open` is a plain flag, not
 /// a `Mode` variant; see that field's own doc for why). This ordering is
 /// what keeps the overlay from ever swallowing a key meant for an active
 /// permission prompt / `/ask` modal / intent-confirm card: those can only
 /// arrive while `mode` is already something other than `Normal`, so the
 /// guard here simply never fires for them, and `handle_key` falls through
-/// to the ordinary `mode` match exactly as it did before this item.
+/// to the ordinary `mode` match exactly as it always did.
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
     // Board item `01M0RWFH6V709B7WTAFRZGFKG3`: while an `/ask` is in
     // flight, `Ctrl-C` reaches `Action::CtrlC` (-> `App::handle_ctrl_c` ->
@@ -294,7 +294,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
     }
 }
 
-/// The `/help` overlay's key handling (T7): read-only, so almost everything
+/// The `/help` overlay's key handling: read-only, so almost everything
 /// is SWALLOWED -- `Esc` is the only way to close it (module spec: "No
 /// hotkey for help ... Esc closes it"). Mirrors
 /// [`handle_ask_modal_key`]/[`handle_intent_confirm_key`]'s shape: the quit
@@ -1137,7 +1137,7 @@ fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
         // immediately -- it OPENS the feedback text entry
         // (`Mode::EditingDenyFeedback`, `AppState::offer_deny_feedback`) so
         // the operator can actually type something before the call is
-        // denied. Before this item, `Esc` sent
+        // denied. `Esc` used to send
         // `PermissionDecision::DenyWithFeedback` with a single hardcoded
         // message and no way to say anything of its own -- the overlay's own
         // footer read "[Esc] deny with feedback", a control that claimed to
@@ -1163,7 +1163,7 @@ fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
 /// wording when nothing was typed) as `Action::PermissionDecision(
 /// DenyWithFeedback { message })` -- the app loop's EXISTING arm for that
 /// variant (`self.state.resolve_current_prompt(decision)`) is what actually
-/// resolves the call; this item adds no new `Action` variant and no new app
+/// resolves the call; this adds no new `Action` variant and no new app
 /// loop wiring. `Esc` cancels with NO decision at all, returning the prompt
 /// to the screen exactly as the `[p]` field editor's own `Esc` does
 /// (`cancel_editing_pattern`) -- the operator can still press
@@ -1368,7 +1368,8 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         // line-by-line); otherwise -- V3 -- bare Up/Down scroll the
         // transcript one line.
         //
-        // V3 moved history recall OFF bare Up/Down (T8 had put it here) and
+        // V3 moved history recall OFF bare Up/Down (it had been there
+        // before) and
         // onto `Ctrl-P`/`Ctrl-N`. The reason is not aesthetic: terminals
         // implement *alternate scroll* (DECSET 1007), which translates
         // wheel events into cursor-key presses while the alternate screen
@@ -1444,8 +1445,9 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         KeyCode::PageUp => Action::ScrollUp,
         KeyCode::PageDown => Action::ScrollDown,
         // Board item `01M0WX62C2VGJTXSR7XJBGMM9J`: Shift+Tab cycles the
-        // permission mode (Prompt -> Plan -> AutoAllow). Before this item
-        // `Action::CyclePermissionMode` (see its own doc) was reachable ONLY
+        // permission mode (Prompt -> Plan -> AutoAllow).
+        // `Action::CyclePermissionMode` (see its own doc) used to be
+        // reachable ONLY
         // from a `/settings` menu row -- this is the keyboard shortcut for
         // it.
         //
@@ -1552,7 +1554,7 @@ fn byte_index(s: &str, char_idx: usize) -> usize {
         .unwrap_or(s.len())
 }
 
-/// Inserts a literal `\n` at the cursor (T8: Alt-Enter/Shift-Enter) -- the
+/// Inserts a literal `\n` at the cursor (Alt-Enter/Shift-Enter) -- the
 /// same insert-at-cursor shape `KeyCode::Char(c)` uses in
 /// [`handle_normal_key`], just with a fixed `'\n'` instead of the typed
 /// char.
@@ -1563,7 +1565,7 @@ fn insert_newline(state: &mut AppState) {
     state.sync_palette_stem();
 }
 
-/// Inserts a whole pasted block as ONE edit at the cursor (T8: bracketed
+/// Inserts a whole pasted block as ONE edit at the cursor (bracketed
 /// paste, `CEvent::Paste` -- wired from `app.rs`, not through
 /// [`handle_key`], since a paste is not a `KeyEvent`). Swallowed while any
 /// modal-bearing surface is showing (`Mode` other than `Normal`) -- the
@@ -1577,7 +1579,7 @@ fn insert_newline(state: &mut AppState) {
 /// side effects once per pasted character instead of once for the whole
 /// paste, and (b) treat a pasted `\n` as if the user had pressed a
 /// character key rather than as literal text, which is exactly the
-/// char-by-char-arrival bug this item exists to fix.
+/// char-by-char-arrival bug this avoids.
 pub fn handle_paste(state: &mut AppState, text: &str) {
     if !matches!(state.mode, Mode::Normal) || state.help_open {
         return;
@@ -1591,7 +1593,7 @@ pub fn handle_paste(state: &mut AppState, text: &str) {
     state.sync_palette_stem();
 }
 
-/// `Up`/`Down` within a multi-line draft (T8): moves the cursor to the
+/// `Up`/`Down` within a multi-line draft: moves the cursor to the
 /// equivalent column on the line above (`delta < 0`) or below (`delta >
 /// 0`) the cursor's current line. Returns whether it moved the cursor --
 /// `false` (no mutation) when `input` is a single line, or when the cursor
@@ -4276,9 +4278,9 @@ mod tests {
         );
     }
 
-    /// Acceptance 4 (regression): bare `Tab` -- no `SHIFT` -- must still do
-    /// exactly what it did before this item in `Mode::Normal`: nothing.
-    /// This is the plausible break the item's own spec calls out -- the
+    /// A regression check: bare `Tab` -- no `SHIFT` -- must still do
+    /// exactly what it always did in `Mode::Normal`: nothing.
+    /// This is the plausible break -- the
     /// chord and the bare key share a `KeyCode` on some terminals.
     #[test]
     fn bare_tab_in_normal_mode_is_still_a_no_op() {
@@ -4293,10 +4295,10 @@ mod tests {
 
     /// Regression, the other direction: bare `Tab` inside
     /// `Mode::EditingPattern` (the field editor) must keep moving the
-    /// selected field exactly as it did before this item
-    /// (`handle_editing_pattern_key`'s own `Down | Tab` arm) -- this item's
-    /// new binding lives only in `handle_normal_key` and must not shadow
-    /// it.
+    /// selected field exactly as it always did
+    /// (`handle_editing_pattern_key`'s own `Down | Tab` arm) -- the new
+    /// Shift-Tab binding lives only in `handle_normal_key` and must not
+    /// shadow it.
     #[test]
     fn bare_tab_still_moves_the_field_editor_selection() {
         let mut state = AppState::new(AgentId::new());

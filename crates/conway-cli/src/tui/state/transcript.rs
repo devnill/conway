@@ -82,7 +82,7 @@ pub enum Entry {
         /// [`AppState::toggle_all_tool_entries_expanded`] (the `Ctrl-E`
         /// keybinding). The flag is kept on the entry itself -- not derived
         /// from a single global toggle -- so a future per-entry selective
-        /// expand (T4's tool-args reuse, or a transcript-cursor selection)
+        /// expand (tool-args reuse, or a transcript-cursor selection)
         /// can flip individual entries without touching the rest. The render
         /// branch in `view/transcript.rs::tool_lines` reads this plus the
         /// stored `preview` (which is NEVER truncated -- the cap is
@@ -116,7 +116,7 @@ pub enum Entry {
     /// A runtime error surfaced via `Event::Error`. Kept as its OWN variant rather than a
     /// field bolted onto [`Entry::Notice`]: a field would still let severity
     /// leak into an existing cyan-styled call site by accident, and (more
-    /// concretely) a recon on this item found a field/constructor approach
+    /// concretely) a recon found a field/constructor approach
     /// touches every one of `Entry::Notice`'s ~50 construction sites while a
     /// separate variant touches exactly three (this apply arm,
     /// `view/transcript.rs::entry_lines`, and the variant-enumerating
@@ -238,7 +238,7 @@ impl AppState {
     /// Board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`: `Event::StreamRestarted`
     /// discarded a mid-stream failure's partial deltas -- already appended
     /// to the transcript by `append_assistant_text`/`append_reasoning_text`
-    /// as they streamed in (T4's own doc) -- and this truncates the
+    /// as they streamed in (see those methods' own doc) -- and this truncates the
     /// in-progress entries back to their pre-delta content before appending
     /// a visible discard notice, so the retry's own deltas resume on a
     /// clean bubble rather than silently splicing onto the discarded
@@ -487,7 +487,7 @@ mod tests {
         }
     }
 
-    /// The exact event sequence from this item's own criterion: one
+    /// A full turn's exact event sequence: one
     /// coalesced "ab" assistant message, one completed tool-call entry, and
     /// a tree with the one (root) node in `Finished` state.
     #[test]

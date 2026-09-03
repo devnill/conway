@@ -71,7 +71,7 @@ pub struct App {
     // `SessionHandle` -- cheap to hold (every field is `Arc`-backed, per
     // `Conway`'s own doc: "Cheap to `Clone`").
     conway: conway::Conway,
-    /// The TUI's resolved color/style table (T1): built once at startup from
+    /// The TUI's resolved color/style table: built once at startup from
     /// `[tui.theme]` config (defaults when the key is absent or a value is
     /// malformed -- config is untrusted input) and passed by reference into
     /// `view::draw` every frame. Decision D-T1: threaded as `&Theme`, not
@@ -102,8 +102,8 @@ pub struct App {
     /// spawned off this loop (`Self::run`'s own `Effect::RunPluginCommand`
     /// arm), never awaited directly on it -- see that arm's own doc, and
     /// `commands::Effect::RunPluginCommand`'s, for why this is the
-    /// structural guarantee behind this item's hang/panic-safety acceptance
-    /// criterion.
+    /// structural guarantee that a hanging or panicking plugin command
+    /// cannot freeze the app loop.
     plugin_cmd_tx: mpsc::UnboundedSender<PluginCommandDone>,
     plugin_cmd_rx: Option<mpsc::UnboundedReceiver<PluginCommandDone>>,
     /// `/await <agent>` (INTENT.md §7a): mirrors `plugin_cmd_tx`/
@@ -147,7 +147,7 @@ pub struct App {
     /// never touch), and an ambient `std::env::vars()` read done fresh
     /// inside the command-dispatch path itself, which would defeat
     /// `CONWAY_CONFIG_DIR`-based test isolation for this AND every future
-    /// command needing it -- exactly the hazard this item's own spec named.
+    /// command needing it.
     /// Threaded to the two methods by cloning at the one call site that
     /// needs them (`Effect::RunMarketplaceInstall`/`RunMarketplaceUninstall`'s
     /// arms in `Self::submit`, both awaited/called directly -- neither is
@@ -219,7 +219,7 @@ impl App {
     ///   that actually opens the menu -- kept OUT of `commands::execute`
     ///   itself because `commands.rs::tests::settings_opens_the_menu`
     ///   already pins `/settings` as "a pure `AppState` flip, no facade call
-    ///   at all", and this item's own acceptance forbids editing that test.
+    ///   at all" -- that test must not be edited.
     /// - **`/ask`** needs a `tokio::spawn`ed task (forking the ephemeral
     ///   child and draining its turn) that only `App` can start -- it owns
     ///   the live `SessionHandle` to clone and `modal_ask_tx` to reply on,
@@ -236,11 +236,9 @@ impl App {
     /// through the identical `commands::parse` -> `commands::execute` call
     /// this method already makes for `/steer`, `/fork`, `/spawn`, and every
     /// other command. `/ask`'s three FATES (fork the child into a real
-    /// session, pull the answer into the transcript, discard it) are
-    /// untouched by this item -- they run through `commands::
-    /// apply_ask_fate`, driven by `Action::AskFate` in `run.rs`, a
-    /// completely separate call site from `submit` that this refactor never
-    /// touches.
+    /// session, pull the answer into the transcript, discard it) run
+    /// through `commands::apply_ask_fate`, driven by `Action::AskFate` in
+    /// `run.rs`, a completely separate call site from `submit`.
     async fn submit(&mut self, text: String) -> conway::Result<SubmitOutcome> {
         // T8: every submitted line (prompt or slash command) is recorded into
         // the history FIFO before dispatch, so a slash command that changes
@@ -485,9 +483,8 @@ impl App {
         // run loop already polls, and `state. rs`'s `apply` builds the
         // `Entry::User` bubble from that envelope
         // -- the one path both this TUI and a library embedder watching the
-        // bare `EventStream` now share. Pushing it here too would double it
-        // (the exact regression this item's own tests guard against); NOT
-        // pushing it at all on a failed `prompt_agent` (the `Err` arm below)
+        // bare `EventStream` now share. Pushing it here too would double it;
+        // NOT pushing it at all on a failed `prompt_agent` (the `Err` arm below)
         // is also correct, not a gap -- a message that was never actually
         // sent must never appear to have been (echoing it locally used to
         // do exactly that on a failure).
@@ -570,7 +567,7 @@ mod tests {
     use crate::tui::state::{Activity, AskFate, AskModal, Entry, Mode};
 
     /// The `Effect::Resumed` call site's own `refresh_session_head` call
-    /// (`Self::submit`, this item): resuming a DIFFERENT, non-empty
+    /// (`Self::submit`): resuming a DIFFERENT, non-empty
     /// session must read back ITS OWN head, not leave the field `None`
     /// (`execute`'s `Resume` arm resets `self.state` to a fresh
     /// `AppState`, which starts `None`) or carry over whatever the
@@ -755,7 +752,7 @@ mod tests {
             .expect("submit should not error");
         assert!(matches!(outcome, SubmitOutcome::Continue));
 
-        // `submit` itself pushes nothing locally anymore (this item) --
+        // `submit` itself pushes nothing locally anymore --
         // the transcript is empty until the live envelope is drained below.
         super::fixtures::drain_and_apply(&mut events, &mut app.state);
 
@@ -821,7 +818,7 @@ mod tests {
         );
     }
 
-    /// **The discriminating observable this item exists to prove.** With
+    /// **The discriminating observable this test proves.** With
     /// `conway_plugin_history::HistoryPlugin` NOT installed (`App::new`'s
     /// own `plugins` slice is empty -- no fixture, no substitute), typing
     /// `/conway.history.rewind 1` produces the ordinary "unknown command"
@@ -834,8 +831,7 @@ mod tests {
         let conway = echo_conway();
         let cli = minimal_cli();
         // Deliberately `&[]`: no plugin installed at all, not even an
-        // unrelated one -- the empty case this whole item's acceptance
-        // criterion is about.
+        // unrelated one -- the empty-plugin-list case this test covers.
         let mut app = App::new(&cli, &conway, &[])
             .await
             .expect("App::new should succeed");
@@ -878,7 +874,7 @@ mod tests {
     /// `view::settings::build_tree`) plus the rendered screen buffer --
     /// never on an internal call count. No trust decision and no user config
     /// isolation are needed precisely because deny/prompt install from any
-    /// file, trusted or not -- the case this item exists for.
+    /// file, trusted or not.
     #[tokio::test]
     async fn untrusted_file_deny_and_prompt_rules_are_visible_in_settings() {
         let project = tempfile::TempDir::new().expect("tempdir");
@@ -1097,7 +1093,8 @@ mod tests {
     // `hook_rules_are_visible_in_settings_scoped_to_deny_capable_events`
     // for `/settings`, and `commands.rs`'s own `execute()`-level tests for
     // `/trust`/`/agents`/`/ask`) proves nothing on its own -- all four
-    // worked before this item too, by bypassing the parser entirely.
+    // would pass even without parser-level validation, by bypassing the
+    // parser entirely.
     // ---------------------------------------------------------------
 
     #[tokio::test]
@@ -1313,8 +1310,8 @@ mod tests {
     // `Effect::RunModalAsk` -> `Self::spawn_modal_ask` -> the real spawned
     // task -> `modal_ask_rx` -> the modal opens -- exactly `App::run`'s own
     // path, minus the terminal. Each fate is its OWN test (module notes'
-    // convention, and this item's own acceptance: "a test asserting /ask
-    // 'works' does not distinguish them"), proving the dispatch refactor
+    // convention: a test asserting /ask "works" does not distinguish
+    // them), proving the dispatch refactor
     // changed none of the three: fork the child into a real, persistent
     // session; pull the answer into the parent and purge the child;
     // discard the child outright.
@@ -1505,9 +1502,8 @@ mod tests {
     /// merge's live `TextDelta` twin on the parent's OWN focused stream, the
     /// final assertion would trivially hold against broken code too. It does
     /// not: pre-fix, this test fails with `left: Responding, right: Idle`
-    /// (captured verbatim in this item's own report) -- proof the fixture
-    /// genuinely drives `activity` away from `Idle` before the fix makes it
-    /// return.
+    /// -- proof the fixture genuinely drives `activity` away from `Idle`
+    /// before the fix makes it return.
     #[tokio::test]
     async fn ask_fate_pull_in_leaves_the_status_bar_idle_not_wedged_responding() {
         let conway = echo_conway();

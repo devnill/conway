@@ -389,7 +389,7 @@ mod tests {
     /// just the bare `limit` string -- otherwise a `keep_alive` root whose
     /// `steps_taken` (session-lifetime) is far larger than the `max_steps`
     /// it tripped on (turn-scoped) reads as though the limit failed to
-    /// hold, exactly the real incident this item fixes (`budget_exceeded
+    /// hold -- exactly the real incident this fixes (`budget_exceeded
     /// max_steps=40` alongside `steps_taken 81`).
     #[test]
     fn root_finished_notice_renders_both_labelled_step_counts() {

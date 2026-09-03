@@ -13,7 +13,7 @@
 //! spawn_plugin_command`'s own shape exactly.
 //!
 //! **Board item `01M0RWFH6V709B7WTAFRZGFKG3` widened this module's own
-//! shape.** Before this item, the spawned task sent exactly one message
+//! shape:** the spawned task used to send exactly one message
 //! (the finished [`ModalAskOutcome`]) once the child's whole turn was
 //! done -- so nothing in `AppState` ever learned the child's `AgentId`
 //! until the ask had ALREADY finished, which is too late to cancel it.
@@ -64,7 +64,7 @@ pub(super) enum AskUpdate {
 /// ends) -- see this module's own doc.
 ///
 /// **`turn.result()`, deliberately, not `turn.text()`** (board item
-/// `01M0RWFH6V709B7WTAFRZGFKG3`, a correction made after this item's own
+/// `01M0RWFH6V709B7WTAFRZGFKG3`, a correction made after a
 /// verification sweep first shipped with `text()` and a flaky test).
 /// `TurnHandle::text`'s own doc: it stops draining "as soon as it sees
 /// `Event::AgentFinished`... **or, if the agent finishes within the same
@@ -156,8 +156,7 @@ impl App {
     /// in this order, both best-effort and both needed --
     /// `SessionHandle::cancel` ALONE cannot free a child parked awaiting a
     /// permission decision (see `AppState::discard_prompts_for_agent`'s own
-    /// doc for the mechanism, confirmed by this item's own reproduction
-    /// test), so the pending prompt is discarded FIRST:
+    /// doc for the mechanism), so the pending prompt is discarded FIRST:
     ///
     /// 1. [`crate::tui::state::AppState::discard_prompts_for_agent`] on the
     ///    ask child, if one is known yet (`state.ask_child`) -- frees a
@@ -172,9 +171,8 @@ impl App {
     /// purges the child once it actually reaches a terminal state (never
     /// synchronously here -- an immediate `purge` on a child that has not
     /// yet finished would reproduce the exact `RuntimeError::Store(
-    /// StoreError::NotRemovable)` error this item was filed over) instead
-    /// of opening the answer modal over a question nobody is waiting on any
-    /// more. When `state.ask_child` is still `None` (the operator abandoned
+    /// StoreError::NotRemovable)` error) instead of opening the answer
+    /// modal over a question nobody is waiting on any more. When `state.ask_child` is still `None` (the operator abandoned
     /// before `AskUpdate::Started` even arrived -- the fork is still in
     /// flight), only the flag is set here; `App::run`'s `Started` arm
     /// finishes the job the moment the child id is known.
@@ -223,9 +221,8 @@ mod tests {
     //! doc); these tests reproduce the channel arms directly, which is the
     //! whole of the mechanism in question.
     //!
-    //! **Written and run against unmodified code before any fix landed**
-    //! (this item's own instruction). Two findings, in tension, both
-    //! load-bearing for the fix below:
+    //! **Written and run against unmodified code before any fix landed.**
+    //! Two findings, in tension, both load-bearing for the fix below:
     //!
     //! 1. [`ask_child_tool_call_is_answerable_exactly_as_an_interactive_
     //!    operator_would`] proves the permission request DOES reach the
@@ -235,8 +232,8 @@ mod tests {
     //!    answering it the way an operator would (a `y` keypress through
     //!    the real `input::handle_key` + `AppState::resolve_current_prompt`)
     //!    lets the ask reach a resolution. **There is no mode-stacking
-    //!    deadlock** -- the hypothesis this item's own spec flagged as
-    //!    "verify before fixing" does not hold.
+    //!    deadlock** -- the hypothesis flagged as "verify before fixing"
+    //!    does not hold.
     //! 2. [`cancelling_an_in_flight_ask_does_not_unblock_a_child_stuck_on_
     //!    the_gate_today`] is the REAL mechanism: `SessionHandle::cancel`
     //!    (even `CancelMode::Immediate`) only trips a `CancellationToken`
@@ -251,8 +248,7 @@ mod tests {
     //!    agent) produces the reported error. The only thing that unblocks
     //!    it today is answering the prompt, or dropping its reply sender
     //!    (`TuiGate::check`'s own fail-closed `Deny { reason: "cancelled"
-    //!    }` fallback) -- which nothing in the abandon/quit path did before
-    //!    this item.
+    //!    }` fallback).
     //!
     //! Together: an in-flight ask is not doomed by mode-stacking, but
     //! abandoning one that is waiting on a tool permission needs more than
@@ -419,16 +415,15 @@ mod tests {
     /// `AppState::resolve_current_prompt` -- the exact two calls an
     /// interactive operator's keystroke would drive.
     ///
-    /// Passes today, unmodified (and after this item's fix): the request
+    /// Passes today, unmodified: the request
     /// DOES reach `gate_rx` (mode is `Normal` during the ask's flight, so
     /// `offer_prompt` promotes it to `AwaitingPermission` rather than
     /// queuing behind a modal that has not opened yet), and answering it
     /// the way an operator would lets the ask reach a resolution
-    /// (`outcome.child.is_some()`). This item's OTHER acceptance criteria
-    /// close what remains: nothing surfaces this prompt to an operator who
-    /// does not already know that sequence (no spinner names it as
-    /// belonging to the ask), and there was previously no way to abandon
-    /// it instead of answering it -- see the next test.
+    /// (`outcome.child.is_some()`). What remains: nothing surfaces this
+    /// prompt to an operator who does not already know that sequence (no
+    /// spinner names it as belonging to the ask), and there was previously
+    /// no way to abandon it instead of answering it -- see the next test.
     #[tokio::test]
     async fn ask_child_tool_call_is_answerable_exactly_as_an_interactive_operator_would() {
         let (conway, mut gate_rx, _backend) = conway_with_real_gate();
@@ -504,12 +499,12 @@ mod tests {
     /// whole test -- dropping it early would take the OTHER, already-known
     /// escape hatch: `TuiGate::check`'s fail-closed `Deny {reason:
     /// "cancelled"}` on a dropped reply channel), then calls
-    /// `SessionHandle::cancel` (immediate mode, the pre-existing primitive
-    /// this item's own recon pointed at) on the child and waits, bounded,
+    /// `SessionHandle::cancel` (immediate mode, the pre-existing
+    /// primitive) on the child and waits, bounded,
     /// for it to actually finish.
     ///
-    /// **Written and run against unmodified code first, per this item's
-    /// own instruction, and it genuinely times out**: `cancel` only trips
+    /// **Written and run against unmodified code first,
+    /// and it genuinely times out**: `cancel` only trips
     /// a `CancellationToken` the agent loop checks cooperatively at
     /// specific points (`conway-runtime/src/agent_loop.rs`); the call site
     /// blocked on a permission decision
@@ -540,7 +535,7 @@ mod tests {
             .expect("TuiGate's sender half is alive");
         let child = prompt.request.agent_id;
 
-        // The primitive this item's own recon pointed at -- immediate
+        // The pre-existing primitive -- immediate
         // cancellation, applied to exactly the stuck child.
         app.handle
             .cancel(child, "ask abandoned")
@@ -700,7 +695,7 @@ mod tests {
         // tree considers `child` terminal yet (measured directly: a bare
         // `purge` here, immediately after `Done`, intermittently reproduces
         // the exact `RuntimeError::Store(StoreError::NotRemovable)`/"agent
-        // is still running" error this item was filed over --
+        // is still running" error --
         // `TurnHandle::text`'s own drain-to-event heuristic can resolve
         // before the tree's status flips). `await_agent` is what actually
         // confirms the terminal state; `App::run`'s own arm does the same

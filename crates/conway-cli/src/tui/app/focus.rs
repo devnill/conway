@@ -50,7 +50,7 @@ impl App {
     /// otherwise stick). Best-effort: a failed fetch just leaves it at zero
     /// rather than failing the whole focus switch.
     ///
-    /// T3 follow-up (this item): `focus_agent` also zeroes
+    /// `focus_agent` also zeroes
     /// `focused_ctx_tokens`/`focused_model`/`focused_model_max_context` --
     /// same problem, same fix shape. `host.context_report`/`host.last_model`
     /// below are the authoritative re-fetches for those, run alongside the
@@ -84,7 +84,7 @@ impl App {
                 // Board `01M0VWMMEG4CER8Y8VH77KZ0CV`: `focus_agent` just
                 // reset `turn_started_at` to `None` -- correct for the
                 // common case (a freshly focused agent with no turn in
-                // flight), wrong for the one this item exists to fix: `agent`
+                // flight), wrong for the case where `agent`
                 // was already streaming a reply when this switch happened,
                 // and `Event::TurnStarted` is bus-only (never replayed), so
                 // the fresh subscription above can never observe the
@@ -185,7 +185,7 @@ mod tests {
     /// suspends `generate()`/`stream()` itself BEFORE any chunk is ever
     /// produced (`std::future::pending()`), which is exactly right for a
     /// "this agent never responds" repro (`pull_in.rs`'s still-running-child
-    /// guard) but wrong for this one -- this item's own bug is specifically
+    /// guard) but wrong for this one -- the bug here is specifically
     /// about REAL, already-streaming `TextDelta` chunks arriving before AND
     /// after a focus switch, so the repro needs a turn that has genuinely
     /// started producing text, not one stuck before its first byte.
@@ -299,7 +299,7 @@ mod tests {
                         // as the "more" delta, which is correct production
                         // behavior (a finished round legitimately goes
                         // idle) but would make this test unable to observe
-                        // the moment this item's fix is actually
+                        // the moment the fix is actually
                         // responsible for.
                         2 => {
                             let _ = done;
@@ -397,14 +397,14 @@ mod tests {
     /// no synthesized `Event::TurnStarted` either -- so a focus switch onto
     /// an agent whose persisted history ends in an assistant reply replays
     /// that same wedge shape, unless the `TextDelta` arm's
-    /// `turn_started_at.is_some()` gate (this item) also covers it.
+    /// `turn_started_at.is_some()` gate also covers it.
     ///
     /// Non-vacuous: `try_focus_agent`'s own `state.focus_agent` call resets
     /// `activity` to `Idle` BEFORE the replay batch below is ever applied
     /// (asserted explicitly), so the closing assertion is not "stayed at
     /// its untouched default" -- it is "the replay batch, once actually
     /// drained through the real `apply`, did not move it away". Confirmed to
-    /// fail pre-fix (this item's own report quotes the output): with the
+    /// fail pre-fix: with the
     /// `turn_started_at` gate reverted, this same replay batch left
     /// `activity` at `Responding` after the drain below.
     ///
@@ -413,7 +413,7 @@ mod tests {
     /// `AgentResultRecord` after its `Assistant` reply, which
     /// `record_to_event` maps to `Event::AgentFinished` -- and `apply`'s own
     /// `AgentFinished` arm resets `activity` back to `Idle` regardless of
-    /// this item's gate, masking the exact bug this test exists to catch.
+    /// the `turn_started_at` gate, masking the exact bug this test exists to catch.
     /// A keep-alive child's log genuinely ends on the bare `Assistant`
     /// record (`keep_alive_spawn_starts_idle_with_no_own_records_then_runs_
     /// and_is_repromptable`, `conway/tests/session_handle_subagent.rs`, is
@@ -489,12 +489,12 @@ mod tests {
         );
     }
 
-    /// T3 follow-up acceptance test: focusing an agent that has already run
+    /// Focusing an agent that has already run
     /// a turn shows its real serving model and a non-zero `ctx` total
     /// IMMEDIATELY -- straight out of `try_focus_agent`, with nothing
     /// drained from the freshly-subscribed stream yet (`AppState::apply`
     /// never sees this stream at all in this test) and no live turn
-    /// required. Before this item, `focus_agent` zeroed both and nothing
+    /// required. `focus_agent` used to zero both and nothing
     /// repopulated them until the focused agent's own next LIVE
     /// `ModelDecision`/`ContextSegmentAdded` -- this asserts the fix, not
     /// just its absence of a crash.
@@ -555,11 +555,10 @@ mod tests {
     /// its `Event::TurnFinished` provably has not, because the backend's
     /// `stream()` is parked on a `Notify` the test itself releases.
     ///
-    /// Pre-fix, this test fails exactly where the item's own report quotes
-    /// it: the assertion right after the refocus, `left: Idle, right:
+    /// Pre-fix, this test fails at the assertion right after the refocus,
+    /// `left: Idle, right:
     /// Thinking` (reverting `App::try_focus_agent`'s `turn_in_progress`
-    /// seed reproduces it -- see this item's completion report for the
-    /// verbatim output).
+    /// seed reproduces it).
     #[tokio::test]
     async fn focus_away_and_back_mid_turn_keeps_the_working_indicator() {
         let gate = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -649,7 +648,7 @@ mod tests {
         // Focus BACK onto the child WHILE its turn is still genuinely in
         // flight: the backend is still parked on `gate`, so `Event::
         // TurnFinished` has provably not fired. This is the exact
-        // resubscribe this item's report traces: `agent_events` cannot
+        // resubscribe hazard: `agent_events` cannot
         // replay a bus-only `Event::TurnStarted` that already fired before
         // this subscription existed.
         let mut events = app
@@ -699,7 +698,7 @@ mod tests {
         // legitimately drops the LOWER-priority `activity` field entirely
         // before `mode`/`hint` give up anything (verified directly: at 300
         // columns the very same state renders `"... | ⠋ responding… 0s · +0
-        // tok | ..."`) -- unrelated to this item, and not something a wider
+        // tok | ..."`) -- and not something a wider
         // render is "cheating" around, just a real terminal size where the
         // configured Lean field set actually fits.
         let text = crate::tui::test_support::render_text(&app.state, 150, 24);

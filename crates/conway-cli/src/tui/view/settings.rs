@@ -44,11 +44,11 @@
 //! ## Grouping
 //!
 //! **Restated in full here, not appended to, because it had already drifted
-//! once before this item touched it: this doc used to say "four top-level
+//! once: this doc used to say "four top-level
 //! groups" naming only display/tool-output/permissions/plugins, while
 //! "providers" (board item `01M11XWB4T8ZADNDB4M8R482MA`) had already
 //! shipped a fifth without this paragraph being updated for it. Corrected
-//! here alongside this item's own sixth, "defaults", per GP-14 -- a
+//! here alongside a sixth, "defaults", per GP-14 -- a
 //! declaration site is one artifact, not an append log.**
 //!
 //! Six top-level [`MenuNode::Group`]s -- "defaults" (the default role, a
@@ -92,11 +92,11 @@
 //!
 //! Board item `01M1AWGSTD7084VFVGN1GK9AS8`. An operator who runs `/model
 //! <pair>` (session-scoped, forks -- INTENT.md §5c) has no in-app way to
-//! make that choice stick past a restart: before this item, the derived
-//! "default model" row above was READ-ONLY end to end, so the only path
+//! make that choice stick past a restart: the derived
+//! "default model" row above used to be READ-ONLY end to end, so the only path
 //! from "I like what this session is running" to "conway starts on it next
 //! time" was hand-editing `roles.<default_role>.chain` in `settings.json`.
-//! The operator report this item closes hit exactly that gap -- they chose
+//! The operator report that motivated this hit exactly that gap -- they chose
 //! a fast model with `/model`, worked on it, restarted, and landed back on
 //! the chain head (a slow default) with no warning that the switch had
 //! been session-only, corrupting a timing comparison they did not know
@@ -146,8 +146,7 @@
 //! one to head must not silently discard the rest). Persisted via
 //! `conway::config::set_role_chain` -- the exact writer `/settings`'
 //! provider-add flow already calls for the identical "id/model" shape, no
-//! second opinion about chain-entry format (P-14, this item's own spec
-//! names this reuse explicitly).
+//! second opinion about chain-entry format (P-14).
 //!
 //! ## Plugins: one home, not two
 //!
@@ -179,18 +178,19 @@
 //! Unlike plugins, providers get NO separate `/provider` command to
 //! shortcut into -- this section IS the one implementation of provider
 //! management, and it is the surface named in "whichever surface does not
-//! own provider management delegates to the one that does" (this item's own
-//! acceptance 8). There is no drift risk analogous to plugins' pre-existing
+//! own provider management delegates to the one that does" (acceptance 8).
+//! There is no drift risk analogous to plugins' pre-existing
 //! `/plugin` browser to duplicate: no other surface in this crate lists,
 //! adds, or removes a `backends.<id>` entry today. **The precedent this
-//! choice sets, flagged for the surface-coherence session this item's own
-//! spec names as not-yet-held:** plugins concluded "one home, not two" by
+//! choice sets is flagged here for whenever surface coherence across
+//! `/settings`, `/plugin`, and any future settings category gets
+//! revisited:** plugins concluded "one home, not two" by
 //! MOVING ownership out of `/settings` into a dedicated `/plugin` view;
-//! this item concludes the opposite -- `/settings` IS the dedicated view,
+//! this section concludes the opposite -- `/settings` IS the dedicated view,
 //! with no `/provider` sibling at all. Both are defensible under P-14 (one
 //! implementation, wherever it lives); which one is the house style for a
-//! THIRD future settings category is exactly the question that session
-//! should rule on, not something this item decides for it.
+//! THIRD future settings category is exactly the question that future
+//! review should rule on, not something decided here.
 //!
 //! Every provider currently in [`AppState::provider_entries`] (a config
 //! snapshot refreshed on open and after every add/remove -- see that
@@ -206,8 +206,8 @@
 //! `build_tree`'s other rows read, and renders one of three, never
 //! collapsed to two: `working`, `not working: <the Unusable Display,
 //! verbatim -- never reworded>`, or `undetermined: <the Undetermined
-//! Display, verbatim>` -- visibly distinct wording is this item's own
-//! acceptance 3, and reusing `Display` verbatim rather than inventing new
+//! Display, verbatim>` -- visibly distinct wording is required
+//! (acceptance 3), and reusing `Display` verbatim rather than inventing new
 //! phrasing is P-14 applied to `conway::backend_usability` specifically
 //! (that module's own doc calls out "a classification vocabulary restated
 //! at a second call site" as the exact hazard). A row absent from
@@ -218,7 +218,7 @@
 //!
 //! One leaf per `crate::first_run::HOSTED_CHOICES` entry follows --
 //! `add {label} (Enter)` -- reusing that table verbatim rather than
-//! restating which provider shapes exist (this item's own acceptance 8/
+//! restating which provider shapes exist (acceptance 8/
 //! P-14 again: `first_run.rs`'s own module doc names exactly this reuse as
 //! the intended one). Local-server auto-detection (the third option
 //! `first_run.rs`'s interactive flow offers before falling back to
@@ -777,7 +777,7 @@ const FOOTER_ROWS: u16 = 2;
 /// transcript: claiming the whole pane cost nothing that the `Clear` was
 /// not covering anyway.
 ///
-/// The reservation this item introduced (see [`modal_rect`]) inverts that.
+/// The reservation `modal_rect` (below) introduces inverts that.
 /// `layout` now shrinks the transcript by exactly the menu's height, so
 /// a denominator of `1` is self-defeating by construction: the menu claims
 /// the full pane, the transcript is shrunk to nothing, and an error raised
@@ -1646,7 +1646,7 @@ mod tests {
         );
     }
 
-    /// Acceptance 3, and the trap this item's own spec names explicitly: an
+    /// The trap: an
     /// `Undetermined` provider must render VISIBLY DIFFERENTLY from an
     /// `Unusable` one -- never collapsed to a single "broken" wording. A
     /// test asserting only "not shown as working" would pass against that
@@ -1867,9 +1867,9 @@ mod tests {
     /// never a `Leaf` -- there is no `Enter` action that could write a
     /// second, independent value for it. The discriminating observable:
     /// if a future edit turned this into a settable leaf (reintroducing
-    /// the rejected `default_model` scalar this item's own decision
-    /// record argues against), this assertion is exactly what would catch
-    /// it.
+    /// the rejected `default_model` scalar -- see `app/defaults.rs`'s own
+    /// doc for why it is a derived read, not a second stored value),
+    /// this assertion is exactly what would catch it.
     #[test]
     fn default_model_row_is_static_never_a_settable_leaf() {
         let mut state = AppState::new(AgentId::new());

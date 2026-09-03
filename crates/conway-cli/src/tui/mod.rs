@@ -64,10 +64,10 @@ fn sweep_live_threshold() -> chrono::Duration {
 
 /// Entry point. Deviates from the module notes' literal two-argument
 /// `tui::run(cli, conway)` form by one argument -- see this crate's
-/// `main.rs`, `build_conway`'s doc comment, and this item's own Self-Check
+/// `main.rs` and `build_conway`'s doc comment
 /// for why: `conway_runtime::runtime::Runtime` bakes its `PermissionGate` in
 /// at construction, with no later swap point, so the interactive permission
-/// gate this item is responsible for wiring (`gate::TuiGate`, CARRIED
+/// gate this function is responsible for wiring (`gate::TuiGate`, CARRIED
 ///) must be constructed and handed to `ConwayBuilder::with_permission_gate`
 /// *before* `conway: Conway` (this function's second argument) is built --
 /// i.e. in `main.rs`, ahead of this call. This function receives the
@@ -101,7 +101,7 @@ fn sweep_live_threshold() -> chrono::Duration {
 /// which would otherwise have to name a store it does not use, and none of
 /// which exercises naming. When `conway.names` is not installed this is
 /// the non-durable `InMemoryAgentNames` fallback -- always empty, so every
-/// surface behaves exactly as it did before this item existed.
+/// surface behaves exactly as it did before this parameter existed.
 pub async fn run(
     cli: &Cli,
     conway: Conway,

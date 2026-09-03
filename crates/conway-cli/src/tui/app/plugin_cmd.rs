@@ -3,7 +3,7 @@
 //! invocation, through the spawned task that isolates a hang/panic from the
 //! run loop, to applying the reply against `AppState` (including
 //! `CommandOutcome::ForkSession`, `/rewind`'s own capability). Extracted out
-//! of `app.rs` verbatim (this item, board); [`super::run`]'s own
+//! of `app.rs` verbatim; [`super::run`]'s own
 //! `plugin_cmd_rx.recv()` arm is the production caller of
 //! [`App::apply_plugin_command_done`].
 
@@ -48,9 +48,8 @@ pub(super) struct PluginCommandDone {
 
 impl App {
     /// Runs a resolved plugin command
-    /// off this loop's own `select!`, never on it -- the mechanism behind
-    /// this item's "a hanging or panicking plugin command does not freeze
-    /// the TUI" acceptance criterion.
+    /// off this loop's own `select!`, never on it -- the mechanism that
+    /// keeps a hanging or panicking plugin command from freezing the TUI.
     ///
     /// **Two nested `tokio::spawn`s, not one.** The OUTER task is what
     /// neither `Self::submit` nor `Self::run`'s `select!` ever awaits, so
@@ -111,11 +110,11 @@ impl App {
     /// `plugin_cmd_rx.recv()` arm) must then resubscribe its `events` local,
     /// exactly like `SubmitOutcome::Resubscribe`'s own call site.
     ///
-    /// **Now `async`** (this item, board): the
+    /// **Now `async`:** the
     /// `ForkSession` arm awaits `Conway::fork_from`, the SAME facade call
     /// `/rewind` needs and the reason this method could not stay
-    /// synchronous. This does NOT reopen the hang-safety property point 15
-    /// establishes -- `fork_from` runs on THIS loop's own async task, same
+    /// synchronous. This does NOT reopen the hang-safety property
+    /// established above -- `fork_from` runs on THIS loop's own async task, same
     /// as every other facade call `Self::run`'s `select!` already awaits
     /// directly (`host.fork`, `host.resume`, ...); the property that must
     /// never block is `Command::invoke` itself, which is already complete
@@ -294,9 +293,8 @@ impl App {
             // `PluginCommandDone::agent`'s own doc gives (mirroring
             // `ForkSession`'s `done.session_id` binding exactly).
             conway::plugin::CommandOutcome::SubmitPrompt { text } => {
-                // Determine-first question 4's guard (this item's own
-                // spec): refuse rather than silently racing a second turn
-                // onto the SAME agent the TUI is currently watching
+                // This guard refuses rather than silently racing a second
+                // turn onto the SAME agent the TUI is currently watching
                 // mid-turn. Composes with, rather than fights, `state.rs`'s
                 // own `turn_started_at.is_some()` guard (the fix for the
                 // adjacent wedged-status-bar defect, board
@@ -314,13 +312,14 @@ impl App {
                 // `App::try_focus_agent`'s own refocus-mid-turn seed, not
                 // yet consulted by this guard. Widening THIS check to query
                 // it for a non-focused `done.agent` is a genuine option a
-                // future item can pick up (it would let this guard refuse a
+                // future change can pick up (it would let this guard refuse a
                 // target the operator has merely navigated away from, not
                 // only the one currently on screen) but is deliberately not
-                // done here -- this item's own ownership was `state.rs`/
+                // done here -- ownership of this guard is `state.rs`/
                 // `focus.rs`/`session_handle.rs`, and widening a REFUSAL
-                // surface is a behavior change this guard's own author,
-                // not this item, should weigh. A target agent the operator
+                // surface is a behavior change that guard's own author
+                // should weigh, not a side effect of an unrelated fix.
+                // A target agent the operator
                 // has since navigated away from therefore still has no
                 // tracked state HERE to consult, so the submission
                 // proceeds in that case -- `Runtime::prompt`'s own
@@ -774,8 +773,7 @@ mod tests {
     /// snapshot dropped there exactly as it used to drop across `/resume`
     /// -- an operator who reached the capability through
     /// `/conway.history.rewind` rather than typing `/resume` directly
-    /// would still have lost it. Closed in the same commit as the `/resume`
-    /// fix rather than filed separately, per this item's own scoping rule.
+    /// would still have lost it.
     #[tokio::test]
     async fn plugin_status_contribution_survives_a_fork_session_outcome() {
         // Unlike `fork_session_outcome_forks_the_calling_session_and_drives_
@@ -968,8 +966,8 @@ mod tests {
     // -----------------------------------------------------------------
     // `conway-plugin-history`'s
     // `/conway.history.rewind`, driven through the REAL shipped plugin
-    // crate (not `RewindPluginFixture` above) -- the discriminating
-    // acceptance criterion this item names: absent the plugin, the command
+    // crate (not `RewindPluginFixture` above) -- the discriminating case:
+    // absent the plugin, the command
     // is simply unknown, with no stub or special case anywhere in core;
     // installed, it forks the real calling session end to end and the
     // parent's own log is provably untouched.
@@ -983,8 +981,8 @@ mod tests {
     /// `fork_session_outcome_forks_the_calling_session_and_drives_the_child`
     /// above already gives for the local fixture) AND, stronger, every
     /// persisted `LogRecord` read back byte-for-byte equal
-    /// (`LogRecord: PartialEq`) -- the literal "the parent's bytes are
-    /// unchanged" this item's acceptance criterion names.
+    /// (`LogRecord: PartialEq`) -- the literal claim that the parent's
+    /// bytes are unchanged.
     #[tokio::test]
     async fn conway_history_rewind_forks_the_real_plugin_and_leaves_the_parent_log_byte_for_byte_unchanged(
     ) {
@@ -1356,9 +1354,8 @@ mod tests {
     // and its falsification (P-15).
     // -----------------------------------------------------------------
 
-    /// Ignores `ctx.args` entirely -- this item's own determine-first
-    /// question 3 answer (v1 performs no interpolation of any kind): the
-    /// submitted text is always this literal string.
+    /// Ignores `ctx.args` entirely -- v1 performs no interpolation of any
+    /// kind: the submitted text is always this literal string.
     struct SubmitPromptCommandFixture;
 
     #[async_trait::async_trait]
@@ -1524,8 +1521,7 @@ mod tests {
     /// turn is in flight" without needing to race a live one.
     ///
     /// **Falsified** (removing the guard's `if` block from `Self::
-    /// apply_plugin_command_done` makes this test fail -- verified by hand
-    /// during this item's own development, see the completion report): a
+    /// apply_plugin_command_done` makes this test fail): a
     /// fixture that leaves `turn_started_at` at its default `None` would
     /// prove nothing about the guard (P-15's own "a check is not
     /// established until it has been shown to fail" -- this is why

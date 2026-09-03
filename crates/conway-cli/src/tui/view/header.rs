@@ -80,7 +80,7 @@
 //! doc already explains why crossterm mouse capture is not enabled (it
 //! would disable the terminal's native click-drag text selection, which
 //! the clean-copy guarantee exists to protect). `PageUp`/`PageDown` (existing)
-//! plus `End`/`Home` (T6) and the floating footer remain the keyboard-only,
+//! plus `End`/`Home` and the floating footer remain the keyboard-only,
 //! selection-preserving answer to "how do I get back to the bottom".
 
 use ratatui::layout::Rect;

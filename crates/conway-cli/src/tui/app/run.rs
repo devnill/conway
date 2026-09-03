@@ -2,7 +2,7 @@
 //! session's own `EventStream`, the gate's `PendingPrompt` channel,
 //! crossterm's key/resize stream, and the `/ask`/plugin-command reply
 //! channels, driving one `AppState` and redrawing at a capped rate.
-//! Extracted out of `app.rs` verbatim (this item, board) -- `run` is not
+//! Extracted out of `app.rs` verbatim -- `run` is not
 //! unit-tested directly (it owns the real terminal and a live
 //! `SessionHandle`); the pieces it composes (`state::apply`,
 //! `input::handle_key`, `view::draw`, `gate::TuiGate`, and every `App`
@@ -42,8 +42,8 @@ const ANIMATION_TICK: Duration = Duration::from_millis(125);
 /// this loop calls `Conway::poll_plugin_status_contributions` -- see that
 /// method's own doc for why re-reading it is cheap (non-blocking by
 /// contract) but still not free to do on every 16ms `REDRAW_TICK`, which
-/// this guards against ("polling every plugin per frame is unacceptable",
-/// this item's own spec). 1000ms -- the SAME floor
+/// this guards against (polling every plugin per frame is unacceptable).
+/// 1000ms -- the SAME floor
 /// `conway_plugin_statusline::MIN_REFRESH_INTERVAL_MS` enforces on that
 /// crate's own background loop -- is chosen deliberately, not arbitrarily:
 /// polling faster than the fastest any status-contributing plugin can
@@ -214,14 +214,13 @@ impl App {
                                     // (`TurnHandle::text`'s own drain-to-
                                     // event heuristic can resolve before the
                                     // tree's status flips -- measured
-                                    // directly by this item's own tests, the
+                                    // directly, which is the
                                     // reason `await_agent` -- not a bare
                                     // `purge` attempt -- is what actually
                                     // confirms it below). A bare `purge`
                                     // here would risk reproducing the exact
                                     // `RuntimeError::Store(StoreError::
-                                    // NotRemovable)` error this item was
-                                    // filed over.
+                                    // NotRemovable)` error.
                                     (true, Some(child)) => {
                                         match tokio::time::timeout(
                                             Duration::from_secs(5),
@@ -371,7 +370,7 @@ impl App {
                     match maybe_env {
                         Some(env) => {
                             // the `/why` reads this back; `AppState::apply`
-                            // (state.rs, out of this item's file scope) does
+                            // (state.rs) does
                             // not populate it -- see the field's own doc.
                             // The OLD value shifts into `previous_model_
                             // decision` first (its own doc) so `/why` can
@@ -1003,9 +1002,10 @@ impl App {
                                             // with a wildcard drop -- `Effect`
                                             // is one enum shared by every
                                             // dispatch site, and a silently
-                                            // dropped case here is exactly
-                                            // the "silent loss" this item's
-                                            // own acceptance forbids, should
+                                            // dropped case here would be
+                                            // exactly the kind of silent
+                                            // loss this codebase refuses to
+                                            // accept, should
                                             // a future change ever route one
                                             // through this call site.
                                             Effect::Quit => return Ok(ExitCode::Completed),
@@ -1122,9 +1122,9 @@ impl App {
                                         // a wildcard drop: `Effect` is one
                                         // enum shared by every dispatch site,
                                         // and a silently dropped plugin
-                                        // command would be the exact "silent
-                                        // loss" this item's own acceptance
-                                        // criterion forbids, should a future
+                                        // command would be exactly the kind
+                                        // of silent loss this codebase
+                                        // refuses to accept, should a future
                                         // change ever route one here.
                                         Effect::RunPluginCommand(invocation) => {
                                             self.spawn_plugin_command(invocation);

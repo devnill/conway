@@ -66,7 +66,7 @@
 //!   function of `AppState` -- see `app.rs::submit`'s own doc for exactly
 //!   where that refresh now lives and why moving it into `execute` would
 //!   break `tests::settings_opens_the_menu`'s existing "a pure `AppState`
-//!   flip, no facade call at all" assertion, which this item must leave
+//!   flip, no facade call at all" assertion, which must be left
 //!   passing unedited. `execute`'s own `SlashCommand::Settings` arm is
 //!   UNCHANGED: still exactly `state.open_settings(); Effect::None`.
 
@@ -154,7 +154,7 @@ pub enum SlashCommand {
     /// as a fresh, interactive KEEP-ALIVE session forked from the FOCUSED
     /// agent -- see [`execute`]'s own `Fork` arm and `parse_fork` for the
     /// exact forms this covers. `agent` is `Some` only for the explicit-
-    /// target form `/fork @<agent> <directive>` (this item's generalization
+    /// target form `/fork @<agent> <directive>` (a generalization
     /// of the pre-existing `/fork <agent> <directive>`, unchanged in
     /// substance: an autonomous, non-keep-alive fork of that SPECIFIC live
     /// agent). `directive` is `None` when the caller supplies no first
@@ -323,7 +323,7 @@ pub struct CommandSpec {
 }
 
 /// Describes one built-in [`SlashCommand`] variant for the palette --
-/// **the single declaration site this item's spec asked for**: name, usage
+/// **the single declaration site**: name, usage
 /// and description live nowhere else, and both the palette
 /// (`view::palette::draw_overlay`, via [`builtin_commands`]) and this
 /// module's own tests read it.
@@ -551,8 +551,7 @@ fn builtin_variant_samples() -> Vec<SlashCommand> {
 /// `"/quit" | "/exit"` arm -- not a distinct variant, so it cannot come
 /// from the exhaustive match [`describe`] performs. Represented explicitly
 /// here instead of silently dropped (dropping it would make a working
-/// command undiscoverable again, the exact defect class this item exists
-/// to close); `tests::exit_and_quit_both_parse_to_the_same_described_variant`
+/// command undiscoverable again); `tests::exit_and_quit_both_parse_to_the_same_described_variant`
 /// proves the two spellings really do parse to the identical command, so
 /// this hand-written row cannot silently drift from `parse`'s own alias.
 pub fn builtin_commands() -> Vec<CommandSpec> {
@@ -601,14 +600,13 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             Ok(SlashCommand::Await { target })
         }
         "/tree" => {
-            // Item A3 introduced `/tree` as an alias for the `/agents`
+            // `/tree` is an alias for the `/agents`
             // panel's own view (`execute` renders it from `state.tree`, no
             // facade call). Board item `01M0RW29F2ATVGCV0R8H0GQEYH`
-            // reverses A3's OTHER choice -- hiding it from the palette --
-            // which was itself the exact defect class this item exists to
-            // close: a working command a person could not discover by
+            // reverses an earlier choice to hide it from the palette --
+            // a working command a person could not discover by
             // typing `/`. `/tree` is now described like any other command
-            // (see [`describe`]); T7's removal of the transcript-dump
+            // (see [`describe`]); the earlier removal of the transcript-dump
             // `/help` listing it used to be excluded from is unrelated and
             // still stands.
             parse_no_arg(rest, "/tree")?;
@@ -839,7 +837,7 @@ fn parse_cancel(rest: &str, form: &str) -> Result<(String, Option<String>), Pars
 }
 
 /// Parses `/spawn`'s argument list, where naming an `agent_def` is optional
-/// (module notes / this item's own doc: no `agent_def` means the spawned
+/// (module notes: no `agent_def` means the spawned
 /// child inherits the parent session's role/model) AND -- since the "bare
 /// /spawn & /fork open an interactive session" item -- the prompt itself is
 /// now ALSO optional (a bare `/spawn`/`/spawn @<agent_def>` creates a fresh,
@@ -1027,8 +1025,8 @@ pub enum Effect {
     /// caller (`app.rs::App::run`) can spawn it off the render/input loop
     /// (mirroring the existing `/ask` modal's own `tokio::spawn` +
     /// channel-reply shape, `run_modal_ask`). This is the load-bearing
-    /// property behind this item's own hang/panic-safety acceptance
-    /// criterion: since `execute` (the thing `App::run`'s `select!` loop
+    /// property that keeps the run loop hang/panic-safe:
+    /// since `execute` (the thing `App::run`'s `select!` loop
     /// DOES await directly) never runs a byte of plugin code, a hanging or
     /// panicking `Command::invoke` cannot block or crash the loop that
     /// awaits `execute` -- see `commands::tests::
@@ -1059,8 +1057,8 @@ pub enum Effect {
     /// the whole TUI for as long as the target agent runs, exactly the
     /// property `commands::tests::execute_never_awaits_a_hanging_await`
     /// pins (demonstrated failing first against a scratch version that
-    /// called `host.await_agent(agent).await` directly inside this arm,
-    /// per this item's own verification instruction). The caller
+    /// called `host.await_agent(agent).await` directly inside this arm).
+    /// The caller
     /// (`App::submit`, via `App::spawn_await`) does the actual
     /// `tokio::spawn`, mirroring `App::spawn_modal_ask`'s shape exactly
     /// (its own dedicated channel, not `modal_ask_tx` -- see
@@ -1120,8 +1118,8 @@ pub trait Host {
     /// to `SessionHandle::id`, exactly like [`Self::root`]'s own passthrough
     /// to `SessionHandle::root`.
     fn session_id(&self) -> SessionId;
-    /// A thin passthrough to `SessionHandle::context_report_current` (T3
-    /// follow-up) -- NOT the plain `SessionHandle::context_report`: the
+    /// A thin passthrough to `SessionHandle::context_report_current` --
+    /// NOT the plain `SessionHandle::context_report`: the
     /// `_current` variant closes that method's documented resumed-session
     /// gap (falls back to the most recently PERSISTED report when this
     /// process has no live one yet for `agent`), so every caller reached
@@ -1209,8 +1207,7 @@ pub trait Host {
     /// prepend that variant's `"io error: "` `Display` prefix onto every
     /// message the old `app.rs::submit` interception used to show verbatim
     /// (e.g. the unrecognized-top-level-key case's own message), which
-    /// would be an observable wording regression this item's "must not
-    /// regress" acceptance forbids.
+    /// would be an observable wording regression that must not happen.
     async fn trust_permission_file(
         &self,
         path: &std::path::Path,
@@ -1244,7 +1241,7 @@ pub trait Host {
 }
 
 /// The live [`Host`]: pure delegation to a `SessionHandle` + `Conway` pair
-/// -- no logic of its own, per this item's own objective ("none of them may
+/// -- no logic of its own ("none of them may
 /// reach past `SessionHandle`/`Conway`").
 pub struct LiveHost<'a> {
     pub handle: &'a SessionHandle,
@@ -1356,7 +1353,7 @@ impl Host for LiveHost<'_> {
 /// [`CommandRegistry::build`] refuses to install a malformed or colliding
 /// plugin command rather than silently dropping or overwriting it --
 /// "a surfaced, named error at install time, not a silent win or a silent
-/// loss" (this item's own acceptance). `App::new` propagates this as a
+/// loss". `App::new` propagates this as a
 /// startup failure (`FacadeError::Config`), so a defect here stops the TUI
 /// from starting with a clear message, the same severity every OTHER
 /// startup misconfiguration (a malformed permissions file, an unknown
@@ -1787,8 +1784,8 @@ pub async fn execute_intent_confirm<H: Host>(
 /// returning whatever [`Effect`] the caller's app loop must additionally
 /// carry out. Every command maps to exactly one `host` call except `/why`
 /// (reads `state.last_model_decision`, no facade call at all), `/tree`
-/// (item A3: renders `state.tree` directly, no facade call), and `/help`
-/// (T7: flips `AppState::help_open`, no facade call and no transcript
+/// (renders `state.tree` directly, no facade call), and `/help`
+/// (flips `AppState::help_open`, no facade call and no transcript
 /// mutation at all).
 ///
 /// Never panics and never propagates a facade error: a failing command
@@ -1959,7 +1956,7 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             }
         },
         SlashCommand::Spawn { agent_def, prompt } => {
-            // Always a fresh, interactive keep-alive session (this item):
+            // Always a fresh, interactive keep-alive session:
             // empty prompt (the child idles until `prompt`, if given, is
             // delivered separately by the app loop -- see `Effect::
             // FocusNewSession`'s own doc), attached under `host.root()`
@@ -2010,8 +2007,8 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                     // events, reset AppState from handle.transcript(root)".
                     // The full LogRecord -> Entry backfill is left out here
                     // (disclosed): no LogRecord -> Entry mapping exists
-                    // anywhere in this crate today, and no criterion of
-                    // this item exercises it -- `conway::SessionHandle`'s
+                    // anywhere in this crate today, and nothing exercises
+                    // it -- `conway::SessionHandle`'s
                     // own `record_to_event` doc names the analogous
                     // LogRecord -> Event gap as unresolved for the same
                     // reason (mismatched cardinality). `state` is reset to
@@ -2334,8 +2331,8 @@ fn notice(state: &mut AppState, text: impl Into<String>) {
 /// -- whose `Display` names exactly how many of how many records merged
 /// and which child session still holds the ask, and can run past what even
 /// a grown footer shows -- is never simply lost. `modal.error` itself
-/// still gets the FULL, untruncated `Display` text (unchanged from before
-/// this item): deciding how much of it actually fits on screen is the view
+/// still gets the FULL, untruncated `Display` text: deciding how much of
+/// it actually fits on screen is the view
 /// layer's job, not this dispatch's.
 pub async fn apply_ask_fate<H: Host>(fate: AskFate, state: &mut AppState, host: &H) {
     let child = match &state.mode {
@@ -2376,7 +2373,7 @@ pub async fn apply_ask_fate<H: Host>(fate: AskFate, state: &mut AppState, host: 
 /// `01KZHVFCN6ZEAXV7K5JHRQN1YB`): a no-op `notice` for [`TrustDecision::
 /// Cancel`] (there is nothing to undo -- nothing was ever written), or the
 /// SAME `Host::trust_permission_file` call this arm used to make
-/// immediately (before this item added the preview step) for
+/// immediately (before the preview step was added) for
 /// [`TrustDecision::Confirm`]. Driven by `app.rs`'s `Action::TrustDecision`
 /// arm, mirroring [`apply_ask_fate`]'s own dispatch shape exactly: reads
 /// the open card from `state.mode`, is a no-op if none is open (the same
@@ -2464,7 +2461,7 @@ pub async fn apply_trust_decision<H: Host>(
 /// function, so accepting a name here is the whole of the payoff and costs
 /// no new verbs. With `conway.names` uninstalled,
 /// [`AppState::agent_names`] is `None`, this pass matches nothing, and the
-/// two surrounding passes behave exactly as they did before this item.
+/// two surrounding passes behave exactly as they always did.
 ///
 /// **Ordering, decided: exact id, then exact name, then prefix.** Both of
 /// the first two passes are EXACT matches on an identifier the operator
@@ -2607,7 +2604,8 @@ fn render_tree_snapshot(state: &mut AppState) {
 /// BEFORE [`render_context_report`] -- "instruction is the top of your
 /// context" (decision `01M0K5K8DCRVR523P54DZF4BY3`) -- and only when
 /// non-empty, so a session with no instruction-declaring plugin installed
-/// renders byte-identically to before this item (the per-segment listing
+/// renders byte-identically to a build with no such section at all (the
+/// per-segment listing
 /// below already shows the base idiom and any directory-authored skill by
 /// name, via `Provenance::AgentDef`/`Provenance::Skill`; this section adds
 /// only what that listing cannot: which PLUGIN a fragment came from, and
@@ -2968,14 +2966,14 @@ fn provenance_label(p: &Provenance) -> String {
 /// `Event::ModelDecision` -- this module never writes it). No facade call
 /// at all (module notes: "reads cached state with no facade call").
 ///
-/// **Shows what changed** (this item, INTENT.md §5c: "changing model
+/// **Shows what changed** (INTENT.md §5c: "changing model
 /// mid-session is ordinary"): when `state.previous_model_decision` is also
 /// `Some` (i.e. this is at least the second routing decision this session
 /// has seen -- ordinarily the child's first turn after a `/model`/`/role`
 /// switch), a changed `role`/`chosen` is rendered as `X -> Y` instead of
 /// bare `Y`, naming exactly what a `/model`/`/role` switch (or, equally, an
 /// ordinary fallback the router itself chose) actually changed. A field
-/// that did NOT change renders bare, unchanged from before this item --
+/// that did NOT change renders bare, as it always has --
 /// there is nothing to contrast it against.
 fn render_why(state: &mut AppState) {
     let Some(env) = state.last_model_decision.clone() else {
@@ -3186,7 +3184,7 @@ mod tests {
 
     #[test]
     fn fork_at_agent_splits_agent_and_directive() {
-        // Explicit target via `@` (this item's generalization of the old
+        // Explicit target via `@` (a generalization of the old
         // `/fork <agent> <directive>` two-arg form).
         assert_eq!(
             parse("/fork @a7 review the diff"),
@@ -3205,7 +3203,7 @@ mod tests {
 
     #[test]
     fn bare_fork_parses_with_no_agent_and_no_directive() {
-        // Bare `/fork` (this item): a fresh, interactive keep-alive fork of
+        // Bare `/fork`: a fresh, interactive keep-alive fork of
         // the FOCUSED agent, idling until prompted.
         assert_eq!(
             parse("/fork"),
@@ -3256,7 +3254,7 @@ mod tests {
 
     #[test]
     fn bare_spawn_parses_with_no_agent_def_and_no_prompt() {
-        // Bare `/spawn` (this item): a fresh, interactive keep-alive spawn,
+        // Bare `/spawn`: a fresh, interactive keep-alive spawn,
         // idling until prompted -- no longer a parse error.
         assert_eq!(
             parse("/spawn"),
@@ -3269,7 +3267,7 @@ mod tests {
 
     #[test]
     fn spawn_at_agent_def_with_no_prompt_parses_with_prompt_none() {
-        // `/spawn @<agent_def>` (this item): names an agent_def with no
+        // `/spawn @<agent_def>`: names an agent_def with no
         // first message -- no longer a parse error.
         assert_eq!(
             parse("/spawn @reviewer"),
@@ -3426,7 +3424,7 @@ mod tests {
 
     /// An unrecognized action word (neither `install` nor `uninstall`) is a
     /// `ParseError`, not a silently-accepted third form -- shown to fail
-    /// first (P-15): before this item's `parse_plugins_action` existed,
+    /// first (P-15): before `parse_plugins_action` existed,
     /// `/plugin all` already failed this way via the old `parse_no_arg`
     /// path, so this and `plugin_with_trailing_argument_is_a_parse_error_
     /// naming_the_form` above both cover the identical case through the
@@ -3565,14 +3563,14 @@ mod tests {
     }
 
     /// `/ask` and `/agents` (the two the operator named explicitly) must
-    /// still be listed -- and, per this item's own finding, the mechanism
+    /// still be listed -- and the mechanism
     /// by which they are listed is no longer a special case at all: both
     /// are ordinary `SlashCommand` variants reached through the identical
     /// `describe` match every other built-in goes through (see this
     /// module's own top-of-file doc on `/settings`, `/trust`, `/agents`,
     /// `/ask` "are ordinary commands now" -- board item
     /// `01KZVZ5XV162XCQR96AQKCCCF7` already closed the pre-parser
-    /// interception this item's spec describes as the reason they needed
+    /// interception that used to be the reason they needed
     /// separate handling). There is no "handled elsewhere" case left to
     /// model for them.
     #[test]
@@ -4084,8 +4082,8 @@ mod tests {
 
     /// A fixture plugin command that never resolves -- `Command::invoke`'s
     /// own `Future` never completes. Used ONLY to prove `execute` never
-    /// awaits a plugin's `invoke` itself (the structural property behind
-    /// this item's hang-safety acceptance criterion); actually running
+    /// awaits a plugin's `invoke` itself (the structural property that
+    /// keeps `execute` hang-safe); actually running
     /// this to completion would hang the test process, so no test here
     /// ever `.await`s the `CommandOutcome` this produces -- only that
     /// `execute` returns without needing to.
@@ -4362,7 +4360,7 @@ mod tests {
     /// AGENT's own tree-node status flip to `Cancelled`/the `-` marker is a
     /// separate, pre-existing mechanism: `AgentFinished { Cancelled }` ->
     /// `AppState::apply_agent_finished`, unrelated to this command's own
-    /// dispatch and untouched by this item).
+    /// dispatch and untouched here).
     #[tokio::test]
     async fn cancel_a_running_non_focused_subagent_stops_it_and_the_session_lives() {
         let root = AgentId::new();
@@ -4654,7 +4652,7 @@ mod tests {
     /// `SlashCommand::Await` arm never calls it at all (see `Effect::
     /// RunAwait`'s own doc). Written and run against a scratch version of
     /// this arm that called `host.await_agent(agent).await` directly inline
-    /// FIRST, per this item's own verification instruction: that version
+    /// FIRST: that version
     /// hangs and this test times out against it, demonstrating the check
     /// actually catches the regression it exists to catch; restoring the
     /// real arm (which only returns `Effect::RunAwait`, deferring the
@@ -5664,12 +5662,12 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // /trust, /agents, /ask -- the discriminating observable this item
-    // exists to prove: each reaches its handler THROUGH `execute`, driven
+    // /trust, /agents, /ask -- the discriminating observable proved below:
+    // each reaches its handler THROUGH `execute`, driven
     // off `SlashCommand`, not a pre-parser string comparison.
     // ---------------------------------------------------------------
 
-    /// The headline property this item exists to prove: `/trust
+    /// The headline property proved here: `/trust
     /// permissions` opens the preview card FIRST, showing the file's
     /// current content and status -- it must NOT call
     /// `trust_permission_file` (which would both install and trust in the
@@ -5707,7 +5705,7 @@ mod tests {
     /// Confirming the open card is what actually calls
     /// `trust_permission_file` and records the installed count -- the SAME
     /// facade call and message shape `/trust permissions` used to produce
-    /// immediately, before this item added the preview step.
+    /// immediately, before the preview step was added.
     #[tokio::test]
     async fn confirming_the_trust_preview_installs_rules_and_records_the_installed_count() {
         let root = AgentId::new();
@@ -7223,7 +7221,7 @@ mod tests {
     /// per piece of it... with no total and no way to see what is taking
     /// the space." This is the acceptance-level check that the rendered
     /// `/context` output actually leads with the total/kind-table/largest
-    /// block this item adds, ahead of the unchanged per-segment listing.
+    /// block, ahead of the unchanged per-segment listing.
     #[tokio::test]
     async fn context_renders_the_summary_header_before_the_per_segment_list() {
         let root = AgentId::new();
@@ -7372,8 +7370,8 @@ mod tests {
         // `short_agent_id`'s own doc) -- this test hit exactly that
         // collision, non-deterministically, when it first used
         // `AgentId::new()` for both. Fixed, non-colliding literal ULIDs
-        // make this test's own pass/fail about the loop this item exists
-        // to close, not about ULID clock timing.
+        // make this test's own pass/fail about `resolve_agent` matching the
+        // rendered id, not about ULID clock timing.
         let root: AgentId = "01HF7YAT000000000000000001"
             .parse()
             .expect("valid ULID string");
@@ -7576,7 +7574,7 @@ mod tests {
         // `AppState` alone: the status line names the newly focused child
         // (mirrors `view::status`'s own `status_line_names_the_focused_
         // agent_once_switched_off_root` test). The status line's `lineage`
-        // field (this item relocated V5's breadcrumb here from T6's sticky
+        // field (V5's breadcrumb, relocated here from the sticky
         // header) names the agent by its SHORT id, not the full ULID --
         // matching `view/agents.rs::short_agent_id`'s truncation.
         let rendered = crate::tui::test_support::render(&state, RENDER_WIDTH, 24);
@@ -7850,9 +7848,9 @@ mod tests {
 
     /// With `conway.names` uninstalled -- `AppState::agent_names` `None`,
     /// which is what every `AppState::new` produces -- `resolve_agent` is
-    /// exactly the two-pass function it was before this item. Stated as its
-    /// own test because "uninstalled changes nothing" is half of this
-    /// item's deliverable, and the pre-existing resolver tests above (which
+    /// exactly the two-pass function it always was. Stated as its
+    /// own test because "uninstalled changes nothing" needs its own proof,
+    /// and the pre-existing resolver tests above (which
     /// this file did not edit) are the other half.
     #[test]
     fn with_no_names_store_installed_resolve_agent_is_unchanged() {

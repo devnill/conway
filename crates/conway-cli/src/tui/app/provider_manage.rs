@@ -5,7 +5,7 @@
 //! identical reason (directly testable, no real terminal/`select!` loop
 //! needed).
 //!
-//! **Calls the three BUILT primitives this item names, never a second
+//! **Calls the three BUILT primitives below, never a second
 //! opinion about any of them (P-14):**
 //! - `crate::first_run::HOSTED_CHOICES`/`resolve_credential_plan`/
 //!   `backend_entry_json` decide which provider SHAPES exist and how to
@@ -21,9 +21,9 @@
 //!
 //! # A newly added provider is wired into the routing chain, not just saved
 //!
-//! Board item `01M1A54RS91QHHHTY7N1PV8X0H` (2026-08-30): before this item,
+//! Board item `01M1A54RS91QHHHTY7N1PV8X0H` (2026-08-30):
 //! [`App::apply_add_provider_choice`]/[`App::apply_add_provider_credential`]
-//! called only [`set_backend_provider`], exactly the same one-write defect
+//! used to call only [`set_backend_provider`], exactly the same one-write defect
 //! `first_run.rs::finish_setup` had before board item
 //! `01M1A2HKMDGNK961ZFV1EGZDQ0` fixed it there -- `backends.<id>` was
 //! written and nothing else, so `default_role` fell through to
@@ -67,8 +67,8 @@
 //! else.** That is silence about a state acceptance -- the operator adds a
 //! provider through the ONLY add-a-provider surface this app has and sees
 //! it listed with a status, with no visible sign that a prompt would never
-//! actually reach it; this item's own spec calls that exact silence "what
-//! made this a finding" and requires either wiring it or saying so loudly,
+//! actually reach it; that exact silence is what made this a finding, and
+//! the fix requires either wiring it or saying so loudly,
 //! and wiring it is strictly less work than building a second UI just to
 //! say "this one does nothing yet." A write failure during this second step
 //! (the backend entry is already saved) is reported by name rather than
@@ -78,7 +78,7 @@
 //!
 //! # Removal has consequences -- refuse, don't warn-and-proceed
 //!
-//! **Ruling, made here and recorded per this item's own spec:** removing a
+//! **Ruling:** removing a
 //! provider a role's `chain` still names is REFUSED outright, naming the
 //! affected roles, before any write -- never a warn-and-proceed. This
 //! follows `app/plugin_toggle.rs`'s own toggle-off posture (a plugin
@@ -158,8 +158,8 @@
 //! role into existence and hit this refusal there has no in-app remedy for
 //! that specific role today. That gap is a real, disclosed limit of the
 //! current `/settings` surface (it has never supported authoring a
-//! non-default role's chain at all), not a defect this item introduces or
-//! silently papers over.
+//! non-default role's chain at all), not a defect introduced here or
+//! silently papered over.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -588,7 +588,7 @@ impl App {
     /// mentions this provider somewhere in a chain that has other,
     /// independently usable entries too). See this module's own doc,
     /// "Removal has consequences" and its `2026-08-30` addendum, for why
-    /// refusal (not warn-and-proceed) is this item's ruling and why the
+    /// refusal (not warn-and-proceed) is the ruling and why the
     /// guard's own criterion narrowed to exactly this.
     pub(super) fn apply_remove_provider(
         &mut self,
@@ -877,7 +877,7 @@ mod tests {
         // at the FRONT, so that slice was only ever `"{\n  "`, which is a
         // prefix of anything. It could not have failed for the reason it
         // claimed. Adding a second front-inserted member (`roles`, from
-        // this item's chain wiring) is what exposed that.
+        // the chain wiring above) is what exposed that.
         let operator_bytes = "\"//\": \"an operator comment\",\n  \"default_role\": \"coder\"";
         assert!(
             text.contains(operator_bytes),

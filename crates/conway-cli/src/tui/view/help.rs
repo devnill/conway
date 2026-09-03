@@ -1,7 +1,7 @@
-//! The `/help` keybinding overlay (T7): a read-only cheat-sheet of every key
+//! The `/help` keybinding overlay: a read-only cheat-sheet of every key
 //! binding the TUI actually has.
 //!
-//! Before this item, `/help` dumped a static command list
+//! `/help` used to dump a static command list
 //! (`commands.rs::HELP_LINES`, now removed) into the transcript as a pile of
 //! `Entry::Notice` lines -- spamming the conversation with content that
 //! already lived in the `/` command palette (`view/palette.rs::COMMANDS`),
@@ -94,9 +94,9 @@ struct Group {
     bindings: &'static [Binding],
 }
 
-/// The overlay's whole content, grouped exactly as this item's verified
-/// binding list (enumerated from `input.rs` at HEAD, not the work item's own
-/// -- stale -- spec text). Kept as one `const` so
+/// The overlay's whole content, grouped exactly as verified against
+/// `input.rs` at HEAD (never any spec text, which can go stale). Kept as
+/// one `const` so
 /// [`no_binding_row_mentions_mouse`] can scan it directly, with no rendered
 /// buffer needed.
 const GROUPS: &[Group] = &[
@@ -279,8 +279,8 @@ const FOOTER_ROWS: u16 = 1;
 /// **Written for V1 as `1` ("up to the whole `transcript_area`"), corrected
 /// by board item `01M1AFGDWR9CQ8WNYYV2B1TQBK`.** The `1` was sound while
 /// `/help` drew straight OVER an already-rendered transcript (`Clear` cost
-/// nothing the overlay wasn't already covering) -- but this item makes
-/// `view::mod::layout` reserve this overlay's own height out of the
+/// nothing the overlay wasn't already covering) -- but
+/// `view::mod::layout` now reserves this overlay's own height out of the
 /// transcript pane BEFORE `transcript::draw` runs (see [`modal_rect`],
 /// mirroring `view/settings.rs::modal_rect`'s own fix one item earlier). A
 /// cap of `1` and a reservation are the same contradiction `settings.rs`'s
@@ -297,7 +297,7 @@ const FOOTER_ROWS: u16 = 1;
 /// `Paragraph::scroll` against `scroll` (`AppState::modal_scroll`), and
 /// `input.rs::handle_help_key` already wires `PageUp`/`PageDown` to it
 /// (`adjust_modal_scroll`) -- a REAL, working, independent scroll offset
-/// that has existed since before this item, not something this correction
+/// that already existed, not something this correction
 /// adds. Capping only shrinks the VIEWPORT (`frame_areas.body_area.height`,
 /// which `body_max_scroll` reads); the full binding list is still there to
 /// scroll to, exactly the way `/settings`' `ListState` keeps rows past ITS

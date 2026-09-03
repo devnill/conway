@@ -1,8 +1,8 @@
 //! Terminal-size-derived transcript scrolling: `App`'s own thin wrappers
 //! around `AppState`'s pure scroll math (`scroll_page_up`/`scroll_page_down`/
 //! `jump_to_top`), supplying the `max_scroll`/page inputs those methods need
-//! but don't have access to themselves. Extracted out of `app.rs` verbatim
-//! (this item, board); [`super::run`]'s own key-handling match is the sole
+//! but don't have access to themselves. Extracted out of `app.rs` verbatim;
+//! [`super::run`]'s own key-handling match is the sole
 //! production caller.
 
 use ratatui::backend::Backend;
@@ -74,7 +74,7 @@ impl App {
         Ok(())
     }
 
-    /// `Home` (T6): jumps the transcript straight to its own top. Delegates
+    /// `Home`: jumps the transcript straight to its own top. Delegates
     /// the actual mutation to `AppState::jump_to_top`, mirroring how
     /// `page_scroll` delegates to `scroll_page_up`/`scroll_page_down` --
     /// this method's only job is the terminal-size-derived `max_scroll`

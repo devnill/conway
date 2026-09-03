@@ -425,7 +425,7 @@ pub struct AppState {
     pub plugins_selected: usize,
     /// The scope the permission prompt's remembered-grant keys (`a` and
     /// `p`) grant at: `Session` (the default, and the only scope the prompt
-    /// offered before this item), `Agent` (only the agent whose call is
+    /// offered before this scope existed), `Agent` (only the agent whose call is
     /// being asked about), or `AgentSubtree` (that agent's whole subtree).
     /// Cycled by the prompt's `s` key (`input.rs::handle_permission_key`),
     /// rendered by `view/mod.rs::draw_permission_overlay`, and reset to
@@ -453,9 +453,9 @@ pub struct AppState {
     /// into `mode` as each one resolves (module notes: "concurrent requests
     /// queue in arrival order").
     pub queued_prompts: std::collections::VecDeque<PendingPrompt>,
-    /// Whether the below-chat agent-tree panel (criterion 4) is
-    /// currently shown. Toggled by `/agents` (handled in `app.rs`, since
-    /// `commands.rs` -- out of this item's file scope -- owns no such
+    /// Whether the below-chat agent-tree panel is
+    /// currently shown. Toggled by `/agents` (handled in `app.rs`;
+    /// `commands.rs` owns no such
     /// command); never an always-on pane.
     pub agent_view_open: bool,
     /// Arrow-navigated row in the slash-command palette, or `None`
@@ -522,8 +522,8 @@ pub struct AppState {
     /// focused on, so this tracks the ROOT agent's own turn boundaries, not
     /// the focused agent's.
     ///
-    /// **Why this field exists at all.** Before this item, nothing in the
-    /// TUI showed an operator any `LogSeq` at all -- `Envelope::seq` (the
+    /// **Why this field exists at all.** Nothing in the
+    /// TUI used to show an operator any `LogSeq` at all -- `Envelope::seq` (the
     /// live event stream's own field) is a PER-CONNECTION renumbering, not
     /// the persisted seq `fork_from` accepts (see that field's own doc),
     /// so surfacing it here directly would have been actively misleading.
@@ -648,19 +648,19 @@ pub struct AppState {
     /// [`Self::offer_ask_modal`], [`Self::offer_intent_confirm`], and
     /// [`Self::open_help`].
     pub modal_scroll: u16,
-    /// The current braille spinner frame index (T2). Advanced by
+    /// The current braille spinner frame index. Advanced by
     /// [`Self::tick_animation`] modulo [`SPINNER_FRAMES`]' length, only while
     /// [`Self::activity`] is not [`Activity::Idle`]. Rendered by
     /// `view/status.rs` as the glyph preceding the activity phrase.
     pub spinner_frame: usize,
-    /// When the focused agent's current turn started (T2): set by
+    /// When the focused agent's current turn started: set by
     /// `Event::TurnStarted` for the focused agent and cleared whenever
     /// `activity` returns to [`Activity::Idle`] (`TurnFinished`/
     /// `AgentFinished` for the focused agent, or [`Self::focus_agent`]). The
     /// status line renders live `elapsed` from `Instant::now() -
     /// turn_started_at` while this is `Some`; `None` while idle.
     pub turn_started_at: Option<Instant>,
-    /// New context tokens ADDED this turn (T2): the sum of
+    /// New context tokens ADDED this turn: the sum of
     /// `Event::ContextSegmentAdded { tokens_est }` deltas observed on the
     /// focused agent's own stream between `TurnStarted` and `TurnFinished`.
     /// The runtime emits `ContextSegmentAdded` only for segments NEW to a
@@ -673,7 +673,7 @@ pub struct AppState {
     /// line renders it with a leading `+` (`+{n} tok`) to signal "added
     /// this turn" and to distinguish it from the cumulative
     /// `| {tokens} tok |` slot; the authoritative turn-end token total
-    /// lands via the turn-end summary (T4). Reset to 0 on `TurnStarted` and
+    /// lands via the turn-end summary. Reset to 0 on `TurnStarted` and
     /// on [`Self::focus_agent`]; cleared when `activity` returns to idle.
     /// Distinct from [`Self::focused_agent_usage`], which is the cumulative
     /// spend across all of the focused agent's turns.
@@ -734,7 +734,7 @@ pub struct AppState {
     /// against what this fetch already counted) -- see that method's own
     /// doc for why a fresh focus no longer needs to wait on a live turn.
     ///
-    /// Dedup rationale (T3 code-review fix 1): the runtime's
+    /// Dedup rationale: the runtime's
     /// `seen_segments` is a LOCAL `HashSet` constructed fresh at the top of
     /// each `AgentLoop::run_inner`, NOT a session-scoped set. For
     /// `keep_alive: false` children (every spawned child), each new prompt
@@ -758,7 +758,7 @@ pub struct AppState {
     /// [`Self::focused_ctx_tokens`] only happens when
     /// `focused_seen_segments.insert(segment)` returns true. Reset on
     /// [`Self::focus_agent`] -- a freshly focused agent starts with an
-    /// empty seen-set -- then (T3 follow-up) immediately re-seeded by
+    /// empty seen-set -- then immediately re-seeded by
     /// `app.rs`'s `try_focus_agent` with the segment ids already counted in
     /// the re-fetched [`Self::focused_ctx_tokens`] total, so dedup stays
     /// correct against a live agent's next `ContextSegmentAdded` instead of
@@ -792,7 +792,7 @@ pub struct AppState {
     pub tool_preview_lines: u32,
     /// T3: the local model-metadata map (`"backend/model"` -> max context
     /// tokens), derived once at `App::new` from `Conway::model_metadata()`
-    /// (T3 follow-up: no longer a second, independent read of
+    /// (no longer a second, independent read of
     /// `[models.metadata_path]` -- `ConwayBuilder::build` already loaded and
     /// parsed that file once; `App::new` now reuses that SAME parse instead
     /// of re-reading the file itself, so there is exactly one code path
@@ -1605,10 +1605,10 @@ impl AppState {
             // T2/T3: accumulate the focused agent's context-token figures
             // from context-segment additions. Two accumulators share this
             // arm:
-            // - `turn_running_tokens` (T2): the per-turn "added this turn"
+            // - `turn_running_tokens`: the per-turn "added this turn"
             //   figure, reset on `TurnStarted`/`focus_agent`. Accumulated
             //   only while a turn is in flight (`turn_started_at.is_some()`).
-            // - `focused_ctx_tokens` (T3): the CUMULATIVE context-occupancy
+            // - `focused_ctx_tokens`: the CUMULATIVE context-occupancy
             //   estimate across the focused session (NOT reset per turn),
             //   the numerator for the status line's `ctx%` field.
             //   Accumulated for every segment-add on the focused agent's

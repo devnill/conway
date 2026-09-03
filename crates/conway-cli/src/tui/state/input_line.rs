@@ -38,8 +38,8 @@ impl AppState {
 
     /// The cursor's (line, column) position within [`Self::input`], both
     /// char indices -- `line` counts `\n` characters before the cursor,
-    /// `column` is the cursor's offset from that line's own start (T8:
-    /// multi-line input, Alt/Shift-Enter). Used by `view/input_box.rs` to
+    /// `column` is the cursor's offset from that line's own start
+    /// (multi-line input via Alt/Shift-Enter). Used by `view/input_box.rs` to
     /// place the on-screen cursor and by `input.rs`'s `Up`/`Down`
     /// vertical-cursor-movement gating.
     pub fn cursor_line_col(&self) -> (usize, usize) {
@@ -56,10 +56,9 @@ impl AppState {
         (line, col)
     }
 
-    /// Records a just-submitted line into [`Self::history`] (T8): pushed to
+    /// Records a just-submitted line into [`Self::history`]: pushed to
     /// the back (newest), then the front is evicted until the deque is back
-    /// within [`Self::history_cap`] -- the circular-buffer behavior the
-    /// item spec asks for. Always resets browsing state
+    /// within [`Self::history_cap`] -- a circular buffer. Always resets browsing state
     /// (`Self::history_index`/`Self::history_draft`) so the NEXT `Up`
     /// starts a fresh recall from the newest entry, not wherever a previous
     /// (now-stale) browse left off. `App::submit` calls this before
@@ -78,7 +77,7 @@ impl AppState {
         }
     }
 
-    /// `Up` while composing (T8): recalls the previous (older) history
+    /// `Up` while composing: recalls the previous (older) history
     /// entry into `input`, saving whatever was already typed as
     /// `Self::history_draft` the FIRST time this starts browsing (`Up`
     /// from `history_index == None`) so [`Self::history_recall_next`] can
@@ -105,7 +104,7 @@ impl AppState {
         }
     }
 
-    /// `Down`'s counterpart (T8): recalls the next (newer) history entry,
+    /// `Down`'s counterpart: recalls the next (newer) history entry,
     /// or -- once `Down` walks past the newest entry -- restores whatever
     /// unsent draft [`Self::history_recall_prev`] saved when browsing
     /// started, and stops browsing (`history_index` back to `None`).

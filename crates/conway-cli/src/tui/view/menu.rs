@@ -32,7 +32,7 @@
 //! `input.rs::handle_normal_key`'s `Up`/`Down` arms resolve, in order:
 //! palette -> agent panel -> multi-line draft interior -> bare transcript
 //! line-scroll (V3, `a562550`). None of this module's own key-handling
-//! joins that chain at all -- exactly like `/help` (T7), the settings
+//! joins that chain at all -- exactly like `/help`, the settings
 //! surface built on this primitive (`view/settings.rs`) is **informational**,
 //! not decision-owed (see `AppState::help_open`'s own doc on that
 //! distinction), so it belongs alongside `/help`'s own top-level check in

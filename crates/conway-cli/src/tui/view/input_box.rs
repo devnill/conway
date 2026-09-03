@@ -167,7 +167,7 @@ mod tests {
             .collect()
     }
 
-    /// The bug this item fixes: a long single line used to CLAMP the
+    /// The bug fixed here: a long single line used to CLAMP the
     /// rendered cursor column to `area.width - 2` with the text itself
     /// never scrolling -- the row always showed the HEAD of the string
     /// (columns 0.. from the left), with the cursor frozen at the right
