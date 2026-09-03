@@ -621,6 +621,31 @@ struct LoopState {
     started_at: Option<DateTime<Utc>>,
 }
 
+/// [`AgentLoop::check_budget`]'s outcome. `Continue` (nothing tripped) is
+/// the overwhelmingly common case; `Finished` carries the SAME terminal
+/// `AgentResult` `check_budget` has always produced for a session-ending
+/// trip (unchanged by this item: `deadline`/`max_tokens` always, and
+/// `max_steps`/`max_tool_calls` for a non-`keep_alive` agent). `TurnAborted`
+/// is new: a `keep_alive` agent's turn-scoped dimension (`max_steps`/
+/// `max_tool_calls`) tripped. `check_budget` itself only has `&LoopState`
+/// (several callers read `state` again right after calling it -- see
+/// `LoopState`'s own doc), so it cannot own the store-append/bus-emit
+/// fallibility the way a `finish` call already in progress can; it hands
+/// `limit`/`steps_this_turn` back instead, and [`AgentLoop::run_inner`]'s
+/// caller -- which DOES own `state` -- appends the `LogRecord::SystemNote {
+/// reason: "budget_turn_aborted", .. }`, emits `Event::TurnAborted`, and
+/// then performs the shared turn-boundary reset
+/// ([`AgentLoop::end_keep_alive_turn`]) before looping back to the prompt
+/// gate. Not `Option<AgentResult>` (this method's shape before this item)
+/// because a third, non-terminal outcome needs its own case rather than
+/// overloading `None` for both "nothing tripped" and "something tripped but
+/// nothing finished".
+enum BudgetCheck {
+    Continue,
+    TurnAborted { limit: String, steps_this_turn: u32 },
+    Finished(AgentResult),
+}
+
 /// Bounds how many times [`AgentLoop::route_and_attempt`] will call
 /// a registered `ContextHook::on_overflow` for a single turn before giving
 /// up and surfacing the last `ContextTooLarge` regardless of what the hook
@@ -1102,8 +1127,65 @@ impl AgentLoop {
                     )
                     .await);
             }
-            if let Some(result) = self.check_budget(&state, &result_builder).await {
-                return Ok(result);
+            match self.check_budget(&state, &result_builder).await {
+                BudgetCheck::Continue => {}
+                BudgetCheck::Finished(result) => return Ok(result),
+                // Board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`: a `keep_alive`
+                // agent's turn-scoped budget trip ends only the current
+                // user turn, not the session. Tell the model why (a
+                // `LogRecord::SystemNote { reason: "budget_turn_aborted",
+                // .. }`, persisted BEFORE the live `Event::TurnAborted` so a
+                // subscriber that reacts to the live event by re-reading
+                // the log always finds it there), tell every other
+                // subscriber (`Event::TurnAborted`), then perform the SAME
+                // turn-boundary reset the natural-completion branch below
+                // performs (`Self::end_keep_alive_turn` -- the one shared
+                // implementation of "end a keep_alive turn cleanly") and
+                // loop back to the prompt gate exactly as that branch does.
+                BudgetCheck::TurnAborted {
+                    limit,
+                    steps_this_turn,
+                } => {
+                    let note_seq = try_rt!(state, self.deps.store.head(&self.session).await);
+                    let text = format!(
+                        "this turn was ended by the harness: {limit} reached \
+                         ({steps_this_turn} steps this turn). Answer with what you have; the \
+                         operator can continue with a new prompt."
+                    );
+                    try_rt!(
+                        state,
+                        self.deps
+                            .store
+                            .append(
+                                &self.session,
+                                LogRecord::SystemNote {
+                                    seq: note_seq,
+                                    ts: Utc::now(),
+                                    text,
+                                    reason: "budget_turn_aborted".to_string(),
+                                    prov: Provenance::SystemNote {
+                                        reason: "budget_turn_aborted".to_string(),
+                                    },
+                                },
+                            )
+                            .await
+                    );
+                    self.deps.bus.emit(
+                        self.session,
+                        self.agent_id,
+                        Event::TurnAborted {
+                            agent_id: self.agent_id,
+                            limit,
+                            steps_this_turn,
+                        },
+                    );
+                    self.end_keep_alive_turn(
+                        &mut state,
+                        &mut result_builder,
+                        &mut contract_retried,
+                    );
+                    continue;
+                }
             }
             if self.cancel.is_cancelled() {
                 return Ok(self.finish_cancelled(&state, &result_builder).await);
@@ -1594,34 +1676,34 @@ impl AgentLoop {
                 // exactly like the non-keep-alive path's `state.turn + 1`)
                 // keep accruing across turns so budgets still span the
                 // whole session (`check_budget`, next loop iteration, at
-                // the top). The task ends ONLY via the top-of-loop
-                // cancel/budget checks or the gate's own
-                // cancel/deadline arms below -- never by falling out of
-                // this branch on its own after a normal turn.
+                // the top). The task now ends ONLY via the top-of-loop
+                // cancel check, `check_budget`'s session-lifetime dimensions
+                // (`deadline`/`max_tokens`, always terminal), or the gate's
+                // own cancel/deadline arms below -- board item
+                // `01M1FSP1QJFCHA7H8QPYZ9GG1P` moved `check_budget`'s
+                // turn-scoped dimensions (`max_steps`/`max_tool_calls`) off
+                // this list: those now abort just the current turn
+                // (`BudgetCheck::TurnAborted`, `run_inner`'s own top-of-loop
+                // match) via the exact same reset this branch performs,
+                // never by falling out of this branch on its own after a
+                // normal turn either.
                 if self.spec.keep_alive {
+                    // Counts THIS roundtrip: the natural-completion response
+                    // that just arrived never reaches the shared
+                    // per-roundtrip increment at the bottom of this loop
+                    // (`state.turn += 1; state.turn_steps += 1;`, far
+                    // below) -- this branch returns via `end_keep_alive_
+                    // turn`'s `continue` first. `end_keep_alive_turn` itself
+                    // deliberately does NOT touch `state.turn` -- see that
+                    // method's own doc for why the OTHER call site (the
+                    // `BudgetCheck::TurnAborted` arm above) must not
+                    // double-count it.
                     state.turn += 1;
-                    // Keep-alive user-turn boundary: reset the per-turn step
-                    // budget counter and this turn's result accumulators.
-                    // `state.turn_steps = 0` (not `+= 1`) because the turn
-                    // that just naturally completed needs no further budget
-                    // check and the next one hasn't taken a step yet (see
-                    // that field's own doc). `result_builder`/
-                    // `contract_retried` are similarly turn-scoped for a
-                    // keep-alive agent: without this reset, a `report` call
-                    // (or a spent contract retry) from THIS turn would keep
-                    // shadowing every later turn's own outcome all the way
-                    // to whatever turn the session eventually really ends
-                    // on, producing a terminal `AgentResult` built from
-                    // stale, unrelated history. `seen_segments` and
-                    // `state.usage` are deliberately NOT reset here -- they
-                    // must persist across the whole keep-alive session (see
-                    // their own declarations above this loop).
-                    state.turn_steps = 0;
-                    state.tool_calls = 0;
-                    result_builder = ResultBuilder::new();
-                    contract_retried = false;
-                    state.runway.reset_turn_scoped();
-                    self.resume_gate.awaiting_prompt = true;
+                    self.end_keep_alive_turn(
+                        &mut state,
+                        &mut result_builder,
+                        &mut contract_retried,
+                    );
                     continue;
                 }
 
@@ -1900,15 +1982,77 @@ impl AgentLoop {
         String::new()
     }
 
-    /// Checks every configured budget dimension at the top of a turn,
-    /// returning `Some(result)` the first exceeded dimension produces. All
-    /// four of `Budget`'s dimensions are enforced here; a dimension a caller
-    /// sets must bind, since the whole reason to set one is to bound cost or
+    /// Ends a `keep_alive` agent's current user turn cleanly: resets every
+    /// turn-scoped counter/accumulator and opens the resume gate so
+    /// `run_inner`'s next loop iteration waits for the caller's next prompt
+    /// ([`ResumeGate::awaiting_prompt`], that type's own doc) instead of
+    /// starting a new turn.
+    ///
+    /// **The ONE shared implementation of "end a keep_alive turn"** -- board
+    /// item `01M1FSP1QJFCHA7H8QPYZ9GG1P`'s central structural requirement.
+    /// Called from BOTH `run_inner`'s natural-completion branch (a turn that
+    /// produced a final, tool-call-free reply) and its `BudgetCheck::
+    /// TurnAborted` arm (a `max_steps`/`max_tool_calls` trip for a
+    /// `keep_alive` agent), so there is never a second, independently
+    /// drifting copy of this reset. This function's own body is the only
+    /// place in this file that resets the turn-scoped step counter to
+    /// zero.
+    ///
+    /// Deliberately does NOT touch `state.turn`: the natural-completion call
+    /// site increments it itself, immediately before calling this, to count
+    /// the just-completed roundtrip (which never reaches the shared
+    /// per-roundtrip increment at the bottom of `run_inner`'s loop -- it
+    /// returns via this fn's `continue` first, at its own call site). The
+    /// abort call site has no such roundtrip to count: it fires at the TOP
+    /// of the loop, before a new one is ever started, so it passes
+    /// `state.turn` through unchanged rather than double-counting.
+    ///
+    /// `seen_segments` (owned by `run_inner` itself, not `LoopState`) and
+    /// `state.usage` are deliberately left untouched by this fn -- both must
+    /// persist across the whole keep-alive session, exactly as they did
+    /// before this item.
+    fn end_keep_alive_turn(
+        &mut self,
+        state: &mut LoopState,
+        result_builder: &mut ResultBuilder,
+        contract_retried: &mut bool,
+    ) {
+        // `= 0` (not `+= 1`): the turn that just ended -- naturally or by
+        // this trip -- needs no further budget check, and the next one
+        // hasn't taken a step yet (see `LoopState::turn_steps`'s own doc).
+        state.turn_steps = 0;
+        state.tool_calls = 0;
+        // `result_builder`/`contract_retried` are similarly turn-scoped for
+        // a keep-alive agent: without this reset, a `report` call (or a
+        // spent contract retry) from the ending turn would keep shadowing
+        // every later turn's own outcome all the way to whatever turn the
+        // session eventually really ends on, producing a terminal
+        // `AgentResult` built from stale, unrelated history.
+        *result_builder = ResultBuilder::new();
+        *contract_retried = false;
+        state.runway.reset_turn_scoped();
+        self.resume_gate.awaiting_prompt = true;
+    }
+
+    /// Checks every configured budget dimension at the top of a turn.
+    /// Before board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`, EVERY exceeded
+    /// dimension called `self.finish` and ended the whole agent -- for a
+    /// `keep_alive` session that meant an ordinary per-turn runaway-loop
+    /// guard (`max_steps`, or `max_tool_calls`) silently killed the entire
+    /// interactive conversation, with only a terminal notice (no chance to
+    /// keep talking) as the operator's explanation. That is fixed now: see
+    /// [`BudgetCheck`] for the three-way outcome this method returns instead
+    /// of the old `Option<AgentResult>`, and [`Self::end_keep_alive_turn`]
+    /// for the turn-boundary reset a `TurnAborted` outcome shares with a
+    /// natural completion. A dimension a caller sets must still always
+    /// BIND, though -- the whole reason to set one is to bound cost or
     /// blast radius, and a ceiling that silently does nothing is worse than
-    /// no field at all. This method's own hard trip is never the model's
-    /// first warning: `crate::runway` computes these same numbers earlier
-    /// and proactively, at `BUDGET_WARN_FRACTION` of each limit, and tells
-    /// the model directly.
+    /// no field at all; `TurnAborted` binds by ending the runaway turn, it
+    /// just no longer ends the conversation along with it. This method's
+    /// own hard trip is never the model's first warning either way:
+    /// `crate::runway` computes these same numbers earlier and proactively,
+    /// at `BUDGET_WARN_FRACTION` of each limit, and tells the model
+    /// directly.
     ///
     /// **`max_steps` and `max_tool_calls` for a `keep_alive` agent** gate on
     /// turn-scoped counters (`state.turn_steps`, `state.tool_calls`)
@@ -1917,53 +2061,47 @@ impl AgentLoop {
     /// survive an unbounded number of user turns, each independently bounded
     /// by `max_steps` as a runaway-tool-loop guard, not have the WHOLE
     /// session's lifetime capped at `max_steps` total steps -- see
-    /// `LoopState::turn_steps`'s own doc. Every other budget dimension
-    /// (`deadline`, `max_tokens`) is intentionally left session-lifetime for
-    /// both keep-alive and non-keep-alive agents: `state.usage` already
-    /// accrues across every turn of a keep-alive session (never reset), and
-    /// `deadline` is a wall-clock cutoff independent of turn boundaries by
-    /// nature. A session-lifetime `max_tokens`/`deadline` can still end an
-    /// interactive keep-alive session outright (the TUI's default `Budget`
-    /// has no `max_tokens`/`deadline` set, so this does not fire in
-    /// practice) -- the companion TUI-notice fix
+    /// `LoopState::turn_steps`'s own doc. A trip on either of these two,
+    /// for a `keep_alive` agent, is exactly the new `BudgetCheck::
+    /// TurnAborted` outcome -- never `Finished` -- so `self.finish` is
+    /// simply never called for them in that case; the caller
+    /// (`Self::run_inner`) does the SystemNote/event/reset work instead
+    /// (`BudgetCheck`'s own doc explains why this method cannot do that
+    /// work itself). Non-`keep_alive` behavior is byte-for-byte unchanged:
+    /// `state.turn` gates `max_steps`/`max_tool_calls` exactly as before
+    /// this item, and a trip always produces `BudgetCheck::Finished`.
+    ///
+    /// Every other budget dimension (`deadline`, `max_tokens`) is
+    /// intentionally left session-lifetime for both keep-alive and
+    /// non-keep-alive agents, and always produces `BudgetCheck::Finished`
+    /// -- ending the whole agent, unchanged by this item: `state.usage`
+    /// already accrues across every turn of a keep-alive session (never
+    /// reset), and `deadline` is a wall-clock cutoff independent of turn
+    /// boundaries by nature. A session-lifetime `max_tokens`/`deadline` can
+    /// still end an interactive keep-alive session outright (the TUI's
+    /// default `Budget` has no `max_tokens`/`deadline` set, so this does
+    /// not fire in practice) -- the companion TUI-notice fix
     /// (`conway_cli::tui::state::AppState::apply_agent_finished`) is what
     /// makes any such termination visible rather than silent; making those
-    /// two dimensions turn-scoped too is out of this item's scope.
+    /// two dimensions turn-scoped too remains out of this item's scope,
+    /// exactly as it was out of the `runway` item's before it.
     ///
-    /// Non-`keep_alive` behavior is byte-for-byte unchanged: `state.turn`
-    /// gates `max_steps` exactly as before this field existed.
-    ///
-    /// The `max_steps`/`max_tool_calls` trips label their
-    /// `ResultStatus::BudgetExceeded { limit }` string with which counter
-    /// gated them -- `" (this turn)"` when `self.spec.keep_alive` (the
-    /// turn-scoped counter above), `" (this session)"` otherwise -- and
-    /// every `finish` call here also carries `state.turn_steps` into the
-    /// new `AgentResult::steps_this_turn` field, so a renderer showing both
-    /// `steps_taken` and `steps_this_turn` next to the label never looks
-    /// like the limit failed to hold. Board item
-    /// `01M1FS8R09PGF9HHV95B7A6RMH`.
-    async fn check_budget(
-        &self,
-        state: &LoopState,
-        builder: &ResultBuilder,
-    ) -> Option<AgentResult> {
+    /// A `Finished` outcome's `max_steps`/`max_tool_calls` trip still labels
+    /// its `ResultStatus::BudgetExceeded { limit }` string with which
+    /// counter gated it -- `" (this session)"` -- and carries
+    /// `state.turn_steps` into `AgentResult::steps_this_turn`, exactly as
+    /// board item `01M1FS8R09PGF9HHV95B7A6RMH` established (that trip is
+    /// now reachable only for a non-`keep_alive` agent, where
+    /// `steps_this_turn` tracks `steps_taken` in lockstep, but the field
+    /// and the label are unchanged). A `TurnAborted` outcome's `limit`
+    /// carries the bare `"<key>=<n>"` with no scope suffix instead -- see
+    /// [`BudgetCheck`]'s own doc.
+    async fn check_budget(&self, state: &LoopState, builder: &ResultBuilder) -> BudgetCheck {
         let budget = &self.spec.budget;
         let steps_this_turn = if self.spec.keep_alive {
             state.turn_steps
         } else {
             state.turn
-        };
-        // `max_steps`/`max_tool_calls` are the two dimensions gated on a
-        // turn-scoped counter for a `keep_alive` agent (see this method's
-        // own doc) -- `scope_label` renders that fact into
-        // `ResultStatus::BudgetExceeded { limit }` itself, using the exact
-        // "this turn"/"this session" vocabulary `crate::runway`'s
-        // `budget_notes` already established for the model-facing warning
-        // one step earlier, board item `01M1FS8R09PGF9HHV95B7A6RMH`.
-        let scope_label = if self.spec.keep_alive {
-            "this turn"
-        } else {
-            "this session"
         };
         // `0` means NO CEILING, matching every other dimension in
         // `[limits]` (`max_tokens`, `deadline_secs`, `max_tool_calls` all
@@ -1974,10 +2112,17 @@ impl AgentLoop {
         // ceiling. An interactive coding session routinely needs more
         // steps in one turn than any fixed number a default can guess.
         if budget.max_steps > 0 && steps_this_turn >= budget.max_steps {
-            return Some(
+            let limit = format!("max_steps={}", budget.max_steps);
+            if self.spec.keep_alive {
+                return BudgetCheck::TurnAborted {
+                    limit,
+                    steps_this_turn,
+                };
+            }
+            return BudgetCheck::Finished(
                 self.finish(
                     ResultStatus::BudgetExceeded {
-                        limit: format!("max_steps={} ({scope_label})", budget.max_steps),
+                        limit: format!("{limit} (this session)"),
                     },
                     self.terminal_account(state, builder),
                     state.usage,
@@ -1990,7 +2135,7 @@ impl AgentLoop {
         }
         if let Some(deadline) = budget.deadline {
             if Utc::now() >= deadline {
-                return Some(
+                return BudgetCheck::Finished(
                     self.finish(
                         ResultStatus::BudgetExceeded {
                             limit: format!("deadline={deadline}"),
@@ -2008,7 +2153,7 @@ impl AgentLoop {
         if let Some(max_tokens) = budget.max_tokens {
             let spent = state.usage.input_tokens as u64 + state.usage.output_tokens as u64;
             if spent >= max_tokens as u64 {
-                return Some(
+                return BudgetCheck::Finished(
                     self.finish(
                         ResultStatus::BudgetExceeded {
                             limit: format!("max_tokens={max_tokens}"),
@@ -2025,10 +2170,17 @@ impl AgentLoop {
         }
         if let Some(max_tool_calls) = budget.max_tool_calls {
             if state.tool_calls >= max_tool_calls {
-                return Some(
+                let limit = format!("max_tool_calls={max_tool_calls}");
+                if self.spec.keep_alive {
+                    return BudgetCheck::TurnAborted {
+                        limit,
+                        steps_this_turn,
+                    };
+                }
+                return BudgetCheck::Finished(
                     self.finish(
                         ResultStatus::BudgetExceeded {
-                            limit: format!("max_tool_calls={max_tool_calls} ({scope_label})"),
+                            limit: format!("{limit} (this session)"),
                         },
                         self.terminal_account(state, builder),
                         state.usage,
@@ -2040,7 +2192,7 @@ impl AgentLoop {
                 );
             }
         }
-        None
+        BudgetCheck::Continue
     }
 
     /// The immediate-path terminus for every `self.cancel.is_cancelled()`

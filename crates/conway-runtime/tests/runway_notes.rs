@@ -256,6 +256,36 @@ async fn wait_for_agent_finished(
     .expect("agent never finished")
 }
 
+/// Waits for either `Event::AgentFinished` or `Event::TurnAborted` --
+/// board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`: a `keep_alive` root's
+/// `max_steps`/`max_tool_calls` trip no longer finishes the agent at all,
+/// it aborts just the current turn (see `agent_loop.rs`'s `check_budget`).
+/// The `max_steps` scenarios below only need the run to reach a stable
+/// turn boundary -- either shape counts -- so this is the wait THEY use
+/// instead of `wait_for_agent_finished`, which would otherwise hang
+/// forever waiting for an `AgentFinished` that a turn-scoped trip no
+/// longer produces.
+async fn wait_for_agent_finished_or_turn_aborted(
+    stream: &mut conway_runtime::events::EventStream,
+    agent: AgentId,
+) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let envelope = stream.next().await.expect("event stream ended early");
+            if envelope.agent == agent
+                && matches!(
+                    envelope.event,
+                    Event::AgentFinished { .. } | Event::TurnAborted { .. }
+                )
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("agent never reached a stable turn boundary")
+}
+
 async fn runway_notes(store: &dyn SessionStore, session: SessionId) -> Vec<String> {
     store
         .read(&session, SeqRange::full())
@@ -368,7 +398,11 @@ async fn run_max_steps_scenario(max_steps: u32) -> Vec<String> {
         .unwrap();
     let session = session_of(&runtime, agent_id);
 
-    let _ = wait_for_agent_finished(&mut stream, agent_id).await;
+    // `keep_alive: true` -- board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`: a
+    // `max_steps` trip now aborts just the turn (`Event::TurnAborted`),
+    // never finishing the agent, so this waits for either shape rather
+    // than the `AgentFinished` this scenario can no longer produce.
+    wait_for_agent_finished_or_turn_aborted(&mut stream, agent_id).await;
 
     runway_notes(store.as_ref(), session).await
 }
@@ -444,7 +478,10 @@ async fn unverified_window_writes_no_window_note_but_budget_notes_still_fire() {
         .unwrap();
     let session = session_of(&runtime, agent_id);
 
-    let _ = wait_for_agent_finished(&mut stream, agent_id).await;
+    // `keep_alive: true`, same reasoning as `run_max_steps_scenario` above:
+    // the `max_steps=4` trip now aborts the turn instead of finishing the
+    // agent.
+    wait_for_agent_finished_or_turn_aborted(&mut stream, agent_id).await;
 
     let notes = runway_notes(store.as_ref(), session).await;
     assert!(

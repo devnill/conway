@@ -80,7 +80,7 @@ entry point.
 | 1 | AgentFailed | The catch-all: a `Failed` terminal status whose cause is not a routing rejection, a `Rejected` or `Cancelled`-without-SIGINT status, or a `FacadeError::Io`/`Backend`/`Store` (or any other unclassified) error. |
 | 2 | Usage | A malformed or conflicting flag, an empty/unreadable prompt, an unknown `--session`/`--resume` id, a malformed `--model`/`--fork-from` reference, or any `FacadeError::Config`/`AgentDef`/`Build`/`UnsupportedFeature`. |
 | 4 | NoHealthyBackend | Routing could not supply any model for the turn: the role is unknown (e.g. `--role-override` naming a role the config does not define), no candidate in the role's chain was admissible (an unregistered `backend/model` pair, a health-open breaker, every fallback entry exhausted against a live backend), or the assembled context exceeds every candidate's window (`RoutingError::ContextTooLarge` — no truncation or escalation is performed). |
-| 5 | BudgetExceeded | The root agent's turn finished with `ResultStatus::BudgetExceeded` (e.g. `limits.max_steps` reached). The `limit` string names which dimension tripped AND its scope — a `-p`/scripted run is never a keep-alive session, so `limit` here always reads `"max_steps=40 (this session)"` (the whole run); a keep-alive interactive session (the TUI) instead reads `"…(this turn)"` (per user turn) — see `json`'s `steps_taken`/`steps_this_turn` fields, immediately below, for the two counters that scope distinguishes. |
+| 5 | BudgetExceeded | The root agent's turn finished with `ResultStatus::BudgetExceeded` (e.g. `limits.max_steps` reached). A `-p`/scripted run is never a keep-alive session (`SessionSpec::keep_alive` is an opt-in only the interactive/library facade sets), so every dimension here is session-lifetime and `limit` always reads `"max_steps=40 (this session)"` (the whole run) — see `json`'s `steps_taken`/`steps_this_turn` fields, immediately below, for the two counters this scope label distinguishes. A **keep-alive** session (the TUI) behaves differently for two of these four dimensions: `max_steps`/`max_tool_calls` are per-turn runaway-loop guards there, so tripping one ends only the current turn (`Event::TurnAborted`, no exit code involved — the process is still running), never the session; only `max_tokens`/`deadline` can still end a keep-alive session outright, and produce this same exit code when they do. See [`interactive.md`](interactive.md#when-a-turn-is-cut-off) for the keep-alive behavior. |
 | 130 | Interrupted | A SIGINT was observed (once, or twice for an immediate hard exit) and the run's terminal status is `Cancelled`. |
 
 Code 3 is unassigned. There is no permission-denied exit code, and that is
@@ -151,7 +151,9 @@ $ conway -p "reply with exactly the word pong and nothing else" --output-format 
 }
 ```
 
-**Two step counters, two scopes.** `steps_taken` is session-lifetime — never reset, so it keeps growing across every turn of a keep-alive session. `steps_this_turn` is scoped to the current user turn — reset to `0` at each keep-alive turn boundary, and therefore equal to `steps_taken` for an ordinary (non-keep-alive) run like the one above, where there is only ever one "turn" to speak of. The two diverge only for a keep-alive session that has already completed at least one prior turn: `steps_taken` keeps the whole run's total, `steps_this_turn` resets for the new turn. This is also what a `BudgetExceeded` `limit` string's `(this turn)`/`(this session)` suffix (see the exit-code table above) is telling you which of these two counts it gated on. `steps_this_turn` decodes as `0` from any session log written before this field existed.
+**Two step counters, two scopes.** `steps_taken` is session-lifetime — never reset, so it keeps growing across every turn of a keep-alive session. `steps_this_turn` is scoped to the current user turn — reset to `0` at each keep-alive turn boundary (a turn completing naturally, *or*, since board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`, a `max_steps`/`max_tool_calls` trip aborting the turn), and therefore equal to `steps_taken` for an ordinary (non-keep-alive) run like the one above, where there is only ever one "turn" to speak of. The two diverge only for a keep-alive session that has already completed at least one prior turn: `steps_taken` keeps the whole run's total, `steps_this_turn` resets for the new turn.
+
+On a `-p`/scripted run (never keep-alive) `steps_this_turn` always equals `steps_taken`, since a `BudgetExceeded` `limit` string there always reads `(this session)`, never `(this turn)` — see the exit-code table above. A keep-alive session's own `max_steps`/`max_tool_calls` trip, which WOULD read `(this turn)`, no longer produces a terminal `AgentResult`/exit code at all (`Event::TurnAborted` instead, per that same table entry); the `(this turn)` scope label survives only in the TUI's own `session ended: …` notice, labelling `steps_taken`/`steps_this_turn` for whichever session-lifetime dimension (`max_tokens`/`deadline`) actually ended a keep-alive session. `steps_this_turn` decodes as `0` from any session log written before this field existed.
 
 **Two fields here are id-shaped, and only one of them is a session handle.**
 `transcript_ref` is what `--session`, `--resume`, and `--fork-from` (see
@@ -360,6 +362,21 @@ other dimensions — `--max-turns 5` alone does not silently clear a
 configured `[limits].max_tokens`. None of the three is supported with
 `--resume`/`--fork-from` in this release (a usage error): neither facade
 path accepts a caller-supplied budget override yet.
+
+**`--max-turns`/`[limits].max_steps` means something different for a
+keep-alive session.** A `-p`/scripted run is never keep-alive, so
+`--max-turns 5` here is a simple, one-shot ceiling: the run trips and exits
+5 once it reaches 5 steps, full stop. The SAME `[limits].max_steps` config
+value, applied instead to a **keep-alive** session (the TUI, or a
+`SessionSpec::keep_alive` embedder), is a *per-turn* runaway-tool-loop
+guard — it resets at every user-turn boundary, and tripping it ends only
+the current turn (a transcript notice, the model told directly in the
+log), never the session. See
+[`interactive.md`](interactive.md#when-a-turn-is-cut-off) for what that
+looks like from the operator's side. `--max-tokens`/`--max-seconds` carry
+no such difference: both stay session-lifetime for a keep-alive session
+exactly as they are for a one-shot run, and can still end a keep-alive
+session outright.
 
 **The model itself is warned before any of these trips.** A note reaches
 the model at 80% of each configured limit (`max_steps`, `max_tool_calls`,

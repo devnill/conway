@@ -172,6 +172,32 @@ pub enum Event {
         usage: Usage,
         stop: StopReason,
     },
+    /// A `keep_alive` agent's current user turn was ended BY THE HARNESS,
+    /// not by the model producing a final reply: a turn-scoped budget
+    /// dimension (`max_steps`/`max_tool_calls`) reached its ceiling
+    /// mid-turn. Unlike `Event::AgentFinished { result: ResultStatus::
+    /// BudgetExceeded, .. }`, this does NOT end the session -- the harness
+    /// performs the exact same turn-boundary reset a natural completion
+    /// would (`conway_runtime::agent_loop::AgentLoop`'s shared
+    /// `end_keep_alive_turn`) and returns to idling for the operator's next
+    /// prompt. `agent_id` names the (root) agent whose turn was aborted --
+    /// carried explicitly rather than relied on from the envelope alone,
+    /// mirroring `Event::StreamRestarted::agent_id`'s own precedent, since a
+    /// consumer filtering this specific event by agent should not have to
+    /// reach into the envelope for it. `limit` is the bare `"<key>=<n>"`
+    /// that tripped (e.g. `"max_steps=40"` -- no `"(this turn)"` scope
+    /// suffix: unlike `ResultStatus::BudgetExceeded`'s `limit`, this event
+    /// only ever fires for a turn-scoped dimension, so the scope is never
+    /// ambiguous). `steps_this_turn` is `LoopState::turn_steps` at the
+    /// moment of the trip, before the reset zeroes it -- the same count a
+    /// companion `LogRecord::SystemNote { reason: "budget_turn_aborted",
+    /// .. }` (persisted just before this is emitted) already tells the
+    /// model in its own text. Board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`.
+    TurnAborted {
+        agent_id: AgentId,
+        limit: String,
+        steps_this_turn: u32,
+    },
 
     ToolCallProposed {
         call_id: String,
@@ -354,6 +380,14 @@ mod tests {
                 "turn_finished",
             ),
             (
+                Event::TurnAborted {
+                    agent_id: AgentId::new(),
+                    limit: "max_steps=40".into(),
+                    steps_this_turn: 40,
+                },
+                "turn_aborted",
+            ),
+            (
                 Event::ToolCallProposed {
                     call_id: "tc_1".into(),
                     tool: ToolName::new("read"),
@@ -456,8 +490,9 @@ mod tests {
         // `StreamRestarted` (board item `01M1FSJ4E2S5M9KBSBJAAPJQ48`).
         //
         // This assertion exists precisely so nobody adds or removes a variant
-        // without saying so here (see this file's module doc).
-        assert_eq!(variants.len(), 24);
+        // without saying so here (see this file's module doc). `TurnAborted`
+        // (board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`) is the 25th.
+        assert_eq!(variants.len(), 25);
         for (event, expected_tag) in variants {
             let value = serde_json::to_value(&event).unwrap();
             assert_eq!(value["event"], expected_tag, "tag for {event:?}");

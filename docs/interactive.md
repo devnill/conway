@@ -208,31 +208,45 @@ warning) — you see exactly what the model was told, not a summary of it.
 No note is ever sent for a window whose size conway does not actually
 know; the harness says nothing rather than guess.
 
+### When a turn is cut off
+
+`max_steps` and `max_tool_calls` are runaway-tool-loop guards *for the
+current turn*, not a cap on the whole conversation: the root session is
+always **keep-alive**, so tripping one of them ends only the turn that
+tripped it, never the session. You'll see a notice like:
+
+```
+turn ended: max_steps=40 reached; type to continue
+```
+
+and the model sees the same thing, in its own words, as a system note it
+reads before its next reply — so it knows to wrap up with whatever it has
+rather than silently stopping mid-thought. Nothing else changes: the
+conversation is exactly as alive as it was before the trip, and your next
+prompt starts a fresh turn with a fresh `max_steps`/`max_tool_calls`
+allowance. This is what "each turn independently bounded" means in
+practice — a single runaway tool loop can no longer take the whole session
+down with it.
+
 ### When the root session itself ends
 
-The interactive TUI's root session is always **keep-alive**: it survives an
-unbounded number of prompts, so nothing else in the transcript tells you
-when it stops responding for good (cancel, a deadline, or a budget dimension
-tripping) — it would otherwise look exactly like a hang. When that happens,
-a `session ended: …` notice appears, naming the terminal reason. For a
-budget trip it names both step counters, each labelled with the scope it
-counts:
+Two budget dimensions are **session-lifetime**, not per-turn: `max_tokens`
+(total tokens spent across every turn) and a `deadline` (a wall-clock
+cutoff). Unlike `max_steps`/`max_tool_calls` above, tripping one of these —
+or a cancel — really does end the session for good, so nothing else in the
+transcript tells you when it stops responding — it would otherwise look
+exactly like a hang. When that happens, a `session ended: …` notice
+appears, naming the terminal reason, e.g.:
 
 ```
-session ended: budget exceeded (max_steps=40 (this turn); steps_taken=81
-(this session), steps_this_turn=40 (this turn))
+session ended: budget exceeded (max_tokens=100000; steps_taken=81
+(this session), steps_this_turn=6 (this turn))
 ```
 
-Read literally: this session's WHOLE lifetime (`steps_taken`, every turn
-since it started) reached 81 steps, but the `max_steps=40` ceiling that
-actually tripped is scoped to the CURRENT user turn alone
-(`steps_this_turn`, reset at every turn boundary) — which had itself just
-reached 40. Before both counters were labelled this way, the notice showed
-only the bare limit next to a step count that silently meant something
-different, and looked like the ceiling had failed to hold when it had not.
-`max_tool_calls` is labelled the same way; `max_tokens` and `deadline` are
-always session-lifetime (there is no per-turn counterpart for either), so
-neither carries a scope suffix.
+`steps_taken` (this session's WHOLE lifetime step count, every turn since
+it started) and `steps_this_turn` (steps since the last turn boundary) are
+shown side by side, each labelled with the scope it counts, so neither
+number is ever mistaken for the other.
 
 Tool calls appear inline in the transcript as they're proposed, run, and
 finish, each tagged with its state (`proposed`, `awaiting permission`,

@@ -141,6 +141,18 @@ impl Renderer for TextRenderer {
             Event::Error { error, fatal: true } => {
                 diag::error(error.to_string());
             }
+            // Board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`: a keep_alive root's
+            // turn-scoped budget trip no longer ends the session, it aborts
+            // just the turn -- see `Event::TurnAborted`'s own doc. One
+            // stderr line is enough for this renderer; a one-shot `conway
+            // -p` run is never `keep_alive` in practice (`SessionSpec::
+            // keep_alive` is an opt-in only the interactive/library facade
+            // sets), so this arm exists for exhaustiveness/forward
+            // compatibility more than for anything a real one-shot run
+            // triggers today.
+            Event::TurnAborted { limit, .. } => {
+                diag::warn(format!("turn ended: {limit} reached"));
+            }
             // Only the ROOT's finish is this run's terminal occasion. A
             // subagent's `AgentFinished` reaches this stream too (lifecycle
             // events bypass the session/agent filter), and flushing on it
