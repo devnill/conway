@@ -77,6 +77,14 @@ each disclosed rather than silently assumed:
   "Providing a capability" below. See [`hooks.md`](hooks.md) point 1 for the
   full consumed-status disclosure.
 - **Trust.** No new trust mechanism was built. See "Trust" below.
+- **Trait surface.** `Plugin::instructions`, `Plugin::commands`,
+  `Plugin::events`, `Plugin::hooks`, `Plugin::curators`,
+  `Plugin::narrowable_keys`, and `Plugin::context_hooks` have no wire
+  projection at all — no request kind on this page's own protocol answers
+  any of them, under either transport: a subprocess plugin brings tools, a
+  permission policy, an observer sink, status text and capabilities;
+  nothing else. Forward-declared here, not tracked, since no item exists to
+  build one — the day a consumer does, this bullet is what gets replaced.
 
 ## The wire protocol
 

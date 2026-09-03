@@ -90,6 +90,20 @@ binary links) and `subprocess_plugins::install` (conway's own wire).
   or closes its stdout, that session is marked dead: a typed error surfaces
   and every later call on it fails fast. You must re-`discover` (restart)
   to get a fresh child; nothing here silently respawns one for you.
+- **No MCP prompts or resources.** MCP defines three server-offered
+  primitives — tools, prompts, and resources — and this crate speaks only
+  the first: `prompts/list`, `prompts/get`, `resources/list`,
+  `resources/read` are never called (`grep -rn 'prompts/\|resources/'
+  crates/conway-plugin-mcp/src` matches nothing). A consumer would look
+  different for each: an MCP prompt is a server-authored, parameterized
+  message template, which maps onto conway's own `Plugin::commands()` as a
+  namespaced slash command; an MCP resource is server-exposed read-only
+  content, addressable by URI, which maps onto either a read-only `Tool` or
+  a `Plugin::instructions()` fragment depending on whether the model should
+  pull it on demand or always see it. Neither is built or scheduled — not
+  tracked, since no item exists to build one; forward-declared here so an
+  author who wants to publish a prompt or a resource from an MCP server
+  finds out here, not by watching `tools/list` silently ignore both.
 
 ## Its limits, stated plainly
 

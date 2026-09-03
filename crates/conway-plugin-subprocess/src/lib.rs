@@ -16,8 +16,13 @@
 //! nothing beyond `tool/1` itself, the session-scoped
 //! `permission.policy/1` declaration, the one-way `observe/1` observer sink
 //! (board item `01M03VKQ738DTGHHK2C4RWXC0E`), and the `status.declare/1` /
-//! `status/1` status push (same item): no `context.hook/1`,
-//! no capability handshake beyond the `PluginManifest::required_host_caps`/
+//! `status/1` status push (same item): no `context.hook/1`. **Nor any wire
+//! projection for `Plugin::instructions`, `Plugin::commands`,
+//! `Plugin::events`, `Plugin::hooks`, `Plugin::curators`,
+//! `Plugin::narrowable_keys`, or `Plugin::context_hooks` -- a subprocess
+//! plugin brings tools, a permission policy, an observer sink, status text
+//! and capabilities; nothing else.** No capability handshake beyond the
+//! `PluginManifest::required_host_caps`/
 //! `::optional_host_caps` the wire now CARRIES (board item
 //! `01M03VJXARFHSDAGHFXGCWKJTY` for `required_host_caps`; `optional_host_caps`
 //! closed for THIS tier by board item `01M0XXXX3HK8914NE418P5GNRY`, which
