@@ -1,7 +1,7 @@
-//! The TUI's central color/style system (T1, the v0.3.0 polish enabler).
+//! The TUI's central color/style system.
 //!
-//! Before T1, every `view/*.rs` hand-rolled `Style::default().fg(Color::…)`
-//! inline at each call site. T1 replaces that with a single [`Theme`] struct
+//! Every `view/*.rs` file used to hand-roll `Style::default().fg(Color::…)`
+//! inline at each call site. This module replaces that with a single [`Theme`] struct
 //! holding one named [`Style`] per concern, threaded through `view::draw`
 //! and each per-view `draw` fn as `&Theme` (decision D-T1: injected, not
 //! re-fetched via a call-site accessor or a global `Lazy`). The view files

@@ -209,10 +209,10 @@ mod tests {
         assert!(matches("/zzz", &[]).is_empty());
     }
 
-    /// Board item `01M0RW29F2ATVGCV0R8H0GQEYH`: Item A3 had demoted `/tree`
+    /// Board item `01M0RW29F2ATVGCV0R8H0GQEYH`: `/tree` had been demoted
     /// to a hidden alias -- it parsed (`commands.rs` kept the arm) but
     /// never showed up as completion, which is exactly the "advertised
-    /// nowhere, works anyway" defect this item exists to close. `/tree` is
+    /// nowhere, works anyway" defect fixed here. `/tree` is
     /// now an ordinary discoverable entry, generated the same way as every
     /// other built-in.
     #[test]
@@ -230,10 +230,9 @@ mod tests {
         assert_eq!(found[0].name, "/trust");
     }
 
-    /// V4: `/thinking` and `/timestamps` are REMOVED, not aliased --
+    /// `/thinking` and `/timestamps` are REMOVED, not aliased --
     /// `/settings` replaces both. Neither name appears in the palette at
-    /// all any more (T4 had added them; V4 retired them together with the
-    /// standalone commands they backed) -- `commands::builtin_commands()`
+    /// all any more -- `commands::builtin_commands()`
     /// has no `SlashCommand` variant to generate a row from, since `parse`
     /// itself no longer recognizes either word.
     #[test]

@@ -47,7 +47,7 @@ use ratatui::Frame;
 use super::theme::Theme;
 use crate::tui::state::{Activity, AppState, Entry, NodeStatus, ToolStatus};
 
-/// The streaming-line cursor (T2): a block `▌` (U+258C) appended at RENDER
+/// The streaming-line cursor: a block `▌` (U+258C) appended at RENDER
 /// time to the live, in-progress `Entry::Assistant` line while `activity ==
 /// Responding`. This is a render-time decoration ONLY -- it is never baked
 /// into the stored `Entry::Assistant` text or into [`entry_lines`] output
@@ -98,7 +98,7 @@ fn build_paragraph(state: &AppState, theme: &Theme) -> Paragraph<'static> {
 }
 
 /// The `Vec<Line>` `build_paragraph` wraps into a `Paragraph` -- factored
-/// out (T2) so the streaming-cursor behavior is directly unit-testable
+/// out so the streaming-cursor behavior is directly unit-testable
 /// without a `TestBackend`/`Paragraph` round-trip. The streaming cursor
 /// (`STREAMING_CURSOR`) is appended to the last `Line` of the last
 /// `Entry::Assistant` ONLY while `state.activity == Responding`; it is
@@ -148,7 +148,7 @@ fn build_lines(state: &AppState, theme: &Theme) -> Vec<Line<'static>> {
                     // Reuse the assistant body style for the cursor so it
                     // reads as part of the streaming line, not a separate
                     // accent. Uses the `theme.assistant` slot -- never an
-                    // inline `Style::default().fg(..)` literal (T1's grep
+                    // inline `Style::default().fg(..)` literal (a grep
                     // guard forbids that in view files other than
                     // `theme.rs`).
                     last.spans
@@ -287,8 +287,8 @@ pub(super) fn entry_row_starts(state: &AppState, width: u16, scroll_row: u16) ->
 /// split into one [`Line`] per physical line (see [`split_lines`]). A free
 /// function (not inlined into `draw`) so it is directly unit-testable
 /// against a `TestBackend`-free `Line`/`Span`. The `theme` parameter drives
-/// every color/modifier on the emitted `Span`s (T1); the text content is
-/// identical to a pre-T1 build at the default theme (visual parity).
+/// every color/modifier on the emitted `Span`s; the text content is
+/// identical to a pre-theming build at the default theme (visual parity).
 ///
 /// T4 additions:
 /// - `show_timestamps`: when `true`, an `HH:MM ` prefix (styled with
@@ -571,7 +571,7 @@ fn tool_lines(
     // on a technicality, but it is still decorative non-ASCII baked
     // permanently into SETTLED transcript text that a user copies out --
     // against the spirit of the clean-copy guarantee, and inconsistent with
-    // T4's own plain-`[`/`]`/`>` speaker marker. (T4 review, minor 2.)
+    // the plain-`[`/`]`/`>` speaker marker used elsewhere.
     if !progress.is_empty() {
         for note in progress.split('\n') {
             if note.is_empty() {
@@ -581,7 +581,7 @@ fn tool_lines(
         }
     }
 
-    // Output preview block (T5). The stored `preview` is never truncated;
+    // Output preview block. The stored `preview` is never truncated;
     // the cap is render-time only.
     if !preview.is_empty() {
         let all_lines: Vec<&str> = preview.split('\n').collect();
@@ -949,7 +949,7 @@ mod tests {
         );
     }
 
-    // ---- embedded-newline splitting (the bug this item fixes) ----
+    // ---- embedded-newline splitting ----
 
     /// The bug itself: `entry_lines` must build one `Line` PER physical
     /// line of a `\n`-containing `Entry::Assistant` text, not one `Line`
@@ -1824,7 +1824,7 @@ mod tests {
     }
 
     /// The streaming cursor attaches to the last `Entry::Reasoning` while
-    /// `activity == Thinking` (T4 mirrors T2's assistant streaming cursor).
+    /// `activity == Thinking`, mirroring the assistant streaming cursor above.
     #[test]
     fn streaming_cursor_present_on_last_reasoning_line_while_thinking() {
         let mut state = AppState::new(AgentId::new());

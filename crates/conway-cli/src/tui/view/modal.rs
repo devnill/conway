@@ -1,15 +1,15 @@
-//! The shared bottom-anchored, content-sized, capped modal primitive (V1).
+//! The shared bottom-anchored, content-sized, capped modal primitive.
 //!
-//! Before this item, Conway had five overlay/panel surfaces built to three
+//! Conway used to have five overlay/panel surfaces built to three
 //! different shapes: the permission prompt, the `/ask` modal, and the NL
 //! intent-confirm card each hand-rolled their own "claim nearly the whole
 //! transcript area" `Rect` math (`view/mod.rs`'s three `draw_*` fns, each
 //! with its own copy of the same border/`Clear`/footer-split logic); `/help`
-//! (T7) copied that shape a fourth time; `/agents` is a `Layout` row, not an
+//! copied that shape a fourth time; `/agents` is a `Layout` row, not an
 //! overlay at all (see this module's own doc below on why it stays that
 //! way). The permission prompt's own doc used to read *"claim nearly the
-//! whole transcript area"* — which is exactly the user complaint this item
-//! exists to fix: a modal that always eats the whole screen regardless of
+//! whole transcript area"* — the complaint this module fixes: a modal
+//! that always eats the whole screen regardless of
 //! how little it actually has to say.
 //!
 //! This module is the ONE place that decides a modal's `Rect`: **bottom-
@@ -222,8 +222,9 @@ pub fn draw_modal_frame(
 /// permission prompt, the `/ask` modal, the intent-confirm/trust-preview
 /// cards, the `[p]` field editor, the add-provider-credential prompt,
 /// `ask_question`'s modal -- uses, drawing OVER the transcript's tail rather
-/// than reserving space ahead of it; see this item's own report for why
-/// those are deliberately left unreserved).
+/// than reserving space ahead of it; those are deliberately left
+/// unreserved, unlike `/help`/`/settings`/`/plugin`, which DO reserve
+/// space (see this crate's `view` module doc).
 pub fn draw_modal_frame_in(
     frame: &mut Frame,
     area: Rect,

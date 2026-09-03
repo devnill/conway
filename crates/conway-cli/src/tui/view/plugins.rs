@@ -18,8 +18,8 @@
 //!
 //! ## The gap this closes
 //!
-//! Before this item, the only plugin listing in the TUI was `/settings`'
-//! own plugins section, and it read `AppState::plugin_browser` alone --
+//! The only plugin listing in the TUI used to be `/settings`'
+//! own plugins section, which read `AppState::plugin_browser` alone --
 //! populated (`app/startup.rs`) from `first_party_plugins::
 //! all_bundle_plugins`, the compiled-in first-party bundle. An operator
 //! with a `[plugins].subprocess[]` or `[plugins].mcp[]` entry configured
@@ -72,7 +72,7 @@
 //! [`all_plugin_rows`]. Nothing else in this module changes -- no match
 //! arm, no new group constant, no renderer edit -- because grouping,
 //! labelling, and detail rendering are already origin-agnostic. This is
-//! the literal test the spec asked this item to pass: "if the answer is
+//! the literal test: "if the answer is
 //! more than 'add a source', redesign."
 //!
 //! ## Kinds 2 and 3 are honestly thinner, not padded to match kind 1
@@ -99,8 +99,8 @@
 //! `[plugins].subprocess[]`/`[plugins].mcp[]` entries are installed
 //! UNCONDITIONALLY -- "every configured entry is spawned, there is no
 //! candidate set" (`subprocess_plugins.rs`'s own doc). There is nothing to
-//! toggle, and `config::writer` deliberately has no array-entry writer
-//! (out of scope for this item to add one). So every subprocess/MCP row's
+//! toggle, and `config::writer` deliberately has no array-entry writer.
+//! So every subprocess/MCP row's
 //! [`PluginRow::toggle`] is [`PluginToggle::ReadOnly`], and [`build_tree`]
 //! renders it as a [`super::menu::MenuNode::Static`] row naming exactly why
 //! -- never a selectable-but-inert row that silently does nothing on
@@ -312,8 +312,8 @@ const FOOTER_ROWS: u16 = 3;
 /// **Written for the listing's own V1 as `1` ("up to the whole
 /// `transcript_area`"), corrected by board item
 /// `01M1AFGDWR9CQ8WNYYV2B1TQBK`.** The `1` was sound while this listing drew
-/// straight OVER an already-rendered transcript -- this item makes
-/// `view::mod::layout` reserve the listing's own height out of the
+/// straight OVER an already-rendered transcript --
+/// `view::mod::layout` now reserves the listing's own height out of the
 /// transcript pane BEFORE `transcript::draw` runs (see [`modal_rect`],
 /// mirroring `view/settings.rs::modal_rect`'s own fix one item earlier, and
 /// `view/help.rs`'s identical correction alongside this one). A cap of `1`

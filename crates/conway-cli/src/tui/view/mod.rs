@@ -468,9 +468,9 @@ pub(crate) fn max_scroll(state: &AppState, area: Rect) -> u16 {
 const PERMISSION_FOOTER_ROWS: u16 = 5;
 
 /// The permission prompt: bottom-anchored, content-sized, capped, drawn over
-/// the transcript via the shared [`modal`] primitive (V1) -- unmistakably
-/// distinct from ordinary transcript output (module notes; also this item's
-/// human criterion), never part of the copyable conversation (it replaces
+/// the transcript via the shared [`modal`] primitive -- unmistakably
+/// distinct from ordinary transcript output (module notes), never part of
+/// the copyable conversation (it replaces
 /// transcript content on screen only while a decision is pending, via
 /// `Clear`).
 ///
@@ -630,7 +630,7 @@ const ASK_MODAL_FOOTER_ROWS: u16 = 2;
 /// The most ADDITIONAL rows (beyond the hint's own row) the footer may grow
 /// to for an in-modal error (board item `01M0TYRPF1ASGQ77AK04RB7H84`).
 ///
-/// Before this item the error line was a FIXED single row inside a
+/// The error line used to be a FIXED single row inside a
 /// two-row-total footer (`ASK_MODAL_FOOTER_ROWS`): `RuntimeError::
 /// PullInIncomplete`'s `Display` -- which names exactly how many of how
 /// many records merged and which child session still holds the ask -- runs
@@ -638,7 +638,7 @@ const ASK_MODAL_FOOTER_ROWS: u16 = 2;
 /// operator saw only its first fitted line, right at the moment they most
 /// needed the rest. This is not particular to that one variant: EVERY
 /// error `apply_ask_fate` can hand `AppState::fail_ask_modal` shares the
-/// same one-row slot, so the class this item fixes is "any in-modal error
+/// same one-row slot, so the class this fixes is "any in-modal error
 /// whose `Display` does not fit one line", not one call site.
 ///
 /// `5` rows comfortably fits `PullInIncomplete`'s own `Display` at an
@@ -873,12 +873,11 @@ const TRUST_PREVIEW_FOOTER_ROWS: u16 = 2;
 /// The trust-preview card (board item, split from
 /// `01KZHVFCN6ZEAXV7K5JHRQN1YB`'s `(kind, id, digest)`/plugin-subject
 /// generalisation, which this does not pre-empt): bottom-anchored,
-/// content-sized, capped, via the shared [`modal`] primitive (V1) --
+/// content-sized, capped, via the shared [`modal`] primitive --
 /// following [`draw_ask_modal`]/[`draw_intent_confirm`]'s precedent. Shows
 /// `path`'s current content BEFORE any trust decision is recorded --
 /// `commands::execute`'s `SlashCommand::Trust` arm opens this card instead
-/// of installing and trusting in the same action, which is what shipped
-/// before this item.
+/// of installing and trusting in the same action, the way it used to.
 ///
 /// The header line's wording depends on `card.status`
 /// (`conway::TrustStatus`), stated honestly rather than implying a
@@ -891,8 +890,8 @@ const TRUST_PREVIEW_FOOTER_ROWS: u16 = 2;
 ///   not retained anywhere and cannot be shown -- `crate::config::trust::
 ///   TrustStore` keeps only a digest of a prior decision, never its
 ///   content (see that module's own doc), so there is nothing to diff
-///   `card.contents` against. This is the plain statement this item's own
-///   acceptance requires in place of a diff view: showing only a preview
+///   `card.contents` against. This is the plain statement required in
+///   place of a diff view: showing only a preview
 ///   and calling it a diff would repeat exactly the failure this project
 ///   has already ruled against elsewhere (a mechanism that manufactures
 ///   confidence it cannot deliver).
@@ -1522,7 +1521,7 @@ mod tests {
             "the tail of a huge command must not already be visible with no scrolling: {before}"
         );
         // Still true at the top: the hint is visible even before any
-        // scrolling happens (the main invariant this item fixes).
+        // scrolling happens (the main invariant this test guards).
         assert!(before.contains("[y] allow once"));
 
         // Page down generously -- `draw_permission_overlay` clamps the
@@ -1637,8 +1636,8 @@ mod tests {
         assert!(text.contains("[p] pull in"), "{text}");
     }
 
-    /// The rendering-layer regression this item (`01M0TYRPF1ASGQ77AK04RB7H84`)
-    /// exists for: a `RuntimeError::PullInIncomplete`-shaped error (merge
+    /// The rendering-layer regression board item `01M0TYRPF1ASGQ77AK04RB7H84`
+    /// fixes: a `RuntimeError::PullInIncomplete`-shaped error (merge
     /// counts and "still holds the ask" land well past the ~78-character
     /// budget one fixed footer row gave `error: {err}` at an ordinary
     /// 80-column terminal) must still reach the screen, not just its first
@@ -1650,7 +1649,7 @@ mod tests {
     /// substring starts at character 126 of `error: {long_error}` -- past
     /// the single error row a 2-row-total footer (1 hint + 1 error) had
     /// room for, so it was silently clipped along with the rest of the
-    /// message. Reverting this item's `draw_ask_modal`/`ASK_MODAL_MAX_ERROR_ROWS`
+    /// message. Reverting the `draw_ask_modal`/`ASK_MODAL_MAX_ERROR_ROWS`
     /// change (keeping `commands.rs`'s transcript push, if desired) is
     /// enough to reproduce the failure.
     #[test]
@@ -1693,7 +1692,7 @@ mod tests {
     fn ask_modal_short_error_still_uses_the_original_two_row_footer() {
         // A short error (fits in the pre-existing single row) must not
         // grow the footer beyond `ASK_MODAL_FOOTER_ROWS` -- the no-cost
-        // common case this item's own doc promises is unchanged.
+        // common case above stays unchanged.
         let state = ask_modal_state("q", "a", Some("pull_in refused"));
 
         let rows = render(&state, 80, 24);
@@ -1898,7 +1897,7 @@ mod tests {
         );
     }
 
-    // ---- T7: the /help keybinding overlay ----
+    // ---- the /help keybinding overlay ----
 
     /// Renders every PAGE of the `/help` overlay at `width`x`height` --
     /// `PageDown` (stepping `state.modal_scroll` by the same
@@ -1906,8 +1905,8 @@ mod tests {
     /// concatenates them, stopping once a step no longer changes what is on
     /// screen (`modal::clamp_scroll` has pinned to the true bottom).
     ///
-    /// **Board item `01M1AFGDWR9CQ8WNYYV2B1TQBK`.** Before this item,
-    /// `help::CAP_DENOMINATOR` was generous enough (`1`) that the overlay's
+    /// **Board item `01M1AFGDWR9CQ8WNYYV2B1TQBK`.**
+    /// `help::CAP_DENOMINATOR` used to be generous enough (`1`) that the overlay's
     /// entire binding list rendered on ONE screen at any ordinary terminal
     /// size, so a single `render_text` call was a faithful proof of
     /// "every binding is shown." The correction that fixed the transcript-
@@ -2367,7 +2366,7 @@ mod tests {
     /// fills the transcript PAST the viewport height (`follow_tail`, the
     /// default, always shows the transcript's own tail) so the freshly
     /// appended error lands exactly where the settings menu's own rows are:
-    /// the discriminating case. Before this item, `layout` handed
+    /// the discriminating case. `layout` used to hand
     /// `transcript::draw` the FULL transcript row regardless of `/settings`
     /// being open, and the menu's `Clear`+`Block` painted over that row's
     /// own tail afterward -- the newest line (this error) would have been
@@ -2414,7 +2413,7 @@ mod tests {
     /// regardless of whether the transcript pane was ever shrunk, so this
     /// fills the transcript PAST the viewport height (`follow_tail`, the
     /// default) so the freshly appended error lands exactly where the
-    /// overlay's own rows are. Before this item, `layout` handed
+    /// overlay's own rows are. `layout` used to hand
     /// `transcript::draw` the FULL transcript row regardless of `/help`
     /// being open, and the overlay's `Clear`+`Block` painted over that
     /// row's own tail afterward -- the newest line (this error) would have
@@ -2494,7 +2493,7 @@ mod tests {
     /// Mirrors `an_error_raised_while_settings_is_open_is_not_covered_by_
     /// the_menu`/`an_error_raised_while_help_is_open_is_not_covered_by_the_
     /// overlay` exactly, for `/plugin` -- the third and last of the three
-    /// surfaces this item names.
+    /// surfaces that need the same transcript reservation.
     #[test]
     fn an_error_raised_while_plugins_is_open_is_not_covered_by_the_listing() {
         let mut state = AppState::new(AgentId::new());
