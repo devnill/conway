@@ -19,7 +19,9 @@ Conway idioms -- specific to this harness, not general agent advice.
 - **Permissions.** Every call passes a broker. A denial is a normal
   outcome to reason about and route around, not an error to retry blindly.
 - **Budgets.** A turn is bounded; exceeding one is a real terminal state,
-  not a soft warning.
+  not a soft warning. You will be told when you pass 50/75/90% of the
+  window and when a budget is within 20% of tripping; at 75%, fork
+  remaining exploration to a child and keep only its distillate.
 - **Steering.** A parent may steer or cancel a child mid-flight -- an
   in-flight instruction or task can change or end without you asking.
 

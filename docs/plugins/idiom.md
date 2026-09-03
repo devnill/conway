@@ -12,7 +12,7 @@ A plugin that prepends a short, conway-specific instruction fragment near
 the front of a session's assembled context — the operator's own framing:
 *"this is a plugin which prepends a custom system prompt. Currently we send
 minimal data, and the purpose of this is to add a little extra if
-desired."* A little extra: 28 lines, 275 words, well inside a 40-line/
+desired."* A little extra: 33 lines, 344 words, well inside a 40-line/
 400-word budget measured against Pi's own system-prompt template
 (`docs/vision/INTENT.md`'s citation of Pi as conway's extension-surface
 reference).
@@ -92,6 +92,15 @@ Fork vs. spawn, how an agent ends (`report`, or plain text for a
 scarcity, permissions, budgets, and steering — see
 `crates/conway-plugin-idiom/fragments/idiom.md` for the fragment's own
 exact text.
+
+**The budgets bullet's promise is made true by the runtime, in the same
+change that wrote it** (declaration honesty): the fragment tells the model
+it will be warned at 50/75/90% of the context window and within 20% of any
+budget's limit, and `conway_runtime::runway` (`crates/conway-runtime/src/
+runway.rs`) is the mechanism that actually sends those warnings — see
+[`interactive.md`](../interactive.md#runway-notices) for what one looks
+like on the wire and [`scripting.md`](../scripting.md#budget-flags) for the
+non-interactive framing.
 
 `tool_ids` is empty, deliberately. `ContextBuilder::build`'s reachability
 check withholds a fragment's text **entirely** when any id in its

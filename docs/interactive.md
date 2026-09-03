@@ -179,6 +179,35 @@ While the agent is working, the status line's `activity` field is your
 responding…`), live elapsed seconds, and new context tokens added this
 turn. It reads `idle` between turns.
 
+### Runway notices
+
+The status line's `ctx%` field is for *you*. Before this, the model itself
+found out its context window or a budget was running out only when it was
+already cut off — the harness computed how close it was every turn, and
+told only the human. conway now tells the model too: once per session it
+crosses 50%, 75%, or 90% of the routed model's context window, and once
+per turn it comes within 20% of a configured `[limits]` ceiling
+(`max_steps`, `max_tool_calls`, `max_tokens`, or a deadline), the harness
+appends a note the model reads on its next turn, e.g.:
+
+```
+runway: context window 76% full (12.4k of 16k tokens est., anthropic/claude). Fork the
+remaining exploration to a child and keep only its distillate; do not accumulate large
+tool results inline.
+```
+
+or
+
+```
+runway: 4 of 5 max_steps used this turn (max_steps=5). Wrap up or report now.
+```
+
+It shows up in your transcript as a notice line, the same way conway
+already shows other system notes (e.g. `conway.stepguard`'s repeated-call
+warning) — you see exactly what the model was told, not a summary of it.
+No note is ever sent for a window whose size conway does not actually
+know; the harness says nothing rather than guess.
+
 Tool calls appear inline in the transcript as they're proposed, run, and
 finish, each tagged with its state (`proposed`, `awaiting permission`,
 `running`, `done`, `failed`). A settled tool call's output is folded to its first few

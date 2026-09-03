@@ -358,6 +358,18 @@ configured `[limits].max_tokens`. None of the three is supported with
 `--resume`/`--fork-from` in this release (a usage error): neither facade
 path accepts a caller-supplied budget override yet.
 
+**The model itself is warned before any of these trips.** A note reaches
+the model at 80% of each configured limit (`max_steps`, `max_tool_calls`,
+`max_tokens`, or a deadline) — `runway: 4 of 5 max_steps used this turn
+(max_steps=5). Wrap up or report now.` — and again whenever the routed
+model's own context window passes 50%, 75%, or 90% full. This is a
+one-way, informational note only: it changes nothing about when a budget
+actually trips (still exactly the numbers in this table), and it costs a
+caller nothing to opt into — there is no flag for it. `--output-format
+jsonl` carries it like any other event; a `text`/`json` run sees the note
+folded into whatever the model does with it (e.g. wrapping up early), not
+as a separate line of its own.
+
 ```console
 conway -p "summarize this log" --max-turns 3 --max-seconds 30 < build.log
 ```
