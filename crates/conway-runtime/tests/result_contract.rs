@@ -976,6 +976,7 @@ fn agent_result_serializes_only_the_bounded_field_set_no_raw_transcript() {
             "facts",
             "status",
             "steps_taken",
+            "steps_this_turn",
             "structured",
             "summary",
             "transcript_ref",
