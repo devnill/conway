@@ -916,10 +916,19 @@ return types, the field types of the structs you construct (`ToolSpec`,
 `ToolOutput`, `PluginManifest`, `PromptSegment`), the two capability
 handle types the built-in tools themselves name in helper signatures
 (`PluginConfig`, `CancellationToken`), and the `async_trait` attribute
-macro all three traits are transformed with. Two data-type crates are
-part of the public signatures but are *not* re-exported — name them in
-your own `Cargo.toml`, at the same version conway uses, so the types line
-up: `schemars` (`ToolSpec::schema`) and `serde_json`
+macro all three traits are transformed with. `Plugin`'s optional
+methods (`docs/plugins/authoring.md`'s "What else a plugin can declare"
+section) need their own return-type elements named the same way —
+`InstructionFragment`, `PluginDescription`, `EventDecl`, `NarrowingRule`,
+`ContextHook`/`Curator`, `PluginPermissionRule`/`PluginPermissionVerdict`,
+`EventSinkHandle`, `PluginStatusContribution`, `CapabilityRegistration`,
+`PluginHookRule` — all re-exported here too, for the identical reason.
+`NarrowingRule` specifically was missing from this list until this item;
+closed at the same seam every other name here lives at
+(`crates/conway/src/lib.rs`), not merely noted as a gap. Two data-type
+crates are part of the public signatures but are *not* re-exported —
+name them in your own `Cargo.toml`, at the same version conway uses, so
+the types line up: `schemars` (`ToolSpec::schema`) and `serde_json`
 (`ToolCall::arguments`, `Tool::render`'s argument).
 
 `ToolCtx`'s remaining fields (`chdir`, `events`, `subagents`)

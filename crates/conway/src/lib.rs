@@ -378,6 +378,18 @@ pub mod plugin {
     /// declares, the SAME "declare, host attributes/checks it" shape
     /// [`EventDecl`]/[`CommandSpec`] establish immediately above and below.
     pub use conway_core::ports::InstructionFragment;
+    /// [`Plugin::narrowable_keys`]'s own return-type element -- a plugin
+    /// author constructs one of these per per-agent-configurable key it
+    /// declares narrowable, pairing the bare key name with the pure
+    /// [`NarrowingRule::narrows`] comparison the host consults when a
+    /// caller's `SubagentSpec::plugin_config` requests a per-agent
+    /// override. Re-exported for the same reason every other
+    /// `Plugin`-method return-type element in this module is: an
+    /// implementor of `Plugin::narrowable_keys` needs to name it without
+    /// depending on `conway-core` directly (`docs/plugins/authoring.md`'s
+    /// "What else a plugin can declare" section named this as a facade
+    /// parity gap; closed here rather than only noted).
+    pub use conway_core::ports::NarrowingRule;
     /// [`Plugin::description`]'s own return type -- see that method's own
     /// doc for why this is a distinct type from [`InstructionFragment`],
     /// argued rather than assumed (two audiences, two cardinalities).
