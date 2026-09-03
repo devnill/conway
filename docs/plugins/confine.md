@@ -107,6 +107,20 @@ honesty (GP-14): treat the Linux path as a designed, not-yet-independently-
 verified-here implementation until a CI runner with `bwrap` actually
 exercises it.
 
+**The confinement root is canonicalized before either profile is built.**
+Found by the build lane running this crate's own acceptance suite: a
+`tempfile::tempdir()`-backed root lands under `/var/folders/...` on macOS,
+itself a symlink to `/private/var/folders/...`; Seatbelt's `subpath` match
+(and the same path-matching logic `bwrap`'s `--bind` relies on) resolves
+symlinks before comparing, so handing either primitive the unresolved path
+denied writes even *inside* the confinement root — a broken feature, not a
+containment gap, but real and reproducible. `ConfinedBashTool`'s
+`build_launcher` (`crates/conway-plugin-confine/src/tool.rs`) now calls
+`std::fs::canonicalize` on `root` before either OS-specific launcher
+builder sees it, on both platforms; a root that fails to canonicalize
+(e.g. it no longer exists) is a named error, never a silent fall-through
+to matching against the unresolved path.
+
 ## No fallback to unconfined execution, ever
 
 - **No root configured for this agent** (`--root` was never set, or a

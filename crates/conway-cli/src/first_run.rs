@@ -1193,7 +1193,6 @@ fn offer_opinion_set_and_shell(path: &Path) {
                          plugins.install in {}.",
                         path.display()
                     );
-                    return;
                 }
                 Err(e) => {
                     println!("Could not enable the confined shell tool: {e}");

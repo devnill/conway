@@ -183,7 +183,10 @@ mod macos_containment {
             "write inside root should succeed: {}",
             text_of(&out)
         );
-        assert!(target.exists(), "the file must exist after a confined write inside root");
+        assert!(
+            target.exists(),
+            "the file must exist after a confined write inside root"
+        );
     }
 
     /// `echo x > <outside>/out.txt` returns non-zero with the file absent.
@@ -306,19 +309,24 @@ mod linux_containment {
             .invoke(call(&format!("echo x > {}", inside_target.display())), ctx)
             .await
             .expect("invoke must not host-error");
-        assert!(!out.is_error, "write inside root should succeed: {}", text_of(&out));
+        assert!(
+            !out.is_error,
+            "write inside root should succeed: {}",
+            text_of(&out)
+        );
         assert!(inside_target.exists());
 
         let outside_target = outside.join("out.txt");
         let ctx = ctx_with_root(&root, Some(&root));
         let out = confined_tool()
-            .invoke(
-                call(&format!("echo x > {}", outside_target.display())),
-                ctx,
-            )
+            .invoke(call(&format!("echo x > {}", outside_target.display())), ctx)
             .await
             .expect("invoke must not host-error even though bash itself fails");
-        assert!(out.is_error, "write outside root must fail: {}", text_of(&out));
+        assert!(
+            out.is_error,
+            "write outside root must fail: {}",
+            text_of(&out)
+        );
         assert!(!outside_target.exists());
 
         let ctx = ctx_with_root(&root, Some(&root));
@@ -326,6 +334,10 @@ mod linux_containment {
             .invoke(call("cat /etc/hosts"), ctx)
             .await
             .expect("invoke must not host-error");
-        assert!(!out.is_error, "a read outside root must succeed: {}", text_of(&out));
+        assert!(
+            !out.is_error,
+            "a read outside root must succeed: {}",
+            text_of(&out)
+        );
     }
 }

@@ -161,7 +161,9 @@ fn every_top_level_section_in_the_bare_document_round_trips_its_own_default() {
     // baked-in floor role rather than being empty) -- proven directly
     // instead, matching `ConwayConfig::baseline`'s own construction.
     assert_eq!(
-        doc.get("backends").and_then(|v| v.as_object()).map(|m| m.len()),
+        doc.get("backends")
+            .and_then(|v| v.as_object())
+            .map(|m| m.len()),
         Some(0),
         "the built-in default must name no backend"
     );

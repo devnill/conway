@@ -138,7 +138,7 @@ impl Tool for ConfinedBashTool {
     /// The bare shell command -- byte-for-byte `bash`'s own override (see
     /// that tool's doc for why `PatternRule` needs the literal command
     /// text, not a JSON dump). Duplicated for the identical private-type
-    /// reason [`ConfinedBashArgs`] is: there is no shared, importable
+    /// reason `ConfinedBashArgs` is: there is no shared, importable
     /// implementation to call instead.
     fn render(&self, args: &serde_json::Value) -> String {
         match args.get("command").and_then(serde_json::Value::as_str) {
@@ -184,11 +184,32 @@ impl Tool for ConfinedBashTool {
 /// containment primitive on this OS" error -- see WHAT NOT TO BUILD: no
 /// Landlock/`unshare`, and no fallback to an unconfined run on a platform
 /// this crate does not implement a primitive for.
+/// Both branches below canonicalize `root` before handing it to the OS
+/// primitive's own launcher builder -- found live in this crate's own
+/// macOS acceptance test: a `tempfile::tempdir()` root lands under
+/// `/var/folders/...`, which is itself a symlink to
+/// `/private/var/folders/...`; Seatbelt's `subpath` (and, by the same
+/// bind-mount-path-matching logic, `bwrap`'s `--bind`) match against the
+/// RESOLVED path, so an unresolved `root` denies writes even INSIDE the
+/// confinement root, not only outside it -- the opposite of silently
+/// under-confining, but a broken feature all the same. `std::fs::
+/// canonicalize` requires `root` to exist, which a real confinement root
+/// always does by the time a call reaches here (`resolve_root` already
+/// requires `--root` to have been configured); a root that vanishes
+/// between configuration and this call is a genuine error, surfaced named
+/// rather than silently building a launcher against a resolved-but-stale
+/// path.
 #[cfg(target_os = "macos")]
 fn build_launcher(
     primitive: PathBuf,
     root: PathBuf,
 ) -> Result<conway::plugin::Launcher, ToolError> {
+    let root = std::fs::canonicalize(&root).map_err(|e| ToolError::Denied {
+        reason: format!(
+            "conway.confine could not resolve --root {} to a canonical path: {e}",
+            root.display()
+        ),
+    })?;
     Ok(crate::launcher::sandbox_exec_launcher(primitive, root))
 }
 
@@ -197,6 +218,12 @@ fn build_launcher(
     primitive: PathBuf,
     root: PathBuf,
 ) -> Result<conway::plugin::Launcher, ToolError> {
+    let root = std::fs::canonicalize(&root).map_err(|e| ToolError::Denied {
+        reason: format!(
+            "conway.confine could not resolve --root {} to a canonical path: {e}",
+            root.display()
+        ),
+    })?;
     Ok(crate::launcher::bwrap_launcher(primitive, root))
 }
 

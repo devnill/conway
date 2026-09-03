@@ -2,10 +2,16 @@
 //! 2026-09-01, decision `01M1FQG08GDQ71984T0W0RJ019`): fixture installing
 //! `conway.confine` with `--root`, a mock backend scripting a
 //! `confined_bash` call that writes OUTSIDE the root -- the tool result in
-//! the one-shot event stream is an error and the file is absent -- and the
-//! root+unconfinable-shell-tool warning is NOT printed for this
-//! configuration (`Tool::confined_by_tool`'s own structural exclusion,
-//! `crates/conway/src/builder.rs`'s "10a2b" comment).
+//! the one-shot event stream is an error and the file is absent. Does
+//! **not** assert the root+unconfinable-shell-tool warning stays silent --
+//! one-shot `-p` dispatch registers every built-in plugin unconditionally,
+//! so `conway.shell`'s own `bash` is genuinely present and genuinely
+//! unconfined here too, regardless of `[plugins].install`; the warning is
+//! therefore correct to fire in THIS dispatch mode. `Tool::confined_by_
+//! tool`'s actual suppression effect (`crates/conway/src/builder.rs`'s
+//! "10a2b" comment) is unit-tested directly against `ConwayBuilder::build`
+//! in `crates/conway/tests/builder.rs` instead, where the plugin set is
+//! controlled precisely.
 //!
 //! Written the same way `crates/conway-cli/tests/first_party_plugins.rs`
 //! drives a first-party plugin end to end: real compiled binary, real mock
@@ -70,7 +76,7 @@ fn tool_call_finished_is_error(lines: &[serde_json::Value], tool_name: &str) -> 
 /// `confined_bash` call writing outside it -- an error result, the file
 /// absent, and no root+bash warning.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn confined_bash_write_outside_root_is_an_error_result_and_the_root_warning_is_silent() {
+async fn confined_bash_write_outside_root_is_an_error_result_and_the_file_stays_absent() {
     let outside = tempfile::tempdir().expect("outside tempdir");
     let outside_target = outside.path().join("out.txt");
 
@@ -122,10 +128,20 @@ async fn confined_bash_write_outside_root_is_an_error_result_and_the_root_warnin
         "no file may exist outside --root after a refused confined write"
     );
 
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !(stderr.contains("bash") && stderr.contains("--root")),
-        "conway.confine's own tool declares confined_by_tool() == true, so the root+ \
-         unconfinable-shell-tool warning must NOT fire for this configuration, got: {stderr:?}"
-    );
+    // NOT asserting the root+unconfinable-shell-tool warning is silent
+    // here, on further thought: one-shot `-p` dispatch registers every
+    // built-in plugin unconditionally (`main.rs`'s own `PluginSelection::
+    // All` for every non-interactive CLI target -- the same documented
+    // behavior `tools_list.rs`'s `tools_builtin_plugins_toggle_has_no_
+    // effect_on_bash_registration` proves for `conway tools list`), so
+    // `conway.shell`'s own `bash` (genuinely unconfined) is present in
+    // THIS process alongside `conway.confine`'s `confined_bash` regardless
+    // of `[plugins].install` naming only the latter -- the warning is
+    // therefore CORRECT to fire here, not a defect. `confined_by_tool`'s
+    // actual suppression effect (a root check exempting a tool that
+    // declares it) is unit-tested directly against `ConwayBuilder::build`
+    // in `crates/conway/tests/builder.rs`'s
+    // `a_tool_declaring_confined_by_tool_suppresses_the_root_warning`,
+    // where the plugin set is controlled precisely rather than inheriting
+    // one-shot's own always-register-everything posture.
 }

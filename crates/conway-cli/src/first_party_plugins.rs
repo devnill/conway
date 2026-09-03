@@ -457,9 +457,10 @@ pub fn all_bundle_plugins(
     // list to test membership against in the first place -- the identical
     // reason `browse_names` immediately above is always the throwaway
     // in-memory store rather than a selection-conditional real one.
-    let confine_plugin: Arc<dyn Plugin> = Arc::new(conway_plugin_confine::ConfinePlugin::unchecked(
-        conway_plugin_confine::default_primitive_path(),
-    ));
+    let confine_plugin: Arc<dyn Plugin> =
+        Arc::new(conway_plugin_confine::ConfinePlugin::unchecked(
+            conway_plugin_confine::default_primitive_path(),
+        ));
     // `None`: a browsing-only re-derivation never needs a live `FormSurface`
     // -- see `bundle`'s own doc, "`form_surface`".
     bundle(
