@@ -341,8 +341,10 @@ pub struct LimitsConfig {
     /// a SUBAGENT, which no one is watching. It does not on a root session
     /// driven by a person who can read the transcript and interrupt --
     /// there, the human is the guard, and a fixed number can only be wrong
-    /// in one of two directions. `Budget::default()`'s `40` is unchanged, so
-    /// a spawned agent that names no budget of its own still gets one.
+    /// in one of two directions. `conway_core::agent::Budget::default()`'s
+    /// `40` is unchanged (see that type's own doc for the full
+    /// three-site reconciliation, board item `01M1FS8R09PGF9HHV95B7A6RMH`),
+    /// so a spawned agent that names no budget of its own still gets one.
     ///
     /// **This `Default` impl is the only place this value lives.**
     /// `crate::config::merge::default_document` (the baked-in,

@@ -235,6 +235,18 @@ dimension it was — so an agent that set several can tell what stopped it. In
 one-shot mode a root agent tripping any of them is [exit code
 5](scripting.md#exit-codes).
 
+For the two turn-scoped dimensions (`max_steps`, `max_tool_calls`, table
+below), the `BudgetExceeded` result also names WHICH of the two scopes it
+counted: `"max_steps=40 (this turn)"` for a keep-alive session, `"max_steps=40
+(this session)"` otherwise. Read that label alongside the terminal
+`AgentResult`'s own two step counters — `steps_taken` (session-lifetime,
+never reset) and `steps_this_turn` (reset at each keep-alive turn boundary,
+equal to `steps_taken` when there is only ever one turn) — rather than
+`steps_taken` alone: a keep-alive session that has already run several turns
+can report a `steps_taken` far larger than the `max_steps` that just tripped,
+and without both labels that reads as though the ceiling failed to hold when
+it did not.
+
 | Dimension | Bounds | Scope |
 | --- | --- | --- |
 | `max_steps` | Turns taken. | Per user turn for a [keep-alive](sessions.md#keep-alive-sessions) session, otherwise the agent's whole life. |
@@ -257,7 +269,7 @@ Set the defaults for a session's own root agent in `settings.json`:
 ```json
 {
   "limits": {
-    "max_steps": 40,
+    "max_steps": 0,
     "max_tool_calls": 0,
     "max_tokens": 0,
     "deadline_secs": 0,
@@ -266,7 +278,23 @@ Set the defaults for a session's own root agent in `settings.json`:
 }
 ```
 
-`0` means no ceiling for `max_tool_calls`, `max_tokens`, and `deadline_secs`.
+`0` means no ceiling for every dimension here, `max_steps` included — a root
+session is watched by the person running it, who can read the transcript and
+interrupt, so a fixed step ceiling has no one it protects and can only cut a
+real task off early.
+
+**A bare subagent's default `max_steps` is `40`, not `0` — and that is a
+deliberate difference, not drift.** A step ceiling earns its keep on a
+subagent, which no one is watching directly, so `conway_core::agent::
+Budget::default().max_steps` stays a real ceiling even though the root's own
+`settings.json` default (above) is unlimited. Both values are stated in
+exactly one place each: `Budget::default()`
+(`crates/conway-core/src/agent.rs`) for the subagent floor, and
+`LimitsConfig::default()` (`crates/conway/src/config/schema.rs` — mechanically
+mirrored into `config::merge::default_document`, never a second independent
+value) for the root's `settings.json` default. See either type's own doc
+comment for the full three-site cross-reference.
+
 `max_parallel_tools` is not a budget — it caps how many calls in one batch run
 concurrently, and never ends an agent.
 

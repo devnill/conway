@@ -236,7 +236,7 @@ impl AppState {
         // node status already reflects the end for the /agents panel).
         if self.tree.root == Some(agent) && self.is_root_focused() {
             self.transcript.push(Entry::Notice {
-                text: format!("session ended: {}", terminal_reason(&result.status)),
+                text: format!("session ended: {}", terminal_reason(result)),
             });
         }
     }
@@ -264,16 +264,30 @@ impl AppState {
     }
 }
 
-/// A short, human-readable rendering of a terminal `ResultStatus`, for the
+/// A short, human-readable rendering of a terminal `AgentResult`, for the
 /// root-session-ended `Notice` in [`AppState::apply_agent_finished`].
 /// `ResultStatus` is `#[non_exhaustive]`; the wildcard arm is forward
 /// compatibility, not a modeled case.
-fn terminal_reason(status: &ResultStatus) -> String {
-    match status {
+///
+/// `BudgetExceeded`'s `limit` already carries its own `(this turn)`/`(this
+/// session)` scope label (`AgentLoop::check_budget`'s doc), but that alone
+/// does not say what the OTHER number in the sentence -- `steps_taken` --
+/// counts, which is exactly the ambiguity board item
+/// `01M1FS8R09PGF9HHV95B7A6RMH` fixed: a reader seeing only `max_steps=40
+/// (this turn)` next to a bare step count could not tell whether that count
+/// was the same turn-scoped thing or the session's whole lifetime. So this
+/// arm renders BOTH `AgentResult` counters, each labelled with its own
+/// scope, rather than only the one `check_budget` happened to gate on.
+fn terminal_reason(result: &AgentResult) -> String {
+    match &result.status {
         ResultStatus::Completed => "completed".to_string(),
         ResultStatus::Failed { error } => format!("failed: {error}"),
         ResultStatus::Cancelled { reason } => format!("cancelled: {reason}"),
-        ResultStatus::BudgetExceeded { limit } => format!("budget exceeded ({limit})"),
+        ResultStatus::BudgetExceeded { limit } => format!(
+            "budget exceeded ({limit}; steps_taken={} (this session), steps_this_turn={} \
+             (this turn))",
+            result.steps_taken, result.steps_this_turn
+        ),
         ResultStatus::Rejected { missing } => format!("rejected: {}", missing.join(", ")),
         _ => "unknown".to_string(),
     }
@@ -364,6 +378,58 @@ mod tests {
                 assert!(
                     text.contains("session ended") && text.contains("budget exceeded"),
                     "expected a session-ended budget-exceeded notice, got: {text}"
+                );
+            }
+            other => panic!("expected a Notice entry, got {other:?}"),
+        }
+    }
+
+    /// Board item `01M1FS8R09PGF9HHV95B7A6RMH`: the notice must show BOTH
+    /// `AgentResult` step counters, each labelled with its own scope, not
+    /// just the bare `limit` string -- otherwise a `keep_alive` root whose
+    /// `steps_taken` (session-lifetime) is far larger than the `max_steps`
+    /// it tripped on (turn-scoped) reads as though the limit failed to
+    /// hold, exactly the real incident this item fixes (`budget_exceeded
+    /// max_steps=40` alongside `steps_taken 81`).
+    #[test]
+    fn root_finished_notice_renders_both_labelled_step_counts() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        let mut result = AgentResult::new(
+            root,
+            session,
+            ResultStatus::BudgetExceeded {
+                limit: "max_steps=40 (this turn)".to_string(),
+            },
+            "",
+        );
+        result.steps_taken = 81;
+        result.steps_this_turn = 40;
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::AgentFinished {
+                result,
+                ephemeral: false,
+            },
+        ));
+
+        match state.transcript.last() {
+            Some(Entry::Notice { text }) => {
+                assert!(
+                    text.contains("max_steps=40 (this turn)"),
+                    "expected the turn-scoped limit label, got: {text}"
+                );
+                assert!(
+                    text.contains("steps_taken=81 (this session)"),
+                    "expected the labelled session-lifetime count, got: {text}"
+                );
+                assert!(
+                    text.contains("steps_this_turn=40 (this turn)"),
+                    "expected the labelled turn-scoped count, got: {text}"
                 );
             }
             other => panic!("expected a Notice entry, got {other:?}"),

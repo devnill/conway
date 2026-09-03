@@ -1097,6 +1097,7 @@ impl AgentLoop {
                         self.terminal_account(&state, &result_builder),
                         state.usage,
                         state.turn,
+                        state.turn_steps,
                         &result_builder,
                     )
                     .await);
@@ -1132,6 +1133,7 @@ impl AgentLoop {
                                     self.terminal_account(&state, &result_builder),
                                     state.usage,
                                     state.turn,
+                                    state.turn_steps,
                                     &result_builder,
                                 ).await);
                             }
@@ -1431,6 +1433,7 @@ impl AgentLoop {
                                 self.terminal_account(&state, &result_builder),
                                 state.usage,
                                 state.turn,
+                                state.turn_steps,
                                 &result_builder,
                             ).await);
                         }
@@ -1570,6 +1573,7 @@ impl AgentLoop {
                                     summary,
                                     state.usage,
                                     state.turn + 1,
+                                    state.turn_steps + 1,
                                     &result_builder,
                                 )
                                 .await);
@@ -1627,6 +1631,7 @@ impl AgentLoop {
                         summary,
                         state.usage,
                         state.turn + 1,
+                        state.turn_steps + 1,
                         &result_builder,
                     )
                     .await);
@@ -1927,6 +1932,16 @@ impl AgentLoop {
     ///
     /// Non-`keep_alive` behavior is byte-for-byte unchanged: `state.turn`
     /// gates `max_steps` exactly as before this field existed.
+    ///
+    /// The `max_steps`/`max_tool_calls` trips label their
+    /// `ResultStatus::BudgetExceeded { limit }` string with which counter
+    /// gated them -- `" (this turn)"` when `self.spec.keep_alive` (the
+    /// turn-scoped counter above), `" (this session)"` otherwise -- and
+    /// every `finish` call here also carries `state.turn_steps` into the
+    /// new `AgentResult::steps_this_turn` field, so a renderer showing both
+    /// `steps_taken` and `steps_this_turn` next to the label never looks
+    /// like the limit failed to hold. Board item
+    /// `01M1FS8R09PGF9HHV95B7A6RMH`.
     async fn check_budget(
         &self,
         state: &LoopState,
@@ -1937,6 +1952,18 @@ impl AgentLoop {
             state.turn_steps
         } else {
             state.turn
+        };
+        // `max_steps`/`max_tool_calls` are the two dimensions gated on a
+        // turn-scoped counter for a `keep_alive` agent (see this method's
+        // own doc) -- `scope_label` renders that fact into
+        // `ResultStatus::BudgetExceeded { limit }` itself, using the exact
+        // "this turn"/"this session" vocabulary `crate::runway`'s
+        // `budget_notes` already established for the model-facing warning
+        // one step earlier, board item `01M1FS8R09PGF9HHV95B7A6RMH`.
+        let scope_label = if self.spec.keep_alive {
+            "this turn"
+        } else {
+            "this session"
         };
         // `0` means NO CEILING, matching every other dimension in
         // `[limits]` (`max_tokens`, `deadline_secs`, `max_tool_calls` all
@@ -1950,11 +1977,12 @@ impl AgentLoop {
             return Some(
                 self.finish(
                     ResultStatus::BudgetExceeded {
-                        limit: format!("max_steps={}", budget.max_steps),
+                        limit: format!("max_steps={} ({scope_label})", budget.max_steps),
                     },
                     self.terminal_account(state, builder),
                     state.usage,
                     state.turn,
+                    state.turn_steps,
                     builder,
                 )
                 .await,
@@ -1970,6 +1998,7 @@ impl AgentLoop {
                         self.terminal_account(state, builder),
                         state.usage,
                         state.turn,
+                        state.turn_steps,
                         builder,
                     )
                     .await,
@@ -1987,6 +2016,7 @@ impl AgentLoop {
                         self.terminal_account(state, builder),
                         state.usage,
                         state.turn,
+                        state.turn_steps,
                         builder,
                     )
                     .await,
@@ -1998,11 +2028,12 @@ impl AgentLoop {
                 return Some(
                     self.finish(
                         ResultStatus::BudgetExceeded {
-                            limit: format!("max_tool_calls={max_tool_calls}"),
+                            limit: format!("max_tool_calls={max_tool_calls} ({scope_label})"),
                         },
                         self.terminal_account(state, builder),
                         state.usage,
                         state.turn,
+                        state.turn_steps,
                         builder,
                     )
                     .await,
@@ -2047,6 +2078,7 @@ impl AgentLoop {
             self.terminal_account(state, builder),
             state.usage,
             state.turn,
+            state.turn_steps,
             builder,
         )
         .await
@@ -2115,6 +2147,7 @@ impl AgentLoop {
                     self.terminal_account(state, &builder),
                     state.usage,
                     state.turn,
+                    state.turn_steps,
                     &builder,
                 )
                 .await;
@@ -2134,6 +2167,7 @@ impl AgentLoop {
             self.terminal_account(state, &builder),
             state.usage,
             state.turn,
+            state.turn_steps,
             &builder,
         )
         .await
@@ -2185,6 +2219,11 @@ impl AgentLoop {
         trailing_text: impl Into<String>,
         usage: Usage,
         steps_taken: u32,
+        // `LoopState::turn_steps` at termination -- see
+        // `AgentResult::steps_this_turn`'s own doc. Every call site below
+        // passes `state.turn_steps` (or `state.turn_steps + 1`, mirroring
+        // whichever form `steps_taken` itself uses at that site).
+        steps_this_turn: u32,
         builder: &ResultBuilder,
     ) -> AgentResult {
         // precedence between an explicit `report` tool call and
@@ -2198,6 +2237,7 @@ impl AgentLoop {
         result.structured = parts.structured;
         result.usage = usage;
         result.steps_taken = steps_taken;
+        result.steps_this_turn = steps_this_turn;
 
         match self.deps.store.head(&self.session).await {
             Ok(seq) => {

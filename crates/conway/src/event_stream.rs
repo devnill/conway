@@ -909,6 +909,7 @@ mod tests {
                 transcript_ref: session,
                 usage: Default::default(),
                 steps_taken: 1,
+                steps_this_turn: 1,
             },
             ephemeral: false,
         }
