@@ -1814,36 +1814,34 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
         // `conway_await` tool. See `SlashCommand::Await`'s own doc for the
         // root/duplicate refusals, and `Effect::RunAwait`'s for why this
         // arm never calls `host.await_agent` itself.
-        SlashCommand::Await { target } => {
-            match resolve_agent(state, &target) {
-                Ok(agent) if agent == state.root_agent() => {
-                    notice(
-                        state,
-                        format!(
-                            "cannot await {agent}: it is this session's own root agent -- \
+        SlashCommand::Await { target } => match resolve_agent(state, &target) {
+            Ok(agent) if agent == state.root_agent() => {
+                notice(
+                    state,
+                    format!(
+                        "cannot await {agent}: it is this session's own root agent -- \
                              use /quit instead"
-                        ),
-                    );
-                    Effect::None
-                }
-                Ok(agent) if state.awaiting_agents.contains(&agent) => {
-                    notice(state, format!("already awaiting {agent}"));
-                    Effect::None
-                }
-                Ok(agent) => {
-                    state.awaiting_agents.insert(agent);
-                    notice(
-                        state,
-                        format!("awaiting {agent}; a keep_alive agent ends only on /cancel"),
-                    );
-                    Effect::RunAwait { agent }
-                }
-                Err(e) => {
-                    notice(state, e);
-                    Effect::None
-                }
+                    ),
+                );
+                Effect::None
             }
-        }
+            Ok(agent) if state.awaiting_agents.contains(&agent) => {
+                notice(state, format!("already awaiting {agent}"));
+                Effect::None
+            }
+            Ok(agent) => {
+                state.awaiting_agents.insert(agent);
+                notice(
+                    state,
+                    format!("awaiting {agent}; a keep_alive agent ends only on /cancel"),
+                );
+                Effect::RunAwait { agent }
+            }
+            Err(e) => {
+                notice(state, e);
+                Effect::None
+            }
+        },
         SlashCommand::Tree => {
             // Item A3: no facade call -- the alias renders from
             // `state.tree` (the panel's own view), so its labels, recipe
@@ -3378,6 +3376,7 @@ mod tests {
             let example = match row.name {
                 "/steer" => "/steer a1 hello".to_string(),
                 "/cancel" => "/cancel a1".to_string(),
+                "/await" => "/await a1".to_string(),
                 "/context" => "/context a1".to_string(),
                 "/fork" => "/fork".to_string(),
                 "/spawn" => "/spawn".to_string(),
@@ -4239,8 +4238,8 @@ mod tests {
     /// never `Effect::None`, and never a `host.await_agent` call (that would
     /// break hang-safety; see `Effect::RunAwait`'s own doc).
     #[tokio::test]
-    async fn await_a_running_non_focused_subagent_posts_the_immediate_notice_and_returns_run_await(
-    ) {
+    async fn await_a_running_non_focused_subagent_posts_the_immediate_notice_and_returns_run_await()
+    {
         let root = AgentId::new();
         let child = AgentId::new();
         let mut state = AppState::new(root);

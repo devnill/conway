@@ -176,9 +176,9 @@ mod tests {
     }
 
     #[test]
-    fn a_prefix_matches_both_ask_and_agents() {
+    fn a_prefix_matches_ask_agents_and_await() {
         let names: Vec<&str> = matches("/a", &[]).iter().map(|c| c.name).collect();
-        assert_eq!(names, vec!["/ask", "/agents"]);
+        assert_eq!(names, vec!["/ask", "/agents", "/await"]);
     }
 
     #[test]
