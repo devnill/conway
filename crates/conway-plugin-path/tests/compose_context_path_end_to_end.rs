@@ -13,49 +13,16 @@
 //! composition "survives the next turn" (acceptance criterion 1) rather
 //! than merely returning the right value from one call.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use conway::backend::{BackendId, GenerateRequest, GenerateResponse, StopReason, Usage};
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
 use conway::plugin::{ContentBlock, Event, ToolCall, ToolName};
-use conway::{Conway, EventStream, RoleAlias, SessionSpec};
+use conway::{Conway, EventStream, SessionSpec};
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
-use conway::test_support::test_builder;
+use conway::test_support::{base_config_at, test_builder};
 use conway_plugin_path::{PathPlugin, COMPOSE_TOOL_NAME};
-
-fn base_config(cwd: std::path::PathBuf) -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd,
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 fn tool_call_response(call_id: &str, tool: &str, args: serde_json::Value) -> GenerateResponse {
     GenerateResponse {
@@ -94,7 +61,7 @@ fn conway_with_plugins(
     store: Arc<FakeStore>,
     plugins: Vec<Arc<dyn conway::plugin::Plugin>>,
 ) -> Conway {
-    let mut builder = test_builder(base_config(cwd))
+    let mut builder = test_builder(base_config_at(cwd))
         .with_backend(backend)
         .with_session_store(store);
     for plugin in plugins {

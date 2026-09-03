@@ -13,20 +13,15 @@
 //! call count -- P-15.
 #![cfg(feature = "builtin-tools")]
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
-use conway::test_support::{build_conway_with_builtins, scripted_backend};
+use conway::test_support::{base_config, build_conway_with_builtins, scripted_backend};
 use conway::{SessionHandle, SessionSpec, SpawnSpec};
 use conway_core::agent::PermissionDecision;
 use conway_core::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
-use conway_core::ids::{AgentId, RoleAlias, ToolName};
+use conway_core::ids::{AgentId, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, PermissionGate, PluginConfig};
 use conway_testkit::{text_response, ScriptedTurn};
@@ -56,34 +51,6 @@ fn double_read_turn(
         tool_calls: vec![read_call(call_id_a, path_a), read_call(call_id_b, path_b)],
         stop: StopReason::ToolUse,
         usage: Usage::default(),
-    }
-}
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
     }
 }
 

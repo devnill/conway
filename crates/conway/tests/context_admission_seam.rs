@@ -104,12 +104,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
-    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig,
-};
-use conway::test_support::test_builder_without_router;
+use conway::config::schema::{BackendEntry, ConwayConfig, ModelsConfig, RoleEntry, RoutingSection};
+use conway::test_support::{base_config, test_builder_without_router};
 use conway::SessionSpec;
 use conway_core::agent::ResultStatus;
 use conway_core::capabilities::{
@@ -185,32 +181,23 @@ fn config_naming(headroom: u32, metadata_path: PathBuf) -> ConwayConfig {
             ..BackendEntry::default()
         },
     );
-    ConwayConfig {
-        default_role: RoleAlias::new("coder"),
-        cwd: PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends,
-        routing: RoutingSection {
-            default_headroom_tokens: headroom,
-            ..RoutingSection::default()
-        },
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        // full literal: `ModelsConfig` has exactly two fields and both are
-        // load-bearing here -- `metadata_path` points at this fixture's own
-        // JSON file and `probe_on_startup: false` keeps the startup probe
-        // out of this file's admission-seam scenarios.
-        models: ModelsConfig {
-            metadata_path,
-            probe_on_startup: false,
-        },
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
+    let mut config = base_config();
+    config.default_role = RoleAlias::new("coder");
+    config.roles = roles;
+    config.backends = backends;
+    config.routing = RoutingSection {
+        default_headroom_tokens: headroom,
+        ..RoutingSection::default()
+    };
+    // full literal: `ModelsConfig` has exactly two fields and both are
+    // load-bearing here -- `metadata_path` points at this fixture's own
+    // JSON file and `probe_on_startup: false` keeps the startup probe
+    // out of this file's admission-seam scenarios.
+    config.models = ModelsConfig {
+        metadata_path,
+        probe_on_startup: false,
+    };
+    config
 }
 
 #[tokio::test]
@@ -418,32 +405,23 @@ fn two_candidate_config(headroom: u32, metadata_path: PathBuf) -> ConwayConfig {
             ..BackendEntry::default()
         },
     );
-    ConwayConfig {
-        default_role: RoleAlias::new("coder"),
-        cwd: PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends,
-        routing: RoutingSection {
-            default_headroom_tokens: headroom,
-            ..RoutingSection::default()
-        },
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        // full literal: `ModelsConfig` has exactly two fields and both are
-        // load-bearing here -- `metadata_path` points at this fixture's own
-        // JSON file and `probe_on_startup: false` keeps the startup probe
-        // out of this file's admission-seam scenarios.
-        models: ModelsConfig {
-            metadata_path,
-            probe_on_startup: false,
-        },
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
+    let mut config = base_config();
+    config.default_role = RoleAlias::new("coder");
+    config.roles = roles;
+    config.backends = backends;
+    config.routing = RoutingSection {
+        default_headroom_tokens: headroom,
+        ..RoutingSection::default()
+    };
+    // full literal: `ModelsConfig` has exactly two fields and both are
+    // load-bearing here -- `metadata_path` points at this fixture's own
+    // JSON file and `probe_on_startup: false` keeps the startup probe
+    // out of this file's admission-seam scenarios.
+    config.models = ModelsConfig {
+        metadata_path,
+        probe_on_startup: false,
+    };
+    config
 }
 
 /// PRIMARY: a session whose ONLY chain candidate would have died with

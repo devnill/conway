@@ -26,55 +26,17 @@
 
 mod common;
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
-use conway::test_support::test_builder;
+use conway::test_support::{base_config, test_builder};
 use conway::{Conway, SessionSpec};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
-use conway_core::ids::{BackendId, RoleAlias, SeqRange, ToolName};
+use conway_core::ids::{BackendId, SeqRange, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, SessionStore};
 use conway_plugin_subprocess::SubprocessPlugin;
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        // Proving the config-driven `[plugins].subprocess` wiring belongs
-        // to `conway-cli`, not this test: this stays default (empty), and
-        // the plugin is attached the library-embedder way below, exactly
-        // like `conway-plugin-skeleton`'s own fixture does for `[plugins]`
-        // generally.
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 fn tool_call_response(call_id: &str, tool: &str, arguments: serde_json::Value) -> GenerateResponse {
     GenerateResponse {

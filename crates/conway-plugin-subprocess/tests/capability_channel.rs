@@ -27,51 +27,13 @@ use conway::plugin::{
     Tool, ToolCall, ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec,
     TruncationPolicy,
 };
-use conway::test_support::{scripted_backend, test_builder};
+use conway::test_support::{base_config, scripted_backend, test_builder};
 use conway::Conway;
 use conway_core::content::{StopReason, ToolCall as GenToolCall, Usage};
 use conway_core::log::LogRecord;
 use conway_core::ports::GenerateResponse;
 use conway_plugin_subprocess::{SubprocessPlugin, SubprocessTransport};
 use conway_testkit::{text_response, ScriptedTurn};
-
-fn base_config() -> conway::config::schema::ConwayConfig {
-    use conway::config::schema::{
-        AgentsConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig, PermissionsConfig,
-        PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-    };
-    let mut roles = std::collections::BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    conway::config::schema::ConwayConfig {
-        default_role: conway_core::ids::RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: std::collections::BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        // No `[plugins].subprocess[]` entries -- this test attaches the
-        // subprocess plugin the library-embedder way (`with_plugin`), the
-        // same reason `end_to_end.rs`'s own `base_config` stays empty here.
-        // Load-bearing for acceptance criterion 2: it means `HostCaps::
-        // from_config` never offers `persistent_transport`, regardless of
-        // which transport the ATTACHED `SubprocessPlugin` itself uses.
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 /// A `Tool` whose `invoke` calls straight through `ctx.capabilities` with a
 /// FIXED payload -- mirrors `crates/conway/tests/capability_channel.rs`'s
@@ -212,6 +174,12 @@ fn capability_call_result_text(records: &[LogRecord]) -> Option<String> {
 }
 
 fn build_calling_conway(plugins: Vec<Arc<dyn Plugin>>) -> Conway {
+    // `base_config()`'s `plugins.subprocess` is empty -- this test attaches
+    // the subprocess plugin the library-embedder way (`with_plugin`), the
+    // same reason `end_to_end.rs`'s own fixture stays empty here.
+    // Load-bearing for acceptance criterion 2: it means `HostCaps::
+    // from_config` never offers `persistent_transport`, regardless of which
+    // transport the ATTACHED `SubprocessPlugin` itself uses.
     let cfg = base_config();
     let mut builder =
         test_builder(cfg).with_backend(scripted_backend(call_capability_tool_script()));

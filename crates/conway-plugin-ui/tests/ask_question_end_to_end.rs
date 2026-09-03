@@ -18,52 +18,19 @@
 //!      tool result carries the plugin's own typed degrade sentence, never
 //!      a panic and never an empty success.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
 use conway::plugin::{async_trait, ContentBlock, SeqRange, ToolCall, ToolName};
-use conway::test_support::test_builder;
+use conway::test_support::{base_config_at, test_builder};
 use conway::{
     backend::{BackendId, GenerateResponse, StopReason, Usage},
-    Conway, RoleAlias, SessionSpec, SessionStore,
+    Conway, SessionSpec, SessionStore,
 };
 use conway_plugin_ui::{
     AskSelectAnswer, AskSelectRequest, ConwayUiPlugin, FormSurface, FormSurfaceError,
     ASK_QUESTION_TOOL_NAME,
 };
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
-
-fn base_config(cwd: std::path::PathBuf) -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd,
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 /// A real, fully-faked `Conway` with `ConwayUiPlugin` attached exactly the
 /// way a library embedder would.
@@ -73,7 +40,7 @@ fn ui_conway(
     store: Arc<FakeStore>,
     plugin: ConwayUiPlugin,
 ) -> Conway {
-    test_builder(base_config(cwd))
+    test_builder(base_config_at(cwd))
         .with_backend(backend)
         .with_session_store(store)
         .with_plugin(Arc::new(plugin))

@@ -2,21 +2,16 @@
 
 mod support;
 
-use std::collections::BTreeMap;
 // Only named by the `jsonl-store`-gated tests below.
 #[cfg(feature = "jsonl-store")]
 use std::fs;
 use std::sync::Arc;
 
 use conway::config::schema::BackendEntry;
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PermissionsConfigMode, PluginsConfig, RoleEntry, RoutingSection,
-    SessionConfig, ToolsConfig,
-};
+use conway::config::schema::{ConwayConfig, PermissionsConfig, PermissionsConfigMode, RoleEntry};
 use conway::{Conway, ConwayBuilder, FacadeError, SessionSpec};
 // Only named by the `builtin-tools`-gated tests below.
-use conway::test_support::test_builder_without_router;
+use conway::test_support::{base_config, test_builder_without_router};
 #[cfg(feature = "builtin-tools")]
 use conway::PluginSelection;
 use conway_core::agent::{PermissionDecision, ResultStatus};
@@ -228,39 +223,13 @@ impl Plugin for BeforeSystemPromptPlugin {
     }
 }
 
-/// A minimal config: one role with an empty chain (so `merge::validate`'s
-/// chain/backend-existence check is trivially satisfied), no backends, and
-/// otherwise-default sections. `cwd = "."`, so `agents.dir`
-/// (`.conway/agents`, relative) resolves to a directory that does not exist
-/// under the test process's cwd -- `agents::load_agent_defs` treats a
-/// missing directory as `Ok(empty)`, not an error.
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: conway_core::ids::RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
+// `base_config()` (`conway::test_support`) is `ConwayConfig::baseline()`:
+// one role, "default", with an empty chain (so `merge::validate`'s
+// chain/backend-existence check is trivially satisfied), no backends, and
+// otherwise-default sections. `cwd = "."`, so `agents.dir`
+// (`.conway/agents`, relative) resolves to a directory that does not exist
+// under the test process's cwd -- `agents::load_agent_defs` treats a
+// missing directory as `Ok(empty)`, not an error.
 
 #[cfg(feature = "jsonl-store")]
 #[tokio::test]

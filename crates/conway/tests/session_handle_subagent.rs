@@ -18,12 +18,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
+use conway::config::schema::RoleEntry;
 use conway::test_support::echo_model;
-use conway::test_support::{build_conway, build_conway_with_echo_backend, test_builder};
+use conway::test_support::{
+    base_config, build_conway, build_conway_with_echo_backend, test_builder,
+};
 use conway::{
     CancelMode, Conway, ConwayBuilder, FacadeError, ForkSpec, Plugin, SessionHandle, SessionId,
     SessionSpec, SpawnSpec, Tool,
@@ -46,34 +45,6 @@ use futures_core::Stream as _;
 // ---------------------------------------------------------------------
 // Fixtures (mirrors tests/session_handle.rs's own helpers)
 // ---------------------------------------------------------------------
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: conway_core::ids::RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 async fn new_handle(conway: &Conway) -> SessionHandle {
     conway
@@ -213,11 +184,9 @@ async fn fork_without_a_role_inherits_the_parents_role_not_the_literal_default()
             ..Default::default()
         },
     );
-    let config = ConwayConfig {
-        default_role: RoleAlias::new("coder"),
-        roles,
-        ..base_config()
-    };
+    let mut config = base_config();
+    config.default_role = RoleAlias::new("coder");
+    config.roles = roles;
     let store = Arc::new(FakeStore::new());
     let conway = ConwayBuilder::from_parts(config)
         .with_backend(Arc::new(FakeBackend::echo(BackendId::new("fake"))))
@@ -1330,11 +1299,9 @@ async fn spawn_without_an_agent_def_inherits_the_parents_role_not_the_literal_de
             ..Default::default()
         },
     );
-    let config = ConwayConfig {
-        default_role: RoleAlias::new("coder"),
-        roles,
-        ..base_config()
-    };
+    let mut config = base_config();
+    config.default_role = RoleAlias::new("coder");
+    config.roles = roles;
     let store = Arc::new(FakeStore::new());
     let conway = ConwayBuilder::from_parts(config)
         .with_backend(Arc::new(FakeBackend::echo(BackendId::new("fake"))))

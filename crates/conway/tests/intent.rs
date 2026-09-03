@@ -10,53 +10,27 @@
 
 mod support;
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
-    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig,
-};
-use conway::test_support::test_builder;
+use conway::config::schema::{BackendEntry, ConwayConfig, RoleEntry};
+use conway::test_support::{base_config, test_builder};
 use conway::{AgentIntent, Conway, FacadeError, SessionHandle, SessionSpec};
 use conway_core::agent::SubagentMode;
 use conway_core::error::BackendError;
-use conway_core::ids::{BackendId, RoleAlias};
+use conway_core::ids::BackendId;
 use conway_core::log::SessionFilter;
 use conway_core::ports::{Backend, SessionStore};
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
 const CLASSIFY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// `with_intent_role` toggles the `[roles.intent]` entry -- the switch the
-/// unconfigured-role passthrough test flips.
-fn base_config(with_intent_role: bool) -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    // The `intent` role's chain references `fake/echo-model`; config
-    // validation (`merge::validate` step 3) requires every chain entry's
-    // backend id to exist in `[backends]`, and `build()` then CONSTRUCTS
-    // every config backend before merging injected ones over them. So the
-    // `fake` entry must be constructible on its own. An `Anthropic`-kind
-    // entry keyed "fake" is rejected (its id is hardcoded "anthropic"); an
-    // `openai-compat` entry with a valid base_url + dialect constructs
-    // without I/O (`OpenAiCompatBackend::new` stores config only, and
-    // `probe_on_startup` defaults to false so no network probe runs). The
-    // injected `ScriptedBackend` (id "fake") then overwrites it in the
-    // backend map, so the stub is never routed to. `api_key` and
-    // `api_key_env` are both empty, satisfying the mutual-exclusion rule.
-    let mut backends = BTreeMap::new();
+/// [`base_config`] with `with_intent_role` toggling the `[roles.intent]`
+/// entry -- the switch the unconfigured-role passthrough test flips.
+fn config_with_intent_role(with_intent_role: bool) -> ConwayConfig {
+    let mut config = base_config();
     if with_intent_role {
-        roles.insert(
+        config.roles.insert(
             "intent".to_string(),
             RoleEntry {
                 chain: vec!["fake/echo-model".to_string()],
@@ -64,7 +38,20 @@ fn base_config(with_intent_role: bool) -> ConwayConfig {
                 ..Default::default()
             },
         );
-        backends.insert(
+        // The `intent` role's chain references `fake/echo-model`; config
+        // validation (`merge::validate` step 3) requires every chain
+        // entry's backend id to exist in `[backends]`, and `build()` then
+        // CONSTRUCTS every config backend before merging injected ones over
+        // them. So the `fake` entry must be constructible on its own. An
+        // `Anthropic`-kind entry keyed "fake" is rejected (its id is
+        // hardcoded "anthropic"); an `openai-compat` entry with a valid
+        // base_url + dialect constructs without I/O (`OpenAiCompatBackend::
+        // new` stores config only, and `probe_on_startup` defaults to false
+        // so no network probe runs). The injected `ScriptedBackend` (id
+        // "fake") then overwrites it in the backend map, so the stub is
+        // never routed to. `api_key` and `api_key_env` are both empty,
+        // satisfying the mutual-exclusion rule.
+        config.backends.insert(
             "fake".to_string(),
             BackendEntry {
                 kind: "openai-compat".to_string(),
@@ -74,22 +61,7 @@ fn base_config(with_intent_role: bool) -> ConwayConfig {
             },
         );
     }
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends,
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
+    config
 }
 
 /// A `Conway` over an intent-role fixture config, which always carries a
@@ -147,7 +119,11 @@ async fn classify_parses_a_well_formed_reply_and_purges_the_intent_session() {
         ))])
         .with_id(BackendId::new("fake")),
     );
-    let conway = conway_with_intent_config(base_config(true), store.clone(), backend.clone());
+    let conway = conway_with_intent_config(
+        config_with_intent_role(true),
+        store.clone(),
+        backend.clone(),
+    );
     let parent = idle_parent(&conway).await;
 
     let intent = tokio::time::timeout(
@@ -202,7 +178,7 @@ async fn classify_strips_a_single_json_code_fence() {
         ))])
         .with_id(BackendId::new("fake")),
     );
-    let conway = conway_with_intent_config(base_config(true), store.clone(), backend);
+    let conway = conway_with_intent_config(config_with_intent_role(true), store.clone(), backend);
     let parent = idle_parent(&conway).await;
 
     let intent = tokio::time::timeout(
@@ -241,7 +217,7 @@ async fn classify_malformed_json_passes_through_verbatim_and_still_purges() {
         ))])
         .with_id(BackendId::new("fake")),
     );
-    let conway = conway_with_intent_config(base_config(true), store.clone(), backend);
+    let conway = conway_with_intent_config(config_with_intent_role(true), store.clone(), backend);
     let parent = idle_parent(&conway).await;
 
     let raw = "fork this conversation to summarize it";
@@ -278,7 +254,11 @@ async fn classify_without_an_intent_role_passes_through_without_a_session_or_bac
     // An EMPTY script: any backend call would fail with "scripted backend
     // exhausted" -- the `calls()` assertion below pins that none happened.
     let backend = Arc::new(ScriptedBackend::new(vec![]).with_id(BackendId::new("fake")));
-    let conway = conway_with_intent_config(base_config(false), store.clone(), backend.clone());
+    let conway = conway_with_intent_config(
+        config_with_intent_role(false),
+        store.clone(),
+        backend.clone(),
+    );
     let parent = idle_parent(&conway).await;
 
     let raw = "spawn a reviewer for this diff";
@@ -323,7 +303,7 @@ async fn classify_strips_a_hallucinated_agent_def_but_keeps_recipe_and_prompt() 
     // `AgentsConfig::default().dir` (".conway/agents") does not exist under
     // the test process's cwd, so the configured def set is empty and EVERY
     // name is a hallucination.
-    let conway = conway_with_intent_config(base_config(true), store.clone(), backend);
+    let conway = conway_with_intent_config(config_with_intent_role(true), store.clone(), backend);
     let parent = idle_parent(&conway).await;
 
     let intent = tokio::time::timeout(
@@ -368,7 +348,7 @@ async fn classify_keeps_a_configured_agent_def() {
         ))])
         .with_id(BackendId::new("fake")),
     );
-    let mut config = base_config(true);
+    let mut config = config_with_intent_role(true);
     config.agents.dir = agents_dir;
     let conway = conway_with_intent_config(config, store.clone(), backend);
     let parent = idle_parent(&conway).await;
@@ -406,7 +386,7 @@ async fn classify_an_invalid_recipe_value_passes_through_with_the_callers_defaul
         ))])
         .with_id(BackendId::new("fake")),
     );
-    let conway = conway_with_intent_config(base_config(true), store.clone(), backend);
+    let conway = conway_with_intent_config(config_with_intent_role(true), store.clone(), backend);
     let parent = idle_parent(&conway).await;
 
     let raw = "do something with this";
@@ -443,7 +423,7 @@ async fn classify_propagates_a_failed_intent_turn_and_still_purges() {
         })])
         .with_id(BackendId::new("fake")),
     );
-    let conway = conway_with_intent_config(base_config(true), store.clone(), backend);
+    let conway = conway_with_intent_config(config_with_intent_role(true), store.clone(), backend);
     let parent = idle_parent(&conway).await;
 
     let err = tokio::time::timeout(

@@ -21,57 +21,20 @@
 //! subject, and the same fixture `crate::commands`'s own unit test suite
 //! uses verbatim.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
 use conway::plugin::{
     Command, CommandCtx, CommandOutcome, Plugin as PluginTrait, PluginManifest, Tool,
 };
-use conway::test_support::test_builder;
+use conway::test_support::{base_config, test_builder};
 use conway::{Conway, SessionSpec};
-use conway_core::ids::{BackendId, RoleAlias, SeqRange};
+use conway_core::ids::{BackendId, SeqRange};
 use conway_core::log::LogRecord;
 use conway_core::ports::SessionStore;
 use conway_core::provenance::Provenance;
 use conway_testkit::FakeBackend;
 
 const BEEPBOOP_CONFIG_MD: &str = "---\ndescription: Configure beepboop plugin settings (sounds and notifications)\nargument-hint: \"[show | enable sounds | disable sounds]\"\nallowed-tools: Read, Edit, Bash\n---\n\nManage the beepboop plugin configuration.\n\nFind the settings file and update it as directed.\n";
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        // Deliberately left empty, the identical reason
-        // `conway-plugin-skeleton`'s own `file_prompt_command.rs::
-        // base_config` gives: this test installs the plugin directly via
-        // `with_plugin`, never through `[plugins].install`.
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 /// Wraps every command `ClaudeCompatReport::command_registrations()`
 /// produced in a minimal ad-hoc `Plugin` -- the identical shape

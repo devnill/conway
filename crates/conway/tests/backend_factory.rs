@@ -43,15 +43,11 @@
 //! completion report, not committed here (the guard must be shown to fail
 //! and then be restored, never left broken in the tree).
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
-    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig,
-};
+use conway::config::schema::{BackendEntry, ConwayConfig};
+use conway::test_support::base_config;
 use conway::{
     BackendBuildContext, BackendFactory, Conway, ConwayBuilder, CoreConwayError, FacadeError,
     SessionSpec,
@@ -75,39 +71,6 @@ fn caps() -> Capabilities {
         max_context_tokens: 100_000,
         reasoning: true,
         reliability_tier: ReliabilityTier::Verified,
-    }
-}
-
-/// One role with an EMPTY chain -- `merge::validate`'s own chain/backend
-/// existence check has nothing to reject, and `build()`'s no-router/
-/// no-factory default (`conway_core::routing::MinimalRouter`) never
-/// validates a chain either, matching `tests/router_factory.rs`'s own
-/// `base_config` precedent.
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: conway_core::ids::RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
     }
 }
 

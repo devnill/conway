@@ -197,6 +197,10 @@ fixture) — `ConwayBuilder::from_parts(ConwayConfig)` is still there, and
 you still name all fourteen fields, because there is still no default
 value for `default_role` to fall back to. `bare_inference.rs` is that path,
 deliberately exercised so the cost is visible rather than assumed away.
+(A test inside this workspace's own tree does not need to pay that cost at
+all: `conway::test_support::base_config`/`base_config_at`, behind the
+`test-support` feature, already IS that fourteen-field answer — mutate the
+value it returns rather than writing a fresh literal.)
 
 ## Configuring providers, roles, permissions, and confinement
 

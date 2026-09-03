@@ -833,3 +833,118 @@ fn t11_config_section_literals_spread_defaults() {
         violations.len()
     );
 }
+
+#[test]
+fn t12_no_hand_rolled_base_config_in_facade_tests() {
+    // Board item 01M1FSM2FS9BMNN7G8934PQVM4: dozens of files under
+    // `crates/conway/tests` used to open with a locally-defined `fn
+    // base_config() -> ConwayConfig` (or a `ConwayConfig { .. }` literal
+    // under some other name) that hand-spelled every one of the type's
+    // fourteen fields just to get a blank starting point -- every new
+    // config section broke all of them at once. `conway::test_support::
+    // base_config`/`base_config_at` (`crates/conway/src/test_support.rs`,
+    // behind the `test-support` feature) is now the one shared starting
+    // point -- exactly `ConwayConfig::baseline()` -- and a fixture that
+    // needs one field different MUTATES the value it returns
+    // (`let mut c = base_config(); c.field = ..;`) rather than writing a
+    // fresh literal. This guard polices both halves of the sweep that
+    // moved every file over: no test file may define its own `fn
+    // base_config`, and no `ConwayConfig { .. }` struct literal may appear
+    // at all -- a function's own `-> ConwayConfig {` return-type line is
+    // excluded (the identical false positive T11, above, already guards
+    // against for its nine config-section types).
+    //
+    // No named exception file exists here, unlike T11's `// full literal:`
+    // escape hatch: every fixture in this crate's test suite -- including
+    // the ones building a `ConwayConfig` with a non-"default" role or a
+    // populated `[backends]` table (`intent.rs`, `context_admission_seam.
+    // rs`, `router_plugin_configurations.rs`, ...) -- reaches that shape by
+    // mutating `base_config()`'s return value, never a fresh literal, so
+    // the bar this guard holds is a flat zero rather than "zero or one
+    // justified file". A file that genuinely cannot do this (real config
+    // load/parse testing that must construct a `ConwayConfig` byte-for-byte
+    // from parsed TOML/JSON, say) would need to be named here explicitly
+    // with a one-line reason -- none currently exists.
+
+    fn rs_files_under(dir: &str) -> Vec<String> {
+        fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+            entries.sort();
+            for path in entries {
+                if path.is_dir() {
+                    walk(&path, root, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(
+                        path.strip_prefix(root)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+            }
+        }
+        let root = repo_root();
+        let mut out = Vec::new();
+        walk(&root.join(dir), &root, &mut out);
+        out
+    }
+
+    // Excluded from the scan: this file itself (it necessarily NAMES both
+    // patterns, in this very doc comment and in the literal `"fn
+    // base_config"`/`"ConwayConfig {"` needles below).
+    const EXEMPT_FILES: &[&str] = &["crates/conway/tests/architecture_invariants.rs"];
+
+    let mut base_config_defs = Vec::new();
+    let mut literal_violations = Vec::new();
+
+    for rel in rs_files_under("crates/conway/tests") {
+        if EXEMPT_FILES.contains(&rel.as_str()) {
+            continue;
+        }
+        let text = read(&rel);
+        for (idx, line) in text.lines().enumerate() {
+            if line.contains("fn base_config") {
+                base_config_defs.push(format!("{rel}:{}", idx + 1));
+            }
+
+            let Some(rel_pos) = line.find("ConwayConfig {") else {
+                continue;
+            };
+            // Not a struct literal at all -- a function's own return type
+            // (`fn foo() -> ConwayConfig {`, possibly a fully-qualified
+            // path): mirrors T11's own `is_return_type` check above.
+            let before = &line[..rel_pos];
+            let is_return_type = before.rfind("->").is_some_and(|arrow| {
+                before[arrow + 2..]
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == ':' || c.is_whitespace())
+            });
+            if is_return_type {
+                continue;
+            }
+            literal_violations.push(format!("{rel}:{}", idx + 1));
+        }
+    }
+
+    assert!(
+        base_config_defs.is_empty(),
+        "T12: {} file(s) under crates/conway/tests define their own `fn \
+         base_config` instead of using `conway::test_support::base_config`/\
+         `base_config_at` -- {base_config_defs:?}.",
+        base_config_defs.len()
+    );
+    assert!(
+        literal_violations.is_empty(),
+        "T12: {} `ConwayConfig {{ .. }}` struct literal(s) found in \
+         crates/conway/tests instead of mutating `conway::test_support::\
+         base_config()`/`base_config_at()`'s return value -- \
+         {literal_violations:?}. If a file genuinely needs a fresh literal \
+         (real config load/parse testing, say), name it here explicitly \
+         with a one-line reason via `EXEMPT_FILES` instead of silently \
+         exempting it.",
+        literal_violations.len()
+    );
+}

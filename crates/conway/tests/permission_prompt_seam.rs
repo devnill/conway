@@ -38,21 +38,16 @@
 //! reason (e.g. DNS resolution against a `.invalid` host).
 #![cfg(feature = "builtin-tools")]
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
-use conway::test_support::build_conway_with_builtins;
+use conway::test_support::{base_config, build_conway_with_builtins};
 use conway::{Conway, PatternRule, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{ContentBlock, ToolResult};
-use conway_core::ids::{AgentId, BackendId, RoleAlias};
+use conway_core::ids::{AgentId, BackendId};
 use conway_core::log::LogRecord;
 use conway_core::permission_mode::PermissionMode;
 use conway_core::ports::{GenerateResponse, PermissionGate};
@@ -70,34 +65,6 @@ fn bash_call_response(command: &str) -> GenerateResponse {
         }],
         stop: conway_core::content::StopReason::ToolUse,
         usage: conway_core::content::Usage::default(),
-    }
-}
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
     }
 }
 

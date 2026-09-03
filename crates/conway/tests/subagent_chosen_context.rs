@@ -10,49 +10,14 @@
 //! discipline for the sibling, mid-chain capability this is the
 //! boundary-time counterpart of.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use conway::backend::{BackendId, GenerateRequest};
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
 use conway::plugin::{ContentBlock, SeqRange};
-use conway::test_support::build_conway;
-use conway::{
-    ForkSpec, LogRecord, LogSeq, RecordRef, RoleAlias, SessionSpec, SessionStore, SpawnSpec,
-};
+use conway::test_support::{base_config, build_conway};
+use conway::{ForkSpec, LogRecord, LogSeq, RecordRef, SessionSpec, SessionStore, SpawnSpec};
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 fn all_text(req: &GenerateRequest) -> String {
     let mut out = String::new();

@@ -64,16 +64,12 @@
 //! represents) now has no way to make it matter.
 #![cfg(feature = "builtin-tools")]
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
-use conway::test_support::test_builder;
+use conway::test_support::{base_config, test_builder};
 use conway::{AgentId, Plugin, SessionHandle, SessionSpec, SpawnSpec, Tool};
 use conway_core::agent::{Budget, PermissionDecision, SubagentMode, SubagentSpec};
 use conway_core::capabilities::{
@@ -84,7 +80,7 @@ use conway_core::content::{
     TruncationPolicy, Usage,
 };
 use conway_core::error::{BackendError, ToolError};
-use conway_core::ids::{BackendId, ModelId, RoleAlias, ToolName};
+use conway_core::ids::{BackendId, ModelId, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
     Backend, BoxStream, GenerateRequest, GenerateResponse, PermissionGate, PluginManifest,
@@ -103,34 +99,6 @@ fn tool_call_response(tool: &str, arguments: serde_json::Value) -> GenerateRespo
         }],
         stop: StopReason::ToolUse,
         usage: Usage::default(),
-    }
-}
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
     }
 }
 

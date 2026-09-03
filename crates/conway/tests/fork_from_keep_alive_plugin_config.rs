@@ -25,21 +25,16 @@
 //! second turn, not just "the record was appended").
 #![cfg(feature = "builtin-tools")]
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
 use conway::test_support::echo_model;
-use conway::test_support::{scripted_backend, test_builder};
+use conway::test_support::{base_config, scripted_backend, test_builder};
 use conway::{Conway, ConwayBuilder, ForkSpec, PluginSelection, SessionHandle, SessionSpec};
 use conway_core::agent::PermissionDecision;
 use conway_core::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
-use conway_core::ids::{BackendId, RoleAlias};
+use conway_core::ids::BackendId;
 use conway_core::log::LogRecord;
 use conway_core::ports::{Backend, GenerateResponse, PermissionGate, PluginConfig};
 use conway_testkit::{text_response, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
@@ -68,34 +63,6 @@ fn double_read_turn(
         tool_calls: vec![read_call(call_id_a, path_a), read_call(call_id_b, path_b)],
         stop: StopReason::ToolUse,
         usage: Usage::default(),
-    }
-}
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
     }
 }
 

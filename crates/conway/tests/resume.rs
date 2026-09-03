@@ -20,16 +20,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
-use conway::test_support::{build_conway, build_conway_with_echo_backend};
+use conway::test_support::{base_config, build_conway, build_conway_with_echo_backend};
 use conway::{ConwayBuilder, FacadeError, ForkSpec, SessionSpec};
 use conway_core::agent::{PermissionDecision, ResultStatus};
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
-use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
+use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, SessionId};
 use conway_core::log::{ForkOrigin, SessionFilter, SubagentMode};
 use conway_core::ports::{Backend, SessionStore};
 use conway_testkit::{text_response, FakeGate, FakeStore, ScriptedBackend, ScriptedTurn};
@@ -96,34 +92,6 @@ fn request_text(req: &conway_core::ports::GenerateRequest) -> String {
             _ => None,
         })
         .collect()
-}
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
 }
 
 /// `SessionHandle` deliberately does not derive `Debug` (it wraps

@@ -15,21 +15,17 @@
 //! config-declared hook.
 #![cfg(feature = "builtin-tools")]
 
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
+use conway::config::schema::HooksConfig;
 use conway::plugin::{Plugin, PluginHookRule, PluginManifest, Tool};
-use conway::test_support::{scripted_backend, test_builder};
+use conway::test_support::{base_config_at, scripted_backend, test_builder};
 use conway::{Conway, PluginSelection};
 use conway_core::agent::{PermissionDecision, PermissionRequest};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
-use conway_core::ids::{RoleAlias, ToolName};
+use conway_core::ids::ToolName;
 use conway_core::log::LogRecord;
 use conway_core::permission_mode::PermissionMode;
 use conway_core::ports::{GenerateResponse, PermissionGate};
@@ -46,34 +42,6 @@ fn bash_call_response(command: &str) -> GenerateResponse {
         }],
         stop: StopReason::ToolUse,
         usage: Usage::default(),
-    }
-}
-
-fn base_config(cwd: &Path) -> ConwayConfig {
-    let mut roles = std::collections::BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: cwd.to_path_buf(),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: std::collections::BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
     }
 }
 
@@ -242,7 +210,7 @@ fn bash_tool_result_text(records: &[LogRecord]) -> Option<String> {
 async fn a_plugin_registered_pre_tool_use_hook_outranks_auto_allow() {
     let cwd = TempDir::new().expect("tempdir");
     let gate = RecordingAllowGate::new();
-    let conway = test_builder(base_config(cwd.path()))
+    let conway = test_builder(base_config_at(cwd.path()))
         .with_backend(scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("echo hi")),
             ScriptedTurn::Respond(text_response("done")),
@@ -292,7 +260,7 @@ async fn a_plugin_registered_hook_is_distinguishable_from_an_operator_authored_o
     use conway::config::schema::HookEntry;
 
     let cwd = TempDir::new().expect("tempdir");
-    let mut config = base_config(cwd.path());
+    let mut config = base_config_at(cwd.path());
     config.hooks = HooksConfig {
         rules: vec![HookEntry {
             id: "operator-rule".to_string(),
@@ -372,7 +340,7 @@ async fn a_plugin_hook_id_colliding_with_an_operator_authored_one_is_refused_by_
     use conway::config::schema::HookEntry;
 
     let cwd = TempDir::new().expect("tempdir");
-    let mut config = base_config(cwd.path());
+    let mut config = base_config_at(cwd.path());
     config.hooks = HooksConfig {
         rules: vec![HookEntry {
             id: "acme-hooks.deny-bash".to_string(),
@@ -417,7 +385,7 @@ async fn a_plugin_hook_id_colliding_with_an_operator_authored_one_is_refused_by_
 #[tokio::test]
 async fn a_plugin_hook_rule_with_an_empty_id_is_refused_by_name() {
     let cwd = TempDir::new().expect("tempdir");
-    let built = test_builder(base_config(cwd.path()))
+    let built = test_builder(base_config_at(cwd.path()))
         .with_backend(scripted_backend(vec![]))
         .with_builtin_plugins(PluginSelection::All)
         .with_plugin(Arc::new(ConfigurableHookPlugin {
@@ -458,7 +426,7 @@ async fn a_plugin_hook_rule_with_an_empty_id_is_refused_by_name() {
 #[tokio::test]
 async fn a_plugin_registered_prompt_submitted_hook_is_deny_capable_and_attributed() {
     let cwd = TempDir::new().expect("tempdir");
-    let conway = test_builder(base_config(cwd.path()))
+    let conway = test_builder(base_config_at(cwd.path()))
         .with_backend(scripted_backend(vec![]))
         .with_builtin_plugins(PluginSelection::All)
         .with_plugin(Arc::new(ConfigurableHookPlugin {

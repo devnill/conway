@@ -7,13 +7,10 @@
 //! file -- the sibling `state.rs` split's own `fixtures` module for the same
 //! reason (see its own doc).
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
+use conway::config::schema::ConwayConfig;
+pub(super) use conway::test_support::base_config;
 use conway::test_support::build_conway_with_echo_backend;
 use conway::Conway;
 use conway_testkit::FakeStore;
@@ -21,34 +18,6 @@ use futures::Stream as _;
 
 use crate::cli::{Cli, OutputFormat};
 use crate::tui::state::AppState;
-
-pub(super) fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: conway::RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 /// An echoing, fully in-memory `Conway`: its backend replies with
 /// exactly the last user-role segment's text, so a submitted prompt's

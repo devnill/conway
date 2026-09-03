@@ -53,13 +53,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
+use conway::test_support::base_config;
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::{PermissionDecision, ResultStatus};
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
+use conway_core::ids::{BackendId, ModelId, ModelRef};
 use conway_core::ports::Backend;
 use conway_plugin_backends::anthropic::AnthropicBackend;
 use conway_plugin_backends::config::{AnthropicConfig, SecretString};
@@ -96,36 +93,10 @@ const DIRECTIVES: [&str; 3] = [
     "FANOUT_MARKER_REVIEW_SECURITY",
 ];
 
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        // `ToolsConfig::default()` includes `"conway.subagent"` (the plugin
-        // registering `conway_fork`/`conway_spawn`) -- unchanged, so this
-        // test exercises the exact tool surface a model gets out of the box.
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
+// `base_config()`'s `tools: ToolsConfig::default()` includes
+// `"conway.subagent"` (the plugin registering `conway_fork`/`conway_spawn`)
+// -- unchanged, so this file's tests exercise the exact tool surface a
+// model gets out of the box.
 
 fn anthropic_config(base_url: &str) -> AnthropicConfig {
     AnthropicConfig {

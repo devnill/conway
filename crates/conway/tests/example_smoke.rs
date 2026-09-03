@@ -9,49 +9,24 @@
 //! (e.g. reintroducing a second prompt on a non-keep-alive session) fails the
 //! test quickly instead of blocking forever.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
+use conway::config::schema::ConwayConfig;
+use conway::test_support::base_config;
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::PermissionDecision;
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
+use conway_core::ids::{BackendId, ModelId, ModelRef};
 use conway_core::ports::SessionStore;
 use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
 const T: Duration = Duration::from_secs(5);
 
-/// The same minimal config the example builds.
+/// The same minimal config the example builds -- `base_config()`
+/// (`conway::test_support`) IS that config: one `default` role, empty
+/// chain, every other section at its schema default.
 fn minimal_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
+    base_config()
 }
 
 fn build(store: Arc<FakeStore>) -> Conway {

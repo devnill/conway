@@ -14,18 +14,14 @@
 //! fails the test quickly instead of blocking forever -- the same
 //! precaution `example_smoke.rs` takes.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PermissionsConfigMode, PluginsConfig, RoleEntry, RoutingSection,
-    SessionConfig, ToolsConfig,
-};
+use conway::config::schema::{ConwayConfig, PermissionsConfig, PermissionsConfigMode, ToolsConfig};
+use conway::test_support::base_config;
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::PermissionDecision;
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias, ToolName};
+use conway_core::ids::{BackendId, ModelId, ModelRef, ToolName};
 use conway_core::ports::SessionStore;
 use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
@@ -33,37 +29,16 @@ const T: Duration = Duration::from_secs(5);
 
 /// The same parameterized config the example's `config_with_tools` builds.
 fn config_with_tools(tools: ToolsConfig) -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        // See the example's own doc comment for why this is `Deny`, not the
-        // crate's `presets::default_permissions_for_one_shot` (that preset
-        // fails `config::merge::validate`'s own check unconditionally).
-        permissions: PermissionsConfig {
-            mode: PermissionsConfigMode::Deny,
-            ..PermissionsConfig::default()
-        },
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools,
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
+    let mut config = base_config();
+    // See the example's own doc comment for why this is `Deny`, not the
+    // crate's `presets::default_permissions_for_one_shot` (that preset
+    // fails `config::merge::validate`'s own check unconditionally).
+    config.permissions = PermissionsConfig {
+        mode: PermissionsConfigMode::Deny,
+        ..PermissionsConfig::default()
+    };
+    config.tools = tools;
+    config
 }
 
 fn build(config: ConwayConfig, store: Arc<FakeStore>) -> Conway {

@@ -20,50 +20,17 @@
 //! actually lands before that request is built (not merely that
 //! `MemoryStore::put` and `ContextBuilder::build` each work in isolation).
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use conway::backend::{BackendId, GenerateResponse, StopReason, Usage};
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
 use conway::plugin::{
     ContentBlock, MemoryStore, PromptSegment, Provenance, Role, ToolCall, ToolName,
 };
-use conway::test_support::test_builder;
-use conway::{RoleAlias, SessionHandle, SessionSpec};
+use conway::test_support::{base_config, test_builder};
+use conway::{SessionHandle, SessionSpec};
 use conway_plugin_memory::{InMemoryMemoryStore, MemoryConfig, MemoryPlugin, REMEMBER_TOOL_NAME};
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 /// A scripted assistant turn that calls `remember` with `text` and ends the
 /// turn there (`StopReason::ToolUse`).
