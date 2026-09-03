@@ -511,11 +511,8 @@ async fn ask_child_can_invoke_a_tool_the_parent_session_had() {
     );
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
     let mut config = base_config();
-    // `AgentsConfig` is a one-field struct again: board item
-    // 01M0XRE2N96ATHEXJ1617E133P retired `extra_dirs` in favour of
-    // `ConwayBuilder::with_extra_agent_dir`, so the struct-update spread
-    // yesterday's item added here is now a no-op clippy rejects.
-    config.agents = AgentsConfig { dir: agents_dir, ..AgentsConfig::default() };
+    // full literal: AgentsConfig is a one-field struct; spreading is a clippy needless_update.
+    config.agents = AgentsConfig { dir: agents_dir };
     let conway = ConwayBuilder::from_parts(config)
         .with_backend(backend as Arc<dyn Backend>)
         .with_session_store(store.clone())
@@ -646,11 +643,8 @@ async fn ask_child_completes_with_prose_despite_a_def_declared_result_contract_i
     );
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
     let mut config = base_config();
-    // `AgentsConfig` is a one-field struct again: board item
-    // 01M0XRE2N96ATHEXJ1617E133P retired `extra_dirs` in favour of
-    // `ConwayBuilder::with_extra_agent_dir`, so the struct-update spread
-    // yesterday's item added here is now a no-op clippy rejects.
-    config.agents = AgentsConfig { dir: agents_dir, ..AgentsConfig::default() };
+    // full literal: AgentsConfig is a one-field struct; spreading is a clippy needless_update.
+    config.agents = AgentsConfig { dir: agents_dir };
     let conway = ConwayBuilder::from_parts(config)
         .with_backend(backend as Arc<dyn Backend>)
         .with_session_store(store.clone())
