@@ -277,5 +277,5 @@ why: mcp.md and conway-plugin-mcp's own module doc label prompts/resources as ne
 note: added alongside the subprocess instructions/1 predicate above, same item.
 claim: this crate never calls MCP's prompts or resources primitives -- tools only
 paths: crates/conway-plugin-mcp/src
-absent: (prompts/list|resources/list)
+absent: (prompts/(list|get)|resources/(list|read))
 -->
