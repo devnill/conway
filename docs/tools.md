@@ -267,3 +267,16 @@ default enforcement, unaffected by the runner having no ceiling of its own.
 never heard of it sees byte-identical behavior to before this setting
 existed — see `[limits]`'s own section in
 [`scripting.md`](scripting.md#budget-flags) for how to set it.
+
+**Disclosed gap: not yet wired from a real `settings.json` to a running
+session.** `ToolBatchCtx::tool_timeout` is real and enforced at the seam
+described above; the gap is upstream of it — neither
+`conway_runtime::runtime::RootSpec` nor the internally-built `AgentSpec`
+exposes a field `ConwayBuilder`/`Conway::new_session` could set it through,
+so `Runtime::start_root` always builds a session with no tool timeout
+regardless of what `[limits].tool_timeout_secs` says. An operator who sets
+it in a real `settings.json` today gets a value that parses and
+round-trips but has no effect on a live run; only an embedder constructing
+`ToolBatchCtx` directly benefits right now. Same shape, same cause, as
+`max_parallel_tools`'s own pre-existing gap (`docs/agents.md`'s example);
+see `crates/conway/src/builder.rs`'s module doc for both.
