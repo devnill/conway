@@ -285,6 +285,61 @@ script exits **2** and prints `SKIPPED` — never 0, because a run that verified
 nothing must not report success. Run it on a maintainer checkout when you add or
 retire a citation, and when you close a board item that the tree cites.
 
+### What a doc comment is for
+
+A doc comment carries what constrains the next edit: the invariant it holds,
+the alternative that was rejected and why, the consequence of getting it
+wrong. It does not carry the history of *how the code got here* — that is
+what the commit message and `CHANGELOG.md` are for, and both are already
+dated and searchable. This is not a hypothetical failure mode: comment lines
+run past half the file in several of the engine's largest modules
+(`crates/conway-core/src/ports/plugin.rs`, `crates/conway/src/conway.rs`,
+`crates/conway/src/builder.rs`, `crates/conway-runtime/src/{permission,
+runtime,agent_loop}.rs`), and much of that bulk narrates what changed and
+under which board item rather than what a future editor must not repeat.
+`crates/conway-cli/src/tui` alone carries dozens of comments naming "this
+item" or a spec's own `(T<n>)` shorthand — unreadable by a reader who does
+not have that item's spec open, which by construction is everyone once it
+closes.
+
+**The test, applied sentence by sentence:**
+
+- **KEEP** a sentence if deleting it would let a future editor make a change
+  the author already knew was wrong. The worked example is `ports/
+  plugin.rs`'s `ToolCtx` doc: "**Deliberately NOT `#[non_exhaustive]`**, and
+  that is a decision, not an oversight," followed by the concrete reasons.
+  Delete that paragraph and the attribute looks like a safe addition; it
+  is the mistake the comment exists to head off.
+- **MOVE** (to `CHANGELOG.md`, or delete outright because the commit that
+  made the change already has it) a sentence that only makes sense relative
+  to a prior state: "before this item," "used to," "now," "this item's own
+  acceptance," a bare date, a correction notice, a reviewer finding number.
+  `crates/conway-cli/src/tui/view/settings.rs` ("…this item's own
+  acceptance 8/ P-14 again") and `.../app/focus.rs` ("Confirmed to fail
+  pre-fix (this item's own report quotes the output)") are both this shape:
+  true when written, opaque the moment the item that wrote them is no
+  longer open in anyone's head.
+- **When a sentence mixes both**, keep the constraint and cut the narration
+  in the same edit — do not keep the whole sentence because half of it
+  earns its place.
+
+**Board citations follow [the rule above](#citing-a-board-item-and-keeping-the-citation-honest).**
+A ULID is legitimate provenance ("implemented by `01K…`") and must never
+stand in for "this item," a phrase only the writer can resolve, and not
+durably even then, or for "tracked under" unless the item cited is actually
+open. A spec's own `(T3)`-style shorthand is worse than a stale ULID: it was
+never durable, and is replaced by the fact it abbreviated, not carried into
+the comment as a label.
+
+**Scope.** This rule is applied by the two sweep items this round
+(`crates/conway-cli/src/tui`; the engine files named above) and by review
+after that — it is review-only, not a CI gate, the same as [module docs
+generally](#module-docs-and-other-doc-comments-are-review-only-not-gated).
+One piece becomes mechanically checkable once the tui sweep lands: `absent:
+this item` as a `board-claims.md` predicate over `crates/` turns "no
+comment says 'this item'" into a ledger fact instead of a review habit —
+the sweep item adds that predicate, not this one.
+
 ## 3. A check is not established until it has been shown to fail
 
 "Any check that cannot fail is not a check" started as a corollary of
