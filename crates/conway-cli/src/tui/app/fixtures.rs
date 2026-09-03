@@ -71,7 +71,7 @@ pub(super) fn minimal_cli() -> Cli {
         output_format: OutputFormat::Text,
         allowed_tools: Vec::new(),
         deny_tools: Vec::new(),
-        permission_mode: crate::cli::PermissionMode::Allowlist,
+        permission_mode: crate::cli::OneShotPermissionMode::Allowlist,
         role_override: None,
         model: None,
         agent: None,

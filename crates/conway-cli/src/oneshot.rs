@@ -254,7 +254,7 @@ use conway::{
 use futures::StreamExt;
 use schemars::schema::RootSchema;
 
-use crate::cli::{Cli, PermissionMode};
+use crate::cli::{Cli, OneShotPermissionMode};
 use crate::exit::ExitCode;
 use crate::model_pin::{parse_model_pin, usage_error};
 use crate::session_names::{self, NamesStore};
@@ -903,7 +903,7 @@ fn resolve_budget(cli: &Cli, conway: &Conway) -> Option<Budget> {
 /// moment the model tries it anyway -- so a scoped `--deny-tools` entry
 /// leaves the tool announced, unlike a bare one.
 fn resolve_tools(cli: &Cli, agent_def: Option<&AgentDef>) -> Option<ToolSelector> {
-    if !matches!(cli.permission_mode, PermissionMode::Allowlist) || cli.allowed_tools.is_empty() {
+    if !matches!(cli.permission_mode, OneShotPermissionMode::Allowlist) || cli.allowed_tools.is_empty() {
         return None;
     }
     let base = agent_def
@@ -1016,8 +1016,8 @@ fn read_prompt(cli: &Cli) -> conway::Result<String> {
 /// everything.
 pub fn build_gate(cli: &Cli) -> AllowListGate {
     match cli.permission_mode {
-        PermissionMode::Deny => AllowListGate::new(Vec::new(), Vec::new()),
-        PermissionMode::Allowlist => {
+        OneShotPermissionMode::Deny => AllowListGate::new(Vec::new(), Vec::new()),
+        OneShotPermissionMode::Allowlist => {
             AllowListGate::new(cli.allowed_tools.clone(), cli.deny_tools.clone())
         }
     }
@@ -1046,7 +1046,7 @@ mod tests {
         }
     }
 
-    fn cli_with(mode: PermissionMode, allowed: Vec<String>, denied: Vec<String>) -> Cli {
+    fn cli_with(mode: OneShotPermissionMode, allowed: Vec<String>, denied: Vec<String>) -> Cli {
         Cli {
             print: Some("hi".into()),
             output_format: OutputFormat::Text,
@@ -1076,7 +1076,7 @@ mod tests {
     #[tokio::test]
     async fn allowlist_explicit_denies_unlisted_allows_listed() {
         let cli = cli_with(
-            PermissionMode::Allowlist,
+            OneShotPermissionMode::Allowlist,
             vec!["read".into(), "glob".into()],
             Vec::new(),
         );
@@ -1095,7 +1095,7 @@ mod tests {
     async fn no_allow_list_denies_everything_fail_closed() {
         // Deliberate deviation from the plan doc's "no allow-list => allow
         // all" reading -- see this module's doc comment, reconciliation #2.
-        let cli = cli_with(PermissionMode::Allowlist, Vec::new(), vec!["bash".into()]);
+        let cli = cli_with(OneShotPermissionMode::Allowlist, Vec::new(), vec!["bash".into()]);
         let gate = build_gate(&cli);
         assert!(matches!(
             gate.check(request("bash")).await,
@@ -1114,7 +1114,7 @@ mod tests {
 
     #[tokio::test]
     async fn deny_mode_denies_every_tool_with_feedback_never_hard_deny() {
-        let cli = cli_with(PermissionMode::Deny, Vec::new(), Vec::new());
+        let cli = cli_with(OneShotPermissionMode::Deny, Vec::new(), Vec::new());
         let gate = build_gate(&cli);
         for tool in ["bash", "read", "anything"] {
             assert!(matches!(

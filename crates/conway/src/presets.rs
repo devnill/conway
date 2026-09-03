@@ -4,7 +4,7 @@
 //! here is privileged over one an embedder supplies via
 //! `ConwayBuilder::with_plugin` -- the one extension mechanism.
 
-use crate::config::schema::{PermissionMode, PermissionsConfig};
+use crate::config::schema::{PermissionsConfig, PermissionsConfigMode};
 
 /// The full built-in plugin CANDIDATE set (`conway-tools`' `fs`, `shell`,
 /// `subagent`, and `report` plugins), unchanged.
@@ -72,7 +72,7 @@ pub fn default_permissions_for_one_shot() -> PermissionsConfig {
     // shipped one-shot combination, deliberately, not inheriting whatever
     // `PermissionsConfig::default()` happens to be today.
     PermissionsConfig {
-        mode: PermissionMode::Allowlist,
+        mode: PermissionsConfigMode::Allowlist,
         allowed_tools: Vec::new(),
         denied_tools: Vec::new(),
     }

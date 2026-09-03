@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
+    PermissionsConfigMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
     ToolsConfig,
 };
 use conway::{Conway, ConwayBuilder, SessionSpec};
@@ -51,7 +51,7 @@ fn config_with_tools(tools: ToolsConfig) -> ConwayConfig {
         // crate's `presets::default_permissions_for_one_shot` (that preset
         // fails `config::merge::validate`'s own check unconditionally).
         permissions: PermissionsConfig {
-            mode: PermissionMode::Deny,
+            mode: PermissionsConfigMode::Deny,
             ..PermissionsConfig::default()
         },
         backends: BTreeMap::new(),

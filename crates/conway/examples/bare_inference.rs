@@ -58,7 +58,7 @@ use std::sync::Arc;
 
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
+    PermissionsConfigMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
     ToolsConfig,
 };
 use conway::{ConwayBuilder, SessionSpec};
@@ -120,12 +120,12 @@ fn config_with_tools(tools: ToolsConfig) -> ConwayConfig {
         // default_permissions_for_one_shot` builds now, and
         // `tests/preset_one_shot_permissions_build.rs` pins that.
         //
-        // This example keeps `PermissionMode::Deny` anyway, deliberately:
+        // This example keeps `PermissionsConfigMode::Deny` anyway, deliberately:
         // with zero tools registered the two are exactly as inert, and
         // `Deny` states the intent without depending on how an empty
         // allow-list is interpreted. Either is correct here.
         permissions: PermissionsConfig {
-            mode: PermissionMode::Deny,
+            mode: PermissionsConfigMode::Deny,
             ..PermissionsConfig::default()
         },
         backends: BTreeMap::new(),

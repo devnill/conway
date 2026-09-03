@@ -36,7 +36,7 @@ use conway::config::schema::{
 };
 use conway::test_support::build_conway_with_echo_backend;
 use conway::ModelRef;
-use conway_cli::cli::{Cli, OutputFormat, PermissionMode};
+use conway_cli::cli::{Cli, OneShotPermissionMode, OutputFormat};
 use conway_cli::exit::ExitCode;
 use conway_cli::tui::app::App;
 use conway_testkit::FakeStore;
@@ -52,7 +52,7 @@ fn minimal_cli() -> Cli {
         output_format: OutputFormat::Text,
         allowed_tools: Vec::new(),
         deny_tools: Vec::new(),
-        permission_mode: PermissionMode::Allowlist,
+        permission_mode: OneShotPermissionMode::Allowlist,
         role_override: None,
         model: None,
         agent: None,

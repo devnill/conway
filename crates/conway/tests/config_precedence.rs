@@ -7,7 +7,7 @@ mod support;
 use std::collections::HashMap;
 
 use conway::config::discovery;
-use conway::config::schema::{ConwayConfig, PermissionMode};
+use conway::config::schema::{ConwayConfig, PermissionsConfigMode};
 use conway::config::{load, load_ignoring_user_config, CliOverrides, LoadOptions};
 use conway_core::ids::RoleAlias;
 
@@ -81,6 +81,23 @@ fn conway_config_round_trips_the_full_documented_schema() {
     assert_eq!(cfg, cfg2);
     assert_eq!(cfg.roles["coder"].chain.len(), 2);
     assert_eq!(cfg.backends["local"].stream_tools, Some(false));
+}
+
+/// Board item `01M1FS46ZGP0FG6CTWPZP44P94`:
+/// `conway::config::schema::PermissionMode` was renamed to
+/// `PermissionsConfigMode` (Rust identifier only -- the serde wire value
+/// `"prompt"` is untouched, `#[serde(rename_all = "lowercase")]` unchanged).
+/// P-15 evidence the wire form survived: parses the exact JSON shape
+/// `"permissions":{"mode":"prompt"}` a hand-written settings file uses,
+/// not the Rust type name in isolation. Written before the rename landed;
+/// it passes identically before and after, the expected shape of a pure
+/// rename.
+#[test]
+fn permissions_mode_prompt_wire_string_still_parses_after_the_rename() {
+    let json = r#"{ "mode": "prompt", "allowed_tools": [], "denied_tools": [] }"#;
+    let cfg: conway::config::schema::PermissionsConfig =
+        serde_json::from_str(json).expect("\"mode\": \"prompt\" must still parse");
+    assert_eq!(cfg.mode, PermissionsConfigMode::Prompt);
 }
 
 /// Precedence test: default < user < project < env < CLI, proven for
@@ -171,13 +188,13 @@ fn five_source_precedence_across_representative_keys() {
     let outcome = load(opts(full_env.clone(), full_cli.clone())).unwrap();
     assert_eq!(outcome.config.default_role.as_str(), "role-c");
     assert_eq!(outcome.config.limits.max_steps, 44);
-    assert_eq!(outcome.config.permissions.mode, PermissionMode::Prompt);
+    assert_eq!(outcome.config.permissions.mode, PermissionsConfigMode::Prompt);
 
     // Stage 2: remove CLI -> env wins.
     let outcome = load(opts(full_env.clone(), CliOverrides::default())).unwrap();
     assert_eq!(outcome.config.default_role.as_str(), "role-e");
     assert_eq!(outcome.config.limits.max_steps, 33);
-    assert_eq!(outcome.config.permissions.mode, PermissionMode::Deny);
+    assert_eq!(outcome.config.permissions.mode, PermissionsConfigMode::Deny);
     assert_eq!(
         outcome.config.backends["anthropic"].base_url,
         "https://env.example.com"
@@ -187,7 +204,7 @@ fn five_source_precedence_across_representative_keys() {
     let outcome = load(opts(user_only_env.clone(), CliOverrides::default())).unwrap();
     assert_eq!(outcome.config.default_role.as_str(), "role-p");
     assert_eq!(outcome.config.limits.max_steps, 22);
-    assert_eq!(outcome.config.permissions.mode, PermissionMode::Prompt);
+    assert_eq!(outcome.config.permissions.mode, PermissionsConfigMode::Prompt);
     assert_eq!(
         outcome.config.backends["anthropic"].base_url,
         "https://project.example.com"
@@ -203,7 +220,7 @@ fn five_source_precedence_across_representative_keys() {
     .unwrap();
     assert_eq!(outcome.config.default_role.as_str(), "role-x");
     assert_eq!(outcome.config.limits.max_steps, 11);
-    assert_eq!(outcome.config.permissions.mode, PermissionMode::Deny);
+    assert_eq!(outcome.config.permissions.mode, PermissionsConfigMode::Deny);
     assert_eq!(
         outcome.config.backends["anthropic"].base_url,
         "https://config_dir.example.com"
@@ -227,7 +244,7 @@ fn five_source_precedence_across_representative_keys() {
     // an agent that names no budget of its own -- asserted separately in
     // `conway_core::agent`'s own tests.
     assert_eq!(outcome.config.limits.max_steps, 0);
-    assert_eq!(outcome.config.permissions.mode, PermissionMode::Prompt);
+    assert_eq!(outcome.config.permissions.mode, PermissionsConfigMode::Prompt);
     assert!(!outcome.config.backends.contains_key("anthropic"));
 }
 

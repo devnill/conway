@@ -16,7 +16,7 @@ use conway_core::permission_pattern::contains_shell_metacharacters;
 use conway_core::ports::{PermissionGate, RenderKind};
 use globset::{Glob, GlobMatcher};
 
-use crate::config::schema::{PermissionMode, PermissionsConfig};
+use crate::config::schema::{PermissionsConfig, PermissionsConfigMode};
 use crate::error::{FacadeError, Result};
 
 /// A boxed, `'static`, `Send` future — the return type a [`PromptingGate`]
@@ -338,12 +338,12 @@ pub fn from_config(
     prompt_handler: Option<PromptHandler>,
 ) -> Result<Arc<dyn PermissionGate>> {
     match config.mode {
-        PermissionMode::Allowlist => Ok(Arc::new(AllowListGate::new(
+        PermissionsConfigMode::Allowlist => Ok(Arc::new(AllowListGate::new(
             config.allowed_tools.clone(),
             config.denied_tools.clone(),
         ))),
-        PermissionMode::Deny => Ok(Arc::new(DenyAllGate)),
-        PermissionMode::Prompt => {
+        PermissionsConfigMode::Deny => Ok(Arc::new(DenyAllGate)),
+        PermissionsConfigMode::Prompt => {
             let handler = prompt_handler.ok_or_else(|| FacadeError::Config {
                 path: None,
                 message: "permissions.mode = \"prompt\" requires a prompt handler to be supplied"

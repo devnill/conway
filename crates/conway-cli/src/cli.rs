@@ -67,7 +67,7 @@ pub struct Cli {
     /// `deny` refuses every tool outright. There is no prompting variant
     /// here because a non-interactive run has nobody to ask.
     #[arg(long, value_enum, default_value = "allowlist")]
-    pub permission_mode: PermissionMode,
+    pub permission_mode: OneShotPermissionMode,
 
     /// Run the root agent under this role instead of the configured
     /// `default_role`. A role is an alias resolved to a model chain by
@@ -240,12 +240,17 @@ pub enum OutputFormat {
 }
 
 /// `--permission-mode`: how one-shot mode's tool gate is built. Distinct
-/// from `conway::config`'s own `permissions.mode` (which additionally has a
-/// `Prompt` variant meaningful only to the TUI/an embedder) -- one-shot mode
-/// never prompts (notes), so this CLI-facing enum only has the two
-/// variants a non-interactive run can actually use.
+/// from `conway::config`'s own `permissions.mode`
+/// (`conway::config::schema::PermissionsConfigMode`, which additionally has
+/// a `Prompt` variant meaningful only to the TUI/an embedder) -- one-shot
+/// mode never prompts (notes), so this CLI-facing enum only has the two
+/// variants a non-interactive run can actually use. Also distinct from
+/// `conway::PermissionMode` (`Prompt`/`Plan`/`AutoAllow`, the TUI's
+/// operator-facing runtime mode) -- three unrelated types once shared this
+/// name; this one and the config-schema one were each given a disambiguating
+/// name, and the TUI's own kept `PermissionMode` unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum PermissionMode {
+pub enum OneShotPermissionMode {
     Allowlist,
     Deny,
 }
