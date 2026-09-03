@@ -1215,4 +1215,42 @@ mod tests {
         assert_eq!(state.adjust_tool_preview_lines(i32::MIN), 1);
         assert_eq!(state.adjust_tool_preview_lines(i32::MAX), 200);
     }
+
+    /// Board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`, acceptance criterion 4:
+    /// `Event::TurnAborted` -- the live signal a `keep_alive` agent's
+    /// turn-scoped budget trip ended just the current turn, not the whole
+    /// session -- renders as a transcript `Notice` naming the limit that
+    /// tripped. Unlike `Event::AgentFinished`, this must NOT touch the tree
+    /// node status: the agent is still alive, just idling for the next
+    /// prompt.
+    #[test]
+    fn turn_aborted_event_pushes_a_notice_naming_the_limit() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::TurnAborted {
+                agent_id: root,
+                limit: "max_steps=40".to_string(),
+                steps_this_turn: 40,
+            },
+        ));
+
+        match state.transcript.last() {
+            Some(Entry::Notice { text }) => {
+                assert!(
+                    text.contains("max_steps=40"),
+                    "expected the tripped limit in the notice, got: {text}"
+                );
+                assert!(
+                    text.contains("turn ended"),
+                    "expected the notice to say the TURN (not the session) ended, got: {text}"
+                );
+            }
+            other => panic!("expected a Notice entry, got {other:?}"),
+        }
+    }
 }

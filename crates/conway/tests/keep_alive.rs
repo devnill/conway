@@ -42,9 +42,12 @@ use conway::{Plugin, SessionSpec, Tool};
 use conway_core::agent::{Budget, ResultStatus};
 use conway_core::content::ContentBlock;
 use conway_core::event::Event;
-use conway_core::ids::{BackendId, RoleAlias};
+use conway_core::ids::{BackendId, RoleAlias, SeqRange};
+use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, SessionStore};
-use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_testkit::{
+    text_response, text_response_with_stub_usage, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 
 /// How long a test sleeps after `new_session` to give an idle keep_alive
 /// session's agent loop a moment to actually reach its idle-await gate
@@ -162,10 +165,14 @@ fn base_config() -> ConwayConfig {
 }
 
 /// Drains `stream` until it yields `Event::AgentFinished`, returning its
-/// `AgentResult` -- for the cancel/budget tests below, which (unlike the
-/// keep-alive-turn tests) DO expect a real terminal event, since a genuine
-/// end (cancel/deadline/budget) is exactly when a `keep_alive` session's one
-/// and only `AgentFinished` is emitted.
+/// `AgentResult` -- for the cancel/deadline/session-lifetime-budget tests
+/// below, which (unlike the keep-alive-turn tests) DO expect a real
+/// terminal event, since a genuine end (cancel/deadline/`max_tokens`) is
+/// exactly when a `keep_alive` session's one and only `AgentFinished` is
+/// emitted. Board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`: a `max_steps`/
+/// `max_tool_calls` trip is NO LONGER one of those genuine ends for a
+/// `keep_alive` agent -- see `next_turn_aborted`, immediately below, for
+/// that case instead.
 async fn next_agent_finished(
     stream: &mut conway::EventStream,
 ) -> Option<conway_core::agent::AgentResult> {
@@ -175,6 +182,30 @@ async fn next_agent_finished(
             std::future::poll_fn(|cx| std::pin::Pin::new(&mut *stream).poll_next(cx)).await?;
         if let Event::AgentFinished { result, .. } = envelope.event {
             return Some(result);
+        }
+    }
+}
+
+/// Drains `stream` until it yields `Event::TurnAborted`, returning its
+/// `limit`/`steps_this_turn` fields. Board item
+/// `01M1FSP1QJFCHA7H8QPYZ9GG1P`: the live signal that a `keep_alive`
+/// agent's turn-scoped budget dimension (`max_steps`/`max_tool_calls`)
+/// tripped and ended just the current turn -- the session itself is still
+/// alive and returns to idling for the next prompt, so callers must NOT
+/// also wait for `Event::AgentFinished` here (it never comes for this
+/// trip).
+async fn next_turn_aborted(stream: &mut conway::EventStream) -> Option<(String, u32)> {
+    use futures_core::Stream as _;
+    loop {
+        let envelope =
+            std::future::poll_fn(|cx| std::pin::Pin::new(&mut *stream).poll_next(cx)).await?;
+        if let Event::TurnAborted {
+            limit,
+            steps_this_turn,
+            ..
+        } = envelope.event
+        {
+            return Some((limit, steps_this_turn));
         }
     }
 }
@@ -506,6 +537,69 @@ async fn deadline_ends_an_idle_keep_alive_session() {
     );
 }
 
+/// Board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`, acceptance criterion 3:
+/// session-lifetime dimensions are UNCHANGED by this item -- only
+/// `max_steps`/`max_tool_calls` (turn-scoped) became turn-aborting;
+/// `max_tokens` (session-lifetime, like `deadline`) still ends the whole
+/// `keep_alive` agent, exactly as before. `state.usage` accrues across
+/// every turn and is never reset at a turn boundary (`LoopState::usage`'s
+/// own doc), so `check_budget`'s `max_tokens` check trips at the very top
+/// of the next loop iteration -- immediately after the first turn
+/// naturally completes, before this test ever issues a second prompt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keep_alive_session_max_tokens_exceeded_still_ends_the_whole_session() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response_with_stub_usage(
+            "hi there",
+        ))])
+        .with_id(BackendId::new("fake")),
+    );
+    let conway = build_conway(base_config(), backend, store);
+
+    let spec = SessionSpec {
+        keep_alive: true,
+        budget: Some(Budget {
+            max_steps: 0,
+            deadline: None,
+            // `text_response_with_stub_usage` accrues 10 + 5 = 15 tokens --
+            // comfortably over this ceiling after just the one turn below.
+            max_tokens: Some(10),
+            max_tool_calls: None,
+        }),
+        ..SessionSpec::default()
+    };
+    let handle = conway
+        .new_session(spec)
+        .await
+        .expect("new_session should succeed");
+
+    let mut events = handle.events();
+    let turn = handle.prompt("hi").await.expect("prompt should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), turn.text())
+        .await
+        .expect("text() must not hang")
+        .expect("text() should succeed");
+
+    // Do NOT prompt again -- a session-lifetime trip must end the agent on
+    // its own, the same as it always has, unlike the turn-scoped trips this
+    // item changes.
+    let result = tokio::time::timeout(Duration::from_secs(5), next_agent_finished(&mut events))
+        .await
+        .expect("a max_tokens trip must still terminate the whole keep_alive session")
+        .expect("the event stream must yield AgentFinished before ending");
+    match &result.status {
+        ResultStatus::BudgetExceeded { limit } => {
+            assert_eq!(
+                limit, "max_tokens=10",
+                "max_tokens carries no turn/session scope suffix -- it is only ever \
+                 session-lifetime, unlike max_steps/max_tool_calls"
+            );
+        }
+        other => panic!("expected BudgetExceeded, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------
 // Critical fix: `max_steps` is a PER-USER-TURN runaway guard for a
 // keep_alive session, not a session-lifetime total.
@@ -613,12 +707,27 @@ async fn keep_alive_session_survives_many_turns_whose_total_steps_exceed_max_ste
     );
 }
 
-/// Runaway protection is preserved: a SINGLE keep-alive turn whose tool loop
-/// never naturally completes still terminates once ITS OWN step count hits
-/// `max_steps`, exactly like the non-keep-alive path always has.
+/// Board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`, acceptance criterion 1. Runaway
+/// protection is preserved -- a SINGLE keep-alive turn whose tool loop never
+/// naturally completes still gets cut off once ITS OWN step count hits
+/// `max_steps`, exactly like the non-keep-alive path always has -- but
+/// cutting it off now ends only that ONE turn, not the whole session:
+/// `Event::TurnAborted` fires (not `Event::AgentFinished`), a
+/// `LogRecord::SystemNote { reason: "budget_turn_aborted", .. }` tells the
+/// model why, and a SUBSEQUENT prompt on the same handle is processed and
+/// completes normally.
+///
+/// **Shown to fail first (P-15):** before this item, `check_budget` called
+/// `self.finish(ResultStatus::BudgetExceeded, ..)` for this exact trip,
+/// ending the whole agent -- so against the unmodified loop this test's
+/// first `tokio::time::timeout(.., next_turn_aborted(&mut events))` times
+/// out (no `Event::TurnAborted` variant existed at all; the agent instead
+/// emits `Event::AgentFinished` and the task then exits, so the SECOND
+/// prompt this test issues afterward finds no live task left to notify).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn keep_alive_single_turn_runaway_tool_loop_still_hits_max_steps() {
+async fn keep_alive_single_turn_runaway_tool_loop_aborts_the_turn_and_the_session_survives() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let store_check = store.clone();
     let backend = Arc::new(
         ScriptedBackend::new(vec![
             ScriptedTurn::Respond(tool_call_response("tc_1", "probe", serde_json::json!({}))),
@@ -629,6 +738,9 @@ async fn keep_alive_single_turn_runaway_tool_loop_still_hits_max_steps() {
             // script entry to consume instead of panicking on exhaustion.
             ScriptedTurn::Respond(tool_call_response("tc_4", "probe", serde_json::json!({}))),
             ScriptedTurn::Respond(tool_call_response("tc_5", "probe", serde_json::json!({}))),
+            // Consumed by the SECOND prompt below, proving the session
+            // survived the trip: a plain text reply, no tool call.
+            ScriptedTurn::Respond(text_response("recovered")),
         ])
         .with_id(BackendId::new("fake")),
     );
@@ -661,14 +773,18 @@ async fn keep_alive_single_turn_runaway_tool_loop_still_hits_max_steps() {
         .await
         .expect("prompt should succeed");
 
-    let result = tokio::time::timeout(Duration::from_secs(5), next_agent_finished(&mut events))
-        .await
-        .expect("a runaway single-turn tool loop must still hit max_steps and terminate")
-        .expect("the event stream must yield AgentFinished before ending");
-    assert!(
-        matches!(result.status, ResultStatus::BudgetExceeded { .. }),
-        "expected BudgetExceeded (runaway tool loop within one turn), got {:?}",
-        result.status
+    let (limit, steps_this_turn) =
+        tokio::time::timeout(Duration::from_secs(5), next_turn_aborted(&mut events))
+            .await
+            .expect("a runaway single-turn tool loop must still trip max_steps and abort")
+            .expect("the event stream must yield TurnAborted before ending");
+    assert_eq!(
+        limit, "max_steps=3",
+        "the bare turn-scoped limit, no session-ended framing"
+    );
+    assert_eq!(
+        steps_this_turn, 3,
+        "the runaway loop's own step count at the moment it tripped"
     );
     assert_eq!(
         backend.calls().len(),
@@ -676,27 +792,64 @@ async fn keep_alive_single_turn_runaway_tool_loop_still_hits_max_steps() {
         "exactly 3 in-turn steps must have run before the per-turn budget tripped, without ever \
          reaching tc_4/tc_5"
     );
+
+    // The durable half of the fix: the model was told why, in the log.
+    let records = store_check
+        .read(&handle.id(), SeqRange::full())
+        .await
+        .expect("read session records");
+    let note = records
+        .into_iter()
+        .find_map(|r| match r {
+            LogRecord::SystemNote { text, reason, .. } if reason == "budget_turn_aborted" => {
+                Some(text)
+            }
+            _ => None,
+        })
+        .expect("a budget_turn_aborted SystemNote must be appended");
+    assert!(note.contains("max_steps=3"), "{note}");
+    assert!(note.contains("3 steps this turn"), "{note}");
+
+    // The session survived: a SECOND prompt on the same handle is processed
+    // and completes normally -- this is exactly the "notice, not the
+    // conversation" fix.
+    let _turn2 = handle
+        .prompt("continue")
+        .await
+        .expect("second prompt should succeed -- the session must still be alive");
+    let text = tokio::time::timeout(
+        Duration::from_secs(5),
+        drain_n_turn_finished(&mut events, 1),
+    )
+    .await
+    .expect("the recovery turn must not hang -- the session survived the turn-scoped trip");
+    assert_eq!(text, "recovered");
 }
 
-/// Board item `01M1FS8R09PGF9HHV95B7A6RMH`: the fix for a real session that
-/// ended `budget_exceeded max_steps=40` with `steps_taken 81` and nothing
-/// saying the two numbers counted different things. Two ordinary turns run
-/// to completion first (2 steps each, `NORMAL_TURNS * 2 = 4` steps accrued
-/// session-lifetime), THEN a third turn's tool loop never completes
-/// naturally and trips `max_steps=3` on ITS OWN step count alone --
-/// reproducing the shape of the real incident (`steps_taken` far exceeding
-/// the `max_steps` that tripped) at a scale a test can assert on exactly.
+/// Board item `01M1FS8R09PGF9HHV95B7A6RMH` established that a keep_alive
+/// trip's `limit` is turn-scoped, not session-scoped, and that
+/// `AgentResult` carries both `steps_taken` (session-lifetime) and
+/// `steps_this_turn`. Board item `01M1FSP1QJFCHA7H8QPYZ9GG1P` goes further:
+/// that trip no longer produces an `AgentResult` at all for a `keep_alive`
+/// agent -- it aborts just the turn (`Event::TurnAborted`, carrying `limit`/
+/// `steps_this_turn` directly) and the session survives. This test proves
+/// the trip is STILL scoped to the runaway turn's own step count alone (two
+/// ordinary turns run to completion first, accruing `NORMAL_TURNS * 2 = 4`
+/// steps of session-lifetime history that must NOT count toward the third
+/// turn's own `max_steps=3` ceiling), and that the session survives the
+/// trip well enough to process a fourth prompt normally afterward.
 ///
-/// **Shown to fail first (P-15):** before this item, `ResultStatus::
-/// BudgetExceeded { limit }` was the bare `"max_steps=3"` (no scope word at
-/// all) and `AgentResult` had no `steps_this_turn` field, so this test does
-/// not even compile against the unfixed tree -- the strongest possible
-/// "observed failing first".
+/// **Shown to fail first (P-15):** before this item, this exact trip called
+/// `self.finish(ResultStatus::BudgetExceeded, ..)` and ended the whole
+/// agent -- `Event::TurnAborted` did not exist, so this test does not even
+/// compile against the unfixed tree, and the fourth prompt below would find
+/// no live task left to notify even if it did.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn keep_alive_max_steps_trip_labels_the_limit_this_turn_and_reports_both_step_counts() {
+async fn keep_alive_max_steps_trip_is_turn_scoped_and_the_session_survives_it() {
     const NORMAL_TURNS: usize = 2;
 
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let store_check = store.clone();
     let mut script = Vec::new();
     for i in 1..=NORMAL_TURNS {
         script.push(ScriptedTurn::Respond(tool_call_response(
@@ -708,11 +861,11 @@ async fn keep_alive_max_steps_trip_labels_the_limit_this_turn_and_reports_both_s
             "turn-{i}-response"
         ))));
     }
-    // The third, final prompt: a runaway tool loop that never completes
-    // naturally. Only 3 of these are ever reached if the per-turn budget
-    // trips where it should (max_steps=3); the rest exist only so an
-    // unfixed/regressed loop that keeps going has script entries to consume
-    // instead of panicking on exhaustion.
+    // The third prompt: a runaway tool loop that never completes naturally.
+    // Only 3 of these are ever reached if the per-turn budget trips where it
+    // should (max_steps=3); the rest exist only so an unfixed/regressed loop
+    // that keeps going has script entries to consume instead of panicking on
+    // exhaustion.
     for i in 1..=5 {
         script.push(ScriptedTurn::Respond(tool_call_response(
             &format!("runaway_{i}"),
@@ -720,6 +873,8 @@ async fn keep_alive_max_steps_trip_labels_the_limit_this_turn_and_reports_both_s
             serde_json::json!({}),
         )));
     }
+    // The fourth, final prompt: proves the session survived the trip.
+    script.push(ScriptedTurn::Respond(text_response("turn-4-response")));
     let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
     let conway = test_builder(base_config())
         .with_backend(backend.clone())
@@ -763,38 +918,48 @@ async fn keep_alive_max_steps_trip_labels_the_limit_this_turn_and_reports_both_s
         .prompt("go wild")
         .await
         .expect("third prompt should succeed");
-    let result = tokio::time::timeout(Duration::from_secs(5), next_agent_finished(&mut events))
-        .await
-        .expect("the runaway third turn must still hit max_steps and terminate")
-        .expect("the event stream must yield AgentFinished before ending");
+    let (limit, steps_this_turn) =
+        tokio::time::timeout(Duration::from_secs(5), next_turn_aborted(&mut events))
+            .await
+            .expect("the runaway third turn must still trip max_steps and abort")
+            .expect("the event stream must yield TurnAborted before ending");
 
-    match &result.status {
-        ResultStatus::BudgetExceeded { limit } => {
-            assert_eq!(
-                limit, "max_steps=3 (this turn)",
-                "a keep_alive trip must be labelled turn-scoped, not session-scoped"
-            );
-        }
-        other => panic!("expected BudgetExceeded, got {other:?}"),
-    }
     assert_eq!(
-        result.steps_this_turn, 3,
+        limit, "max_steps=3",
+        "a keep_alive trip names the bare turn-scoped limit"
+    );
+    assert_eq!(
+        steps_this_turn, 3,
         "the THIRD turn's own runaway loop must have taken exactly max_steps=3 steps of ITS \
-         OWN before tripping"
+         OWN before aborting -- NOT the {} steps the two prior turns already accrued \
+         session-lifetime",
+        (NORMAL_TURNS as u32) * 2
     );
-    assert_eq!(
-        result.steps_taken,
-        (NORMAL_TURNS as u32) * 2 + 3,
-        "steps_taken is session-lifetime: {NORMAL_TURNS} prior turns * 2 steps each, plus this \
-         turn's own 3 steps"
-    );
+
+    let records = store_check
+        .read(&handle.id(), SeqRange::full())
+        .await
+        .expect("read session records");
     assert!(
-        result.steps_taken > result.steps_this_turn,
-        "session-lifetime steps_taken ({}) must exceed this-turn steps_this_turn ({}) -- proving \
-         the two numbers count different things, exactly the real incident this item fixes",
-        result.steps_taken,
-        result.steps_this_turn
+        records.iter().any(|r| matches!(
+            r,
+            LogRecord::SystemNote { reason, .. } if reason == "budget_turn_aborted"
+        )),
+        "a budget_turn_aborted SystemNote must be appended"
     );
+
+    // The session survives the trip: a fourth prompt is processed normally.
+    let _turn4 = handle
+        .prompt("turn 4 text")
+        .await
+        .expect("fourth prompt should succeed -- the session must still be alive");
+    let text = tokio::time::timeout(
+        Duration::from_secs(5),
+        drain_n_turn_finished(&mut events, 1),
+    )
+    .await
+    .expect("the fourth turn must not hang -- the session survived the turn-scoped trip");
+    assert_eq!(text, "turn-4-response");
 }
 
 // ---------------------------------------------------------------------

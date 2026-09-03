@@ -229,23 +229,12 @@ distinction existed.
 
 ## Budgets
 
-Every agent runs under a `Budget` with four independent ceilings. The first one
+Every agent runs under a `Budget` with four independent ceilings. For a
+**non-keep-alive** agent (every subagent, and a one-shot root), the first one
 to trip ends that agent with `ResultStatus::BudgetExceeded`, naming which
 dimension it was — so an agent that set several can tell what stopped it. In
 one-shot mode a root agent tripping any of them is [exit code
 5](scripting.md#exit-codes).
-
-For the two turn-scoped dimensions (`max_steps`, `max_tool_calls`, table
-below), the `BudgetExceeded` result also names WHICH of the two scopes it
-counted: `"max_steps=40 (this turn)"` for a keep-alive session, `"max_steps=40
-(this session)"` otherwise. Read that label alongside the terminal
-`AgentResult`'s own two step counters — `steps_taken` (session-lifetime,
-never reset) and `steps_this_turn` (reset at each keep-alive turn boundary,
-equal to `steps_taken` when there is only ever one turn) — rather than
-`steps_taken` alone: a keep-alive session that has already run several turns
-can report a `steps_taken` far larger than the `max_steps` that just tripped,
-and without both labels that reads as though the ceiling failed to hold when
-it did not.
 
 | Dimension | Bounds | Scope |
 | --- | --- | --- |
@@ -254,11 +243,41 @@ it did not.
 | `max_tokens` | Input + output tokens accrued. | The agent's whole life, always. |
 | `deadline` | Wall clock. | The agent's whole life, always. |
 
-The two turn-scoped dimensions are runaway-tool-loop guards, so they reset at
-each user-turn boundary: a keep-alive session has to survive an unbounded number
-of turns, each independently bounded, rather than having its whole lifetime
-capped. The two lifetime-scoped ones are cost and time ceilings, where a total is
-the thing you actually want to bound.
+`max_tokens` and `deadline` are cost and time ceilings, where a total across
+the agent's whole life is the thing you actually want to bound — tripping
+either always ends the agent, `keep-alive` or not, exactly as the paragraph
+above describes. `max_steps` and `max_tool_calls` are runaway-tool-loop
+guards instead, and behave differently depending on `keep_alive`:
+
+- **Non-keep-alive** (every subagent, and a one-shot root): session-lifetime,
+  same as the other two — the ceiling is the agent's whole life, and tripping
+  it ends the agent. The `BudgetExceeded` result's `limit` names this scope
+  explicitly, e.g. `"max_steps=40 (this session)"`.
+- **Keep-alive** (the TUI's root, or an embedder's `SessionSpec::
+  keep_alive`): scoped to the CURRENT user turn instead — reset at every turn
+  boundary, so a keep-alive session has to survive an unbounded number of
+  turns, each independently bounded, rather than having its whole lifetime
+  capped. Tripping one of these two no longer ends the session at all: it
+  aborts just the runaway turn (a `LogRecord::SystemNote { reason:
+  "budget_turn_aborted" }` tells the model why, in text like `"this turn was
+  ended by the harness: max_steps=40 reached (40 steps this turn). Answer
+  with what you have; the operator can continue with a new prompt."`, and a
+  live `Event::TurnAborted { agent_id, limit, steps_this_turn }` tells every
+  subscriber) and returns to idling for the next prompt — no
+  `ResultStatus::BudgetExceeded`, no exit code, the process keeps running.
+  See [`interactive.md`](interactive.md#when-a-turn-is-cut-off) for what this
+  looks like from the operator's side.
+
+Either way, `steps_taken` (session-lifetime, never reset) and
+`steps_this_turn` (reset at each keep-alive turn boundary — a natural
+completion, or a turn-scoped trip aborting the turn; equal to `steps_taken`
+when there is only ever one turn) are both always available: on a terminal
+`AgentResult` for a session-lifetime trip, and directly on `Event::
+TurnAborted`'s own `steps_this_turn` field for a turn-scoped one. Read them
+side by side rather than `steps_taken` alone — a keep-alive session that has
+already run several turns can report a `steps_taken` far larger than the
+`max_steps` that just tripped, and without both numbers that reads as though
+the ceiling failed to hold when it did not.
 
 `max_tool_calls` counts calls **dispatched**, not results returned. A batch
 cancelled part-way through still counts every call it started, because some of
