@@ -1650,6 +1650,18 @@ impl AgentLoop {
                 plugin_config: self.plugin_config.clone(),
                 max_parallel_tools: self.spec.max_parallel_tools.max(1),
                 root: root.clone(),
+                // Board item `01M1FSHJ3FG522MHA9CMBJTVW1`. Unconditionally
+                // `None` (unlimited) -- `AgentSpec` has no field to source
+                // this from yet, mirroring `max_parallel_tools`'s own
+                // already-disclosed gap immediately above (`conway::
+                // builder`'s module doc): `[limits].tool_timeout_secs`
+                // exists in config and is enforced by `ToolRunner::
+                // run_batch` (`ToolBatchCtx::tool_timeout`'s own doc), but
+                // nothing yet threads a real session's configured value
+                // through `RootSpec`/`AgentSpec` to this construction site.
+                // A future item can close that gap without touching this
+                // runner-level enforcement at all.
+                tool_timeout: None,
             };
             // Counted from the DISPATCHED batch rather than `outcomes` below:
             // the cancel check immediately after discards every outcome,

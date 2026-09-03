@@ -65,6 +65,16 @@
 //!   `DEFAULT_MAX_PARALLEL_TOOLS`) exposes a field this builder or
 //!   `Conway::new_session` could set it through. Flagged as a gap for
 //!   `MODULE:conway-runtime`, not solved here.
+//! - **`config.limits.tool_timeout_secs` has the identical gap, for the
+//!   identical reason** (board item `01M1FSHJ3FG522MHA9CMBJTVW1`):
+//!   `conway_runtime::tools::ToolBatchCtx::tool_timeout` is real and
+//!   enforced (`ToolRunner::run_batch`'s per-call seam), but `AgentSpec`
+//!   (built internally by `Runtime::start_root`) hardcodes it to `None`
+//!   unconditionally -- `RootSpec` has no field this builder could set it
+//!   through either. An operator who sets `[limits].tool_timeout_secs` in a
+//!   real `settings.json` today gets a config value that parses and
+//!   round-trips but does not yet reach a running session. Flagged as the
+//!   same `MODULE:conway-runtime` gap, not solved here.
 //! - **The router's `CapabilityIndex` is built from `Backend::capabilities()`,
 //!   not from a second `models.json` → `Capabilities` conversion**:
 //!   [`models_overrides_for`] projects `models.json`'s `max_context_tokens`

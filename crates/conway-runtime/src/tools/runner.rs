@@ -36,6 +36,7 @@
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use conway_core::content::{Artifact, ContentBlock, ToolCall, TruncationPolicy, TruncationRecord};
 use conway_core::error::ToolError;
@@ -108,6 +109,24 @@ pub struct ToolBatchCtx {
     /// (hazard #8 in this slice's own inventory: a TOCTOU widening, and
     /// slow).
     pub root: AgentRoot,
+    /// Board item `01M1FSHJ3FG522MHA9CMBJTVW1`: an operator-configurable
+    /// ceiling on ONE tool call's own `invoke`, enforced at the single seam
+    /// every tool runs through (`execute_one`, below) so a hung tool becomes
+    /// a model-visible error instead of holding the turn forever. `None` (0
+    /// in `[limits].tool_timeout_secs`, the default) means unlimited --
+    /// byte-identical to this runner's behavior before this field existed.
+    ///
+    /// **Not yet reachable from a real `settings.json`.** This mirrors
+    /// [`Self::max_parallel_tools`]'s own already-disclosed gap exactly
+    /// (`conway::builder`'s module doc): `conway_runtime::agent_loop::
+    /// AgentSpec` has no field to source this from, so the one production
+    /// call site that builds a `ToolBatchCtx` (`AgentLoop::run_inner`)
+    /// passes `None` unconditionally today, regardless of
+    /// `[limits].tool_timeout_secs`. Threading it from config through
+    /// `RootSpec`/`AgentSpec` is a separate, disclosed gap for a future
+    /// item -- this item's own acceptance criteria exercise the runner's
+    /// enforcement directly against this field, not that facade wiring.
+    pub tool_timeout: Option<Duration>,
 }
 
 /// The outcome of one dispatched tool call.
@@ -231,6 +250,7 @@ impl ToolRunner {
             let capability_host = ctx.capability_host.clone();
             let plugin_config = ctx.plugin_config.clone();
             let root = ctx.root.clone();
+            let tool_timeout = ctx.tool_timeout;
             let hooks = self.hooks.clone();
             let call_id_for_panic = call.call_id.clone();
             let tool_for_panic = call.name.clone();
@@ -260,6 +280,7 @@ impl ToolRunner {
                     capability_host,
                     plugin_config,
                     root,
+                    tool_timeout,
                     call,
                 ))
                 .catch_unwind()
@@ -322,6 +343,7 @@ async fn execute_one(
     capability_host: Arc<dyn CapabilityHost>,
     plugin_config: Arc<PluginConfig>,
     root: AgentRoot,
+    tool_timeout: Option<Duration>,
     call: ToolCall,
 ) -> ToolOutcome {
     let call_id = call.call_id.clone();
@@ -430,7 +452,10 @@ async fn execute_one(
                 session_id,
                 cwd: cwd.clone(),
                 chdir: chdir.clone(),
-                cancel: core_cancel,
+                // Cloned rather than moved: this item's own timeout path
+                // (below) needs `core_cancel` again, after `tool_ctx` is
+                // built, to cancel it directly on expiry.
+                cancel: core_cancel.clone(),
                 events: Arc::new(BusSink::new(bus.clone(), session_id, agent_id)) as EventSinkHandle,
                 // The agent's OWN id is baked into the handle here -- the
                 // one place a `ToolCtx` is built for real tool dispatch
@@ -480,7 +505,72 @@ async fn execute_one(
                 ),
             };
 
-            let invoked = resolved.tool.invoke(call.clone(), tool_ctx).await;
+            // Board item `01M1FSHJ3FG522MHA9CMBJTVW1`: the runner-level tool
+            // timeout. `None` (the default -- `[limits].tool_timeout_secs ==
+            // 0`) takes the exact pre-existing path: `invoke` is awaited
+            // directly, byte-identical to before this field existed.
+            //
+            // `Some(duration)` spawns `invoke` as its OWN tokio task rather
+            // than awaiting it inline, specifically so a timeout does not
+            // have to drop it: `tokio::select!`/`tokio::time::timeout`
+            // around an inline future DROPS the loser the instant the timer
+            // wins, which would abandon the tool's own future without ever
+            // giving it a further poll -- a cooperative tool watching
+            // `core_cancel` would never actually observe the signal this
+            // sends it. Spawned, the task keeps running (and keeps being
+            // polled by the runtime) after this function stops waiting on
+            // it, so calling `core_cancel.cancel()` below and then
+            // returning immediately still lets a well-behaved tool (like
+            // `bash`, which kills its process group) react on its own time
+            // -- this function just stops blocking the turn on it.
+            let invoked = match tool_timeout {
+                None => resolved.tool.invoke(call.clone(), tool_ctx).await,
+                Some(duration) => {
+                    // Cloned out of `resolved` (which borrows the registry
+                    // and is not `'static`) so the spawned task below owns
+                    // everything it touches -- `Arc<dyn Tool>` itself has no
+                    // such borrow.
+                    let spawned_tool = resolved.tool.clone();
+                    let spawned_call = call.clone();
+                    let handle = tokio::spawn(async move {
+                        spawned_tool.invoke(spawned_call, tool_ctx).await
+                    });
+                    match tokio::time::timeout(duration, handle).await {
+                        Ok(Ok(invoked)) => invoked,
+                        Ok(Err(join_err)) => {
+                            bridge.abort();
+                            let detail = if join_err.is_panic() {
+                                panic_message(join_err.into_panic())
+                            } else {
+                                "task ended unexpectedly".to_string()
+                            };
+                            return ToolOutcome::error(
+                                call_id.clone(),
+                                tool_name.clone(),
+                                format!("tool `{tool_name}` panicked: {detail}"),
+                            );
+                        }
+                        Err(_elapsed) => {
+                            // Expired: signal cancellation (bash kills its
+                            // process group; a cooperative tool watching
+                            // `core_cancel` stops on its own) and return the
+                            // error immediately -- this call does not block
+                            // the turn waiting for the detached task to
+                            // actually finish.
+                            core_cancel.cancel();
+                            bridge.abort();
+                            return ToolOutcome::error(
+                                call_id.clone(),
+                                tool_name.clone(),
+                                format!(
+                                    "tool `{tool_name}` exceeded the {}s tool timeout ([limits].tool_timeout_secs); raise the limit, split the work, or run it in a child",
+                                    duration.as_secs_f64()
+                                ),
+                            );
+                        }
+                    }
+                }
+            };
             bridge.abort();
             match invoked {
                 Ok(mut output) => {

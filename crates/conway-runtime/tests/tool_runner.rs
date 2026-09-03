@@ -2,7 +2,7 @@
 //! design §4.2, §8).
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -105,6 +105,43 @@ impl Tool for DelayTool {
     async fn invoke(&self, _call: ToolCall, _ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
         tokio::time::sleep(self.delay).await;
         Ok(text_output("done"))
+    }
+}
+
+/// Sleeps for `delay`, polling `ctx.cancel.is_cancelled()` every 5ms so it
+/// can react promptly rather than only at the end of a long
+/// `tokio::time::sleep` -- `conway_core::ports::CancellationToken` is a
+/// poll-based flag (`is_cancelled()`), not an async-awaitable one (see that
+/// type's own doc), so a cooperative tool must poll it to be genuinely
+/// cooperative rather than merely outlasting its own fixed sleep. Records
+/// whether it ever observed cancellation in `observed_cancel`, for board
+/// item `01M1FSHJ3FG522MHA9CMBJTVW1`'s acceptance criterion that a timed-out
+/// call's own tool genuinely saw its cancellation token, not merely that the
+/// runner stopped waiting on it.
+struct CancelObservingSleepTool {
+    name: ToolName,
+    delay: Duration,
+    observed_cancel: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl Tool for CancelObservingSleepTool {
+    fn spec(&self) -> conway_core::content::ToolSpec {
+        simple_spec(self.name.clone())
+    }
+
+    async fn invoke(&self, _call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        let deadline = tokio::time::Instant::now() + self.delay;
+        loop {
+            if ctx.cancel.is_cancelled() {
+                self.observed_cancel.store(true, Ordering::SeqCst);
+                return Err(ToolError::Cancelled);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(text_output("done"));
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 }
 
@@ -322,6 +359,11 @@ fn batch_ctx_with_chdir(max_parallel_tools: usize, chdir: CwdHandle) -> ToolBatc
         // root check -- `Unconfined` keeps every existing test here
         // byte-for-byte unchanged.
         root: AgentRoot::Unconfined,
+        // Every existing test in this file predates the runner-level tool
+        // timeout (board item `01M1FSHJ3FG522MHA9CMBJTVW1`) and must keep
+        // its unlimited behavior; the timeout tests below set this field on
+        // the `ToolBatchCtx` they build directly.
+        tool_timeout: None,
     }
 }
 
@@ -922,5 +964,86 @@ async fn per_call_cwd_override_does_not_mutate_the_persistent_cwd() {
         chdir.current(),
         PathBuf::from("/orig"),
         "a per-call cwd argument must never mutate the persistent cwd cell"
+    );
+}
+
+// ---------------------------------------------------------------------
+// ToolRunner: tool timeout ([limits].tool_timeout_secs, board item
+// 01M1FSHJ3FG522MHA9CMBJTVW1)
+// ---------------------------------------------------------------------
+
+/// ACCEPTANCE 1: a fixture that sleeps 5s under `tool_timeout = 200ms`
+/// returns an error outcome whose text contains "tool timeout" within 1s,
+/// and the fixture itself observed its cancellation token (not merely that
+/// the runner stopped waiting on it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tool_timeout_returns_an_error_and_the_tool_observes_cancellation() {
+    let observed_cancel = Arc::new(AtomicBool::new(false));
+    let reg = registry(vec![Arc::new(CancelObservingSleepTool {
+        name: ToolName::new("hangs"),
+        delay: Duration::from_secs(5),
+        observed_cancel: observed_cancel.clone(),
+    })]);
+    let (runner, _bus) = runner_with_gate(reg, PermissionDecision::AllowOnce);
+    let mut ctx = batch_ctx(4);
+    ctx.tool_timeout = Some(Duration::from_millis(200));
+
+    let start = Instant::now();
+    let outcomes = tokio::time::timeout(
+        Duration::from_secs(1),
+        runner.run_batch(&ctx, vec![call("c1", "hangs", serde_json::json!({}))]),
+    )
+    .await
+    .expect("a hung tool under a 200ms tool_timeout must not hold the batch past 1s");
+    let elapsed = start.elapsed();
+
+    assert!(elapsed < Duration::from_secs(1), "{elapsed:?}");
+    assert_eq!(outcomes.len(), 1);
+    assert!(outcomes[0].is_error, "{outcomes:?}");
+    assert!(
+        text_of(&outcomes[0]).contains("tool timeout"),
+        "{outcomes:?}"
+    );
+
+    // The runner returns the timeout error as soon as it stops waiting on
+    // the hung call -- it does not block on the detached fixture task
+    // actually noticing cancellation. Poll briefly (well under the
+    // fixture's own 5s sleep and its 5ms cancellation-poll interval) for
+    // that detached task to catch up.
+    let observed_deadline = Instant::now() + Duration::from_millis(500);
+    while !observed_cancel.load(Ordering::SeqCst) && Instant::now() < observed_deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        observed_cancel.load(Ordering::SeqCst),
+        "the fixture tool must have observed its own cancellation token"
+    );
+}
+
+/// ACCEPTANCE 2: with `tool_timeout = None`, the same shape of fixture
+/// (sleeping well under the tool's own delay) completes normally --
+/// `Option<Duration>` unset must not change ordinary success behavior.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tool_timeout_none_leaves_a_normal_call_unaffected() {
+    let observed_cancel = Arc::new(AtomicBool::new(false));
+    let reg = registry(vec![Arc::new(CancelObservingSleepTool {
+        name: ToolName::new("quick"),
+        delay: Duration::from_millis(100),
+        observed_cancel: observed_cancel.clone(),
+    })]);
+    let (runner, _bus) = runner_with_gate(reg, PermissionDecision::AllowOnce);
+    let ctx = batch_ctx(4);
+    assert_eq!(ctx.tool_timeout, None, "unlimited is the default");
+
+    let outcomes = runner
+        .run_batch(&ctx, vec![call("c1", "quick", serde_json::json!({}))])
+        .await;
+
+    assert_eq!(outcomes.len(), 1);
+    assert!(!outcomes[0].is_error, "{outcomes:?}");
+    assert_eq!(text_of(&outcomes[0]), "done");
+    assert!(
+        !observed_cancel.load(Ordering::SeqCst),
+        "no timeout means no cancellation"
     );
 }

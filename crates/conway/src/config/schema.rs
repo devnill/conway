@@ -365,6 +365,36 @@ pub struct LimitsConfig {
     /// library API would put a capability in one consumption mode and not
     /// the others.
     pub max_tool_calls: u32,
+    /// Board item `01M1FSHJ3FG522MHA9CMBJTVW1`: a ceiling on ONE tool call's
+    /// own `invoke`, enforced at the single seam every tool runs through
+    /// (`conway_runtime::tools::ToolRunner::run_batch`) so a hung tool
+    /// becomes a model-visible error the turn can react to instead of
+    /// holding the turn forever. `0` = unlimited, matching every other
+    /// dimension in this struct.
+    ///
+    /// **Defaults to `0`, deliberately.** A non-zero default would change
+    /// behavior for every existing operator the moment they upgraded --
+    /// this field exists so an operator can OPT IN to a ceiling, not so one
+    /// is imposed on them. Distinct from `bash`'s own per-call `timeout_ms`
+    /// argument (`conway_tools::shell::bash`, unaffected by this field):
+    /// that is one tool's own default when the caller names none; this is
+    /// the runner-wide ceiling every tool call is subject to regardless of
+    /// whether it declares an argument of its own. `docs/tools.md`'s
+    /// "Timeouts" section has the precedence when both apply to the same
+    /// `bash` call (the smaller wins).
+    ///
+    /// **This `Default` impl is the only place this value lives** -- see
+    /// `max_steps`'s own doc immediately above for why:
+    /// `crate::config::merge::default_document` is derived from
+    /// `ConwayConfig::baseline()`, which builds this struct via
+    /// `Self::default()`, so there is no second value to keep in sync.
+    ///
+    /// **Not yet reachable from a real session** -- see `conway::builder`'s
+    /// module doc (the `config.limits.tool_timeout_secs` bullet) for the
+    /// disclosed gap between this config value and
+    /// `conway_runtime::tools::ToolBatchCtx::tool_timeout`, the field it
+    /// would need to reach.
+    pub tool_timeout_secs: u64,
 }
 
 impl Default for LimitsConfig {
@@ -375,6 +405,7 @@ impl Default for LimitsConfig {
             deadline_secs: 0,
             max_parallel_tools: 4,
             max_tool_calls: 0,
+            tool_timeout_secs: 0,
         }
     }
 }

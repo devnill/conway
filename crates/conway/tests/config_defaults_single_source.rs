@@ -190,3 +190,45 @@ fn every_top_level_section_in_the_bare_document_round_trips_its_own_default() {
          it exists only so an unconfigured default_role still validates"
     );
 }
+
+/// Board item `01M1FSHJ3FG522MHA9CMBJTVW1`, acceptance criterion 3:
+/// `{"limits":{"tool_timeout_secs":30}}` parses through the real production
+/// loader, and an absent key resolves to `0` identically through
+/// `LimitsConfig::default()` and the loaded default document -- the second
+/// half is also covered generically by
+/// [`every_top_level_section_in_the_bare_document_round_trips_its_own_default`]
+/// above (via `assert_section_matches_default!("limits", LimitsConfig)`);
+/// asserted again here, directly on this one field, so this field's own
+/// criterion doesn't depend on a reader tracing that macro.
+#[test]
+fn tool_timeout_secs_overlay_parses_and_absent_key_agrees_with_the_default() {
+    let dir = support::unique_temp_dir("config-defaults-single-source-tool-timeout");
+    let settings_path = dir.join("settings.json");
+    std::fs::write(
+        &settings_path,
+        serde_json::json!({"limits": {"tool_timeout_secs": 30}}).to_string(),
+    )
+    .expect("write a settings file naming [limits].tool_timeout_secs");
+
+    let overlaid = load(LoadOptions {
+        explicit_path: Some(settings_path),
+        cwd: dir.clone(),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .expect("a settings file naming [limits].tool_timeout_secs must parse");
+    assert_eq!(overlaid.config.limits.tool_timeout_secs, 30);
+
+    let bare = load(bare_options()).expect("a settings file naming nothing must still load");
+    assert_eq!(
+        bare.config.limits.tool_timeout_secs,
+        LimitsConfig::default().tool_timeout_secs,
+        "an absent key must resolve identically through the loaded default document and \
+         LimitsConfig::default()"
+    );
+    assert_eq!(
+        bare.config.limits.tool_timeout_secs, 0,
+        "0 = unlimited is this field's default"
+    );
+}

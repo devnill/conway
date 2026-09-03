@@ -232,3 +232,38 @@ is not in the table above because it no longer exists as an option — no
 built-in tool, or any tool, can declare it. `TruncationPolicy` stays
 `#[non_exhaustive]`, so a future variant is possible; this table reflects
 what's reachable today.
+
+## Timeouts
+
+Two independent timeouts can apply to a `bash`-shaped call, at two different
+layers:
+
+- **`bash`'s own `timeout_ms` argument** (default 120,000ms) — the model
+  names it per call; `bash` kills the whole process group when it fires.
+  This is the only timeout that exists today for a tool that doesn't
+  otherwise bound its own runtime.
+- **The runner's own `[limits].tool_timeout_secs`** (default `0` =
+  unlimited) — an operator-configured ceiling enforced at the single seam
+  every tool call runs through (`conway_runtime::tools::ToolRunner::
+  run_batch`), regardless of whether the tool declares a timeout argument of
+  its own. It exists so a tool with no cooperative timeout at all (or one
+  that hangs before its own timeout logic ever gets to run) still returns
+  control to the turn instead of holding it forever: on expiry, the call's
+  cancellation token is cancelled — `bash` kills its process group exactly
+  as it would for its own `timeout_ms`, and any other cooperative tool
+  watching `ToolCtx::cancel` stops on its own — and the call returns an
+  error the model sees: `tool `<name>` exceeded the <N>s tool timeout
+  ([limits].tool_timeout_secs); raise the limit, split the work, or run it
+  in a child`.
+
+**When both apply to the same `bash` call, the smaller one wins** — whichever
+fires first ends the call; the other simply never gets the chance to. A
+`bash` call with `timeout_ms: 300000` under an operator's
+`[limits].tool_timeout_secs = 60` still stops at 60 seconds, the runner's
+own ceiling; a `bash` call with `timeout_ms: 5000` under no configured
+`tool_timeout_secs` (the default) still stops at 5 seconds, `bash`'s own
+default enforcement, unaffected by the runner having no ceiling of its own.
+`tool_timeout_secs` is `0` by default specifically so an operator who has
+never heard of it sees byte-identical behavior to before this setting
+existed — see `[limits]`'s own section in
+[`scripting.md`](scripting.md#budget-flags) for how to set it.
