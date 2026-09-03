@@ -20,9 +20,9 @@ use crate::common::{check_cancel, parse_args};
 
 /// Builds the argv this tool spawns and streams, given the shell command
 /// text (verbatim, untouched -- never parsed) and the resolved working
-/// directory. [`BashTool::new`]'s own launcher ([`default_launcher`]) is
+/// directory. [`BashTool::new`]'s own launcher (`default_launcher`) is
 /// `/bin/bash -c <command>`, `current_dir(cwd)`; the run loop
-/// ([`unix::run`]) wires stdin/stdout/stderr and the process group onto
+/// (`unix::run`) wires stdin/stdout/stderr and the process group onto
 /// whatever [`Command`] this returns, uniformly, regardless of which
 /// launcher built it.
 ///
@@ -100,7 +100,7 @@ impl std::fmt::Debug for BashTool {
 }
 
 impl BashTool {
-    /// Plain, unconfined `bash` -- [`default_launcher`]. Byte-for-byte the
+    /// Plain, unconfined `bash` -- `default_launcher`. Byte-for-byte the
     /// pre-[`Launcher`] behavior of this tool.
     pub fn new() -> Self {
         Self {
