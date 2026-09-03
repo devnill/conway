@@ -903,7 +903,9 @@ fn resolve_budget(cli: &Cli, conway: &Conway) -> Option<Budget> {
 /// moment the model tries it anyway -- so a scoped `--deny-tools` entry
 /// leaves the tool announced, unlike a bare one.
 fn resolve_tools(cli: &Cli, agent_def: Option<&AgentDef>) -> Option<ToolSelector> {
-    if !matches!(cli.permission_mode, OneShotPermissionMode::Allowlist) || cli.allowed_tools.is_empty() {
+    if !matches!(cli.permission_mode, OneShotPermissionMode::Allowlist)
+        || cli.allowed_tools.is_empty()
+    {
         return None;
     }
     let base = agent_def
@@ -1095,7 +1097,11 @@ mod tests {
     async fn no_allow_list_denies_everything_fail_closed() {
         // Deliberate deviation from the plan doc's "no allow-list => allow
         // all" reading -- see this module's doc comment, reconciliation #2.
-        let cli = cli_with(OneShotPermissionMode::Allowlist, Vec::new(), vec!["bash".into()]);
+        let cli = cli_with(
+            OneShotPermissionMode::Allowlist,
+            Vec::new(),
+            vec!["bash".into()],
+        );
         let gate = build_gate(&cli);
         assert!(matches!(
             gate.check(request("bash")).await,

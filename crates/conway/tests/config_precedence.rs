@@ -188,7 +188,10 @@ fn five_source_precedence_across_representative_keys() {
     let outcome = load(opts(full_env.clone(), full_cli.clone())).unwrap();
     assert_eq!(outcome.config.default_role.as_str(), "role-c");
     assert_eq!(outcome.config.limits.max_steps, 44);
-    assert_eq!(outcome.config.permissions.mode, PermissionsConfigMode::Prompt);
+    assert_eq!(
+        outcome.config.permissions.mode,
+        PermissionsConfigMode::Prompt
+    );
 
     // Stage 2: remove CLI -> env wins.
     let outcome = load(opts(full_env.clone(), CliOverrides::default())).unwrap();
@@ -204,7 +207,10 @@ fn five_source_precedence_across_representative_keys() {
     let outcome = load(opts(user_only_env.clone(), CliOverrides::default())).unwrap();
     assert_eq!(outcome.config.default_role.as_str(), "role-p");
     assert_eq!(outcome.config.limits.max_steps, 22);
-    assert_eq!(outcome.config.permissions.mode, PermissionsConfigMode::Prompt);
+    assert_eq!(
+        outcome.config.permissions.mode,
+        PermissionsConfigMode::Prompt
+    );
     assert_eq!(
         outcome.config.backends["anthropic"].base_url,
         "https://project.example.com"
@@ -244,7 +250,10 @@ fn five_source_precedence_across_representative_keys() {
     // an agent that names no budget of its own -- asserted separately in
     // `conway_core::agent`'s own tests.
     assert_eq!(outcome.config.limits.max_steps, 0);
-    assert_eq!(outcome.config.permissions.mode, PermissionsConfigMode::Prompt);
+    assert_eq!(
+        outcome.config.permissions.mode,
+        PermissionsConfigMode::Prompt
+    );
     assert!(!outcome.config.backends.contains_key("anthropic"));
 }
 

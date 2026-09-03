@@ -840,8 +840,8 @@ async fn denied_calls_stay_in_turn_until_budget() {
 /// fixed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn permission_mode_allowlist_wire_string_still_parses_after_the_rename() {
-    let mock = MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]]))
-        .await;
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
     let fixture = write_fixture(&mock, 1);
 
     let out = run_conway(&["-p", "hi", "--permission-mode", "allowlist"], &fixture);

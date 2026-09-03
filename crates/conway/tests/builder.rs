@@ -11,8 +11,8 @@ use std::sync::Arc;
 use conway::config::schema::BackendEntry;
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfigMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig,
+    PermissionsConfig, PermissionsConfigMode, PluginsConfig, RoleEntry, RoutingSection,
+    SessionConfig, ToolsConfig,
 };
 use conway::{Conway, ConwayBuilder, FacadeError, SessionSpec};
 // Only named by the `builtin-tools`-gated tests below.

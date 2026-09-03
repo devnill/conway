@@ -31,8 +31,8 @@ use std::sync::Arc;
 #[cfg(feature = "jsonl-store")]
 use conway::config::schema::{
     AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
-    ModelsConfig, PermissionsConfigMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection,
-    SessionConfig, ToolsConfig,
+    ModelsConfig, PermissionsConfig, PermissionsConfigMode, PluginsConfig, RoleEntry,
+    RoutingSection, SessionConfig, ToolsConfig,
 };
 use conway::plugin::{
     async_trait, Artifact, ArtifactKind, ArtifactWriteError, ArtifactWriteHandle, ArtifactWriter,
