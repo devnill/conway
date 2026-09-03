@@ -364,6 +364,9 @@ mod tests {
     #[test]
     fn a_colon_typed_prefix_matches_identically_to_the_dot_form() {
         let plugins = fixture_plugin_commands();
-        assert_eq!(matches("/acme:greet", &plugins), matches("/acme.greet", &plugins));
+        assert_eq!(
+            matches("/acme:greet", &plugins),
+            matches("/acme.greet", &plugins)
+        );
     }
 }
