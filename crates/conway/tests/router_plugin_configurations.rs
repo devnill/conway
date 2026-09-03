@@ -35,11 +35,8 @@ mod support;
 
 use std::sync::Arc;
 
-use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
-    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig,
-};
+use conway::config::schema::{BackendEntry, ConwayConfig, ModelsConfig, RoleEntry, RoutingSection};
+use conway::test_support::base_config;
 use conway::{Conway, ConwayBuilder, EntryOutcome, RoutingReason, SessionSpec};
 use conway_core::agent::{PermissionDecision, ResultStatus};
 use conway_core::capabilities::{
@@ -77,7 +74,12 @@ fn backend_entry() -> BackendEntry {
     }
 }
 
-fn base_config(
+/// [`base_config`], but with the "coder" role (not "default") as
+/// `default_role` and driving every routing-specific section: this file's
+/// whole subject is role/backend/routing configuration, so unlike most
+/// fixtures in this crate, almost nothing here is left at the shared
+/// baseline.
+fn router_config(
     chain: Vec<String>,
     backend_ids: &[&str],
     metadata_path: std::path::PathBuf,
@@ -95,33 +97,24 @@ fn base_config(
     for id in backend_ids {
         backends.insert(id.to_string(), backend_entry());
     }
-    ConwayConfig {
-        default_role: RoleAlias::new("coder"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends,
-        routing: RoutingSection {
-            default_headroom_tokens: 4_096,
-            ..RoutingSection::default()
-        },
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        // full literal: `ModelsConfig` has exactly two fields and both are
-        // load-bearing here -- `metadata_path` is this fixture's own JSON
-        // file (or a nonexistent one, per the caller's comment) and
-        // `probe_on_startup: false` keeps the startup probe out of this
-        // file's router-configuration scenarios.
-        models: ModelsConfig {
-            metadata_path,
-            probe_on_startup: false,
-        },
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
+    let mut config = base_config();
+    config.default_role = RoleAlias::new("coder");
+    config.roles = roles;
+    config.backends = backends;
+    config.routing = RoutingSection {
+        default_headroom_tokens: 4_096,
+        ..RoutingSection::default()
+    };
+    // full literal: `ModelsConfig` has exactly two fields and both are
+    // load-bearing here -- `metadata_path` is this fixture's own JSON
+    // file (or a nonexistent one, per the caller's comment) and
+    // `probe_on_startup: false` keeps the startup probe out of this
+    // file's router-configuration scenarios.
+    config.models = ModelsConfig {
+        metadata_path,
+        probe_on_startup: false,
+    };
+    config
 }
 
 /// Acceptance item 4: absent configuration. No `.with_router`/
@@ -134,7 +127,7 @@ async fn absent_configuration_resolves_via_the_core_resolver_and_completes() {
     // `models.json`; a nonexistent path resolves to empty metadata
     // (`config::model_metadata::load`'s own "missing -> empty" contract).
     let dir = support::unique_temp_dir("router-plugin-configurations-absent");
-    let config = base_config(
+    let config = router_config(
         vec!["primary/model-a".to_string(), "primary/model-b".to_string()],
         &["primary"],
         dir.join("models.json"),
@@ -220,7 +213,7 @@ async fn installed_configuration_ordered_fallback_and_breaker_skip_the_open_endp
         }}"#,
     )
     .expect("write models.json fixture");
-    let config = base_config(
+    let config = router_config(
         vec![
             "primary/model-a".to_string(),
             "secondary/model-b".to_string(),

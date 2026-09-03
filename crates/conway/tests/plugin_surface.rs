@@ -30,9 +30,8 @@ use std::sync::Arc;
 
 #[cfg(feature = "jsonl-store")]
 use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
-    ModelsConfig, PermissionsConfig, PermissionsConfigMode, PluginsConfig, RoleEntry,
-    RoutingSection, SessionConfig, ToolsConfig,
+    BackendEntry, ConwayConfig, ModelsConfig, PermissionsConfig, PermissionsConfigMode, RoleEntry,
+    SessionConfig,
 };
 use conway::plugin::{
     async_trait, Artifact, ArtifactKind, ArtifactWriteError, ArtifactWriteHandle, ArtifactWriter,
@@ -55,6 +54,8 @@ use conway::plugin::{CurateCtx, CurateOutcome, Curator, SeqRange, StoreError};
 use conway::{AgentId, SessionId};
 use conway::{LogRecord, PathOp, ValidatedPath};
 // Only used by the `jsonl-store`-gated test below; see that test's own doc.
+#[cfg(feature = "jsonl-store")]
+use conway::test_support::base_config;
 #[cfg(feature = "jsonl-store")]
 use conway::{ConwayBuilder, RoleAlias};
 
@@ -318,36 +319,27 @@ fn facade_only_config(
             ..BackendEntry::default()
         },
     );
-    let permissions = PermissionsConfig {
+    let mut config = base_config();
+    config.default_role = RoleAlias::new("coder");
+    config.roles = roles;
+    config.backends = backends;
+    config.session = SessionConfig {
+        root: Some(session_root),
+        ..SessionConfig::default()
+    };
+    config.permissions = PermissionsConfig {
         mode: PermissionsConfigMode::Deny,
         ..PermissionsConfig::default()
     };
-    ConwayConfig {
-        default_role: RoleAlias::new("coder"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig {
-            root: Some(session_root),
-            ..SessionConfig::default()
-        },
-        limits: LimitsConfig::default(),
-        permissions,
-        backends,
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        // full literal: `ModelsConfig` has exactly two fields and both are
-        // load-bearing here -- `metadata_path` is this fixture's own JSON
-        // file and `probe_on_startup: false` keeps the startup probe out of
-        // this facade-registration scenario.
-        models: ModelsConfig {
-            metadata_path,
-            probe_on_startup: false,
-        },
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
+    // full literal: `ModelsConfig` has exactly two fields and both are
+    // load-bearing here -- `metadata_path` is this fixture's own JSON
+    // file and `probe_on_startup: false` keeps the startup probe out of
+    // this facade-registration scenario.
+    config.models = ModelsConfig {
+        metadata_path,
+        probe_on_startup: false,
+    };
+    config
 }
 
 /// The acceptance criterion: a `Tool`, a `Plugin`, and a `ContextHook`

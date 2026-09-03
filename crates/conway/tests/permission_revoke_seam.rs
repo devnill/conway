@@ -16,21 +16,16 @@
 #![cfg(feature = "builtin-tools")]
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
 use conway::permission_pattern::{PatternOrigin, PatternRule};
-use conway::test_support::{build_conway_with_builtins, scripted_backend};
+use conway::test_support::{base_config_at, build_conway_with_builtins, scripted_backend};
 use conway::{Conway, RevokeOutcome, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{StopReason, ToolCall, Usage};
-use conway_core::ids::{AgentId, RoleAlias, ToolName};
+use conway_core::ids::{AgentId, ToolName};
 use conway_core::ports::{GenerateResponse, PermissionGate};
 use conway_testkit::{text_response, ScriptedTurn};
 use tempfile::TempDir;
@@ -80,34 +75,6 @@ fn write_call_response(path: &str) -> GenerateResponse {
         }],
         stop: StopReason::ToolUse,
         usage: Usage::default(),
-    }
-}
-
-fn base_config(cwd: &Path) -> ConwayConfig {
-    let mut roles = std::collections::BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: cwd.to_path_buf(),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: std::collections::BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
     }
 }
 
@@ -203,7 +170,7 @@ async fn revoking_one_pattern_leaves_the_other_in_force() {
     let (_config_dir, env) = isolated_env();
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(cwd.path()),
+        base_config_at(cwd.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(&read_path)),
             ScriptedTurn::Respond(text_response("done")),
@@ -276,7 +243,7 @@ async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
 
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(project.path()),
+        base_config_at(project.path()),
         scripted_backend(vec![]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
@@ -307,7 +274,7 @@ async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
     // fresh from disk.
     let gate2 = RecordingGate::new();
     let restarted = build_conway_with_builtins(
-        base_config(project.path()),
+        base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(&read_path)),
             ScriptedTurn::Respond(text_response("done")),
@@ -358,7 +325,7 @@ async fn revoking_a_global_rule_persists_with_no_retrust_ceremony() {
 
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(cwd.path()),
+        base_config_at(cwd.path()),
         scripted_backend(vec![]),
         gate.clone() as Arc<dyn PermissionGate>,
     );
@@ -411,7 +378,7 @@ async fn revoking_an_interactive_rule_creates_no_file() {
     let (_config_dir, env) = isolated_env();
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(cwd.path()),
+        base_config_at(cwd.path()),
         scripted_backend(vec![]),
         gate as Arc<dyn PermissionGate>,
     );
@@ -456,7 +423,7 @@ async fn a_persist_failure_still_revokes_for_the_session_and_reports_the_failure
 
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(project.path()),
+        base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("git status")),
             ScriptedTurn::Respond(text_response("done")),
@@ -508,7 +475,7 @@ async fn revoking_a_grant_that_is_not_installed_reports_not_found() {
     let (_config_dir, env) = isolated_env();
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(cwd.path()),
+        base_config_at(cwd.path()),
         scripted_backend(vec![]),
         gate as Arc<dyn PermissionGate>,
     );
@@ -532,7 +499,7 @@ async fn revoke_all_still_clears_every_grant() {
     let _ = &env; // unused in this test beyond satisfying the helper shape
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(cwd.path()),
+        base_config_at(cwd.path()),
         scripted_backend(vec![]),
         gate as Arc<dyn PermissionGate>,
     );

@@ -22,28 +22,23 @@
 //! `CapabilityCallHandle::noop`, so a `requires` edge that resolved as
 //! satisfied at `build()` time still refused every live call).
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
-    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig,
-};
+use conway::config::schema::ConwayConfig;
 use conway::plugin::{
     CapabilityCallError, CapabilityError, CapabilityProvider, CapabilityRegistration, ContentBlock,
     HostCapability, PermissionClass, PluginManifest, Tool, ToolCategory, ToolCtx, ToolError,
     ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
-use conway::test_support::{echo_model, scripted_backend};
+use conway::test_support::{base_config, echo_model, scripted_backend};
 use conway::{Conway, ConwayBuilder, FacadeError, Plugin};
 use conway_core::agent::PermissionDecision;
 use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::content::{StopReason, ToolCall, Usage};
-use conway_core::ids::{BackendId, RoleAlias};
+use conway_core::ids::BackendId;
 use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, Router};
 use conway_testkit::{text_response, FakeBackend, FakeGate, FakeRouter, FakeStore, ScriptedTurn};
@@ -80,45 +75,14 @@ fn fake_backend(id: &str) -> Arc<dyn conway_core::ports::Backend> {
     ))
 }
 
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::<String, BackendEntry>::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        // `default_backends` is deliberately empty here (the schema default
-        // is `["anthropic", "openai-compat"]`): every test in this file
-        // attaches its own fake backend via `.with_backend()`, and a real
-        // `BackendFactory` resolving `default_backends` would fight that.
-        // Every other field is left at its default via the spread below --
-        // that is what this item (fixture fields track only what a test
-        // depends on, close with `..Default::default()`) replaces the old
-        // "spell out every field so a new one can't sneak past" comment
-        // with; `t11_config_section_literals_spread_defaults` is the guard
-        // that now protects this instead.
-        plugins: PluginsConfig {
-            default_backends: vec![],
-            ..PluginsConfig::default()
-        },
-        hooks: HooksConfig::default(),
-    }
+/// [`base_config`] with `default_backends` cleared (the schema default is
+/// `["anthropic", "openai-compat"]`): every test in this file attaches its
+/// own fake backend via `.with_backend()`, and a real `BackendFactory`
+/// resolving `default_backends` would fight that.
+fn config_with_no_default_backends() -> ConwayConfig {
+    let mut config = base_config();
+    config.plugins.default_backends = vec![];
+    config
 }
 
 /// `Conway` deliberately does not derive `Debug`, mirroring
@@ -206,7 +170,7 @@ impl Plugin for DependentPlugin {
 /// from a satisfied plugin-id `requires` edge.
 #[test]
 fn a_requires_edge_satisfied_by_a_provided_capability_builds_cleanly() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec!["acme.ui".to_string(), "acme.consumer".to_string()];
 
     ConwayBuilder::from_parts(cfg)
@@ -240,7 +204,7 @@ fn a_requires_edge_satisfied_by_a_provided_capability_builds_cleanly() {
 /// already produces.
 #[test]
 fn a_requires_edge_naming_an_unprovided_capability_fails_build_naming_both_sides() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec!["acme.consumer".to_string()];
 
     let result = ConwayBuilder::from_parts(cfg)
@@ -279,7 +243,7 @@ fn a_requires_edge_naming_an_unprovided_capability_fails_build_naming_both_sides
 /// announcement a missing optional plugin-id dependency already gets.
 #[test]
 fn an_optional_capability_nothing_provides_degrades_and_is_announced() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec!["acme.consumer".to_string()];
 
     let conway = ConwayBuilder::from_parts(cfg)
@@ -319,7 +283,7 @@ fn an_optional_capability_nothing_provides_degrades_and_is_announced() {
 /// cleanly with no degradation warning at all.
 #[test]
 fn an_optional_capability_something_provides_produces_no_warning() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec!["acme.ui".to_string(), "acme.consumer".to_string()];
 
     let conway = ConwayBuilder::from_parts(cfg)
@@ -649,7 +613,7 @@ fn capability_call_result(records: &[LogRecord]) -> Option<(String, bool)> {
 /// a scripted backend that calls `acme_call_capability` once, with the
 /// port doubles every other test in this file already uses.
 fn build_calling_conway(plugins: Vec<Arc<dyn Plugin>>, install: Vec<&str>) -> Conway {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = install.into_iter().map(str::to_string).collect();
 
     ConwayBuilder::from_parts(cfg)
@@ -758,7 +722,7 @@ async fn a_call_naming_an_unprovided_capability_still_gets_not_provided() {
 /// the registry.
 #[test]
 fn two_plugins_registering_the_same_capability_fail_build_naming_both_and_the_capability() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec!["acme.ui.one".to_string(), "acme.ui.two".to_string()];
 
     let result = ConwayBuilder::from_parts(cfg)

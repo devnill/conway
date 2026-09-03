@@ -23,14 +23,10 @@
 //! completion report, not committed here (the guard must be shown to fail
 //! and then be restored, never left broken in the tree).
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
+use conway::test_support::base_config;
 use conway::{
     Conway, ConwayBuilder, FacadeError, HealthRegistry, Router, RouterBuildContext, RouterBundle,
     RouterFactory,
@@ -70,46 +66,12 @@ fn fake_backend(id: &str) -> Arc<dyn conway_core::ports::Backend> {
     ))
 }
 
-/// One role with an EMPTY chain.
-/// `build()`'s own no-router/no-factory default fell through to
-/// `conway_core::routing::MinimalRouter` (which never validates a chain at
-/// construction) by the time this test landed; this fixture's discriminating
-/// power instead comes from `CountingRouterFactory`'s own router double
-/// (`FakeRouter`, which also performs no such validation) vs. the properly
-/// STRICTER validation `conway-plugin-routing::DeclarativeRouter::new`
-/// would apply if that engine were installed instead -- a `build()` that
-/// succeeds against this config together with the call-counter assertions
-/// below is still proof the registered factory's own router, not some
-/// other path, produced the result -- exactly the discriminating signal
-/// `builder.rs`'s own tests already lean on for `with_router` (see that
-/// file's `fake_router` doc), reused here for `with_router_factory`.
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: conway_core::ids::RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
+// `base_config()` (`conway::test_support`) is one role, "default", with an
+// EMPTY chain -- the property `factory_is_used_when_no_router_is_injected`'s
+// own doc below leans on directly: it would fail `build()` under the
+// compiled `DeclarativeRouter` path, so a success there can only be
+// explained by the factory's own `FakeRouter` (which performs no such
+// validation) having been used instead.
 
 /// A stub `RouterFactory` counting its own `build` calls -- the same
 /// counter proves both "was used" (property 1, count == 1) and "was NOT

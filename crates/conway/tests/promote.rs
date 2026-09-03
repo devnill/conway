@@ -14,51 +14,18 @@
 
 mod support;
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
-use conway::test_support::build_conway;
+use conway::test_support::{base_config, build_conway};
 use conway::{Conway, FacadeError, SessionSpec};
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::event::Event;
-use conway_core::ids::{AgentId, BackendId, RoleAlias, SessionId};
+use conway_core::ids::{AgentId, BackendId, SessionId};
 use conway_core::log::SessionFilter;
 use conway_core::ports::SessionStore;
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 use futures_core::Stream as _;
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 /// Drives a session with one parent turn plus one completed `/ask`,
 /// returning the handle and the ephemeral child's `(AgentId, SessionId)`.

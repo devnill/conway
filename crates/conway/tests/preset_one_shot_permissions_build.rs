@@ -16,51 +16,28 @@
 //! `conway_testkit` (no API key, no live provider) -- the same shape as
 //! `examples/bare_inference.rs`.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
+use conway::config::schema::{ConwayConfig, ToolsConfig};
+use conway::test_support::base_config;
 use conway::{ConwayBuilder, SessionSpec};
-use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
+use conway_core::ids::{BackendId, ModelId, ModelRef};
 use conway_core::ports::SessionStore;
 use conway_testkit::{FakeBackend, FakeRouter, FakeStore};
 
-/// The one-role, no-backend-table, no-tools config shape `bare_inference.rs`
-/// also uses, except `permissions` here is the crate's OWN shipped preset,
-/// completely unmodified -- the thing under test.
+/// [`base_config`], except `permissions` here is the crate's OWN shipped
+/// one-shot preset, completely unmodified -- the thing under test -- and
+/// `tools` is emptied so this test drives a turn with no tool wiring in the
+/// way.
 fn config_with_one_shot_preset() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: conway::presets::default_permissions_for_one_shot(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        // full literal: `ToolsConfig` has exactly one field, emptied here so
-        // this test drives a turn with no tool wiring in the way.
-        tools: ToolsConfig {
-            builtin_plugins: Vec::new(),
-        },
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
+    let mut config = base_config();
+    config.permissions = conway::presets::default_permissions_for_one_shot();
+    // full literal: `ToolsConfig` has exactly one field, emptied here so
+    // this test drives a turn with no tool wiring in the way.
+    config.tools = ToolsConfig {
+        builtin_plugins: Vec::new(),
+    };
+    config
 }
 
 /// ACCEPTANCE (this item's own verification anchor): a `Conway` built from

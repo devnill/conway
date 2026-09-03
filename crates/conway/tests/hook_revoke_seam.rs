@@ -27,15 +27,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HookEntry, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
-use conway::test_support::{scripted_backend, test_builder};
+use conway::config::schema::HookEntry;
+use conway::config::schema::HooksConfig;
+use conway::test_support::{base_config_at, scripted_backend, test_builder};
 use conway::{Conway, HookRuleView, PluginSelection};
 use conway_core::agent::{PermissionDecision, PermissionRequest};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
-use conway_core::ids::{RoleAlias, ToolName};
+use conway_core::ids::ToolName;
 use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, PermissionGate};
 use conway_testkit::{text_response, ScriptedTurn};
@@ -51,34 +49,6 @@ fn bash_call_response(command: &str) -> GenerateResponse {
         }],
         stop: StopReason::ToolUse,
         usage: Usage::default(),
-    }
-}
-
-fn base_config(cwd: &Path, hooks: HooksConfig) -> ConwayConfig {
-    let mut roles = std::collections::BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: cwd.to_path_buf(),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: std::collections::BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks,
     }
 }
 
@@ -139,7 +109,9 @@ fn conway_with_hook_rules(
     script: Vec<ScriptedTurn>,
     gate: Arc<dyn PermissionGate>,
 ) -> Conway {
-    test_builder(base_config(cwd, hooks))
+    let mut config = base_config_at(cwd);
+    config.hooks = hooks;
+    test_builder(config)
         .with_backend(scripted_backend(script))
         .with_permission_gate(gate)
         // This file drives the REAL `bash` tool end to end (bash ships off

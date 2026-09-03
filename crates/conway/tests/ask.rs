@@ -32,15 +32,12 @@
 
 mod support;
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
+use conway::config::schema::AgentsConfig;
+use conway::test_support::base_config;
 use conway::test_support::build_conway;
 use conway::test_support::echo_model;
 use conway::{ConwayBuilder, Plugin, SessionSpec, Tool};
@@ -49,7 +46,7 @@ use conway_core::content::{
     ContentBlock, PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy,
 };
 use conway_core::error::ToolError;
-use conway_core::ids::{BackendId, RoleAlias, SeqRange, ToolName};
+use conway_core::ids::{BackendId, SeqRange, ToolName};
 use conway_core::log::{LogRecord, SessionFilter};
 use conway_core::ports::{
     Backend, GenerateResponse, PluginManifest, SessionStore, ToolCtx, ToolOutput,
@@ -83,34 +80,6 @@ fn request_text(req: &conway_core::ports::GenerateRequest) -> String {
             _ => None,
         })
         .collect()
-}
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
 }
 
 // ---------------------------------------------------------------------

@@ -31,15 +31,21 @@
 //!
 //! # What is deliberately NOT here
 //!
-//! There is no shared `base_config()`. The 46 files had 14 genuinely
-//! different configs between them, and collapsing those is a separate
-//! question from collapsing the wiring: every helper here takes the
-//! caller's `ConwayConfig` as its first argument.
-//!
 //! There is no `fake_router()` either. `conway_testkit::FakeRouter::single`
 //! already is that helper; `test_builder` calls it directly, and so should
 //! any test that needs a router of its own.
+//!
+//! `base_config`/`base_config_at` *are* here (board item
+//! `01M1FSM2FS9BMNN7G8934PQVM4`, superseding the note this module used to
+//! carry about the 14 genuinely different configs among the old 46 local
+//! copies): every one of those copies turned out to be
+//! `ConwayConfig::baseline()` plus, at most, an overridden `cwd` --
+//! nothing about assembling the `Conway` (the concern this module already
+//! owned). A file whose fixture needs more than that mutates the
+//! returned value or defines its own small local wrapper around these two
+//! -- it never goes back to a fresh `ConwayConfig { .. }` literal.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use conway_core::agent::PermissionDecision;
@@ -49,6 +55,29 @@ use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore, ScriptedBacke
 
 use crate::config::schema::ConwayConfig;
 use crate::{Conway, ConwayBuilder, PluginSelection};
+
+/// The shared starting point for a test's `ConwayConfig`: one `default`
+/// role with an empty chain, every other section at its schema default --
+/// exactly `ConwayConfig::baseline()`.
+///
+/// A test that needs one field different from this mutates the returned
+/// value (`let mut c = base_config(); c.plugins.default_backends =
+/// vec![];`), or defines its own small local wrapper that does the same
+/// -- never a fresh `ConwayConfig { .. }` struct literal, which is what
+/// `crates/conway/tests/architecture_invariants.rs`'s
+/// `t12_no_hand_rolled_base_config_in_facade_tests` guards against.
+pub fn base_config() -> ConwayConfig {
+    ConwayConfig::baseline()
+}
+
+/// [`base_config`] with `cwd` overridden -- the other shape the old local
+/// copies took, for a test whose subject depends on the working
+/// directory the config reports.
+pub fn base_config_at(cwd: impl Into<PathBuf>) -> ConwayConfig {
+    let mut config = base_config();
+    config.cwd = cwd.into();
+    config
+}
 
 /// The model reference every fake router in this workspace's tests
 /// resolves to: backend `"fake"`, model `"echo-model"`.

@@ -15,16 +15,12 @@
 //! resolves against whatever `Vec`s a caller hands it, not against
 //! anything this crate itself knows how to construct.
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
-    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig,
-};
+use conway::config::schema::{BackendEntry, ConwayConfig};
 use conway::plugin::{PluginManifest, Tool};
+use conway::test_support::base_config;
 use conway::{
     BackendBuildContext, BackendFactory, Conway, ConwayBuilder, CoreConwayError, FacadeError,
     HealthRegistry, Plugin, Router, RouterBuildContext, RouterBundle, RouterFactory,
@@ -34,7 +30,7 @@ use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::content::{StopReason, Usage};
-use conway_core::ids::{BackendId, RoleAlias};
+use conway_core::ids::BackendId;
 use conway_core::ports::GenerateResponse;
 use conway_testkit::{FakeBackend, FakeGate, FakeHealth, FakeRouter, FakeStore};
 
@@ -74,42 +70,14 @@ fn fake_backend(id: &str) -> Arc<dyn conway_core::ports::Backend> {
     ))
 }
 
-/// One role with an empty chain (routing is not what this file exercises),
-/// no backends, `[plugins]` left at whatever `install`/`default_backends`
-/// each test sets.
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        // `default_backends` is deliberately empty here (the schema default
-        // is `["anthropic", "openai-compat"]`): every test in this file
-        // attaches its own fake backend via `.with_backend()` -- see
-        // `capability_channel.rs`'s identical note.
-        plugins: PluginsConfig {
-            default_backends: vec![],
-            ..PluginsConfig::default()
-        },
-        hooks: HooksConfig::default(),
-    }
+/// [`base_config`] with `default_backends` cleared -- every test in this
+/// file attaches its own fake backend via `.with_backend()`, and `[plugins]`
+/// is otherwise left at whatever `install` each test sets; see
+/// `capability_channel.rs`'s identical note.
+fn config_with_no_default_backends() -> ConwayConfig {
+    let mut config = base_config();
+    config.plugins.default_backends = vec![];
+    config
 }
 
 /// `Conway` deliberately does not derive `Debug`, mirroring
@@ -236,7 +204,7 @@ impl BackendFactory for CountingBackendFactory {
 /// only fire if `install_selected` genuinely attached the first one.
 #[test]
 fn plugin_id_resolves_and_attaches_via_with_plugin() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec!["test.echo".to_string()];
 
     let result = ConwayBuilder::from_parts(cfg)
@@ -274,7 +242,7 @@ fn plugin_id_resolves_and_attaches_via_with_plugin() {
 /// router is what `build()` used.
 #[test]
 fn router_factory_id_resolves_and_is_used() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec!["test.router".to_string()];
     let calls = Arc::new(AtomicUsize::new(0));
 
@@ -306,7 +274,7 @@ fn router_factory_id_resolves_and_is_used() {
 /// has exactly one router.
 #[test]
 fn two_router_factory_ids_is_a_hard_error() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec!["router.a".to_string(), "router.b".to_string()];
 
     let result = ConwayBuilder::from_parts(cfg).install_selected(
@@ -340,7 +308,7 @@ fn two_router_factory_ids_is_a_hard_error() {
 /// zero `[plugins]` configuration by naming this list's own default.
 #[test]
 fn backend_factory_id_resolves_from_default_backends_with_no_install_entry() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec![]; // deliberately empty
     cfg.plugins.default_backends = vec!["test.backend".to_string()];
     cfg.backends.insert(
@@ -383,7 +351,7 @@ fn backend_factory_id_resolves_from_default_backends_with_no_install_entry() {
 /// bundles actually carries.
 #[test]
 fn unknown_id_is_a_hard_error_naming_the_id_and_every_supplied_bundle() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec!["totally.unknown".to_string()];
 
     let result = ConwayBuilder::from_parts(cfg).install_selected(
@@ -418,7 +386,7 @@ fn unknown_id_is_a_hard_error_naming_the_id_and_every_supplied_bundle() {
 /// unknown-id error, were its id named, is simply never looked at).
 #[test]
 fn empty_resolved_id_set_is_not_an_error_and_consults_no_bundle() {
-    let cfg = base_config();
+    let cfg = config_with_no_default_backends();
     assert!(cfg.plugins.install.is_empty());
     assert!(cfg.plugins.default_backends.is_empty());
 
@@ -456,7 +424,7 @@ fn empty_resolved_id_set_is_not_an_error_and_consults_no_bundle() {
 /// kinds` call.
 #[test]
 fn a_supplied_backend_factory_not_selected_is_diagnosed_as_declined_not_unknown() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     // Neither `install` nor `default_backends` names "test.backend" -- it is
     // supplied but not selected.
     cfg.backends.insert(
@@ -510,7 +478,7 @@ fn a_supplied_backend_factory_not_selected_is_diagnosed_as_declined_not_unknown(
 /// regardless of what `build()` later adds.
 #[test]
 fn install_selected_refuses_a_requires_cycle_among_what_it_can_see() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec!["cycle.a".to_string(), "cycle.b".to_string()];
 
     let result = ConwayBuilder::from_parts(cfg).install_selected(
@@ -549,7 +517,7 @@ fn install_selected_refuses_a_requires_cycle_among_what_it_can_see() {
 /// and the missing dependency.
 #[test]
 fn install_selected_defers_missing_required_check_to_build() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec!["needs.ui".to_string()];
 
     let builder = ConwayBuilder::from_parts(cfg)
@@ -599,7 +567,7 @@ fn install_selected_defers_missing_required_check_to_build() {
 /// naming both the dependent and the missing dependency.
 #[test]
 fn missing_optional_dependency_loads_degraded_and_is_recorded_on_warnings() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec!["wants.ui".to_string()];
 
     let conway = ConwayBuilder::from_parts(cfg)
@@ -648,7 +616,7 @@ fn missing_optional_dependency_loads_degraded_and_is_recorded_on_warnings() {
 /// produces one).
 #[test]
 fn a_satisfied_requires_edge_builds_cleanly_with_no_warning() {
-    let mut cfg = base_config();
+    let mut cfg = config_with_no_default_backends();
     cfg.plugins.install = vec!["needs.base".to_string(), "base".to_string()];
 
     let conway = ConwayBuilder::from_parts(cfg)

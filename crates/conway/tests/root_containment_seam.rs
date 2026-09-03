@@ -63,21 +63,18 @@
 //! `conway_runtime::permission::derive_fs_root_config`'s own doc.
 #![cfg(feature = "builtin-tools")]
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+use conway::test_support::{
+    base_config, build_conway_with_builtins, scripted_backend, test_builder,
 };
-use conway::test_support::{build_conway_with_builtins, scripted_backend, test_builder};
 use conway::{Conway, PatternRule, PluginSelection, SessionHandle, SessionSpec, SpawnSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
-use conway_core::ids::{AgentId, RoleAlias, ToolName};
+use conway_core::ids::{AgentId, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::permission_mode::PermissionMode;
 use conway_core::ports::{GenerateResponse, PermissionGate};
@@ -121,34 +118,6 @@ fn bash_call(command: &str, cwd: Option<&Path>) -> GenerateResponse {
         args["cwd"] = serde_json::Value::String(cwd.display().to_string());
     }
     tool_call_response("bash", args)
-}
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
 }
 
 /// Records every `PermissionRequest` it receives and always answers with a

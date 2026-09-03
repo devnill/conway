@@ -149,12 +149,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
-    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig,
-};
-use conway::test_support::test_builder_without_router;
+use conway::config::schema::{BackendEntry, ConwayConfig, ModelsConfig, RoleEntry, RoutingSection};
+use conway::test_support::{base_config, test_builder_without_router};
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::{PermissionDecision, ResultStatus};
 use conway_core::capabilities::{
@@ -255,32 +251,23 @@ fn config_naming(base_url: String, metadata_path: PathBuf) -> ConwayConfig {
             ..BackendEntry::default()
         },
     );
-    ConwayConfig {
-        default_role: RoleAlias::new("coder"),
-        cwd: PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends,
-        routing: RoutingSection {
-            default_headroom_tokens: 8,
-            ..RoutingSection::default()
-        },
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        // full literal: `ModelsConfig` has exactly two fields and this test
-        // depends on both -- `metadata_path` points at this fixture's own
-        // JSON file and `probe_on_startup: true` is the behaviour this
-        // whole file exercises. There is no third field to default away.
-        models: ModelsConfig {
-            metadata_path,
-            probe_on_startup: true,
-        },
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
+    let mut config = base_config();
+    config.default_role = RoleAlias::new("coder");
+    config.roles = roles;
+    config.backends = backends;
+    config.routing = RoutingSection {
+        default_headroom_tokens: 8,
+        ..RoutingSection::default()
+    };
+    // full literal: `ModelsConfig` has exactly two fields and this test
+    // depends on both -- `metadata_path` points at this fixture's own
+    // JSON file and `probe_on_startup: true` is the behaviour this
+    // whole file exercises. There is no third field to default away.
+    config.models = ModelsConfig {
+        metadata_path,
+        probe_on_startup: true,
+    };
+    config
 }
 
 /// Wires a `Conway` exactly as a real embedder would: `ConwayBuilder`
@@ -726,32 +713,23 @@ fn t1_backstop_config(metadata_path: PathBuf) -> ConwayConfig {
             ..BackendEntry::default()
         },
     );
-    ConwayConfig {
-        default_role: RoleAlias::new("coder"),
-        cwd: PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends,
-        routing: RoutingSection {
-            default_headroom_tokens: 8,
-            ..RoutingSection::default()
-        },
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        // full literal: `ModelsConfig` has exactly two fields and both are
-        // load-bearing here -- `metadata_path` points at this fixture's own
-        // JSON file and `probe_on_startup: false` is this test's own
-        // divergence point, spelled out above in this function's doc.
-        models: ModelsConfig {
-            metadata_path,
-            probe_on_startup: false,
-        },
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
+    let mut config = base_config();
+    config.default_role = RoleAlias::new("coder");
+    config.roles = roles;
+    config.backends = backends;
+    config.routing = RoutingSection {
+        default_headroom_tokens: 8,
+        ..RoutingSection::default()
+    };
+    // full literal: `ModelsConfig` has exactly two fields and both are
+    // load-bearing here -- `metadata_path` points at this fixture's own
+    // JSON file and `probe_on_startup: false` is this test's own
+    // divergence point, spelled out above in this function's doc.
+    config.models = ModelsConfig {
+        metadata_path,
+        probe_on_startup: false,
+    };
+    config
 }
 
 /// **3d** -- the discriminating witness `probe_overlay_admits_on_an_

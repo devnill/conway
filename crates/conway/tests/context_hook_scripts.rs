@@ -32,47 +32,23 @@
 //! restate that coverage, only the facade-level, config-driven anchor.
 #![cfg(feature = "builtin-tools")]
 
-use std::path::Path;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HookEntry, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
-use conway::test_support::{scripted_backend, test_builder};
+use conway::config::schema::{ConwayConfig, HookEntry, HooksConfig};
+use conway::test_support::{base_config_at, scripted_backend, test_builder};
 use conway::PluginSelection;
-use conway_core::ids::{ModelId, RoleAlias};
+use conway_core::ids::ModelId;
 use conway_runtime::context::{apply_script_deltas, prefix_key};
 use conway_runtime::hook_dispatch::ContextHookAnswer;
 use conway_testkit::{text_response, ScriptedTurn};
 use tempfile::TempDir;
 
-fn base_config(cwd: &Path, hooks: HooksConfig) -> ConwayConfig {
-    let mut roles = std::collections::BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: cwd.to_path_buf(),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: std::collections::BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks,
-    }
+/// [`base_config_at`] plus `hooks` -- the shape this file's two `[hooks]`
+/// tests both need.
+fn config_with_hooks(cwd: &std::path::Path, hooks: HooksConfig) -> ConwayConfig {
+    let mut config = base_config_at(cwd);
+    config.hooks = hooks;
+    config
 }
 
 fn request_assembled_rule(id: &str, command: Vec<&str>) -> HookEntry {
@@ -242,7 +218,7 @@ async fn a_configured_script_hook_appends_a_segment_the_real_request_carries() {
         rules: vec![request_assembled_rule("annotator", script)],
     };
     let backend_calls_script = vec![ScriptedTurn::Respond(text_response("done"))];
-    let conway = test_builder(base_config(cwd.path(), hooks))
+    let conway = test_builder(config_with_hooks(cwd.path(), hooks))
         .with_backend(scripted_backend(backend_calls_script))
         .with_builtin_plugins(PluginSelection::All)
         .with_default_hook_runner()
@@ -279,7 +255,7 @@ async fn a_configured_script_hook_appends_a_segment_the_real_request_carries() {
 #[tokio::test]
 async fn no_configured_context_editing_hooks_leaves_a_turn_unaffected() {
     let cwd = TempDir::new().expect("tempdir");
-    let conway = test_builder(base_config(cwd.path(), HooksConfig::default()))
+    let conway = test_builder(config_with_hooks(cwd.path(), HooksConfig::default()))
         .with_backend(scripted_backend(vec![ScriptedTurn::Respond(
             text_response("done"),
         )]))

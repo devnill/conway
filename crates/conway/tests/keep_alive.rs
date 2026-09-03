@@ -29,20 +29,15 @@
 //! (`TurnHandle::text()`/`events()`), and `AgentFinished` only ever arrives
 //! once, at the session's real end (cancel/deadline/budget).
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
-use conway::test_support::{build_conway, test_builder};
+use conway::test_support::{base_config, build_conway, test_builder};
 use conway::{Plugin, SessionSpec, Tool};
 use conway_core::agent::{Budget, ResultStatus};
 use conway_core::content::ContentBlock;
 use conway_core::event::Event;
-use conway_core::ids::{BackendId, RoleAlias};
+use conway_core::ids::BackendId;
 use conway_core::ports::{GenerateResponse, SessionStore};
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
@@ -130,34 +125,6 @@ impl Plugin for FixtureToolsPlugin {
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![Arc::new(ProbeTool)]
-    }
-}
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
     }
 }
 

@@ -1,14 +1,9 @@
 //! Acceptance tests for `SessionHandle`/`TurnHandle`/`EventStream`.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
-use conway::test_support::build_conway_with_echo_backend;
+use conway::test_support::{base_config, build_conway_with_echo_backend};
 use conway::{Conway, ForkSpec, SessionSpec, SpawnSpec};
 use conway_core::agent::{Budget, ResultStatus};
 use conway_core::event::Event;
@@ -24,34 +19,6 @@ fn assert_clone_send_sync<T: Clone + Send + Sync>() {}
 #[test]
 fn session_handle_is_clone_send_sync() {
     assert_clone_send_sync::<conway::SessionHandle>();
-}
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: conway_core::ids::RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
 }
 
 async fn new_handle(conway: &Conway) -> conway::SessionHandle {

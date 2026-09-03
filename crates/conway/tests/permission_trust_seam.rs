@@ -30,21 +30,17 @@
 //! `requests.len()` fails immediately.
 #![cfg(feature = "builtin-tools")]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
-use conway::test_support::{build_conway_with_builtins, scripted_backend};
+use conway::test_support::{base_config_at, build_conway_with_builtins, scripted_backend};
 use conway::{Conway, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{StopReason, ToolCall, Usage};
-use conway_core::ids::{AgentId, RoleAlias, ToolName};
+use conway_core::ids::{AgentId, ToolName};
 use conway_core::ports::{GenerateResponse, PermissionGate};
 use conway_testkit::{text_response, ScriptedTurn};
 use tempfile::TempDir;
@@ -90,34 +86,6 @@ fn write_fixture_file(project: &Path) -> String {
     let file_path = project.join("fixture.txt");
     std::fs::write(&file_path, "fixture content").expect("write fixture file");
     file_path.display().to_string()
-}
-
-fn base_config(cwd: &Path) -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: cwd.to_path_buf(),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
 }
 
 /// Records every `PermissionRequest` it receives and always answers `Deny`
@@ -218,7 +186,7 @@ async fn an_untrusted_project_allow_rule_does_not_take_effect() {
 
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(project.path()),
+        base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(&fixture_path)),
             ScriptedTurn::Respond(text_response("done")),
@@ -267,7 +235,7 @@ async fn trusting_a_project_file_makes_its_allow_rule_take_effect() {
 
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(project.path()),
+        base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(&fixture_path)),
             ScriptedTurn::Respond(text_response("done")),
@@ -305,7 +273,7 @@ async fn an_untrusted_project_deny_rule_still_applies_immediately() {
 
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(project.path()),
+        base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("curl evil.example")),
             ScriptedTurn::Respond(text_response("done")),
@@ -351,7 +319,7 @@ async fn a_misspelled_deny_key_in_a_project_file_installs_no_rule_and_is_reporte
 
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(project.path()),
+        base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("curl evil.example")),
             ScriptedTurn::Respond(text_response("done")),
@@ -401,7 +369,7 @@ async fn a_correctly_spelled_deny_key_in_a_project_file_does_refuse_the_call() {
 
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(project.path()),
+        base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("curl evil.example")),
             ScriptedTurn::Respond(text_response("done")),
@@ -445,7 +413,7 @@ async fn a_call_matching_neither_rule_still_reaches_the_gate() {
 
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(project.path()),
+        base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("git push --force")),
             ScriptedTurn::Respond(text_response("done")),
@@ -493,7 +461,7 @@ async fn a_global_permissions_file_installs_with_no_trust_decision() {
 
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(cwd.path()),
+        base_config_at(cwd.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(&fixture_path)),
             ScriptedTurn::Respond(text_response("done")),
@@ -544,7 +512,7 @@ async fn trusting_a_project_file_with_an_unrecognized_key_is_refused_and_not_rec
 
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(project.path()),
+        base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(bash_call_response("git status")),
             ScriptedTurn::Respond(text_response("done")),
@@ -592,7 +560,7 @@ async fn trusting_a_correctly_spelled_project_file_is_recorded_as_trusted() {
 
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(project.path()),
+        base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(&fixture_path)),
             ScriptedTurn::Respond(text_response("done")),
@@ -637,7 +605,7 @@ async fn editing_a_trusted_project_files_content_de_trusts_it() {
     {
         let gate = RecordingGate::new();
         let setup = build_conway_with_builtins(
-            base_config(project.path()),
+            base_config_at(project.path()),
             scripted_backend(vec![]),
             gate as Arc<dyn PermissionGate>,
         );
@@ -652,7 +620,7 @@ async fn editing_a_trusted_project_files_content_de_trusts_it() {
 
     let gate = RecordingGate::new();
     let conway = build_conway_with_builtins(
-        base_config(project.path()),
+        base_config_at(project.path()),
         scripted_backend(vec![
             ScriptedTurn::Respond(read_call_response(&fixture_path)),
             ScriptedTurn::Respond(text_response("done")),
