@@ -217,15 +217,21 @@ pub trait Plugin: Send + Sync + 'static {
     /// authorship chain at all. An instruction fragment does not outlive
     /// its plugin: it ships and leaves with `with_plugin`, by
     /// construction, which is the property this whole method exists to
-    /// make structural. They render through the SAME machinery
-    /// (`conway_runtime::context::builder::SkillFragment`,
-    /// `Provenance::Skill`) once resolved, because both are, at that
-    /// point, "a named text fragment injected into context" -- but the
-    /// SOURCING differs (capability-authored vs. operator-authored) and so
+    /// make structural. Both render as their own `Role::System` segment,
+    /// at the point they are, either way, "a named text fragment injected
+    /// into context" -- but they no longer share a `Provenance` tag (board
+    /// item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`): a skill still stamps
+    /// `Provenance::Skill { name }`, unchanged, while an instruction
+    /// fragment stamps `Provenance::PluginInstruction { plugin_id, name }`
+    /// or, when [`InstructionFragment::authored_by`] is
+    /// [`FragmentAuthor::Operator`], `Provenance::Operator { name, path }`
+    /// -- see [`InstructionFragment::authored_by`]'s own doc. The SOURCING
+    /// still differs (capability-authored vs. operator-authored) and so
     /// does the LIFETIME (bound to a plugin vs. bound to a file an
     /// operator manages directly), which is why this is a distinct
     /// contribution method rather than a widened `Self::commands`-shaped
-    /// reuse of skills' own directory-loading path.
+    /// reuse of skills' own directory-loading path -- and, since this
+    /// item, why the two no longer share a provenance stamp either.
     fn instructions(&self) -> Vec<InstructionFragment> {
         Vec::new()
     }
@@ -1015,14 +1021,58 @@ pub struct InstructionFragment {
     /// fragment declared before this field existed renders regardless of
     /// which agent def, if any, supplied `[0]`.
     pub agent_def: Option<String>,
+    /// Who actually wrote [`Self::text`] -- [`FragmentAuthor::Plugin`] (the
+    /// default) for a fragment sourced from the declaring plugin's own crate
+    /// (a Rust string literal or an `include_str!`'d file it ships), or
+    /// [`FragmentAuthor::Operator`] for text an operator wrote themselves in
+    /// a file the plugin merely reads (e.g. `conway.idiom`'s
+    /// `.conway/instructions.md`). `ContextBuilder::build` stamps the
+    /// resulting segment's [`crate::provenance::Provenance`] from this field
+    /// -- [`FragmentAuthor::Plugin`] yields `Provenance::PluginInstruction`,
+    /// [`FragmentAuthor::Operator`] yields `Provenance::Operator` -- so an
+    /// operator's own words are never durably misattributed to whichever
+    /// plugin happened to carry them to the model. Board item
+    /// `01M1FSNBRE5XJ0GQ04RT5HZ1PS`; see `conway_core::provenance::
+    /// Provenance`'s own doc for the wire-format argument, and
+    /// `conway_plugin_idiom`'s module doc for the worked example this field
+    /// closes.
+    pub authored_by: FragmentAuthor,
+}
+
+/// [`InstructionFragment::authored_by`]'s own vocabulary -- who actually
+/// wrote a fragment's [`InstructionFragment::text`], as distinct from which
+/// plugin's `Plugin::instructions()` call carried it to `ConwayBuilder::
+/// build`. Every fragment before this type existed was, in effect,
+/// [`FragmentAuthor::Plugin`] -- the default preserves that exactly.
+///
+/// Deliberately narrower than a general "who wrote this" enum: this exists
+/// to answer one question (`ContextBuilder::build`'s stamping decision), not
+/// to become conway's one attribution vocabulary for every kind of text a
+/// session ever carries -- a user's own turns, a merged `/ask`, a memory,
+/// and so on already have their own dedicated `Provenance` variants that do
+/// not route through `InstructionFragment` at all.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum FragmentAuthor {
+    /// The declaring plugin's own crate wrote this text -- a Rust string
+    /// literal or an `include_str!`'d file it ships. Every fragment
+    /// declared before this field existed behaves exactly as this variant.
+    #[default]
+    Plugin,
+    /// An operator wrote this text themselves, in a file the plugin merely
+    /// reads. `path` is that file's own path, exactly as the plugin
+    /// resolved it (e.g. `<cwd>/.conway/instructions.md`) -- carried through
+    /// to `Provenance::Operator { path, .. }` so `/context` and a session
+    /// log can both name which file, not merely that the fragment came from
+    /// "some operator source".
+    Operator { path: PathBuf },
 }
 
 impl InstructionFragment {
     /// Construct a fragment with every optional field at its default:
     /// [`FragmentPosition::AfterSystemPrompt`], `order: 0`,
-    /// [`FragmentScope::All`], `agent_def: None`, `tool_ids: vec![]` --
-    /// exactly today's (pre-this-field) behavior. Use the `with_*` methods
-    /// below to opt into anything else.
+    /// [`FragmentScope::All`], `agent_def: None`, `tool_ids: vec![]`,
+    /// [`FragmentAuthor::Plugin`] -- exactly today's (pre-this-field)
+    /// behavior. Use the `with_*` methods below to opt into anything else.
     pub fn new(name: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -1032,6 +1082,7 @@ impl InstructionFragment {
             order: 0,
             scope: FragmentScope::default(),
             agent_def: None,
+            authored_by: FragmentAuthor::default(),
         }
     }
 
@@ -1062,6 +1113,12 @@ impl InstructionFragment {
     /// See [`Self::agent_def`].
     pub fn with_agent_def(mut self, agent_def: impl Into<String>) -> Self {
         self.agent_def = Some(agent_def.into());
+        self
+    }
+
+    /// See [`Self::authored_by`].
+    pub fn with_authored_by(mut self, authored_by: FragmentAuthor) -> Self {
+        self.authored_by = authored_by;
         self
     }
 }

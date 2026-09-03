@@ -25,6 +25,8 @@
 //! `conway-session` re-exports these functions unchanged for existing
 //! callers.
 
+use std::path::PathBuf;
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -35,22 +37,29 @@ use crate::ports::SessionStore;
 
 /// Why a segment of assembled context exists.
 ///
-/// Thirteen variants: the original nine of architecture §5.3, plus
+/// Fifteen variants: the original nine of architecture §5.3, plus
 /// [`Provenance::MergedAsk`] (B4), plus
 /// [`Provenance::ChildResult`], plus [`Provenance::Memory`] (board item
 /// `01M09P2T8E5M292WMSMS64CVC4`), plus [`Provenance::CommandPrompt`]
-/// (board item `01M0VSMF71S6VXX81YRAAF5S8Q`).
+/// (board item `01M0VSMF71S6VXX81YRAAF5S8Q`), plus
+/// [`Provenance::PluginInstruction`] and [`Provenance::Operator`] (board
+/// item `01M1FSNBRE5XJ0GQ04RT5HZ1PS` -- see those two variants' own docs).
 /// Adding another is a breaking wire-format change and must be treated as
 /// such -- this one is: an OLDER binary reading a NEWER log that contains a
-/// `command_prompt`-tagged record fails to deserialize that one record (the
-/// `#[serde(tag = "type", ...)]` internal tagging has no "unknown tag"
-/// fallback), exactly the same forward-compatibility cost every prior
-/// addition to this enum (`MergedAsk`, `ChildResult`, `Memory`) already
-/// paid. Every record written BEFORE this variant existed is unaffected:
-/// its own `type` tag is still one of the original twelve, so it decodes
-/// exactly as it always has -- this is a forward-compat gap for a NEWER
-/// record read by an OLDER binary, never a backward-compat break for an
-/// older record read by a newer one.
+/// `plugin_instruction`- or `operator`-tagged record fails to deserialize
+/// that one record (the `#[serde(tag = "type", ...)]` internal tagging has
+/// no "unknown tag" fallback), exactly the same forward-compatibility cost
+/// every prior addition to this enum (`MergedAsk`, `ChildResult`, `Memory`,
+/// `CommandPrompt`) already paid. Every record written BEFORE these two
+/// variants existed is unaffected: its own `type` tag is still one of the
+/// original thirteen, so it decodes exactly as it always has -- this is a
+/// forward-compat gap for a NEWER record read by an OLDER binary, never a
+/// backward-compat break for an older record read by a newer one. This is
+/// additive, not a migration: no existing record's `type` tag changes, and
+/// no rewrite of any prior log is required or performed -- the new tags
+/// appear only in NEW records, going forward, from the moment a fragment
+/// with `authored_by: FragmentAuthor::Operator` (or the ordinary plugin
+/// default) is first assembled by a binary that carries this change.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -123,6 +132,61 @@ pub enum Provenance {
     /// own variants rather than silently reusing `UserPrompt`/`SystemNote`
     /// for conway-originated content that merely LOOKS like one of those.
     CommandPrompt { command: String },
+    /// A `crate::ports::plugin::Plugin::instructions()` fragment whose
+    /// [`crate::ports::InstructionFragment::authored_by`] is
+    /// [`crate::ports::FragmentAuthor::Plugin`] (the default) --
+    /// text the DECLARING PLUGIN itself wrote (a Rust string literal or an
+    /// `include_str!`'d file it ships), as opposed to text an operator
+    /// wrote in a file the plugin merely reads (see
+    /// [`Provenance::Operator`] below for that case). `plugin_id` is the
+    /// declaring plugin's own `PluginManifest::id`; `name` is the
+    /// fragment's own bare
+    /// `crate::ports::plugin::InstructionFragment::name`.
+    ///
+    /// **Replaces [`Provenance::Skill`] for this content, not an addition
+    /// alongside it.** Before this variant existed, `ContextBuilder::build`
+    /// stamped EVERY plugin instruction fragment `Skill { name }` -- the
+    /// same stamp an operator's own directory-authored `.conway/skills`
+    /// body gets, even though the two have nothing in common: a skill is a
+    /// standing capability an operator opted a specific `AgentDef` into by
+    /// name (`AgentDef.skills`), a plugin instruction fragment is harness
+    /// orientation text a plugin author wrote and every eligible agent
+    /// receives unconditionally, subject only to `tool_ids` reachability
+    /// and `scope`. `Provenance::Skill` keeps its exact prior meaning and
+    /// behavior for actual skill fragments (`ContextInput::skills`,
+    /// `[1b] SkillFragments*`) -- this item is scoped to instruction
+    /// fragments alone, board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`.
+    PluginInstruction { plugin_id: String, name: String },
+    /// A `crate::ports::plugin::Plugin::instructions()` fragment whose
+    /// [`crate::ports::InstructionFragment::authored_by`] is
+    /// [`crate::ports::FragmentAuthor::Operator`] -- text an
+    /// OPERATOR wrote themselves, in a file some plugin merely reads and
+    /// forwards (e.g. `conway.idiom`'s `.conway/instructions.md` /
+    /// `<home>/.conway/instructions.md`). `name` is the fragment's own bare
+    /// name (still declared by whichever plugin resolved the file into an
+    /// `InstructionFragment`); `path` is that file's own path, exactly as
+    /// the plugin resolved it, so a `/context` render or a session log can
+    /// name the actual file an operator edited, not merely "some operator
+    /// source".
+    ///
+    /// **Why this is not [`Provenance::Skill`] either.** Before this
+    /// variant existed, an operator's own words -- typed into a file THEY
+    /// wrote, with no plugin author anywhere near the sentence -- were
+    /// durably logged as `Skill { name }`, the identical stamp a shipped,
+    /// plugin-authored fragment (now [`Provenance::PluginInstruction`])
+    /// also got. That made the log lie in both directions at once: an
+    /// operator's own text read back as "a skill" (which it categorically
+    /// is not -- nothing about it is a directory-authored `.conway/skills`
+    /// capability), and a plugin's own shipped fragment read back
+    /// indistinguishably from operator prose, with the only attribution
+    /// living in the side-channel `ContextReport::instruction_fragments`
+    /// list rather than in durable per-segment provenance. Board item
+    /// `01M1FSNBRE5XJ0GQ04RT5HZ1PS` closes both directions at once, with
+    /// two variants rather than one, because the two questions an operator
+    /// asks are different: "which plugin said this" (`PluginInstruction`)
+    /// vs. "is this MY OWN text" (`Operator`) -- collapsing them into one
+    /// variant with an optional path would answer neither cleanly.
+    Operator { name: String, path: PathBuf },
 }
 
 /// Where a segment sits in the fixed §5.3 ordering: `Static` segments are
@@ -150,6 +214,15 @@ impl Provenance {
     /// same byte-identity property `AgentDef`/`Skill`/`ToolRegistry` already
     /// have, and the reason a rarely-changing memory set is a good citizen
     /// of the STABLE prefix rather than the per-turn-changing tail.
+    ///
+    /// [`Provenance::PluginInstruction`]/[`Provenance::Operator`] join this
+    /// set too: both replace what used to be `Skill`-stamped plugin
+    /// instruction fragments (see those variants' own docs), and a plugin
+    /// instruction fragment has always been byte-identical across sibling
+    /// agents for the same reason a skill is -- `ContextBuilder::build`
+    /// resolves it fresh from `AgentSpec.instructions` on every turn, gated
+    /// only by that turn's own tool/scope reachability, never by anything
+    /// agent-specific in the text itself.
     pub fn is_static(&self) -> bool {
         matches!(
             self,
@@ -157,6 +230,8 @@ impl Provenance {
                 | Provenance::Skill { .. }
                 | Provenance::ToolRegistry { .. }
                 | Provenance::Memory { .. }
+                | Provenance::PluginInstruction { .. }
+                | Provenance::Operator { .. }
         )
     }
 
@@ -167,7 +242,9 @@ impl Provenance {
             Provenance::AgentDef { .. }
             | Provenance::Skill { .. }
             | Provenance::ToolRegistry { .. }
-            | Provenance::Memory { .. } => SegmentTier::Static,
+            | Provenance::Memory { .. }
+            | Provenance::PluginInstruction { .. }
+            | Provenance::Operator { .. } => SegmentTier::Static,
             Provenance::Inherited { .. } => SegmentTier::Inherited,
             Provenance::UserPrompt
             | Provenance::ForkDirective { .. }
@@ -459,6 +536,20 @@ mod tests {
                 },
                 "command_prompt",
             ),
+            (
+                Provenance::PluginInstruction {
+                    plugin_id: "conway.trim".into(),
+                    name: "when-to-compose".into(),
+                },
+                "plugin_instruction",
+            ),
+            (
+                Provenance::Operator {
+                    name: "conway.idiom.operator.project".into(),
+                    path: PathBuf::from("/repo/.conway/instructions.md"),
+                },
+                "operator",
+            ),
         ]
     }
 
@@ -470,8 +561,8 @@ mod tests {
             let back: Provenance = serde_json::from_value(value).unwrap();
             assert_eq!(back, prov);
         }
-        // Thirteen variants, no more, no fewer.
-        assert_eq!(all_tagged().len(), 13);
+        // Fifteen variants, no more, no fewer.
+        assert_eq!(all_tagged().len(), 15);
     }
 
     #[test]
@@ -501,6 +592,53 @@ mod tests {
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn deserializes_plugin_instruction_example() {
+        let json =
+            r#"{"type":"plugin_instruction","plugin_id":"conway.trim","name":"when-to-compose"}"#;
+        let prov: Provenance = serde_json::from_str(json).unwrap();
+        match prov {
+            Provenance::PluginInstruction { plugin_id, name } => {
+                assert_eq!(plugin_id, "conway.trim");
+                assert_eq!(name, "when-to-compose");
+            }
+            other => panic!("expected PluginInstruction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserializes_operator_example() {
+        let json = r#"{"type":"operator","name":"conway.idiom.operator.project","path":"/repo/.conway/instructions.md"}"#;
+        let prov: Provenance = serde_json::from_str(json).unwrap();
+        match prov {
+            Provenance::Operator { name, path } => {
+                assert_eq!(name, "conway.idiom.operator.project");
+                assert_eq!(path, PathBuf::from("/repo/.conway/instructions.md"));
+            }
+            other => panic!("expected Operator, got {other:?}"),
+        }
+    }
+
+    /// P-15's "shown to fail" bar for wire-format additivity: a session log
+    /// line written BEFORE these two variants existed -- a hand-written
+    /// record using the original `skill` tag, exactly what
+    /// `conway.idiom`'s shipped fragment used to be stamped -- must still
+    /// decode unchanged after this change. Falsified by, e.g., making
+    /// `Provenance`'s `#[serde(tag = "type", ...)]` `deny_unknown_fields`
+    /// or otherwise tightening decode in a way that only the NEW tags
+    /// satisfy; confirmed passing against the actual current `Provenance`.
+    #[test]
+    fn a_pre_existing_skill_tagged_record_still_decodes_unchanged() {
+        let legacy = r#"{"type":"skill","name":"conway.idiom.base"}"#;
+        let prov: Provenance = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            prov,
+            Provenance::Skill {
+                name: "conway.idiom.base".into()
+            }
+        );
     }
 
     #[test]
@@ -561,6 +699,34 @@ mod tests {
             }
             .tier(),
             SegmentTier::Volatile
+        );
+
+        assert!(Provenance::PluginInstruction {
+            plugin_id: "conway.trim".into(),
+            name: "when-to-compose".into(),
+        }
+        .is_static());
+        assert_eq!(
+            Provenance::PluginInstruction {
+                plugin_id: "conway.trim".into(),
+                name: "when-to-compose".into(),
+            }
+            .tier(),
+            SegmentTier::Static
+        );
+
+        assert!(Provenance::Operator {
+            name: "conway.idiom.operator.project".into(),
+            path: PathBuf::from("/repo/.conway/instructions.md"),
+        }
+        .is_static());
+        assert_eq!(
+            Provenance::Operator {
+                name: "conway.idiom.operator.project".into(),
+                path: PathBuf::from("/repo/.conway/instructions.md"),
+            }
+            .tier(),
+            SegmentTier::Static
         );
 
         assert!(SegmentTier::Static < SegmentTier::Inherited);

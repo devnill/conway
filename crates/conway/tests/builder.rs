@@ -2148,7 +2148,11 @@ async fn a_before_system_prompt_fragment_renders_ahead_of_a_real_agent_defs_prom
         report.segments
     );
     assert!(
-        matches!(&report.segments[0].provenance, Provenance::Skill { name } if name == "conway.idiom.base"),
+        matches!(
+            &report.segments[0].provenance,
+            Provenance::PluginInstruction { plugin_id, name }
+                if plugin_id == "test.before_system_prompt" && name == "conway.idiom.base"
+        ),
         "the BeforeSystemPrompt fragment must be the very first segment, ahead of the agent \
          def's own prompt: {:?}",
         report

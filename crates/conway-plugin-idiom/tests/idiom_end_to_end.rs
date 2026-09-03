@@ -357,3 +357,108 @@ fn instruction_name_is_the_published_constant() {
     let instructions = IdiomPlugin::new().instructions();
     assert_eq!(instructions[0].name, INSTRUCTION_NAME);
 }
+
+/// Acceptance 3, board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`: a real turn's
+/// `ContextReport.segments` carries one `Provenance::PluginInstruction`
+/// entry for `conway.idiom`'s own shipped base fragment, AND one
+/// `Provenance::Operator` entry for the operator's own project file --
+/// distinct provenance tags for the plugin's own words and the operator's
+/// own words, no longer both flattened into `Provenance::Skill`. Driven
+/// through the real facade (`SessionHandle::context_report_current`), the
+/// same data source `/context` renders from -- not `Plugin::instructions()`
+/// inspected in isolation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_report_segments_carry_plugin_and_operator_provenance() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let instructions_dir = tmp.path().join(".conway");
+    std::fs::create_dir_all(&instructions_dir).expect("mkdir");
+    let instructions_path = instructions_dir.join("instructions.md");
+    std::fs::write(
+        &instructions_path,
+        "Always run tests before reporting done.\n",
+    )
+    .expect("write operator instructions");
+
+    let store = Arc::new(FakeStore::new());
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response(
+            "hello from the model",
+        ))])
+        .with_id(conway::backend::BackendId::new("fake")),
+    );
+    let plugin = IdiomPlugin::from_operator_files(Some(&instructions_path), None)
+        .expect("a present, readable operator file must not error");
+    let conway = idiom_conway_with_plugin(tmp.path().to_path_buf(), backend.clone(), store, plugin);
+
+    let session = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = session.prompt("hi").await.expect("prompt");
+    turn.result().await.expect("turn completes");
+
+    let report = session
+        .context_report_current(root_agent(&session))
+        .await
+        .expect("context_report_current");
+
+    use conway::plugin::Provenance;
+
+    let plugin_entry = report.segments.iter().find(|entry| {
+        matches!(
+            &entry.provenance,
+            Provenance::PluginInstruction { plugin_id, name }
+                if plugin_id == PLUGIN_ID && name == INSTRUCTION_NAME
+        )
+    });
+    assert!(
+        plugin_entry.is_some(),
+        "the shipped base fragment must be stamped Provenance::PluginInstruction {{ plugin_id: \
+         {PLUGIN_ID:?}, name: {INSTRUCTION_NAME:?} }}, got: {:?}",
+        report
+            .segments
+            .iter()
+            .map(|e| &e.provenance)
+            .collect::<Vec<_>>()
+    );
+
+    let operator_entry = report.segments.iter().find(|entry| {
+        matches!(
+            &entry.provenance,
+            Provenance::Operator { name, path }
+                if name == conway_plugin_idiom::OPERATOR_PROJECT_INSTRUCTION_NAME
+                    && path.file_name().map(|f| f.to_string_lossy().into_owned())
+                        == Some("instructions.md".to_string())
+        )
+    });
+    assert!(
+        operator_entry.is_some(),
+        "the operator's own project fragment must be stamped Provenance::Operator {{ name: \
+         {:?}, path: .../.conway/instructions.md }}, got: {:?}",
+        conway_plugin_idiom::OPERATOR_PROJECT_INSTRUCTION_NAME,
+        report
+            .segments
+            .iter()
+            .map(|e| &e.provenance)
+            .collect::<Vec<_>>()
+    );
+
+    // No segment for either fragment name is left stamped `Skill` --
+    // confirms this item REPLACED the old stamp rather than adding the new
+    // ones alongside it.
+    assert!(
+        !report.segments.iter().any(|entry| matches!(
+            &entry.provenance,
+            Provenance::Skill { name }
+                if name == INSTRUCTION_NAME
+                    || name == conway_plugin_idiom::OPERATOR_PROJECT_INSTRUCTION_NAME
+        )),
+        "neither the plugin's own fragment nor the operator's own fragment should still be \
+         stamped Provenance::Skill: {:?}",
+        report
+            .segments
+            .iter()
+            .map(|e| &e.provenance)
+            .collect::<Vec<_>>()
+    );
+}

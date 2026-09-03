@@ -194,18 +194,32 @@ ruling applies uniformly to every `Plugin::instructions()` fragment this
 plugin declares, operator-authored or shipped alike; there is no separate
 rule for the operator's own text, and no flag to opt a child out of it.
 
-**Provenance, stated rather than fixed.** Every fragment this plugin
-contributes — including an operator's own project/global text — is
-stamped `Provenance::Skill { name }` once assembled
-(`crates/conway-runtime/src/context/builder.rs`), the SAME stamp an
-operator-authored `.conway/skills` body gets. Plugin attribution lives
-only in the parallel `ContextReport::instruction_fragments` list, a
-side-channel, not durable provenance — so an operator's own words, merely
-read by this plugin, are attributed in the durable log to "a skill" and in
-`/context`'s report to `conway.idiom`, wrong in both directions. Not fixed
-here: a `Provenance::Operator` variant is a persisted wire-format change
-(precedent: `Provenance::CommandPrompt`, added the same day for a
-different feature) and is its own decision.
+**Provenance: the shipped fragment and your own text are tagged apart**
+(board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`). Every fragment this plugin
+contributes carries an `authored_by` marker
+(`InstructionFragment::authored_by`), and `ContextBuilder::build`
+(`crates/conway-runtime/src/context/builder.rs`) reads it when it stamps
+the assembled segment's provenance:
+
+- The shipped base fragment (`conway.idiom.base`) is stamped
+  `Provenance::PluginInstruction { plugin_id: "conway.idiom", name }` —
+  this crate wrote every word of it.
+- An operator's own project/global text is stamped `Provenance::Operator
+  { name, path }` instead, naming the exact file (`.conway/instructions.md`
+  or `<home>/.conway/instructions.md`) the words came from.
+
+Before this item, every fragment this plugin contributed — the shipped
+paragraph and an operator's own text alike — was stamped
+`Provenance::Skill { name }`, the SAME stamp an operator-authored
+`.conway/skills` body gets. That made the durable log lie in both
+directions: an operator's own words read back as "a skill," and this
+plugin's own shipped paragraph was indistinguishable from operator prose in
+the one place a session's durable record actually lives. `/context`'s
+preamble section (below) already named which PLUGIN declared a fragment,
+but that was a side-channel, not durable provenance — it could not say a
+fragment's *words* were never the plugin's own. Fixed now: an operator's
+own instructions are durably, per-segment provenance as theirs, not the
+plugin's.
 
 **Replacing, not adding, is still the flag's job.** `--system-prompt`/
 `--append-system-prompt` (`crates/conway-cli/src/cli.rs`) reach
@@ -223,3 +237,13 @@ considered — `conway.idiom.base` always, plus `conway.idiom.operator.
 project`/`conway.idiom.operator.global` whenever the corresponding file
 exists — each with its source plugin, its estimated token cost, and (had
 it been withheld) which tool id made it unreachable.
+
+The per-segment listing further down `/context`'s output (and `conway
+sessions show`/`export`'s headless render of the same session log) names
+each segment's own provenance label, and the two now read apart: the
+shipped base fragment renders as `plugin:conway.idiom/conway.idiom.base`,
+while your own project/global text renders as
+`operator:instructions.md` — the file's own basename, not "a skill" and not
+merely "`conway.idiom`". Nothing here is attributed to a skill anymore;
+a directory-authored `.conway/skills` body keeps its own, separate
+`skill:<name>` label, unaffected.

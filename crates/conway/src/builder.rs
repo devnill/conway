@@ -2081,6 +2081,7 @@ impl ConwayBuilder {
                     order: fragment.order,
                     scope: fragment.scope,
                     agent_def: fragment.agent_def,
+                    authored_by: fragment.authored_by,
                 });
             }
         }
