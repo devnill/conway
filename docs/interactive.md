@@ -272,10 +272,40 @@ page's own list is, so the two cannot drift apart the way they once did
 (board item `01M0RW29F2ATVGCV0R8H0GQEYH`: `/trust` and `/tree` used to work
 while being absent from the palette).
 
-### `/context`: the preamble section
+### `/context`: the summary header and the preamble section
 
 `/context <agent>` (or bare `/context`, for the focused agent) lists every
-segment in that agent's assembled context.
+segment in that agent's assembled context. A large session can carry
+hundreds of segments, so the per-segment listing is preceded by a summary
+header rather than making you count lines by hand (after any preamble
+section, described below, when one applies):
+
+```
+context: 175,212 tok est across 183 segments
+  tool result: read  48 segments  89,624tok  51%
+  tool result: bash  31 segments  38,155tok  22%
+  agent def `reviewer`  1 segment  1,200tok  1%
+  ...
+largest:
+  tool result read (tc_9f2)  60,412tok
+  tool result bash (tc_7a1)  22,003tok
+  ...
+```
+
+The first line is the total estimate and segment count. The table below it
+groups every segment by kind — a tool result is further split by which
+*tool* produced it (`tool result: read` and `tool result: bash` are
+separate rows, never merged into one `tool result` row), every other kind
+groups on its own provenance variant alone (a `SystemNote`'s specific
+reason, for instance, is never a separate row — it stays one `system note`
+row regardless of which reason produced which segment). Rows are ordered by
+token count, largest first. The `largest:` block that follows names the
+five single biggest segments in the whole context, so a runaway file read
+or an oversized tool result is visible immediately rather than found by
+scanning 183 lines one at a time. If the context has no segments at all,
+`/context` still shows the plain `empty context` notice it always has —
+there is nothing to summarize.
+
 If any installed plugin declares an instruction fragment (a paragraph of
 guidance shipped alongside its tools, rather than a system prompt or a
 directory-loaded skill), those fragments appear first, in a **preamble**
