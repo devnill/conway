@@ -145,6 +145,11 @@ fn tool_batch_ctx() -> ToolBatchCtx {
         plugin_config: Arc::new(PluginConfig::default()),
         max_parallel_tools: 4,
         root: AgentRoot::Unconfined,
+        // Unrelated to this file's own hook-dispatch acceptance criteria
+        // (board item `01M1FSHJ3FG522MHA9CMBJTVW1`'s runner-level tool
+        // timeout) -- unlimited keeps every test here byte-for-byte
+        // unchanged.
+        tool_timeout: None,
     }
 }
 

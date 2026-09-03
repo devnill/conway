@@ -374,6 +374,19 @@ as a separate line of its own.
 conway -p "summarize this log" --max-turns 3 --max-seconds 30 < build.log
 ```
 
+**`[limits].tool_timeout_secs` is a fourth dimension with no CLI flag of its
+own** — a per-tool-call ceiling enforced by the tool runner itself, not a
+turn/token/wall-clock budget dimension like the three above, so it has no
+`--max-*` counterpart here. `0` (unlimited) is the default; set it directly
+in `settings.json`:
+
+```json
+{ "limits": { "tool_timeout_secs": 60 } }
+```
+
+See [`tools.md`'s "Timeouts" section](tools.md#timeouts) for what happens
+when it fires and how it interacts with `bash`'s own `timeout_ms` argument.
+
 ### `--output-schema`: structured output
 
 A caller embedding conway in a script has, until this flag, exactly one way
