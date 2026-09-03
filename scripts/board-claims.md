@@ -335,3 +335,10 @@ claim: docs/plugins/authoring.md documents Plugin::observe_sink()
 paths: docs/plugins/authoring.md
 present: observe_sink
 -->
+
+<!-- claim-check
+why: regression guard for the tui doc-comment sweep (board item 01M1FSQ99EZ1TF66775206YD3M), applying CONTRIBUTING.md's "What a doc comment is for" subsection -- specifically its MOVE rule that "this item" never survives as a durable comment reference, since it resolves only for the writer, and not durably even then. A future comment that reintroduces the phrase reopens the exact "unreadable once the item that wrote it closes" defect the sweep closed.
+claim: no comment in crates/conway-cli/src/tui says "this item"
+paths: crates/conway-cli/src/tui
+absent: this item
+-->
