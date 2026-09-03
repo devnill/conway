@@ -49,10 +49,16 @@ entirely.
 conway reads its configuration from `.conway/settings.json`, discovered by
 walking up from your current directory (so a project-local `.conway/`
 takes precedence over `~/.conway/settings.json`, which takes precedence
-over conway's built-in defaults). At minimum, `settings.json` needs a
-`default_role`, a `backends.<id>` entry for your provider, and a
-`roles.<alias>` entry (named by `default_role`) whose model chain points
-at that backend.
+over conway's built-in defaults).
+
+A **role** names one purpose — coder, reviewer, etc. — and each role has
+its own model fallback chain, so you can keep a cheap model for routine
+work and a stronger one for harder tasks under separate names. Most
+setups start with a single role and never need a second.
+
+At minimum, `settings.json` needs a `default_role`, a `backends.<id>`
+entry for your provider, and a `roles.<alias>` entry (named by
+`default_role`) whose model chain points at that backend.
 
 **`$CONWAY_CONFIG_DIR`, when set, is exempted from that upward walk too,**
 not just from the `~/.conway/` fallback it replaces — `~/.conway/
