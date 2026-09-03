@@ -265,6 +265,37 @@ from matching real Claude Code exactly lives here, named, not glossed over.
   registration real, it does not make conway behave identically to Claude
   Code for whatever that script does with what it reads.
 
+### Command naming: a Claude Code `:` becomes conway's own `.`
+
+**Dogfooding finding, capstone virgin-walk (board item
+`01M0X1GRJ52SF38FV8E0V7V7B4`):** an operator who installs `ideate` and
+reads ITS docs, or Claude Code's own skill listing, sees every skill named
+`/ideate:refine` — a colon. Typed verbatim into conway, that used to be an
+"unknown command." This is not a translation this layer invented for
+skills specifically: conway's own slash-command namespace separator has
+always been `.` (`conway_core::event_name::EVENT_NAMESPACE_SEPARATOR`),
+used for EVERY plugin-declared command surface, translated or not — a
+`commands/*.md` file and a `skills/<name>/SKILL.md` file both register
+under the identical bare-name-plus-host-namespacing scheme
+`crate::commands::ClaudeCommand::new` already established. So `ideate`'s
+`refine` skill is genuinely, permanently named `/ideate.refine` in
+conway's own palette — never `/ideate:refine` — for the same structural
+reason no plugin command anywhere in conway ever uses `:` as its
+namespace separator.
+
+Two things soften the mismatch rather than leave it silent:
+`commands::parse` accepts a leading `:` in a typed plugin-command word as
+an ALIAS for `.` — `/ideate:refine`, typed exactly the way Claude Code
+itself would have you type it, resolves to the identical registration as
+`/ideate.refine` (only the FIRST `:` is rewritten, so an unusual plugin id
+that itself contains `.` still resolves correctly either way). And the
+slash-command palette's own live filter (`view/palette.rs::matches`)
+applies that SAME alias to a still-being-typed prefix, not only a
+finished word — typing `/ideate:re` now surfaces the `/ideate.refine` row
+live, instead of showing nothing until the whole colon form is typed and
+submitted. See the `skills/<name>/SKILL.md` bullet above for the rest of
+what a translated skill does and does not carry over.
+
 ### Coverage table: which of a Claude Code plugin's own hooks actually run
 
 Every event `beepboop` 1.4.0 or `ideate` 3.2.2 declares (25 measured from
