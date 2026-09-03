@@ -37,6 +37,24 @@
 //! so a plugin command is discoverable through the exact SAME surface a
 //! built-in is, and `/help`'s own "see / for those" pointer (`view/help.rs`)
 //! covers it too, with no separate listing to keep in sync.
+//!
+//! **A colon-typed plugin-command prefix now self-corrects (dogfooding
+//! finding `01M1M3RKHNAJP1TRNTT3ENH68W`, filed during the capstone
+//! virgin-walk board item `01M0X1GRJ52SF38FV8E0V7V7B4`).**
+//! A translated Claude Code skill's real, registered name always uses
+//! conway's own `.` namespace separator (`/ideate.refine`, never
+//! `/ideate:refine` -- see `docs/plugins/claude-compat.md`'s "What runs,
+//! with real caveats" section for why), and `commands::parse` has long
+//! accepted a leading `:` as a typed-input ALIAS for `.` on a FINISHED
+//! command word. This module's own live filter did not: typing
+//! `/ideate:re` matched nothing at all, silently, even though finishing
+//! the word to `/ideate:refine` and pressing Enter would have worked --
+//! the one surface an operator actually watches while typing disagreed
+//! with the one that resolves. [`matches()`] now runs `input` through
+//! `commands::translate_colon_alias` before filtering, so a colon-typed
+//! prefix now finds and displays the SAME `/ideate.refine` row a dot-typed
+//! prefix already did -- the palette suggests the working form instead of
+//! looking empty.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -68,9 +86,14 @@ pub fn matches<'a>(input: &str, plugin_commands: &'a [PluginCommandEntry]) -> Ve
     if !input.starts_with('/') {
         return Vec::new();
     }
+    // `commands::parse` already accepts a leading `:` as an alias for `.`
+    // on a finished plugin-command word -- normalizing the live prefix the
+    // identical way before filtering keeps this palette from disagreeing
+    // with what will actually resolve (module doc above).
+    let normalized = commands::translate_colon_alias(input);
     let builtins = commands::builtin_commands()
         .into_iter()
-        .filter(|c| c.name.starts_with(input))
+        .filter(|c| c.name.starts_with(&normalized))
         .map(|c| PaletteRow {
             name: c.name,
             usage: c.usage,
@@ -78,7 +101,7 @@ pub fn matches<'a>(input: &str, plugin_commands: &'a [PluginCommandEntry]) -> Ve
         });
     let plugins = plugin_commands
         .iter()
-        .filter(|c| c.name.starts_with(input))
+        .filter(|c| c.name.starts_with(&normalized))
         .map(|c| PaletteRow {
             name: &c.name,
             // A plugin command declares only a name + one-line summary
@@ -318,5 +341,29 @@ mod tests {
     fn no_plugin_commands_means_no_plugin_rows() {
         assert_eq!(matches("/", &[]).len(), commands::builtin_commands().len());
         assert!(matches("/acme", &[]).is_empty());
+    }
+
+    /// Dogfooding finding `01M1M3RKHNAJP1TRNTT3ENH68W` (filed during the
+    /// capstone virgin-walk board item `01M0X1GRJ52SF38FV8E0V7V7B4`):
+    /// typing the colon form Claude Code
+    /// itself would have you type used to find nothing at all, live, even
+    /// though `commands::parse` already accepted the finished word. A
+    /// still-being-typed colon prefix must now surface the SAME dot-named
+    /// row a dot-typed prefix already does.
+    #[test]
+    fn a_colon_typed_prefix_still_finds_the_dot_form_plugin_command() {
+        let plugins = fixture_plugin_commands();
+        let found = matches("/acme:gr", &plugins);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "/acme.greet");
+    }
+
+    /// A finished colon-typed word behaves identically to its dot-typed
+    /// twin, not merely a superset match -- both resolve to the exact same
+    /// one row.
+    #[test]
+    fn a_colon_typed_prefix_matches_identically_to_the_dot_form() {
+        let plugins = fixture_plugin_commands();
+        assert_eq!(matches("/acme:greet", &plugins), matches("/acme.greet", &plugins));
     }
 }

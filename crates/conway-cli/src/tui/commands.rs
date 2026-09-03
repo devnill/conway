@@ -708,10 +708,7 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             // `"foo.bar:baz"` becomes `"foo.bar.baz"`, the same full name a
             // plugin id containing `.` already produces today.
             let bare = other.strip_prefix('/').unwrap_or(other);
-            let full_name = match bare.split_once(':') {
-                Some((head, tail)) => format!("{head}.{tail}"),
-                None => bare.to_string(),
-            };
+            let full_name = translate_colon_alias(bare);
             if full_name.contains('.') {
                 Ok(SlashCommand::Plugin {
                     full_name,
@@ -723,6 +720,25 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
                 )))
             }
         }
+    }
+}
+
+/// Translates the FIRST `:` anywhere in `input` to `.` — the identical
+/// alias [`parse`]'s own plugin-command arm applies to a finished command
+/// word, factored out so [`crate::tui::view::palette::matches`] can apply
+/// the SAME rule to a live, still-being-typed prefix (dogfooding finding
+/// `01M1M3RKHNAJP1TRNTT3ENH68W`, filed during the capstone virgin-walk
+/// board item `01M0X1GRJ52SF38FV8E0V7V7B4`: the
+/// palette's own live filter used to reject a colon-typed prefix outright
+/// — `/ideate:re` showed nothing — even though `parse` already accepted
+/// the finished word `/ideate:refine`; the two must never disagree about
+/// which separator resolves). A bare `input` with no `:` at all is
+/// returned unchanged (no allocation-shape surprise for the overwhelmingly
+/// common case).
+pub fn translate_colon_alias(input: &str) -> String {
+    match input.split_once(':') {
+        Some((head, tail)) => format!("{head}.{tail}"),
+        None => input.to_string(),
     }
 }
 
