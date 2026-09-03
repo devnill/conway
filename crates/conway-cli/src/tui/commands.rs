@@ -2555,10 +2555,215 @@ fn render_instruction_preamble(report: &ContextReport, state: &mut AppState) {
     }
 }
 
+/// A summarized view over a [`ContextReport`], computed from the report
+/// alone -- no `AppState`, no facade call, no TUI type anywhere in this
+/// function's signature or body. `render_context_summary` is the ONLY
+/// consumer today, but the split is deliberate (INTENT.md: "the TUI is a
+/// renderer"): a future one-shot `--output-format json` context dump could
+/// call this same function and print the identical numbers this notice-per-
+/// line rendering shows, with no second implementation of "which segment is
+/// biggest" to keep in sync.
+///
+/// Board item: asking to see the context window printed one line per piece
+/// of it -- 183 lines in a real session -- with no total and no way to see
+/// what was taking the space. This is the header that answers both without
+/// changing the per-segment listing underneath it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ContextSummary {
+    /// [`ContextReport::total_tokens_est`], carried through unchanged --
+    /// this struct does not re-derive it from `segments` (a curator or a
+    /// future field could legitimately make the two diverge; the report's
+    /// own total is the one number this crate has already committed to
+    /// elsewhere, e.g. the `ctx` status-line field).
+    pub total_tokens: u32,
+    pub segment_count: usize,
+    /// One row per distinct provenance KIND -- `ToolResult` further split by
+    /// `tool` name, every other variant grouped on the variant alone (a
+    /// `SystemNote`'s `reason` text is NOT a grouping key, so a sibling
+    /// item changing what reason gets stamped on an assistant turn cannot
+    /// silently fragment this table). Ordered by `tokens` descending, ties
+    /// broken by `label` ascending for a deterministic render.
+    pub kinds: Vec<ContextKindSummary>,
+    /// The `N` largest segments by `tokens_est`, descending, ties broken by
+    /// original `segments` order (stable, not `HashMap`-order-dependent).
+    /// Shorter than `CONTEXT_SUMMARY_TOP_N` exactly when `segment_count` is.
+    pub largest: Vec<ContextSegmentSummary>,
+}
+
+/// One row of [`ContextSummary::kinds`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ContextKindSummary {
+    /// The variant name for every kind except `ToolResult`, which renders
+    /// `"tool result: <tool>"` -- e.g. `"tool result: read"` -- so distinct
+    /// tools never collapse into one misleadingly large row.
+    pub label: String,
+    pub count: usize,
+    pub tokens: u32,
+    /// `tokens / ContextSummary::total_tokens * 100`, `0.0` when the report
+    /// carries a zero total (never a division panic).
+    pub percent: f64,
+}
+
+/// One row of [`ContextSummary::largest`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ContextSegmentSummary {
+    /// [`provenance_label`]'s own text for this segment -- for a
+    /// `ToolResult` this already reads `"tool result <tool> (<call_id>)"`,
+    /// carrying both the tool name and the call id the spec asks for; no
+    /// second label format is invented for this list.
+    pub label: String,
+    pub tokens: u32,
+}
+
+/// How many of the largest segments [`summarize_context_report`] reports --
+/// fixed, not configurable (spec: "no configurable N").
+const CONTEXT_SUMMARY_TOP_N: usize = 5;
+
+/// Computes [`ContextSummary`] from a [`ContextReport`] alone. Pure: no
+/// `AppState`, no I/O, no facade call -- see [`ContextSummary`]'s own doc
+/// for why that purity is load-bearing rather than incidental.
+pub(crate) fn summarize_context_report(report: &ContextReport) -> ContextSummary {
+    let total_tokens = report.total_tokens_est;
+    let segment_count = report.segments.len();
+
+    let mut by_kind: HashMap<String, (usize, u32)> = HashMap::new();
+    for entry in &report.segments {
+        let slot = by_kind
+            .entry(provenance_kind_label(&entry.provenance))
+            .or_insert((0, 0));
+        slot.0 += 1;
+        slot.1 += entry.tokens_est;
+    }
+    let mut kinds: Vec<ContextKindSummary> = by_kind
+        .into_iter()
+        .map(|(label, (count, tokens))| {
+            let percent = if total_tokens == 0 {
+                0.0
+            } else {
+                f64::from(tokens) / f64::from(total_tokens) * 100.0
+            };
+            ContextKindSummary {
+                label,
+                count,
+                tokens,
+                percent,
+            }
+        })
+        .collect();
+    kinds.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.label.cmp(&b.label)));
+
+    // `enumerate` before `sort_by` so the tiebreak below is the segment's
+    // ORIGINAL position, not whatever order a prior sort left it in --
+    // that's what makes equal-`tokens_est` ties render in a stable, always-
+    // reproducible order rather than depending on `sort_by`'s own
+    // (already-stable, but easy to accidentally rely on for the wrong
+    // reason) implementation detail.
+    let mut ranked: Vec<_> = report.segments.iter().enumerate().collect();
+    ranked.sort_by(|a, b| b.1.tokens_est.cmp(&a.1.tokens_est).then_with(|| a.0.cmp(&b.0)));
+    let largest = ranked
+        .into_iter()
+        .take(CONTEXT_SUMMARY_TOP_N)
+        .map(|(_, entry)| ContextSegmentSummary {
+            label: provenance_label(&entry.provenance),
+            tokens: entry.tokens_est,
+        })
+        .collect();
+
+    ContextSummary {
+        total_tokens,
+        segment_count,
+        kinds,
+        largest,
+    }
+}
+
+/// The grouping key/label for [`ContextSummary::kinds`] -- the variant name,
+/// `ToolResult` further split by `tool`. Deliberately NOT
+/// [`provenance_label`]: that function's `SystemNote` arm renders the
+/// `reason` string, which would fragment this table's `system_note` row per
+/// reason if reused here -- exactly the "group on the variant, not on the
+/// reason string" the spec calls out (a sibling item may change what
+/// reason gets stamped on an assistant turn; that change must not change
+/// this table's row count).
+fn provenance_kind_label(p: &Provenance) -> String {
+    match p {
+        Provenance::UserPrompt => "user prompt".to_string(),
+        Provenance::AgentDef { .. } => "agent def".to_string(),
+        Provenance::Skill { .. } => "skill".to_string(),
+        Provenance::ToolRegistry { .. } => "tool registry".to_string(),
+        Provenance::Inherited { .. } => "inherited".to_string(),
+        Provenance::ForkDirective { .. } => "fork directive".to_string(),
+        Provenance::ParentSteer { .. } => "parent steer".to_string(),
+        Provenance::ToolResult { tool, .. } => format!("tool result: {tool}"),
+        Provenance::SystemNote { .. } => "system note".to_string(),
+        Provenance::MergedAsk { .. } => "merged /ask".to_string(),
+        Provenance::ChildResult { .. } => "child result".to_string(),
+        Provenance::CommandPrompt { .. } => "command prompt".to_string(),
+        _ => "unknown provenance".to_string(),
+    }
+}
+
+/// `1234567` -> `"1,234,567"`. No external crate for this one thing.
+fn format_thousands(n: u32) -> String {
+    let digits: Vec<char> = n.to_string().chars().collect();
+    let len = digits.len();
+    let mut out = String::with_capacity(len + len / 3);
+    for (i, c) in digits.iter().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(*c);
+    }
+    out
+}
+
+/// Renders [`ContextSummary`] as the notice lines [`render_context_report`]
+/// prints before the per-segment listing: the `context: ... tok est across
+/// ... segments` header, one line per [`ContextSummary::kinds`] row, then a
+/// `largest:` header and one line per [`ContextSummary::largest`] entry.
+/// Not called when `summary.segment_count == 0` -- `render_context_report`
+/// keeps today's bare `empty context` notice for that case instead.
+fn render_context_summary(summary: &ContextSummary, state: &mut AppState) {
+    notice(
+        state,
+        format!(
+            "context: {} tok est across {} segment{}",
+            format_thousands(summary.total_tokens),
+            summary.segment_count,
+            if summary.segment_count == 1 { "" } else { "s" },
+        ),
+    );
+    for kind in &summary.kinds {
+        notice(
+            state,
+            format!(
+                "  {}  {} segment{}  {}tok  {}%",
+                kind.label,
+                kind.count,
+                if kind.count == 1 { "" } else { "s" },
+                format_thousands(kind.tokens),
+                kind.percent.round() as i64,
+            ),
+        );
+    }
+    if !summary.largest.is_empty() {
+        notice(state, "largest:");
+        for seg in &summary.largest {
+            notice(
+                state,
+                format!("  {}  {}tok", seg.label, format_thousands(seg.tokens)),
+            );
+        }
+    }
+}
+
 fn render_context_report(report: &ContextReport, state: &mut AppState) {
     if report.segments.is_empty() && report.dropped.is_empty() {
         notice(state, "empty context");
         return;
+    }
+    if !report.segments.is_empty() {
+        render_context_summary(&summarize_context_report(report), state);
     }
     for entry in &report.segments {
         notice(
@@ -6131,22 +6336,41 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(lines.len(), 2, "expected one line per segment");
+        // The context-summary header/kind-table/`largest:` block (this
+        // item) now renders BEFORE the per-segment listing this test is
+        // actually about -- exactly two lines carry a segment id, one per
+        // segment, and (since `dropped` is empty here) they are the LAST
+        // two lines of the notice stream.
+        let per_segment_lines: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|l| l.contains(&seg0.to_string()) || l.contains(&seg1.to_string()))
+            .collect();
+        assert_eq!(
+            per_segment_lines.len(),
+            2,
+            "expected one line per segment, got: {lines:?}"
+        );
+        assert_eq!(
+            &lines[lines.len() - 2..],
+            per_segment_lines.as_slice(),
+            "per-segment lines must be last, after the summary block: {lines:?}"
+        );
         // Each line must carry the segment id, a provenance label, and the
         // token estimate -- not just be present.
         assert!(
-            lines[0].contains(&seg0.to_string())
-                && lines[0].contains("user prompt")
-                && lines[0].contains("12tok"),
+            per_segment_lines[0].contains(&seg0.to_string())
+                && per_segment_lines[0].contains("user prompt")
+                && per_segment_lines[0].contains("12tok"),
             "line 0 missing id/provenance/tokens: {:?}",
-            lines[0]
+            per_segment_lines[0]
         );
         assert!(
-            lines[1].contains(&seg1.to_string())
-                && lines[1].contains("agent def `reviewer`")
-                && lines[1].contains("40tok"),
+            per_segment_lines[1].contains(&seg1.to_string())
+                && per_segment_lines[1].contains("agent def `reviewer`")
+                && per_segment_lines[1].contains("40tok"),
             "line 1 missing id/provenance/tokens: {:?}",
-            lines[1]
+            per_segment_lines[1]
         );
     }
 
@@ -6285,6 +6509,315 @@ mod tests {
             state.transcript.last(),
             Some(Entry::Notice { text }) if text == "empty context"
         ));
+    }
+
+    /// Builds a fixture `ContextReport` with one segment per
+    /// `(provenance, tokens_est)` pair, in the given order -- shared by the
+    /// `summarize_context_report` tests below so each one states only the
+    /// shape it actually cares about.
+    fn report_with(entries: Vec<(Provenance, u32)>) -> ContextReport {
+        let total_tokens_est = entries.iter().map(|(_, t)| t).sum();
+        ContextReport {
+            agent_id: AgentId::new(),
+            turn: 1,
+            tokenizer: "heuristic-chars4".to_string(),
+            segments: entries
+                .into_iter()
+                .map(|(provenance, tokens_est)| ContextReportEntry {
+                    segment: SegmentId::new(),
+                    provenance,
+                    tokens_est,
+                    estimated: true,
+                })
+                .collect(),
+            total_tokens_est,
+            dropped: Vec::new(),
+            curator_failed: None,
+            instruction_fragments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn summarize_totals_and_segment_count_come_from_the_report() {
+        let report = report_with(vec![(Provenance::UserPrompt, 12), (Provenance::UserPrompt, 8)]);
+        let summary = summarize_context_report(&report);
+        assert_eq!(summary.total_tokens, 20);
+        assert_eq!(summary.segment_count, 2);
+    }
+
+    /// A wrong grouping bug this test is built to catch: keying the
+    /// by-kind table on `tool` name is easy to get backwards (or to omit
+    /// entirely, collapsing every tool result into one row) -- this
+    /// asserts the exact split the spec calls out by name: `'tool result:
+    /// read 48 segments 90k 51%' is one row`.
+    #[test]
+    fn summarize_splits_tool_result_rows_by_tool_name() {
+        let report = report_with(vec![
+            (
+                Provenance::ToolResult {
+                    call_id: "tc_1".into(),
+                    tool: ToolName::new("read"),
+                },
+                30,
+            ),
+            (
+                Provenance::ToolResult {
+                    call_id: "tc_2".into(),
+                    tool: ToolName::new("read"),
+                },
+                20,
+            ),
+            (
+                Provenance::ToolResult {
+                    call_id: "tc_3".into(),
+                    tool: ToolName::new("write"),
+                },
+                10,
+            ),
+        ]);
+        let summary = summarize_context_report(&report);
+        let read_row = summary
+            .kinds
+            .iter()
+            .find(|k| k.label == "tool result: read")
+            .expect("a `tool result: read` row");
+        assert_eq!(read_row.count, 2);
+        assert_eq!(read_row.tokens, 50);
+        let write_row = summary
+            .kinds
+            .iter()
+            .find(|k| k.label == "tool result: write")
+            .expect("a `tool result: write` row");
+        assert_eq!(write_row.count, 1);
+        assert_eq!(write_row.tokens, 10);
+        assert_eq!(
+            summary.kinds.len(),
+            2,
+            "expected exactly two tool-result rows, not one merged or three split further: {:?}",
+            summary.kinds
+        );
+    }
+
+    /// The background's own note: "a sibling item this cycle may change the
+    /// provenance stamped on assistant turns (today `SystemNote{reason:
+    /// "assistant_turn"}`); group on the variant, not on the reason
+    /// string". Two `SystemNote`s with DIFFERENT reason text must still
+    /// collapse into one row -- grouping on `provenance_label` (which
+    /// renders the reason inline) instead of the variant alone would wrongly
+    /// split this into two rows, which is exactly the failure this test is
+    /// built to catch.
+    #[test]
+    fn summarize_groups_system_notes_by_variant_not_reason_text() {
+        let report = report_with(vec![
+            (
+                Provenance::SystemNote {
+                    reason: "repeated_step".into(),
+                },
+                15,
+            ),
+            (
+                Provenance::SystemNote {
+                    reason: "assistant_turn".into(),
+                },
+                25,
+            ),
+        ]);
+        let summary = summarize_context_report(&report);
+        assert_eq!(
+            summary.kinds.len(),
+            1,
+            "two different reasons must not fragment the system-note row: {:?}",
+            summary.kinds
+        );
+        let row = &summary.kinds[0];
+        assert_eq!(row.label, "system note");
+        assert_eq!(row.count, 2);
+        assert_eq!(row.tokens, 40);
+    }
+
+    #[test]
+    fn summarize_kind_rows_are_ordered_by_tokens_descending() {
+        let report = report_with(vec![
+            (Provenance::UserPrompt, 5),
+            (
+                Provenance::AgentDef {
+                    name: "reviewer".into(),
+                },
+                50,
+            ),
+            (
+                Provenance::Skill {
+                    name: "review".into(),
+                },
+                20,
+            ),
+        ]);
+        let summary = summarize_context_report(&report);
+        let tokens: Vec<u32> = summary.kinds.iter().map(|k| k.tokens).collect();
+        assert_eq!(tokens, vec![50, 20, 5], "expected descending order: {tokens:?}");
+    }
+
+    /// Percentages are computed straight from `tokens / total * 100`, not
+    /// rounded until render time -- their unrounded sum across every kind
+    /// row must equal the whole report to within float error, never
+    /// silently drift because of how each row rounds on its own.
+    #[test]
+    fn summarize_kind_percentages_sum_to_100_within_rounding() {
+        let report = report_with(vec![
+            (Provenance::UserPrompt, 7),
+            (
+                Provenance::AgentDef {
+                    name: "reviewer".into(),
+                },
+                13,
+            ),
+            (
+                Provenance::Skill {
+                    name: "review".into(),
+                },
+                29,
+            ),
+            (
+                Provenance::ToolResult {
+                    call_id: "tc_1".into(),
+                    tool: ToolName::new("read"),
+                },
+                101,
+            ),
+        ]);
+        let summary = summarize_context_report(&report);
+        let total_percent: f64 = summary.kinds.iter().map(|k| k.percent).sum();
+        assert!(
+            (total_percent - 100.0).abs() < 1e-6,
+            "expected ~100%, got {total_percent}: {:?}",
+            summary.kinds
+        );
+    }
+
+    #[test]
+    fn summarize_top_n_orders_by_tokens_descending_with_stable_ties() {
+        // Two pairs share a `tokens_est` (30 and 10) -- the tie must break
+        // on ORIGINAL segment order, not float/hash iteration order, so
+        // this is deterministic across runs.
+        let report = report_with(vec![
+            (Provenance::UserPrompt, 30), // index 0: first of the 30-tie
+            (
+                Provenance::AgentDef {
+                    name: "first-agent-def".into(),
+                },
+                10,
+            ), // index 1: first of the 10-tie
+            (
+                Provenance::Skill {
+                    name: "review".into(),
+                },
+                60,
+            ), // index 2: largest, alone
+            (
+                Provenance::ToolRegistry {
+                    hash: "deadbeef".into(),
+                },
+                30,
+            ), // index 3: second of the 30-tie
+            (
+                Provenance::ForkDirective { by: AgentId::new() },
+                10,
+            ), // index 4: second of the 10-tie
+            (Provenance::ChildResult { from: AgentId::new() }, 5), // index 5: smallest, excluded from top 5
+        ]);
+        let summary = summarize_context_report(&report);
+        let tokens: Vec<u32> = summary.largest.iter().map(|s| s.tokens).collect();
+        assert_eq!(
+            tokens,
+            vec![60, 30, 30, 10, 10],
+            "expected the five largest, ties broken by original order, smallest (5) excluded: {tokens:?}"
+        );
+        assert!(
+            summary.largest[1].label.contains("user prompt"),
+            "first 30-tok entry (index 0) must sort before the second (index 3): {:?}",
+            summary.largest[1]
+        );
+        assert!(
+            summary.largest[3].label.contains("agent def"),
+            "first 10-tok entry (index 1) must sort before the second (index 4): {:?}",
+            summary.largest[3]
+        );
+    }
+
+    #[test]
+    fn summarize_top_n_larger_than_segment_count_returns_every_segment() {
+        let report = report_with(vec![(Provenance::UserPrompt, 12), (Provenance::UserPrompt, 8)]);
+        let summary = summarize_context_report(&report);
+        assert_eq!(
+            summary.largest.len(),
+            2,
+            "fewer than N=5 segments: every segment is `largest`, no padding: {:?}",
+            summary.largest
+        );
+    }
+
+    /// Board item: "Asking to see the context window today prints one line
+    /// per piece of it... with no total and no way to see what is taking
+    /// the space." This is the acceptance-level check that the rendered
+    /// `/context` output actually leads with the total/kind-table/largest
+    /// block this item adds, ahead of the unchanged per-segment listing.
+    #[tokio::test]
+    async fn context_renders_the_summary_header_before_the_per_segment_list() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        let mut report = report_with(vec![
+            (
+                Provenance::ToolResult {
+                    call_id: "tc_1".into(),
+                    tool: ToolName::new("read"),
+                },
+                60,
+            ),
+            (Provenance::UserPrompt, 40),
+        ]);
+        // `report_with`'s fixture leaves `agent_id` random -- reset it so
+        // `execute`'s `Some(root.to_string())` resolution actually matches.
+        report.agent_id = root;
+        host.context = Some(report);
+
+        execute(
+            SlashCommand::Context {
+                agent: Some(root.to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let lines: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lines[0], "context: 100 tok est across 2 segments",
+            "expected the header line first, got: {lines:?}"
+        );
+        assert!(
+            lines[1].contains("tool result: read") && lines[1].contains("60%"),
+            "expected the largest kind row second: {:?}",
+            lines[1]
+        );
+        assert!(
+            lines[2].contains("user prompt") && lines[2].contains("40%"),
+            "expected the second kind row third: {:?}",
+            lines[2]
+        );
+        assert_eq!(lines[3], "largest:", "expected the largest: header fourth");
+        assert!(
+            lines[4].contains("read") && lines[4].contains("tc_1") && lines[4].contains("60tok"),
+            "expected the largest segment's tool and call id: {:?}",
+            lines[4]
+        );
     }
 
     #[tokio::test]
