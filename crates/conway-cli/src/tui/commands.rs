@@ -2659,7 +2659,11 @@ pub(crate) fn summarize_context_report(report: &ContextReport) -> ContextSummary
     // (already-stable, but easy to accidentally rely on for the wrong
     // reason) implementation detail.
     let mut ranked: Vec<_> = report.segments.iter().enumerate().collect();
-    ranked.sort_by(|a, b| b.1.tokens_est.cmp(&a.1.tokens_est).then_with(|| a.0.cmp(&b.0)));
+    ranked.sort_by(|a, b| {
+        b.1.tokens_est
+            .cmp(&a.1.tokens_est)
+            .then_with(|| a.0.cmp(&b.0))
+    });
     let largest = ranked
         .into_iter()
         .take(CONTEXT_SUMMARY_TOP_N)
@@ -2709,7 +2713,7 @@ fn format_thousands(n: u32) -> String {
     let len = digits.len();
     let mut out = String::with_capacity(len + len / 3);
     for (i, c) in digits.iter().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*c);
@@ -6539,7 +6543,10 @@ mod tests {
 
     #[test]
     fn summarize_totals_and_segment_count_come_from_the_report() {
-        let report = report_with(vec![(Provenance::UserPrompt, 12), (Provenance::UserPrompt, 8)]);
+        let report = report_with(vec![
+            (Provenance::UserPrompt, 12),
+            (Provenance::UserPrompt, 8),
+        ]);
         let summary = summarize_context_report(&report);
         assert_eq!(summary.total_tokens, 20);
         assert_eq!(summary.segment_count, 2);
@@ -6654,7 +6661,11 @@ mod tests {
         ]);
         let summary = summarize_context_report(&report);
         let tokens: Vec<u32> = summary.kinds.iter().map(|k| k.tokens).collect();
-        assert_eq!(tokens, vec![50, 20, 5], "expected descending order: {tokens:?}");
+        assert_eq!(
+            tokens,
+            vec![50, 20, 5],
+            "expected descending order: {tokens:?}"
+        );
     }
 
     /// Percentages are computed straight from `tokens / total * 100`, not
@@ -6719,11 +6730,13 @@ mod tests {
                 },
                 30,
             ), // index 3: second of the 30-tie
+            (Provenance::ForkDirective { by: AgentId::new() }, 10), // index 4: second of the 10-tie
             (
-                Provenance::ForkDirective { by: AgentId::new() },
-                10,
-            ), // index 4: second of the 10-tie
-            (Provenance::ChildResult { from: AgentId::new() }, 5), // index 5: smallest, excluded from top 5
+                Provenance::ChildResult {
+                    from: AgentId::new(),
+                },
+                5,
+            ), // index 5: smallest, excluded from top 5
         ]);
         let summary = summarize_context_report(&report);
         let tokens: Vec<u32> = summary.largest.iter().map(|s| s.tokens).collect();
@@ -6746,7 +6759,10 @@ mod tests {
 
     #[test]
     fn summarize_top_n_larger_than_segment_count_returns_every_segment() {
-        let report = report_with(vec![(Provenance::UserPrompt, 12), (Provenance::UserPrompt, 8)]);
+        let report = report_with(vec![
+            (Provenance::UserPrompt, 12),
+            (Provenance::UserPrompt, 8),
+        ]);
         let summary = summarize_context_report(&report);
         assert_eq!(
             summary.largest.len(),
