@@ -1,12 +1,12 @@
-//! The focused agent's live activity signal: [`Activity`] itself, the T2
+//! The focused agent's live activity signal: [`Activity`] itself, the
 //! braille spinner ([`SPINNER_FRAMES`], [`should_animate`],
 //! [`AppState::tick_animation`]) and per-turn elapsed/token-estimate
 //! tracking ([`AppState::clear_turn_state`]). `apply`'s `ModelDecision`/
-//! `ContextSegmentAdded` arms (T3's serving-model/context-window tracking)
+//! `ContextSegmentAdded` arms (serving-model/context-window tracking)
 //! stay inline in [`AppState::apply`] -- they are plain field mutations
 //! with no standalone method of their own -- but this module's own tests
-//! cover that behavior alongside T2's, since both are the status line's
-//! "what is the focused agent doing right now" surface.
+//! cover that behavior alongside the spinner's, since both are the status
+//! line's "what is the focused agent doing right now" surface.
 
 use super::*;
 
@@ -43,14 +43,14 @@ pub enum Activity {
     AwaitingPermission,
 }
 
-/// The braille spinner frame sequence (T2, 8 TPS animation tick). Advanced by
+/// The braille spinner frame sequence (8 TPS animation tick). Advanced by
 /// [`AppState::tick_animation`] only while [`AppState::activity`] is not
 /// [`Activity::Idle`] (idle terminal stays flat-cost -- no animation tick
 /// work, no redraw). The 10-glyph braille cycle is the same one `spinners`-
 /// style CLI indicators use.
 pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Whether `activity` should drive the 125ms animation tick (T2): true for
+/// Whether `activity` should drive the 125ms animation tick: true for
 /// every variant but [`Activity::Idle`]. The app loop's animation-tick arm
 /// calls this to decide whether to advance the spinner/frame counters and
 /// mark the frame dirty -- an idle terminal is never redrawn by the animation
@@ -80,7 +80,7 @@ impl AppState {
         }
     }
 
-    /// Clears the per-turn timing/token counters (T2). Called whenever
+    /// Clears the per-turn timing/token counters. Called whenever
     /// `activity` transitions back to [`Activity::Idle`] -- the working
     /// indicator no longer shows elapsed/running tokens once the turn is
     /// done. The spinner counters themselves are zeroed by [`Self::focus_agent`]

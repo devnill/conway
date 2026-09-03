@@ -92,7 +92,8 @@ pub struct TrustPreviewCard {
 /// has been created or written yet). Each maps to at most one facade call
 /// (`commands::apply_trust_decision`): `Confirm` -> `Host::
 /// trust_permission_file` (the SAME call the surface used to make
-/// immediately, with no preview, before this item); `Cancel` makes no
+/// immediately, with no preview, before the preview card was added);
+/// `Cancel` makes no
 /// facade call at all -- there is nothing to undo when nothing was ever
 /// written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,7 +184,7 @@ pub struct AddProviderCredentialState {
 }
 
 /// The generic wording `Esc` on the permission prompt used to send
-/// unconditionally, before this item -- kept as the fallback [`AppState::
+/// unconditionally -- kept as the fallback [`AppState::
 /// submit_deny_feedback`] uses when the operator submits [`DenyFeedbackState`]
 /// with nothing typed, so a bare `Esc`-then-`Enter` (no typing at all) still
 /// reproduces exactly the old one-keystroke behavior.
@@ -193,7 +194,7 @@ pub const DEFAULT_DENY_FEEDBACK: &str = "user declined; try another approach";
 /// "deny with feedback" text entry, opened by `Esc` on `Mode::
 /// AwaitingPermission` instead of resolving the call immediately.
 ///
-/// **Why this exists.** Before this item, the overlay's own footer read
+/// **Why this exists.** The overlay's own footer used to read
 /// `[Esc] deny with feedback`, but `Esc` sent [`conway::PermissionDecision::
 /// DenyWithFeedback`] with a single hardcoded message (now
 /// [`DEFAULT_DENY_FEEDBACK`]) and no way for the operator to type anything of
@@ -751,7 +752,7 @@ impl AppState {
         self.queued_prompts.retain(|p| p.request.agent_id != agent);
     }
 
-    /// Opens the `/help` keybinding overlay (T7). See [`Self::help_open`]'s
+    /// Opens the `/help` keybinding overlay. See [`Self::help_open`]'s
     /// own doc for why this is a plain flag flip rather than a `mode`
     /// transition/park -- `commands.rs`'s `SlashCommand::Help` arm can only
     /// ever reach this while `mode` is already `Normal` (the input line is
@@ -770,7 +771,7 @@ impl AppState {
         self.plugins_open = false;
     }
 
-    /// Closes the `/help` keybinding overlay (T7's `Esc` binding, wired in
+    /// Closes the `/help` keybinding overlay (the `Esc` binding, wired in
     /// `input.rs`). A no-op when it is already closed.
     pub fn close_help(&mut self) {
         self.help_open = false;
@@ -1551,8 +1552,8 @@ mod tests {
     }
 
     /// Same "never stack" proof, against the `/ask` modal specifically --
-    /// the FIRST of the four pre-existing surfaces, and the one whose own
-    /// module doc this item's spec pointed at as the precedent to read.
+    /// the FIRST of the four pre-existing surfaces, and the precedent to
+    /// read for this shape.
     #[test]
     fn offer_ui_form_parks_behind_an_ask_modal_and_opens_once_it_closes() {
         let mut state = AppState::new(AgentId::new());

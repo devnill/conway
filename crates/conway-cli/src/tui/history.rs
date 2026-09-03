@@ -20,7 +20,7 @@
 //!
 //! One JSON-string-encoded entry per line, not a bare newline-delimited
 //! line per entry -- a submitted line can itself contain embedded `\n`
-//! (T8's multi-line input, Alt/Shift-Enter), which a bare-newline format
+//! (multi-line input via Alt/Shift-Enter), which a bare-newline format
 //! could not round-trip. `serde_json` is already a dependency (no new
 //! dependency needed for the escaping).
 

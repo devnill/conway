@@ -40,7 +40,7 @@ impl AppState {
         self.follow_tail = self.scroll >= max_scroll;
     }
 
-    /// `End` (T6): snaps the transcript straight to its own tail --
+    /// `End`: snaps the transcript straight to its own tail --
     /// re-engages [`Self::follow_tail`] and resets the stored [`Self::scroll`]
     /// to 0. The stored `scroll` value is meaningless once `follow_tail` is
     /// set (the next render draws from `max_scroll` instead -- see
@@ -52,7 +52,7 @@ impl AppState {
         self.scroll = 0;
     }
 
-    /// `Home` (T6): jumps the transcript straight to its own TOP --
+    /// `Home`: jumps the transcript straight to its own TOP --
     /// disengages `follow_tail` (reviewing history, same as
     /// [`Self::scroll_page_up`]) and seats `scroll` at 0, the oldest wrapped
     /// line. [`Self::scroll`]'s own doc is explicit that it counts "wrapped

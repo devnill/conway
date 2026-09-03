@@ -40,7 +40,7 @@ pub enum AgentVisibility {
     /// nothing about "what's still running" is lost, unlike hiding it would
     /// lose "what happened." A dimmed-but-visible middle ground was also
     /// considered (V5 spec) and would work too, but `All` is the simpler
-    /// change and needs no new theme slot (T1: no bare inline styles in
+    /// change and needs no new theme slot (no bare inline styles in
     /// `view/` outside `theme.rs`) -- the status glyph alone already
     /// carries "this one is done."
     All,

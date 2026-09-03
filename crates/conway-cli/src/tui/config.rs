@@ -49,7 +49,7 @@ use crate::cli::Cli;
 pub struct TuiSection {
     #[serde(default)]
     pub theme: ThemeConfig,
-    /// `[tui.status_line]` (T3): declarative status-line field order +
+    /// `[tui.status_line]`: declarative status-line field order +
     /// visibility. `fields` is the ordered list of field names to render; a
     /// field absent from the list is hidden, and the list's order is the
     /// render order. Unknown names are silently dropped at render time
@@ -93,7 +93,7 @@ pub struct TuiSection {
     /// deciding whether to configure it.
     #[serde(default)]
     pub status_line_command: StatusLineCommandConfig,
-    /// `[tui.tool_preview_lines]` (T5): the cap on collapsed tool-preview
+    /// `[tui.tool_preview_lines]`: the cap on collapsed tool-preview
     /// lines in the TUI transcript. A tool entry whose stored `preview` has
     /// more physical lines than this renders the first N lines + a dim
     /// `… (+M lines, Ctrl-E to expand)` affordance while the entry's
@@ -106,7 +106,7 @@ pub struct TuiSection {
     /// env.
     #[serde(default)]
     pub tool_preview_lines: Option<u32>,
-    /// `[tui.history_size]` (T8): the cap on the persisted input-history
+    /// `[tui.history_size]`: the cap on the persisted input-history
     /// FIFO (`~/.conway/history`, or `$CONWAY_CONFIG_DIR/history` when
     /// set -- see `conway::config::discovery::history_file_path`). Loaded at
     /// startup and appended to on every submit; oldest entries are evicted
@@ -119,8 +119,8 @@ pub struct TuiSection {
     pub history_size: Option<u32>,
 }
 
-/// `[tui.status_line]`: declarative status-line field order + visibility
-/// (T3). The `fields` list is the ordered set of field names the TUI
+/// `[tui.status_line]`: declarative status-line field order + visibility.
+/// The `fields` list is the ordered set of field names the TUI
 /// renders, left to right; a field not in the list is hidden, and the list
 /// order is the render order. Unknown names are dropped at render time
 /// (config is untrusted input: never a panic). Defaults to the Lean line

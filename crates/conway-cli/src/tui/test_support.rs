@@ -74,7 +74,7 @@ pub(crate) fn key(code: KeyCode) -> KeyEvent {
 /// - `ScrollUp`/`ScrollDown`: `view::transcript_area`/`view::max_scroll` at
 ///   `area`, then `AppState::scroll_page_up`/`scroll_page_down` -- mirrors
 ///   `App::page_scroll` exactly (same page-height math, same clamp).
-/// - `JumpToTop`/`JumpToTail` (T6): the same `max_scroll` lookup, but
+/// - `JumpToTop`/`JumpToTail`: the same `max_scroll` lookup, but
 ///   `AppState::jump_to_top`/`jump_to_tail` (`Home`/`End`) instead of the
 ///   page-sized pair above -- mirrors `App::jump_to_top`/the direct
 ///   `state.jump_to_tail()` call in `app.rs`'s action dispatch.

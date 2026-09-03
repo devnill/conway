@@ -1,6 +1,6 @@
 //! The TUI's in-process [`conway_plugin_ui::FormSurface`] implementation --
 //! board item `01M19NH39AE2D5AMJK0RZRQY86`, the live surface
-//! `conway-plugin-ui`'s own module doc names as this item's whole point.
+//! `conway-plugin-ui`'s own module doc names as the whole point of that work.
 //!
 //! Mirrors [`crate::tui::gate::TuiGate`] deliberately, not by coincidence:
 //! `TuiFormSurface::ask_select` never decides anything itself -- it forwards
