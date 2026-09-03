@@ -726,8 +726,9 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
 /// Translates the FIRST `:` anywhere in `input` to `.` — the identical
 /// alias [`parse`]'s own plugin-command arm applies to a finished command
 /// word, factored out so [`crate::tui::view::palette::matches`] can apply
-/// the SAME rule to a live, still-being-typed prefix (dogfooding finding,
-/// capstone virgin-walk board item `01M0X1GRJ52SF38FV8E0V7V7B4`: the
+/// the SAME rule to a live, still-being-typed prefix (dogfooding finding
+/// `01M1M3RKHNAJP1TRNTT3ENH68W`, filed during the capstone virgin-walk
+/// board item `01M0X1GRJ52SF38FV8E0V7V7B4`: the
 /// palette's own live filter used to reject a colon-typed prefix outright
 /// — `/ideate:re` showed nothing — even though `parse` already accepted
 /// the finished word `/ideate:refine`; the two must never disagree about

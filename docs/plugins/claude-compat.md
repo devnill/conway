@@ -267,8 +267,9 @@ from matching real Claude Code exactly lives here, named, not glossed over.
 
 ### Command naming: a Claude Code `:` becomes conway's own `.`
 
-**Dogfooding finding, capstone virgin-walk (board item
-`01M0X1GRJ52SF38FV8E0V7V7B4`):** an operator who installs `ideate` and
+**Dogfooding finding `01M1M3RKHNAJP1TRNTT3ENH68W`, filed during the
+capstone virgin-walk (board item `01M0X1GRJ52SF38FV8E0V7V7B4`):** an
+operator who installs `ideate` and
 reads ITS docs, or Claude Code's own skill listing, sees every skill named
 `/ideate:refine` — a colon. Typed verbatim into conway, that used to be an
 "unknown command." This is not a translation this layer invented for

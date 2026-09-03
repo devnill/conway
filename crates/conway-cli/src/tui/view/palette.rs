@@ -39,7 +39,8 @@
 //! covers it too, with no separate listing to keep in sync.
 //!
 //! **A colon-typed plugin-command prefix now self-corrects (dogfooding
-//! finding, capstone virgin-walk board item `01M0X1GRJ52SF38FV8E0V7V7B4`).**
+//! finding `01M1M3RKHNAJP1TRNTT3ENH68W`, filed during the capstone
+//! virgin-walk board item `01M0X1GRJ52SF38FV8E0V7V7B4`).**
 //! A translated Claude Code skill's real, registered name always uses
 //! conway's own `.` namespace separator (`/ideate.refine`, never
 //! `/ideate:refine` -- see `docs/plugins/claude-compat.md`'s "What runs,
@@ -342,8 +343,9 @@ mod tests {
         assert!(matches("/acme", &[]).is_empty());
     }
 
-    /// Dogfooding finding, capstone virgin-walk board item
-    /// `01M0X1GRJ52SF38FV8E0V7V7B4`: typing the colon form Claude Code
+    /// Dogfooding finding `01M1M3RKHNAJP1TRNTT3ENH68W` (filed during the
+    /// capstone virgin-walk board item `01M0X1GRJ52SF38FV8E0V7V7B4`):
+    /// typing the colon form Claude Code
     /// itself would have you type used to find nothing at all, live, even
     /// though `commands::parse` already accepted the finished word. A
     /// still-being-typed colon prefix must now surface the SAME dot-named
