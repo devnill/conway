@@ -1179,7 +1179,11 @@ impl AgentLoop {
                             steps_this_turn,
                         },
                     );
-                    self.end_keep_alive_turn(&mut state, &mut result_builder, &mut contract_retried);
+                    self.end_keep_alive_turn(
+                        &mut state,
+                        &mut result_builder,
+                        &mut contract_retried,
+                    );
                     continue;
                 }
             }
@@ -1695,7 +1699,11 @@ impl AgentLoop {
                     // `BudgetCheck::TurnAborted` arm above) must not
                     // double-count it.
                     state.turn += 1;
-                    self.end_keep_alive_turn(&mut state, &mut result_builder, &mut contract_retried);
+                    self.end_keep_alive_turn(
+                        &mut state,
+                        &mut result_builder,
+                        &mut contract_retried,
+                    );
                     continue;
                 }
 

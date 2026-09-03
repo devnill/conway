@@ -733,13 +733,13 @@ async fn keep_alive_single_turn_runaway_tool_loop_aborts_the_turn_and_the_sessio
             ScriptedTurn::Respond(tool_call_response("tc_1", "probe", serde_json::json!({}))),
             ScriptedTurn::Respond(tool_call_response("tc_2", "probe", serde_json::json!({}))),
             ScriptedTurn::Respond(tool_call_response("tc_3", "probe", serde_json::json!({}))),
-            // Never reached if the budget trips where it should -- present
-            // only so an unfixed/regressed loop that keeps going has a
-            // script entry to consume instead of panicking on exhaustion.
-            ScriptedTurn::Respond(tool_call_response("tc_4", "probe", serde_json::json!({}))),
-            ScriptedTurn::Respond(tool_call_response("tc_5", "probe", serde_json::json!({}))),
             // Consumed by the SECOND prompt below, proving the session
-            // survived the trip: a plain text reply, no tool call.
+            // survived the trip: a plain text reply, no tool call. If the
+            // budget trip regresses to NOT aborting the turn (the old,
+            // unfixed behavior), the loop would try to consume a 4th
+            // script entry here and ScriptedBackend's own exhaustion
+            // panic reports that clearly, rather than this test silently
+            // asserting against the wrong response.
             ScriptedTurn::Respond(text_response("recovered")),
         ])
         .with_id(BackendId::new("fake")),
@@ -862,18 +862,23 @@ async fn keep_alive_max_steps_trip_is_turn_scoped_and_the_session_survives_it() 
         ))));
     }
     // The third prompt: a runaway tool loop that never completes naturally.
-    // Only 3 of these are ever reached if the per-turn budget trips where it
-    // should (max_steps=3); the rest exist only so an unfixed/regressed loop
-    // that keeps going has script entries to consume instead of panicking on
-    // exhaustion.
-    for i in 1..=5 {
+    // Exactly 3 of these are consumed if the per-turn budget trips where it
+    // should (max_steps=3) -- ScriptedBackend serves entries strictly in
+    // call order with no notion of a "turn," so any extra entries here
+    // would be consumed by the FOURTH prompt below instead of a fresh
+    // regression-only exhaustion, silently shifting `turn-4-response` out
+    // from under it.
+    for i in 1..=3 {
         script.push(ScriptedTurn::Respond(tool_call_response(
             &format!("runaway_{i}"),
             "probe",
             serde_json::json!({}),
         )));
     }
-    // The fourth, final prompt: proves the session survived the trip.
+    // The fourth, final prompt: proves the session survived the trip. If
+    // the budget trip regresses to NOT aborting the turn, the runaway loop
+    // would try to consume a 4th script entry here and ScriptedBackend's
+    // own exhaustion panic reports that clearly.
     script.push(ScriptedTurn::Respond(text_response("turn-4-response")));
     let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
     let conway = test_builder(base_config())
@@ -929,7 +934,8 @@ async fn keep_alive_max_steps_trip_is_turn_scoped_and_the_session_survives_it() 
         "a keep_alive trip names the bare turn-scoped limit"
     );
     assert_eq!(
-        steps_this_turn, 3,
+        steps_this_turn,
+        3,
         "the THIRD turn's own runaway loop must have taken exactly max_steps=3 steps of ITS \
          OWN before aborting -- NOT the {} steps the two prior turns already accrued \
          session-lifetime",
