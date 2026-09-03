@@ -53,15 +53,18 @@ There are genuinely **two** ways to build a working hook today, not one:
    but cannot say anything the model will read.
    `crates/conway-plugin-stepguard` is the worked example.
 
-What's still genuinely true from the old framing, so you don't overcorrect:
-there is still no `hooks()` method on the `Plugin` trait itself — a `Plugin`
-you write contributes `tools()`, `commands()`, `events()`, and
-`observers`, never a `hooks`-consulted script of its own — and there is
-still no
-script-dispatching *plugin* (`concepts.md`'s "Language choice"); the
-dispatching in mechanism 1 above is the runtime's own, built-in
-`ProcessHookRunner`, not something a third-party `Plugin` implementation
-provides. F8 is still
+**Correction, so an old framing doesn't mislead you the other way:** an
+earlier revision of this section said "there is still no `hooks()` method on
+the `Plugin` trait itself." That is no longer true — `Plugin::hooks()` exists
+(board item `01M129QW0GV90QTQS6B3BY3DAR`), and a `Plugin` you write can
+contribute `tools()`, `commands()`, `events()`, `observers()`, `hooks()`, and
+several more; see "What else a plugin can declare" below for the full list,
+what each one does, and the shipped plugin to copy from. What the sentence
+above was actually trying to say, and what remains true: there is still no
+script-dispatching *plugin* (`concepts.md`'s "Language choice") — a rule
+registered through `Plugin::hooks()` is still dispatched by conway's own
+built-in `ProcessHookRunner`, the identical runner mechanism 1 above uses;
+no third-party `Plugin` implementation supplies its own runner. F8 is still
 what makes mechanism 2 real, and `crates/conway/tests/plugin_surface.rs` is
 still a complete, compile-guarded worked example of it — every snippet in
 that section is lifted from it or from
@@ -409,24 +412,11 @@ return types, and the field types of the structs you construct.
 what's exported and why each name is there — this page doesn't duplicate
 that list, only the shape of using it.
 
-**Two new things on `Plugin` since this page was last written, worth
-knowing even if this walkthrough doesn't exercise them itself:**
-`Plugin::commands()` lets a plugin contribute a `/command` to the TUI,
-namespaced `/{plugin_id}.{name}` (never the author's own choice of
-namespace — the host prefixes it, closing the collision risk two plugins
-picking the same bare name would otherwise have), and `Plugin::events()`
-lets a plugin declare and fire its **own** hook event, reachable in a
-`hooks.rules[].event` as `"{plugin_id}.{event_name}"` and narrowable by
-`match` the identical way a core event is, gated on the plugin's own
-declaration of whether its payload even carries a tool name to match
-against. Both default to an empty `Vec` — every existing `Plugin`
-implementor, including every snippet on this page, keeps compiling
-unmodified. `crates/conway-plugin-skeleton` is the shipped worked example of
-both, proven end to end rather than merely declared:
-`SkeletonPlugin::commands()`/`events()` register a real `/ping` command and
-a real `pong_dispatched` event, and `conway-plugin-skeleton/tests/
-skeleton_end_to_end.rs` drives a real configured `hooks.rules[]` entry
-that actually receives the fired event.
+**`Plugin` carries more than `manifest()`/`tools()` — thirteen optional
+methods in total, each with a zero-cost default this walkthrough's own
+`MyFirstPlugin` never has to touch.** See "What else a plugin can declare"
+below, after this section, for what each one does, who reads it, and the
+shipped plugin to copy from.
 
 **A worked, executed example: your own thin binary, exactly like
 `conway-cli`'s own shape**, using `ConwayBuilder::install_selected`
@@ -627,6 +617,240 @@ case: a hook under test that never calls `ctx.artifacts.write` at all. Either
 way, the real containment-checked writer is supplied by the runtime when your
 hook runs inside an actual session — neither constructor is what production
 code ever sees.
+
+## What else a plugin can declare
+
+`Plugin::manifest()` and `Plugin::tools()` are the only two required methods
+(`crates/conway-core/src/ports/plugin.rs`). Everything below is optional,
+defaults to an empty `Vec`/`None`, and costs nothing to skip — every snippet
+earlier on this page keeps compiling exactly as written whether or not you
+ever touch any of them. This is a map, not a tutorial: what each method
+declares, who reads it (a real symbol, checked by `grep` against this tree),
+the smallest shipped plugin to copy from, and how two plugins that both
+declare the same thing compose — verified against `ConwayBuilder::build`
+(`crates/conway/src/builder.rs`), not assumed from the trait doc alone. For
+the field-by-field wire/dispatch contract (kind, error/timeout/garbage
+handling, status), see `hooks.md` — this section never repeats those tables,
+only points at the right row.
+
+### `instructions()` — text for the model
+
+Declares zero or more `InstructionFragment`s: paragraphs injected into an
+agent's assembled context as their own segment, so a plugin's guidance is
+DATA a host can inspect and order rather than text buried in a
+`ContextHook`'s edit. `ConwayBuilder::build` collects every installed
+plugin's fragments; `ContextBuilder::build`'s "Plugin instruction fragments"
+step (`crates/conway-runtime/src/context/builder.rs`) renders them each turn,
+withholding any one fragment individually (never the whole build) when its
+declared `tool_ids` aren't reachable this turn. `conway-plugin-idiom`'s
+`IdiomPlugin::instructions` is the smallest real implementor — one fragment,
+sourced from `include_str!`. Multiple plugins' fragments union together and
+render in one deterministic order (`(position, order, install_index)`,
+stable-sorted) — no fragment wins by being first or last, every fragment
+renders unless withheld individually. See hooks.md point 17.
+
+### `description()` — text for the operator, not the model
+
+Declares one operator-facing summary (`summary`/`you_get`/`you_lose`/`costs`)
+a plugin browser shows before someone turns it on — a different audience
+from `instructions()`, never assembled into a prompt. Read by
+`crate::tui::state::PluginBrowserEntry`'s construction in `conway-cli`'s
+`/settings` plugin browser (`crates/conway-cli/src/tui/app/startup.rs`) and
+by `first_party_plugins::opinion_set_summaries`. `conway-plugin-skeleton`'s
+`SkeletonPlugin::description` is a short, real example. One per plugin, so
+there is no cross-plugin composition question — the browser renders one row
+per installed candidate, each independently. Leaving it unimplemented is
+fine: the default renders an honest "(no description)" rather than an
+invented claim. See hooks.md point 19.
+
+### `commands()` — a TUI slash command
+
+Declares zero or more `Command`s reachable as `/{plugin_id}.{name}` — before
+this method, a plugin could hand the *model* a tool but had nothing to give
+the *operator* to type. Read by `CommandRegistry::build`
+(`crates/conway-cli/src/tui/commands.rs`), which namespaces every command by
+its declaring plugin's own manifest id (never the author's own choice) before
+it reaches the palette. `conway-plugin-skeleton`'s `SkeletonPlugin::commands`
+(a real `/ping`) is the shipped worked example this page's own "Writing a
+Rust plugin" section already names. Multiple plugins' commands union
+together; two commands landing on the identical *full* (already-namespaced)
+name is refused as a named `CommandRegistrationError` rather than silently
+picking one. See hooks.md point 15.
+
+### `events()` — a plugin's own hook event
+
+Declares zero or more custom events a plugin may fire, reachable in a
+`hooks.rules[].event` as `"{plugin_id}.{event_name}"` once the host prefixes
+it. Read by `declared_plugin_events`
+(`crates/conway-runtime/src/hook_dispatch.rs`), which performs that
+namespacing and validates the result with the same `validate_event_name`
+`commands()` uses for command names. `conway-plugin-skeleton`'s
+`SkeletonPlugin::events` (a real `pong_dispatched`, driven end to end by
+`conway-plugin-skeleton/tests/skeleton_end_to_end.rs`) is the shipped
+example. Multiple plugins' events union together; two events landing on the
+identical full name is refused outright (`"duplicate plugin event '...'"`),
+the identical collision rule `commands()` enforces. An event declared here
+and never fired is the same defect as a tool that does nothing — a plugin
+fires its own declared event from inside `Tool::invoke` via
+`ToolCtx::plugin_events`. See hooks.md point 16.
+
+### `observers()` — add to the record
+
+Declares zero or more `ToolObserver`s: policy that watches a *finished* tool
+call and may append notes the model itself reads next turn — the one thing
+this trait's methods can do that a declarative `post_tool_use` hook cannot
+(that hook's own output is discarded). Called from `AgentLoop::run_inner`
+(`crates/conway-runtime/src/agent_loop.rs`), once per registered observer,
+after every finished tool call. `conway-plugin-stepguard`'s
+`StepGuardPlugin::observers` is the one shipped implementor. Multiple
+plugins' observers union together — every one runs on every finished tool
+call, each bound to its own declaring plugin's id so the notes it appends can
+never be mistaken for another plugin's. No dedicated hooks.md point exists
+for this seam (it is documented on `crate::ports::ToolObserver`'s own module
+doc and `concepts.md`'s "Observers vs participants" instead).
+
+### `narrowable_keys()` — per-agent config that may only get tighter
+
+Declares which of a plugin's own `PluginConfig` keys may vary per agent down
+the fork/spawn tree, paired with the plugin's own comparison
+(`NarrowingRule::narrows`) for what "narrower" means for that key — the
+trait has no general way to know, so only the plugin that gives the value
+meaning can say. `PluginRegistry::from_plugins`
+(`crates/conway-runtime/src/tools/registry.rs`) collects every installed
+plugin's rules, each key prefixed with its declaring plugin's own manifest
+id; `PluginConfig::narrow`, called from `SubagentHost::start`
+(`crates/conway-runtime/src/subagent.rs`) at fork/spawn time, is what
+actually enforces it — a requested value that does not narrow the parent's
+is refused (`PluginConfigError::WouldWiden`), never silently clamped.
+`conway-tools`' `FsPlugin::narrowable_keys` (its own confinement `root` key)
+is the one shipped implementor. Keys union across plugins, namespaced so two
+plugins can never collide; a key no installed plugin declared is refused
+(`NotNarrowable`) rather than silently accepted. `NarrowingRule` itself was
+missing from `conway::plugin`'s facade re-export list until this item —
+closed in `crates/conway/src/lib.rs` rather than left as a gap a
+facade-only plugin author would hit only by trying. No dedicated hooks.md
+point exists for this seam (see `Plugin::narrowable_keys`'s own doc).
+
+### `context_hooks()` — a plugin's own context curator, wired without a separate builder call
+
+Declares zero or more `ContextHook`s a plugin installs itself, so a
+plugin-contributed tool can ship the context curation its value often
+depends on (progressive skill disclosure: a tool plus the hook that narrows
+what's shown until it's called) through the same `with_plugin` surface its
+tools already use, rather than requiring a third party to also remember a
+separate `ConwayBuilder::with_context_hook` call. `ConwayBuilder::build`
+collects every installed plugin's hooks and folds them, alongside any
+`with_context_hook`-injected one, through `compose_context_hooks`
+(`crates/conway/src/builder.rs`) into the single `Runtime::set_context_hook`
+call the runtime reads. `conway-plugin-skills`' `SkillsPlugin::context_hooks`
+(its own `SkillIndexHook`) is a shipped implementor;
+`conway-plugin-memory` is the other. Composition is chaining, not a union of
+independent effects: more than one hook is wrapped in a `ChainedContextHook`
+that runs each hook in install order, feeding one hook's `before_request`
+output to the next as input, and returns the first `Some` any hook gives
+`on_overflow`. See hooks.md point 3 for the `ContextHook` contract itself;
+the multi-plugin chaining is `ConwayBuilder`'s own composition, verified
+directly in `builder.rs`, not a separate numbered point.
+
+### `curators()` — a plugin's own path-model curator
+
+Declares zero or more `Curator`s: selection-layer curation that runs
+*before* assembly, over a resolved `ValidatedPath`, and returns a validated
+`Derivation` — the seam a cross-tree memory curator plugs into, at the path
+layer rather than the segment layer `context_hooks()` curates.
+`ConwayBuilder::build` collects every installed plugin's curators and folds
+them, alongside any `with_curator`-injected one, through `compose_curators`
+(`crates/conway/src/builder.rs`) into the single
+`Runtime::set_context_curator` call. `conway-plugin-trim`'s
+`TrimPlugin::curators` is the one shipped implementor. Composition chains exactly like
+`context_hooks()`: more than one curator is wrapped in a `ComposedCurator`
+that runs each in install order, feeding one curator's derived path to the
+next as its base. No hooks.md point exists for this seam — the contract
+lives in `docs/vision/DESIGN-context-path.md` §11.3/§11.4 and
+`crate::ports::curator`'s own module doc instead, cited directly rather
+than through an invented hooks.md citation.
+
+### `permission_rules()` — narrowing-only policy over a plugin's own tools
+
+Declares zero or more `PluginPermissionRule`s: a `Deny`/`Prompt`/`Abstain`
+verdict per tool, narrowing-only by type construction (there is no `Allow`
+variant, so a plugin can never widen what the operator authorized).
+`ConwayBuilder::build` collects every installed plugin's rules and installs
+each `Deny`/`Prompt` as a `PatternOrigin::Plugin` rule via
+`PermissionBroker::remember_deny_rule`/`remember_prompt_rule`
+(`crates/conway-runtime/src/permission.rs`); `Abstain` installs nothing.
+`conway-plugin-subprocess`'s `SubprocessPlugin::permission_rules` (produced
+from the `permission.policy/1` wire exchange) is the one shipped
+implementor. Composition is a plain union: every plugin's installed
+rules are checked at the SAME deny tier an operator's own `permissions.json`
+deny already is, before the mode gate, the cache, pattern-allows, and
+`AutoAllow` — any one plugin's matching `Deny` refuses the call regardless
+of what any other plugin abstained on, and the operator's own deny/plan-mode
+refusal still fires first and outranks every plugin verdict. See hooks.md
+point 7.
+
+### `observe_sink()` — watch the host's own event stream
+
+Declares an optional `EventSinkHandle` the host fans its live `Event` stream
+onto, so a plugin can observe conway's own events over a session — the
+host-side half of the `observe/1` wire point. `ConwayBuilder::build`
+collects each installed plugin's sink and spawns one forwarding task per
+sink onto the runtime's `EventBus` (`crates/conway/src/builder.rs`).
+`conway-plugin-subprocess`'s `SubprocessPlugin::observe_sink` is the one
+shipped implementor. Composition is independent, not merged: 0 or 1 sink
+per plugin, each with its own forwarding task — a slow or lagging plugin
+sees `Event::Lagged` on its own sink and never blocks another plugin's sink
+or the host turn. See hooks.md point 11.
+
+### `status_contributions()` — a polled snapshot of what a plugin is pushing
+
+Declares nothing by itself; it returns the CURRENT contents of a per-key
+store a persistent subprocess plugin fills by pushing `status/1`
+notifications over its session. Read by
+`Conway::poll_plugin_status_contributions` (`crates/conway/src/conway.rs`), which
+`flat_map`s every live plugin's current contributions into one `Vec` on each
+poll. `conway-plugin-statusline`'s `StatusLinePlugin::status_contributions`
+is the simplest shipped implementor (`conway-plugin-subprocess` is the
+wire-driven one). Composition is a plain union across plugins each poll —
+no cross-plugin dedup by key; within one plugin's own store, a later
+`status/1` line for the same key overwrites the earlier one before any poll
+ever runs. The TUI render path that would show this alongside conway's own
+computed status-line state remains design-only — this method is exposed
+now as the reachable surface a future render path reads from. See hooks.md
+point 12.
+
+### `capabilities()` — callable by another plugin, not by the model
+
+Declares zero or more capabilities this plugin makes callable by ANOTHER
+installed plugin (Edge B) — so a checkbox-shaped capability need not be
+reimplemented by every plugin that wants one. `ConwayBuilder::build` builds
+the real `CapabilityRegistry` from every installed plugin's registrations
+(`crates/conway/src/builder.rs`, `provided_capability_names` +
+`capability_registrations`). `conway-plugin-ui`'s
+`ConwayUiPlugin::capabilities` is the simplest shipped implementor
+(`conway-plugin-subprocess` is the wire-driven one). Composition is exclusive, not union: two plugins
+registering the identical `HostCapability` name fail `build()` outright with
+a named duplicate-provider error naming both offending plugins — never
+silently resolved to one arbitrary provider. See hooks.md point 21.
+
+### `hooks()` — registering a hook rule the way you register a tool
+
+Declares zero or more `PluginHookRule`s — the same `event`/`match_tool`/
+`command`/`timeout_ms`/`enabled`/`on_failure` shape an operator's own
+`[hooks].rules[]` entry carries, plus `spawn_only`, closing the gap that
+used to force a translation layer through the whole-config
+`ConwayBuilder::config_mut` escape hatch instead. `ConwayBuilder::build`
+folds every plugin's rules, host-namespaced by declaring plugin id and
+tagged `HookOrigin::Plugin`, into the SAME `PreToolUseHookSpec`/`HookSpec`
+lists it builds from `config.hooks.rules` (`crates/conway/src/builder.rs`).
+`conway-cli`'s own `ClaudeCompatHooksPlugin::hooks`
+(`crates/conway-cli/src/claude_compat_plugins.rs`) is the one real
+consumer, translating a discovered Claude Code `hooks.json` into this
+surface. Composition is a union at the identical tier a config-declared
+rule reaches — never a second, weaker one. `Plugin::hooks()` is not a
+separate hooks.md point: it is a new PRODUCER of point 13's existing
+`hooks` charter (hooks.md's own text says so explicitly), so see hooks.md
+point 13.
 
 ## Testing your hook
 

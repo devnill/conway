@@ -293,3 +293,45 @@ claim: conway.confine's Linux launcher invokes bwrap directly, not merely a bind
 paths: crates/conway-plugin-confine/src/launcher.rs
 present: bwrap
 -->
+
+<!-- claim-check
+why: board item 01M1FSKJHXMSTSM9076W5MR4KM gave authoring.md a section per real optional Plugin method because six of them (context_hooks, curators, permission_rules, capabilities, narrowable_keys, observe_sink) were mentioned zero times before this item, despite each having a shipped first-party implementor -- a doc gap an author could only discover by reading the trait source. This predicate is the regression guard: it fails the moment a future edit deletes the context_hooks() subsection without noticing.
+claim: docs/plugins/authoring.md documents Plugin::context_hooks()
+paths: docs/plugins/authoring.md
+present: context_hooks
+-->
+
+<!-- claim-check
+why: same finding as the context_hooks predicate above, for curators -- conway-plugin-trim is the shipped implementor authoring.md's own subsection names.
+claim: docs/plugins/authoring.md documents Plugin::curators()
+paths: docs/plugins/authoring.md
+present: curators
+-->
+
+<!-- claim-check
+why: same finding as the context_hooks predicate above, for permission_rules -- conway-plugin-subprocess is the shipped implementor authoring.md's own subsection names.
+claim: docs/plugins/authoring.md documents Plugin::permission_rules()
+paths: docs/plugins/authoring.md
+present: permission_rules
+-->
+
+<!-- claim-check
+why: same finding as the context_hooks predicate above, for capabilities -- conway-plugin-ui and conway-plugin-subprocess are the shipped implementors authoring.md's own subsection names.
+claim: docs/plugins/authoring.md documents Plugin::capabilities()
+paths: docs/plugins/authoring.md
+present: capabilities
+-->
+
+<!-- claim-check
+why: same finding as the context_hooks predicate above, for narrowable_keys -- conway-tools' FsPlugin is the shipped implementor authoring.md's own subsection names.
+claim: docs/plugins/authoring.md documents Plugin::narrowable_keys()
+paths: docs/plugins/authoring.md
+present: narrowable_keys
+-->
+
+<!-- claim-check
+why: same finding as the context_hooks predicate above, for observe_sink -- conway-plugin-subprocess is the shipped implementor authoring.md's own subsection names.
+claim: docs/plugins/authoring.md documents Plugin::observe_sink()
+paths: docs/plugins/authoring.md
+present: observe_sink
+-->

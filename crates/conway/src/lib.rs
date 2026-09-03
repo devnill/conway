@@ -382,6 +382,18 @@ pub mod plugin {
     /// doc for why this is a distinct type from [`InstructionFragment`],
     /// argued rather than assumed (two audiences, two cardinalities).
     pub use conway_core::ports::PluginDescription;
+    /// [`Plugin::narrowable_keys`]'s own return-type element -- a plugin
+    /// author constructs one of these per per-agent-configurable key it
+    /// declares narrowable, pairing the bare key name with the pure
+    /// [`NarrowingRule::narrows`] comparison the host consults when a
+    /// caller's `SubagentSpec::plugin_config` requests a per-agent
+    /// override. Re-exported for the same reason every other
+    /// `Plugin`-method return-type element in this module is: an
+    /// implementor of `Plugin::narrowable_keys` needs to name it without
+    /// depending on `conway-core` directly (`docs/plugins/authoring.md`'s
+    /// "What else a plugin can declare" section named this as a facade
+    /// parity gap; closed here rather than only noted).
+    pub use conway_core::ports::NarrowingRule;
     pub use conway_core::ports::{
         ArtifactWriteHandle, ArtifactWriter, CancellationToken, Command, CommandCtx,
         CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, CurateCtx,
