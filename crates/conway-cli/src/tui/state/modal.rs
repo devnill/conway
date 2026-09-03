@@ -182,6 +182,40 @@ pub struct AddProviderCredentialState {
     pub error: Option<String>,
 }
 
+/// Board item (setup-time context window, ASK + PERSIST): the settings
+/// providers section's own context-window ASK prompt -- opened right after
+/// a provider is added ([`super::AppState::begin_add_provider_context_
+/// window`], called from `App::write_provider_entry_and_refresh`) whenever
+/// setup-time discovery found nothing AND the dialect's own baseline is not
+/// already a real, sourced figure (`crate::first_run::context_window_is_
+/// verified`). A small, self-contained single-line editor (`input`/
+/// `cursor`), mirroring [`AddProviderCredentialState`]'s own shape exactly
+/// -- unlike that state, this text is NOT a secret and renders in the
+/// clear (a token count, not a credential).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddProviderContextWindowState {
+    /// The `"backend/model"` key (`crate::first_run::chain_entry`'s own
+    /// format) this answer will be recorded under in `models.json` --
+    /// resolved back to nothing else: unlike the credential prompt, there is
+    /// no table lookup on submit, this key IS the write target.
+    pub model_key: String,
+    /// The card's own display label (`"<id>: <model>"`), captured at open
+    /// time so the card never has to re-derive it from `model_key`.
+    pub label: String,
+    /// The typed-so-far number, as raw text -- validated only on submit
+    /// (`crate::first_run::validate_context_window_input`), mirroring
+    /// [`AddProviderCredentialState::input`]'s own "validate on Enter, not
+    /// per keystroke" contract.
+    pub input: String,
+    /// Cursor position within `input`, as a *char* index -- same convention
+    /// as [`super::AppState::cursor`].
+    pub cursor: usize,
+    /// Set when `crate::first_run::validate_context_window_input` rejects
+    /// the current `input` -- the card stays open with the reason shown,
+    /// mirroring [`AddProviderCredentialState::error`]'s own contract.
+    pub error: Option<String>,
+}
+
 /// The generic wording `Esc` on the permission prompt used to send
 /// unconditionally, before this item -- kept as the fallback [`AppState::
 /// submit_deny_feedback`] uses when the operator submits [`DenyFeedbackState`]
@@ -318,6 +352,23 @@ pub enum Mode {
     /// `AppState::promote_next_surface` so a prompt queued in the
     /// meantime is not stranded.
     AddProviderCredential(AddProviderCredentialState),
+    /// Board item (setup-time context window, ASK + PERSIST): the settings
+    /// providers section's own context-window ASK prompt (see
+    /// [`AddProviderContextWindowState`]'s own doc). While this is the
+    /// mode, the input line is inert and `input::handle_add_provider_
+    /// context_window_key` swallows every key except ordinary character/
+    /// `Backspace`/`Left`/`Right` editing, `Enter` (validate and record --
+    /// an EMPTY `input` on `Enter` is a valid "skip" answer, not an error),
+    /// `Esc` (skip, identical outcome to an empty `Enter` -- see `crate::
+    /// first_run::validate_context_window_input`'s own doc for why a blank
+    /// answer is never an error state here), and the quit keys. Reachable
+    /// only from `App::write_provider_entry_and_refresh`, AFTER the
+    /// provider's own `backends.<id>` entry already wrote (or failed to)
+    /// on its own merits -- so, like `AddProviderCredential`, it never
+    /// needs to consider parking behind another of the four modal-bearing
+    /// surfaces on OPEN, and `Enter`/`Esc` both restore `Mode::Normal` via
+    /// `AppState::promote_next_surface`.
+    AddProviderContextWindow(AddProviderContextWindowState),
     /// Board item `01M19NH39AE2D5AMJK0RZRQY86`: `ask_question`'s own modal
     /// -- a model-called tool is blocked awaiting the operator's answer.
     /// While this is the mode, the input line is inert and
@@ -369,6 +420,9 @@ impl std::fmt::Debug for Mode {
             }
             Mode::AddProviderCredential(cred) => {
                 write!(f, "AddProviderCredential(choice_id={})", cred.choice_id)
+            }
+            Mode::AddProviderContextWindow(w) => {
+                write!(f, "AddProviderContextWindow(model_key={})", w.model_key)
             }
             Mode::UiForm(form) => {
                 write!(f, "UiForm(prompt={:?})", form.ask.request.prompt)
@@ -879,6 +933,44 @@ impl AppState {
     /// when the mode is something else.
     pub fn close_add_provider_credential(&mut self) {
         if !matches!(self.mode, Mode::AddProviderCredential(_)) {
+            return;
+        }
+        self.mode = Mode::Normal;
+        self.promote_next_surface();
+    }
+
+    /// Opens the settings providers section's own context-window ASK prompt
+    /// (board item: setup-time context window, ASK + PERSIST) -- the ONE
+    /// caller, `App::write_provider_entry_and_refresh`, only ever reaches
+    /// this after the provider's own `backends.<id>` write has already
+    /// settled, at which point `mode` is `Normal` in EVERY reachable case
+    /// (the credential prompt, if one was open, already closed itself
+    /// before that write ran). A no-op otherwise, mirroring [`Self::begin_
+    /// add_provider_credential`]'s own guard -- an operator's typed
+    /// keystroke pattern must never silently steal the floor from an
+    /// unrelated pending decision.
+    pub fn begin_add_provider_context_window(&mut self, model_key: String, label: String) {
+        if !matches!(self.mode, Mode::Normal) {
+            return;
+        }
+        self.mode = Mode::AddProviderContextWindow(AddProviderContextWindowState {
+            model_key,
+            label,
+            input: String::new(),
+            cursor: 0,
+            error: None,
+        });
+        self.modal_scroll = 0;
+    }
+
+    /// Closes the context-window prompt with no further state change here
+    /// -- `Esc`/`Enter` (validated or empty) alike; the caller
+    /// (`input::handle_add_provider_context_window_key`) reads `model_key`/
+    /// the validated answer out before calling this, mirroring [`Self::
+    /// close_add_provider_credential`]'s own contract exactly. A no-op when
+    /// the mode is something else.
+    pub fn close_add_provider_context_window(&mut self) {
+        if !matches!(self.mode, Mode::AddProviderContextWindow(_)) {
             return;
         }
         self.mode = Mode::Normal;

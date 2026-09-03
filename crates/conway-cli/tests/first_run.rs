@@ -45,6 +45,7 @@
 
 mod common;
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use common::mock_backend::{Chunk, MockBackend, Script};
@@ -446,8 +447,15 @@ async fn finish_setup_writes_a_config_that_routes_from_the_file_alone() {
     let entry_json = openai_compat_entry_json(&mock.base_url, "any-key");
 
     let mut chain: Vec<String> = Vec::new();
-    let outcome =
-        first_run::finish_setup(&path, "mock", &entry_json, &mock.model, &mut chain).await;
+    let outcome = first_run::finish_setup(
+        &path,
+        "mock",
+        &entry_json,
+        &mock.model,
+        &mut chain,
+        &HashMap::new(),
+    )
+    .await;
 
     assert_eq!(
         outcome,
@@ -490,8 +498,15 @@ async fn finish_setup_alone_leaves_a_working_single_provider_config() {
     let entry_json = openai_compat_entry_json(&mock.base_url, "any-key");
 
     let mut chain: Vec<String> = Vec::new();
-    let outcome =
-        first_run::finish_setup(&path, "solo", &entry_json, &mock.model, &mut chain).await;
+    let outcome = first_run::finish_setup(
+        &path,
+        "solo",
+        &entry_json,
+        &mock.model,
+        &mut chain,
+        &HashMap::new(),
+    )
+    .await;
     assert_eq!(outcome, first_run::GuidedSetupOutcome::Configured);
     assert_eq!(
         chain.len(),
@@ -517,8 +532,15 @@ async fn finish_setup_called_twice_writes_both_backends_and_a_chain_naming_both_
     let mut chain: Vec<String> = Vec::new();
 
     let entry_first = openai_compat_entry_json(&mock_first.base_url, "any-key");
-    let outcome_first =
-        first_run::finish_setup(&path, "first", &entry_first, &mock_first.model, &mut chain).await;
+    let outcome_first = first_run::finish_setup(
+        &path,
+        "first",
+        &entry_first,
+        &mock_first.model,
+        &mut chain,
+        &HashMap::new(),
+    )
+    .await;
     assert_eq!(outcome_first, first_run::GuidedSetupOutcome::Configured);
 
     let entry_second = openai_compat_entry_json(&mock_second.base_url, "any-key");
@@ -528,6 +550,7 @@ async fn finish_setup_called_twice_writes_both_backends_and_a_chain_naming_both_
         &entry_second,
         &mock_second.model,
         &mut chain,
+        &HashMap::new(),
     )
     .await;
     assert_eq!(outcome_second, first_run::GuidedSetupOutcome::Configured);
@@ -578,8 +601,15 @@ async fn apply_opinion_set_after_finish_setup_writes_exactly_the_six_ruled_ids()
     let entry_json = openai_compat_entry_json(&mock.base_url, "any-key");
 
     let mut chain: Vec<String> = Vec::new();
-    let outcome =
-        first_run::finish_setup(&path, "mock", &entry_json, &mock.model, &mut chain).await;
+    let outcome = first_run::finish_setup(
+        &path,
+        "mock",
+        &entry_json,
+        &mock.model,
+        &mut chain,
+        &HashMap::new(),
+    )
+    .await;
     assert_eq!(outcome, first_run::GuidedSetupOutcome::Configured);
 
     let expected = [
@@ -640,8 +670,15 @@ async fn a_session_built_from_the_opinion_set_config_reports_instruction_fragmen
     let entry_json = openai_compat_entry_json(&mock.base_url, "any-key");
 
     let mut chain: Vec<String> = Vec::new();
-    let outcome =
-        first_run::finish_setup(&settings_path, "mock", &entry_json, &mock.model, &mut chain).await;
+    let outcome = first_run::finish_setup(
+        &settings_path,
+        "mock",
+        &entry_json,
+        &mock.model,
+        &mut chain,
+        &HashMap::new(),
+    )
+    .await;
     assert_eq!(outcome, first_run::GuidedSetupOutcome::Configured);
     first_run::apply_opinion_set(&settings_path).expect("apply_opinion_set must succeed");
 

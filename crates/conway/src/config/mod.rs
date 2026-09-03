@@ -18,10 +18,10 @@ pub mod writer;
 pub use discovery::discover;
 pub use locality::role_is_local;
 pub use merge::{
-    apply_cli, is_baked_in_role_floor, load, load_ignoring_user_config, merged_document, validate,
-    CliOverrides, LoadOptions,
+    apply_cli, is_baked_in_role_floor, load, load_ignoring_user_config, merged_document,
+    metadata_path_for, resolve_metadata_path, validate, CliOverrides, LoadOptions,
 };
-pub use model_metadata::ModelMetadata;
+pub use model_metadata::{set_context_window, ModelMetadata};
 pub use schema::ConwayConfig;
 pub use writer::{
     ensure_default_role, plugin_install_key_present, set_backend_provider, set_builtin_plugins,

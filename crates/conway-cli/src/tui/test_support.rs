@@ -130,6 +130,12 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         // reason to duplicate.
         | Action::AddProviderChoice(_)
         | Action::SubmitProviderCredential(_, _)
+        // Board item (setup-time context window, ASK + PERSIST): mirrors
+        // `SubmitProviderCredential` immediately above for the identical
+        // reason -- writing `models.json` needs a real filesystem context
+        // this terminal-free harness does not have, so this is applied in
+        // `app.rs`'s run loop only.
+        | Action::SubmitProviderContextWindow(_, _)
         | Action::RemoveProvider(_) => {}
         Action::ScrollLineUp => apply_line_scroll(state, area, true),
         Action::ScrollLineDown => apply_line_scroll(state, area, false),

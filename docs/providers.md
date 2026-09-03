@@ -810,60 +810,82 @@ entry, naming the real window — or let provider setup do it for you, next.
 
 **The operator's ruling (2026-08-30): at provider setup, conway attempts to
 discover the real window; if discovery fails or the dialect has none, it
-asks.** This item ships the DISCOVER half in full: both places a provider
-gets configured — guided first-run setup and `/settings` → providers → add
-— attempt live discovery through one shared primitive,
-`conway_plugin_backends::probe::discover_context_window`, never two
-separate implementations (a fix applied to only one of two config
-entrances shipped as a real defect earlier in this same item's own
-history, caught within minutes). For `ollama`, discovery is `POST
-/api/show` (below); a dialect with no known discovery endpoint
-(`lm_studio`, `vllm_hermes`, `llama_cpp_server`, `kimi` — none confirmed to
-expose one) is skipped, never attempted.
+asks; either way, the answer is recorded.** Both places a provider gets
+configured — guided first-run setup and `/settings` → providers → add —
+run the identical DISCOVER-then-ASK-then-PERSIST sequence through one
+shared set of primitives (`conway_plugin_backends::probe::
+discover_context_window` for DISCOVER;
+`conway_cli::first_run::ask_and_persist_context_window`/the settings TUI's
+own `Mode::AddProviderContextWindow` card for ASK;
+`conway_cli::first_run::persist_context_window`/`persist_context_window_at`
+→ `conway::config::metadata_path_for` → `conway::config::
+set_context_window` for PERSIST), never two separate implementations of
+any of the three (a fix applied to only one of two config entrances shipped
+as a real defect earlier in this same item's own history, caught within
+minutes). For `ollama`, discovery is `POST /api/show` (below); a dialect
+with no known discovery endpoint (`lm_studio`, `vllm_hermes`,
+`llama_cpp_server`, `kimi` — none confirmed to expose one) is skipped,
+never attempted.
 
-**The ASK half — a UI prompt for the value when discovery fails — and
-automatic PERSISTENCE of a discovered value are both disclosed follow-ups,
-not shipped by this item.** A successful discovery is surfaced as an
-operator-facing notice (a `.conway/models.json` snippet naming the exact
-model and window, copy-pasteable — the same "refuse and name what changed"
-convention this doc's own non-interactive-guidance messages use) rather
-than written automatically, because — see the corrected precedence note
-above — there is no per-model override channel reachable from inside a
-`[backends.<id>]` entry for conway to write into; the only real channel is
-the separate `.conway/models.json` file, whose default `metadata_path` is
-resolved relative to the process's own working directory, a genuinely
-different scope question than the USER-scope-only writes guided
-setup/`/settings` already make for `settings.json` itself. Wiring real
-persistence is real, additional, separately-scoped work: a new writer for
-a fourth JSON-file shape, plus a scope-resolution decision, neither
-invented here unverified.
+**Asking is skipped when discovery is skipped for a GOOD reason, not just
+any reason.** `anthropic` and the `"openai"` dialect both have a real,
+sourced baseline window (200,000 and 128,000 tokens respectively — see the
+`Profile fields` table above) — discovery is never attempted for them, but
+neither is the ASK prompt: their own baseline is already a fact, not an
+unsourced placeholder, so asking would be pure noise. Every other dialect
+this flow can configure today (`"ollama"`, for both a detected local server
+and Ollama Cloud) has NO verified baseline, so a discovery failure there
+always reaches the ASK prompt.
 
-Until that follow-up lands, a discovered window is NOT a session-changing
-event by itself — an operator who wants it to take effect pastes the
-printed snippet into `.conway/models.json` themselves. A config an
-operator never edits after setup keeps resolving `Unverified` exactly as
-it did before this item, safely (the admission-safety clamp, never an
-invented number) — discovery not being auto-applied is a scoping decision,
-not a silent failure: the notice always fires on a successful discovery, so
-nothing about a real window conway learned goes unreported.
+**The window is written into whichever `models.json` conway would actually
+read back for the CURRENT working directory** — the same
+`[models].metadata_path` resolution (default `.conway/models.json`,
+relative to `cwd`, unless a `user`/`project`/`env` layer overrides it) a
+normal run's own five-source `load` performs, computed without requiring a
+full, validated config to already exist. This is a deliberate choice, not
+the only option considered: an earlier draft always wrote into a FIXED
+user-scope `models.json` (next to `settings.json`) and pointed `[models].
+metadata_path` at it — rejected, because it would silently redirect that
+key away from a project-local `models.json` an operator already relies on,
+the very first time this code ran. A second earlier draft wrote into
+`backends.<id>.models.<model>.max_context_tokens` (a sibling key inside the
+`[backends.<id>]` entry itself) — reverted, because that channel is
+confirmed INERT for `openai-compat` backends (the precedence note above:
+`ctx.extra`'s overlay is exercised for the `anthropic` kind only). Neither
+alternative is built here; both are recorded so a future reader does not
+rebuild on them unverified. See `conway::config::merge::metadata_path_for`'s
+own doc for the full account.
+
+A successful discovery, or a typed answer, is confirmed with an
+operator-facing notice naming the model, the window, and the exact file it
+was written to — the same "refuse and name what changed" convention this
+doc's own non-interactive-guidance messages use. Declining the ASK prompt
+(pressing Enter with nothing typed, or `Esc`) is treated as a real, honest
+answer, never an error: the model's window simply stays unrecorded, and the
+notice says so plainly rather than silently re-prompting or falling back to
+a guessed number.
 
 **This is a setup-time step, not a CLI configuration surface.** There is no
 `/settings` row, no slash command, and no flag for triggering or reading
-discovery directly — consistent with every other knob this doc's own
-[`Profile` fields](#the-profile-fields) table documents as config-file-only.
+discovery directly, and none for reading or re-asking the window
+afterward — consistent with every other knob this doc's own [`Profile`
+fields](#the-profile-fields) table documents as config-file-only. A setup-
+time QUESTION is not the same thing as a config surface; this item adds the
+former, never the latter.
 
-**Existing configs — and, until the persistence follow-up above lands,
-every config — are not broken and are not silently given an invented
+**A config written before this item shipped — or one an operator declined
+to answer at setup — is not broken and is not silently given an invented
 number.** A backend with no `.conway/models.json` entry for a model simply
 resolves `Unverified` exactly like any other undescribed model (above) —
 conway still routes, using the admission-safety clamp, and
 `tracing::debug!` (or a future operator-facing display of the resolved
 window's *source*, not just its value — the equivalent of typing
 `/context` in other coding-agent CLIs, but showing configured / discovered
-/ bundled / unverified rather than only a number) says so. Pasting
-discovery's own printed snippet into `.conway/models.json` is what moves a
-model out of `Unverified` today; a future persistence follow-up would make
-that automatic.
+/ bundled / unverified rather than only a number, disclosed as a separate,
+not-yet-decided follow-up rather than folded into this item) says so.
+Nothing about this item retroactively fills in a window for a
+pre-existing config; it only makes `Unverified` rarer going forward, by
+asking once, at the moment a provider is configured.
 
 ### Requesting the window: `num_ctx`
 

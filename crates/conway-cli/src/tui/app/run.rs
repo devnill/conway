@@ -755,6 +755,25 @@ impl App {
                                     )
                                     .await;
                                 }
+                                // Board item (setup-time context window, ASK
+                                // + PERSIST): mirrors
+                                // `Action::SubmitProviderCredential`
+                                // immediately above -- the decision and
+                                // write live in `app/provider_manage.rs`,
+                                // factored out for the same testability
+                                // reason, and `env_vars` is collected HERE
+                                // for the identical hermetic-testing reason.
+                                Action::SubmitProviderContextWindow(model_key, window) => {
+                                    let env_vars: std::collections::HashMap<String, String> =
+                                        std::env::vars().collect();
+                                    self.apply_provider_context_window(
+                                        &model_key,
+                                        window,
+                                        &env_vars,
+                                        &std::env::current_dir()
+                                            .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                                    );
+                                }
                                 Action::RemoveProvider(provider_id) => {
                                     let env_vars: std::collections::HashMap<String, String> =
                                         std::env::vars().collect();
