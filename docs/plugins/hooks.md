@@ -17,8 +17,9 @@ tool registration, one `ContextHook`, one `PermissionGate`, file-based
 permission rules, declarative script hooks, plugin commands, plugin-fired
 events, and the two observer-class wire points (`observe/1`,
 `status.declare/1`); what still reads designed-not-built is the composed
-inference-evaluated policy chain, a remote `context.hook/1` transport, and a
-plugin-declared tool-hide selector, plus the TTL sweep that would age a
+inference-evaluated policy chain (point 8), a remote `context.hook/1`
+transport (point 9), and a plugin-declared tool-hide selector (point 10),
+plus the TTL sweep that would age a
 `status.declare/1` contribution out once its declared `ttl_ms` passes (the
 render path that displays those contributions, and the startup snapshot
 that populates it, both shipped — see point 12 below). The `subagent_mode`
@@ -293,9 +294,9 @@ three previously-divergent copies.
 | On error | N/A |
 | On timeout | N/A |
 | On garbage | N/A |
-| When absent | This is the current, only state: no `Plugin` implementor has any way to submit a rule. `Plugin::tools()`/`Plugin::manifest()` are the entire trait surface (point 1) — there is no `Plugin::rules()` method or equivalent |
+| When absent | N/A — the producer exists. `Plugin::permission_rules` (`crates/conway-core/src/ports/plugin.rs`) returns `Vec<PluginPermissionRule>`; an in-process plugin may override it directly, and a subprocess plugin's rules are produced from the `permission.policy/1` wire exchange (`SubprocessPlugin::permission_rules`, `crates/conway-plugin-subprocess/src/lib.rs`) |
 | Ordering | N/A |
-| Status | **designed-not-built**, but with real, tested guard code already in place ahead of the producer: `PatternOrigin::Plugin` (`crates/conway-core/src/permission_pattern.rs`) exists as a variant, is exercised by `crates/conway-runtime/tests/permission_broker.rs` (proving the allow-rejection holds even though nothing constructs this variant outside tests today), and its own doc names the reason precisely — "the invariant rests on a guard, not on the absence of a transport." **Nothing tracks building this producer.** The declarative `hooks` charter does not build it — none of its nine children gives `Plugin` a `rules()` method or constructs `PatternOrigin::Plugin` outside a test; that charter's own spec is scoped to the script-hook surface, a different axis. **Correction: this row's forward reference is now only partially right.** `pre_tool_use` IS a real, dispatched capability (point 13 below) — but it does NOT produce `PatternOrigin::Plugin` rules, and its answer shape is not "allow/deny/deny-with-feedback": `HookPermissionVerdict` is `no_opinion` (proceed) or `deny { reason }` ONLY, with no `allow` variant at all, by construction (a hook may only narrow, never widen). `pre_tool_use` dispatch feeds `PermissionBroker::decide` directly, as an independent narrowing-only chain step (exactly one narrowing chain, never configurable policy branching), never through this row's `Plugin::rules()`/`PatternOrigin::Plugin` producer, which remains exactly as unbuilt as before this item |
+| Status | **Implemented.** `Plugin::permission_rules` (`crates/conway-core/src/ports/plugin.rs`) returns `Vec<PluginPermissionRule>`; `ConwayBuilder::build` collects each installed plugin's rules (`crates/conway/src/builder.rs`) and installs them via `PermissionBroker::remember_pattern_rule` as `PatternOrigin::Plugin` deny/prompt rules — the SAME guard that rejects `Then::Allow` paired with `PatternOrigin::Plugin` (`crates/conway-core/src/permission_pattern.rs`). `conway-plugin-subprocess` produces these rules from the `permission.policy/1` wire exchange (`SubprocessPlugin::permission_rules`, `crates/conway-plugin-subprocess/src/lib.rs`): a plugin declaring `permission.policy/1` at a supported version exchanges a static per-tool narrowing declaration once at session open, and the host surfaces it through this method. An in-process plugin may implement `permission_rules` directly. The narrowing-only-by-type fact holds: no `allow` verdict — `PermissionBroker::remember_pattern_rule` structurally rejects `Then::Allow` paired with `PatternOrigin::Plugin`. What REMAINS design-only is the composed inference-evaluated policy chain of point 8 — a per-call, argument-aware, inference-evaluated `PolicyRequest`/`NarrowingPolicy`/`DecidingPolicy` trait — which is a different axis from this static, per-tool declaration |
 
 ### 8. Composed inference-evaluated permission policy — `permission.policy/1`
 
@@ -1160,7 +1161,7 @@ overridden by a *later*, weaker mechanism; it does not, by itself, establish
 that the grant should have existed. Do not read this pipeline as a stronger
 guarantee than that.
 
-### The policy-chain overlay, if points 7 and 8 are ever built
+### The policy-chain overlay, if point 8 is ever built
 
 the extension design specifies where a composed
 `NarrowingPolicy`/`DecidingPolicy` chain would sit, argued from the same

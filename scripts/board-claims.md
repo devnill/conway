@@ -249,3 +249,17 @@ claim: no first-party conway-plugin-* crate declares a non-empty optional_host_c
 paths: crates/conway-plugin-backends/src crates/conway-plugin-claude/src crates/conway-plugin-discover/src crates/conway-plugin-history/src crates/conway-plugin-idiom/src crates/conway-plugin-marketplace/src crates/conway-plugin-mcp/src crates/conway-plugin-memory/src crates/conway-plugin-names/src crates/conway-plugin-path/src crates/conway-plugin-routing/src crates/conway-plugin-skeleton/src crates/conway-plugin-skills/src crates/conway-plugin-statusline/src crates/conway-plugin-stepguard/src crates/conway-plugin-subprocess/src crates/conway-plugin-trim/src crates/conway-plugin-ui/src
 absent: optional_host_caps: vec!\[[^]]
 -->
+
+<!-- claim-check
+why: regression guard on the Plugin-contributed permission rules installation -- hooks.md point 7 was stale in the understating direction for multiple cycles, saying the producer did not exist while it shipped and installed rules as PatternOrigin::Plugin
+claim: ConwayBuilder::build installs plugin permission rules as PatternOrigin::Plugin -- the producer path hooks.md point 7 now documents
+paths: crates/conway/src/builder.rs
+present: PatternOrigin::Plugin
+-->
+
+<!-- claim-check
+why: regression guard pinning the exact stale phrasing removed from hooks.md point 7 -- the page said "there is no Plugin::rules() method or equivalent" while Plugin::permission_rules existed and shipped
+claim: hooks.md point 7 no longer says there is no Plugin::rules() method or equivalent
+paths: docs/plugins/hooks.md
+absent: there is no .Plugin::rules\(\). method
+-->
