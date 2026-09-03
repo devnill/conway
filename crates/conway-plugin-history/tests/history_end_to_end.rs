@@ -26,54 +26,17 @@
 //! through the concrete `RewindCommand` type this crate's own `src/lib.rs`
 //! unit tests already exercise directly.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
 use conway::plugin::{Command, CommandCtx, CommandOutcome, Plugin as _};
 use conway::LogSeq;
-use conway_core::ids::{BackendId, RoleAlias};
+use conway_core::ids::BackendId;
 use conway_testkit::FakeBackend;
 
-use conway::test_support::test_builder;
+use conway::test_support::{base_config, test_builder};
 use conway_plugin_history::{
     HistoryPlugin, COMMAND_NAME_CHECKOUT, COMMAND_NAME_MASK, COMMAND_NAME_REWIND, PLUGIN_ID,
 };
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        // Deliberately empty, same as `conway-plugin-skeleton`'s own test:
-        // `[plugins].install` is read by whatever BINARY links this crate
-        // (`conway-cli`'s `first_party_plugins.rs`); a library embedder
-        // instead attaches directly via `with_plugin`, below.
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 /// A real `Conway` build succeeds with this plugin installed -- the same
 /// "no stub, no special case" property `PluginManifest` validation would

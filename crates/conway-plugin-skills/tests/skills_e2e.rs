@@ -33,21 +33,18 @@
 //! shape (the credential-free fakes family), and `crates/conway/tests/
 //! skills_e2e.rs`'s on-disk `.conway/skills` fixture shape.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
+use conway::config::schema::{ConwayConfig, RoleEntry};
 use conway::plugin::Plugin;
+use conway::test_support::base_config_at;
 use conway::{SessionSpec, SkillDef};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
-use conway_core::ids::{BackendId, RoleAlias, SeqRange, ToolName};
+use conway_core::ids::{BackendId, SeqRange, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, SessionStore};
 use conway_core::provenance::Provenance;
@@ -110,9 +107,14 @@ fn write_fixtures() -> PathBuf {
     dir
 }
 
-fn base_config(cwd: PathBuf) -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
+/// [`base_config_at`] plus an extra, unrouted-to "coder" role entry
+/// (identical shape to "default": empty chain) alongside the baseline's own
+/// "default" -- kept here even though nothing in this file names "coder",
+/// matching the original fixture's shape exactly rather than silently
+/// dropping a role a future test in this file might come to depend on.
+fn config_with_extra_coder_role(cwd: PathBuf) -> ConwayConfig {
+    let mut config = base_config_at(cwd);
+    config.roles.insert(
         "coder".to_string(),
         RoleEntry {
             chain: vec![],
@@ -120,30 +122,7 @@ fn base_config(cwd: PathBuf) -> ConwayConfig {
             ..Default::default()
         },
     );
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd,
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: conway::config::schema::HooksConfig::default(),
-    }
+    config
 }
 
 fn tool_call_response(call_id: &str, tool: &str, arguments: serde_json::Value) -> GenerateResponse {
@@ -159,7 +138,8 @@ fn tool_call_response(call_id: &str, tool: &str, arguments: serde_json::Value) -
     }
 }
 
-/// Builds a `Conway` from `base_config(scratch)` with every port faked, a
+/// Builds a `Conway` from `config_with_extra_coder_role(scratch)` with
+/// every port faked, a
 /// real on-disk `.conway/skills` + `.conway/agents` tree the facade's own
 /// `ConwayBuilder::build` discovers, and -- when `install` is `true` --
 /// `SkillsPlugin::from_dir(scratch/.conway/skills)` attached exactly the
@@ -173,7 +153,7 @@ fn skills_conway(
     install: bool,
 ) -> (conway::Conway, Arc<FakeStore>) {
     let store = Arc::new(FakeStore::new());
-    let mut builder = test_builder(base_config(scratch.to_path_buf()))
+    let mut builder = test_builder(config_with_extra_coder_role(scratch.to_path_buf()))
         .with_backend(backend)
         .with_session_store(store.clone());
     if install {

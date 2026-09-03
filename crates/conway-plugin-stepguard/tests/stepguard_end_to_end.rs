@@ -36,53 +36,20 @@
 //! headline assertion is not vacuous, checked here for a reviewer or the
 //! build lane to read rather than merely asserted in prose.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
 use conway::plugin::{
     async_trait, ContentBlock, PathArgs, PermissionClass, Plugin, PluginManifest, RenderKind,
     SeqRange, Tool, ToolCall, ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec,
     TruncationPolicy,
 };
-use conway::test_support::test_builder;
+use conway::test_support::{base_config_at, test_builder};
 use conway::{
     backend::{BackendId, GenerateResponse, StopReason, Usage},
-    Conway, Provenance, RoleAlias, SessionSpec, SessionStore,
+    Conway, Provenance, SessionSpec, SessionStore,
 };
 use conway_plugin_stepguard::{StepGuardPlugin, NOTE_REASON, NOTICE_AT};
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
-
-fn base_config(cwd: std::path::PathBuf) -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd,
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 /// A real, fully-faked `Conway` with `StepGuardPlugin::new()` AND a tiny
 /// always-succeeds `probe` tool installed (`ProbePlugin`/`ProbeTool` below)
@@ -95,7 +62,7 @@ fn stepguard_conway(
     backend: Arc<ScriptedBackend>,
     store: Arc<FakeStore>,
 ) -> Conway {
-    test_builder(base_config(cwd))
+    test_builder(base_config_at(cwd))
         .with_backend(backend)
         .with_session_store(store)
         .with_plugin(Arc::new(StepGuardPlugin::new()))

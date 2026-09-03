@@ -15,50 +15,17 @@
 //! that same store -- session A never forks or spawns session B, so
 //! anything A finds about B can only have come through discovery.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use conway::backend::{BackendId, GenerateRequest, GenerateResponse, StopReason, Usage};
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
 use conway::plugin::{ContentBlock, Event, ToolCall, ToolName};
-use conway::{EventStream, RoleAlias, SessionSpec};
+use conway::{EventStream, SessionSpec};
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
-use conway::test_support::test_builder;
+use conway::test_support::{base_config_at, test_builder};
 use conway_plugin_discover::{DiscoverPlugin, SEARCH_TOOL_NAME};
 use conway_plugin_path::{PathPlugin, COMPOSE_TOOL_NAME};
-
-fn base_config(cwd: std::path::PathBuf) -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd,
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 fn tool_call_response(call_id: &str, tool: &str, args: serde_json::Value) -> GenerateResponse {
     GenerateResponse {
@@ -170,7 +137,7 @@ async fn search_finds_a_record_and_composing_it_survives_the_next_turn() {
         ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("b replies"))])
             .with_id(BackendId::new("fake")),
     );
-    let mint_conway = test_builder(base_config(tmp.path().to_path_buf()))
+    let mint_conway = test_builder(base_config_at(tmp.path().to_path_buf()))
         .with_backend(mint_backend)
         .with_session_store(store.clone())
         .with_plugin(Arc::new(DiscoverPlugin))
@@ -216,7 +183,7 @@ async fn search_finds_a_record_and_composing_it_survives_the_next_turn() {
         ])
         .with_id(BackendId::new("fake")),
     );
-    let conway = test_builder(base_config(tmp.path().to_path_buf()))
+    let conway = test_builder(base_config_at(tmp.path().to_path_buf()))
         .with_backend(backend.clone())
         .with_session_store(store.clone())
         .with_plugin(Arc::new(DiscoverPlugin))

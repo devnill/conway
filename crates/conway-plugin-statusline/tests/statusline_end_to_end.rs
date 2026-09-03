@@ -23,61 +23,17 @@
 //! module doc, "Why this crate is worth more than the migration", for the
 //! full §7c argument these two tests are the executable half of.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
 use conway::plugin::Plugin as _;
-use conway::test_support::test_builder;
-use conway_core::ids::{BackendId, RoleAlias};
+use conway::test_support::{base_config, test_builder};
+use conway_core::ids::BackendId;
 use conway_testkit::{text_response, ScriptedBackend, ScriptedTurn};
 
 use conway_plugin_statusline::{
     StatusLinePlugin, StatusLineSpec, DEFAULT_KEY, MIN_REFRESH_INTERVAL_MS,
 };
-
-/// Mirrors `conway-plugin-skeleton`'s own `base_config` helper exactly --
-/// see that crate's `tests/skeleton_end_to_end.rs` for why every field is
-/// spelled out rather than deriving `Default` (this facade config has no
-/// blanket `Default`, by design: an embedder must make every choice, not
-/// inherit an implicit one -- see `ConwayConfig`'s own doc).
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        // `[plugins].install`/`.statusline` are read by whatever
-        // BINARY links this crate (`conway-cli`'s own
-        // `first_party_plugins.rs`) -- a library embedder instead attaches
-        // the plugin directly via `with_plugin`, which is what this test
-        // does. Left at its default here on purpose, mirroring
-        // `conway-plugin-skeleton`'s own identical note.
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 fn fake_backend() -> Arc<ScriptedBackend> {
     Arc::new(

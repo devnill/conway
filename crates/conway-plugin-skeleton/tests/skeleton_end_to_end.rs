@@ -38,64 +38,21 @@
 //! a declaration (`PHILOSOPHY.md` §5: "An event a plugin declares and never
 //! fires is the same defect as a tool that does nothing").
 
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HookEntry, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
+use conway::config::schema::{HookEntry, HooksConfig};
 use conway::plugin::{async_trait, HookAnswer, HookInvocation, HookRunner};
+use conway::test_support::{base_config, test_builder};
 use conway::{Conway, Plugin as _, SessionSpec};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
 use conway_core::error::HookFailure;
-use conway_core::ids::{BackendId, RoleAlias, SeqRange, ToolName};
+use conway_core::ids::{BackendId, SeqRange, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{GenerateResponse, SessionStore};
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
-use conway::test_support::test_builder;
 use conway_plugin_skeleton::{SkeletonPlugin, PLUGIN_ID, PONG_DISPATCHED_EVENT, TOOL_NAME};
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        // Deliberately NOT how this plugin is installed -- `tools.builtin_plugins`
-        // is the closed conway-tools candidate set, unrelated to this
-        // crate (`PluginsConfig`'s own doc). This test never registers any
-        // built-in either way: this crate depends only on `conway`, not
-        // `conway-tools`.
-        tools: ToolsConfig::default(),
-        // `[plugins].install` is read by whatever BINARY links a given
-        // first-party plugin crate (`conway-cli`'s own
-        // `first_party_plugins.rs`) -- a library embedder instead attaches
-        // the plugin directly via `with_plugin` below, which is what this
-        // test does. Left empty here on purpose: proving the config-driven
-        // install path is `conway-cli`'s own test, not this one.
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 fn tool_call_response(call_id: &str, tool: &str, arguments: serde_json::Value) -> GenerateResponse {
     GenerateResponse {

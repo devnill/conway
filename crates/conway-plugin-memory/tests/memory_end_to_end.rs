@@ -27,49 +27,16 @@
 //!    `conway-runtime`'s own `hook_guard.rs` test module,
 //!    `an_injected_memory_segment_does_not_trip_the_coherence_guard`.)
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use conway::backend::BackendId;
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
 use conway::plugin::{ContentBlock, Memory, MemoryProvenance, MemoryStore};
-use conway::{Conway, MemoryId, RoleAlias, SessionId, SessionSpec};
+use conway::{Conway, MemoryId, SessionId, SessionSpec};
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
-use conway::test_support::test_builder;
+use conway::test_support::{base_config, test_builder};
 use conway_plugin_memory::{InMemoryMemoryStore, MemoryConfig, MemoryPlugin};
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 async fn run_one_turn(conway: &Conway, prompt: &str, reply: &str, backend: &ScriptedBackend) {
     let _ = backend; // kept for symmetry/readability at call sites

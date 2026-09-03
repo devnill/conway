@@ -30,17 +30,12 @@ mod common;
 
 use std::str::FromStr;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
-use conway::test_support::build_conway_with_echo_backend;
+use conway::test_support::{base_config, build_conway_with_echo_backend};
 use conway::ModelRef;
 use conway_cli::cli::{Cli, OneShotPermissionMode, OutputFormat};
 use conway_cli::exit::ExitCode;
 use conway_cli::tui::app::App;
 use conway_testkit::FakeStore;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use common::mock_backend::{MockBackend, Script};
@@ -202,32 +197,4 @@ async fn session_flags_are_rejected_by_app_new_not_silently_ignored() {
         Err(e) => e,
     };
     assert_eq!(ExitCode::from_error(&err), ExitCode::Usage);
-}
-
-fn base_config() -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: conway::RoleAlias::new("default"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
 }

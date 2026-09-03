@@ -10,46 +10,13 @@
 //! fragment reaches the model, not merely that `Plugin::instructions()`
 //! returns the right value in isolation.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
 use conway::plugin::ContentBlock;
-use conway::test_support::test_builder;
-use conway::{Conway, ForkSpec, RoleAlias, SessionSpec, SpawnSpec};
+use conway::test_support::{base_config_at, test_builder};
+use conway::{Conway, ForkSpec, SessionSpec, SpawnSpec};
 use conway_plugin_idiom::{IdiomPlugin, FRAGMENT_TEXT, INSTRUCTION_NAME, PLUGIN_ID};
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
-
-fn base_config(cwd: std::path::PathBuf) -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd,
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
-}
 
 /// A real, fully-faked `Conway` with `IdiomPlugin` attached, mirroring
 /// `conway-plugin-path`'s own `path_conway` precedent.
@@ -72,7 +39,7 @@ fn idiom_conway_with_plugin(
     store: Arc<FakeStore>,
     plugin: IdiomPlugin,
 ) -> Conway {
-    test_builder(base_config(cwd))
+    test_builder(base_config_at(cwd))
         .with_backend(backend)
         .with_session_store(store)
         .with_plugin(Arc::new(plugin))
