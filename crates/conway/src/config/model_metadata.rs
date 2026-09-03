@@ -75,10 +75,15 @@ pub fn load(path: &Path) -> Result<ModelMetadata> {
 /// touched). `ModelMetadata` is the shape that SAME doc names as the
 /// opposite case, using `permissions.json`'s own precedent
 /// (`crate::permissions::rewrite_permission_file_removing`): "a narrow,
-/// single-purpose file with a `#[serde(deny_unknown_fields)]`-shaped struct
-/// behind it, so there is no unrelated key to lose." `ModelMetadata` has
-/// exactly one field (`models`); there is nothing here for a reserialize to
-/// drop, and no comment convention this file supports at all.
+/// single-purpose file, so there is no unrelated key to lose." `ModelMetadata`
+/// has exactly one field (`models`), and today's `ModelMetadataEntry` has
+/// exactly the four fields this function reads and re-writes -- there is
+/// nothing here for a reserialize to drop yet, and no comment convention
+/// this file supports at all. Neither struct actually carries `#[serde(
+/// deny_unknown_fields)]`, so this safety holds only as long as every field
+/// either struct gains stays one this function (and its siblings) knows
+/// about; an unrecognized field on an operator's hand-edited file would be
+/// silently dropped on the next rewrite rather than failing loud.
 ///
 /// Every OTHER model already recorded in the file survives untouched -- this
 /// reads the whole map, replaces `key`'s own entry, and writes the whole map
