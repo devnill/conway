@@ -1,7 +1,7 @@
 //! `Ctrl-C`/quit handling: the double-press-to-exit window and B5's "no
 //! fourth way out" of the `/ask` modal (every quit path purges its live or
 //! parked child before the process actually exits). Extracted out of
-//! `app.rs` verbatim (this item, board); [`super::run`]'s own
+//! `app.rs` verbatim; [`super::run`]'s own
 //! `Action::CtrlC`/`Action::Quit` arms are the production callers.
 //!
 //! **Board item `01M0RWFH6V709B7WTAFRZGFKG3` widened both paths to cover
@@ -15,7 +15,7 @@
 //! pending prompt on quit -- but deliberately does NOT attempt to `purge`
 //! it (see that method's own doc for why attempting to would reproduce the
 //! exact `RuntimeError::Store(StoreError::NotRemovable)`/"agent is still
-//! running" error this item was filed over).
+//! running" error).
 
 use std::time::{Duration, Instant};
 
@@ -83,10 +83,10 @@ impl App {
     /// question was asked but no answer has arrived yet). This is
     /// deliberately handled differently from the other three: `purge`
     /// requires a TERMINAL agent (`RuntimeError::Store(StoreError::
-    /// NotRemovable)`, "agent is still running", otherwise -- the exact
-    /// error this item was filed over), and a running turn does not become
-    /// terminal the instant this method cancels it (this item's own
-    /// reproduction test measured the gap). Attempting `purge` here
+    /// NotRemovable)`, "agent is still running", otherwise), and a running
+    /// turn does not become
+    /// terminal the instant this method cancels it (a reproduction test
+    /// measured the gap). Attempting `purge` here
     /// synchronously would reproduce that same error on quit, so this does
     /// NOT attempt it. What it does instead, deliberately: best-effort
     /// cancel the child and discard any pending permission prompt for it

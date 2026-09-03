@@ -1,8 +1,8 @@
 //! `App::session_spec`/`App::new` -- the interactive session's construction
-//! path, extracted out of `app.rs` (this item, board) verbatim. `run`, the
+//! path, extracted out of `app.rs` verbatim. `run`, the
 //! dispatch loop `new` hands off to, lives in [`super::run`]; the four
-//! pre-parser slash-command interceptions stay in `app.rs` itself (T9's own
-//! guard, `crates/conway/tests/architecture_invariants.rs`, greps that exact
+//! pre-parser slash-command interceptions stay in `app.rs` itself (a guard
+//! in `crates/conway/tests/architecture_invariants.rs` greps that exact
 //! file's source text for them).
 
 use conway::{Conway, RoleAlias, SessionSpec, ToolSelector};
@@ -37,9 +37,9 @@ impl App {
     /// shape here (an existence probe ahead of `--session`, `--cwd`
     /// rejected alongside `--fork-from`, a local-head lookup for a seq-less
     /// fork ref) -- building a second, TUI-flavored version of that logic is
-    /// out of this item's scope. Rather than leave the three flags
-    /// accepted-and-ignored (the exact defect this item exists to close for
-    /// `--model`), the TUI refuses to start when any of them is passed, with
+    /// out of scope. Rather than leave the three flags
+    /// accepted-and-ignored (the same defect `--model` had), the TUI
+    /// refuses to start when any of them is passed, with
     /// a usage error naming both alternatives: one-shot mode for startup
     /// continuity, or the already-wired `/resume <session-id>` slash
     /// command once the TUI is running. `docs/interactive.md` documents
@@ -701,12 +701,13 @@ mod tests {
         );
     }
 
-    /// A1: a permission rule that fails registration is
+    /// A permission rule that fails registration is
     /// OPERATOR-VISIBLE at load time. The assertion is on the observable
     /// transcript/rendered screen -- what the operator actually reads --
     /// NOT on `report.registration_errors` (the field the producer writes;
-    /// a unit test on that field is the liveness trap this item exists to
-    /// close). The fixture is a `command_prefix` rule against `read`
+    /// a unit test on that field is a liveness trap: it exercises the
+    /// mapping, not the render path the operator actually reads).
+    /// The fixture is a `command_prefix` rule against `read`
     /// (Structured render -- can never match reliably) written as a `deny`
     /// rule, because deny rules are validated and refused BEFORE any trust
     /// gating (deny applies from every file, trusted or not), so the test
@@ -1073,10 +1074,10 @@ mod tests {
         }
     }
 
-    /// Board item `01M0XC1GF73Z9GTE7TN65TRW4A`. The render path
-    /// (`view::status::status_line_spans`'s `plugins` field,
+    /// Implemented by board item `01M0XC1GF73Z9GTE7TN65TRW4A`. The render
+    /// path (`view::status::status_line_spans`'s `plugins` field,
     /// `view/status.rs`'s own `a_plugin_contribution_appears_in_the_status_
-    /// line`) was real and tested before this item -- what it lacked was
+    /// line`) was already real and tested -- what it lacked was
     /// live data: `AppState::plugin_status_contributions` was set only by
     /// hand, in tests, never by `App::new` from a running `Conway`. This
     /// proves the missing link, end to end: a plugin installed through the
@@ -1142,7 +1143,7 @@ mod tests {
         // REAL AppState through the REAL view::draw and confirm the
         // contribution is actually READABLE on screen, not merely present
         // on the struct -- the exact "renders but nothing feeds it" defect
-        // this item exists to close.
+        // this test exists to catch.
         let text = crate::tui::test_support::render_text(&app.state, 120, 40);
         assert!(
             text.contains("guard: qwen2.5-3b"),

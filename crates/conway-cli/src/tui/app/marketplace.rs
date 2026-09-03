@@ -51,9 +51,9 @@
 //! two-step preview-then-confirm modal
 //!
 //! `/trust permissions` shows a preview card and waits for a separate
-//! `[y]`/`[n]` before writing anything -- a heavier UX this item's own
-//! spec names as the ANSWER to "what does the operator see before they
-//! consent", but only by pointing at `plugin_toggle.rs`'s OWN standard,
+//! `[y]`/`[n]` before writing anything -- a heavier UX than the answer
+//! settled on for "what does the operator see before they
+//! consent", which points at `plugin_toggle.rs`'s OWN standard,
 //! not `/trust`'s: "the existing plugin toggle's honesty is the standard".
 //! `plugin_toggle` is a ONE-STEP action with no preview modal, so matching
 //! ITS standard does not require building a second preview-then-confirm
@@ -111,8 +111,7 @@ impl App {
     /// landed successfully (P-13: never before) -- writes a
     /// `[plugins].claude_compat[]` entry naming it
     /// (`conway::config::set_claude_compat_entry`), the SAME array-of-
-    /// objects writer this item's own completion report proves preserves
-    /// an operator's hand-edited formatting.
+    /// objects writer that preserves an operator's hand-edited formatting.
     ///
     /// **Dependency enforcement (board item `01M0WWMQZN5WK1AADKW4WKTQQZ`,
     /// this trigger's own scope fence): a resolved `MarketplacePluginEntry`
@@ -828,11 +827,11 @@ mod tests {
     // Board item `01M0WB5W5DX844HSJQG3JP23X0` -- the interactive trigger.
     // Every test above drives `App::apply_marketplace_install`/
     // `apply_marketplace_uninstall` directly (the pre-existing,
-    // already-correct shape this item's own spec preserves); the two
+    // already-correct shape); the two
     // tests below instead drive the REAL surface an operator types into
     // (`App::submit`, `commands::parse`/`execute`, `Effect::
     // RunMarketplaceInstall`/`RunMarketplaceUninstall`) -- the actual
-    // proof that the wiring this item adds does not bypass any of the
+    // proof that the new wiring does not bypass any of the
     // failure handling the methods above already have (acceptance 7).
     // -----------------------------------------------------------------
 
@@ -845,8 +844,8 @@ mod tests {
     /// apply_marketplace_install` every test above already proves correct.
     /// No real network (`wiremock`, this module's own established
     /// pattern) and no ambient config (`app.env`/`app.cwd` overridden
-    /// directly after construction -- this item's own Q1 answer: `App::
-    /// new` itself resolved both from this TEST PROCESS's real ambient
+    /// directly after construction -- `App::new` itself resolved both
+    /// from this TEST PROCESS's real ambient
     /// values, which must never be what a config-writing test exercises;
     /// private-field access from this crate's own test module, the same
     /// pattern `app.state` already uses throughout).

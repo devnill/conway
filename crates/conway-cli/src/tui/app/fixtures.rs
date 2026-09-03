@@ -3,7 +3,7 @@
 //! tests all construct the same fully in-memory `Conway` (the fake port set
 //! `conway`'s own `tests/session_handle.rs` builds), the same minimal `Cli`,
 //! and the same buffered-envelope drain. Extracted verbatim out of `app.rs`'s
-//! former single `mod tests` (this item, board) rather than duplicated per
+//! former single `mod tests` rather than duplicated per
 //! file -- the sibling `state.rs` split's own `fixtures` module for the same
 //! reason (see its own doc).
 

@@ -5,7 +5,7 @@
 //! the identical reason (directly testable, no real terminal/`select!`
 //! loop needed).
 //!
-//! **Calls the three BUILT primitives this item names, never a second
+//! **Calls the three BUILT primitives below, never a second
 //! opinion about any of them (P-14):**
 //! - `conway::config::schema::ConwayConfig::model_for` decides what "the
 //!   default model" means -- the head of a role's `chain` -- the exact
@@ -28,7 +28,7 @@
 //! model" row is `MenuNode::Static` (`view/settings.rs`), not a leaf --
 //! there is no `Action` that sets IT, and therefore no writer here for
 //! THAT row, because `ConwayConfig::default_model`'s own doc records the
-//! decision this item made: the default model is a DERIVED read over
+//! decision: the default model is a DERIVED read over
 //! `roles.<default_role>.chain`, not a second stored value.
 //!
 //! **What changed:** the observation above ("no write path here for it")

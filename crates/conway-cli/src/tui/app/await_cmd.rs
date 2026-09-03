@@ -5,8 +5,8 @@
 //! then posts a transcript notice -- never awaited inline on `submit`/
 //! `execute` (see `commands::Effect::RunAwait`'s own doc for the
 //! hang-safety reasoning: unlike an `/ask` child, an awaited agent can be
-//! `keep_alive` and run indefinitely). [`App::spawn_await`] (this item,
-//! board) is the actual `tokio::spawn` call site, mirroring `ask::App::
+//! `keep_alive` and run indefinitely). [`App::spawn_await`] is the actual
+//! `tokio::spawn` call site, mirroring `ask::App::
 //! spawn_modal_ask`'s shape closely -- `commands::execute`'s `SlashCommand::
 //! Await` arm cannot spawn this itself (it has no live `SessionHandle` to
 //! clone and no `await_tx` -- see `commands::Effect::RunAwait`'s own doc),
@@ -30,12 +30,12 @@
 //!   prompt) happens to be open at the moment it arrives. Coupling it to
 //!   `modal_ask_tx` would make its delivery depend on that channel's own
 //!   consumer correctly disambiguating an unrelated message shape --
-//!   exactly the "lost when the modal state changes" hazard this item's own
-//!   design question warns against.
+//!   exactly the "lost when the modal state changes" hazard this design
+//!   question warns against.
 //! - **Watching `Event::AgentFinished` on `self.handle.events()`** (the
 //!   stream `App::run`'s `maybe_env = events.next()` arm already drains for
 //!   every agent in this session) would avoid a new channel entirely, but
-//!   introduces a real loss window this item's acceptance cannot accept:
+//!   introduces a real loss window that this design cannot tolerate:
 //!   that stream is RESUBSCRIBED on `/resume` and on a `ForkSession`/
 //!   `Checkout`-outcome plugin command (`events = self.handle.events()`,
 //!   `run.rs`'s own `Resubscribe`/`apply_plugin_command_done` arms) --

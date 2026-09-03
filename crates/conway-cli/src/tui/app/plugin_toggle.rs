@@ -31,8 +31,7 @@
 //! now refuses that write, before it happens, naming the still-enabled
 //! dependent (§3's own "before the write").
 //!
-//! Four checks, matching §4b's "Failure modes, matching ruling 3" list and
-//! this item's own acceptance criteria:
+//! Four checks, matching §4b's "Failure modes, matching ruling 3" list:
 //!
 //! 1. Toggle **off** a plugin some enabled plugin `requires` -> refused,
 //!    naming the dependent, before any write
@@ -73,7 +72,7 @@
 //! one-keystroke "accept and enable both" affordance §4b's own text
 //! anticipates needs a NEW interactive surface (a confirm keybinding on the
 //! `/plugin` browser's own row, `view/plugins.rs`/`input.rs`), which is
-//! deliberately left as a disclosed follow-up: this item's own file
+//! deliberately left as a disclosed follow-up: the file
 //! ownership fence grants this module and `view/settings.rs` (the
 //! shortcut-only settings section, not the browser itself) alone.
 //!
@@ -106,7 +105,7 @@ use crate::tui::state::{Entry, PluginBrowserEntry};
 /// `missing_optional_dependencies` take, so a fabricated `PluginManifest`
 /// fixture is enough to exercise every branch -- no real first-party plugin
 /// declares a `requires`/`optional` edge yet (the mechanism landed the same
-/// day this item's own bundled dependent might not exist), so a test that
+/// day, so a bundled dependent using it might not yet exist), so a test that
 /// could only drive the REAL compiled-in bundle could never observe a
 /// refusal at all.
 fn enabled_dependents_requiring(
@@ -695,9 +694,9 @@ mod tests {
     // settings.json write path, fabricated manifest graph).
     // ---------------------------------------------------------------
 
-    /// Enablement point 2/3 (browser toggle): turning a plugin ON writes
+    /// Browser toggle: turning a plugin ON writes
     /// `plugins.install`, flips the display mirror, and leaves a Notice
-    /// naming the restart-to-apply contract -- unchanged by this item for
+    /// naming the restart-to-apply contract -- unchanged for
     /// the no-dependency case.
     #[tokio::test]
     async fn turning_a_plugin_on_writes_settings_json_and_flips_the_mirror() {
@@ -977,11 +976,10 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Enablement point 2 (browser toggle) -- the four acceptance criteria
-    // this item exists to satisfy.
+    // Browser toggle -- the four checks in this module's own doc.
     // ---------------------------------------------------------------
 
-    /// Criterion 1, and the item's own headline: toggling OFF a plugin a
+    /// Toggling OFF a plugin a
     /// still-enabled plugin `requires` is refused BEFORE the write --
     /// checked here against `settings.json` itself, not merely that an
     /// error was shown (this method's own doc: "a refusal must preserve
@@ -1392,8 +1390,9 @@ mod tests {
 
     /// `apply_plugin_toggle` (the public entry point `run.rs` actually
     /// calls) resolves the REAL compiled-in bundle rather than a
-    /// fabricated one -- a thin end-to-end proof that the split introduced
-    /// by this item did not break the production wiring. Since no real
+    /// fabricated one -- a thin end-to-end proof that the split between
+    /// `apply_plugin_toggle` and `apply_plugin_toggle_against` did not
+    /// break the production wiring. Since no real
     /// first-party plugin declares a `requires`/`optional` edge yet (this
     /// module's own doc), this can only prove the ordinary no-dependency
     /// path still works -- the dependency-enforcement behaviour itself is

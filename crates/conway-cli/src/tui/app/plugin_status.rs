@@ -70,8 +70,8 @@ mod tests {
     /// live surface rather than replaying a value captured once at startup.
     /// Call 0 (the build-time snapshot `ConwayBuilder::build` itself takes)
     /// answers empty, matching the "typically empty at session start" case
-    /// this item's own spec and `Conway::plugin_status_contributions`'s doc
-    /// both describe; every call after that answers a distinct value.
+    /// `Conway::plugin_status_contributions`'s doc describes; every call
+    /// after that answers a distinct value.
     struct CountingPlugin {
         calls: AtomicUsize,
     }
@@ -126,8 +126,8 @@ mod tests {
             .expect("build should succeed with one status-contributing plugin installed");
 
         // The build-time snapshot (`Conway::plugin_status_contributions`)
-        // is still taken from the plugin's FIRST call, exactly as before
-        // this item -- unaffected by the new live poll surface.
+        // is still taken from the plugin's FIRST call,
+        // unaffected by the live poll surface.
         assert!(
             conway.plugin_status_contributions().is_empty(),
             "the build-time snapshot must still see the plugin's first (empty) answer"
@@ -255,8 +255,8 @@ mod tests {
     /// the SAME contribution `startup.rs`'s own
     /// `app_new_populates_plugin_status_contributions_from_a_real_plugin`
     /// test proves reaches the screen at startup ALSO reach it when it only
-    /// becomes available afterward -- the exact case this item's own spec
-    /// says "has never worked" before this item.
+    /// becomes available afterward -- the exact case that had never
+    /// worked before this fix.
     #[tokio::test]
     async fn a_contribution_that_appears_after_build_reaches_the_rendered_status_line() {
         let conway = conway::test_support::test_builder(base_config())
