@@ -69,8 +69,8 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::state::{
-    AddProviderCredentialState, AppState, AskModal, DenyFeedbackState, EditingPatternState,
-    IntentConfirm, Mode, TrustPreviewCard, UiFormState,
+    AddProviderContextWindowState, AddProviderCredentialState, AppState, AskModal,
+    DenyFeedbackState, EditingPatternState, IntentConfirm, Mode, TrustPreviewCard, UiFormState,
 };
 pub use theme::Theme;
 
@@ -184,6 +184,14 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     // replaces it on screen, never stacks on top of it).
     if let Mode::AddProviderCredential(cred) = &state.mode {
         draw_add_provider_credential(frame, areas.transcript, cred, theme);
+    }
+
+    // Board item (setup-time context window, ASK + PERSIST): the settings
+    // providers section's own context-window ASK card -- ungated by
+    // `settings_open` for the identical reason `Mode::AddProviderCredential`
+    // is just above (the `Mode` variant IS the gate).
+    if let Mode::AddProviderContextWindow(w) = &state.mode {
+        draw_add_provider_context_window(frame, areas.transcript, w, theme);
     }
 
     // Board item `01M1A9M2EVJNR0HBN86A8E40EA`: the permission prompt's own
@@ -1170,6 +1178,63 @@ fn draw_add_provider_credential(
 
     let footer_lines = vec![
         Line::from("[enter] add  [esc] cancel -- never echoed or logged"),
+        Line::from(""),
+    ];
+    let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, frame_areas.footer_area);
+}
+
+/// [`ADD_PROVIDER_CREDENTIAL_FOOTER_ROWS`]'s own sibling for
+/// [`draw_add_provider_context_window`].
+const ADD_PROVIDER_CONTEXT_WINDOW_FOOTER_ROWS: u16 = 2;
+
+/// Board item (setup-time context window, ASK + PERSIST): the settings
+/// providers section's own context-window ASK card (`Mode::
+/// AddProviderContextWindow`). Renders `w.input` IN THE CLEAR -- unlike
+/// [`draw_add_provider_credential`]'s masking, a token count is not a
+/// secret. Renders `w.error`, when set, as its own styled line, the
+/// identical "a rejected attempt is shown, never silently re-prompted"
+/// contract [`draw_add_provider_credential`] already keeps.
+fn draw_add_provider_context_window(
+    frame: &mut Frame,
+    transcript_area: Rect,
+    w: &AddProviderContextWindowState,
+    theme: &Theme,
+) {
+    let mut body_lines = vec![
+        Line::from(Span::styled(
+            format!(
+                "{} -- no context window could be established automatically. Enter it in \
+                 tokens, or leave blank to skip:",
+                w.label
+            ),
+            theme.emphasized,
+        )),
+        Line::from(""),
+        Line::from(w.input.as_str()),
+    ];
+    if let Some(err) = &w.error {
+        body_lines.push(Line::from(""));
+        body_lines.push(Line::from(Span::styled(format!("error: {err}"), theme.dim)));
+    }
+    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
+
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        ADD_PROVIDER_CONTEXT_WINDOW_FOOTER_ROWS,
+        modal::DEFAULT_CAP_DENOMINATOR,
+        " CONTEXT WINDOW ",
+        theme.border_accent,
+    );
+    frame.render_widget(body, frame_areas.body_area);
+
+    let footer_lines = vec![
+        Line::from("[enter] save  [esc] skip -- leaves the window unverified"),
         Line::from(""),
     ];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });

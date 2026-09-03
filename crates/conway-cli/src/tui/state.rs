@@ -50,8 +50,9 @@ pub use agent_panel::AgentVisibility;
 pub use agent_tree::{AgentTreeView, NodeStatus, TreeNode};
 pub use input_line::{clamp_history_size, DEFAULT_HISTORY_SIZE};
 pub use modal::{
-    AddProviderCredentialState, AskFate, AskModal, DenyFeedbackState, Mode, TrustDecision,
-    TrustPreviewCard, UiFormDecision, UiFormState, DEFAULT_DENY_FEEDBACK,
+    AddProviderContextWindowState, AddProviderCredentialState, AskFate, AskModal,
+    DenyFeedbackState, Mode, TrustDecision, TrustPreviewCard, UiFormDecision, UiFormState,
+    DEFAULT_DENY_FEEDBACK,
 };
 pub use status::{should_animate, Activity, SPINNER_FRAMES};
 pub use transcript::{clamp_tool_preview_lines, Entry, ToolStatus};

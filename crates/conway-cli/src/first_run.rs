@@ -51,7 +51,8 @@
 //!
 //! Everything a test can assert on without driving a real TTY lives in pure
 //! functions in the first half of this file: [`resolve_credential_plan`],
-//! [`validate_credential_input`], [`backend_entry_json`],
+//! [`validate_credential_input`], [`validate_context_window_input`],
+//! [`context_window_is_verified`], [`backend_entry_json`],
 //! [`local_offer_entry_json`], [`non_interactive_guidance`], [`chain_entry`],
 //! `decline_or_keep`. Only the very
 //! last function, [`run_guided_setup`], touches a real terminal (via
@@ -67,8 +68,50 @@
 //! declaration honesty, num_ctx) joins that same bucket -- async, network
 //! only, no terminal -- covered by `#[tokio::test]`s in this file's own
 //! test module against a wiremock server standing in for Ollama's native
-//! `/api/show`. [`context_window_setup_notice`]/`models_json_snippet` are
-//! pure string formatting, tested alongside the other pure functions above.
+//! `/api/show`. [`context_window_setup_notice`] is pure string formatting,
+//! tested alongside the other pure functions above; [`context_window_is_
+//! verified`] and [`persist_context_window`] join it -- the former reads
+//! only compile-time-embedded profile data, the latter touches disk (via
+//! `conway::config::metadata_path_for`/`set_context_window`) but no
+//! terminal or network, so both are covered directly, no pty needed.
+//! `ask_and_persist_context_window` (the setup-time ASK half of "discover,
+//! or ask if discovery fails") is the one new function in THIS pair that
+//! DOES touch a terminal (`read_plain_line`) -- it joins [`run_guided_setup`]
+//! in the untestable-without-a-pty bucket; [`validate_context_window_input`]
+//! is what a test asserts on instead, the same split
+//! [`validate_credential_input`]/`read_secret_line` already established.
+//!
+//! # The setup-time context-window PERSIST half -- file/scope decision
+//!
+//! Board item (setup-time context window, ASK + PERSIST): a prior item
+//! built DISCOVER only and disclosed the rest rather than faking it (see
+//! [`discover_setup_context_window`]'s own doc, "Deliberately does NOT
+//! persist the result itself"). This item closes both gaps:
+//! `ask_and_persist_context_window` (this file) / `tui::app::
+//! provider_manage`'s `Mode::AddProviderContextWindow` (the TUI's own
+//! equivalent surface, since a raw-terminal read here would fight
+//! ratatui's screen control) is ASK; [`persist_context_window`] (this file)
+//! -> `conway::config::metadata_path_for` -> `conway::config::
+//! set_context_window` is PERSIST, shared by both a successful discovery
+//! AND a typed answer, and by both setup entrances. **The file/scope
+//! decision itself -- which `models.json`, in which scope -- is recorded
+//! once, in `conway::config::merge::metadata_path_for`'s own doc, not
+//! restated here**: it writes into whichever `models.json` the CURRENT
+//! process would actually read back for its own `cwd`, honoring any
+//! existing `[models].metadata_path` override rather than ever picking a
+//! new location of its own. `crates/conway/src/config/model_metadata.rs`'s
+//! `set_context_window` records the companion decision (a whole-document
+//! rewrite, not `config::writer`'s byte-preserving splicer, and why that is
+//! safe for this specific file's narrow schema).
+//!
+//! A pre-existing config with no recorded window (an operator who
+//! configured a provider before this item shipped) is handled by NOT this
+//! item at all: `conway_plugin_backends::capabilities::ContextTokensSource::
+//! Unverified` already exists for exactly this state (a model with no
+//! override, no metadata entry, and a dialect whose own baseline is
+//! unsourced) and this item builds nothing new on top of it -- it only
+//! makes that state rarer going forward by asking at setup time, never
+//! retroactively.
 //! [`finish_setup`] belongs in that same bucket -- it touches disk (via
 //! `conway::config`'s writers) and, on success, the network (via
 //! [`verify_backend`]), but reads the terminal only on its OWN failure
@@ -286,6 +329,52 @@ pub fn validate_credential_input(raw: &str) -> Result<String, &'static str> {
     Ok(trimmed.to_string())
 }
 
+/// Pure: parses the setup-time context-window ASK prompt's raw typed line
+/// (both TTY entrances share this — see `ask_and_persist_context_window`
+/// and the TUI's `input::handle_add_provider_context_window_key`).
+///
+/// Empty/whitespace-only means "skip" (`Ok(None)`) -- the operator declines
+/// to supply a number and the model's window stays whatever it already was
+/// (unrecorded, if this is the first time; `Unverified` at read time -- see
+/// this module's own top doc). This is the ONE place a blank answer is
+/// accepted as a real, non-error outcome: the operator's own ruling forbids
+/// ever filling an unknown window with an invented number, and "press Enter
+/// with nothing typed" is how an interactive prompt says "I don't know
+/// either" without that turning into an error state.
+///
+/// A non-empty value must parse as a plain base-10 `u32` greater than zero
+/// and no larger than `MAX_PLAUSIBLE_CONTEXT_WINDOW` -- generous headroom
+/// above the largest window this crate's own investigation observed live
+/// (`glm-5.2`'s `1_048_576` -- `probe.rs`'s own "2026-08-30
+/// re-confirmation" doc) while still catching an obvious mis-paste (a
+/// pasted API key, a stray decimal) before it reaches a config write, the
+/// same P-10 boundary [`validate_credential_input`] already applies to a
+/// human's typed input.
+pub fn validate_context_window_input(raw: &str) -> Result<Option<u32>, &'static str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match trimmed.parse::<u32>() {
+        Ok(0) => Err(
+            "a context window of 0 tokens is not usable -- press Enter with nothing typed to \
+             skip instead",
+        ),
+        Ok(n) if n > MAX_PLAUSIBLE_CONTEXT_WINDOW => Err(
+            "that's larger than any known real model context window -- refusing to save it \
+             (press Enter with nothing typed to skip)",
+        ),
+        Ok(n) => Ok(Some(n)),
+        Err(_) => Err("not a whole number of tokens"),
+    }
+}
+
+/// [`validate_context_window_input`]'s own upper bound: comfortably above
+/// the largest real window this crate's own investigation has observed live
+/// (`glm-5.2`'s `1_048_576`), never itself presented as a plausible answer
+/// -- just a mis-paste backstop.
+const MAX_PLAUSIBLE_CONTEXT_WINDOW: u32 = 4_000_000;
+
 /// Where a saved entry's credential came from -- the two shapes
 /// [`backend_entry_json`] can write.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -332,29 +421,13 @@ pub fn local_offer_entry_json(offer: &LocalOffer) -> String {
     serde_json::to_string(&entry).expect("BackendEntry always serializes to a JSON object")
 }
 
-/// The `.conway/models.json` snippet [`context_window_setup_notice`] prints
-/// naming `model`'s discovered `window` — the exact, copy-pasteable shape
-/// `getting-started.md`'s own worked examples use for this file, built the
-/// same "always serialize a real value, never hand-format JSON" way
-/// [`backend_entry_json`] is (P-10: this text ends up on a real terminal).
-fn models_json_snippet(model: &str, window: u32) -> String {
-    serde_json::to_string_pretty(&serde_json::json!({
-        "models": {
-            model: {
-                "max_context_tokens": window,
-                "tool_calling": "yes",
-                "reasoning": false,
-                "reliability_tier": "community"
-            }
-        }
-    }))
-    .expect("a constructed JSON value always serializes")
-}
-
 /// The DISCOVER half of the operator's "discover, or ask if discovery
-/// fails" setup-time ruling — the ASK half (a UI prompt for the value when
-/// discovery finds nothing) is a disclosed follow-up, not implemented by
-/// this item; see this module's own top doc.
+/// fails" setup-time ruling. The ASK half is
+/// `ask_and_persist_context_window`; the PERSIST half (shared by both
+/// DISCOVER's successful result and ASK's typed answer) is
+/// [`persist_context_window`]; `handle_context_window_at_setup` is the one
+/// orchestrator that calls all three in the right order, from both setup
+/// entrances — see this module's own top doc.
 ///
 /// Calls `conway_plugin_backends::probe::discover_context_window` (the ONE
 /// shared discovery primitive both guided first-run and `/settings` →
@@ -365,29 +438,10 @@ fn models_json_snippet(model: &str, window: u32) -> String {
 /// today), `base_url` fails to parse, or discovery itself finds nothing
 /// (unreachable server, unrecognized model, timeout).
 ///
-/// **Deliberately does NOT persist the result.** `conway`'s facade reads a
-/// per-model context-window override exclusively from the SEPARATE
-/// `.conway/models.json` file (`[models].metadata_path`, resolved relative
-/// to the process's own working directory — see `getting-started.md`),
-/// never from any key inside a `[backends.<id>]` entry itself (confirmed by
-/// reading `conway::builder::build_backend_context`/`models_overrides_for`:
-/// neither reads `BackendEntry.extra` for a `models` sub-key, and
-/// `conway_plugin_backends::factory`'s own module doc states outright that
-/// `ctx.extra`'s precedence-merge overlay is exercised for the `anthropic`
-/// kind only — `"openai-compat"`'s `Profile` is "resolved as a whole
-/// bundle, not an overlay map `ctx.extra` could sensibly patch key-for-
-/// key"). Writing a real, working entry into `.conway/models.json` needs
-/// its own path-resolution decision (project-scope-relative by default,
-/// versus every other setup-time write in this module being user-scope
-/// only) and its own writer (a fourth JSON-file shape this crate's byte-
-/// preserving splicer has never handled) — a real, separately-scoped
-/// follow-up, not invented here unverified. [`context_window_setup_notice`]
-/// is the honest interim: it tells the operator exactly what was
-/// discovered and exactly what to paste to make it take effect, rather
-/// than silently writing to a location nothing reads (which this module's
-/// very first implementation of this function did, and which is exactly
-/// the kind of claim GP-14 — the whole governing principle of this item —
-/// forbids: never presenting an inert write as if it configured anything).
+/// **Deliberately does NOT persist the result itself** — that is
+/// [`persist_context_window`]'s own, separately-scoped job (this function's
+/// only concern is the network read); see this module's own top doc for the
+/// file/scope decision that unblocked writing it.
 pub async fn discover_setup_context_window(
     base_url: &str,
     dialect: Option<&str>,
@@ -403,17 +457,116 @@ pub async fn discover_setup_context_window(
     conway_plugin_backends::probe::discover_context_window(&base, &profile, None, model).await
 }
 
-/// The operator-facing message printed after a successful discovery — names
-/// the model, the discovered window, and the exact `.conway/models.json`
-/// snippet that makes it take effect, per `INTENT.md` §8.3 ("refuse and
-/// name what changed") and this module's own `non_interactive_guidance`
-/// precedent for a copy-pasteable snippet over a vague description.
-pub fn context_window_setup_notice(model: &str, window: u32) -> String {
+/// Whether `kind`/`dialect`'s own BASELINE `max_context_tokens` is already a
+/// real, sourced fact (`ContextTokensSource::DialectDefaultFloor` once no
+/// override/metadata names this model — `capabilities.rs`'s own doc) rather
+/// than an unsourced placeholder (`ContextTokensSource::Unverified`, the
+/// state this whole item's ask step exists to avoid landing on silently).
+/// `anthropic` (200,000) and the `"openai"` dialect (128,000) are the only
+/// two built-in profiles this is true for today
+/// (`conway_plugin_backends::profile`'s own
+/// `only_openai_declares_its_context_window_verified` test) — every other
+/// dialect this flow can ever configure (`"ollama"`, for both the local
+/// offer and Ollama Cloud) is not, so `handle_context_window_at_setup`
+/// only ever asks when discovery ALSO found nothing for one of those.
+///
+/// Reads the SAME `context_window_verified` flag `capabilities::
+/// build_capabilities` itself consults
+/// (`conway_plugin_backends::capabilities::anthropic_defaults`/
+/// `conway_plugin_backends::profile::ProfileStore::built_ins`), never a
+/// second, hand-maintained opinion about which providers are trustworthy
+/// (P-14) — this is a lookup on an EXISTING sourced-ness flag, not the
+/// static context-window-VALUE table the operator's ruling forbids
+/// ("prefer discovery over a table"). An unrecognized `dialect` string (or
+/// none at all, for a non-`"anthropic"` kind) is conservatively `false` —
+/// the same "an unfamiliar provider is never assumed verified by silence"
+/// rule `Profile::context_window_verified`'s own doc states for a
+/// hand-authored profile that omits the field.
+pub fn context_window_is_verified(kind: &str, dialect: Option<&str>) -> bool {
+    if kind == "anthropic" {
+        return conway_plugin_backends::capabilities::anthropic_defaults().context_window_verified;
+    }
+    let Some(dialect) = dialect else {
+        return false;
+    };
+    conway_plugin_backends::profile::ProfileStore::built_ins()
+        .resolve(dialect)
+        .map(|p| p.context_window_verified)
+        .unwrap_or(false)
+}
+
+/// The PERSIST half of the setup-time "discover, or ask if discovery fails"
+/// ruling, shared by both a successful [`discover_setup_context_window`]
+/// result and an operator's own typed answer
+/// (`ask_and_persist_context_window`/the TUI's `Action::
+/// SubmitProviderContextWindow`) — one write path for both origins, never
+/// two (P-14).
+///
+/// **The file/scope decision, made here and recorded in
+/// `conway::config::merge::metadata_path_for`'s own doc (the function this
+/// resolves the write location through) rather than restated a second
+/// time:** the window is written into whichever `models.json` THIS process
+/// would actually read back for its own `cwd` right now — the same
+/// `[models].metadata_path` resolution (default < user < project < env)
+/// `conway::config::load` itself performs, computed without requiring a
+/// full, validated config to already exist (a setup flow's whole point is
+/// that one does not yet). See `metadata_path_for`'s own doc for the two
+/// rejected alternatives (a fixed user-scope `models.json` with an injected
+/// `metadata_path` override, and the confirmed-inert
+/// `backends.<id>.models.<model>.max_context_tokens` channel) and why each
+/// was rejected.
+///
+/// `key` is the `"backend/model"` form [`chain_entry`] already builds — the
+/// exact key `conway::config::model_metadata::ModelMetadata` itself uses.
+/// Returns the resolved path on success (for the caller's own confirmation
+/// message); `Err(message)` naming exactly why not, never silently
+/// swallowed (GP-14: a failed write must be as loud as a successful one is
+/// quiet).
+pub fn persist_context_window(
+    env: &HashMap<String, String>,
+    key: &str,
+    window: u32,
+) -> Result<std::path::PathBuf, String> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| format!("could not resolve the working directory: {e}"))?;
+    persist_context_window_at(&cwd, env, key, window)
+}
+
+/// [`persist_context_window`]'s own `cwd`-parameterized half. Two reasons
+/// this is `pub(crate)` rather than private:
+/// - **A test can exercise the real resolution/write logic against a
+///   fixture `cwd`** without mutating THIS PROCESS's actual working
+///   directory, which `cargo test`'s default parallel execution makes an
+///   unsafe thing for any one test to do (every other test in the same
+///   binary runs concurrently and would observe the mutated value).
+/// - **`tui::app::provider_manage::App::write_provider_entry_and_refresh`
+///   already has a real `cwd` threaded in** (the same one `wire_provider_
+///   into_default_chain` uses) -- calling THIS function with it, rather
+///   than [`persist_context_window`] (which would silently re-derive `cwd`
+///   from `std::env::current_dir()` a second, possibly-different way), is
+///   what keeps every write inside one `write_provider_entry_and_refresh`
+///   call resolving `cwd` identically.
+pub(crate) fn persist_context_window_at(
+    cwd: &Path,
+    env: &HashMap<String, String>,
+    key: &str,
+    window: u32,
+) -> Result<std::path::PathBuf, String> {
+    let path = conway::config::metadata_path_for(cwd, env).map_err(|e| e.to_string())?;
+    conway::config::set_context_window(&path, key, window).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// The operator-facing message printed after a window is discovered (or
+/// typed) AND successfully persisted — names the model, the window, and the
+/// file it now lives in, per `INTENT.md` §8.3 ("refuse and name what
+/// changed"). `key` is the `"backend/model"` form [`chain_entry`] builds --
+/// the exact key the printed `path` now records it under.
+pub fn context_window_setup_notice(key: &str, window: u32, path: &std::path::Path) -> String {
     format!(
-        "conway discovered a {window}-token context window for {model} from the server. This \
-         isn't persisted automatically yet -- add it to .conway/models.json to make routing and \
-         admission reflect it:\n\n{}",
-        models_json_snippet(model, window)
+        "conway recorded a {window}-token context window for {key} in {} -- routing and \
+         admission now reflect it.",
+        path.display()
     )
 }
 
@@ -654,6 +807,136 @@ fn read_secret_line() -> Option<String> {
     outcome
 }
 
+/// [`read_secret_line`]'s un-masked sibling -- echoes each typed character
+/// verbatim rather than a `*`. Used only for the setup-time context-window
+/// number prompt (`ask_and_persist_context_window`): a token count is not
+/// a credential and has no reason to be hidden. `None` on `Esc` or a
+/// terminal error, both treated as "skip" by every caller here, mirroring
+/// [`read_secret_line`]'s own contract for its own two failure paths.
+fn read_plain_line() -> Option<String> {
+    crossterm::terminal::enable_raw_mode().ok()?;
+    let mut buf = String::new();
+    let outcome = loop {
+        match crossterm::event::read() {
+            Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => match k.code {
+                KeyCode::Enter => break Some(buf.clone()),
+                KeyCode::Esc => break None,
+                KeyCode::Backspace => {
+                    if buf.pop().is_some() {
+                        print!("\u{8} \u{8}");
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    buf.push(c);
+                    print!("{c}");
+                    let _ = std::io::stdout().flush();
+                }
+                _ => {}
+            },
+            Ok(_) => continue,
+            Err(_) => break None,
+        }
+    };
+    let _ = crossterm::terminal::disable_raw_mode();
+    println!();
+    outcome
+}
+
+/// The ASK half of the operator's "discover, or ask if discovery fails"
+/// setup-time ruling, for the pre-TUI guided-setup entrance (`run_
+/// backend_setup`/`retry_credential_and_finish`, via [`handle_context_
+/// window_at_setup`]) -- the TUI's `/settings` → providers → add entrance
+/// has its own equivalent surface (`tui::app::provider_manage`'s `Mode::
+/// AddProviderContextWindow`), since a raw-terminal keypress read here would
+/// fight ratatui's own screen control; both share every PURE decision this
+/// module makes ([`validate_context_window_input`],
+/// [`context_window_is_verified`], [`persist_context_window`]) and differ
+/// only in how the keystrokes themselves are collected (P-14 applied to
+/// everything except the terminal I/O itself, which cannot be shared across
+/// a raw-mode read and a ratatui widget).
+///
+/// `Esc` (via [`read_plain_line`] returning `None`) is treated exactly like
+/// an empty `Enter` -- both mean "skip", never an error: declining costs
+/// the operator nothing beyond leaving this ONE model's window unrecorded,
+/// which already has an honest name for the resulting state --
+/// `conway_plugin_backends::capabilities::ContextTokensSource::Unverified`
+/// -- rather than a silently invented number.
+fn ask_and_persist_context_window(env: &HashMap<String, String>, key: &str) {
+    println!();
+    println!(
+        "conway could not determine {key}'s context window automatically -- this profile has \
+         no known discovery endpoint, or the server did not answer."
+    );
+    println!("Enter it in tokens (e.g. 131072), or press Enter to leave it unverified for now:");
+    print!("> ");
+    let _ = std::io::stdout().flush();
+    let raw = read_plain_line().unwrap_or_default();
+    match validate_context_window_input(&raw) {
+        Ok(None) => {
+            println!(
+                "Skipped -- {key}'s context window remains unverified; conway will not send a \
+                 num_ctx hint and admission uses the dialect's conservative floor until you set \
+                 one (docs/providers.md)."
+            );
+        }
+        Ok(Some(window)) => match persist_context_window(env, key, window) {
+            Ok(path) => println!("{}", context_window_setup_notice(key, window, &path)),
+            Err(e) => println!("Could not save {key}'s context window: {e}"),
+        },
+        Err(msg) => println!("{msg} -- {key}'s context window remains unverified."),
+    }
+}
+
+/// The one orchestrator every setup-time call site (`run_backend_setup`'s
+/// local-offer and hosted-choice branches, and `retry_credential_and_
+/// finish`) calls instead of hand-rolling the discover-then-maybe-ask
+/// sequence itself (P-14) -- see this module's own top doc for the full
+/// three-function split this composes:
+/// [`discover_setup_context_window`] (network), [`context_window_is_
+/// verified`] (decide whether asking is even warranted), [`persist_context_
+/// window`] (the shared write), `ask_and_persist_context_window` (this
+/// entrance's own TTY read).
+///
+/// `base_url` is `None` only for the one hosted choice with no fixed base
+/// URL at all (`anthropic`) -- discovery is skipped entirely in that case
+/// (there is no server to ask), and since `anthropic`'s own baseline is
+/// verified (`context_window_is_verified("anthropic", None) == true`),
+/// nothing is asked either: the fall-through below reaches the `if
+/// context_window_is_verified(...) { return; }` guard exactly as if
+/// discovery had been attempted and found nothing.
+async fn handle_context_window_at_setup(
+    env: &HashMap<String, String>,
+    key: &str,
+    base_url: Option<&str>,
+    dialect: Option<&str>,
+    kind: &str,
+    model: &str,
+) {
+    if let Some(base_url) = base_url {
+        if let Some(window) = discover_setup_context_window(base_url, dialect, model).await {
+            println!();
+            match persist_context_window(env, key, window) {
+                Ok(path) => println!("{}", context_window_setup_notice(key, window, &path)),
+                Err(e) => println!(
+                    "conway discovered a {window}-token context window for {key} but could not \
+                     save it: {e}"
+                ),
+            }
+            return;
+        }
+    }
+    if context_window_is_verified(kind, dialect) {
+        // The dialect's own baseline is a real, sourced figure (Anthropic's
+        // 200k, OpenAI's 128k) -- nothing to ask, and asking anyway would
+        // be exactly the noise the operator's own ruling (a setup-time
+        // question is warranted only to avoid an UNSOURCED placeholder,
+        // never to double-check a fact conway already has) argues against.
+        return;
+    }
+    ask_and_persist_context_window(env, key);
+}
+
 /// The interactive flow itself: detect, offer, verify, offer to add
 /// another, get out of the way. Only reachable when the caller has already
 /// confirmed a real, writable terminal is attached (`main.rs`'s own
@@ -732,15 +1015,24 @@ async fn run_backend_setup(env: &HashMap<String, String>, path: &Path) -> Guided
         match read_single_key() {
             Some(KeyCode::Enter) => {
                 let entry_json = local_offer_entry_json(&offer);
-                if let Some(window) =
-                    discover_setup_context_window(&offer.base_url, Some("ollama"), &offer.model)
-                        .await
-                {
-                    println!();
-                    println!("{}", context_window_setup_notice(&offer.model, window));
-                }
-                match finish_setup(path, LOCAL_OLLAMA_ID, &entry_json, &offer.model, &mut chain)
-                    .await
+                handle_context_window_at_setup(
+                    env,
+                    &chain_entry(LOCAL_OLLAMA_ID, &offer.model),
+                    Some(&offer.base_url),
+                    Some("ollama"),
+                    "openai-compat",
+                    &offer.model,
+                )
+                .await;
+                match finish_setup(
+                    path,
+                    LOCAL_OLLAMA_ID,
+                    &entry_json,
+                    &offer.model,
+                    &mut chain,
+                    env,
+                )
+                .await
                 {
                     GuidedSetupOutcome::Configured => {
                         if !prompt_add_another() {
@@ -806,23 +1098,22 @@ async fn run_backend_setup(env: &HashMap<String, String>, path: &Path) -> Guided
         };
 
         let entry_json = backend_entry_json(choice, &credential);
-        if let Some(base_url) = choice.base_url {
-            if let Some(window) =
-                discover_setup_context_window(base_url, choice.dialect, choice.default_model).await
-            {
-                println!();
-                println!(
-                    "{}",
-                    context_window_setup_notice(choice.default_model, window)
-                );
-            }
-        }
+        handle_context_window_at_setup(
+            env,
+            &chain_entry(choice.id, choice.default_model),
+            choice.base_url,
+            choice.dialect,
+            choice.kind,
+            choice.default_model,
+        )
+        .await;
         match finish_setup(
             path,
             choice.id,
             &entry_json,
             choice.default_model,
             &mut chain,
+            env,
         )
         .await
         {
@@ -918,12 +1209,24 @@ fn decline_or_keep(chain: &[String]) -> GuidedSetupOutcome {
 /// testability without a terminal" -- this function reads the terminal
 /// only on ITS OWN failure path, so a test driving the success path (the
 /// one acceptance 1 needs) never touches a pty.
+///
+/// `env` is threaded through for exactly one reason: a verification failure
+/// here can lead to `retry_credential_and_finish`, which -- like every
+/// other setup-time credential/model pairing -- must ALSO run
+/// `handle_context_window_at_setup` before its own recursive call back
+/// into this function (board item: setup-time context window, ASK +
+/// PERSIST, acceptance 4 -- this retry path previously attempted no
+/// discovery at all, a gap named explicitly and closed here rather than
+/// left disclosed). Every OTHER use in this function is unaffected: the
+/// two ordinary call sites in `run_backend_setup` already run that step
+/// themselves, before ever calling `finish_setup`.
 pub async fn finish_setup(
     path: &Path,
     id: &str,
     entry_json: &str,
     model: &str,
     chain_so_far: &mut Vec<String>,
+    env: &HashMap<String, String>,
 ) -> GuidedSetupOutcome {
     if let Err(e) = conway::config::set_backend_provider(path, id, entry_json, true) {
         println!("Could not save this provider to {}: {e}", path.display());
@@ -956,7 +1259,7 @@ pub async fn finish_setup(
             match read_single_key() {
                 Some(KeyCode::Char('y')) | Some(KeyCode::Char('Y')) => {
                     let _ = conway::config::set_backend_provider(path, id, entry_json, false);
-                    retry_credential_and_finish(path, id, chain_so_far).await
+                    retry_credential_and_finish(path, id, chain_so_far, env).await
                 }
                 _ => {
                     let _ = conway::config::set_backend_provider(path, id, entry_json, false);
@@ -1239,10 +1542,19 @@ fn offer_plain_shell(path: &Path) {
 /// `api_key_env` retry has nothing new to try without restarting the whole
 /// process -- see `resolve_credential_plan`'s own doc for why that path is
 /// declined outright by [`finish_setup`] instead of looping here).
+///
+/// Runs `handle_context_window_at_setup` for the retried `choice` before
+/// recursing back into [`finish_setup`], closing the gap this path
+/// previously had (board item: setup-time context window, ASK + PERSIST,
+/// acceptance 4): a retry with a corrected credential is just as real a
+/// setup as the first attempt, and skipping this step here would have left
+/// exactly the retried model's window unrecorded for no reason a caller
+/// could see.
 async fn retry_credential_and_finish(
     path: &Path,
     id: &str,
     chain_so_far: &mut Vec<String>,
+    env: &HashMap<String, String>,
 ) -> GuidedSetupOutcome {
     let Some(choice) = HOSTED_CHOICES.iter().find(|c| c.id == id) else {
         // The local-Ollama offer has no credential to retry at all -- a
@@ -1264,12 +1576,22 @@ async fn retry_credential_and_finish(
         }
     };
     let entry_json = backend_entry_json(choice, &CredentialSource::Literal(key));
+    handle_context_window_at_setup(
+        env,
+        &chain_entry(choice.id, choice.default_model),
+        choice.base_url,
+        choice.dialect,
+        choice.kind,
+        choice.default_model,
+    )
+    .await;
     Box::pin(finish_setup(
         path,
         id,
         &entry_json,
         choice.default_model,
         chain_so_far,
+        env,
     ))
     .await
 }
@@ -1325,27 +1647,133 @@ mod tests {
         assert_eq!(window, None);
     }
 
-    // ---- context_window_setup_notice / models_json_snippet (board item: ----
-    // ---- context-window declaration honesty, num_ctx) ----
+    // ---- context_window_setup_notice (board item: setup-time context ----
+    // ---- window, ASK + PERSIST) ----
 
     #[test]
-    fn context_window_setup_notice_names_the_model_window_and_a_pasteable_models_json_snippet() {
-        let msg = context_window_setup_notice("glm-5.2", 1_048_576);
-        assert!(msg.contains("glm-5.2"));
+    fn context_window_setup_notice_names_the_key_window_and_the_file_it_was_saved_to() {
+        let path = std::path::Path::new("/home/op/.conway/models.json");
+        let msg = context_window_setup_notice("ollama/glm-5.2", 1_048_576, path);
+        assert!(msg.contains("ollama/glm-5.2"));
         assert!(msg.contains("1048576"));
         assert!(
-            msg.contains(".conway/models.json"),
-            "must name the file that actually reads this value: {msg}"
+            msg.contains("/home/op/.conway/models.json"),
+            "must name the exact file the value was actually written to: {msg}"
         );
-        // The embedded snippet must itself be valid, complete JSON --
-        // parse it out and check the exact key path a real
-        // `.conway/models.json` reader (`conway::config::model_metadata`)
-        // expects.
-        let start = msg.find('{').expect("snippet has an opening brace");
-        let snippet = &msg[start..];
-        let parsed: serde_json::Value =
-            serde_json::from_str(snippet).expect("the printed snippet must itself be valid JSON");
-        assert_eq!(parsed["models"]["glm-5.2"]["max_context_tokens"], 1_048_576);
+    }
+
+    // ---- validate_context_window_input (board item: setup-time context ----
+    // ---- window, ASK + PERSIST) ----
+
+    #[test]
+    fn validate_context_window_input_treats_a_blank_answer_as_skip_not_an_error() {
+        assert_eq!(validate_context_window_input(""), Ok(None));
+        assert_eq!(validate_context_window_input("   "), Ok(None));
+    }
+
+    #[test]
+    fn validate_context_window_input_accepts_a_plausible_number() {
+        assert_eq!(validate_context_window_input("131072"), Ok(Some(131_072)));
+        assert_eq!(validate_context_window_input("  1048576  "), Ok(Some(1_048_576)));
+    }
+
+    #[test]
+    fn validate_context_window_input_rejects_zero_non_numeric_and_implausibly_large() {
+        assert!(validate_context_window_input("0").is_err());
+        assert!(validate_context_window_input("not a number").is_err());
+        assert!(validate_context_window_input("-5").is_err());
+        assert!(validate_context_window_input("999999999999").is_err());
+    }
+
+    // ---- context_window_is_verified (board item: setup-time context ----
+    // ---- window, ASK + PERSIST) ----
+
+    #[test]
+    fn context_window_is_verified_true_for_anthropic_and_the_openai_dialect() {
+        assert!(context_window_is_verified("anthropic", None));
+        assert!(context_window_is_verified("openai-compat", Some("openai")));
+    }
+
+    #[test]
+    fn context_window_is_verified_false_for_ollama_and_anything_unrecognized() {
+        assert!(!context_window_is_verified("openai-compat", Some("ollama")));
+        assert!(!context_window_is_verified("openai-compat", None));
+        assert!(!context_window_is_verified(
+            "openai-compat",
+            Some("totally-unknown")
+        ));
+    }
+
+    // ---- persist_context_window (board item: setup-time context window, ----
+    // ---- ASK + PERSIST) ----
+
+    /// `CONWAY_CONFIG_DIR` pointed at a fresh, never-written scratch
+    /// directory -- so `conway::config::metadata_path_for`'s own user-layer
+    /// read resolves to "absent" deterministically, rather than the
+    /// invoking user's REAL `~/.conway/settings.json` (which
+    /// `conway::config::discovery::user_config_path`'s own doc says every
+    /// caller falls back to whenever `CONWAY_CONFIG_DIR` is unset). Mirrors
+    /// `crates/conway/tests/support/mod.rs::isolated_env`'s own documented
+    /// reasoning -- the identical hermeticity hazard, in this crate's own
+    /// unit tests instead of that crate's integration tests.
+    fn isolated_env() -> HashMap<String, String> {
+        let home = std::env::temp_dir().join(format!(
+            "conway-cli-first-run-test-isolated-home-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        env_with(&[("CONWAY_CONFIG_DIR", home.to_string_lossy().as_ref())])
+    }
+
+    #[test]
+    fn persist_context_window_writes_into_dot_conway_models_json_under_cwd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let path =
+            persist_context_window_at(dir.path(), &isolated_env(), "ollama/glm-5.2", 1_048_576)
+                .expect("persist must succeed against a writable temp dir");
+
+        assert_eq!(path, dir.path().join(".conway").join("models.json"));
+        let text = std::fs::read_to_string(&path).expect("read the written file");
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            parsed["models"]["ollama/glm-5.2"]["max_context_tokens"],
+            1_048_576
+        );
+    }
+
+    #[test]
+    fn persist_context_window_is_idempotent_for_the_same_value() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = isolated_env();
+        persist_context_window_at(dir.path(), &env, "ollama/glm-5.2", 1_048_576).unwrap();
+        let path = dir.path().join(".conway").join("models.json");
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        persist_context_window_at(dir.path(), &env, "ollama/glm-5.2", 1_048_576).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn persist_context_window_honors_an_existing_metadata_path_override_in_cwd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".conway")).unwrap();
+        std::fs::write(
+            dir.path().join(".conway").join("settings.json"),
+            r#"{"models":{"metadata_path":"custom-models.json"}}"#,
+        )
+        .unwrap();
+
+        let path =
+            persist_context_window_at(dir.path(), &isolated_env(), "ollama/glm-5.2", 1_048_576)
+                .expect("persist must succeed");
+
+        assert_eq!(path, dir.path().join("custom-models.json"));
     }
 
     // ---- opinion_set_transcript: board item `01M1FS34GNZEVZP4ZBVC90VD6J`, ----

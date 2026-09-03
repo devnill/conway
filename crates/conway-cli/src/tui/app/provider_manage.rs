@@ -173,8 +173,9 @@ use conway::config::{
 use super::defaults::load_default_role_lax;
 use super::App;
 use crate::first_run::{
-    backend_entry_json, chain_entry, context_window_setup_notice, discover_setup_context_window,
-    resolve_credential_plan, CredentialPlan, CredentialSource, HOSTED_CHOICES,
+    backend_entry_json, chain_entry, context_window_is_verified, context_window_setup_notice,
+    discover_setup_context_window, persist_context_window_at, resolve_credential_plan,
+    CredentialPlan, CredentialSource, HOSTED_CHOICES,
 };
 use crate::tui::state::Entry;
 
@@ -325,6 +326,12 @@ struct NewProviderEntry<'a> {
     /// which skips discovery entirely.
     base_url: Option<&'a str>,
     dialect: Option<&'a str>,
+    /// The `[backends.<id>].kind` this entry writes (`"anthropic"` or
+    /// `"openai-compat"`) -- board item (setup-time context window, ASK +
+    /// PERSIST): needed alongside `dialect` by `crate::first_run::
+    /// context_window_is_verified` to decide whether the context-window ASK
+    /// modal is even warranted once discovery finds nothing.
+    kind: &'a str,
     model: &'a str,
 }
 
@@ -364,6 +371,7 @@ impl App {
                         entry_json,
                         base_url: choice.base_url,
                         dialect: choice.dialect,
+                        kind: choice.kind,
                         model: choice.default_model,
                     },
                     env,
@@ -408,6 +416,7 @@ impl App {
                 entry_json,
                 base_url: choice.base_url,
                 dialect: choice.dialect,
+                kind: choice.kind,
                 model: choice.default_model,
             },
             env,
@@ -442,21 +451,37 @@ impl App {
             entry_json,
             base_url,
             dialect,
+            kind,
             model,
         } = provider;
-        // Board item (context-window declaration honesty, num_ctx): the
+        let key = chain_entry(id, model);
+        // Board item (setup-time context window, ASK + PERSIST): the
         // DISCOVER half of the operator's "discover, or ask if discovery
         // fails" setup-time ruling, via the SAME shared primitive
         // `first_run.rs`'s guided setup calls -- never a second
         // implementation of "try to learn this model's window before
         // writing it" (P-14). A `base_url` of `None` (only a hosted choice
         // with no fixed `base_url`, i.e. `anthropic`, ever reaches here
-        // with `None`) skips discovery entirely.
+        // with `None`) skips discovery entirely. A successful discovery is
+        // PERSISTED here too (`persist_context_window`, the same shared
+        // writer `first_run.rs`'s own entrance calls) -- `window_found`
+        // records that so the ASK step below is skipped.
+        let mut window_found = false;
         if let Some(base_url) = base_url {
             if let Some(window) = discover_setup_context_window(base_url, dialect, model).await {
-                self.state.transcript.push(Entry::Notice {
-                    text: context_window_setup_notice(model, window),
-                });
+                window_found = true;
+                match persist_context_window_at(cwd, env, &key, window) {
+                    Ok(path) => self.state.transcript.push(Entry::Notice {
+                        text: context_window_setup_notice(&key, window, &path),
+                    }),
+                    Err(e) => self.state.transcript.push(Entry::Error {
+                        text: format!(
+                            "discovered a {window}-token context window for {key} but could \
+                             not save it: {e}"
+                        ),
+                        fatal: false,
+                    }),
+                }
             }
         }
         let entry_json = entry_json.as_str();
@@ -491,6 +516,19 @@ impl App {
                     }
                 }
                 self.refresh_provider_entries_and_kick_off_status(env, cwd);
+                // Board item (setup-time context window, ASK + PERSIST): the
+                // ASK half, opened only when discovery found nothing AND
+                // this dialect's own baseline is not already a real, sourced
+                // figure (`context_window_is_verified`'s own doc explains
+                // why asking an Anthropic/OpenAI setup would be pure noise).
+                // Opened AFTER the backend write above settles, on either
+                // outcome -- the two writes (`backends.<id>`, `models.json`)
+                // are independent, and a window question must never block
+                // or roll back the backend entry itself.
+                if !window_found && !context_window_is_verified(kind, dialect) {
+                    self.state
+                        .begin_add_provider_context_window(key.clone(), format!("{id}: {model}"));
+                }
             }
             Err(e) => {
                 self.state.transcript.push(Entry::Error {
@@ -498,6 +536,45 @@ impl App {
                     fatal: false,
                 });
             }
+        }
+    }
+
+    /// `Action::SubmitProviderContextWindow` (board item: setup-time
+    /// context window, ASK + PERSIST) -- the context-window ASK card's own
+    /// `Enter`/`Esc`. `window` is `None` for a skip (both keys can produce
+    /// that -- see `input::handle_add_provider_context_window_key`'s own
+    /// doc), in which case this only reports the honest outcome (still
+    /// unverified) rather than writing anything; `Some(tokens)` writes via
+    /// [`crate::first_run::persist_context_window`] -- the SAME shared
+    /// writer `write_provider_entry_and_refresh`'s own DISCOVER branch, and
+    /// the pre-TUI `first_run.rs` entrance, both already call (P-14: one
+    /// write path for every origin a window can come from).
+    pub(super) fn apply_provider_context_window(
+        &mut self,
+        model_key: &str,
+        window: Option<u32>,
+        env: &HashMap<String, String>,
+        cwd: &Path,
+    ) {
+        match window {
+            None => {
+                self.state.transcript.push(Entry::Notice {
+                    text: format!(
+                        "Skipped -- {model_key}'s context window remains unverified; conway \
+                         will not send a num_ctx hint and admission uses the dialect's \
+                         conservative floor until you set one (docs/providers.md)."
+                    ),
+                });
+            }
+            Some(window) => match persist_context_window_at(cwd, env, model_key, window) {
+                Ok(path) => self.state.transcript.push(Entry::Notice {
+                    text: context_window_setup_notice(model_key, window, &path),
+                }),
+                Err(e) => self.state.transcript.push(Entry::Error {
+                    text: format!("could not save {model_key}'s context window: {e}"),
+                    fatal: false,
+                }),
+            },
         }
     }
 
@@ -582,7 +659,7 @@ mod tests {
 
     use super::super::fixtures::{echo_conway, minimal_cli};
     use super::{roles_left_unroutable_by_removing, App, NewProviderEntry};
-    use crate::tui::state::Entry;
+    use crate::tui::state::{Entry, Mode};
 
     fn isolated_env(dir: &std::path::Path) -> HashMap<String, String> {
         let mut env = HashMap::new();
@@ -1150,6 +1227,7 @@ mod tests {
                 entry_json,
                 base_url: Some(server.uri().as_str()),
                 dialect: Some("openai"),
+                kind: "openai-compat",
                 model: "mock-model",
             },
             &env,
@@ -1233,6 +1311,7 @@ mod tests {
                 entry_json,
                 base_url: Some(server.uri().as_str()),
                 dialect: Some("ollama"),
+                kind: "openai-compat",
                 model: "glm-5.2",
             },
             &env,
@@ -1278,6 +1357,7 @@ mod tests {
                 entry_json,
                 base_url: None,
                 dialect: None,
+                kind: "anthropic",
                 model: "claude-sonnet-4-6",
             },
             &env,
@@ -1293,6 +1373,125 @@ mod tests {
             "a provider with no base_url/dialect to discover against must never produce a \
              discovery notice: {:?}",
             app.state.transcript
+        );
+        // Board item (setup-time context window, ASK + PERSIST): `anthropic`
+        // has a real, sourced baseline window (`context_window_is_verified`)
+        // -- the ASK card must not open just because there was nothing to
+        // discover.
+        assert!(
+            matches!(app.state.mode, Mode::Normal),
+            "a verified dialect must never open the context-window ASK card: {:?}",
+            app.state.mode
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Board item (setup-time context window, ASK + PERSIST): the ASK card
+    // opens exactly when discovery found nothing AND the dialect has no
+    // real, sourced baseline -- and a typed (or skipped) answer is
+    // persisted (or honestly reported) through `apply_provider_context_
+    // window`, the SAME shared writer both setup entrances use.
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn adding_an_unreachable_ollama_provider_opens_the_context_window_ask_card() {
+        // No `/api/show` mock registered at all: discovery must find
+        // nothing, exactly the "server did not answer" case.
+        let server = wiremock::MockServer::start().await;
+
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        let entry_json = serde_json::json!({
+            "kind": "openai-compat",
+            "dialect": "ollama",
+            "base_url": server.uri(),
+            "api_key": "any-key",
+        })
+        .to_string();
+
+        app.write_provider_entry_and_refresh(
+            NewProviderEntry {
+                id: "mock_ollama_unreachable",
+                entry_json,
+                base_url: Some(server.uri().as_str()),
+                dialect: Some("ollama"),
+                kind: "openai-compat",
+                model: "glm-5.2",
+            },
+            &env,
+            cwd.path(),
+        )
+        .await;
+
+        match &app.state.mode {
+            Mode::AddProviderContextWindow(w) => {
+                assert_eq!(w.model_key, "mock_ollama_unreachable/glm-5.2");
+                assert!(
+                    w.label.contains("mock_ollama_unreachable") && w.label.contains("glm-5.2"),
+                    "the card's own label must name the provider and model: {}",
+                    w.label
+                );
+            }
+            other => panic!(
+                "a discovery failure against an unverified dialect must open the context-window \
+                 ASK card, got {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_provider_context_window_persists_a_typed_answer_and_reports_a_skip_honestly() {
+        let conway = echo_conway();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = isolated_env(dir.path());
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+
+        app.apply_provider_context_window("mock/glm-5.2", Some(1_048_576), &env, cwd.path());
+
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("mock/glm-5.2") && text.contains("1048576")
+            )),
+            "a typed answer must be persisted and confirmed: {:?}",
+            app.state.transcript
+        );
+        let models_path = cwd.path().join(".conway").join("models.json");
+        let text =
+            std::fs::read_to_string(&models_path).expect("models.json must have been written");
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            parsed["models"]["mock/glm-5.2"]["max_context_tokens"],
+            1_048_576
+        );
+
+        // A skip is a real, honest answer -- reported plainly, never a
+        // silent no-op and never an invented number.
+        app.apply_provider_context_window("mock/other-model", None, &env, cwd.path());
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("mock/other-model")
+                    && text.contains("Skipped")
+                    && text.contains("unverified")
+            )),
+            "a skip must be reported, not silently dropped: {:?}",
+            app.state.transcript
+        );
+        let text_after = std::fs::read_to_string(&models_path).unwrap();
+        let parsed_after: serde_json::Value = serde_json::from_str(&text_after).unwrap();
+        assert!(
+            parsed_after["models"]["mock/other-model"].is_null(),
+            "a skip must never write anything for that model: {text_after}"
         );
     }
 }

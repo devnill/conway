@@ -285,7 +285,7 @@ fn load_impl(options: LoadOptions, include_user_config: IncludeUserLayer) -> Res
             message: format!("failed to parse merged configuration: {e}"),
         })?;
 
-    let metadata_path = resolve_metadata_path(&config, &options.cwd);
+    let metadata_path = resolve_metadata_path(&config.models.metadata_path, &options.cwd);
     let metadata = model_metadata::load(&metadata_path)?;
 
     // Adaptive headroom: when `routing.headroom_fraction` is set and a role
@@ -386,7 +386,7 @@ pub fn apply_cli(config: &ConwayConfig, cli: &CliOverrides) -> Result<ConwayConf
         message: format!("failed to parse config after CLI override merge: {e}"),
     })?;
 
-    let metadata_path = resolve_metadata_path(&merged, &merged.cwd);
+    let metadata_path = resolve_metadata_path(&merged.models.metadata_path, &merged.cwd);
     let metadata = model_metadata::load(&metadata_path).unwrap_or_else(|_| ModelMetadata::empty());
     validate_impl(
         &merged,
@@ -398,12 +398,77 @@ pub fn apply_cli(config: &ConwayConfig, cli: &CliOverrides) -> Result<ConwayConf
     Ok(merged)
 }
 
-fn resolve_metadata_path(config: &ConwayConfig, cwd: &std::path::Path) -> PathBuf {
-    if config.models.metadata_path.is_absolute() {
-        config.models.metadata_path.clone()
+/// Resolves a raw `[models].metadata_path` value (or its schema default,
+/// `.conway/models.json`) against `cwd`: returned unchanged if absolute,
+/// else joined onto `cwd`. Takes the bare path rather than a whole
+/// [`ConwayConfig`] -- the only two production callers were `load_impl`/
+/// `apply_cli` (both already hold a full, validated config to read the
+/// field off of) until [`metadata_path_for`] joined them: that caller has
+/// only peeked at the merged document's own `models.metadata_path` (never
+/// run the full validated `load`, which a setup flow with no backend
+/// configured yet cannot always satisfy), so it needs to resolve the SAME
+/// value the same way without constructing a `ConwayConfig` first.
+pub fn resolve_metadata_path(metadata_path: &std::path::Path, cwd: &std::path::Path) -> PathBuf {
+    if metadata_path.is_absolute() {
+        metadata_path.to_path_buf()
     } else {
-        cwd.join(&config.models.metadata_path)
+        cwd.join(metadata_path)
     }
+}
+
+/// The effective `models.json` path a setup-time caller (never running the
+/// full [`load`]) should read/write -- the SAME five-source
+/// `models.metadata_path` value (default < user < project < env; no CLI
+/// layer here, since this runs before any CLI flags are parsed) [`load`]
+/// itself resolves via [`resolve_metadata_path`], computed through
+/// [`merged_document`] rather than [`load`] so this never fails just
+/// because backends/roles/routing are not fully configured yet -- exactly
+/// the state a setup flow runs in (`crates/conway-cli/src/first_run.rs`'s
+/// guided setup, and `crates/conway-cli/src/tui/app/provider_manage.rs`'s
+/// `/settings` → providers → add).
+///
+/// **This is the setup-time context-window persistence's own file/scope
+/// decision** (board item: setup-time context window, ASK + PERSIST): a
+/// discovered-or-typed window is written into whichever `models.json` this
+/// exact process would ACTUALLY read back for `cwd` right now -- never a
+/// new, always-user-scope location invented for this purpose. Two
+/// alternatives were considered and rejected; see
+/// `crates/conway-cli/src/first_run.rs`'s own module doc for the fuller
+/// account:
+/// - **Rejected: always write `$CONWAY_CONFIG_DIR/models.json` (or
+///   `~/.conway/models.json`), alongside `settings.json`**, and point
+///   `[models].metadata_path` at it explicitly. This would make a
+///   discovered window follow the operator across every `cwd` -- but it
+///   also means the FIRST setup to run this code would silently redirect
+///   `[models].metadata_path` away from any project-local `.conway/
+///   models.json` an operator already relies on (the default, unqualified
+///   resolution this same function reproduces), shadowing a working
+///   project override the operator never asked to change. A setup flow
+///   must never rewrite a config key it was not asked to change as a side
+///   effect of persisting an unrelated value.
+/// - **Rejected: `backends.<id>.models.<model>.max_context_tokens`** (a
+///   sibling key inside the `settings.json` entry itself) -- this is the
+///   channel `crate::builder`'s own module doc and `docs/providers.md`
+///   confirm is INERT for `"openai-compat"` (`factory.rs`'s `ctx.extra`
+///   precedence overlay is exercised for the `anthropic` kind only); an
+///   earlier draft of this same board item wrote there, found the defect,
+///   and reverted -- recorded here so it is never rebuilt on.
+pub fn metadata_path_for(cwd: &std::path::Path, env: &HashMap<String, String>) -> Result<PathBuf> {
+    let options = LoadOptions {
+        cwd: cwd.to_path_buf(),
+        explicit_path: None,
+        env: env.clone(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    };
+    let merged = merged_document(&options)?;
+    let raw = merged
+        .get("models")
+        .and_then(|m| m.get("metadata_path"))
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".conway/models.json"));
+    Ok(resolve_metadata_path(&raw, cwd))
 }
 
 /// The built-in, lowest-precedence layer -- derived, not hand-maintained.

@@ -176,6 +176,19 @@ pub enum Action {
     /// `crate::first_run::backend_entry_json` already does for the pre-TUI
     /// flow, and writes it via `conway::config::set_backend_provider`.
     SubmitProviderCredential(String, String),
+    /// The context-window ASK prompt's `Enter`/`Esc` (`Mode::
+    /// AddProviderContextWindow`, board item: setup-time context window,
+    /// ASK + PERSIST) -- already validated by `crate::first_run::
+    /// validate_context_window_input` (an invalid, non-empty attempt keeps
+    /// the card open with its own error shown and never reaches this
+    /// variant at all). Carries `(model_key, window)`: `window` is `None`
+    /// for a skip (an empty `Enter`, or `Esc` -- both the SAME outcome, see
+    /// `validate_context_window_input`'s own doc for why a blank answer is
+    /// never an error state), `Some(tokens)` for a validated number. The
+    /// app loop writes via `crate::first_run::persist_context_window` (the
+    /// SAME shared writer the pre-TUI entrance uses -- P-14) on `Some`, and
+    /// pushes an explanatory transcript notice either way.
+    SubmitProviderContextWindow(String, Option<u32>),
     /// `Enter` on a provider's own `remove_provider:<id>` leaf -- carries
     /// the provider's `backends.<id>` map key exactly, addressed by id
     /// (never an index: `AppState::provider_entries` is itself a
@@ -273,6 +286,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
         Mode::TrustPreview(_) => handle_trust_preview_key(state, key),
         Mode::EditingPattern(_) => handle_editing_pattern_key(state, key),
         Mode::AddProviderCredential(_) => handle_add_provider_credential_key(state, key),
+        Mode::AddProviderContextWindow(_) => handle_add_provider_context_window_key(state, key),
         Mode::UiForm(_) => handle_ui_form_key(state, key),
         // Board item `01M1A9M2EVJNR0HBN86A8E40EA`.
         Mode::EditingDenyFeedback(_) => handle_deny_feedback_key(state, key),
@@ -940,6 +954,76 @@ fn handle_add_provider_credential_key(state: &mut AppState, key: KeyEvent) -> Ac
             let idx = byte_index(&cred.input, cred.cursor);
             cred.input.insert(idx, c);
             cred.cursor += 1;
+            Action::None
+        }
+        _ => Action::None,
+    }
+}
+
+/// The settings providers section's own context-window ASK prompt
+/// (`Mode::AddProviderContextWindow`, board item: setup-time context
+/// window, ASK + PERSIST): mirrors [`handle_add_provider_credential_key`]'s
+/// own editing shape exactly (`Char`/`Backspace`/`Left`/`Right` edit
+/// `AddProviderContextWindowState::input`/`cursor` directly), differing in
+/// two respects `crate::first_run::validate_context_window_input`'s own doc
+/// explains: `Enter` on an EMPTY `input` is a valid "skip" answer, not an
+/// error (the empty-string case of that function returns `Ok(None)`, never
+/// reaching the `Err` arm at all), and `Esc` produces the SAME
+/// `Action::SubmitProviderContextWindow(key, None)` an empty `Enter` does --
+/// both mean "skip", and both deserve the SAME explanatory transcript
+/// notice the app loop prints for a skip, rather than `Esc`'s usual silent
+/// cancel: there is nothing to silently discard here (no credential was
+/// ever typed), and the card closing either way still needs to say the
+/// window is being left unverified.
+fn handle_add_provider_context_window_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    let Mode::AddProviderContextWindow(w) = &mut state.mode else {
+        return Action::None;
+    };
+    match key.code {
+        KeyCode::Esc => {
+            let model_key = w.model_key.clone();
+            state.close_add_provider_context_window();
+            Action::SubmitProviderContextWindow(model_key, None)
+        }
+        KeyCode::Enter => match crate::first_run::validate_context_window_input(&w.input) {
+            Ok(window) => {
+                let model_key = w.model_key.clone();
+                state.close_add_provider_context_window();
+                Action::SubmitProviderContextWindow(model_key, window)
+            }
+            Err(msg) => {
+                w.error = Some(msg.to_string());
+                Action::None
+            }
+        },
+        KeyCode::Backspace => {
+            if w.cursor > 0 {
+                let end = byte_index(&w.input, w.cursor);
+                let start = byte_index(&w.input, w.cursor - 1);
+                w.input.replace_range(start..end, "");
+                w.cursor -= 1;
+            }
+            Action::None
+        }
+        KeyCode::Left => {
+            w.cursor = w.cursor.saturating_sub(1);
+            Action::None
+        }
+        KeyCode::Right => {
+            w.cursor = (w.cursor + 1).min(char_count(&w.input));
+            Action::None
+        }
+        KeyCode::Char(c) => {
+            let idx = byte_index(&w.input, w.cursor);
+            w.input.insert(idx, c);
+            w.cursor += 1;
             Action::None
         }
         _ => Action::None,
