@@ -865,7 +865,7 @@ fn validate_impl(
     if matches!(allowlist_empty_check, AllowlistEmptyCheck::Enforce)
         && matches!(
             config.permissions.mode,
-            crate::config::schema::PermissionMode::Allowlist
+            crate::config::schema::PermissionsConfigMode::Allowlist
         )
         && config.permissions.allowed_tools.is_empty()
     {

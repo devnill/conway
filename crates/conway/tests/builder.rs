@@ -11,8 +11,8 @@ use std::sync::Arc;
 use conway::config::schema::BackendEntry;
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig,
+    PermissionsConfig, PermissionsConfigMode, PluginsConfig, RoleEntry, RoutingSection,
+    SessionConfig, ToolsConfig,
 };
 use conway::{Conway, ConwayBuilder, FacadeError, SessionSpec};
 // Only named by the `builtin-tools`-gated tests below.
@@ -674,7 +674,7 @@ fn build_succeeds_for_a_conventionally_named_anthropic_backend() {
 fn injected_permission_gate_overrides_config_derived_selection() {
     let mut cfg = base_config();
     cfg.permissions = PermissionsConfig {
-        mode: PermissionMode::Prompt,
+        mode: PermissionsConfigMode::Prompt,
         ..PermissionsConfig::default()
     };
     let backend = fake_backend("fake");
@@ -719,7 +719,7 @@ fn injected_permission_gate_overrides_config_derived_selection() {
 fn with_prompt_handler_satisfies_prompt_mode_with_no_injected_gate() {
     let mut cfg = base_config();
     cfg.permissions = PermissionsConfig {
-        mode: PermissionMode::Prompt,
+        mode: PermissionsConfigMode::Prompt,
         ..PermissionsConfig::default()
     };
     let handler: conway::gates::PromptHandler =
@@ -746,7 +746,7 @@ fn with_prompt_handler_satisfies_prompt_mode_with_no_injected_gate() {
 fn with_permission_gate_wins_over_with_prompt_handler() {
     let mut cfg = base_config();
     cfg.permissions = PermissionsConfig {
-        mode: PermissionMode::Prompt,
+        mode: PermissionsConfigMode::Prompt,
         ..PermissionsConfig::default()
     };
     let denying_handler: conway::gates::PromptHandler = Arc::new(|_req| {

@@ -103,7 +103,10 @@ live example denying a `read` outside a root, which is the shape of
 guarantee `bash`'s presence in the tool set breaks. conway warns at startup
 when both are set — `--root` (or `ConwayBuilder::with_root`) alongside
 `bash` among the registered tools — rather than leaving this only as prose
-on this page.
+on this page. For what to actually do about approving `bash` calls day to
+day, see [`permissions.md`'s "Working with bash day to
+day"](permissions.md#working-with-bash-day-to-day): session `AutoAllow`
+plus `conway.confine`, below.
 
 ## `confined_bash` (`conway.confine`, first-party plugin, opt-in)
 

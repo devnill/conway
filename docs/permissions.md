@@ -23,6 +23,47 @@ never consult it.)
 | `Plan` | Allows the non-mutating categories (`Read`, `Search`, `Think`) without asking; denies everything else outright, including a `bash` call that merely reads a file — the category is what `bash` *declares itself as* (`Execute`), not what a given command happens to do, so plan mode never has to parse or guess at shell syntax. For exploring a codebase with a guarantee that nothing changes. |
 | `AutoAllow` | Allows every call without asking. |
 
+## Working with bash day to day
+
+Every operator running `bash` daily hits the same wall: a shell command can
+never be remembered as approved (see "Rules in `permissions.json`" and
+[Limits](#limits), below, for why -- in short, judging a command safe by
+reading its text is the thing this project ruled out, not an oversight).
+This section says what to do instead, in the place an operator actually
+looks when the wall gets old.
+
+- **There is no durable bash grant, and there will not be one.** `[p]`
+  is never offered for `bash`; a `bash:...` `allow` entry in
+  `permissions.json` parses but authorizes nothing, for any command,
+  chained or not. This is not a gap waiting to be closed by a smarter scan
+  -- see [Limits](#limits) for the 68% false-positive measurement that
+  closed it for good.
+- **`AutoAllow` for the session is the intended anti-fatigue lever.** It is
+  the answer to "I don't want to approve every `bash` call by hand" --
+  not a future pattern grant, the mode that already exists. What still
+  applies inside it: the confinement root, every `deny` rule (from any
+  file, trusted or not), and every `prompt` rule (which forces the gate
+  even under `AutoAllow` -- see "`AutoAllow` honestly," directly below, for
+  the full list). Enter it from `/settings` (cycles Prompt → Plan →
+  AutoAllow → Prompt) or the `Shift+Tab` binding; the status line's `mode`
+  field names it in capitals (`AUTO-ALLOW`) for exactly as long as you stay
+  in it, so leaving is the same cycle in reverse, and forgetting you are in
+  it is the risk this naming exists to prevent.
+- **`conway.confine` is the guardrail that makes blanket approval honest.**
+  It is a real, shipped first-party plugin (`crates/conway-plugin-confine`,
+  install with `[plugins].install = ["conway.confine"]`) whose one tool,
+  `confined_bash`, runs every command through this operating system's own
+  containment primitive (`sandbox-exec` on macOS, `bwrap` on Linux) instead
+  of conway reading the command text -- a write outside `--root` is refused
+  by the kernel, not by a pattern match. See
+  [`docs/plugins/confine.md`](plugins/confine.md) for the full boundary
+  (writes only; reads and network are not confined) and exactly which OS
+  this guarantee is verified on today.
+
+Put together: run `AutoAllow` for the session so you stop being asked on
+every call, and install `conway.confine` so that blanket approval is backed
+by a kernel boundary rather than trust in what the command text looks like.
+
 **`AutoAllow` honestly.** This is the mode with no human in the loop for an
 ordinary call, so it is worth being precise about what still applies inside
 it and what does not:
@@ -627,7 +668,9 @@ does:
   either direction described below), or confine what it can reach with
   `--root`. `read`/`write`/`grep`/… and every other `Structured`-rendering
   tool are unaffected — their `allow` pattern grants work exactly as this
-  page describes, because no shell is ever involved in running one.
+  page describes, because no shell is ever involved in running one. See
+  "Working with bash day to day," above, for what to actually do about
+  this day to day: session `AutoAllow` plus `conway.confine`.
 - **A `[p]` field-editor grant is written to `permissions.json`'s
   structured `rules` array, not the flat `allow` list.** Every other
   session-scope grant this page describes (a flat pattern, or any rule

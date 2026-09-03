@@ -828,6 +828,32 @@ async fn denied_calls_stay_in_turn_until_budget() {
     );
 }
 
+/// Board item `01M1FS46ZGP0FG6CTWPZP44P94`: `conway_cli::cli::PermissionMode`
+/// was renamed to `OneShotPermissionMode` (Rust identifier only -- the
+/// `ValueEnum` wire strings `allowlist`/`deny` are untouched). P-15 evidence
+/// that the wire form actually survived: this drives the real compiled
+/// binary with `--permission-mode allowlist`, the exact flag/value pair a
+/// human types, rather than asserting anything about the Rust type name in
+/// isolation. Written before the rename landed; it passes identically
+/// before and after, which is the expected shape of a pure rename -- the
+/// point is that it keeps passing, not that it starts failing and gets
+/// fixed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn permission_mode_allowlist_wire_string_still_parses_after_the_rename() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
+    let fixture = write_fixture(&mock, 1);
+
+    let out = run_conway(&["-p", "hi", "--permission-mode", "allowlist"], &fixture);
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"hi\n");
+}
+
 /// Board item `01M0PSKJT91WE0DEH2BWSSSNJM` narrowed the ANNOUNCED tool set
 /// to match `--allowed-tools`/`--deny-tools` (`oneshot::resolve_tools`).
 /// Before that fix, this test named a tool NOT in `--allowed-tools` at all

@@ -383,7 +383,7 @@ impl Default for LimitsConfig {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PermissionsConfig {
-    pub mode: PermissionMode,
+    pub mode: PermissionsConfigMode,
     pub allowed_tools: Vec<String>,
     pub denied_tools: Vec<String>,
 }
@@ -391,16 +391,29 @@ pub struct PermissionsConfig {
 impl Default for PermissionsConfig {
     fn default() -> Self {
         Self {
-            mode: PermissionMode::Prompt,
+            mode: PermissionsConfigMode::Prompt,
             allowed_tools: Vec::new(),
             denied_tools: Vec::new(),
         }
     }
 }
 
+/// `permissions.mode`'s wire values (`"prompt"`/`"allowlist"`/`"deny"`),
+/// meaningful only to a library embedder assembling a `Conway` with no gate
+/// of its own -- `gates::from_config` is the sole consumer. Distinct from
+/// two other, unrelated types that used to share this same name:
+/// `conway_cli::cli::OneShotPermissionMode` (one-shot mode's own,
+/// narrower `--permission-mode` flag, `Allowlist`/`Deny` only -- the
+/// `conway` binary's `-p` and TUI paths always supply their own gate and
+/// never construct a `PermissionsConfigMode` at all) and
+/// `conway_core::permission_mode::PermissionMode` (the TUI's operator-facing
+/// runtime mode, `Prompt`/`Plan`/`AutoAllow`, re-exported at this crate's
+/// root as `conway::PermissionMode` -- see that type's own doc). Wire values
+/// are unchanged by this rename; only the three Rust identifiers were ever
+/// ambiguous.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum PermissionMode {
+pub enum PermissionsConfigMode {
     Prompt,
     Allowlist,
     Deny,

@@ -4,7 +4,7 @@
 //! `config::merge::validate`'s check 3 hard-rejected, so the preset could
 //! never survive `ConwayBuilder::build()` -- see `crates/conway/examples/
 //! bare_inference.rs`'s own `config_with_tools` comment, which hit exactly
-//! this wall and worked around it with `PermissionMode::Deny` instead.
+//! this wall and worked around it with `PermissionsConfigMode::Deny` instead.
 //!
 //! P-15 ("a check is not established until it has been shown to fail"): a
 //! test that only calls the preset and asserts its shape (as
