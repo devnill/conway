@@ -241,7 +241,10 @@ mod tests {
         assert!(!changed);
 
         let after = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(before, after, "a no-op write must not touch the file at all");
+        assert_eq!(
+            before, after,
+            "a no-op write must not touch the file at all"
+        );
 
         let _ = std::fs::remove_file(&path);
     }

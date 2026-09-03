@@ -1674,7 +1674,10 @@ mod tests {
     #[test]
     fn validate_context_window_input_accepts_a_plausible_number() {
         assert_eq!(validate_context_window_input("131072"), Ok(Some(131_072)));
-        assert_eq!(validate_context_window_input("  1048576  "), Ok(Some(1_048_576)));
+        assert_eq!(
+            validate_context_window_input("  1048576  "),
+            Ok(Some(1_048_576))
+        );
     }
 
     #[test]
