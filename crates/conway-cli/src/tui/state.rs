@@ -1803,15 +1803,15 @@ impl AppState {
                     *discarded_thinking_chars,
                 );
             }
-            // Board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`: a keep_alive root's
-            // turn-scoped budget trip (`max_steps`/`max_tool_calls`) no
-            // longer ends the session (`Event::AgentFinished`) -- it aborts
-            // just the current turn and the harness returns to idling for
-            // the operator's next prompt. Without this arm, that would fall
-            // into the wildcard below and be silently invisible: the
-            // operator would see the agent simply stop responding, exactly
-            // the "notice, not the conversation" bug this item exists to
-            // fix having only moved one layer down. Unconditional (not
+            // A keep_alive root's turn-scoped budget trip (`max_steps`/
+            // `max_tool_calls`) no longer ends the session
+            // (`Event::AgentFinished`) -- it aborts just the current turn
+            // and the harness returns to idling for the operator's next
+            // prompt. Without this arm, that would fall into the wildcard
+            // below and be silently invisible: the operator would see the
+            // agent simply stop responding, the exact "the session ends
+            // instead of just the turn" failure mode moved one layer down,
+            // from the runtime into this renderer. Unconditional (not
             // gated on `env.agent == self.focused_agent`), matching
             // `Event::Error`/`Event::AgentProgress`'s own convention just
             // above: a root's turn ending is worth surfacing even if the
