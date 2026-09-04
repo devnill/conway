@@ -216,7 +216,7 @@ pub struct InheritedPrefix {
     /// fork depth >= 2", for the full rationale). Recovering true per-record
     /// authorship at arbitrary depth would require per-record session tracking
     /// that does not exist upstream (in `conway_core::log::LogRecord` or in
-    /// `conway_core::transcript`'s resolver) — out of this item's scope; queued as a
+    /// `conway_core::transcript`'s resolver); queued as a
     /// refinement question rather than attempted here (coordinator ruling,
     /// rework).
     pub from: SessionId,
@@ -323,9 +323,7 @@ impl ContextBuilder {
         // `AgentDef` carries, or a one-shot `--system-prompt`/
         // `--append-system-prompt` override -- both occupy the same `[0]`
         // slot): `BeforeSystemPrompt` fragments render AHEAD of `[0]`;
-        // `AfterSystemPrompt` fragments (the default -- every fragment
-        // declared before `InstructionFragment::position` existed keeps
-        // this exact placement) render where they always have, AFTER `[0]`
+        // `AfterSystemPrompt` fragments (the default) render AFTER `[0]`
         // and BEFORE `[1b] SkillFragments*` (an operator's own,
         // directory-authored skills). The tree already established this
         // exact "declare a policy once, and let every installed source
@@ -349,9 +347,9 @@ impl ContextBuilder {
         // that." This is the one seam that already knows, for THIS turn,
         // exactly which tools are reachable (`input.tools`, the tool set
         // this turn's request actually announces) -- the same set breakpoint
-        // A's `ToolSchemas` segment below is built from. **Board item
-        // `01M1FSRJJAB3ZYZXED4SVT2ZSF` moved this check from whole-fragment
-        // to PER PART** (`filter_reachable_parts` below): `instruction.text`
+        // A's `ToolSchemas` segment below is built from. **The check runs
+        // PER PART** (`filter_reachable_parts` below, board item
+        // `01M1FSRJJAB3ZYZXED4SVT2ZSF`): `instruction.text`
         // (the body) always renders; each of `instruction.parts` renders
         // independently, iff every id its OWN `tool_ids` names is reachable
         // -- so a fragment can say "verify with `bash`" as one conditional
@@ -361,8 +359,7 @@ impl ContextBuilder {
         // joined into the rendered segment, so the model never reads an
         // instruction naming a tool it cannot call); the fragment as a
         // whole is only ENTIRELY withheld (no segment pushed at all) when
-        // its body is empty and every part was withheld -- the per-part
-        // analog of the old whole-fragment check. Every fragment is still
+        // its body is empty and every part was withheld. Every fragment is still
         // recorded in `report.instruction_fragments` (built below, via
         // `instruction_reports`, in the SAME install order that list has
         // always used -- unaffected by the position/order render sort
@@ -525,13 +522,13 @@ impl ContextBuilder {
         // `anthropic` wire modules, built straight from `ContextInput.tools`
         // via `AttemptEngine::build_request`, independent of `segments`
         // entirely). A `Role::System` segment holding the SAME canonical JSON
-        // used to be pushed here too, as a `ToolSpec`-serializing superset
+        // as a `ToolSpec`-serializing superset
         // (name, description, schema, **and** the harness-internal
-        // `category`/`permission` fields the model never needed) — a full
-        // second copy of every tool's schema, paid on every turn and, via fork
+        // `category`/`permission` fields the model never needed) would be
+        // a full second copy of every tool's schema, paid on every turn and, via fork
         // inheritance -- a fork takes the whole prefix -- at every fork depth
         // for every sibling. Measured against a representative 14-tool built-in
-        // set (`conway-tools::builtin_plugins`), that duplicate text ran
+        // set (`conway-tools::builtin_plugins`), that duplicate text runs
         // ~13.7KB / ~3.4K estimated tokens — on the close order of, and often
         // larger than, everything else in a single turn; this was measured
         // rather than assumed.
@@ -544,7 +541,7 @@ impl ContextBuilder {
         // docs, "Prompt caching" > "Caching tool definitions",
         // https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching,
         // verified 2026-08-08). That is exactly what breakpoint A needs, so
-        // this segment's TEXT is no longer sent — the native array is the
+        // this segment's TEXT is never sent — the native array is the
         // only copy — while the segment ITSELF is kept, with empty
         // `content`, for three reasons that would otherwise regress:
         //   1. It is still the anchor `desired_breakpoints`/
@@ -844,10 +841,10 @@ fn text_block(text: &str) -> Vec<ContentBlock> {
 /// (`openai_compat::tool_result_messages` and `anthropic::tool_result_blocks`)
 /// serialize a tool result ONLY from a `ToolResultBlock` -- it is the block
 /// that carries the `call_id` tying the result back to its `tool_use` /
-/// `tool_call`. The tool runner produces raw `Text` blocks, so before this
-/// wrapping the segment held bare `Text`, matched neither wire adapter, and the
-/// tool result was silently dropped from every request: the model saw its own
-/// tool call but never the output, so it confabulated an answer.
+/// `tool_call`. The tool runner produces raw `Text` blocks; without this
+/// wrapping the segment would hold bare `Text`, matching neither wire adapter, and the
+/// tool result would be silently dropped from every request: the model would see its own
+/// tool call but never the output, and would confabulate an answer.
 fn tool_result_block(result: &ToolResult) -> Vec<ContentBlock> {
     vec![ContentBlock::ToolResultBlock {
         call_id: result.call_id.clone(),
@@ -880,10 +877,7 @@ fn tool_result_block(result: &ToolResult) -> Vec<ContentBlock> {
 /// `conway_runtime::tools::runner::apply_truncation` already caps a few
 /// built-in tools' own raw output at a fixed, tool-declared byte budget
 /// (`read`'s 65536-byte head, `grep`'s 32768-byte head, `bash`'s
-/// head+tail) BEFORE a `ToolResult` is ever persisted -- a correction of
-/// this item's own "nothing populates `TruncationRecord` today" premise,
-/// stale by the time this item was actually built (multiple sibling items
-/// landed in the same session). That existing mechanism is unconditional
+/// head+tail) BEFORE a `ToolResult` is ever persisted. That existing mechanism is unconditional
 /// and model-agnostic: the SAME fixed cap applies to a tiny local model and
 /// a 1M-token cloud one alike, and exists to keep one absurdly large tool
 /// invocation (a multi-gigabyte file read) from producing an unbounded
@@ -894,8 +888,8 @@ fn tool_result_block(result: &ToolResult) -> Vec<ContentBlock> {
 /// tool-truncated 65536-byte read can still exceed a small role's small
 /// bound, so the two compose rather than duplicate. Neither one is a
 /// lossy MIDDLE ground on its own: the tool-level cap is itself a
-/// head/tail cut (a real truncation, just fixed and pre-existing, out of
-/// this item's file boundaries to revisit), and this gate's own choice
+/// head/tail cut (a real truncation, just fixed and pre-existing, not
+/// revisited here), and this gate's own choice
 /// stays binary given whatever it receives.
 ///
 /// The ONE seam both [`own_segment`] (this session's own tool results) and
@@ -1129,10 +1123,9 @@ pub(crate) fn check_tool_call_coherence(segments: &[PromptSegment]) -> Vec<ToolC
 ///
 /// Replays the WHOLE `AgentResult`, not only `summary`: a summary line,
 /// then one `facts:`/`artifacts:`/`structured:` section per non-empty
-/// field, in that fixed order. A `report` call with typed facts, artifacts,
-/// or structured output used to disappear the moment it crossed into the
-/// parent's context -- this function is the one place that lift happens, so
-/// it is the one place that reassembly had to be built. An empty section is
+/// field, in that fixed order -- this function is the one place that lift
+/// happens for a `report` call with typed facts, artifacts, or structured
+/// output. An empty section is
 /// omitted entirely, never rendered as an empty header.
 ///
 /// No truncation is applied here: `report`'s own argument bounds
@@ -1178,9 +1171,7 @@ fn child_result_text(result: &conway_core::agent::AgentResult) -> String {
 }
 
 /// One `facts:` line: `key`, then `value` (bare for a JSON string, else its
-/// compact JSON form), then `source` when the child gave one. `Fact`'s
-/// three fields (`key`/`value`/`source`) are the type as it stands today --
-/// not the `kind`/`text` shape an earlier draft of this rendering assumed.
+/// compact JSON form), then `source` when the child gave one.
 fn fact_line(fact: &Fact) -> String {
     let value = match &fact.value {
         serde_json::Value::String(s) => s.clone(),
@@ -1344,22 +1335,22 @@ fn own_segment(
 /// tags) a real tokenizer spends a handful of tokens on that a pure
 /// character count would otherwise miss entirely. Deliberately small next to
 /// a typical JSON-serialized block's own structural overhead (field names,
-/// quoting, escaping) -- see the module doc's earlier work note on why this
-/// estimator no longer serializes the whole block to JSON first.
+/// quoting, escaping) -- see [`estimate_tokens`]'s own doc for why this
+/// estimator avoids serializing the whole block to JSON first.
 const PER_BLOCK_OVERHEAD_TOKENS: u32 = 4;
 
 /// Heuristic token estimate (T-9: explicitly approximate, never presented as
 /// an exact count) over a segment's actual text/content payload, NOT its
-/// JSON serialization. the prior formula (`json.len() / 4` over
-/// `serde_json::to_string(content)`) counted every content block's field
+/// JSON serialization: serializing to JSON first (`json.len() / 4` over
+/// `serde_json::to_string(content)`) would count every content block's field
 /// names, `{}`/`[]`/`,` punctuation, and string-escaping once per block --
 /// structural overhead a real tokenizer never spends tokens on -- which
-/// inflated the estimate most for payloads with many small blocks (exactly
+/// inflates the estimate most for payloads with many small blocks (exactly
 /// the "structurally-heavy" case this heuristic most needs to get right,
-/// since that is what an overflow/curation hook is judging). This version
+/// since that is what an overflow/curation hook is judging). This
 /// sums each block's own meaningful payload length (`ceil(chars / 4)`) plus
-/// a small fixed per-block overhead, still a heuristic (no tokenizer
-/// dependency), just one that scales with content rather than with JSON
+/// a small fixed per-block overhead -- still a heuristic (no tokenizer
+/// dependency), one that scales with content rather than with JSON
 /// framing.
 fn estimate_tokens(content: &[ContentBlock]) -> u32 {
     content.iter().map(estimate_block_tokens).sum()
@@ -1456,9 +1447,7 @@ fn derive_segment_id(
 /// The per-part reachability gate itself -- board item
 /// `01M1FSRJJAB3ZYZXED4SVT2ZSF`, the site `scripts/board-claims.md`'s
 /// "an instruction may only name a capability that is actually reachable"
-/// predicate is pinned to (replacing the old whole-fragment `if
-/// unreachable_tool_ids.is_empty()` gate this function's own name
-/// literally supersedes).
+/// predicate is pinned to.
 ///
 /// Joins `instruction.text` (the always-rendered body) with every part in
 /// `instruction.parts` whose OWN `tool_ids` are ALL present in
@@ -1535,10 +1524,8 @@ fn full_instruction_text(instruction: &PluginInstruction) -> String {
 
 /// Stamps a `PluginInstruction` fragment's rendered segment by
 /// [`PluginInstruction::authored_by`] -- board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`.
-/// [`FragmentAuthor::Plugin`] (every fragment's own default, and every
-/// fragment declared before this field existed) yields
-/// `Provenance::PluginInstruction { plugin_id, name }`, replacing what used
-/// to be an unconditional `Provenance::Skill { name }` stamp here.
+/// [`FragmentAuthor::Plugin`] (every fragment's own default) yields
+/// `Provenance::PluginInstruction { plugin_id, name }`.
 /// [`FragmentAuthor::Operator`] yields `Provenance::Operator { name, path }`
 /// -- an operator's own words, sourced from a file some plugin merely read,
 /// are never durably attributed to that plugin or misfiled as a skill. Both
@@ -1919,8 +1906,7 @@ mod estimator_tests {
     /// naming a tool id that IS present in `ContextInput.tools` is fully
     /// reachable -- its text is injected as its own `Role::System` segment
     /// (`Provenance::PluginInstruction { plugin_id, name }`, board item
-    /// `01M1FSNBRE5XJ0GQ04RT5HZ1PS` -- previously `Provenance::Skill { name
-    /// }`, the misattribution that item closed) AND recorded in
+    /// `01M1FSNBRE5XJ0GQ04RT5HZ1PS`) AND recorded in
     /// `report.instruction_fragments` with the declaring plugin's id and an
     /// empty `unreachable_tool_ids`.
     #[test]
@@ -2066,11 +2052,7 @@ mod estimator_tests {
     /// with a non-empty body and two parts -- one gated on a PRESENT tool,
     /// one on an ABSENT tool -- renders body + the reachable part as ONE
     /// `Role::System` segment; the entry names exactly the withheld part
-    /// (index 1) and exactly the absent tool. Falsified before this item:
-    /// `PluginInstruction` had no `parts` field at all, so this fragment
-    /// shape (a body plus two independently-gated parts) could not be
-    /// expressed -- confirmed by the fact that `parts` did not exist on
-    /// `PluginInstruction` until this same change introduced it.
+    /// (index 1) and exactly the absent tool.
     #[test]
     fn a_fragment_with_body_and_mixed_reachable_parts_renders_body_plus_reachable_part_as_one_segment(
     ) {
@@ -2161,11 +2143,7 @@ mod estimator_tests {
     /// Acceptance 2 (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`): a fragment
     /// whose body is non-empty and EVERY part is unreachable still renders
     /// its body -- the whole fragment is never withheld just because every
-    /// conditional part happened to gate out this turn. Falsified before
-    /// this item the same way as the test above: `parts` did not exist, so
-    /// a whole-fragment `tool_ids` (the pre-item mechanism) withheld the
-    /// ENTIRE fragment, body included, the moment its one tool was absent
-    /// -- exactly the defect this item exists to fix.
+    /// conditional part happened to gate out this turn.
     #[test]
     fn a_fragment_with_a_body_and_only_unreachable_parts_still_renders_its_body() {
         let absent = conway_core::ids::ToolName::new("conway_fork");
@@ -2308,16 +2286,8 @@ mod estimator_tests {
     /// `FragmentAuthor::Operator { path }` yields `Provenance::Operator {
     /// name, path }`; an ordinary `ContextInput::skills` entry (never
     /// routed through `authored_by` at all) still yields `Provenance::
-    /// Skill { name }`, unaffected -- this item is scoped to instruction
-    /// fragments, not skills. Observed failing before `provenance_for_instruction`
-    /// existed: every `PluginInstruction` unconditionally stamped
-    /// `Provenance::Skill { name }` regardless of `authored_by`, so an
-    /// operator-authored fragment's segment carried `Skill`, not
-    /// `Operator` -- confirmed by temporarily hardcoding
-    /// `provenance_for_instruction` to always return
-    /// `Provenance::PluginInstruction` (the pre-`authored_by`-aware shape)
-    /// and re-running this test: the `Operator` assertion below failed with
-    /// `Skill`/`PluginInstruction` found instead.
+    /// Skill { name }`, unaffected -- scoped to instruction
+    /// fragments, not skills.
     #[test]
     fn instruction_fragment_provenance_follows_authored_by() {
         let operator_path = std::path::PathBuf::from("/repo/.conway/instructions.md");
@@ -2466,10 +2436,7 @@ mod estimator_tests {
 
     /// Acceptance 1: with an agent-def system prompt present and one
     /// `BeforeSystemPrompt` fragment, segment 0 is the fragment and segment
-    /// 1 is `Provenance::AgentDef` -- falsified before this item: every
-    /// fragment rendered at `[1]`, strictly after `[0]`, so this exact
-    /// assertion order failed (the fragment would have been segment 1, the
-    /// agent def segment 0).
+    /// 1 is `Provenance::AgentDef`.
     #[test]
     fn before_system_prompt_fragment_renders_ahead_of_the_agent_def() {
         let input = fragment_position_input(
@@ -2701,11 +2668,8 @@ mod own_segment_provenance_tests {
 
     /// Board item `01M1FSS152J8NQPJAQZV2V2M3K`: an own `LogRecord::Assistant`
     /// -- the model's own prior turn, re-read on the agent's next own turn --
-    /// must map to the dedicated `Provenance::Assistant`, not the retired,
-    /// fabricated `SystemNote` reason this module's own doc used to
-    /// describe. Written to fail against the unmodified tree (no
-    /// `Provenance::Assistant` variant exists yet); passes once both that
-    /// variant and this mapping exist.
+    /// must map to the dedicated `Provenance::Assistant`, never a fabricated
+    /// `SystemNote` reason.
     #[test]
     fn own_segment_maps_an_assistant_record_to_the_dedicated_provenance() {
         let record = assistant_record(text_block("looking now"));
@@ -2720,7 +2684,7 @@ mod own_segment_provenance_tests {
     /// log as a `UserTurn` stamped `Provenance::MergedAsk { from }` — and
     /// `own_segment` must surface THAT stored provenance (so `/context`'s
     /// report shows `merged_ask`, naming the purged child session), not the
-    /// kind-derived `UserPrompt` it used to fabricate.
+    /// kind-derived `UserPrompt` fallback.
     #[test]
     fn own_segment_honors_stored_provenance_on_a_merged_user_turn() {
         let from = SessionId::new();
