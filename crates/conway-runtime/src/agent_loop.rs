@@ -1970,20 +1970,19 @@ impl AgentLoop {
 
     /// Synthesizes the `trailing_text` argument every non-natural terminal
     /// path (budget, cancellation, deadline, backend failure) passes to
-    /// [`Self::finish`] -- every one of those sites used to pass a literal
-    /// `""`, which `ResultBuilder::resolve`'s status-naming fallback then
-    /// turned into `"(no output; terminal status: <name>)"` regardless of
-    /// how much real work the run had already done. After this item, no
-    /// call to `finish(` in this file passes a bare `""` (`grep -n
-    /// 'finish(' agent_loop.rs` finds none) -- this method is what every
-    /// one of those ten sites calls instead.
+    /// [`Self::finish`] -- a bare `""` here, which `ResultBuilder::resolve`'s
+    /// status-naming fallback
+    /// turns into `"(no output; terminal status: <name>)"` regardless of
+    /// how much real work the run had already done, would misrepresent it:
+    /// this method is what every
+    /// one of those ten sites calls instead (`grep -n
+    /// 'finish(' agent_loop.rs` finds no bare `""` call).
     ///
     /// Precedence:
     /// 1. `state.last_assistant_text` -- the most recent backend response's
     ///    own text, captured every turn in [`Self::run_inner`] BEFORE that
     ///    same turn's own tool-dispatch/cancel/budget checks (see that
-    ///    field's own doc). This is the concrete fix for the incident this
-    ///    item exists to close: a turn that dispatched tool calls and was
+    ///    field's own doc): a turn that dispatched tool calls and was
     ///    then cut off -- by a budget check, a cancel, or a deadline --
     ///    before reaching a LATER turn's natural completion still reports
     ///    whatever the model said alongside those calls, not `""`.
@@ -1991,8 +1990,8 @@ impl AgentLoop {
     ///    captured text but other evidence shows real work happened this
     ///    run anyway (`state.turn > 0`, `state.tool_calls > 0`, or
     ///    `builder.has_activity()` -- a tool artifact or a `report` call
-    ///    already observed). This is acceptance criterion 2, "distinguishes
-    ///    'no work' from 'stopped before reporting'": a run that dispatched
+    ///    already observed): distinguishes
+    ///    "no work" from "stopped before reporting" -- a run that dispatched
     ///    tool calls with no accompanying assistant text (a model that only
     ///    ever emits tool calls, never prose) is not a run that did
     ///    nothing, and must not read like one.
