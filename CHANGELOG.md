@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-09-04
+
 ### Added
 
 - **`conway.idiom` now prepends a session-static environment block — harness, cwd, OS, date, git branch — ahead of everything else in the assembled context** — board item `01M1FSTQT952QYM014G65EVW25`. A model running inside conway was never told what harness it is in, what directory it is working from, what OS it is on, or what day it is; `conway.idiom.environment` closes that gap with one short sentence naming exactly four facts: `cwd` (absolute, verbatim), `os`/arch (`std::env::consts`), `date` (the session's own start date, explicitly labeled "session start"), and `git` (the current branch, or a short commit sha in detached `HEAD` state) — omitted entirely, never guessed at, when `cwd` is not inside a git work tree. Declared `BeforeSystemPrompt` with `order: -200`, ahead of even this plugin's own pre-existing base fragment (`order: -100`), so it is genuinely the first thing the model reads, ahead of an agent def's own prompt. Git facts come from parsing `.git/HEAD` directly (`std::fs`, no `git` subprocess, no new `git2` dependency) — including following a linked worktree's own `.git` FILE (`gitdir: <path>`, not a directory) to the worktree's own `HEAD`, so a worktree checkout reports its own branch rather than the main checkout's. Computed exactly once, at plugin construction, and never again: two consecutive `Plugin::instructions()` calls on the same instance return byte-identical text for this fragment, the whole point being that a fragment this far forward in the context must never disturb a prompt cache's cached prefix from one turn to the next. Deliberately excludes clean/dirty git status (changes almost every turn — the antithesis of session-static), model/window/headroom (not known at construction time; already carried by `conway_runtime::runway`'s per-turn notices), and a tool list (the wire-level tool schema announcement already states this). A session crossing midnight keeps its ORIGINAL start date — it is a snapshot, not a clock. `docs/plugins/idiom.md` gains a "The environment block" section; `PluginDescription::costs` and `/context`'s preamble section both now name `conway.idiom.environment` alongside `conway.idiom.base`.
@@ -6731,7 +6733,8 @@ capability is a plugin.
     ; 0.3.0 and earlier were released
      untagged and have no target to point at. -->
 
-[Unreleased]: https://github.com/devnill/conway/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/devnill/conway/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/devnill/conway/releases/tag/v0.10.0
 [0.9.0]: https://github.com/devnill/conway/releases/tag/v0.9.0
 [0.8.0]: https://github.com/devnill/conway/releases/tag/v0.8.0
 [0.7.0]: https://github.com/devnill/conway/releases/tag/v0.7.0
