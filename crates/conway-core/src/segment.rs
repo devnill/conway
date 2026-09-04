@@ -267,9 +267,6 @@ mod tests {
             }),
             SegmentKind::Memory
         );
-        assert_eq!(
-            SegmentKind::from(&Provenance::Assistant),
-            SegmentKind::Turn
-        );
+        assert_eq!(SegmentKind::from(&Provenance::Assistant), SegmentKind::Turn);
     }
 }
