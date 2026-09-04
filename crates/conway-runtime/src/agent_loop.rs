@@ -160,7 +160,7 @@ use conway_core::capabilities::{CacheMode, HeadroomPolicy, RequiredCaps, ToolCal
 use conway_core::content::{ContentBlock, ToolResult, ToolSpec, Usage};
 use conway_core::error::{ConwayError, RoutingError, RuntimeError};
 use conway_core::event::Event;
-use conway_core::ids::{AgentId, ModelId, ModelRef, RoleAlias, SessionId};
+use conway_core::ids::{AgentId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::LogRecord;
 use conway_core::path::ResolvedPath;
 use conway_core::ports::{
@@ -672,6 +672,58 @@ macro_rules! try_rt {
 }
 
 impl AgentLoop {
+    /// Persist-before-act, in one place (`INTENT.md` §8.6: "an invariant
+    /// belongs to the seam, not to its call sites"). This is the ONLY
+    /// `SessionStore::append` call in this file -- every record this loop
+    /// writes, of any kind, is durable through this one function before the
+    /// loop acts on the fact that it happened.
+    ///
+    /// `make` receives the seq [`SessionStore::head`] reports for this
+    /// session right before `append` runs, and returns the fully-built
+    /// record. That seq is NOT what ends up on disk: the store, not the
+    /// caller, is the seq authority (`conway_session::store::assign_seq`,
+    /// mirrored by `conway_testkit::FakeStore`'s own `reassign_seq`), and
+    /// `append` always overwrites whatever `make` embedded with its own
+    /// under-lock read of the session's true head. The two agree because
+    /// this loop is the only writer of its own session, so the `head` read
+    /// immediately below and `append`'s own assignment always land on the
+    /// same number -- but this method returns `append`'s actually-assigned
+    /// `LogSeq`, never an echo of the `head` read, so no caller's
+    /// correctness depends on that single-writer coincidence holding. A
+    /// call site with nothing meaningful to put in `make`'s parameter
+    /// (`drain_inbox` below: `mailbox::classify` already built a complete
+    /// record with a disposable placeholder seq before this function ever
+    /// sees it) just ignores the argument -- there is no second entry point
+    /// for "I already have a record", because a record's seq field is
+    /// never the real one until `append` assigns it, regardless of who
+    /// built the record or when.
+    ///
+    /// A failed `head` or `append` means the record this call was about to
+    /// make durable never became durable -- acting on it anyway would let
+    /// the agent proceed as though something happened that the log will
+    /// never show. Every call site but one routes this method's `Err`
+    /// through `try_rt!`, which is unconditionally terminal for the current
+    /// turn/agent: persist-before-act's other half is "a failure to persist
+    /// is a failure to act". The one exception is `finish`'s terminal
+    /// `AgentResultRecord` write: `finish` has already committed to a
+    /// terminal `AgentResult` by the time it calls this, returns that
+    /// `AgentResult` unconditionally (its signature has no `Result` to fail
+    /// into), and a lost durable copy of an already-decided result is a
+    /// logging/observability gap rather than a correctness one -- so that
+    /// call site matches on this method's `Result` itself and logs rather
+    /// than routing through `try_rt!`. That is a caller-side choice about
+    /// how to HANDLE the `Result`, not a second persist path: there is
+    /// still exactly one `append` call, made here, either way.
+    async fn persist(
+        &self,
+        make: impl FnOnce(LogSeq) -> LogRecord,
+    ) -> Result<LogSeq, RuntimeError> {
+        let seq = self.deps.store.head(&self.session).await?;
+        let record = make(seq);
+        let seq = self.deps.store.append(&self.session, record).await?;
+        Ok(seq)
+    }
+
     /// Drains every message queued on this agent's inbox and classifies
     /// each one (`mailbox::classify`, architecture §6.2). A `Steer` is
     /// persisted as `LogRecord::ParentSteer` *before* this call returns
@@ -723,8 +775,13 @@ impl AgentLoop {
                         lost_records += 1;
                         continue;
                     }
-                    if let Err(err) = self.deps.store.append(&self.session, record).await {
-                        persist_err = Some(err.into());
+                    // `record` already carries `mailbox::classify`'s
+                    // disposable placeholder seq; `Self::persist` overwrites
+                    // it with a real one on the way through `append` (see
+                    // that method's own doc), so the closure below just
+                    // hands the already-built record back unchanged.
+                    if let Err(err) = self.persist(|_seq| record).await {
+                        persist_err = Some(err);
                         lost_records += 1;
                     }
                 }
@@ -1146,7 +1203,6 @@ impl AgentLoop {
                     limit,
                     steps_this_turn,
                 } => {
-                    let note_seq = try_rt!(state, self.deps.store.head(&self.session).await);
                     let text = format!(
                         "this turn was ended by the harness: {limit} reached \
                          ({steps_this_turn} steps this turn). Answer with what you have; the \
@@ -1154,21 +1210,16 @@ impl AgentLoop {
                     );
                     try_rt!(
                         state,
-                        self.deps
-                            .store
-                            .append(
-                                &self.session,
-                                LogRecord::SystemNote {
-                                    seq: note_seq,
-                                    ts: Utc::now(),
-                                    text,
-                                    reason: "budget_turn_aborted".to_string(),
-                                    prov: Provenance::SystemNote {
-                                        reason: "budget_turn_aborted".to_string(),
-                                    },
-                                },
-                            )
-                            .await
+                        self.persist(|seq| LogRecord::SystemNote {
+                            seq,
+                            ts: Utc::now(),
+                            text,
+                            reason: "budget_turn_aborted".to_string(),
+                            prov: Provenance::SystemNote {
+                                reason: "budget_turn_aborted".to_string(),
+                            },
+                        })
+                        .await
                     );
                     self.deps.bus.emit(
                         self.session,
@@ -1540,7 +1591,6 @@ impl AgentLoop {
             }
 
             let usage = outcome.response.usage;
-            let seq = try_rt!(state, self.deps.store.head(&self.session).await);
             // the assistant record must carry the whole turn -- its
             // text AND the tool calls it made. `GenerateResponse` keeps
             // `content` (text/thinking) and `tool_calls` in separate fields;
@@ -1559,25 +1609,22 @@ impl AgentLoop {
                     arguments: call.arguments.clone(),
                 }
             }));
-            let assistant_record = LogRecord::Assistant {
-                seq,
-                ts: Utc::now(),
-                content: assistant_content,
-                model: ModelRef {
-                    backend: outcome.route.backend.clone(),
-                    model: outcome.route.model.clone(),
-                },
-                route_reason: serde_json::to_value(&outcome.route.reason)
-                    .expect("RoutingReason always serializes"),
-                usage,
-                stop: outcome.response.stop,
-            };
             try_rt!(
                 state,
-                self.deps
-                    .store
-                    .append(&self.session, assistant_record)
-                    .await
+                self.persist(|seq| LogRecord::Assistant {
+                    seq,
+                    ts: Utc::now(),
+                    content: assistant_content,
+                    model: ModelRef {
+                        backend: outcome.route.backend.clone(),
+                        model: outcome.route.model.clone(),
+                    },
+                    route_reason: serde_json::to_value(&outcome.route.reason)
+                        .expect("RoutingReason always serializes"),
+                    usage,
+                    stop: outcome.response.stop,
+                })
+                .await
             );
             // persist the SAME report already pushed to
             // `report_slot` above -- one build, two surfaces (live slot,
@@ -1619,29 +1666,22 @@ impl AgentLoop {
                     ) {
                         ContractOutcome::Ok => {}
                         ContractOutcome::Retry { errors } => {
-                            let note_seq =
-                                try_rt!(state, self.deps.store.head(&self.session).await);
                             let note_text = format!(
                                 "the structured result failed its result_contract: {}",
                                 errors.join("; ")
                             );
                             try_rt!(
                                 state,
-                                self.deps
-                                    .store
-                                    .append(
-                                        &self.session,
-                                        LogRecord::SystemNote {
-                                            seq: note_seq,
-                                            ts: Utc::now(),
-                                            text: note_text,
-                                            reason: "result_contract_violation".to_string(),
-                                            prov: Provenance::SystemNote {
-                                                reason: "result_contract_violation".to_string(),
-                                            },
-                                        },
-                                    )
-                                    .await
+                                self.persist(|seq| LogRecord::SystemNote {
+                                    seq,
+                                    ts: Utc::now(),
+                                    text: note_text,
+                                    reason: "result_contract_violation".to_string(),
+                                    prov: Provenance::SystemNote {
+                                        reason: "result_contract_violation".to_string(),
+                                    },
+                                })
+                                .await
                             );
                             contract_retried = true;
                             state.turn += 1;
@@ -1776,7 +1816,6 @@ impl AgentLoop {
             for (index, tool_outcome) in outcomes.into_iter().enumerate() {
                 result_builder.observe_tool_outcome(&tool_outcome.tool, &tool_outcome);
 
-                let seq = try_rt!(state, self.deps.store.head(&self.session).await);
                 let result = ToolResult {
                     call_id: tool_outcome.call_id,
                     tool: tool_outcome.tool.clone(),
@@ -1784,19 +1823,14 @@ impl AgentLoop {
                     is_error: tool_outcome.is_error,
                     truncated: tool_outcome.truncation,
                 };
-                try_rt!(
+                let seq = try_rt!(
                     state,
-                    self.deps
-                        .store
-                        .append(
-                            &self.session,
-                            LogRecord::ToolResultRecord {
-                                seq,
-                                ts: Utc::now(),
-                                result,
-                            },
-                        )
-                        .await
+                    self.persist(|seq| LogRecord::ToolResultRecord {
+                        seq,
+                        ts: Utc::now(),
+                        result,
+                    })
+                    .await
                 );
 
                 // Hand the finished call to every registered `ToolObserver`,
@@ -1847,24 +1881,18 @@ impl AgentLoop {
                             }
                         };
                     for note in answer.notes {
-                        let note_seq = try_rt!(state, self.deps.store.head(&self.session).await);
                         try_rt!(
                             state,
-                            self.deps
-                                .store
-                                .append(
-                                    &self.session,
-                                    LogRecord::SystemNote {
-                                        seq: note_seq,
-                                        ts: Utc::now(),
-                                        text: note.text,
-                                        reason: note.reason.clone(),
-                                        prov: Provenance::SystemNote {
-                                            reason: note.reason,
-                                        },
-                                    },
-                                )
-                                .await
+                            self.persist(|seq| LogRecord::SystemNote {
+                                seq,
+                                ts: Utc::now(),
+                                text: note.text,
+                                reason: note.reason.clone(),
+                                prov: Provenance::SystemNote {
+                                    reason: note.reason,
+                                },
+                            })
+                            .await
                         );
                     }
                 }
@@ -1907,24 +1935,18 @@ impl AgentLoop {
                 now: Utc::now(),
             };
             for text in runway::notes_for_turn(&mut state.runway, &runway_inputs) {
-                let note_seq = try_rt!(state, self.deps.store.head(&self.session).await);
                 try_rt!(
                     state,
-                    self.deps
-                        .store
-                        .append(
-                            &self.session,
-                            LogRecord::SystemNote {
-                                seq: note_seq,
-                                ts: Utc::now(),
-                                text,
-                                reason: "runway".to_string(),
-                                prov: Provenance::SystemNote {
-                                    reason: "runway".to_string(),
-                                },
-                            },
-                        )
-                        .await
+                    self.persist(|seq| LogRecord::SystemNote {
+                        seq,
+                        ts: Utc::now(),
+                        text,
+                        reason: "runway".to_string(),
+                        prov: Provenance::SystemNote {
+                            reason: "runway".to_string(),
+                        },
+                    })
+                    .await
                 );
             }
 
@@ -2391,28 +2413,25 @@ impl AgentLoop {
         result.steps_taken = steps_taken;
         result.steps_this_turn = steps_this_turn;
 
-        match self.deps.store.head(&self.session).await {
-            Ok(seq) => {
-                let record = LogRecord::AgentResultRecord {
-                    seq,
-                    ts: Utc::now(),
-                    result: result.clone(),
-                };
-                if let Err(err) = self.deps.store.append(&self.session, record).await {
-                    tracing::error!(
-                        agent = %self.agent_id,
-                        error = %err,
-                        "failed to persist terminal AgentResult"
-                    );
-                }
-            }
-            Err(err) => {
-                tracing::error!(
-                    agent = %self.agent_id,
-                    error = %err,
-                    "failed to read session head while persisting terminal AgentResult"
-                );
-            }
+        // `finish` has already committed to a terminal `AgentResult` and
+        // returns it unconditionally below -- there is no `Result` left to
+        // fail into, so unlike every other call site this one handles
+        // `Self::persist`'s `Result` itself (log-and-continue) rather than
+        // routing it through `try_rt!` (see that method's own doc for why
+        // this is still exactly one `append` call either way).
+        if let Err(err) = self
+            .persist(|seq| LogRecord::AgentResultRecord {
+                seq,
+                ts: Utc::now(),
+                result: result.clone(),
+            })
+            .await
+        {
+            tracing::error!(
+                agent = %self.agent_id,
+                error = %err,
+                "failed to persist terminal AgentResult"
+            );
         }
 
         let is_first = self
@@ -2534,4 +2553,226 @@ fn full_text(blocks: &[ContentBlock]) -> String {
             _ => None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit coverage for [`AgentLoop::persist`] -- the single seq-allocate
+    //! and append seam every call site in this file now goes through (board
+    //! item `01M1FSSK042YXVDV5221ACRMGE`). Builds a real `AgentLoop` (every
+    //! `LoopDeps` dependency other than `store` is a cheap `conway_testkit`
+    //! fake that `persist` never touches -- it only ever reads `self.deps.
+    //! store` and `self.session`) so `persist` runs exactly as every real
+    //! call site invokes it, with no stand-in for the method under test
+    //! itself.
+
+    use std::collections::HashMap;
+
+    use conway_core::agent::PermissionDecision;
+    use conway_core::error::StoreError;
+    use conway_core::ids::SeqRange;
+    use conway_core::log::SessionMeta;
+    use conway_core::ports::{CapabilityRegistry, HealthRegistry, PermissionGate};
+    use conway_testkit::{
+        FakeGate, FakeHealth, FakePathStore, FakeRouter, FakeSessionDiscoveryHost, FakeStore,
+        FakeSubagentHost,
+    };
+
+    use super::*;
+    use crate::context::RuntimeContextPathHost;
+    use crate::hook_dispatch::HookDispatcher;
+    use crate::permission::PermissionBroker;
+
+    /// Builds an `AgentLoop` wired to `store`/`session`/`agent` with every
+    /// other `LoopDeps` dependency a fake that is never actually invoked --
+    /// `persist` reads only `self.deps.store` and `self.session`, so
+    /// everything else here only needs to type-check, not do real work.
+    async fn test_loop(
+        store: Arc<dyn SessionStore>,
+        session: SessionId,
+        agent: AgentId,
+    ) -> AgentLoop {
+        let bus = EventBus::new(16);
+        let health: Arc<dyn HealthRegistry> = Arc::new(FakeHealth::new());
+        let attempt = Arc::new(AttemptEngine::new(HashMap::new(), health, bus.clone()));
+        let registry = Arc::new(PluginRegistry::from_plugins(vec![]).expect("empty plugin set"));
+        let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+        let broker = Arc::new(PermissionBroker::new(gate, bus.clone()));
+        let tool_runner = Arc::new(ToolRunner::new(registry.clone(), broker, bus.clone()));
+        let subagents: Arc<dyn SubagentHost> = Arc::new(FakeSubagentHost::new(agent));
+        let path_store: Arc<dyn PathStore> = Arc::new(FakePathStore::new());
+        let resolver = Arc::new(conway_core::transcript::TranscriptResolver::new(64));
+        let tree = Arc::new(AgentTree::new(bus.clone()));
+
+        let deps = Arc::new(LoopDeps {
+            store: store.clone(),
+            path_store: path_store.clone(),
+            context_path_host: Arc::new(RuntimeContextPathHost::new(
+                store.clone(),
+                path_store.clone(),
+                resolver.clone(),
+            )),
+            session_discovery_host: Arc::new(FakeSessionDiscoveryHost::new()),
+            capabilities: Arc::new(CapabilityRegistry::default()),
+            router: Arc::new(FakeRouter::new(vec![])),
+            attempt,
+            registry,
+            tool_runner,
+            subagents,
+            plugin_config: Arc::new(PluginConfig::default()),
+            bus: bus.clone(),
+            builder: Arc::new(ContextBuilder::new()),
+            headroom: Arc::new(HeadroomPolicy::default()),
+            tree,
+            resolver,
+            context_curator: RwLock::new(None),
+            context_hook: RwLock::new(None),
+            observers: Vec::new(),
+            plugin_events: Arc::new(HookDispatcher::new()),
+        });
+
+        let spec = AgentSpec {
+            system_prompt: None,
+            instructions: vec![],
+            skills: vec![],
+            tools: None,
+            role: RoleAlias::new("test"),
+            pin: None,
+            budget: Budget::default(),
+            cache_mode: CacheMode::None,
+            cache_ttl: CacheTtl::FiveMinutes,
+            headroom_override: None,
+            max_parallel_tools: 4,
+            report_slot: None,
+            result_contract: None,
+            keep_alive: false,
+            tag: None,
+        };
+
+        let (_tx, inbox) = mailbox::Mailbox::new(8);
+        AgentLoop {
+            agent_id: agent,
+            session,
+            parent: None,
+            agent_path: vec![agent],
+            cwd: PathBuf::from("/tmp"),
+            root: None,
+            plugin_config: Arc::new(PluginConfig::default()),
+            deps,
+            spec,
+            cancel: CancellationToken::new(),
+            inherited: None,
+            inbox,
+            parent_mailbox: None,
+            pending_cancel: None,
+            resume_gate: ResumeGate::default(),
+        }
+    }
+
+    async fn seeded_session(store: &dyn SessionStore, agent: AgentId) -> SessionId {
+        let session = SessionId::new();
+        store
+            .create(SessionMeta {
+                id: session,
+                agent_id: agent,
+                origin: None,
+                agent_def: None,
+                role: None,
+                created: Utc::now(),
+                cwd: PathBuf::from("/tmp"),
+                labels: vec![],
+                ephemeral: false,
+                ask_origin: None,
+                root: None,
+                plugin_config: PluginConfig::default(),
+            })
+            .await
+            .expect("fresh session id never collides");
+        session
+    }
+
+    fn note(text: &str) -> impl FnOnce(LogSeq) -> LogRecord + '_ {
+        move |seq| LogRecord::SystemNote {
+            seq,
+            ts: Utc::now(),
+            text: text.to_string(),
+            reason: "test".to_string(),
+            prov: Provenance::SystemNote {
+                reason: "test".to_string(),
+            },
+        }
+    }
+
+    /// Acceptance point 4 (first assertion): `persist` allocates the record
+    /// at the seq `SessionStore::head` reports right before the append --
+    /// checked against a `head` read taken by the test itself immediately
+    /// before calling `persist`, so this does not just trust `persist`'s
+    /// own return value.
+    #[tokio::test]
+    async fn persist_appends_at_the_seq_head_reported_at_call_time() {
+        let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+        let agent = AgentId::new();
+        let session = seeded_session(store.as_ref(), agent).await;
+        let agent_loop = test_loop(store.clone(), session, agent).await;
+
+        let head_before = store
+            .head(&session)
+            .await
+            .expect("fresh session has a head");
+        let seq = agent_loop
+            .persist(note("hello"))
+            .await
+            .expect("persist succeeds against a healthy store");
+
+        assert_eq!(
+            seq, head_before,
+            "persist must allocate the record at the seq that was head immediately before it ran"
+        );
+        let records = store
+            .read(&session, SeqRange::full())
+            .await
+            .expect("read back the session");
+        assert_eq!(records.len(), 1, "exactly one record landed: {records:?}");
+        assert_eq!(records[0].seq(), Some(seq));
+    }
+
+    /// Acceptance point 4 (second assertion): a store failure surfaces as
+    /// `persist`'s typed `Err` and appends nothing.
+    ///
+    /// **Shown to fail first:** verified by temporarily editing `persist` to
+    /// swallow a failed append (`Err(_) => seq` instead of `?`) rather than
+    /// propagating it, then reverting before this commit. Under that
+    /// scratch edit this test's first assertion fails: `result` comes back
+    /// `Ok(LogSeq(0))` instead of `Err`, so `matches!(result, Err(..))` is
+    /// `false` and the `assert!` panics naming the unexpected `Ok` value.
+    /// `persist`'s real body has no such swallow -- it propagates via `?` --
+    /// which is what this test asserts against.
+    #[tokio::test]
+    async fn persist_surfaces_a_store_failure_and_appends_nothing() {
+        let store = Arc::new(FakeStore::new());
+        let agent = AgentId::new();
+        let session = seeded_session(store.as_ref(), agent).await;
+        let store_dyn: Arc<dyn SessionStore> = store.clone();
+        let agent_loop = test_loop(store_dyn, session, agent).await;
+
+        store.fail_nth_append(
+            1,
+            StoreError::Io {
+                detail: "disk full".to_string(),
+            },
+        );
+
+        let result = agent_loop.persist(note("hello")).await;
+
+        assert!(
+            matches!(result, Err(RuntimeError::Store(_))),
+            "a store failure must surface as the typed RuntimeError::Store variant, not be \
+             swallowed: {result:?}"
+        );
+        assert_eq!(
+            store.total_record_count(),
+            0,
+            "a failed persist must append nothing"
+        );
+    }
 }
