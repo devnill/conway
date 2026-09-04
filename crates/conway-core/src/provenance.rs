@@ -317,18 +317,25 @@ pub struct ContextReport {
     pub curator_failed: Option<String>,
     /// Every `crate::ports::plugin::Plugin::instructions()` fragment this
     /// turn's context assembly considered, in plugin install order --
-    /// board item `01M0K5MD59YZRSHE31JKZKFRMY`. A reachable fragment
-    /// (`unreachable_tool_ids` empty) ALSO appears in [`Self::segments`]
-    /// as a `Provenance::Skill { name }` entry (the same machinery
-    /// operator-authored skills render through -- see that method's own
-    /// "not `conway.skills`" doc for why the two nonetheless stay distinct
-    /// contributions); this list is what carries the (plugin_id, name)
-    /// attribution `Provenance::Skill` alone does not, so `/context`'s
-    /// preamble section can show a SOURCE column without guessing at a
-    /// segment name. An UNREACHABLE fragment (`unreachable_tool_ids`
-    /// non-empty) appears ONLY here -- its text was withheld from
-    /// [`Self::segments`] entirely, never sent to the model, so this is
-    /// the sole durable record of both the omission and its cause.
+    /// board item `01M0K5MD59YZRSHE31JKZKFRMY`. A fragment that rendered a
+    /// segment this turn (its body, one or more reachable parts, or both --
+    /// see `InstructionFragmentEntry::withheld_parts`, board item
+    /// `01M1FSRJJAB3ZYZXED4SVT2ZSF`) ALSO appears in [`Self::segments`], as
+    /// `Provenance::PluginInstruction { plugin_id, name }` or
+    /// `Provenance::Operator { name, path }` depending on
+    /// `crate::ports::plugin::InstructionFragment::authored_by` (board item
+    /// `01M1FSNBRE5XJ0GQ04RT5HZ1PS`; see that field's own doc); this list is
+    /// what carries the (plugin_id, name) attribution a bare segment alone
+    /// does not, so `/context`'s preamble section can show a SOURCE column
+    /// without guessing at a segment name. A fragment whose body is empty
+    /// AND every part was withheld (`unreachable_tool_ids` non-empty,
+    /// `withheld_parts` covering every declared part) appears ONLY here --
+    /// nothing was withheld from [`Self::segments`] entirely, never sent to
+    /// the model, so this is the sole durable record of both the omission
+    /// and its cause. A fragment with SOME parts withheld and others (or
+    /// its body) reachable appears in BOTH lists at once -- a real, partial
+    /// segment in [`Self::segments`], and this entry naming exactly what
+    /// that segment left out.
     ///
     /// `#[serde(default)]`: every session log written before this field
     /// existed still decodes, with no instruction fragments recorded.
@@ -361,17 +368,58 @@ pub struct InstructionFragmentEntry {
     pub name: String,
     /// This fragment's estimated token cost, using the SAME
     /// `heuristic-chars4` estimator (`ContextReport::tokenizer`) every
-    /// other entry in this report uses -- computed even for a withheld
-    /// (unreachable or scope-skipped) fragment, from its own text, since
+    /// other entry in this report uses. When the fragment rendered a
+    /// segment this turn (the common case), this is that segment's own
+    /// cost -- [`crate::ports::InstructionFragment::text`] plus every
+    /// reachable part, exactly what was sent. When NOTHING rendered
+    /// (the body was empty and every part was withheld -- see
+    /// [`Self::withheld_parts`]), this instead sizes the fragment's WHOLE
+    /// declared text (body plus every part, reachable or not), since
     /// [`ContextReport::segments`] carries no segment to source the
-    /// estimate from in that case.
+    /// estimate from in that case -- still sized, from its own text, never
+    /// zero.
     pub tokens_est: u32,
-    /// Tool ids this fragment's [`crate::ports::InstructionFragment::tool_ids`]
-    /// named that no tool in this turn's assembled tool set provides.
-    /// Empty -- the common case -- means the fragment's text WAS injected
-    /// as a segment (subject also to [`Self::skipped_by_scope`] below);
-    /// non-empty means it was withheld, and this names exactly why.
+    /// Tool ids this fragment's [`crate::ports::InstructionFragment::parts`]
+    /// named, whose withholding cost this fragment a part -- the UNION of
+    /// every id across every entry of [`Self::withheld_parts`] below,
+    /// naming no more than "some part named this and it was not reachable"
+    /// (never which specific part named which specific id; pair with
+    /// `withheld_parts` for that). Empty -- the common case -- means every
+    /// declared part rendered (including the trivial case of a fragment
+    /// with no parts at all); non-empty means at least one part was
+    /// withheld -- the fragment may still have rendered a segment (its body,
+    /// or another reachable part), subject also to [`Self::skipped_by_scope`]
+    /// below.
+    ///
+    /// **Board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` narrowed this field from
+    /// whole-fragment to per-part.** Before that item,
+    /// `InstructionFragment` had its OWN `tool_ids` (no [`Self::withheld_parts`]
+    /// existed to distinguish a part from the whole) and this field's
+    /// non-empty meant the ENTIRE fragment was withheld -- a coarser
+    /// reachability grain that made "verify with `bash`" impossible to say
+    /// inside an otherwise tool-independent orientation paragraph without
+    /// losing the whole paragraph for a `bash`-less session (see
+    /// `InstructionFragment::parts`'s own doc for the full argument). A
+    /// non-empty value here no longer implies the fragment produced no
+    /// segment at all -- check whether a matching entry exists in
+    /// [`ContextReport::segments`] (by `Provenance::PluginInstruction`/
+    /// `Provenance::Operator`'s own `name`) to tell "rendered, minus some
+    /// parts" from "rendered nothing".
     pub unreachable_tool_ids: Vec<ToolName>,
+    /// 0-based indices into [`crate::ports::InstructionFragment::parts`]
+    /// naming exactly which parts were withheld this turn -- the id-level
+    /// detail [`Self::unreachable_tool_ids`] alone cannot give (that field
+    /// is a flat union across every withheld part, unordered and
+    /// unattributed to any one of them). Empty -- the common case -- when
+    /// every declared part rendered.
+    ///
+    /// `#[serde(default)]`: every session log written before this field
+    /// existed (i.e. before board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`, when
+    /// withholding was whole-fragment-or-nothing and had no per-part index
+    /// to record) still decodes, with no part named -- [`Self::unreachable_tool_ids`]
+    /// alone still carries the (coarser) old signal for such a record.
+    #[serde(default)]
+    pub withheld_parts: Vec<u16>,
     /// `true` when this fragment's [`crate::ports::InstructionFragment::scope`]
     /// (or [`crate::ports::InstructionFragment::agent_def`]) excluded it
     /// from THIS turn's agent -- e.g. a `RootOnly` fragment considered for a
@@ -753,6 +801,7 @@ mod tests {
                 name: "when-to-compose".into(),
                 tokens_est: 7,
                 unreachable_tool_ids: vec![ToolName::new("compose_path")],
+                withheld_parts: vec![0],
                 skipped_by_scope: false,
             }],
         };
@@ -776,5 +825,24 @@ mod tests {
         let back: ContextReport = serde_json::from_value(legacy).unwrap();
         assert_eq!(back.curator_failed, None);
         assert!(back.dropped.is_empty());
+    }
+
+    /// `InstructionFragmentEntry::withheld_parts` is `#[serde(default)]`,
+    /// board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`: a session log written
+    /// before per-part withholding existed still decodes, with no part
+    /// index recorded -- `unreachable_tool_ids` alone still carries the
+    /// (coarser, whole-fragment) old signal for such a record.
+    #[test]
+    fn instruction_fragment_entry_without_withheld_parts_still_decodes() {
+        let legacy = serde_json::json!({
+            "plugin_id": "conway.trim",
+            "name": "when-to-compose",
+            "tokens_est": 7,
+            "unreachable_tool_ids": ["compose_path"],
+            "skipped_by_scope": false,
+        });
+        let back: InstructionFragmentEntry = serde_json::from_value(legacy).unwrap();
+        assert!(back.withheld_parts.is_empty());
+        assert_eq!(back.unreachable_tool_ids, vec![ToolName::new("compose_path")]);
     }
 }

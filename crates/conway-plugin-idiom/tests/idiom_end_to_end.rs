@@ -302,6 +302,101 @@ async fn operator_instructions_reach_a_forked_childs_wire_request() {
     );
 }
 
+/// Acceptance 4 (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`): an
+/// interactive-root-shaped session -- no `report`, no `bash`, the exact
+/// premise `conway.idiom` exists for -- gets the fragment's unconditional
+/// body but NEITHER tool-gated part. Mirrors
+/// [`fragment_reaches_a_bare_sessions_wire_request`]'s own "no
+/// tool-providing plugin installed" shape: `App::session_spec`'s real
+/// interactive root excludes `report` via `ToolSelector::Except(vec![
+/// "report".into()])` and never installs `conway.shell` unless the
+/// operator opts bash in, so `ContextInput.tools` is empty for
+/// `report`/`bash` either way -- installing no tool-providing plugin here
+/// reaches the identical `ContextInput.tools` state without needing to
+/// reconstruct that selector.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interactive_root_shaped_session_gets_the_body_without_the_bash_or_report_parts() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = Arc::new(FakeStore::new());
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response(
+            "hello from the model",
+        ))])
+        .with_id(conway::backend::BackendId::new("fake")),
+    );
+    let conway = idiom_conway(tmp.path().to_path_buf(), backend.clone(), store);
+
+    let session = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = session.prompt("hi").await.expect("prompt");
+    turn.result().await.expect("turn completes");
+
+    let calls = backend.calls();
+    let request = calls.last().expect("at least one call recorded");
+    let text = all_text(request);
+    assert!(
+        text.contains("Fork vs spawn"),
+        "the unconditional body must still reach the wire request: {text}"
+    );
+    assert!(
+        !text.contains("Verify with a tool call before you claim done"),
+        "the bash-gated part must be withheld when bash is not reachable: {text}"
+    );
+    assert!(
+        !text.contains("You are a child: finish by calling `report`"),
+        "the report-gated part must be withheld when report is not reachable: {text}"
+    );
+}
+
+/// The other half of acceptance 4: a session with `conway.shell` (the
+/// real `bash` tool, `conway-tools`' own `ShellPlugin`, reached here
+/// through `conway::presets::builtin_plugins()` -- the same facade-only
+/// surface `crates/conway-cli/src/first_party_plugins.rs` installs
+/// through, never a direct `conway-tools` dependency) installed alongside
+/// `conway.idiom` gets the `bash`-gated part's verification sentence on
+/// the wire, not merely a `Plugin::instructions()` return value inspected
+/// in isolation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_with_conway_shell_installed_gets_the_bash_gated_part() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = Arc::new(FakeStore::new());
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response(
+            "hello from the model",
+        ))])
+        .with_id(conway::backend::BackendId::new("fake")),
+    );
+    let shell_plugin = conway::presets::builtin_plugins()
+        .into_iter()
+        .find(|p| p.manifest().id.as_str() == "conway.shell")
+        .expect("conway.shell must be among the built-in plugin candidates");
+
+    let conway = test_builder(base_config_at(tmp.path().to_path_buf()))
+        .with_backend(backend.clone())
+        .with_session_store(store)
+        .with_plugin(shell_plugin)
+        .with_plugin(Arc::new(IdiomPlugin::new()))
+        .build()
+        .expect("build should succeed with conway.shell and conway.idiom installed");
+
+    let session = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = session.prompt("hi").await.expect("prompt");
+    turn.result().await.expect("turn completes");
+
+    let calls = backend.calls();
+    let request = calls.last().expect("at least one call recorded");
+    let text = all_text(request);
+    assert!(
+        text.contains("Verify with a tool call before you claim done"),
+        "the bash-gated part must render when bash IS reachable: {text}"
+    );
+}
+
 /// The fragment's own line/word budget, checked against the exact constant
 /// the plugin ships (acceptance 3) -- redundant with the unit test in
 /// `src/lib.rs`, deliberately: that one guards the constant in isolation,

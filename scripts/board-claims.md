@@ -184,11 +184,11 @@ present: builtin_plugins: Vec::new\(\)
 -->
 
 <!-- claim-check
-why: decision 01M0K4S2S1NBW63KNF1NEY5XT3's obligation ("an instruction may only name a capability that is actually reachable") is exactly the shape this project prefers to express as a mechanical predicate rather than a paragraph nobody re-checks -- this pins that a plugin-declared instruction fragment naming an unreachable tool is WITHHELD from the assembled context, not merely logged about, so the model can never read an instruction assuming a tool it cannot call
-note: added with board item 01M0K5MD59YZRSHE31JKZKFRMY (Plugin::instructions()). Pinned to the exact withholding call site in ContextBuilder::build, not to the struct field alone, so a refactor that keeps recording the omission but stops excluding the segment would still fail this check.
-claim: an instruction fragment naming a tool this turn's assembled tool set does not provide never becomes a Role::System segment -- it is withheld and recorded, checked at context assembly (per turn), not in CI
+why: decision 01M0K4S2S1NBW63KNF1NEY5XT3's obligation ("an instruction may only name a capability that is actually reachable") is exactly the shape this project prefers to express as a mechanical predicate rather than a paragraph nobody re-checks -- this pins that a part naming a tool this turn's assembled tool set does not provide never becomes part of a segment, so the model can never read an instruction assuming a tool it cannot call
+note: added with board item 01M0K5MD59YZRSHE31JKZKFRMY (Plugin::instructions()), narrowed from whole-fragment to per-part by board item 01M1FSRJJAB3ZYZXED4SVT2ZSF (a fragment could not say "verify with bash" as one conditional sentence beside always-true prose without losing the WHOLE paragraph on a bash-less turn -- InstructionFragment now carries an unconditional text body plus zero or more independently-gated InstructionParts). Pinned to the new per-part withholding function's own name, filter_reachable_parts, in ContextBuilder::build -- not to the struct field alone, and not to the old whole-fragment `if unreachable_tool_ids.is_empty()` gate this function replaced -- so a refactor that keeps recording the omission but stops excluding a part's text from the join would still fail this check. Re-pin history: this predicate previously matched `if unreachable_tool_ids.is_empty\(\)`, the whole-fragment gate; that literal was deleted in the same change that introduced filter_reachable_parts, so the OLD predicate was observed to fail against the new code before this note's own re-pin (report's own fail/pass demonstration has the exact before/after).
+claim: a part naming a tool this turn's assembled tool set does not provide never becomes part of a segment -- it is withheld from the join and recorded, checked at context assembly (per turn, per part), not in CI
 paths: crates/conway-runtime/src/context/builder.rs
-present: if unreachable_tool_ids.is_empty\(\)
+present: fn filter_reachable_parts\(
 -->
 
 <!-- claim-check

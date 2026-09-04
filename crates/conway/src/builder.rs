@@ -2076,7 +2076,7 @@ impl ConwayBuilder {
                     plugin_id: plugin_id.clone(),
                     name: fragment.name,
                     text: fragment.text,
-                    tool_ids: fragment.tool_ids,
+                    parts: fragment.parts,
                     position: fragment.position,
                     order: fragment.order,
                     scope: fragment.scope,

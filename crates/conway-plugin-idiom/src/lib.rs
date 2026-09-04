@@ -65,26 +65,55 @@
 //! `first_party_plugins::bundle`'s own doc for where this entry sits in that
 //! list.
 //!
-//! # The `tool_ids` trap
+//! # The `tool_ids` trap, and how per-part gating closes it (board item
+//! `01M1FSRJJAB3ZYZXED4SVT2ZSF`)
 //!
-//! [`IdiomPlugin::instructions`] declares `tool_ids: vec![]` -- empty,
-//! deliberately. `ContextBuilder::build`'s reachability check withholds a
-//! fragment's text ENTIRELY (not just the offending line) when any id in
-//! `tool_ids` is not among the turn's announced tools; a session that
-//! excludes even one named tool would silently lose the whole paragraph.
-//! [`FRAGMENT_TEXT`] names `conway_fork`/`conway_spawn`/`report` in prose
-//! (explaining what they are, not claiming this session has them), but
-//! nothing in it requires the model to be ABLE to call any specific one for
-//! the rest of the text to still be true and useful -- "the tool set is
-//! configuration-dependent" and "context is scarce" hold regardless of
-//! whether fork/spawn/report happen to be announced this turn, and an
-//! interactive root SPECIFICALLY never has `report` (`startup.rs`'s own
-//! `ToolSelector::Except(vec!["report".into()])`) -- naming `report` in
-//! `tool_ids` would make the fragment vanish from the one session type this
-//! item's premise section is about. This is orientation text about the
-//! harness's idioms, not a usage note for one tool; withholding it entirely
-//! because a session lacks any single tool it happens to mention would be
-//! the wrong failure mode for that kind of content.
+//! **Before this item, the whole fragment had exactly one `tool_ids` list,
+//! and it had to stay empty.** `ContextBuilder::build`'s reachability check
+//! withheld a fragment's text ENTIRELY (not just the offending sentence)
+//! when any id in that list was not among the turn's announced tools -- so
+//! [`IdiomPlugin::instructions`] left it `vec![]`, deliberately, even
+//! though [`FRAGMENT_TEXT`] names `conway_fork`/`conway_spawn`/`report` in
+//! prose throughout. That meant this fragment could never say something
+//! genuinely actionable and tool-specific -- "verify with a tool call
+//! before you claim done: run the relevant tests with `bash`" -- without
+//! either (a) losing the whole paragraph on a `bash`-less session (an
+//! interactive root SPECIFICALLY never has `report` either, `startup.rs`'s
+//! own `ToolSelector::Except(vec!["report".into()])`, so naming it would
+//! have made the fragment vanish from the one session type this plugin
+//! exists for) or (b) staying purely descriptive forever ("`report` is how
+//! a non-root agent ends a turn", never "call `report`").
+//!
+//! **Per-part gating is the fix.** [`InstructionFragment`] now carries an
+//! unconditional `text` body plus zero or more [`InstructionPart`]s, each
+//! independently gated on its own tool ids -- see that type's own doc.
+//! [`FRAGMENT_TEXT`] (`fragments/idiom.md`) uses the markdown convention
+//! [`parse_fragment_markdown`] implements: a paragraph immediately preceded
+//! by an HTML comment `<!-- tools: id1, id2 -->` is a conditional part;
+//! every other paragraph is body. Three sentences that used to have to stay
+//! purely descriptive (or be left unwritten) are now real, actionable
+//! parts: verify with `bash` before claiming done, call `report` to end a
+//! turn as a child, fork to a child when the window is filling -- each
+//! rendered only for a session that actually has the tool it names, and
+//! withheld (recorded, never silently) otherwise. The always-true bullets
+//! (fork vs. spawn exist as two primitives, tools are configuration-
+//! dependent, context is scarce in general, permissions/budgets/steering)
+//! stay in the unconditional body, exactly as before.
+//!
+//! [`IdiomPlugin::instructions`] parses [`FRAGMENT_TEXT`] through
+//! [`parse_fragment_markdown`] at call time (cheap -- a handful of
+//! paragraphs, called once per turn, not on a hot loop) and `.expect()`s
+//! success: this crate's OWN shipped file must parse, and a build where it
+//! does not is a bug in this crate, caught immediately by
+//! `fragment_stays_within_budget` and every other test in this module
+//! that exercises it, not a condition to handle gracefully at runtime. An
+//! OPERATOR's own `instructions.md` goes through the identical parser in
+//! [`read_operator_fragment`] below, but fallibly -- a malformed comment in
+//! an operator's own file surfaces as `Err(FacadeError::Config)`, the same
+//! tier every other "file the operator wrote and conway silently ignored"
+//! failure already fails at (this module's own "Operator instructions"
+//! doc, point 4) -- so an operator gating their own sentences gets the
+//! identical convention and the identical honesty about a typo.
 //!
 //! # Reach: every agent, root or child (board item `01M0VSKA76NSEHDSH25XJGJ2J5`)
 //!
@@ -109,9 +138,10 @@
 //! fork and spawn, with no per-mode branch -- see that function's own doc
 //! (`runtime/root.rs`) for the full argument. [`FRAGMENT_TEXT`] was written
 //! knowing its "ending a turn"/"permissions"/"steering" bullets describe
-//! how a *child* agent should behave; those agents now receive it, filtered
-//! per turn by [`IdiomPlugin::instructions`]'s empty `tool_ids` (always
-//! reachable) exactly as for a root.
+//! how a *child* agent should behave; those agents now receive it, its
+//! unconditional body always, and its `report`-gated part specifically
+//! whenever THIS child's own tool set actually has `report` -- see "The
+//! `tool_ids` trap" above for the per-part gate this composes through.
 //!
 //! # Naming
 //!
@@ -253,8 +283,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use conway::plugin::{
-    FragmentAuthor, FragmentPosition, FragmentScope, InstructionFragment, Plugin,
-    PluginDescription, PluginManifest, Tool,
+    FragmentAuthor, FragmentPosition, FragmentScope, InstructionFragment, InstructionPart, Plugin,
+    PluginDescription, PluginManifest, Tool, ToolName,
 };
 
 /// This plugin's published manifest id -- a config author (or a first-party
@@ -284,13 +314,216 @@ pub const OPERATOR_INSTRUCTIONS_FILENAME: &str = "instructions.md";
 /// The fragment's text, sourced from a markdown file in this crate's own
 /// `fragments/` directory (`crates/conway-plugin-path`/
 /// `crates/conway-plugin-discover`'s own `include_str!` convention --
-/// `Plugin::instructions`'s own doc, "Convention, not enforcement"). 28
-/// lines, well under a 40-line/400-word budget measured from Pi's own
-/// `system-prompt.ts` core template (`docs/vision/INTENT.md`'s citation of
-/// Pi as conway's extension-surface reference). See this module's own
-/// doc, "Reach: every agent, root or child", for who actually reads this
-/// text.
+/// `Plugin::instructions`'s own doc, "Convention, not enforcement"), using
+/// the `<!-- tools: ... -->` per-part convention [`parse_fragment_markdown`]
+/// reads (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`) -- well under a
+/// 40-line/400-word budget measured from Pi's own `system-prompt.ts` core
+/// template (`docs/vision/INTENT.md`'s citation of Pi as conway's
+/// extension-surface reference), RAW source, markers included -- see this
+/// module's own doc, "Reach: every agent, root or child", for who actually
+/// reads this text.
 pub const FRAGMENT_TEXT: &str = include_str!("../fragments/idiom.md");
+
+/// Board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` -- see this module's own doc,
+/// "The `tool_ids` trap", for the full argument this implements. Parses
+/// `source` (conway.idiom's own markdown convention: a paragraph
+/// immediately preceded, with no blank line between them, by a
+/// `<!-- tools: id1, id2 -->` HTML comment is a conditional part gated on
+/// those ids; every other paragraph is unconditional body) into
+/// `(body, parts)`. Blocks are markdown's own paragraph boundary -- one or
+/// more consecutive non-blank lines, so a multi-line bulleted list is ONE
+/// block, matching how [`FRAGMENT_TEXT`] itself uses it. `body` is every
+/// non-gated block, in source order, joined by a blank line (`"\n\n"`) --
+/// the SAME separator `conway_runtime::context::builder`'s
+/// `filter_reachable_parts` uses to join a reachable part onto it, so a
+/// fragment with no `<!-- tools: -->` comment at all round-trips to
+/// exactly its own source text (modulo each block's own leading/trailing
+/// whitespace, trimmed).
+///
+/// **A malformed tools comment is a load error, never a silent fallback to
+/// body.** A block whose first line begins `<!--` is read as an ATTEMPTED
+/// tools directive -- there is no other reason for a standalone HTML
+/// comment line in one of these files -- so it must match the exact
+/// `<!-- tools: id[, id...] -->` shape (a `tools:` prefix immediately
+/// after `<!--`, a closing `-->`, at least one non-empty comma-separated
+/// id, nothing else on the line) AND be immediately followed, same block,
+/// by the paragraph it gates. Anything else -- a missing `tools:` prefix,
+/// an empty id list, an unterminated comment with no closing `-->`, a
+/// comment with nothing after it -- is far more likely to be an author's
+/// typo than deliberate prose, so this returns `Err`, naming the offending
+/// line, rather than silently demoting the paragraph that follows to body
+/// text no one asked to gate.
+pub fn parse_fragment_markdown(source: &str) -> Result<(String, Vec<InstructionPart>), String> {
+    let mut body_blocks: Vec<String> = Vec::new();
+    let mut parts: Vec<InstructionPart> = Vec::new();
+
+    for block in split_into_paragraph_blocks(source) {
+        let mut lines = block.lines();
+        let first_line = lines.next().unwrap_or("").trim();
+        if first_line.starts_with("<!--") {
+            let tool_ids = parse_tools_comment(first_line)?;
+            let rest: String = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+            if rest.is_empty() {
+                return Err(format!(
+                    "a `<!-- tools: ... -->` comment must be immediately followed (no blank \
+                     line) by the paragraph it gates; found none after: {first_line}"
+                ));
+            }
+            parts.push(InstructionPart::new(rest, tool_ids));
+        } else {
+            body_blocks.push(block.trim().to_string());
+        }
+    }
+
+    Ok((body_blocks.join("\n\n"), parts))
+}
+
+/// Splits `source` into blank-line-delimited blocks, each keeping its own
+/// internal line breaks intact (a multi-line block is returned as one
+/// multi-line string, newline-joined) -- markdown's own paragraph
+/// boundary, and the unit [`parse_fragment_markdown`] classifies as either
+/// a conditional part or unconditional body.
+fn split_into_paragraph_blocks(source: &str) -> Vec<String> {
+    let mut blocks: Vec<String> = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    for line in source.lines() {
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                blocks.push(current.join("\n"));
+                current.clear();
+            }
+        } else {
+            current.push(line);
+        }
+    }
+    if !current.is_empty() {
+        blocks.push(current.join("\n"));
+    }
+    blocks
+}
+
+/// Parses one whole-line HTML comment -- ALREADY confirmed to start with
+/// `<!--` by [`parse_fragment_markdown`]'s own caller -- into the tool ids
+/// it names, or an `Err` naming exactly what about the line does not match
+/// the `<!-- tools: id[, id...] -->` shape. See [`parse_fragment_markdown`]'s
+/// own doc for why any mismatch here is an error rather than a fallback.
+fn parse_tools_comment(line: &str) -> Result<Vec<ToolName>, String> {
+    let inner = line
+        .strip_prefix("<!--")
+        .and_then(|s| s.strip_suffix("-->"))
+        .map(str::trim)
+        .ok_or_else(|| {
+            format!("malformed HTML comment (missing closing `-->` on its own line): {line}")
+        })?;
+    let rest = inner.strip_prefix("tools:").ok_or_else(|| {
+        format!(
+            "HTML comment on its own line is not a `tools:` directive (must start `<!-- \
+             tools: `): {line}"
+        )
+    })?;
+    let tool_ids: Vec<ToolName> = rest
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToolName::new)
+        .collect();
+    if tool_ids.is_empty() {
+        return Err(format!(
+            "`<!-- tools: ... -->` comment names no tool ids: {line}"
+        ));
+    }
+    Ok(tool_ids)
+}
+
+/// Unit coverage for [`parse_fragment_markdown`] in isolation -- P-15's
+/// "shown to fail" bar for acceptance 3 (board item
+/// `01M1FSRJJAB3ZYZXED4SVT2ZSF`). `operator_file_tests` below exercises the
+/// SAME parser through `read_operator_fragment`'s real call site; these
+/// tests are the parser's own contract, argument by argument.
+#[cfg(test)]
+mod parse_fragment_markdown_tests {
+    use super::*;
+
+    /// The exact shape acceptance 3 names: one `<!-- tools: bash -->`
+    /// comment immediately followed by a paragraph yields one part with
+    /// `tool_ids == [bash]`, and text with no such comment anywhere is
+    /// body.
+    #[test]
+    fn a_tools_comment_followed_by_a_paragraph_yields_one_gated_part() {
+        let source = "General orientation, always true.\n\n<!-- tools: bash -->\nVerify with \
+                       `bash` before you claim done.\n";
+        let (body, parts) = parse_fragment_markdown(source).expect("must parse");
+        assert_eq!(body, "General orientation, always true.");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].tool_ids, vec![ToolName::new("bash")]);
+        assert_eq!(parts[0].text, "Verify with `bash` before you claim done.");
+    }
+
+    /// Multiple gated parts, and multiple body blocks interleaved with
+    /// them, are each classified independently and body blocks are joined
+    /// in source order.
+    #[test]
+    fn multiple_parts_and_body_blocks_interleave_correctly() {
+        let source = "First body block.\n\n<!-- tools: bash -->\nBash part.\n\nSecond body \
+                       block.\n\n<!-- tools: report, conway_fork -->\nMulti-tool part.\n";
+        let (body, parts) = parse_fragment_markdown(source).expect("must parse");
+        assert_eq!(body, "First body block.\n\nSecond body block.");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].tool_ids, vec![ToolName::new("bash")]);
+        assert_eq!(parts[0].text, "Bash part.");
+        assert_eq!(
+            parts[1].tool_ids,
+            vec![ToolName::new("report"), ToolName::new("conway_fork")]
+        );
+        assert_eq!(parts[1].text, "Multi-tool part.");
+    }
+
+    /// Text with no `<!-- tools: -->` comment at all is entirely body --
+    /// the degenerate, most common case (every fragment before this item
+    /// existed).
+    #[test]
+    fn text_with_no_tools_comment_is_entirely_body() {
+        let source = "Just an ordinary paragraph.\n\nAnd another one.\n";
+        let (body, parts) = parse_fragment_markdown(source).expect("must parse");
+        assert_eq!(body, "Just an ordinary paragraph.\n\nAnd another one.");
+        assert!(parts.is_empty());
+    }
+
+    /// Falsified before this item existed at all (the whole function is
+    /// new): a comment missing the `tools:` prefix is a load error, not a
+    /// silent fallback demoting the following paragraph to body.
+    #[test]
+    fn a_comment_missing_the_tools_prefix_is_an_error() {
+        let source = "<!-- bash -->\nSome text.\n";
+        assert!(parse_fragment_markdown(source).is_err());
+    }
+
+    /// An empty id list is malformed, not a vacuously-true "no ids."
+    #[test]
+    fn a_tools_comment_with_no_ids_is_an_error() {
+        let source = "<!-- tools: -->\nSome text.\n";
+        assert!(parse_fragment_markdown(source).is_err());
+    }
+
+    /// An unterminated comment (no closing `-->` on the same line) is
+    /// malformed -- it must NOT silently fall through to being treated as
+    /// an ordinary body paragraph just because it fails the "ends with
+    /// `-->`" check.
+    #[test]
+    fn an_unterminated_comment_is_an_error_not_a_body_fallback() {
+        let source = "<!-- tools: bash\nSome text.\n";
+        assert!(parse_fragment_markdown(source).is_err());
+    }
+
+    /// A `<!-- tools: ... -->` comment with nothing after it (end of
+    /// input, or a blank line before the next block) is an error -- there
+    /// is no paragraph for it to gate.
+    #[test]
+    fn a_tools_comment_with_nothing_to_gate_is_an_error() {
+        assert!(parse_fragment_markdown("<!-- tools: bash -->\n").is_err());
+        assert!(parse_fragment_markdown("<!-- tools: bash -->\n\nSome text.\n").is_err());
+    }
+}
 
 /// The `conway.idiom` plugin: contributes no tool, one shipped instruction
 /// fragment -- conway's own short idioms primer, rendered genuinely first
@@ -432,12 +665,20 @@ fn same_file_lenient(a: &Path, b: &Path) -> bool {
 ///   silently (P-13: absence is the normal, unremarkable case).
 /// - The file exists and is whitespace-only: `Ok(None)` -- an empty file
 ///   communicates nothing, the same as an absent one.
-/// - The file exists, has content, and reads cleanly: `Ok(Some(fragment))`.
+/// - The file exists, has content, and reads cleanly: parsed through the
+///   SAME [`parse_fragment_markdown`] convention [`FRAGMENT_TEXT`] itself
+///   uses (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`) -- an operator can gate
+///   their own sentences on a tool exactly the way this crate does for its
+///   own -- and becomes `Ok(Some(fragment))`.
 /// - Any OTHER read failure (permission denied, the path names a
-///   directory, the bytes are not valid UTF-8): `Err(FacadeError::Config)`,
-///   naming `path` and the underlying error -- surfaced at
+///   directory, the bytes are not valid UTF-8) OR a malformed `<!-- tools:
+///   ... -->` comment in an otherwise-readable file: `Err(FacadeError::
+///   Config)`, naming `path` and the underlying problem -- surfaced at
 ///   `ConwayBuilder::build`, never dropped. A file the operator wrote and
-///   conway silently ignored is the failure mode P-13 exists to prevent.
+///   conway silently ignored (or silently mis-parsed) is the failure mode
+///   P-13 exists to prevent; a malformed comment is exactly as much "the
+///   operator's own words, misread" as an encoding error is, so it fails
+///   at the identical tier rather than a softer one.
 fn read_operator_fragment(
     path: Option<&Path>,
     name: &str,
@@ -450,9 +691,16 @@ fn read_operator_fragment(
             if text.trim().is_empty() {
                 Ok(None)
             } else {
-                // `tool_ids` stays empty, deliberately, exactly like the
-                // shipped fragment's own -- an operator's own prose is not
-                // tied to any specific tool being reachable this turn.
+                let (body, parts) = parse_fragment_markdown(&text).map_err(|reason| {
+                    conway::FacadeError::Config {
+                        path: Some(path.to_path_buf()),
+                        message: format!(
+                            "operator instructions file {} uses the `<!-- tools: ... -->` \
+                             convention incorrectly: {reason}",
+                            path.display()
+                        ),
+                    }
+                })?;
                 // `position`/`scope` are spelled out explicitly, even
                 // though both equal `InstructionFragment::new`'s own
                 // defaults, so this reads as a deliberate choice rather
@@ -471,7 +719,8 @@ fn read_operator_fragment(
                 // shipped fragment and an operator's own text are tagged
                 // apart".
                 Ok(Some(
-                    InstructionFragment::new(name, text)
+                    InstructionFragment::new(name, body)
+                        .with_parts(parts)
                         .with_position(FragmentPosition::AfterSystemPrompt)
                         .with_scope(FragmentScope::All)
                         .with_authored_by(FragmentAuthor::Operator {
@@ -519,18 +768,22 @@ impl Plugin for IdiomPlugin {
                       not the root alone (board item \
                       01M0VSKA76NSEHDSH25XJGJ2J5's ruling: an instruction fragment is harness \
                       configuration, not transcript context, so fork/spawn's inheritance split \
-                      does not govern it) -- the ending/permissions/steering bullets it carries \
-                      describe how a *child* agent should behave, and now reach exactly that \
-                      agent. Also up to two more fragments, additive alongside the shipped one, \
+                      does not govern it) -- the permissions/steering bullets, and the \
+                      `report`-gated part specifically, describe how a *child* agent should \
+                      behave, and now reach exactly that agent. Also up to two more fragments, \
+                      additive alongside the shipped one, \
                       read from an operator's own `.conway/instructions.md` (project scope) and \
                       `<home>/.conway/instructions.md` (global scope) when either file exists -- \
                       reaching a forked/spawned child exactly the same way, for the same reason"
                 .to_string(),
             you_lose: "nothing else".to_string(),
             costs: "one system-prompt segment's worth of tokens per turn for the shipped \
-                    fragment (roughly 275 words), plus whatever an operator's own \
-                    instructions.md file(s) cost -- /context's preamble section names \
-                    conway.idiom.base, conway.idiom.operator.project, and \
+                    fragment's unconditional body plus whichever of its bash/report/ \
+                    conway_fork-gated sentences this turn's own tool set makes reachable \
+                    (board item 01M1FSRJJAB3ZYZXED4SVT2ZSF) -- never the full ~360-word raw \
+                    source at once, only the parts that actually apply -- plus whatever an \
+                    operator's own instructions.md file(s) cost -- /context's preamble section \
+                    names conway.idiom.base, conway.idiom.operator.project, and \
                     conway.idiom.operator.global separately, each with its own exact token cost"
                 .to_string(),
         }
@@ -541,10 +794,17 @@ impl Plugin for IdiomPlugin {
     }
 
     fn instructions(&self) -> Vec<InstructionFragment> {
-        let mut fragments = vec![InstructionFragment::new(INSTRUCTION_NAME, FRAGMENT_TEXT)
-            // Empty `tool_ids`, deliberately -- see this module's own
-            // doc, "The `tool_ids` trap".
-            //
+        // `FRAGMENT_TEXT` is THIS crate's own shipped file, parsed once per
+        // call (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` -- see this
+        // module's own doc, "The `tool_ids` trap"). It must parse: a
+        // malformed shipped fragment is a bug in this crate, not a
+        // condition to handle at runtime -- `.expect()`, backed by
+        // `fragment_stays_within_budget` and every other test below that
+        // exercises this exact call.
+        let (body, parts) = parse_fragment_markdown(FRAGMENT_TEXT)
+            .expect("FRAGMENT_TEXT is this crate's own shipped file and must parse");
+        let mut fragments = vec![InstructionFragment::new(INSTRUCTION_NAME, body)
+            .with_parts(parts)
             // `BeforeSystemPrompt`, `order: -100` -- see this module's
             // own doc, "Where the base fragment lands": conway's own
             // harness orientation now precedes even an agent
@@ -596,9 +856,10 @@ mod plugin_tests {
 
     /// Exactly one fragment, contributing no tool -- `manifest().tools` is
     /// empty, so the reachability check's "same plugin also provides the
-    /// tool" shortcut never applies here; every id in `tool_ids` (there are
-    /// none) would have to be reachable through a DIFFERENT installed
-    /// plugin.
+    /// tool" shortcut never applies here; every id any of this fragment's
+    /// parts names (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` -- `bash`,
+    /// `report`, `conway_fork`) has to be reachable through a DIFFERENT
+    /// installed plugin. The body itself stays unconditional.
     #[test]
     fn contributes_exactly_one_fragment_and_no_tool() {
         let plugin = IdiomPlugin::new();
@@ -607,7 +868,11 @@ mod plugin_tests {
         let instructions = plugin.instructions();
         assert_eq!(instructions.len(), 1);
         assert_eq!(instructions[0].name, INSTRUCTION_NAME);
-        assert!(instructions[0].tool_ids.is_empty());
+        assert!(!instructions[0].text.is_empty(), "the body must be non-empty");
+        assert!(
+            !instructions[0].parts.is_empty(),
+            "the base fragment must declare at least one conditional part"
+        );
     }
 
     /// Declaration honesty for this module's own "Where the base fragment
@@ -703,20 +968,6 @@ mod plugin_tests {
         );
     }
 
-    // NOTE: there was a `tool_ids_are_trivially_always_reachable` test here.
-    // It was removed rather than repaired. It built an empty `known_tool_ids`
-    // set, filtered `instructions[0].tool_ids` against it, and asserted the
-    // result was empty -- but `tool_ids` is empty by construction, so
-    // filtering it can never yield anything regardless of the set's contents.
-    // The assertion was true by construction and could not fail for any future
-    // change to this plugin. `contributes_exactly_one_fragment_and_no_tool`
-    // above already asserts `tool_ids.is_empty()` directly, and the REAL
-    // reachability property -- that the fragment survives an actual
-    // `ContextBuilder::build` pass -- is proven by
-    // `fragment_reaches_a_bare_sessions_wire_request` in
-    // `tests/idiom_end_to_end.rs`, which drives production code rather than
-    // reimplementing the filter shape locally.
-
     /// Budget pin (acceptance 3): fails loudly if a future edit grows the
     /// fragment past the item's stated 40-line/400-word cap, rather than
     /// letting the cap drift unnoticed.
@@ -782,7 +1033,63 @@ mod operator_file_tests {
             .find(|f| f.name == OPERATOR_PROJECT_INSTRUCTION_NAME)
             .expect("operator project fragment present");
         assert!(operator.text.contains("Always run `cargo test`"));
-        assert!(operator.tool_ids.is_empty());
+        assert!(
+            operator.parts.is_empty(),
+            "a file with no `<!-- tools: ... -->` comment must parse to body-only, no parts"
+        );
+    }
+
+    /// An operator can gate their own sentence on a tool too, through the
+    /// identical `<!-- tools: ... -->` convention the shipped fragment
+    /// uses (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`).
+    #[test]
+    fn operator_file_with_a_tools_comment_yields_a_gated_part() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("instructions.md");
+        std::fs::write(
+            &path,
+            "House convention: prefer small commits.\n\n<!-- tools: bash -->\nAlways run \
+             `cargo test` before reporting done.\n",
+        )
+        .expect("write");
+        let plugin = IdiomPlugin::from_operator_files(Some(&path), None).expect("read ok");
+        let instructions = plugin.instructions();
+        let operator = instructions
+            .iter()
+            .find(|f| f.name == OPERATOR_PROJECT_INSTRUCTION_NAME)
+            .expect("operator project fragment present");
+        assert!(operator.text.contains("prefer small commits"));
+        assert_eq!(operator.parts.len(), 1);
+        assert_eq!(operator.parts[0].tool_ids, vec![ToolName::new("bash")]);
+        assert!(operator.parts[0].text.contains("Always run `cargo test`"));
+    }
+
+    /// P-15's "shown to fail" bar, for the parser's own error path
+    /// (acceptance 3): a malformed `<!-- tools: ... -->` comment in an
+    /// operator's file surfaces as a build-time-adjacent `Err`, never a
+    /// silent fallback that demotes the paragraph to body text nobody
+    /// asked to gate. Falsified by temporarily changing
+    /// `read_operator_fragment` to ignore `parse_fragment_markdown`'s
+    /// `Err` and fall back to `InstructionFragment::new(name, text)`
+    /// unparsed -- confirmed to make this test fail (the call returns
+    /// `Ok` instead of `Err`) before restoring the real `map_err` propagation.
+    #[test]
+    fn operator_file_with_a_malformed_tools_comment_is_a_load_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("instructions.md");
+        std::fs::write(
+            &path,
+            // Missing the `tools:` prefix -- an author's typo, not a
+            // deliberate comment.
+            "<!-- bash -->\nAlways run `cargo test` before reporting done.\n",
+        )
+        .expect("write");
+        let result = IdiomPlugin::from_operator_files(Some(&path), None);
+        assert!(
+            result.is_err(),
+            "a malformed `<!-- tools: ... -->` comment must surface as an error, not be \
+             silently demoted to body text"
+        );
     }
 
     /// Acceptance 2, the negative half, and P-15's "shown to fail" bar:

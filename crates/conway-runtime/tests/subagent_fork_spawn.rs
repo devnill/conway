@@ -3982,7 +3982,7 @@ fn general_instruction_fragment() -> conway_runtime::context::PluginInstruction 
         plugin_id: "test.instructions".to_string(),
         name: "general-orientation".to_string(),
         text: "General harness orientation text.".to_string(),
-        tool_ids: vec![],
+        parts: vec![],
         position: conway_core::ports::FragmentPosition::AfterSystemPrompt,
         order: 0,
         scope: conway_core::ports::FragmentScope::All,
@@ -3999,8 +3999,16 @@ fn secret_tool_instruction_fragment() -> conway_runtime::context::PluginInstruct
     conway_runtime::context::PluginInstruction {
         plugin_id: "test.instructions".to_string(),
         name: "secret-tool-note".to_string(),
-        text: "How to use the secret tool.".to_string(),
-        tool_ids: vec![secret_tool_spec().name],
+        // Empty body: this fragment's ENTIRE text is conditional on the
+        // `secret` tool (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` -- the
+        // per-part analog of the old whole-fragment `tool_ids: vec![secret]`
+        // this fixture used before per-part gating existed), so it lives
+        // entirely in one part rather than the unconditional body.
+        text: "".to_string(),
+        parts: vec![conway_core::ports::InstructionPart::new(
+            "How to use the secret tool.",
+            vec![secret_tool_spec().name],
+        )],
         position: conway_core::ports::FragmentPosition::AfterSystemPrompt,
         order: 0,
         scope: conway_core::ports::FragmentScope::All,

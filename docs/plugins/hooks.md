@@ -809,15 +809,15 @@ warn against.
 | Field | Value |
 |---|---|
 | Kind | Declarative (`Plugin::instructions()`, consulted at `ConwayBuilder::build` for duplicate-name validation and at `ConwayBuilder::build` for plugin attribution; the reachability check itself runs per-turn, in `ContextBuilder::build` — see "Where the reachability check runs" below) |
-| Receives | Consulted with nothing live; returns zero or more [`InstructionFragment`] (`name`, `text`, `tool_ids: Vec<ToolName>`, `position: FragmentPosition`, `order: i16`, `scope: FragmentScope`, `agent_def: Option<String>`) |
-| May return | Any number of fragments, including none (the trait's own zero-cost default). No shape constraint on `text` beyond being a `String` — this point ships no markdown-file loader; that is a plugin-author convention (see below), not a mechanism this point enforces. `position`/`order`/`scope`/`agent_def` all default to today's pre-existing behavior (`AfterSystemPrompt`, `0`, `All`, `None`) via `InstructionFragment::new`, so a plugin that never calls the `with_*` builders behaves exactly as it did before those fields existed |
+| Receives | Consulted with nothing live; returns zero or more [`InstructionFragment`] (`name`, `text: String` — the UNCONDITIONAL body, always rendered — `parts: Vec<InstructionPart>` — each `{ text, tool_ids: Vec<ToolName> }`, rendered independently, joined onto `text`, iff every id in ITS OWN `tool_ids` is reachable — `position: FragmentPosition`, `order: i16`, `scope: FragmentScope`, `agent_def: Option<String>`) |
+| May return | Any number of fragments, including none (the trait's own zero-cost default). No shape constraint on `text`/a part's own `text` beyond being a `String` — this point ships no markdown-file loader; that is a plugin-author convention (see below), not a mechanism this point enforces. `parts`/`position`/`order`/`scope`/`agent_def` all default to today's pre-existing behavior (`vec![]`, `AfterSystemPrompt`, `0`, `All`, `None`) via `InstructionFragment::new`, so a plugin that never calls the `with_*` builders behaves exactly as it did before those fields existed |
 | On error | Not applicable — `instructions()` cannot fail; it is a pure, synchronous, in-process call, like `Plugin::tools()`/`Plugin::commands()` |
 | On timeout | None — synchronous, in-process, no I/O boundary |
-| On garbage | A `name` colliding with another installed plugin's fragment name (or another fragment of the SAME plugin's own) is a **named, build-time error** at `ConwayBuilder::build`, mirroring point 16's identical registration-time refusal for a colliding event name. A `tool_ids` entry naming a tool no installed plugin provides is NOT a build-time error (see below) |
+| On garbage | A `name` colliding with another installed plugin's fragment name (or another fragment of the SAME plugin's own) is a **named, build-time error** at `ConwayBuilder::build`, mirroring point 16's identical registration-time refusal for a colliding event name. A part's `tool_ids` naming a tool no installed plugin provides is NOT a build-time error (see below) |
 | When absent | No `Plugin::instructions()` override means no declared fragments — every existing `Plugin` implementor, built-in or third-party, keeps compiling and behaving identically; a build with no instruction-declaring plugin injects no new segment |
-| Ordering | Every fragment renders at one of two positions relative to `[0] SystemPrompt` (the base idiom an `AgentDef` carries, or a one-shot `--system-prompt`/`--append-system-prompt` override — both occupy `[0]`): `BeforeSystemPrompt` fragments render AHEAD of `[0]`; `AfterSystemPrompt` fragments (the default — every fragment declared before `position` existed keeps this exact placement) render where they always have, AFTER `[0]` and BEFORE an operator's own directory-authored skills (`AgentDef.skills`). Within a position, fragments are stable-sorted by `(order, install index)` — lower `order` first, a tie keeping `with_plugin`/`install_selected` install order. The seam (`ContextBuilder::build`) owns this precedence; no call site invents its own order. Deterministic (a plain numeric sort, no hashing) so the assembled prefix stays byte-identical turn over turn (prompt-cache economics) |
-| Reaches | **Every agent — root, forked, or spawned (board item `01M0VSKA76NSEHDSH25XJGJ2J5`, a RULING, not merely an observed behavior) — by DEFAULT.** `SubagentHost::start` resolves a fork/spawn child's `AgentSpec.instructions` through the SAME `resolve_instructions` root/resume already call, unconditionally, with no per-mode branch — the reachability check just above (`tool_ids`) still gates what actually lands in a child's assembled context, exactly as it does for root. **A fragment may narrow this with `scope`**: `FragmentScope::All` (the default) reaches every agent exactly as before; `RootOnly`/`ChildrenOnly` restrict it to one or the other, keyed on the STRUCTURAL fact of whether the agent has a parent (`AgentLoop::parent.is_none()`, never inferred from tools or role) — a scoped-away fragment is dropped before rendering and recorded with `skipped_by_scope: true` in `ContextReport::instruction_fragments`, never silently withheld. `agent_def`, when `Some`, additionally requires `[0]`'s own agent-def name to match exactly. **There is deliberately no ROLE selector** — no first-party consumer needs one, and threading a role into `ContextInput` for a selector nothing uses would be unbuilt theory; a future item that needs one has this line to update. **The argument for reach-by-default, in brief** (full version at `resolve_instructions`'s own doc, `crates/conway-runtime/src/runtime/root.rs`): the two-primitive rule (fork = whole parent TRANSCRIPT, spawn = empty transcript) governs the conversation a child starts with, not every configuration channel `AgentSpec` carries — an instruction fragment is never appended to the log, is resolved fresh every turn from install-time plugin state, and is gated purely by whether THIS turn's announced tools satisfy `tool_ids` (plus, now, `scope`/`agent_def`), the same shape `system_prompt`/`tools`/`plugin_config` already have. Giving a spawned child the same fragments a root gets by default is therefore not a third, blurred "partial inheritance" primitive: fork and spawn remain byte-identical in what they do to the log, and this one function is now called identically for both. |
-| Status | **Implemented — in-process only.** `conway_core::ports::plugin::{InstructionFragment, FragmentPosition, FragmentScope, Plugin::instructions}` (`crates/conway-core/src/ports/plugin.rs`); collection + duplicate-name check in `ConwayBuilder::build` (`crates/conway/src/builder.rs`); position/order sort, scope/agent_def filter, and per-turn reachability check in `ContextBuilder::build` (`crates/conway-runtime/src/context/builder.rs`); `/context`'s preamble section (`crates/conway-cli/src/tui/commands.rs`). No wire projection; a subprocess plugin (`docs/plugins/subprocess-plugins.md`) or an MCP server (`docs/plugins/mcp.md`) cannot contribute an instruction fragment — only a `Plugin` compiled into the binary can. Board item `01M0K5MD59YZRSHE31JKZKFRMY`; position/order/scope extension: process record `01M1FQ36PCW2J19AP219GKZH3R`. |
+| Ordering | Every fragment renders at one of two positions relative to `[0] SystemPrompt` (the base idiom an `AgentDef` carries, or a one-shot `--system-prompt`/`--append-system-prompt` override — both occupy `[0]`): `BeforeSystemPrompt` fragments render AHEAD of `[0]`; `AfterSystemPrompt` fragments (the default — every fragment declared before `position` existed keeps this exact placement) render where they always have, AFTER `[0]` and BEFORE an operator's own directory-authored skills (`AgentDef.skills`). Within a position, fragments are stable-sorted by `(order, install index)` — lower `order` first, a tie keeping `with_plugin`/`install_selected` install order. WITHIN a fragment, its body renders first and every reachable part follows, in declaration order, joined by a blank line, into the SAME segment (never one segment per part). The seam (`ContextBuilder::build`) owns this precedence; no call site invents its own order. Deterministic (a plain numeric sort, no hashing) so the assembled prefix stays byte-identical turn over turn (prompt-cache economics) |
+| Reaches | **Every agent — root, forked, or spawned (board item `01M0VSKA76NSEHDSH25XJGJ2J5`, a RULING, not merely an observed behavior) — by DEFAULT.** `SubagentHost::start` resolves a fork/spawn child's `AgentSpec.instructions` through the SAME `resolve_instructions` root/resume already call, unconditionally, with no per-mode branch — the reachability check just above (per PART, board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`) still gates which parts actually land in a child's assembled context, exactly as it does for root; the body always lands, subject only to `scope`/`agent_def`. **A fragment may narrow this with `scope`**: `FragmentScope::All` (the default) reaches every agent exactly as before; `RootOnly`/`ChildrenOnly` restrict it to one or the other, keyed on the STRUCTURAL fact of whether the agent has a parent (`AgentLoop::parent.is_none()`, never inferred from tools or role) — a scoped-away fragment is dropped before rendering and recorded with `skipped_by_scope: true` in `ContextReport::instruction_fragments`, never silently withheld. `agent_def`, when `Some`, additionally requires `[0]`'s own agent-def name to match exactly. **There is deliberately no ROLE selector** — no first-party consumer needs one, and threading a role into `ContextInput` for a selector nothing uses would be unbuilt theory; a future item that needs one has this line to update. **The argument for reach-by-default, in brief** (full version at `resolve_instructions`'s own doc, `crates/conway-runtime/src/runtime/root.rs`): the two-primitive rule (fork = whole parent TRANSCRIPT, spawn = empty transcript) governs the conversation a child starts with, not every configuration channel `AgentSpec` carries — an instruction fragment is never appended to the log, is resolved fresh every turn from install-time plugin state, and is gated purely by whether THIS turn's announced tools satisfy each part's own `tool_ids` (plus, now, `scope`/`agent_def` for the fragment as a whole), the same shape `system_prompt`/`tools`/`plugin_config` already have. Giving a spawned child the same fragments a root gets by default is therefore not a third, blurred "partial inheritance" primitive: fork and spawn remain byte-identical in what they do to the log, and this one function is now called identically for both. |
+| Status | **Implemented — in-process only.** `conway_core::ports::plugin::{InstructionFragment, InstructionPart, FragmentPosition, FragmentScope, Plugin::instructions}` (`crates/conway-core/src/ports/plugin.rs`); collection + duplicate-name check in `ConwayBuilder::build` (`crates/conway/src/builder.rs`); position/order sort, scope/agent_def filter, and per-turn, PER-PART reachability check (`filter_reachable_parts`) in `ContextBuilder::build` (`crates/conway-runtime/src/context/builder.rs`); `/context`'s preamble section (`crates/conway-cli/src/tui/commands.rs`); the `<!-- tools: id1, id2 -->` markdown convention (`parse_fragment_markdown`, `crates/conway-plugin-idiom/src/lib.rs`) for both the shipped and an operator's own file. No wire projection; a subprocess plugin (`docs/plugins/subprocess-plugins.md`) or an MCP server (`docs/plugins/mcp.md`) cannot contribute an instruction fragment — only a `Plugin` compiled into the binary can. Board item `01M0K5MD59YZRSHE31JKZKFRMY`; position/order/scope extension: process record `01M1FQ36PCW2J19AP219GKZH3R`; per-part gating: board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`. |
 
 **Why this point exists at all, stated once here rather than only in the
 struct's own doc.** Before this point, a plugin could already put a
@@ -841,20 +841,33 @@ distinct failure classes, checked at two different times:
   which tools an operator happens to have installed) — checked once, at
   `ConwayBuilder::build`, the same tier as point 16's duplicate-event-name
   check.
-- **An unreachable `tool_ids` entry** is configuration-DEPENDENT: a
-  fragment can name a tool that exists somewhere in this repository but is
-  not among the tools THIS operator's `plugins.install` actually resolved
-  to — a fact no CI grep can see. This is checked per turn, in
+- **An unreachable part** is configuration-DEPENDENT: a part can name a
+  tool that exists somewhere in this repository but is not among the tools
+  THIS operator's `plugins.install` actually resolved to — a fact no CI
+  grep can see. This is checked per turn, PER PART (board item
+  `01M1FSRJJAB3ZYZXED4SVT2ZSF`, `filter_reachable_parts`), in
   `ContextBuilder::build`, against that turn's own resolved
-  `ContextInput.tools`. An unreachable fragment's text is WITHHELD (never
-  injected as a segment, so the model can never try a tool that is not
-  there and fail silently, forever) and recorded in
-  `ContextReport::instruction_fragments` with the missing tool id named, so
-  `/context`'s preamble section renders the omission inline
-  (`⚠ names <tool> — not installed`) rather than only warning once in a
-  log line that scrolls away.
+  `ContextInput.tools`. An unreachable part's text is WITHHELD from the
+  join (never injected, so the model can never try a tool that is not
+  there and fail silently, forever) while the body and every other
+  reachable part still render together as one segment; the omission is
+  recorded in `ContextReport::instruction_fragments`
+  (`unreachable_tool_ids`, the union across every withheld part;
+  `withheld_parts`, which ones) so `/context`'s preamble section renders it
+  inline (`⚠ N part(s) withheld — names <tool> not installed`) rather than
+  only warning once in a log line that scrolls away. Only when the body
+  is itself empty AND every part is withheld does nothing render at all —
+  the per-part analog of what used to be the ONLY shape this check had,
+  before this item: a single whole-fragment `tool_ids` list, withholding
+  the entire fragment (including any tool-independent prose it also
+  carried) the moment one id in it was unreachable. That coarser grain
+  made it impossible for a fragment to say "verify with `bash`" as one
+  conditional sentence inside an otherwise always-true paragraph without
+  losing the WHOLE paragraph on a `bash`-less turn — `conway.idiom`'s own
+  base fragment (`docs/plugins/idiom.md`) is the worked example of what
+  this unblocks.
 
-A fragment naming a tool id its OWN declaring plugin also provides
+A part naming a tool id its OWN declaring plugin also provides
 (`Plugin::tools`) can NEVER fail the second check: both are contributed by
 the same `Arc<dyn Plugin>`, installed through the same `with_plugin` call,
 so they ship and leave together by construction. Reachability is therefore
@@ -875,6 +888,26 @@ pending a fuller settings design, per decision `01M0K5K8DCRVR523P54DZF4BY3`).
 A files-beside-the-plugin convention keeps every fragment removable with no
 UI at all — the file IS the control surface — which is why it is the
 recommended shape even though `include_str!` remains legal.
+
+**`conway-plugin-idiom`'s own markdown-file convention for `parts`.**
+`InstructionFragment` itself has no opinion on HOW a plugin splits `text`
+from `parts` — that split is constructed in Rust, per fragment, by
+whichever plugin builds it (`InstructionFragment::with_parts`). One
+first-party crate, `conway-plugin-idiom`, layers an additional, crate-local
+markdown convention on top for readability: a paragraph immediately
+preceded, with no blank line between them, by an HTML comment `<!-- tools:
+id1, id2 -->` becomes one conditional part gated on those ids; every other
+paragraph becomes body (`parse_fragment_markdown`,
+`crates/conway-plugin-idiom/src/lib.rs`). This is NOT a general
+`InstructionFragment` mechanism — a different plugin is free to build
+`parts` directly, or invent its own convention — but it is applied
+identically to `conway-plugin-idiom`'s own shipped file AND an operator's
+own `instructions.md`, so an operator gating their own sentences on a tool
+uses the exact same syntax this crate does for itself. A malformed `<!--
+tools: -->` comment in an operator's file is a load error (`FacadeError::
+Config`, naming the path), never a silent fallback that demotes the
+paragraph to unconditional body — the same P-13 discipline this plugin's
+other malformed-file cases already have.
 
 **Relationship to point 3's `conway.skills` — not folded together, and no
 longer sharing a provenance tag either (board item

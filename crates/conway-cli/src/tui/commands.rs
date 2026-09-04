@@ -2657,16 +2657,27 @@ fn render_instruction_preamble(report: &ContextReport, state: &mut AppState) {
                 ),
             );
         } else {
+            // Board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`: withholding is now
+            // per-part, so `unreachable_tool_ids` non-empty no longer means
+            // the WHOLE fragment vanished -- its body, or another reachable
+            // part, may still have rendered a segment. This line names how
+            // many parts were withheld and which tools they named, without
+            // claiming the fragment produced no segment at all (that finer
+            // "rendered nothing" fact is only in `ContextReport::segments`
+            // itself, one more lookup this summary line does not perform).
             let missing = fragment
                 .unreachable_tool_ids
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ");
+            let part_count = fragment.withheld_parts.len();
+            let part_word = if part_count == 1 { "part" } else { "parts" };
             notice(
                 state,
                 format!(
-                    "  {}.{}  {}tok  \u{26a0} names {missing} -- not installed",
+                    "  {}.{}  {}tok  \u{26a0} {part_count} {part_word} withheld -- names \
+                     {missing} not installed",
                     fragment.plugin_id, fragment.name, fragment.tokens_est
                 ),
             );
@@ -6789,6 +6800,7 @@ mod tests {
                 name: "when-to-compose".to_string(),
                 tokens_est: 7,
                 unreachable_tool_ids: Vec::new(),
+                withheld_parts: Vec::new(),
                 skipped_by_scope: false,
             }],
         });
@@ -6845,6 +6857,7 @@ mod tests {
                 name: "when-to-compose".to_string(),
                 tokens_est: 7,
                 unreachable_tool_ids: vec![ToolName::new("compose_path")],
+                withheld_parts: vec![0],
                 skipped_by_scope: false,
             }],
         });

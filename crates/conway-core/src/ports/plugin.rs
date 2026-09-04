@@ -112,15 +112,16 @@ pub trait Plugin: Send + Sync + 'static {
     /// path alongside the one that already exists.
     ///
     /// **What "alongside `tools`" buys structurally, not by convention.**
-    /// A fragment naming a `tool_id` this SAME plugin also returns from
-    /// [`Self::tools`] can never fail the reachability check
+    /// A part (or the whole fragment, before per-part gating existed) naming
+    /// a `tool_id` this SAME plugin also returns from [`Self::tools`] can
+    /// never fail the reachability check
     /// (`conway_runtime::context::builder::ContextBuilder::build`'s own
     /// "Plugin instruction fragments" section performs it): both are
     /// contributed by the same `Arc<dyn Plugin>`, installed through the
     /// same `with_plugin`/`install_selected` call, so they ship and leave
     /// together by construction -- reachability for THAT case needs no
     /// runtime check at all, only the fact that this method sits on the
-    /// same trait as `tools`. A fragment naming a tool_id belonging to a
+    /// same trait as `tools`. A part naming a tool_id belonging to a
     /// DIFFERENT plugin, or to no installed plugin, is the genuinely
     /// checkable case -- see below.
     ///
@@ -132,20 +133,30 @@ pub trait Plugin: Send + Sync + 'static {
     ///
     /// **The reachability check runs at context-assembly time, not at
     /// `ConwayBuilder::build` and not in CI** -- deliberately, per the
-    /// operator's own CLI ruling (`01M0K5K8DCRVR523P54DZF4BY3`). A
-    /// fragment can name a tool that exists somewhere in this repository
-    /// but is not among `ContextInput.tools` for THIS session's THIS
-    /// turn (e.g. an operator installed the fragment's plugin but not the
-    /// plugin providing the tool it assumes) -- a fact no static grep over
-    /// source can see, because it depends on what `plugins.install`
-    /// resolved to for this one operator's config. An unreachable
-    /// fragment's text is WITHHELD from every agent's assembled context
-    /// (never sent, so the model can never try a tool that is not there
-    /// and fail silently, forever) and recorded in
-    /// [`crate::provenance::ContextReport::instruction_fragments`]
-    /// with the missing tool ids named, so `/context`'s preamble section
-    /// renders the omission inline rather than only warning once in a log
-    /// line that scrolls away.
+    /// operator's own CLI ruling (`01M0K5K8DCRVR523P54DZF4BY3`), and PER
+    /// PART, not per whole fragment (board item
+    /// `01M1FSRJJAB3ZYZXED4SVT2ZSF` -- see [`InstructionFragment::parts`]'s
+    /// own doc for why: a whole-fragment gate could never say "verify with
+    /// `bash`" inside an otherwise tool-independent paragraph without
+    /// losing the whole paragraph for a `bash`-less session). A part can
+    /// name a tool that exists somewhere in this repository but is not
+    /// among `ContextInput.tools` for THIS session's THIS turn (e.g. an
+    /// operator installed the fragment's plugin but not the plugin
+    /// providing the tool it assumes) -- a fact no static grep over source
+    /// can see, because it depends on what `plugins.install` resolved to
+    /// for this one operator's config. An unreachable part's text is
+    /// WITHHELD from the assembled segment (never sent, so the model can
+    /// never try a tool that is not there and fail silently, forever) while
+    /// [`InstructionFragment::text`] (the body) and every OTHER reachable
+    /// part still render, together, as one segment; the omission is
+    /// recorded in [`crate::provenance::ContextReport::instruction_fragments`]
+    /// (`unreachable_tool_ids`, the union of ids across every withheld
+    /// part; `withheld_parts`, which parts) with the missing tool ids
+    /// named, so `/context`'s preamble section renders the omission inline
+    /// rather than only warning once in a log line that scrolls away. Only
+    /// when the body is itself empty AND every part is withheld does
+    /// nothing render at all for this turn -- the per-part analog of the
+    /// old whole-fragment withholding.
     ///
     /// **Precedence.** `ContextBuilder::build` renders every fragment at
     /// one of two positions ([`InstructionFragment::position`]):
@@ -183,8 +194,8 @@ pub trait Plugin: Send + Sync + 'static {
     /// scoped away from this turn's agent is dropped before rendering and
     /// recorded with `skipped_by_scope: true` in `ContextReport::
     /// instruction_fragments`, the same "never silently withheld" discipline
-    /// the reachability check below already applies to an unreachable
-    /// `tool_ids` entry. [`InstructionFragment::agent_def`], when `Some`,
+    /// the reachability check below already applies to an unreachable part.
+    /// [`InstructionFragment::agent_def`], when `Some`,
     /// additionally requires `[0]`'s own agent-def name to match -- a
     /// fragment authored for one specific agent definition, absent for
     /// every other. There is deliberately no ROLE selector here: nothing
@@ -985,16 +996,47 @@ pub struct InstructionFragment {
     /// wherever it renders one, rather than mangling the two into a
     /// single string.
     pub name: String,
-    /// The fragment's instruction text -- injected as its own
-    /// `Role::System` segment when every id in [`Self::tool_ids`] is
-    /// reachable, withheld entirely otherwise. See [`Plugin::instructions`]'s
-    /// own doc for the markdown-file convention this field is meant to be
-    /// sourced from.
+    /// The fragment's UNCONDITIONAL body text -- always rendered, injected
+    /// as part of this fragment's own `Role::System` segment regardless of
+    /// which tools this turn's `ContextInput.tools` announces. May be empty
+    /// for a fragment whose every sentence is conditional (see
+    /// [`Self::parts`]) -- e.g. `conway-plugin-path`'s fragment, whose one
+    /// sentence exists only for a turn that actually has
+    /// `compose_context_path`.
+    ///
+    /// **Board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` narrowed this field's own
+    /// scope.** Before that item, [`Self::text`] was the fragment's WHOLE
+    /// text and a separate whole-fragment `tool_ids` field withheld it
+    /// ENTIRELY the moment any one id was unreachable -- so a fragment that
+    /// wanted to say "verify with `bash`" alongside general, always-true
+    /// orientation text had no way to gate only that one sentence: naming
+    /// `bash` made the ENTIRE fragment vanish for a `bash`-less session.
+    /// [`Self::parts`] is what closes that gap -- see its own doc.
     pub text: String,
-    /// Every tool id [`Self::text`] assumes the model can call. May be
-    /// empty for a fragment that names no specific tool (e.g. a general
-    /// style note) -- an empty list is trivially always reachable.
-    pub tool_ids: Vec<ToolName>,
+    /// Zero or more conditional sentences beyond [`Self::text`]'s
+    /// unconditional body, each independently gated on a set of tool ids.
+    /// `conway_runtime::context::builder::ContextBuilder::build` (in
+    /// `conway-runtime`; this crate performs no context assembly) renders
+    /// a part iff EVERY id in [`InstructionPart::tool_ids`] is
+    /// among this turn's `ContextInput.tools` -- an all-of gate over one
+    /// part's own ids, never a boolean expression spanning parts (no
+    /// "part A OR part B"; a plugin wanting that composes two separate,
+    /// independently-gated parts instead). A reachable part's text is
+    /// appended after [`Self::text`] (and after every earlier reachable
+    /// part), each joined by a blank line, into the SAME single
+    /// `Role::System` segment [`Self::text`] alone used to render --
+    /// gating is per-part, but the rendered result is still one segment,
+    /// not one segment per part. An unreachable part is dropped from that
+    /// join silently (per turn, never a build-time error) but recorded --
+    /// see `InstructionFragmentEntry::withheld_parts`/`unreachable_tool_ids`
+    /// (`conway_core::provenance`) for where. [`Self::text`] empty AND
+    /// every part unreachable is the per-part analog of the old
+    /// whole-fragment withholding: nothing renders for this turn at all
+    /// (no segment pushed), the SAME "the model never reads an instruction
+    /// naming a tool it cannot call" guarantee the old whole-fragment
+    /// `tool_ids` field made, now reached by construction rather than by a
+    /// second field.
+    pub parts: Vec<InstructionPart>,
     /// Which side of `[0] SystemPrompt` this fragment renders on. Default
     /// [`FragmentPosition::AfterSystemPrompt`] -- every fragment declared
     /// before this field existed keeps rendering exactly where it always
@@ -1070,14 +1112,14 @@ pub enum FragmentAuthor {
 impl InstructionFragment {
     /// Construct a fragment with every optional field at its default:
     /// [`FragmentPosition::AfterSystemPrompt`], `order: 0`,
-    /// [`FragmentScope::All`], `agent_def: None`, `tool_ids: vec![]`,
+    /// [`FragmentScope::All`], `agent_def: None`, `parts: vec![]`,
     /// [`FragmentAuthor::Plugin`] -- exactly today's (pre-this-field)
     /// behavior. Use the `with_*` methods below to opt into anything else.
     pub fn new(name: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             text: text.into(),
-            tool_ids: Vec::new(),
+            parts: Vec::new(),
             position: FragmentPosition::default(),
             order: 0,
             scope: FragmentScope::default(),
@@ -1086,9 +1128,15 @@ impl InstructionFragment {
         }
     }
 
-    /// See [`Self::tool_ids`].
-    pub fn with_tool_ids(mut self, tool_ids: Vec<ToolName>) -> Self {
-        self.tool_ids = tool_ids;
+    /// See [`Self::parts`]. Board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` --
+    /// replaces the removed whole-fragment `with_tool_ids`: a plugin whose
+    /// entire fragment used to gate on one tool (e.g.
+    /// `conway-plugin-path`/`conway-plugin-discover`, each naming the one
+    /// tool their own fragment is about) now leaves [`Self::text`] empty
+    /// and supplies that same text as this call's one part instead --
+    /// see those crates' own `instructions()` for the worked migration.
+    pub fn with_parts(mut self, parts: Vec<InstructionPart>) -> Self {
+        self.parts = parts;
         self
     }
 
@@ -1120,6 +1168,42 @@ impl InstructionFragment {
     pub fn with_authored_by(mut self, authored_by: FragmentAuthor) -> Self {
         self.authored_by = authored_by;
         self
+    }
+}
+
+/// One conditional sentence (or paragraph) of an [`InstructionFragment`],
+/// gated on a set of tool ids -- board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`.
+/// See [`InstructionFragment::parts`]'s own doc for the full render/
+/// withholding contract; this type is deliberately just the two fields that
+/// contract needs, no boolean-expression vocabulary over tools (all-of
+/// only, over THIS part's own [`Self::tool_ids`] -- never an OR spanning
+/// parts, never a NOT).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstructionPart {
+    /// This part's own text, rendered (appended after
+    /// [`InstructionFragment::text`], and after every earlier reachable
+    /// part, each joined by a blank line) iff every id in [`Self::tool_ids`]
+    /// is among this turn's `ContextInput.tools`.
+    pub text: String,
+    /// Every tool id this part's own [`Self::text`] assumes the model can
+    /// call. MUST be non-empty for a part to mean anything -- a part with
+    /// no ids is unconditionally reachable, which is what
+    /// [`InstructionFragment::text`] (the body) already expresses more
+    /// directly; nothing here refuses an empty list, since refusing it
+    /// would be enforcement this type deliberately leaves to the author's
+    /// own judgment (the same "no shape constraint enforced here" stance
+    /// [`Plugin::instructions`]'s own doc takes for [`InstructionFragment::text`]).
+    pub tool_ids: Vec<ToolName>,
+}
+
+impl InstructionPart {
+    /// Construct a part naming `tool_ids` -- the ids every one of which
+    /// must be reachable this turn for `text` to render.
+    pub fn new(text: impl Into<String>, tool_ids: Vec<ToolName>) -> Self {
+        Self {
+            text: text.into(),
+            tool_ids,
+        }
     }
 }
 

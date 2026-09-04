@@ -232,11 +232,21 @@ impl Plugin for PathPlugin {
     }
 
     fn instructions(&self) -> Vec<conway::plugin::InstructionFragment> {
-        vec![conway::plugin::InstructionFragment::new(
-            INSTRUCTION_NAME,
-            include_str!("../fragments/when_to_compose.md"),
-        )
-        .with_tool_ids(vec![ToolName::new(COMPOSE_TOOL_NAME)])]
+        // The whole fragment is about ONE tool, so it lives entirely in one
+        // conditional part (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` --
+        // `InstructionFragment::text`, the unconditional body, stays empty
+        // here on purpose) rather than an unconditional body -- reachable
+        // by construction anyway, since this plugin's own `Self::tools`
+        // provides `COMPOSE_TOOL_NAME` (`Plugin::instructions`'s own doc,
+        // "What alongside `tools` buys structurally").
+        vec![
+            conway::plugin::InstructionFragment::new(INSTRUCTION_NAME, "").with_parts(vec![
+                conway::plugin::InstructionPart::new(
+                    include_str!("../fragments/when_to_compose.md"),
+                    vec![ToolName::new(COMPOSE_TOOL_NAME)],
+                ),
+            ]),
+        ]
     }
 }
 

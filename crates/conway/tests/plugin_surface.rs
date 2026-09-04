@@ -38,7 +38,8 @@ use conway::plugin::{
     CancellationToken, CapabilityError, CapabilityProvider, CapabilityRegistration, ContentBlock,
     ContextHook, ContextHookCtx, ContextPayload, CwdError, Fact, HookAnswer, HookEvent,
     HookFailure, HookInvocation, HookPermissionVerdict, HookRunner, HostCapability,
-    InstructionFragment, OverflowInfo, PathArgs, PermissionClass, Plugin, PluginConfig,
+    InstructionFragment, InstructionPart, OverflowInfo, PathArgs, PermissionClass, Plugin,
+    PluginConfig,
     PluginManifest, PromptSegment, Provenance, RenderKind, Role, SubagentError, Tool, ToolCall,
     ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
@@ -144,17 +145,17 @@ impl Plugin for EchoPlugin {
     }
 
     /// F8 liveness for `Plugin::instructions` (board item
-    /// `01M0K5MD59YZRSHE31JKZKFRMY`): a third-party plugin author
-    /// constructs `InstructionFragment` using nothing but the curated
-    /// `conway::plugin` surface, naming the SAME tool this plugin already
-    /// declares via `Self::tools` above -- the structurally-reachable case
-    /// that method's own doc argues can never fail the assembly-time check.
+    /// `01M0K5MD59YZRSHE31JKZKFRMY`, per-part gating: `01M1FSRJJAB3ZYZXED4SVT2ZSF`):
+    /// a third-party plugin author constructs `InstructionFragment` and
+    /// `InstructionPart` using nothing but the curated `conway::plugin`
+    /// surface, naming the SAME tool this plugin already declares via
+    /// `Self::tools` above -- the structurally-reachable case that method's
+    /// own doc argues can never fail the assembly-time check.
     fn instructions(&self) -> Vec<InstructionFragment> {
-        vec![InstructionFragment::new(
-            "when-to-echo",
+        vec![InstructionFragment::new("when-to-echo", "").with_parts(vec![InstructionPart::new(
             "Call echo when the operator asks you to repeat something verbatim.",
-        )
-        .with_tool_ids(vec![ToolName::new("echo")])]
+            vec![ToolName::new("echo")],
+        )])]
     }
 
     /// F8 liveness for Edge B's capability channel (board item
@@ -430,13 +431,15 @@ fn authored_plugin_and_tool_are_self_consistent() {
     assert_eq!(output.artifacts.len(), 1);
     assert_eq!(output.artifacts[0].kind, ArtifactKind::File);
 
-    // Board item `01M0K5MD59YZRSHE31JKZKFRMY`: the fragment's `tool_ids`
+    // Board item `01M0K5MD59YZRSHE31JKZKFRMY` (per-part gating:
+    // `01M1FSRJJAB3ZYZXED4SVT2ZSF`): the fragment's one part's `tool_ids`
     // must actually name a tool this same plugin's `Self::tools` declares
     // -- that is the structural half of the reachability argument, checked
     // here rather than merely asserted in prose.
     let instructions = plugin.instructions();
     assert_eq!(instructions.len(), 1);
-    assert_eq!(instructions[0].tool_ids, manifest.tools);
+    assert_eq!(instructions[0].parts.len(), 1);
+    assert_eq!(instructions[0].parts[0].tool_ids, manifest.tools);
 }
 
 /// C3: `Fact`, `CwdError`, and `SubagentError` are constructible/matchable
