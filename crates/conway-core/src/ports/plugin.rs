@@ -3238,9 +3238,8 @@ mod tests {
     }
 
     /// `ArtifactWriteHandle::noop`
-    /// replaces what used to be a hand-rolled private `ArtifactWriter` double
-    /// here -- this module's own fixtures are exactly the boilerplate that
-    /// constructor exists to remove -- one implementation, reused rather than
+    /// is used here rather than a hand-rolled private `ArtifactWriter` double
+    /// -- one implementation, reused rather than
     /// restated. The REAL containment guarantee is exercised by
     /// `conway-runtime`'s `artifact_store` tests, against a real
     /// `AgentArtifactWriter` and a real filesystem; this module's own fixtures
