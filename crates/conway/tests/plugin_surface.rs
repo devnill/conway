@@ -39,9 +39,8 @@ use conway::plugin::{
     ContextHook, ContextHookCtx, ContextPayload, CwdError, Fact, HookAnswer, HookEvent,
     HookFailure, HookInvocation, HookPermissionVerdict, HookRunner, HostCapability,
     InstructionFragment, InstructionPart, OverflowInfo, PathArgs, PermissionClass, Plugin,
-    PluginConfig,
-    PluginManifest, PromptSegment, Provenance, RenderKind, Role, SubagentError, Tool, ToolCall,
-    ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
+    PluginConfig, PluginManifest, PromptSegment, Provenance, RenderKind, Role, SubagentError, Tool,
+    ToolCall, ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
 // D1-8: the curator port + the §11.5 read surface, facade-only. The port
 // types and the `SeqRange`/`StoreError` pair needed to CALL
@@ -152,10 +151,12 @@ impl Plugin for EchoPlugin {
     /// `Self::tools` above -- the structurally-reachable case that method's
     /// own doc argues can never fail the assembly-time check.
     fn instructions(&self) -> Vec<InstructionFragment> {
-        vec![InstructionFragment::new("when-to-echo", "").with_parts(vec![InstructionPart::new(
-            "Call echo when the operator asks you to repeat something verbatim.",
-            vec![ToolName::new("echo")],
-        )])]
+        vec![
+            InstructionFragment::new("when-to-echo", "").with_parts(vec![InstructionPart::new(
+                "Call echo when the operator asks you to repeat something verbatim.",
+                vec![ToolName::new("echo")],
+            )]),
+        ]
     }
 
     /// F8 liveness for Edge B's capability channel (board item

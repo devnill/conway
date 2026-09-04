@@ -108,7 +108,7 @@
 //! `fragment_stays_within_budget` and every other test in this module
 //! that exercises it, not a condition to handle gracefully at runtime. An
 //! OPERATOR's own `instructions.md` goes through the identical parser in
-//! [`read_operator_fragment`] below, but fallibly -- a malformed comment in
+//! `read_operator_fragment` below, but fallibly -- a malformed comment in
 //! an operator's own file surfaces as `Err(FacadeError::Config)`, the same
 //! tier every other "file the operator wrote and conway silently ignored"
 //! failure already fails at (this module's own "Operator instructions"
@@ -868,7 +868,10 @@ mod plugin_tests {
         let instructions = plugin.instructions();
         assert_eq!(instructions.len(), 1);
         assert_eq!(instructions[0].name, INSTRUCTION_NAME);
-        assert!(!instructions[0].text.is_empty(), "the body must be non-empty");
+        assert!(
+            !instructions[0].text.is_empty(),
+            "the body must be non-empty"
+        );
         assert!(
             !instructions[0].parts.is_empty(),
             "the base fragment must declare at least one conditional part"

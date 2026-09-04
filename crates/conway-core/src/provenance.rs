@@ -843,6 +843,9 @@ mod tests {
         });
         let back: InstructionFragmentEntry = serde_json::from_value(legacy).unwrap();
         assert!(back.withheld_parts.is_empty());
-        assert_eq!(back.unreachable_tool_ids, vec![ToolName::new("compose_path")]);
+        assert_eq!(
+            back.unreachable_tool_ids,
+            vec![ToolName::new("compose_path")]
+        );
     }
 }

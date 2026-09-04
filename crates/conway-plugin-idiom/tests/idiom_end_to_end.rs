@@ -305,15 +305,22 @@ async fn operator_instructions_reach_a_forked_childs_wire_request() {
 /// Acceptance 4 (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`): an
 /// interactive-root-shaped session -- no `report`, no `bash`, the exact
 /// premise `conway.idiom` exists for -- gets the fragment's unconditional
-/// body but NEITHER tool-gated part. Mirrors
-/// [`fragment_reaches_a_bare_sessions_wire_request`]'s own "no
-/// tool-providing plugin installed" shape: `App::session_spec`'s real
-/// interactive root excludes `report` via `ToolSelector::Except(vec![
-/// "report".into()])` and never installs `conway.shell` unless the
-/// operator opts bash in, so `ContextInput.tools` is empty for
-/// `report`/`bash` either way -- installing no tool-providing plugin here
-/// reaches the identical `ContextInput.tools` state without needing to
-/// reconstruct that selector.
+/// body but NEITHER tool-gated part.
+///
+/// **Correction, found by the build lane running this exact test**: an
+/// earlier version of this test relied on "install no tool-providing
+/// plugin" to keep `report` unreachable, reasoning by analogy with
+/// [`fragment_reaches_a_bare_sessions_wire_request`]'s own shape. That
+/// premise is false for `report` specifically: `report` is a built-in
+/// tool `ConwayBuilder::build` registers unconditionally, with no
+/// providing plugin to omit -- only an explicit `ToolSelector` excludes
+/// it. The failure was real and reproducible (the report-gated part WAS
+/// reaching the wire) until this test set `SessionSpec.tools` to the
+/// SAME `ToolSelector::Except(vec!["report".into()])` `App::session_spec`'s
+/// real interactive root uses (see `SessionSpec::tools`'s own doc comment
+/// for that precedent). `bash` needed no such fix: it genuinely IS opt-in
+/// (`conway.shell`/`conway.confine`, neither installed here), so it was
+/// already correctly absent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interactive_root_shaped_session_gets_the_body_without_the_bash_or_report_parts() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -327,7 +334,10 @@ async fn interactive_root_shaped_session_gets_the_body_without_the_bash_or_repor
     let conway = idiom_conway(tmp.path().to_path_buf(), backend.clone(), store);
 
     let session = conway
-        .new_session(SessionSpec::default())
+        .new_session(SessionSpec {
+            tools: Some(conway::ToolSelector::Except(vec!["report".into()])),
+            ..SessionSpec::default()
+        })
         .await
         .expect("new_session");
     let turn = session.prompt("hi").await.expect("prompt");
