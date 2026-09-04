@@ -945,8 +945,8 @@ impl Runtime {
     }
 
     /// Appends a `LogRecord::UserTurn` to `agent`'s session before returning
-    /// (persist-before-act), then emits the live `Event::UserTurn` twin (this
-    /// item) so a subscriber on the event stream sees the SAME occurrence
+    /// (persist-before-act), then emits the live `Event::UserTurn` twin
+    /// so a subscriber on the event stream sees the SAME occurrence
     /// live that replay would later reconstruct from the log -- closing the
     /// The gap where only the TUI (via its own local `Entry::User` push) ever
     /// showed a prompt. Ordering-safe for every caller of this method: `agent`
