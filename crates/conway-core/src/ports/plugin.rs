@@ -3190,8 +3190,8 @@ mod tests {
         // The session's OWN persisted value, written back when a WIDER
         // global default (or no ceiling at all) was in effect -- exactly
         // what a resume path that "reconstructs a root by any route other
-        // than the one that validated it" (this item's own hazard
-        // language) could otherwise let through unchecked.
+        // than the one that validated it" could otherwise let through
+        // unchecked.
         let persisted = config_with("acme.limit", 10);
 
         let err = current_global_default
@@ -3688,7 +3688,7 @@ mod tests {
         );
     }
 
-    /// **The discriminating observable this item exists to prove.**
+    /// **The discriminating observable this test proves.**
     /// `CommandOutcome::ForkSession` carries no session identifier of its
     /// own -- checkable directly, by destructuring: this pattern binds only
     /// `at_seq`/`directive`, and would fail to COMPILE if a third field
