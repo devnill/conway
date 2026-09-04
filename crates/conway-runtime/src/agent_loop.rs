@@ -2043,8 +2043,7 @@ impl AgentLoop {
     ///
     /// `seen_segments` (owned by `run_inner` itself, not `LoopState`) and
     /// `state.usage` are deliberately left untouched by this fn -- both must
-    /// persist across the whole keep-alive session, exactly as they did
-    /// before this item.
+    /// persist across the whole keep-alive session.
     fn end_keep_alive_turn(
         &mut self,
         state: &mut LoopState,
@@ -2069,14 +2068,9 @@ impl AgentLoop {
     }
 
     /// Checks every configured budget dimension at the top of a turn.
-    /// Before board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`, EVERY exceeded
-    /// dimension called `self.finish` and ended the whole agent -- for a
-    /// `keep_alive` session that meant an ordinary per-turn runaway-loop
-    /// guard (`max_steps`, or `max_tool_calls`) silently killed the entire
-    /// interactive conversation, with only a terminal notice (no chance to
-    /// keep talking) as the operator's explanation. That is fixed now: see
-    /// [`BudgetCheck`] for the three-way outcome this method returns instead
-    /// of the old `Option<AgentResult>`, and [`Self::end_keep_alive_turn`]
+    /// See
+    /// [`BudgetCheck`] for the three-way outcome this method returns,
+    /// and [`Self::end_keep_alive_turn`]
     /// for the turn-boundary reset a `TurnAborted` outcome shares with a
     /// natural completion. A dimension a caller sets must still always
     /// BIND, though -- the whole reason to set one is to bound cost or
@@ -2101,14 +2095,14 @@ impl AgentLoop {
     /// simply never called for them in that case; the caller
     /// (`Self::run_inner`) does the SystemNote/event/reset work instead
     /// (`BudgetCheck`'s own doc explains why this method cannot do that
-    /// work itself). Non-`keep_alive` behavior is byte-for-byte unchanged:
-    /// `state.turn` gates `max_steps`/`max_tool_calls` exactly as before
-    /// this item, and a trip always produces `BudgetCheck::Finished`.
+    /// work itself). For a non-`keep_alive` agent,
+    /// `state.turn` gates `max_steps`/`max_tool_calls`, and a trip always
+    /// produces `BudgetCheck::Finished`.
     ///
     /// Every other budget dimension (`deadline`, `max_tokens`) is
     /// intentionally left session-lifetime for both keep-alive and
     /// non-keep-alive agents, and always produces `BudgetCheck::Finished`
-    /// -- ending the whole agent, unchanged by this item: `state.usage`
+    /// -- ending the whole agent: `state.usage`
     /// already accrues across every turn of a keep-alive session (never
     /// reset), and `deadline` is a wall-clock cutoff independent of turn
     /// boundaries by nature. A session-lifetime `max_tokens`/`deadline` can
@@ -2117,8 +2111,8 @@ impl AgentLoop {
     /// not fire in practice) -- the companion TUI-notice fix
     /// (`conway_cli::tui::state::AppState::apply_agent_finished`) is what
     /// makes any such termination visible rather than silent; making those
-    /// two dimensions turn-scoped too remains out of this item's scope,
-    /// exactly as it was out of the `runway` item's before it.
+    /// two dimensions turn-scoped too is a disclosed follow-up, not solved
+    /// here.
     ///
     /// A `Finished` outcome's `max_steps`/`max_tool_calls` trip still labels
     /// its `ResultStatus::BudgetExceeded { limit }` string with which
