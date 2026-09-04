@@ -15,7 +15,7 @@
 //! blanket approval of a confined shell actually safe: the OS, not this
 //! crate reading the command text, is what refuses a write outside `--root`.
 //!
-//! # Mechanism, not policy (P-14)
+//! # Mechanism, not policy
 //!
 //! **This crate never reads a command to decide anything.** The whole
 //! command string goes to `/bin/bash -c` verbatim, wrapped in the OS

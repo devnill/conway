@@ -525,8 +525,8 @@ a convention.** It is a first-party plugin (`[plugins].install =
 one tool, `confined_bash`, runs every command through this operating
 system's own containment primitive (`sandbox-exec` on macOS, `bwrap` on
 Linux): a write outside `--root` is refused by the kernel, not by conway
-reading the command text (P-14 — this is a mechanism, never a policy that
-inspects `command` to decide anything). It requires `--root`; a call with
+reading the command text — this is a mechanism, never a policy that
+inspects `command` to decide anything. It requires `--root`; a call with
 none configured is refused rather than run unconfined. Reads and network
 reachability are **not** confined — only writes; see
 [`docs/plugins/confine.md`](plugins/confine.md) for the full boundary,

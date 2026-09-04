@@ -315,7 +315,8 @@ closes.
   to a prior state: "before this item," "used to," "now," "this item's own
   acceptance," a bare date, a correction notice, a reviewer finding number.
   `crates/conway-cli/src/tui/view/settings.rs` ("…this item's own
-  acceptance 8/ P-14 again") and `.../app/focus.rs` ("Confirmed to fail
+  acceptance 8, citing the same restatement-discipline rule again") and
+  `.../app/focus.rs` ("Confirmed to fail
   pre-fix (this item's own report quotes the output)") are both this shape:
   true when written, opaque the moment the item that wrote them is no
   longer open in anyone's head.

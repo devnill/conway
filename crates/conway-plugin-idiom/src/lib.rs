@@ -212,8 +212,8 @@
 //!   here has nothing to add and every chance to go stale against it.
 //!
 //! No hostname, no username, no arbitrary environment variables -- none of
-//! this fragment's four facts need either, and GP-14 (declaration honesty:
-//! say only what is true and needed, nothing added "just in case") argues
+//! this fragment's four facts need either, and declaration honesty — say
+//! only what is true and needed, nothing added "just in case" — argues
 //! against naming a fact no consumer actually asked for.
 //!
 //! # Naming

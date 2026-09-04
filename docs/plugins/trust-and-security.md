@@ -883,10 +883,11 @@ the permission gate, a `deny` pattern, `PluginManifest::required_host_caps`
 — is enforced by conway's own code, running with the operator's own
 privileges, and is only as trustworthy as that code. `confined_bash`'s
 containment (a write outside `--root` refused) is enforced by `sandbox-exec`/
-`bwrap`, a mechanism conway invokes but does not implement — P-14: this
-plugin never reads the command text to decide anything, so a defect in
-conway's own logic cannot silently widen what a confined write can reach
-the way it could for any policy-based control. **This does not extend to
+`bwrap`, a mechanism conway invokes but does not implement — this plugin
+never reads the command text to decide anything, so a defect in conway's
+own logic cannot silently widen what a confined write can reach the way it
+could for any policy-based control: there is no Rust-side restatement of
+the boundary to drift from what the OS enforces. **This does not extend to
 reads or network** — `confined_bash` leaves both exactly as reachable as
 plain `bash` does; see `confine.md`'s own "What this confines, and what it
 does not" for the full, stated boundary. And it does not extend to

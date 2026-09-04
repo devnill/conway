@@ -24,12 +24,14 @@ primitive, which enforces the boundary regardless of what the command says.
 This is what makes blanket approval of a confined shell honest — the
 guarantee is the kernel's, not conway's reading of your command.
 
-## Mechanism, not policy (P-14)
+## Mechanism, not policy
 
 **This plugin never reads a command to decide anything.** There is no
 allow/deny list, no metacharacter scan, no path-extraction heuristic over
 `command` — the whole string goes to `/bin/bash -c` verbatim, wrapped in the
-primitive's own argv. The containment guarantee comes entirely from the OS:
+primitive's own argv, so there is no Rust-side restatement of the boundary
+that could drift from what actually gets enforced. The containment
+guarantee comes entirely from the OS:
 Seatbelt (`sandbox-exec`) on macOS, Linux namespaces (`bwrap`) on Linux. A
 `command` this plugin cannot statically confine (exactly the reason `bash`
 itself declares `PathArgs::Unconfinable`) is not a gap this plugin tries to
@@ -103,9 +105,10 @@ write outside it fails with the file absent, and a read outside it (`cat
 identical shape but is **not exercised by this tree's own CI** — its mirror
 test (`#[cfg(target_os = "linux")]`) skips, printing the reason, when
 `bwrap` is not installed on the machine running the suite. Declaration
-honesty (GP-14): treat the Linux path as a designed, not-yet-independently-
-verified-here implementation until a CI runner with `bwrap` actually
-exercises it.
+honesty — stating a capability's real, tested status rather than
+describing untested code as verified — means treating the Linux path as a
+designed, not-yet-independently-verified-here implementation until a CI
+runner with `bwrap` actually exercises it.
 
 **The confinement root is canonicalized before either profile is built.**
 Found by the build lane running this crate's own acceptance suite: a

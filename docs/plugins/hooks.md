@@ -906,8 +906,9 @@ own `instructions.md`, so an operator gating their own sentences on a tool
 uses the exact same syntax this crate does for itself. A malformed `<!--
 tools: -->` comment in an operator's file is a load error (`FacadeError::
 Config`, naming the path), never a silent fallback that demotes the
-paragraph to unconditional body — the same P-13 discipline this plugin's
-other malformed-file cases already have.
+paragraph to unconditional body — the same fail-loud-on-malformed-input
+discipline (never silently degrading to a default) this plugin's other
+malformed-file cases already have.
 
 **Relationship to point 3's `conway.skills` — not folded together, and no
 longer sharing a provenance tag either (board item
