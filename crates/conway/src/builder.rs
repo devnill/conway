@@ -2022,7 +2022,7 @@ impl ConwayBuilder {
         // operator-facing surface built on it (`[hooks].rules[]` TOML,
         // `config::merge::validate`), stays exactly as it was. Every
         // `[hooks].rules[]` entry gets `false` here -- an operator has no
-        // way to set this field at all, unchanged from before it existed.
+        // way to set this field at all.
         let mut effective_hook_rules: Vec<(HookOrigin, HookEntry, bool)> = config
             .hooks
             .rules
