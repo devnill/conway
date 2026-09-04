@@ -559,13 +559,12 @@ impl ConwayBuilder {
     /// factory. Nothing about registering a factory promises any
     /// particular `[backends.<id>]` entry will ever select it.
     ///
-    /// **`[backends.<id>].kind` is now an open name** -- for
+    /// **`[backends.<id>].kind` is an open name** -- for
     /// every `[backends.<id>]` entry, `build()`'s own `resolve_backend_
     /// factory` resolves `entry.kind` against every registered factory's own
-    /// [`BackendFactory::id`] -- and against nothing else. The temporary
-    /// fallback to two compiled-in adapters is GONE -- this facade no longer links either
-    /// dialect, so an unregistered kind is an unknown-kind error, not a
-    /// silent built-in. See `resolve_backend_factory`'s own doc for the
+    /// [`BackendFactory::id`] -- and against nothing else. This facade
+    /// links neither dialect in, so an unregistered kind is an unknown-kind
+    /// error, not a silent built-in. See `resolve_backend_factory`'s own doc for the
     /// exact resolution order and the error shape. A matching
     /// factory's `build` is invoked with a [`BackendBuildContext`] resolved
     /// from THAT entry: `id` is the entry's own `[backends.<id>]` JSON key,
@@ -579,12 +578,12 @@ impl ConwayBuilder {
     /// `[backends.<id>]` entries naming the same kind invoke that kind's
     /// factory twice, with two different contexts -- exactly the "one
     /// installed kind, many configured instances" cardinality this method's
-    /// own doc above already promises (the "kimi" example), now actually
-    /// reachable for a third-party kind and not just the two built-in ones.
+    /// own doc above already promises (the "kimi" example), reachable for a
+    /// third-party kind, not just the two built-in ones.
     /// **Registering a factory whose kind no entry names is still fine, not
     /// an error** -- its `build` is simply never invoked, the literal case
     /// the paragraph above already covers. **Not called at all**, however,
-    /// is no longer a benign default: with no factory registered there is
+    /// is NOT a benign default: with no factory registered there is
     /// nothing left for a `kind` to resolve against, so every
     /// `[backends.<id>]` entry fails with an unknown-kind error and the
     /// build reaches no model at all. The `conway` CLI avoids this by
@@ -2129,9 +2128,8 @@ impl ConwayBuilder {
         // `01M03VKQ738DTGHHK2C4RWXC0E`). The status contributions are a
         // build-time SNAPSHOT (collected at session-open, before any
         // `status/1` notifications have arrived -- typically empty); kept
-        // for `Conway::plugin_status_contributions` exactly as before. This
-        // snapshot is no longer the ONLY reachable record, though --
-        // `live_plugins` immediately below is the live one (board item
+        // for `Conway::plugin_status_contributions`. `live_plugins`
+        // immediately below is the live counterpart (board item
         // `01M0Y3A8MYKKE0GMYKZE1K0QTD`, see that field's own doc). The
         // observe sinks are installed as `EventBus` subscribers: one forwarding
         // task per sink drives a `bus.subscribe()` stream and calls
