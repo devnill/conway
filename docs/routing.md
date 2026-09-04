@@ -351,6 +351,57 @@ to a role that already exists in the merged config; an unknown alias is
 ignored, not an error). There's no `--headroom-tokens` CLI flag — only
 `settings.json` and these two env vars reach it.
 
+### Adaptive headroom (on by default)
+
+The one thing the precedence chain above does not fix on its own: a flat
+`headroom_tokens` reserves a wildly different SHARE of the window
+depending which model ends up serving the role. `8192` (conway's own
+built-in default) is 25% of a 32K-window model but under 1% of a
+976K-window one — either wasteful (a huge model starved of prompt room by
+comparison) or dangerously thin (a small model's headroom barely denting
+its window at all), depending which end of that range a role's chain
+happens to resolve to.
+
+`routing.headroom_fraction` fixes this by making the effective headroom a
+FRACTION of the role's own smallest reachable window, computed once at
+config-load time, rather than a fixed number: `max(smallest_window / d,
+2048)` (`HEADROOM_FLOOR`, disclosed so a tiny window never gets starved
+down to something unusably small). Default `d = 10` (10% of the window) —
+`headroom_fraction` is set unless you say otherwise, so an ordinary
+config with no `[routing]` section at all already gets this. A role whose
+chain resolves nothing but small windows gets a small, still-proportional
+headroom; a role that can reach a 1M-token model gets a generous one, with
+no operator tuning required:
+
+```json
+// what an operator sees with NO [routing] section at all
+{
+  "roles": {
+    "coder": { "chain": ["ollama-cloud/glm-5.2"] }
+  }
+}
+```
+
+resolves `coder`'s headroom to `max(32768 / 10, 2048) = 3276` — not the
+flat `8192` a config predating this feature would have used (which, at
+25% of that same window, is exactly the ratio the walked scenario below
+names as the proximate trigger of a real session's context rejection).
+
+**Precedence, unchanged in shape, one link added:** an explicit per-role
+`headroom_tokens` always wins (over both the fraction and the flat
+default); absent that, `headroom_fraction` (when nonzero) computes the
+adaptive value; absent BOTH a model window and an override, the flat
+`routing.default_headroom_tokens` is the fallback — "the fixed default is
+the fallback only when no model window is known," not the everyday case
+it used to be. Set `"routing": { "headroom_fraction": 0 }` to opt back
+out entirely (every role falls back to the flat
+`default_headroom_tokens`, exactly the pre-adaptive behavior); a fraction
+this codebase computes is never silently clamped or overridden at
+runtime — the same "not clamped" guarantee the warning below documents
+applies here too, just one step earlier (the VALUE that lands in
+`headroom_tokens` is adaptively chosen; once resolved, it is as fixed as
+if you had typed it yourself).
+
 ### A headroom that already exceeds a model's window
 
 Config loading catches one shape of this mistake before you ever hit
@@ -476,7 +527,12 @@ bigger `chain`, not a smaller prompt.
 Board item `01M1AVZPTRSWVE33G4DTJY7Q1B`'s own framing named four strategies
 and asked for a ranked decision, not just a fix. Recorded here rather than
 only in a completion report, so the ranking outlives the session that made
-it:
+it. **Updated by the operator's 2026-09-01 ruling** (superseding an earlier,
+partial pass on this same item that had left the fourth strategy as a
+follow-up): the ruling reframed "cap or elide oversized tool results" as
+"refuse to admit it, with a note" — not silent truncation — and asked for it
+built, not deferred. That is items 1, 2, and 4 below, in their current,
+actually-built shape:
 
 1. **Escalate along the configured fallback chain — built, and already
    there before this item.** Reading `DeclarativeRouter::resolve`
@@ -492,23 +548,35 @@ it:
    which is exactly the shape this item's own framing calls out ("what
    happens when a prompt genuinely does not fit a genuinely correct
    ceiling").
-2. **A proactive, non-clamping warning for headroom that consumes a large
-   fraction of a window — built.** Extends the pre-existing
-   `HeadroomExceedsContext` config-load check (which only fires once
-   headroom literally exceeds the window) with a second, milder
-   `HeadroomConsumesLargeFractionOfContext` warning at `>= 25%`, the exact
-   ratio this item's own walked scenario hit. **Cost:** none to existing
-   behavior — nothing is clamped, so no admission decision changes; an
-   operator gets an earlier, more specific nudge toward the two knobs they
-   already had (a smaller `headroom_tokens`, or a bigger chain).
-3. **Silently auto-shrinking headroom per candidate (runtime adaptive
-   headroom) — considered, rejected.** The cheapest fix on paper, but two
-   things independently rule it out rather than one: (a) it would reverse
-   an EXISTING, deliberately-tested decision — a test named
+2. **A better DEFAULT headroom, not just a warning about a bad one —
+   built.** The proactive `HeadroomConsumesLargeFractionOfContext` warning
+   (`>= 25%` of a role's smallest reachable window) shipped first, as a
+   milder companion to the pre-existing `HeadroomExceedsContext` check —
+   see ["A headroom that consumes most of a model's
+   window"](#a-headroom-that-consumes-most-of-a-models-window-without-exceeding-it)
+   below. This item's finishing pass went further: `routing.headroom_fraction`
+   (["Adaptive headroom"](#adaptive-headroom-on-by-default) above) is now ON
+   BY DEFAULT (`d = 10`, computed once at config-load time from each role's
+   own smallest reachable window), so the flat `8192`-against-a-32K-window
+   shape that triggered the warning in the first place — the exact scenario
+   this item's own walked session hit — no longer arises from an unconfigured
+   `[routing]` section at all. **Cost:** none to the admission check itself
+   (still computed once, at config-load time, never per-request) — an
+   operator who explicitly set a flat `headroom_tokens` (per-role) or
+   disabled the fraction (`headroom_fraction: 0`) is untouched either way.
+3. **Silently auto-shrinking headroom PER CANDIDATE, at request time
+   (runtime adaptive headroom) — considered, rejected. Not what item 2
+   built.** Do not confuse the two: item 2's adaptive DEFAULT is resolved
+   once, from config, before any request exists, and the resulting number
+   is then exactly as fixed as if an operator had typed it — this item
+   (per-request, per-candidate clamping AFTER a prompt is already
+   assembled) is a genuinely different mechanism, and stays rejected for
+   the reasons already given: (a) it would reverse an EXISTING,
+   deliberately-tested decision — a test named
    `headroom_exceeding_smallest_reachable_context_warns_without_clamping`
    (`crates/conway/tests/config_headroom.rs`) already pins "not clamped:
    the configured value survives unmodified" as the answer to this exact
-   class of problem, and reversing that without being asked is a product
+   class of problem, and reversing THAT without being asked is a product
    decision this item does not own; (b) headroom exists specifically to
    avoid a WORSE failure mode than a pre-flight rejection — trimming it
    trades a safe `ContextTooLarge` (paying nothing) for a live
@@ -517,13 +585,33 @@ it:
    that trade on an operator's behalf is the thing this item's own
    constraints forbid ("do not weaken the admission check to make this go
    away").
-4. **Cap or elide oversized tool results — real, and out of this item's
-   file boundaries.** The proximate trigger in this item's own narrative
-   (`work_list --include_spec` pulling 28k tokens of board prose to answer
-   a question about titles) lives in context ASSEMBLY
-   (`conway-runtime`/`conway-tools`), not in the routing/admission surface
-   this item's files cover. Left as a follow-up, not attempted here —
-   see this item's completion report for the exact scope line.
+4. **A tool-result admission gate: refuse to render an oversized result,
+   with a note — built** (the operator's 2026-09-01 ruling; supersedes an
+   earlier pass's "left as a follow-up" on this same line). A single tool
+   result larger than a configured bound (`routing.tool_result_bound_fraction`
+   / `tool_result_bound_cap_tokens`, default ON — 20% of a role's smallest
+   reachable window, capped at 8192 tokens) is not rendered into context at
+   all: the model sees a short note in its place, naming the result's size,
+   where the full result is kept (the session's own durable log), and two
+   concrete remedies (re-invoke the tool narrower, or fork a child to
+   distill it) — see `ContextBuilder`'s `admit_tool_result`
+   (`conway-runtime`'s `context::builder`) and
+   `ContextReport::not_admitted`. **Deliberately NOT truncation, at this
+   seam**: the choice is binary (the whole result as this gate receives
+   it, or a note), never a lossy middle. This is distinct from — and does
+   not touch — `conway_runtime::tools::runner::apply_truncation`, a
+   separate, pre-existing, ALREADY-ACTIVE mechanism that caps a few
+   built-in tools' own raw output at a fixed byte budget right after the
+   tool runs (`read`'s 65536-byte head, `grep`'s 32768-byte head, `bash`'s
+   head+tail) — unconditional and model-agnostic, there to bound one
+   absurdly large tool invocation, never to fit a specific model's window.
+   The two compose: a tool-truncated 65536-byte result can still exceed a
+   small role's small admission bound, so this gate still applies to it.
+   Applies identically to a fork child's INHERITED tool results, not only a
+   session's own, so "forking is cheap" stays true on a non-caching
+   provider. **Cost:** none to ordinary results — the gate is a size check
+   against already-assembled content, never re-fetches or re-renders
+   anything, and a result under the bound is untouched.
 5. **Full conversation compaction — the largest piece, genuinely deferred,
    and further along than it looks.** `PHILOSOPHY.md`'s own "Where the
    tree is today" note already says it plainly: the `ContextHook` port
@@ -531,10 +619,13 @@ it:
    would need — `AgentLoop` already retries `ContextHook::on_overflow` up
    to `MAX_OVERFLOW_ATTEMPTS` times on exactly this rejection (see
    [`plugins/hooks.md`](plugins/hooks.md)) — but no first-party plugin
-   implements it. Building one is a genuinely separate, large piece of
-   work (what gets summarized, by which model, and how the operator is
-   told, per this item's own list of open questions) that does not fit
-   this item's appetite alongside the other three.
+   implements it, and this item's own operator ruling reaffirmed that gap
+   as deliberate: no default curator, `conway.trim` stays opt-in, the
+   overflow seam stays empty by default. Building a compaction plugin is a
+   genuinely separate, large piece of work (what gets summarized, by which
+   model, and how the operator is told) that does not fit this item's own
+   appetite alongside the other four — an operator who wants it installs a
+   plugin; the core never defaults into it.
 
 ### Advisory vs. authoritative: two context checks, not one
 

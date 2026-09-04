@@ -631,6 +631,7 @@ mod tests {
                         dropped: vec![],
                         curator_failed: None,
                         instruction_fragments: vec![],
+                        not_admitted: Vec::new(),
                     },
                 },
                 "context_report",

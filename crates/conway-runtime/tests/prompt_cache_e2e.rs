@@ -114,6 +114,7 @@ fn build_runtime(turns: usize) -> (Arc<Runtime>, Arc<ScriptedBackend>) {
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
@@ -355,6 +356,7 @@ async fn gp06_stripping_cache_hint_makes_a_cached_and_uncached_route_identical()
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),

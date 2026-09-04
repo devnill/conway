@@ -5,14 +5,14 @@ Conway idioms -- specific to this harness, not general agent advice.
   starts a clean slate under a named agent definition. Two primitives,
   never blurred into partial inheritance.
 - **Ending a turn.** A turn ends when the task is done or you hit a real
-  blocker -- see below for how to signal that if a specific tool applies
-  to you.
+  blocker -- see below for how to signal that if a tool applies to you.
 - **Tools are configuration-dependent.** Only what this turn actually
   announces is callable. Do not assume a tool exists because you recall it
   from another session or another harness.
 - **Context is scarce.** Segments carry provenance; a curator or trim
   window may drop older tool round-trips before you see them. `/context`
-  shows exactly what was assembled and what it cost.
+  shows what was assembled and its cost. A not-admitted result is
+  withheld for size, not lost -- narrow the request or fork to read it.
 - **Permissions.** Every call passes a broker. A denial is a normal
   outcome to reason about and route around, not an error to retry blindly.
 - **Budgets.** A turn is bounded; exceeding one is a real terminal state,

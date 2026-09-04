@@ -156,7 +156,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use conway_core::agent::{AgentMessage, AgentResult, Budget, ResultStatus, ToolSelector};
-use conway_core::capabilities::{CacheMode, HeadroomPolicy, RequiredCaps, ToolCallSupport};
+use conway_core::capabilities::{
+    CacheMode, HeadroomPolicy, RequiredCaps, ToolCallSupport, ToolResultBoundPolicy,
+};
 use conway_core::content::{ContentBlock, ToolResult, ToolSpec, Usage};
 use conway_core::error::{ConwayError, RoutingError, RuntimeError};
 use conway_core::event::Event;
@@ -308,6 +310,14 @@ pub struct LoopDeps {
     pub bus: Arc<EventBus>,
     pub builder: Arc<ContextBuilder>,
     pub headroom: Arc<HeadroomPolicy>,
+    /// The tool-result admission bound policy (board item
+    /// `01M1AVZPTRSWVE33G4DTJY7Q1B`, move 1) -- mirrors [`Self::headroom`]
+    /// exactly (a runtime-wide, config-resolved policy every turn's
+    /// `ContextInput` resolves a role's effective value from before
+    /// assembly). See `conway_core::capabilities::ToolResultBoundPolicy`'s
+    /// own doc for why this is NOT built from `RoutingConfig` the way
+    /// `HeadroomPolicy` is.
+    pub tool_result_bound: Arc<ToolResultBoundPolicy>,
     /// The agent tree this agent belongs to. Carried follow-up
     /// (/): lets `finish` consult the tree's set-once
     /// publication before emitting `Event::AgentFinished`, closing the
@@ -1103,9 +1113,12 @@ impl AgentLoop {
                 turn,
                 &mut segments,
                 &tools,
-                report.dropped,
-                report.curator_failed,
-                report.instruction_fragments,
+                crate::context::builder::CarriedReportFields {
+                    dropped: report.dropped,
+                    curator_failed: report.curator_failed,
+                    instruction_fragments: report.instruction_fragments,
+                    not_admitted: report.not_admitted,
+                },
             );
         }
     }
@@ -1363,6 +1376,7 @@ impl AgentLoop {
                 path,
                 cache_ttl: self.spec.cache_ttl,
                 curator_failed,
+                tool_result_bound_tokens: self.deps.tool_result_bound.resolve(&self.spec.role),
             };
             let (mut segments, mut report) = try_rt!(state, self.deps.builder.build(&input));
 
@@ -1418,9 +1432,12 @@ impl AgentLoop {
                     state.turn,
                     &mut segments,
                     &announced_tools,
-                    report.dropped,
-                    report.curator_failed,
-                    report.instruction_fragments,
+                    crate::context::builder::CarriedReportFields {
+                        dropped: report.dropped,
+                        curator_failed: report.curator_failed,
+                        instruction_fragments: report.instruction_fragments,
+                        not_admitted: report.not_admitted,
+                    },
                 );
             }
 
@@ -1515,9 +1532,12 @@ impl AgentLoop {
                         state.turn,
                         &mut segments,
                         &announced_tools,
-                        report.dropped,
-                        report.curator_failed,
-                        report.instruction_fragments,
+                        crate::context::builder::CarriedReportFields {
+                            dropped: report.dropped,
+                            curator_failed: report.curator_failed,
+                            instruction_fragments: report.instruction_fragments,
+                            not_admitted: report.not_admitted,
+                        },
                     );
                 }
             }

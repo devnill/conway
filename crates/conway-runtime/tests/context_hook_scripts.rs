@@ -352,6 +352,7 @@ fn build_loop(
         bus: bus.clone(),
         builder: Arc::new(ContextBuilder::new()),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
         tree,
         context_hook: std::sync::RwLock::new(
             context_hook.map(|inner| Arc::new(GuardedContextHook::new(inner))),

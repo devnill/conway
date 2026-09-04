@@ -273,6 +273,7 @@ fn build_loop(
         bus: bus.clone(),
         builder: Arc::new(ContextBuilder::new()),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
         tree: tree.clone(),
         context_hook: std::sync::RwLock::new(None),
         resolver,
@@ -701,6 +702,7 @@ fn runtime_with_plugins(
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),

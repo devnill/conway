@@ -294,6 +294,7 @@ fn arb_context_report_record() -> impl Strategy<Value = LogRecord> {
                     dropped,
                     curator_failed: None,
                     instruction_fragments: vec![],
+                    not_admitted: Vec::new(),
                 },
             },
         )

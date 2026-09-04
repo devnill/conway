@@ -2941,6 +2941,34 @@ fn render_context_report(report: &ContextReport, state: &mut AppState) {
             ),
         );
     }
+    // Same "the report is the one place this omission is answerable"
+    // discipline `dropped` immediately above already establishes -- a
+    // not-admitted tool result's segment still appears in the `for entry in
+    // &report.segments` loop above (as an ordinary `tool result {tool}
+    // ({call_id})` line, since its `Provenance::ToolResult` is unchanged),
+    // but nothing in that line says its CONTENT is a substitution rather
+    // than the real result. This block is what makes that distinction
+    // visible in `/context` specifically (board item
+    // `01M1AVZPTRSWVE33G4DTJY7Q1B`, move 1) -- the note itself is also
+    // visible in the ordinary transcript, since it IS the segment's
+    // rendered content.
+    if !report.not_admitted.is_empty() {
+        for entry in &report.not_admitted {
+            notice(
+                state,
+                format!(
+                    "tool result {} ({}) not admitted: {} bytes (~{} tokens) exceeded the \
+                     {}-token bound; the full result stays in this session's log, not in this \
+                     request",
+                    entry.tool,
+                    entry.call_id,
+                    entry.original_bytes,
+                    entry.tokens_est,
+                    entry.bound_tokens,
+                ),
+            );
+        }
+    }
 }
 
 fn provenance_label(p: &Provenance) -> String {
@@ -6731,6 +6759,7 @@ mod tests {
             dropped: Vec::new(),
             curator_failed: None,
             instruction_fragments: Vec::new(),
+            not_admitted: Vec::new(),
         });
 
         execute(
@@ -6813,6 +6842,7 @@ mod tests {
                 withheld_parts: Vec::new(),
                 skipped_by_scope: false,
             }],
+            not_admitted: Vec::new(),
         });
 
         execute(
@@ -6870,6 +6900,7 @@ mod tests {
                 withheld_parts: vec![0],
                 skipped_by_scope: false,
             }],
+            not_admitted: Vec::new(),
         });
 
         execute(
@@ -6910,6 +6941,7 @@ mod tests {
             dropped: Vec::new(),
             curator_failed: None,
             instruction_fragments: Vec::new(),
+            not_admitted: Vec::new(),
         });
 
         execute(
@@ -7006,6 +7038,7 @@ mod tests {
             dropped: Vec::new(),
             curator_failed: None,
             instruction_fragments: Vec::new(),
+            not_admitted: Vec::new(),
         }
     }
 

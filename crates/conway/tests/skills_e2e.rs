@@ -129,6 +129,7 @@ fn build_runtime(
         skills: skill_defs,
         event_bus: EventBus::new(1024),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
@@ -274,6 +275,7 @@ fn skill_body_is_carried_verbatim_into_assembled_segment() {
         .unwrap(),
         cache_ttl: CacheTtl::FiveMinutes,
         curator_failed: None,
+        tool_result_bound_tokens: 0,
     };
     let (segments, _report) = ContextBuilder::new()
         .build(&input)

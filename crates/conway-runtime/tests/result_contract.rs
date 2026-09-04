@@ -265,6 +265,7 @@ fn build_loop_with_contract(
         bus: bus.clone(),
         builder: Arc::new(ContextBuilder::new()),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
         tree: tree.clone(),
         context_hook: std::sync::RwLock::new(None),
         resolver,
@@ -905,6 +906,7 @@ async fn a_spawned_childs_result_contract_is_enforced_through_subagent_host() {
         skills: Default::default(),
         event_bus: EventBus::new(1024),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
@@ -1225,6 +1227,7 @@ async fn keep_alive_with_a_result_contract_is_refused_by_subagent_host() {
         skills: Default::default(),
         event_bus: EventBus::new(1024),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
