@@ -3773,8 +3773,7 @@ fn resolve_backend_factory<'a>(
 /// and `extra` cloned verbatim from this same `entry`'s own
 /// [`BackendEntry::extra`], never
 /// from anywhere else: this is the ONLY place that map is read out of the
-/// loaded config and handed onward, closing the gap where it was previously
-/// captured at load time and then discarded before any factory saw it.
+/// loaded config and handed onward.
 fn build_backend_context(
     id: &str,
     entry: &BackendEntry,
@@ -3896,7 +3895,7 @@ fn build_default_store(_cwd: &Path, _root: &Path) -> Result<Arc<dyn SessionStore
 /// real central default rather than only a project-local fixture). The
 /// original formula -- `sessions_root.parent().join("paths")` -- silently
 /// assumed `sessions_root`'s parent is ALREADY project-exclusive, true of
-/// the old fixed default (`<cwd>/.conway/sessions`, parent `<cwd>/.conway`)
+/// the fixed default (`<cwd>/.conway/sessions`, parent `<cwd>/.conway`)
 /// and of an operator's own explicit `session.root`, but false of the new
 /// central, project-keyed default: `~/.conway/sessions/<project-key>/`'s
 /// parent is `~/.conway/sessions/`, the ONE directory shared by every
