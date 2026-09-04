@@ -21,8 +21,7 @@
 //! `start_root` and `resume_root` resolve the resolved `AgentDef.skills`
 //! name list against `Runtime.skills` (`RuntimeDeps.skills`, sourced from
 //! `crate::skills::load_skill_defs` on the facade side) via
-//! [`resolve_skills`] below, replacing what used to be an unconditional
-//! `skills: Vec::new()` at both call sites. A name the registry does not
+//! [`resolve_skills`] below. A name the registry does not
 //! contain is `RuntimeError::InvalidSpec`, via the same `subagent::
 //! invalid_spec` helper this file's own root/cwd containment checks already
 //! use -- never a silent drop.
@@ -42,8 +41,8 @@ use super::*;
 /// `SkillFragment` list `AgentSpec.skills` carries into context assembly
 /// (`ContextBuilder::build`'s `[1] SkillFragments*` step, which turns each
 /// into a `Provenance::Skill { name }` segment). `agent_def: None` (no
-/// resolved `AgentDef`, e.g. a root started without one) yields no skills,
-/// exactly as before this item -- there is no other selection mechanism.
+/// resolved `AgentDef`, e.g. a root started without one) yields no skills --
+/// there is no other selection mechanism.
 ///
 /// An unknown name is a spawn-time error, not a silent drop: the operator
 /// wrote `skills: [name]` in that def's frontmatter expecting it to resolve
@@ -91,25 +90,20 @@ pub(crate) fn resolve_skills(
 /// already resolved to `(plugin_id, name, text, tool_ids)` at
 /// `ConwayBuilder::build` time. Unlike [`resolve_skills`] there is no NAME
 /// list to resolve against: a plugin's instruction fragments have no
-/// per-agent-def selection mechanism (that is the composing tool's future
-/// territory, not this item's -- see the board item's own "explicitly out
-/// of scope" section), so every agent that calls this gets every installed
-/// plugin's fragments unconditionally, exactly as it gets every installed
-/// plugin's TOOLS unconditionally today. This function exists (rather than
-/// inlining the clone at each call site) so every call site reads the same
-/// "yes, unconditional, on purpose" comment once, and so a future per-agent
-/// selection mechanism has one function to change instead of several.
+/// per-agent-def selection mechanism (that is a composing tool's future
+/// territory -- see board item `01M0K5MD59YZRSHE31JKZKFRMY`'s own
+/// "explicitly out of scope" section), so every agent that calls this gets
+/// every installed plugin's fragments unconditionally, exactly as it gets
+/// every installed plugin's TOOLS unconditionally today. This function
+/// exists (rather than inlining the clone at each call site) so every call
+/// site reads the same "yes, unconditional, on purpose" comment once, and
+/// so a future per-agent selection mechanism has one function to change
+/// instead of several.
 ///
 /// **RULING (board item `01M0VSKA76NSEHDSH25XJGJ2J5`): reached by fork and
 /// spawn too, not root only.** `pub(crate)` so `subagent.rs`'s
 /// `SubagentHost::start` can call this SAME function for a fork/spawn
-/// child, exactly as `start_root`/`resume_root` do below. Before this
-/// item, `SubagentHost::start` passed `AgentSpec.instructions: Vec::new()`
-/// unconditionally, and this function was never called for a child at all
-/// -- disclosed (`docs/plugins/hooks.md` point 17, `docs/plugins/idiom.md`,
-/// this crate's own doc, `conway-plugin-idiom`'s shipped fragment text) but
-/// never *decided*: nobody had argued why a child should NOT get what a
-/// root gets automatically.
+/// child, exactly as `start_root`/`resume_root` do below.
 ///
 /// **The argument, decided in favor of reaching:** the two-primitive rule
 /// (fork = whole parent TRANSCRIPT + directive, spawn = empty transcript
@@ -134,16 +128,16 @@ pub(crate) fn resolve_skills(
 /// this codebase; it means clean slate of the TRANSCRIPT specifically.
 /// Giving a spawned child the same instruction fragments a root gets is
 /// therefore not a third, blurred, "partially inherited" primitive: fork
-/// and spawn remain byte-identical in what they do to the log (unchanged by
-/// this item), and this function is now called identically for both modes
-/// -- one rule, not a per-mode branch. It is unifying a channel that was
+/// and spawn remain byte-identical in what they do to the log, and this
+/// function is called identically for both modes -- one rule, not a
+/// per-mode branch. It is unifying a channel that was
 /// the ONE configuration field hardcoded to empty while every sibling
 /// channel already resolved per-agent, not adding a new kind of
 /// inheritance. Economy (GP-01) is not abandoned either: the `tool_ids`
 /// gate already scales what a child receives down to its own tool surface,
 /// so a narrowly-scoped agent def already sees fewer fragments than root
 /// does, with no new mechanism -- see `context/builder.rs`'s reachability
-/// check, which this item leaves untouched and which composes for a child
+/// check, which composes for a child
 /// exactly as it does for root, by construction (it keys on `ContextInput.
 /// tools`, never on how the agent was created).
 ///
@@ -156,13 +150,11 @@ pub(crate) fn resolve_skills(
 /// `context/builder.rs`'s `AgentKind`) but no per-agent-DEF selector beyond
 /// `InstructionFragment::agent_def`'s exact-name match against `[0]`'s own
 /// agent def -- every fragment still reaches every eligible agent by
-/// default (`FragmentScope::All`), filtered by `tool_ids` reachability
-/// exactly as before this item; a skill is name-scoped through
+/// default (`FragmentScope::All`), filtered by `tool_ids` reachability;
+/// a skill is name-scoped through
 /// `AgentDef.skills`, so a child's own skills are whatever ITS OWN resolved
 /// `agent_def` names -- already exactly what `resolve_skills` computes,
-/// given that def. Both were zeroed by the same `Vec::new()` line in
-/// `subagent.rs`; both are now resolved through their own pre-existing
-/// function, called with the child's own already-resolved `agent_def`.
+/// given that def.
 pub(crate) fn resolve_instructions(
     instructions: &[crate::context::PluginInstruction],
 ) -> Vec<crate::context::PluginInstruction> {
@@ -186,17 +178,13 @@ pub struct RootSpec {
     pub cwd: PathBuf,
     /// This root agent's own
     /// confinement root -- the S3/S5 primitive (`SubagentSpec::root`,
-    /// `AgentRoot`, `PermissionBroker::check_root`), finally reachable for
-    /// the agent an operator actually talks to. Before this field existed,
-    /// `start_root` always passed `SessionMeta.root: None` and
-    /// `AgentLoop.root: None`, so `AgentRoot::reconstruct` always produced
-    /// `Unconfined` for a root agent and `check_root` returned `Proceed`
-    /// without ever inspecting `path_args` -- the root check was real, but
-    /// entirely unreachable from the top of the tree.
+    /// `AgentRoot`, `PermissionBroker::check_root`), reachable for
+    /// the agent an operator actually talks to, not only a subagent.
     ///
-    /// `None` (every caller before this field existed, and still the
-    /// default for every caller that does not set it) preserves that exact
-    /// behavior: unconfined, byte-for-byte. `Some(path)` is resolved exactly
+    /// `None` (the default for every caller that does not set it) means
+    /// unconfined: `AgentRoot::reconstruct` produces `Unconfined` and
+    /// `check_root` returns `Proceed` without inspecting `path_args`.
+    /// `Some(path)` is resolved exactly
     /// like a spawned child's `SubagentSpec::root` (`subagent.rs`'s
     /// `SubagentHost::start`): relative paths resolve against `cwd` above
     /// (a root agent has no parent cwd to resolve against), the result must
@@ -214,9 +202,8 @@ pub struct RootSpec {
     /// Replaces the `[0] SystemPrompt` segment's text outright when `Some`,
     /// regardless of whether `agent_def` also resolves to a known def --
     /// `start_root` still resolves `agent_def` for `role`/`tools`/`model`
-    /// exactly as before, only the system-prompt TEXT is swapped. `None`
-    /// (every caller before this field existed) preserves the prior
-    /// behavior exactly: the resolved `agent_def`'s own `system_prompt`, or
+    /// unconditionally; only the system-prompt TEXT is swapped. `None`
+    /// (the default) means: the resolved `agent_def`'s own `system_prompt`, or
     /// no `SystemPrompt` segment at all when there is no `agent_def`.
     /// `conway-cli`'s `--system-prompt`/`--append-system-prompt` are this
     /// field's one caller today (`conway::Conway::new_session`, from
@@ -241,12 +228,11 @@ pub struct RootSpec {
     /// own as the tree grows, with a failure mode -- unchosen context
     /// silently accumulating -- that never errors and is easy to miss until
     /// context is already polluted). `SubagentSpec` has no `labels` field
-    /// today; a labelled child is a separate, deliberate feature this item
-    /// does not add.
+    /// today; a labelled child would be a separate, deliberate feature, not
+    /// something this field adds implicitly.
     ///
-    /// Empty (the default for every caller before this field existed)
-    /// preserves prior behavior exactly: `SessionMeta.labels` stays empty
-    /// and `SessionFilter::label` never matches this session.
+    /// Empty (the default): `SessionMeta.labels` stays empty and
+    /// `SessionFilter::label` never matches this session.
     pub labels: Vec<String>,
 }
 
@@ -271,39 +257,21 @@ pub struct ResumeSpec {
     /// gap-closing rulings worth restating here since they are specific to
     /// resume:
     ///
-    /// **`result_contract` closes a real gap (board item
-    /// `01M03FQDF33AZ8G258516EDWQD`):** before this knob reached
-    /// `ResumeSpec`, `resume_root` always passed `AgentSpec::
-    /// result_contract: None`, unconditionally -- not because resuming a
-    /// session is incoherent with a contract (it is not: the SAME
-    /// `AgentLoop` enforcement this knob now reaches for a resumed agent is
+    /// **`result_contract` (board item `01M03FQDF33AZ8G258516EDWQD`):** the
+    /// SAME `AgentLoop` enforcement this knob reaches for a resumed agent is
     /// already exercised for a freshly `start_root`ed one via
     /// `RootSpec::knobs.result_contract`, and for a live fork/spawn child
-    /// via `SubagentSpec::knobs.result_contract`), but because `ResumeSpec`
-    /// itself had no field to carry one through. That made
-    /// `conway::Conway::fork_from` -- the ONE caller of `resume_root` that
-    /// receives a fresh, per-call spec (`ForkSpec`) with its own
-    /// `result_contract` knob already on it -- silently drop a contract an
-    /// embedder set: `ForkSpec`'s `result_contract` round-tripped through
-    /// `From<ForkSpec> for SubagentSpec` (honored on the live
-    /// `SessionHandle::fork` path) but was never even read by
-    /// `crate::fork_child::fork_child` (`conway`'s own module), which built
-    /// a `ResumeSpec` with no way to carry it. `None` (`conway::Conway::
-    /// resume`'s own caller, which has no per-call spec at all -- `resume`
-    /// takes only a `SessionId` -- and so always passes `None` here,
-    /// preserving that binding's existing behavior exactly) is the only
+    /// via `SubagentSpec::knobs.result_contract` -- resuming a session is
+    /// not incoherent with a contract. `None` (`conway::Conway::resume`'s
+    /// own caller, which has no per-call spec at all -- `resume` takes only
+    /// a `SessionId` -- and so always passes `None` here) is the only
     /// value that can reach this knob for a genuine resume; `fork_from`'s
     /// `ForkChildRequest::result_contract` is the one caller that can
     /// supply `Some`.
     ///
-    /// **`keep_alive` closes a real gap (board item
-    /// `01M03KZXR1KF77YRAW4W4GE6KK`):** before this knob reached
-    /// `ResumeSpec`, `resume_root` hardcoded `AgentSpec::keep_alive: false`,
-    /// so `conway::Conway::fork_from` silently dropped a `ForkSpec::
-    /// keep_alive(true)` the same way. A caller that set that got a
-    /// one-shot child that terminated on its first completed turn, with no
-    /// error -- a silent behavioural difference between two ways of doing
-    /// the same thing.
+    /// **`keep_alive` (board item `01M03KZXR1KF77YRAW4W4GE6KK`):** the same
+    /// shape as `result_contract` above -- see the re-arming semantics
+    /// immediately below for why it composes safely with a resumed agent.
     ///
     /// **Re-arming semantics (the design decision the spec demanded before
     /// wiring):** `resume_root` always sets `ResumeGate::awaiting_prompt:
@@ -557,7 +525,7 @@ impl Runtime {
         // said anything. `append`'s `assign_seq` overwrites `seq` with the
         // store's own next value regardless.
         //
-        // The matching live `Event::UserTurn` (this item) is emitted right
+        // The matching live `Event::UserTurn` is emitted right
         // after the append succeeds -- ordering-safe unconditionally: a root
         // is attached below with `kind: None` (see that call's own comment),
         // so `AgentTree::attach` never emits `Event::AgentSpawned` for it at
@@ -608,14 +576,12 @@ impl Runtime {
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
             // `RootSpec::knobs.result_contract` -- see `AgentKnobs::
-            // result_contract`'s own doc for the mechanism this finally
-            // makes reachable for a root agent (previously always `None`
-            // here, unconditionally).
+            // result_contract`'s own doc for the mechanism this makes
+            // reachable for a root agent.
             result_contract: spec.knobs.result_contract,
             keep_alive: spec.knobs.keep_alive,
             // A root agent has no `SubagentSpec` to source a consumer tag
-            // from either -- `RootSpec` gains
-            // no counterpart field; out of this item's scope.
+            // from either -- `RootSpec` has no counterpart field.
             tag: None,
         };
 
@@ -631,7 +597,7 @@ impl Runtime {
             cwd: spec.cwd.clone(),
             // matches `meta.root`
             // above -- the same resolved, canonical root (or `None`,
-            // unconfined, unchanged from before this field existed).
+            // unconfined).
             root: root.clone(),
             // (retirement) the SAME
             // effective config just computed for `meta.plugin_config` above
@@ -790,7 +756,7 @@ impl Runtime {
     /// [`Runtime::context_report_at`] (which already resolves an agent id
     /// via a store scan, not the live tree); only *live* re-registration —
     /// i.e., resuming a child as a promptable agent in its own right — is
-    /// out of scope for this item. A caller that needs that can call
+    /// simply not what this method does. A caller that needs that can call
     /// `resume_root` again with that child's own `SessionId`.
     pub async fn resume_root(&self, spec: ResumeSpec) -> Result<AgentId, RuntimeError> {
         let meta = self.store.meta(&spec.session).await?;
@@ -1037,24 +1003,18 @@ impl Runtime {
             report_slot: Some(last_report.clone()),
             // `ResumeSpec::knobs.result_contract` -- see `AgentKnobs::
             // result_contract`'s own doc (board item
-            // `01M03FQDF33AZ8G258516EDWQD`) for the gap this closes:
-            // `conway::Conway::resume` always passes `None` here (it has no
-            // per-call spec to source one from), but
-            // `conway::Conway::fork_from` -- the other `resume_root` caller
-            // -- now threads its own `ForkSpec::result_contract` through
-            // `crate::fork_child::fork_child`'s `ForkChildRequest`, so it no
-            // longer silently drops a contract set on the facade fork path.
+            // `01M03FQDF33AZ8G258516EDWQD`). `conway::Conway::resume` always
+            // passes `None` here (it has no per-call spec to source one
+            // from); `conway::Conway::fork_from` -- the other `resume_root`
+            // caller -- threads its own `ForkSpec::result_contract` through
+            // `crate::fork_child::fork_child`'s `ForkChildRequest`.
             result_contract: spec.knobs.result_contract,
             // `ResumeSpec::knobs.keep_alive` -- see `AgentKnobs::keep_alive`'s
-            // own doc (board item `01M03KZXR1KF77YRAW4W4GE6KK`) for the gap
-            // this closes: `conway::Conway::resume` always passes `false`
-            // here (it has no per-call spec to source the flag from,
-            // preserving the one-shot resume behaviour exactly), but
-            // `conway::Conway::fork_from` -- the other `resume_root` caller
-            // -- now threads its own `ForkSpec::keep_alive` through
-            // `crate::fork_child::fork_child`'s `ForkChildRequest`, so a
-            // `keep_alive(true)` fork_from child no longer silently
-            // terminates on its first completed turn.
+            // own doc (board item `01M03KZXR1KF77YRAW4W4GE6KK`).
+            // `conway::Conway::resume` always passes `false` here (it has no
+            // per-call spec to source the flag from); `conway::Conway::
+            // fork_from` -- the other `resume_root` caller -- threads its
+            // own `ForkSpec::keep_alive` through the same `ForkChildRequest`.
             keep_alive: spec.knobs.keep_alive,
             // A resumed root has no `SubagentSpec` to source a consumer tag
             // from either -- same as
@@ -1081,9 +1041,9 @@ impl Runtime {
             root: meta.root.clone(),
             // (S1.5 resume gap) The re-validated effective value computed
             // just above -- never `self.loop_deps.plugin_config.clone()`
-            // (the global default) unconditionally, which is exactly the
-            // silent revert this item closes. See that computation's own
-            // comment for the full contract.
+            // (the global default) unconditionally, which would be exactly
+            // the silent revert the re-validation above exists to close.
+            // See that computation's own comment for the full contract.
             plugin_config: plugin_config.clone(),
             deps: self.loop_deps.clone(),
             spec: agent_spec,

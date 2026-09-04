@@ -39,12 +39,8 @@ const PRE_TOOL_USE_EVENT: &str = "pre_tool_use";
 /// PROMPT_SUBMITTED`], in the same order [`Conway::
 /// active_deny_capable_hook_rules`] enumerates them -- exposed so a
 /// consumer needing "is this event deny-capable" has exactly one place to
-/// read it from, rather than re-declaring the pair (board item
-/// `01M0XRD8VMWD273W0W51T8ECCM`: `conway_cli::claude_compat_plugins` used
-/// to hardcode `"pre_tool_use"` alone as that classification, silently
-/// missing `prompt_submitted` -- the exact drift this constant exists to
-/// make structurally impossible for every future reader of it, not just
-/// that one).
+/// read it from, rather than re-declaring the pair and risking drift
+/// (board item `01M0XRD8VMWD273W0W51T8ECCM`).
 ///
 /// **What would falsify "this list is exhaustive":** [`Conway::
 /// active_deny_capable_hook_rules`]'s own doc scopes itself to these same
@@ -65,24 +61,15 @@ pub const DENY_CAPABLE_EVENTS: [&str; 2] = [
 /// [`HookRuleView::origin`]'s value for every OPERATOR-AUTHORED row
 /// [`Conway::active_deny_capable_hook_rules`] returns.
 ///
-/// **No longer the only value this field can carry** (board item
-/// `01M129QW0GV90QTQS6B3BY3DAR`): before a plugin could register a hook
-/// directly (`conway_core::ports::Plugin::hooks`), `[hooks].rules[]` really
-/// was the ONLY place a hook rule could come from -- a single array that
-/// replaces WHOLESALE per config layer (`crate::config::merge`'s own module
-/// doc, "arrays and scalars replace wholesale"), never a union of several
-/// files' entries the way a `permissions.json` grant's provenance is -- so
-/// there was exactly one honest label to report. That claim would now be
-/// FALSE for a plugin-contributed rule if this constant were still applied
-/// unconditionally: `active_deny_capable_hook_rules`, below, reads each
-/// row's own `conway_core::hook::HookOrigin` (threaded through
-/// `ConwayBuilder::build`'s `PreToolUseHookSpec`/`HookSpec`) and reports
-/// THIS label only for [`conway_core::hook::HookOrigin::Operator`] rows --
-/// see [`hook_origin_label`] for the `HookOrigin::Plugin` case. Reporting a
-/// specific FILE layer (default/user/project/env/CLI) for an
-/// operator-authored rule remains out of reach for the same reason as
-/// before: nothing downstream of `config::merge::load` still tracks which
-/// layer's `[hooks]` table won once the merge is done.
+/// Not the only value this field can carry: `active_deny_capable_hook_rules`,
+/// below, reads each row's own `conway_core::hook::HookOrigin` (threaded
+/// through `ConwayBuilder::build`'s `PreToolUseHookSpec`/`HookSpec`) and
+/// reports THIS label only for [`conway_core::hook::HookOrigin::Operator`]
+/// rows -- see [`hook_origin_label`] for the `HookOrigin::Plugin` case.
+/// Reporting a specific FILE layer (default/user/project/env/CLI) for an
+/// operator-authored rule remains out of reach: nothing downstream of
+/// `config::merge::load` still tracks which layer's `[hooks]` table won
+/// once the merge is done.
 const HOOK_ORIGIN_LABEL: &str = "settings.json (merged config)";
 
 /// [`HookRuleView::origin`]'s value for a row whose [`conway_core::hook::
@@ -151,13 +138,12 @@ pub struct Conway {
     store: Arc<dyn SessionStore>,
     router_explain: Option<Arc<dyn RoutingExplainer>>,
     warnings: Arc<Vec<ConfigWarning>>,
-    // T3 follow-up: the local model-metadata map `ConwayBuilder::build`
-    // already loads (`[models.metadata_path]`, step 2) to construct the
-    // `CapabilityIndex` -- kept here too so `Self::model_metadata` can hand
-    // the SAME loaded map back out. Before this field existed, every
-    // consumer of that file (the TUI's `App::new`, ~app.rs) re-read and
-    // re-parsed it from disk on its own, a second code path that agreed
-    // with the builder's only by coincidence.
+    // The local model-metadata map `ConwayBuilder::build` already loads
+    // (`[models.metadata_path]`, step 2) to construct the `CapabilityIndex`
+    // -- kept here too so `Self::model_metadata` can hand the SAME loaded
+    // map back out, rather than leaving a consumer to re-read and re-parse
+    // the file from disk on its own, a second code path that could drift
+    // from the builder's.
     model_metadata: Arc<ModelMetadata>,
     /// Set via
     /// `ConwayBuilder::with_root` -- see that method's own doc for the
@@ -198,13 +184,9 @@ pub struct Conway {
 
 impl Conway {
     // `Conway::new` is a crate-internal constructor called from exactly one
-    // site (`ConwayBuilder::build`); its argument list grew to nine when the
-    // facade began carrying a live plugin handle alongside the frozen status
-    // snapshot (board item `01M0Y3A8MYKKE0GMYKZE1K0QTD`, following the same
-    // growth `01M03VKQ738DTGHHK2C4RWXC0E` made for that snapshot itself).
-    // Clippy's default ceiling of seven is a smell worth a note, not a
-    // refactor worth bundling unrelated fields into a throwaway struct that
-    // would only obscure the single call site.
+    // site (`ConwayBuilder::build`). Clippy's default ceiling of seven is a
+    // smell worth a note, not a refactor worth bundling unrelated fields
+    // into a throwaway struct that would only obscure the single call site.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         rt: Arc<Runtime>,
@@ -234,38 +216,17 @@ impl Conway {
     /// (board item `01M03VKQ738DTGHHK2C4RWXC0E`). See the field's own doc for
     /// why this is a snapshot (collected at session-open, before any
     /// `status/1` notifications arrive -- typically empty) rather than a live
-    /// view. [`Self::poll_plugin_status_contributions`] is that live view,
-    /// added by board item `01M0Y3A8MYKKE0GMYKZE1K0QTD` -- see its own doc.
+    /// view. [`Self::poll_plugin_status_contributions`] is that live view --
+    /// see its own doc.
     ///
-    /// **No longer an unrendered accessor** (board item
-    /// `01M0X1B7Z41J57N6YP2JFZ2AZW`; design
-    /// `docs/vision/DESIGN-permission-modes.md` §3d/§6b): `conway-cli`'s TUI
-    /// status line (`view::status::status_line_spans`, the `plugins` field)
-    /// knows how to render a `&[PluginStatusContribution]` -- `key: value`
-    /// per entry, `status: Failed` (and every other non-`Completed` variant)
-    /// visually distinct from `Completed`, bounded rather than silently
-    /// truncated, and NEVER able to displace the permission-mode field's own
-    /// safety signal (`drop_priority` ranks it strictly below `mode`, so
-    /// every contribution is already at its own empty floor before `mode`
-    /// gives up anything). **And no longer unreachable either** (board item
-    /// `01M0XC1GF73Z9GTE7TN65TRW4A`): `crates/conway-cli`'s `App::new`
-    /// copies this accessor's result into `AppState::
-    /// plugin_status_contributions` once, at TUI startup -- the same
-    /// "populate once outside the render path" shape `AppState::
-    /// plugin_commands`/`agent_names` already use.
-    ///
-    /// **This accessor alone still does not give a live view** -- it is still
-    /// exactly the build-time snapshot described above: typically empty at
-    /// real session start, and frozen at whatever it held at that moment for
-    /// the rest of the process's life. A plugin's status changing after
+    /// **This accessor alone does not give a live view** -- it is exactly
+    /// the build-time snapshot described above: typically empty at real
+    /// session start, and frozen at whatever it held at that moment for the
+    /// rest of the process's life. A plugin's status changing after
     /// `ConwayBuilder::build` has run (a guard dying mid-session, a build
-    /// finishing) is invisible to THIS accessor. **It is no longer invisible
-    /// to the TUI as a whole, though**: `App::run`'s own event loop calls
-    /// [`Self::poll_plugin_status_contributions`] on a bounded cadence and
-    /// writes whatever it returns into `AppState::
-    /// plugin_status_contributions` in place of this accessor's one-time
-    /// copy -- see that method's own doc, and `crates/conway-cli/src/tui/
-    /// app/run.rs`'s `PLUGIN_STATUS_POLL_TICK`.
+    /// finishing) is invisible to THIS accessor -- a caller that needs a
+    /// live view must poll [`Self::poll_plugin_status_contributions`] on its
+    /// own cadence instead; see that method's own doc.
     pub fn plugin_status_contributions(&self) -> &[conway_core::ports::PluginStatusContribution] {
         &self.plugin_status_contributions
     }
@@ -313,8 +274,7 @@ impl Conway {
     /// expiry/TTL mechanism: replacing the whole set every poll is a
     /// sufficient staleness fix by construction, not a claim that TTL
     /// enforcement (`crates/conway-plugin-subprocess/src/session.rs`'s own
-    /// disclosed gap; `docs/plugins/hooks.md` point 12) has been built --
-    /// that remains exactly as undone as it was before this method existed.
+    /// disclosed gap; `docs/plugins/hooks.md` point 12) has been built.
     /// A per-key `ttl_ms` sweep is a narrower, independent thing: aging out
     /// one key while a plugin keeps reporting others is not the same
     /// question this method answers (whether the *plugin itself* is still
@@ -641,7 +601,7 @@ impl Conway {
     /// observation hook still runs an arbitrary command with the
     /// operator's own privileges is real, but it is not a permission-rule
     /// visibility gap, and a general hook-inventory surface for that
-    /// concern is not this item's to build.
+    /// concern is a separate, larger piece, not built here.
     ///
     /// A hook installs here regardless of whether its script currently
     /// resolves -- see [`conway_runtime::permission::PermissionBroker::
@@ -1059,11 +1019,8 @@ impl Conway {
     /// The local model-metadata map (`[models.metadata_path]`), loaded ONCE
     /// by `ConwayBuilder::build` and kept here so every consumer reads the
     /// SAME parse of the SAME file instead of each re-reading it from disk
-    /// on its own (T3 follow-up: `conway-cli`'s `App::new` previously
-    /// re-read `[models.metadata_path]` itself, a second code path that
-    /// happened to agree with the builder's only because both implement the
-    /// identical "missing file -> empty map" fallback -- a duplication that
-    /// could silently drift if either side's load logic ever changed alone).
+    /// on its own -- a duplication that could silently drift if either
+    /// side's load logic ever changed alone.
     /// Empty (never an error) when the builder found no metadata file, or
     /// found one that named no models -- mirrors
     /// `config::model_metadata::load`'s own "missing is expected" contract.
@@ -1109,7 +1066,7 @@ impl Conway {
     /// children deliberately do NOT inherit it. `config.limits.
     /// max_parallel_tools` remains a disclosed gap: `RootSpec` still has no
     /// field for it, so it does not reach the created session/agent through
-    /// this method -- out of this item's file scope to add.
+    /// this method.
     pub async fn new_session(&self, spec: SessionSpec) -> Result<SessionHandle> {
         let role = spec
             .role
@@ -1225,16 +1182,13 @@ impl Conway {
     /// When the builder instead received an injected `Router`
     /// (`ConwayBuilder::with_router`) with no `RouterFactory`-supplied
     /// explainer either, there is no `RoutingExplainer` to project through
-    /// at all -- `router_explain` is `None`. This used to fall back to a
-    /// fabricated-empty report (`entries: vec![]`), which `conway routes
-    /// explain` then misread as "unknown role" for a perfectly valid one
-    /// (a silent inversion of what the surface claimed
-    ///).
-    /// It now falls back to `conway_core::routing::MinimalRouter`,
-    /// projected over this `Conway`'s own resolved `RoutingConfig` -- an
-    /// honestly degenerate answer (no capability filtering, no health
-    /// filtering, one entry per configured chain candidate) rather than an
-    /// empty one.
+    /// at all -- `router_explain` is `None`. This falls back to
+    /// `conway_core::routing::MinimalRouter`, projected over this
+    /// `Conway`'s own resolved `RoutingConfig` -- an honestly degenerate
+    /// answer (no capability filtering, no health filtering, one entry per
+    /// configured chain candidate) rather than a fabricated-empty one,
+    /// which `conway routes explain` would otherwise misread as "unknown
+    /// role" for a perfectly valid one.
     pub fn explain_routing(&self, role: &RoleAlias) -> ExplainReport {
         let req = RouteRequest {
             role: role.clone(),
@@ -1262,68 +1216,59 @@ impl Conway {
 
     /// Reattaches to a persisted session, now as a DRIVABLE handle.
     ///
-    /// **Resolved:** this method's previous doc disclosed a real
-    /// gap -- `conway-runtime` exposed only `start_root`, which cannot be
-    /// repurposed for resume (it unconditionally `store.create`s, which
-    /// every committed `SessionStore` rejects for an id that already has a
-    /// persisted session). A later change closed that gap by adding
-    /// `Runtime::resume_root(ResumeSpec)`: it reads the existing
-    /// `SessionMeta` via `store.meta` (no `store.create`), re-registers
-    /// `meta.agent_id` into `Runtime`'s `agents` map and `AgentTree` through
-    /// the same `launch_agent` path `start_root` uses, and gates the
-    /// resumed `AgentLoop`'s first iteration behind a `ResumeGate` so it
-    /// idles until this handle's own first `SessionHandle::prompt` call --
-    /// never racing the (already-completed) persisted transcript. This
-    /// method now calls it directly, which resolves both criteria the
-    /// earlier doc could not satisfy:
-    /// - `prompt()` after resume: `Runtime::prompt` now finds `agent` in
-    ///   `Runtime.agents` (registered by `resume_root` below), so it appends
-    ///   and wakes the gated loop instead of returning `AgentNotFound`.
-    /// - `tree()`: `resume_root` attaches the resumed root to `AgentTree`,
-    ///   so `SessionHandle::tree()` (`self.rt.tree()`, unchanged)
-    ///   now reflects it. **Still disclosed, not silently dropped:**
-    ///   `resume_root`'s own doc is explicit that it re-attaches only the
-    ///   resumed *root* -- past fork/spawn children are not re-attached as
-    ///   live `AgentTree` nodes (their tasks are gone; a live-looking node
-    ///   with nothing to ever finish it would misrepresent their status
-    ///   worse than omitting them). Their history remains fully readable via
-    ///   `transcript`/`context_report_at`, just not via `tree()`.
+    /// `Runtime::resume_root(ResumeSpec)` reads the existing `SessionMeta`
+    /// via `store.meta` (never `store.create`, which every committed
+    /// `SessionStore` rejects for an id that already has a persisted
+    /// session), re-registers `meta.agent_id` into `Runtime`'s `agents` map
+    /// and `AgentTree` through the same `launch_agent` path `start_root`
+    /// uses, and gates the resumed `AgentLoop`'s first iteration behind a
+    /// `ResumeGate` so it idles until this handle's own first
+    /// `SessionHandle::prompt` call -- never racing the (already-completed)
+    /// persisted transcript. `Runtime::prompt` finds `agent` in
+    /// `Runtime.agents` (registered by `resume_root` below), so it appends
+    /// and wakes the gated loop; `SessionHandle::tree()` (`self.rt.tree()`)
+    /// reflects the resumed root, since `resume_root` attaches it to
+    /// `AgentTree`.
     ///
-    /// Every property the old, store-only implementation already delivered
-    /// is preserved: `id()`/`root()` still read from the persisted
-    /// `SessionMeta` (`resume_root` returns exactly `meta.agent_id`, never a
-    /// freshly minted id); `transcript(root)` still reads purely through
-    /// `SessionStore`, unaffected by live registration; a truncated trailing
-    /// line is still repaired transparently by `JsonlSessionStore` on first
-    /// file access (the same `store.meta` call `resume_root` makes
-    /// internally), so `resume` still succeeds on such a session without any
-    /// special-casing here. The warning-forwarding gap this method's
-    /// previous doc disclosed (`SessionStore`'s ports carry no "a repair
-    /// just happened" signal to surface as `Event::Error{fatal: false}`)
-    /// still stands, for the same reason -- `conway-session`'s repair path
-    /// only `tracing::warn!`s, with nothing threaded back through any
-    /// `Result`.
+    /// **Disclosed limit:** `resume_root`'s own doc is explicit that it
+    /// re-attaches only the resumed *root* -- past fork/spawn children are
+    /// not re-attached as live `AgentTree` nodes (their tasks are gone; a
+    /// live-looking node with nothing to ever finish it would misrepresent
+    /// their status worse than omitting them). Their history remains fully
+    /// readable via `transcript`/`context_report_at`, just not via
+    /// `tree()`.
+    ///
+    /// `id()`/`root()` read from the persisted `SessionMeta` (`resume_root`
+    /// returns exactly `meta.agent_id`, never a freshly minted id);
+    /// `transcript(root)` reads purely through `SessionStore`, unaffected by
+    /// live registration; a truncated trailing line is repaired
+    /// transparently by `JsonlSessionStore` on first file access (the same
+    /// `store.meta` call `resume_root` makes internally), so `resume`
+    /// succeeds on such a session without any special-casing here.
+    /// **Disclosed gap:** `SessionStore`'s ports carry no "a repair just
+    /// happened" signal to surface as `Event::Error{fatal: false}` --
+    /// `conway-session`'s repair path only `tracing::warn!`s, with nothing
+    /// threaded back through any `Result`.
     ///
     /// `agent_def`/`role`/`cwd` are all left `None` in the `ResumeSpec`
     /// below, so `resume_root` falls back to the persisted `SessionMeta`'s
     /// own values -- this method has no override surface for them (matching
     /// `resume`'s existing binding signature, which takes only `sid`); a
-    /// caller that needs an override can add one to `ResumeSpec` through a
-    /// future item without breaking this one's contract.
+    /// caller that needs an override can add one to `ResumeSpec` without
+    /// breaking this method's contract.
     ///
-    /// **Error-shape preservation (disclosed):** `resume_root`'s own error
-    /// for an unknown/missing session is `RuntimeError::Store` (its internal
+    /// **Error-shape preservation.** `resume_root`'s own error for an
+    /// unknown/missing session is `RuntimeError::Store` (its internal
     /// `store.meta` lookup, converted via that type's own `#[from]
     /// StoreError`) -- a plain `?` here would surface it as
     /// `FacadeError::Runtime(RuntimeError::Store(_))`, one layer deeper than
-    /// this method returned earlier (`FacadeError::Store(_)` directly, from
-    /// this method's own former `store.meta` call). `resume`'s existing test
-    /// suite asserts the flat shape, and nothing about resuming a session
-    /// makes "the store doesn't have it" a *runtime* concern rather than a
-    /// *store* one -- so this unwraps `RuntimeError::Store` back to
-    /// `FacadeError::Store` explicitly, keeping every other `RuntimeError`
-    /// variant (e.g. a future `resume_root` failure mode) under
-    /// `FacadeError::Runtime` unchanged.
+    /// `resume`'s existing test suite asserts (`FacadeError::Store(_)`
+    /// directly). Nothing about resuming a session makes "the store doesn't
+    /// have it" a *runtime* concern rather than a *store* one -- so this
+    /// unwraps `RuntimeError::Store` back to `FacadeError::Store`
+    /// explicitly, keeping every other `RuntimeError` variant (e.g. a
+    /// future `resume_root` failure mode) under `FacadeError::Runtime`
+    /// unchanged.
     pub async fn resume(&self, sid: SessionId) -> Result<SessionHandle> {
         self.resume_with(sid, None, None).await
     }
@@ -1458,9 +1403,9 @@ impl Conway {
     /// enforces no such bound (unlike `Self::fork_from`'s explicit `at >
     /// head` check), so masking a seq that does not exist yet succeeds
     /// today and simply has no visible effect until a record with that seq
-    /// is appended. Tightening this is a disclosed follow-up, not a defect
-    /// this item's own acceptance criteria require closing (`CommandOutcome::
-    /// MaskRecord::target_seq`'s own doc names the identical limit).
+    /// is appended. Tightening this is a disclosed follow-up
+    /// (`CommandOutcome::MaskRecord::target_seq`'s own doc names the
+    /// identical limit).
     pub async fn mask_record(
         &self,
         sid: SessionId,
@@ -1488,51 +1433,41 @@ impl Conway {
     ///
     /// Distinct from [`SessionHandle::fork`](crate::SessionHandle::fork),
     /// which forks a *live* agent at its current head through
-    /// `SubagentHost` -- this item's binding notes name that contrast as
-    /// "the most likely point of confusion in the public API": both
-    /// ultimately call `SessionStore::fork`, but only `SessionHandle::fork`
-    /// goes through the runtime's subagent machinery (and so also spawns a
-    /// live agent task); this method only creates the child's session file.
+    /// `SubagentHost` -- the most likely point of confusion in the public
+    /// API: both ultimately call `SessionStore::fork`, but only
+    /// `SessionHandle::fork` goes through the runtime's subagent machinery
+    /// (and so also spawns a live agent task); this method only creates the
+    /// child's session file.
     ///
-    /// Reuses [`ForkSpec`] rather than a parallel type, per the
-    /// binding notes. `directive` still has no session-level counterpart --
-    /// `conway_core::log::SessionMeta` carries none, and there is no live
-    /// child turn here to attach a `LogRecord::ForkDirective` to (the child
-    /// session is *created* with zero records, store-side, exactly as
-    /// before) -- so only `agent_def` and `role` are consulted for the
-    /// persisted `SessionMeta`, as overrides onto the parent's own values.
+    /// Reuses [`ForkSpec`] rather than a parallel type. `directive` still
+    /// has no session-level counterpart -- `conway_core::log::SessionMeta`
+    /// carries none, and there is no live child turn here to attach a
+    /// `LogRecord::ForkDirective` to (the child session is *created* with
+    /// zero records, store-side) -- so only `agent_def` and `role` are
+    /// consulted for the persisted `SessionMeta`, as overrides onto the
+    /// parent's own values.
     ///
-    /// **`result_contract` IS honored (board item
-    /// `01M03FQDF33AZ8G258516EDWQD`, closing a real gap disclosed by an
-    /// earlier item):** unlike `directive`, a result contract is not
-    /// session-metadata at all -- it lives on the live agent's own
+    /// **`result_contract` IS honored** (board item
+    /// `01M03FQDF33AZ8G258516EDWQD`): unlike `directive`, a result contract
+    /// is not session-metadata at all -- it lives on the live agent's own
     /// `AgentSpec` and is enforced at natural-completion time
     /// (`conway_runtime::agent_loop::AgentLoop::run_inner`), the exact
     /// mechanism [`SessionHandle::fork`](crate::SessionHandle::fork)'s live
-    /// path already exercises via `SubagentSpec::result_contract`. Before
-    /// this item, this method silently dropped `spec.result_contract`
-    /// instead: `crate::fork_child::fork_child` built a `conway_runtime::
-    /// runtime::ResumeSpec` with no field to carry it, so a caller that set
-    /// [`ForkSpec::result_contract`] and called `fork_from` got a child with
-    /// no contract, with nothing failing. `ResumeSpec::result_contract` (its
-    /// own doc has the gap's full history) now closes that: `spec.
-    /// result_contract` is passed straight through to `fork_child`'s
-    /// `ForkChildRequest`, which threads it into the `ResumeSpec` this
-    /// method's live registration below already builds.
+    /// path already exercises via `SubagentSpec::result_contract`.
+    /// `ResumeSpec::result_contract` carries it: `spec.result_contract` is
+    /// passed straight through to `fork_child`'s `ForkChildRequest`, which
+    /// threads it into the `ResumeSpec` this method's live registration
+    /// below already builds.
     ///
-    /// **`keep_alive` IS honored too (board item
-    /// `01M03KZXR1KF77YRAW4W4GE6KK`, the second sibling of the same bug):**
-    /// `ForkSpec::keep_alive(true)` threads through `ForkChildRequest` into
-    /// `ResumeSpec::keep_alive` and onward into the live
-    /// `AgentSpec::keep_alive`, so a forked child idles for its next prompt
-    /// after each completed turn instead of terminating -- the same
-    /// mechanism [`SessionHandle::fork`](crate::SessionHandle::fork)'s live
-    /// path already exercises via `SubagentSpec::keep_alive`. Before this
-    /// item, the flag was silently dropped (`resume_root` hardcoded
-    /// `false`), so a caller that set `keep_alive(true)` got a one-shot
-    /// child with no error.
+    /// **`keep_alive` IS honored too** (board item
+    /// `01M03KZXR1KF77YRAW4W4GE6KK`): `ForkSpec::keep_alive(true)` threads
+    /// through `ForkChildRequest` into `ResumeSpec::keep_alive` and onward
+    /// into the live `AgentSpec::keep_alive`, so a forked child idles for
+    /// its next prompt after each completed turn instead of terminating --
+    /// the same mechanism [`SessionHandle::fork`](crate::SessionHandle::fork)'s
+    /// live path already exercises via `SubagentSpec::keep_alive`.
     ///
-    /// **`plugin_config` IS honored too (same item, the third sibling):**
+    /// **`plugin_config` IS honored too** (same pair of board items):
     /// `ForkSpec::plugin_config` threads through `ForkChildRequest` into
     /// `fork_child`'s re-validation --
     /// [`conway_runtime::runtime::Runtime::narrow_plugin_config_for_fork`]
@@ -1540,10 +1475,8 @@ impl Conway {
     /// against the currently installed plugins' rules, refusing any widening,
     /// and the re-validated value is PERSISTED onto the child's
     /// `SessionMeta::plugin_config` (so a subsequent `resume` re-derives the
-    /// same narrowed value). Before this item, the request was silently
-    /// dropped (`fork_child` always inherited `parent_meta.plugin_config`),
-    /// so a child forked with a narrowed `conway.fs` root silently got the
-    /// parent's -- a confinement boundary quietly failing to narrow.
+    /// same narrowed value) -- a confinement boundary that must narrow, not
+    /// silently inherit the parent's.
     ///
     /// **Live registration:** after the store-side fork below, this
     /// method now also calls `Runtime::resume_root` over the freshly created
@@ -1562,52 +1495,35 @@ impl Conway {
     /// values (set from `spec`/`parent_meta` just above), so there is no
     /// need to re-derive them a second time.
     ///
-    /// **Inherited prefix, resolved (gap closed):** this criterion
-    /// also asks for "the child's context contains the inherited prefix" --
-    /// previously disclosed here as NOT satisfied, since `Runtime::
-    /// resume_root` always constructed its `AgentLoop` with
-    /// `inherited: None`, correct only for a genuine root (whose own session
-    /// records ARE its complete history), not for a fork child (whose own
-    /// records are, by the zero-copy contract this method preserves, empty
-    /// or a small tail). `resume_root` (`conway-runtime`) now detects a
-    /// fork-child session via its persisted `SessionMeta::origin` and
-    /// resolves the parent's prefix at `origin.at_seq` through
-    /// `conway_session::TranscriptResolver::resolve_prefix` (made `pub` for
-    /// this) -- the exact primitive `subagent.rs`'s live-fork path already
-    /// bottoms out on, so there is one shared implementation of the D-11
-    /// ancestry walk, not two. This works for `fork_from`'s arbitrary,
-    /// possibly-earlier `at` (unlike substituting `subagent.rs`'s own
-    /// current-head-only fork path, which was ruled out for exactly that
-    /// reason) because it resolves directly against `(parent, at_seq)`
-    /// rather than reusing `subagent.rs`'s "resolve the freshly-forked
-    /// child" shortcut. No change was needed in this method itself: it
-    /// already called `resume_root`, which now does the right thing.
+    /// **Inherited prefix:** the child's context contains the inherited
+    /// prefix -- `resume_root` (`conway-runtime`) detects a fork-child
+    /// session via its persisted `SessionMeta::origin` and resolves the
+    /// parent's prefix at `origin.at_seq` through `conway_session::
+    /// TranscriptResolver::resolve_prefix`; see that method's own doc for
+    /// the full mechanism and why it works for `fork_from`'s arbitrary,
+    /// possibly-earlier `at`.
     ///
-    /// **Sibling-tool note (disclosed):** `resume_root`'s own doc covers the
-    /// case a resumed fork child has since accumulated its own turns (the
+    /// **Sibling-tool note:** `resume_root`'s own doc covers the case a
+    /// resumed fork child has since accumulated its own turns (the
     /// resolved prefix excludes them, so `AgentLoop`'s separate own-records
     /// read is never double-counted) -- see that method's doc for the full
     /// mechanism.
     ///
-    /// **Defense-in-depth bounds check (disclosed):** `SessionStore::fork`'s
-    /// own committed implementation (`conway-session`'s `fork_impl`) already
+    /// **Defense-in-depth bounds check:** `SessionStore::fork`'s own
+    /// committed implementation (`conway-session`'s `fork_impl`) already
     /// rejects `at > head` with `StoreError::SeqOutOfRange{ requested, head
     /// }` -- but `conway_testkit::FakeStore` (a `SessionStore` impl this
-    /// crate depends on but does not own; out of this item's file scope to
-    /// change) does not enforce that bound. Rather than let this method's
-    /// behavior depend on which `SessionStore` backs a given `Conway`, the
-    /// bound is checked here too, against the same error shape, so the
-    /// criterion holds under every `SessionStore` implementation.
+    /// crate depends on but does not own) does not enforce that bound.
+    /// Rather than let this method's behavior depend on which
+    /// `SessionStore` backs a given `Conway`, the bound is checked here
+    /// too, against the same error shape, so the criterion holds under
+    /// every `SessionStore` implementation.
     ///
-    /// **Shared helper (disclosed refactor):** the `store.fork` ->
-    /// `rt.resume_root` sequence below used to live inline here. It now
-    /// delegates to `crate::fork_child::fork_child` -- which only this
-    /// method calls, since B2 moved the `/ask` fork-ask flow
-    /// (`SessionHandle::ask`) onto the runtime's own attach path
-    /// (`SubagentHost::start`) so ephemeral `/ask` children attach as proper
-    /// fork children of the asker. A session created through this method is
-    /// never catalog-hidden: `fork_child` fixes `SessionMeta::ephemeral` to
-    /// `false`. See that module's doc for the full history.
+    /// **Shared helper:** the `store.fork` -> `rt.resume_root` sequence
+    /// below delegates to `crate::fork_child::fork_child` -- which only
+    /// this method calls; see that module's own doc for why. A session
+    /// created through this method is never catalog-hidden: `fork_child`
+    /// fixes `SessionMeta::ephemeral` to `false`.
     pub async fn fork_from(
         &self,
         sid: SessionId,
@@ -1681,13 +1597,12 @@ impl Conway {
     pub async fn promote(&self, agent: AgentId) -> Result<SessionId> {
         // Stage 2c (board item `01KZVZ0ASR4CRFG822YWEAW30K`): the full
         // sequence (durable header rewrite, then the live tree flip and
-        // event) now lives on `Runtime::promote`, beside `AgentTree` -- see
+        // event) lives on `Runtime::promote`, beside `AgentTree` -- see
         // that method's own doc. The unwrap below mirrors `Self::resume`'s
         // own "error-shape preservation" precedent: `RuntimeError::Store`
         // flattens back to this facade's own `FacadeError::Store` rather
-        // than nesting one layer deeper, matching what this method
-        // returned before the relocation and what
-        // `crates/conway/tests/promote.rs` already asserts.
+        // than nesting one layer deeper, matching what
+        // `crates/conway/tests/promote.rs` asserts.
         self.rt.promote(agent).await.map_err(|err| match err {
             RuntimeError::Store(inner) => FacadeError::Store(inner),
             other => FacadeError::Runtime(other),
@@ -1799,16 +1714,13 @@ impl Conway {
     /// first is live) is out of scope — the store-level marker means a
     /// second process defers ALL sweeping while another is live.
     ///
-    /// **`live_threshold` is caller-supplied, on purpose (Stage 2a).** This
-    /// used to be a facade-owned constant, `60s = 4× the TUI's 15s
-    /// heartbeat interval` — a presentation detail (a specific renderer's
-    /// refresh cadence) hardcoded into engine configuration, which is
-    /// exactly the defect the rest of Stage 2a moves `TuiSection` and its
-    /// siblings out of this crate to fix. A caller with its own heartbeat
-    /// cadence (or none at all) is the only party positioned to know what
-    /// "fresh" means for its own marker; `conway-cli`'s TUI, the one
-    /// production caller, derives its own value from its own 15s heartbeat
-    /// interval rather than reading it back off this crate (see
+    /// **`live_threshold` is caller-supplied, on purpose.** A presentation
+    /// detail (a specific renderer's refresh cadence) has no business
+    /// hardcoded into engine configuration -- a caller with its own
+    /// heartbeat cadence (or none at all) is the only party positioned to
+    /// know what "fresh" means for its own marker; `conway-cli`'s TUI, the
+    /// one production caller, derives its own value from its own 15s
+    /// heartbeat interval rather than reading it back off this crate (see
     /// `crates/conway-cli/src/tui/mod.rs`).
     ///
     /// Best-effort per session: a session whose `remove` fails (e.g. it has
@@ -1880,8 +1792,8 @@ impl Conway {
     /// session before returning — on every exit path. The full design
     /// (session shape, prompt-prefix system prompt, the unconfigured-role
     /// passthrough fallback, the untrusted-reply validation policy, and every
-    /// disclosed residual) lives in the `intent` module's doc; this is
-    /// the one-method delegation this item is scoped to add here.
+    /// disclosed residual) lives in the `intent` module's doc; this is a
+    /// one-method delegation onto it.
     ///
     /// `parent` is the caller's current live agent (the TUI's focused
     /// session root): the intent session attaches under it as an ephemeral

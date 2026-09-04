@@ -57,18 +57,13 @@ pub(crate) const CONWAY_FS_ROOT_CONFIG_KEY: &str = "conway.fs.root";
 ///
 /// **This is what makes `--root`/`ConwayBuilder::with_root` (and a spawned
 /// child's `SubagentSpec::root`) still confine ordinary `read`/`write`/
-/// `edit`/`cd`/`glob`/`grep` calls after the retirement.** Before
-/// (`PermissionBroker::check_root`'s
-/// per-tool `PathArgs::Named` walk retired), `root` alone was sufficient --
-/// the harness checked every declared path argument against it directly,
-/// and nothing needed to tell `conway.fs` anything. Now `conway.fs`
-/// enforces its OWN root, read from PER-AGENT PLUGIN CONFIG
-/// (`conway_core::ports::Plugin::narrowable_keys`), which `root`
-/// alone does not populate -- without this derivation, an operator's
-/// `--root` (or a caller's `SubagentSpec::root`) would keep confining
-/// artifact writes (the OTHER, still-live consumer of `AgentRoot`) while
-/// SILENTLY no longer confining any ordinary tool call at all, which is
-/// exactly the regression this item's own security preamble forbids.
+/// `edit`/`cd`/`glob`/`grep` calls.** `conway.fs` enforces its OWN root,
+/// read from PER-AGENT PLUGIN CONFIG (`conway_core::ports::Plugin::
+/// narrowable_keys`), which `root` alone does not populate -- without this
+/// derivation, an operator's `--root` (or a caller's `SubagentSpec::root`)
+/// would keep confining artifact writes (the OTHER, still-live consumer of
+/// `AgentRoot`) while SILENTLY no longer confining any ordinary tool call
+/// at all.
 ///
 /// **A derivation, not a second validation.** `root` reaching this function
 /// has ALREADY been resolved, canonicalized, and (for a spawned child)
@@ -94,9 +89,9 @@ pub(crate) const CONWAY_FS_ROOT_CONFIG_KEY: &str = "conway.fs.root";
 /// `AgentArtifactWriter`, needs no plugin at all) into a hard failure it
 /// never asked for. The caller passes whether ITS OWN currently-installed
 /// plugin set actually declares the key (`PluginRegistry::narrowing_rules`)
-/// -- `false` skips the derivation entirely (byte-for-byte the pre-this-
-/// function behavior: `root` still confines the artifact-writer path,
-/// simply does not reach a plugin that isn't there to be reached).
+/// -- `false` skips the derivation entirely: `root` still confines the
+/// artifact-writer path, simply does not reach a plugin that isn't there
+/// to be reached.
 pub(crate) fn derive_fs_root_config(
     root: Option<&Path>,
     requested: Option<&conway_core::ports::PluginConfig>,
@@ -185,9 +180,8 @@ pub struct PreToolUseHookSpec {
     pub command: Vec<String>,
     pub timeout_ms: u64,
     /// The rule's `HookEntry::match_tool` , carried through untouched. `None` (the
-    /// config default) consults this hook for every `pre_tool_use` call,
-    /// unchanged from before this field existed -- see
-    /// [`crate::hook_dispatch::HookSpec::matcher`]'s own doc for the
+    /// config default) consults this hook for every `pre_tool_use` call --
+    /// see [`crate::hook_dispatch::HookSpec::matcher`]'s own doc for the
     /// identical rule applied to the observation tier's `post_tool_use`.
     /// `pre_tool_use` always carries a tool name (`AuthorizedCall::tool`),
     /// so unlike that sibling field there is no "payload with no tool"
@@ -208,15 +202,13 @@ pub struct PreToolUseHookSpec {
     /// `[hooks].rules[]` entry, or an installed plugin's own
     /// `conway_core::ports::Plugin::hooks()` declaration (board item
     /// `01M129QW0GV90QTQS6B3BY3DAR`). Defaults to [`HookOrigin::Operator`]
-    /// (`HookOrigin`'s own `Default` impl), so every construction site
-    /// that predates this field and never sets it explicitly keeps
-    /// reporting exactly what it always implicitly was. Read by
+    /// (`HookOrigin`'s own `Default` impl): a construction site that never
+    /// sets it explicitly reports the conservative default. Read by
     /// `crates/conway/src/conway.rs`'s
     /// `Conway::active_deny_capable_hook_rules` to report a plugin-
-    /// contributed rule's real source rather than the blanket
-    /// "settings.json (merged config)" label every rule used to get
-    /// unconditionally -- see [`HookOrigin`]'s own doc for the full
-    /// argument.
+    /// contributed rule's real source, distinct from the blanket
+    /// "settings.json (merged config)" label an operator-authored rule
+    /// reports -- see [`HookOrigin`]'s own doc for the full argument.
     pub origin: HookOrigin,
 }
 
@@ -233,8 +225,7 @@ pub struct PreToolUseHookSpec {
 /// path argument.
 #[derive(Clone, Debug)]
 pub enum AgentRoot {
-    /// This agent has no confinement root. The root check is a no-op:
-    /// every call proceeds exactly as it did before this slice existed.
+    /// This agent has no confinement root. The root check is a no-op.
     Unconfined,
     /// This agent's root, already canonicalized.
     Confined(CanonicalRoot),
@@ -276,9 +267,7 @@ impl AgentRoot {
 }
 
 /// [`PermissionBroker::check_root`]'s result: whether the call is denied
-/// outright, must skip straight to the operator's gate, or is unaffected
-/// (proceeds through the ordinary allow paths exactly as before this
-/// slice).
+/// outright, must skip straight to the operator's gate, or is unaffected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RootDecision {
     /// No confinement applies, or every declared path argument checked out
@@ -305,14 +294,12 @@ enum RootDecision {
 ///
 /// **A thin, same-crate wrapper around the one shared implementation,
 /// [`conway_core::containment::resolve_candidate`]
-///.** This function used to carry its own
-/// restated copy of the resolution rule (kept in sync with `conway_tools::
-/// common::resolve_path` only by a doc comment demanding lockstep edits,
-/// never enforced by the compiler); it is now a direct call, so the two
-/// crates' wrappers cannot independently drift or independently drop the
-/// NUL guard the way two inlined copies already did once -- and cannot
-/// independently drift on tilde expansion either (board item
-/// `01M10HSENWKTEE4G691XJXBH6T`): a `paths_under` permission-rule prefix
+///.** A direct call, not a restated
+/// copy of the resolution rule, so this crate's wrapper and
+/// `conway_tools::common::resolve_path` cannot independently drift or
+/// independently drop the NUL guard, and cannot independently drift on
+/// tilde expansion either (board item `01M10HSENWKTEE4G691XJXBH6T`): a
+/// `paths_under` permission-rule prefix
 /// and the call argument it is meant to bound both resolve through THIS
 /// function, so a `~`-prefixed rule and a `~`-prefixed argument can never
 /// expand two different ways (P-13). It still cannot simply BE
@@ -738,11 +725,7 @@ pub struct PermissionBroker {
     deny_patterns: RwLock<NarrowingRuleStore>,
     /// Prefix-pattern PROMPT rules --
     /// the second narrowing effect the extension design grants a plugin-contributed rule (`then: prompt`, alongside
-    /// `deny`), which had NOTHING evaluating it anywhere in this broker
-    /// before this item: `must_reach_gate` was set exclusively by
-    /// `check_root`, so a `prompt` rule could never force `gate.check` and
-    /// was inert in every mode (see this item's own board record for the
-    /// two concrete failures this caused).
+    /// `deny`).
     ///
     /// Structurally identical to `deny_patterns` -- no `GrantScope` (a
     /// narrowing rule applies to every requester, D4 §3's asymmetry extends
@@ -771,10 +754,10 @@ pub struct PermissionBroker {
     /// structured form the flat syntax cannot express.
     prompt_patterns: RwLock<Vec<(Rule, Option<CanonicalRoot>, PatternOrigin)>>,
     /// The injected `pre_tool_use`
-    /// hook dispatcher. `None` (the default, and every caller before this
-    /// field existed) means the hook-check step in `Self::decide` is a
-    /// byte-for-byte no-op -- see [`Self::set_hook_runner`]'s own doc for
-    /// the full "additive, not a new dependency" contract.
+    /// hook dispatcher. `None` (the default) means the hook-check step in
+    /// `Self::decide` is a byte-for-byte no-op -- see
+    /// [`Self::set_hook_runner`]'s own doc for the full "additive, not a
+    /// new dependency" contract.
     hook_runner: RwLock<Option<Arc<dyn HookRunner>>>,
     /// The `[hooks].rules[]` entries
     /// (already filtered to `event == "pre_tool_use" && enabled` by the
@@ -789,9 +772,7 @@ pub struct PermissionBroker {
 /// WHY a [`HookStepOutcome::Denied`] denies -- an explicit hook verdict, or
 /// this hook's own outage resolved (by its `on_failure` policy) to `Deny`.
 /// **This is the structural fix
-/// (`docs/vision/DESIGN-permission-modes.md` §3a/§3c): the two used to be
-/// the identical `Option<String>` value, distinguishable only by parsing
-/// the rendered text for the trailing `-- fail-closed`.** Now a downstream
+/// (`docs/vision/DESIGN-permission-modes.md` §3a/§3c):** a downstream
 /// consumer -- a future status surface, or a test -- can match on `cause`
 /// directly and never read `rendered_error` at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -822,9 +803,8 @@ enum HookStepOutcome {
     /// This call is refused outright, tagged with WHY (see
     /// [`HookDenialCause`]). `PermissionBroker::decide` returns
     /// [`PermissionOutcome::Deny`] for either `cause` identically -- the
-    /// RENDERED effect is unchanged from before this type existed -- but
-    /// the two are now different VALUES, not merely different substrings of
-    /// one rendered message.
+    /// RENDERED effect is identical for both -- but the two are different
+    /// VALUES, not merely different substrings of one rendered message.
     Denied {
         rendered_error: String,
         cause: HookDenialCause,
@@ -1431,9 +1411,9 @@ impl PermissionBroker {
     ///   scope render as two distinguishable rows, and revoking one removes
     ///   THAT instance: "what you saw is what you revoke" holds exactly. A
     ///   scope-blind first-match could remove the session-scoped instance
-    ///   when the operator pointed at the agent-scoped row (code-review
-    ///   finding on this item; the failure direction was safe -- net
-    ///   authority only shrank -- but the mismatch was user-visible).
+    ///   when the operator pointed at the agent-scoped row (a code-review
+    ///   finding; the failure direction was safe -- net authority only
+    ///   shrank -- but the mismatch was user-visible).
     /// - **Any stored allow rule matches, not only structured ones.** A
     ///   flat-desugarable rule IS a `Rule` in the store, so equality can
     ///   name it too. That overlap is harmless: the review surface
@@ -1467,7 +1447,7 @@ impl PermissionBroker {
 
     /// Whether any installed pattern authorizes this call.
     ///
-    /// F12: evaluation is now over the stored [`Rule`]s, via the single
+    /// Evaluation is over the stored [`Rule`]s, via the single
     /// `Rule` evaluator ([`Rule::matches_allow_render`] for render-based
     /// `when` clauses, plus the broker's own `paths_under` resolution for
     /// [`When::PathsUnder`] -- the same `resolve_like_the_tool_will` +
@@ -1559,9 +1539,9 @@ impl PermissionBroker {
     /// re-implemented.** `HookRunner::run`'s `Err(HookFailure)` -- a missing
     /// script, a timeout, or stdout that failed to parse as a
     /// [`conway_core::hook::HookAnswer`] -- resolves through THIS hook's own
-    /// `on_failure` policy, which defaults to [`HookOnFailure::Deny`]:
-    /// unchanged from before this policy existed for every registration
-    /// that does not set it. There is still no separate "is this hook
+    /// `on_failure` policy, which defaults to [`HookOnFailure::Deny`]
+    /// for every registration that does not set it explicitly. There is
+    /// still no separate "is this hook
     /// broken" check layered on top that could disagree with the runner's
     /// own verdict; `on_failure` decides what to DO about that failure, it
     /// never second-guesses whether it happened.
@@ -1925,8 +1905,7 @@ impl PermissionBroker {
         // granted before the rule was ever installed, e.g. a plugin loaded
         // mid-session -- permanently suppress every future ask the rule was
         // meant to force. That is a real transfer of authority away from an
-        // operator's own explicit "always allow" (see this method's own
-        // history for that point being raised explicitly), but it is the
+        // operator's own explicit "always allow", but it is the
         // correct direction: `AllowAlways` is `PermissionScope`-bounded
         // consent to a class of call, not a promise that the class can never
         // later be flagged by a narrower rule -- exactly the same relationship
@@ -1949,22 +1928,21 @@ impl PermissionBroker {
         // sees this ask through the ordinary `gate.check` path below, with
         // no marker distinguishing "a rule forced this" from an ordinary
         // first-time ask -- `PermissionDecisionKind` (`#[non_exhaustive]`,
-        // so additive) is NOT extended by this item. That is deliberately
-        // narrower than it could be, not an oversight: the hazard this
-        // item's own acceptance criteria warn against is a NEW cause
-        // silently reported as `Cached` (the cache/pattern/`AutoAllow` steps'
-        // own label for "resolved without asking"), and this step cannot
-        // produce that mislabeling BY CONSTRUCTION -- setting
-        // `must_reach_gate` only ever routes a call INTO `gate.check`, whose
-        // real `PermissionDecision` (`AllowOnce`/`AllowAlways`/`Denied`/
-        // `DeniedWithFeedback`) is reported exactly as it already is for any
-        // other first-time ask. What is genuinely missing is WHY the operator
-        // is being asked -- surfacing "matched plugin rule `bash:curl`" in
-        // the prompt UI needs a wire-visible field on `PermissionRequest`/
+        // so additive) is deliberately NOT extended for this, not an
+        // oversight: the hazard to avoid is a NEW cause silently reported as
+        // `Cached` (the cache/pattern/`AutoAllow` steps' own label for
+        // "resolved without asking"), and this step cannot produce that
+        // mislabeling BY CONSTRUCTION -- setting `must_reach_gate` only ever
+        // routes a call INTO `gate.check`, whose real `PermissionDecision`
+        // (`AllowOnce`/`AllowAlways`/`Denied`/`DeniedWithFeedback`) is
+        // reported exactly as it already is for any other first-time ask.
+        // What is genuinely missing is WHY the operator is being asked --
+        // surfacing "matched plugin rule `bash:curl`" in the prompt UI
+        // needs a wire-visible field on `PermissionRequest`/
         // `Event::PermissionRequested`, a persisted-log-compatible change
         // (`#[serde(default)]`, mirroring `Event::AgentSpawned`'s `ephemeral`
-        // field) this item leaves as a follow-up rather than bundling into
-        // the mechanism fix.
+        // field) left as a follow-up rather than bundled into the mechanism
+        // fix.
         if self.prompt_matches(ctx, call).is_some() {
             must_reach_gate = true;
         }
@@ -2069,18 +2047,17 @@ impl PermissionBroker {
 
 /// The `pre_tool_use` hook step's own
 /// tests. Inline (not `tests/permission_broker.rs`) so `cargo test -p
-/// conway-runtime permission::` -- this item's own verification anchor --
-/// finds them by module path.
+/// conway-runtime permission::` finds them by module path.
 ///
 /// The acceptance criteria this module proves, one test each: a denying
-/// hook is enforced under `AutoAllow` (the failure this item's whole
-/// placement analysis exists to prevent); the same beats a cached
+/// hook is enforced under `AutoAllow` (the mode a downstream-of-
+/// `gate.check` placement would miss); the same beats a cached
 /// `AllowAlways` grant and a matching pattern-allow rule (the other two
-/// bypass paths a downstream-of-`gate.check` implementation would have
-/// missed); a missing/failing/malformed-output hook denies via the
-/// runner's own failure signal, not a second fail-closed implementation;
-/// with nothing installed, `decide()` is unchanged (proving this is
-/// additive); and no JSON shape a hook can send ever produces `Allow`.
+/// bypass paths such a placement would have missed); a missing/failing/
+/// malformed-output hook denies via the runner's own failure signal, not a
+/// second fail-closed implementation; with nothing installed, `decide()`
+/// is unchanged (proving this is additive); and no JSON shape a hook can
+/// send ever produces `Allow`.
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -2453,10 +2430,9 @@ mod tests {
         );
     }
 
-    /// **The single most important test in this item.** `AutoAllow` mode
+    /// **The single most important test in this module.** `AutoAllow` mode
     /// plus a denying `pre_tool_use` hook: the call is STILL denied, and
-    /// the operator's gate is never consulted -- the exact failure this
-    /// item's placement analysis exists to prevent. A hook implemented
+    /// the operator's gate is never consulted. A hook implemented
     /// downstream of `gate.check` would never even run under `AutoAllow`;
     /// this asserts the opposite is true here.
     #[tokio::test]
@@ -2740,9 +2716,9 @@ mod tests {
     }
 
     /// Sibling of `decide_is_unchanged_when_no_hook_runner_is_installed`: an
-    /// ABSENT matcher (not merely an absent runner) preserves today's
+    /// ABSENT matcher (not merely an absent runner) preserves the
     /// fire-for-every-tool behavior -- a hook with no `matcher` set still
-    /// denies every tool, exactly as before this field existed.
+    /// denies every tool.
     #[tokio::test]
     async fn an_absent_matcher_denies_every_tool() {
         let gate = RecordingGate::new();
@@ -2780,8 +2756,7 @@ mod tests {
     /// deny -- but `HookStepOutcome::Denied`'s `cause` field is DIFFERENT
     /// for the two, provably: a downstream consumer (a future status
     /// surface, or this test) can match on `cause` alone and never inspect
-    /// `rendered_error` at all. Before this item, both were the identical
-    /// `Option<String>` value.
+    /// `rendered_error` at all.
     #[tokio::test]
     async fn hook_step_outcome_distinguishes_a_verdict_denial_from_an_outage_denial_structurally() {
         let session = SessionId::new();
@@ -3098,8 +3073,8 @@ mod tests {
     /// `HookPermissionVerdict::Deny` check above it) instead `return`s
     /// immediately -- so a refactor that "regularizes" the `Prompt` arm to
     /// match its neighbours, turning `must_reach_gate = true;` into
-    /// `return HookStepOutcome::MustReachGate;`, is exactly the drift this
-    /// item's spec warns is the natural direction. Under that mutation,
+    /// `return HookStepOutcome::MustReachGate;`, is exactly the drift the
+    /// board item above warns is the natural direction. Under that mutation,
     /// the loop would return after hook A without ever reaching hook B:
     /// `runner.call_order()` would contain only `"hook-a"` (proven below
     /// to contain both), `pre_tool_use_hook_denial` would report
@@ -3218,11 +3193,11 @@ mod tests {
     }
 
     /// **A plugin `Prompt` verdict forces the operator's gate even under
-    /// `AutoAllow`.** This is acceptance criterion 1's first half: a plugin
-    /// declaring its tool dangerous (mapped to `prompt`) causes an approval
-    /// prompt -- the call is NOT silently auto-allowed. `AutoAllow` is the
-    /// mode a plugin's prompt matters most in (no human already in the
-    /// loop); proving it here is the load-bearing case.
+    /// `AutoAllow`.** A plugin declaring its tool dangerous (mapped to
+    /// `prompt`) causes an approval prompt -- the call is NOT silently
+    /// auto-allowed. `AutoAllow` is the mode a plugin's prompt matters most
+    /// in (no human already in the loop); proving it here is the
+    /// load-bearing case.
     #[tokio::test]
     async fn plugin_prompt_forces_the_gate_even_under_autoallow() {
         let gate = RecordingGate::new();

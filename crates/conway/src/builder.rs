@@ -18,22 +18,19 @@
 //!   async context and care about that should do so via `spawn_blocking`.
 //!   This is a load-bearing, disclosed deviation forced by the sync/async
 //!   mismatch between the golden criterion and the lower crates' committed
-//!   `async` signatures — not an oversight. The optional startup capability
-//!   probe used to be the OTHER caller of this same bridge, directly in this
-//!   module;
+//!   `async` signatures — not an oversight.
 //!   `conway_plugin_backends::OpenAiCompatBackendFactory::
-//!   probe_capabilities` now runs its own probe behind its own,
+//!   probe_capabilities` runs its own probe behind its own,
 //!   independently-maintained bridge — see that method's own doc — so this
-//!   module's `block_on` is used by [`build_default_store`] alone today.)
-//! - **`with_prompt_handler` now exists** (board item
-//!   01M00QGYR1M8F71HTAA1S3PEKS closed the gap this bullet used to disclose
-//!   as unresolved): `gates::from_config` is called with whatever handler
+//!   module's `block_on` is used by [`build_default_store`] alone.)
+//! - **`with_prompt_handler` exists**: `gates::from_config` is called with
+//!   whatever handler
 //!   [`ConwayBuilder::with_prompt_handler`] supplied, `None` when it was
 //!   never called. Since `permissions.mode` defaults to `"prompt"`
 //!   (`config::merge::default_document`), an embedder using an unmodified
 //!   default config and neither `with_prompt_handler` nor
-//!   `with_permission_gate` still gets a named `FacadeError::Config` from
-//!   `build()` — unchanged, and deliberately so (see that method's own doc):
+//!   `with_permission_gate` gets a named `FacadeError::Config` from
+//!   `build()` — deliberately (see that method's own doc):
 //!   the fix is a direct path to the one closure a host almost always
 //!   already has, not a silent default gate choice.
 //! - **Backend construction, dialect/profile resolution, and startup
@@ -91,9 +88,8 @@
 //!   has no field for either). `models.json`'s `tool_calling` and
 //!   `reasoning` fields, however, still reach neither the router nor
 //!   `Backend::capabilities()`: `ModelOverrides` (owned by `conway-core`)
-//!   has no field for them, and extending it is outside this item's file
-//!   scope — see `conway_plugin_backends::capabilities`'s module doc and
-//!   this item's scope-boundary note.
+//!   has no field for them — see `conway_plugin_backends::capabilities`'s
+//!   module doc.
 //! - **Startup capability probing is a per-kind opt-in
 //!   ([`BackendFactory::probe_capabilities`]'s own doc), and only
 //!   `conway_plugin_backends::OpenAiCompatBackendFactory` implements it** —
@@ -101,8 +97,7 @@
 //!   this facade's plugin speaks (`Backend::probe()`'s own `ProbeReport`
 //!   carries no `max_context_tokens`/capability data to overlay either).
 //!   `probe_on_startup` therefore only ever affects `"openai-compat"`-kind
-//!   backends; this is disclosed, not silently no-op'd, and is unchanged
-//!   from before this item's relocation. **The RESTRICT eligibility
+//!   backends; this is disclosed, not silently no-op'd. **The RESTRICT eligibility
 //!   filter — a probed pair only overlays the router's `CapabilityIndex`
 //!   when its key already appears in that entry's own `BackendBuildContext
 //!   ::models` (i.e. `models.json` already declared it for this backend) —
@@ -170,7 +165,7 @@ use crate::skills;
 /// criterion pins this value and `conway-runtime` exports no default
 /// constant; picked generously (matching the order of magnitude
 /// `conway-runtime`'s own tests use for a long-lived bus) rather than
-/// inventing a config surface this item has no mandate to add.
+/// inventing a config surface for it.
 const EVENT_BUS_CAPACITY: usize = 1024;
 
 /// Which built-in plugins [`ConwayBuilder::build`] auto-registers, filtered
@@ -192,10 +187,10 @@ const EVENT_BUS_CAPACITY: usize = 1024;
 /// by this type.** Calling `with_plugin` IS already the explicit,
 /// per-plugin declaration the one extension mechanism requires of a third
 /// party -- nothing about
-/// that call is privileged or automatic. What this item corrects is the
-/// other direction: conway's own built-ins were the ONE bundle that
-/// installed itself with no equivalent declaration, `bash` included. This
-/// type extends the SAME "explicit declaration" requirement to built-ins
+/// that call is privileged or automatic. This type corrects the other
+/// direction: conway's own built-ins were the ONE bundle that installed
+/// itself with no equivalent declaration, `bash` included. It extends the
+/// SAME "explicit declaration" requirement to built-ins
 /// (letting three of the four opt back in by default, purely as a matter of
 /// today's chosen default -- see [`crate::config::schema::ToolsConfig`]'s
 /// doc), not the reverse: an already-explicit `with_plugin` call gains no
@@ -240,8 +235,8 @@ pub struct ConwayBuilder {
     gate: Option<Arc<dyn PermissionGate>>,
     /// The handler [`Self::build`]'s step 9 passes to `gates::from_config`
     /// when `permissions.mode = "prompt"` and no [`Self::with_permission_gate`]
-    /// override is set. `None` (the default) is unchanged from before this
-    /// field existed: an unmodified default config (`permissions.mode`
+    /// override is set. `None` (the default) means an unmodified default
+    /// config (`permissions.mode`
     /// defaults to `"prompt"` -- `config::merge::default_document`) with
     /// neither this nor `with_permission_gate` set still fails `build()`
     /// with a named `FacadeError::Config` naming exactly that, rather than
@@ -258,17 +253,16 @@ pub struct ConwayBuilder {
     router: Option<Arc<dyn Router>>,
     /// `None` (the default) means
     /// `build()`'s router step falls through to compiling its own
-    /// `DeclarativeRouter`, exactly as it did before this field existed --
-    /// see [`Self::with_router_factory`]'s own doc for the full precedence.
+    /// `DeclarativeRouter` -- see [`Self::with_router_factory`]'s own doc
+    /// for the full precedence.
     router_factory: Option<Arc<dyn RouterFactory>>,
     /// Empty (the default) means
-    /// `build()`'s backend step is byte-for-byte what it was before this
-    /// field existed -- config-derived backends merged with `backends`
-    /// (above), nothing more -- see [`Self::with_backend_factory`]'s own doc
+    /// `build()`'s backend step is exactly config-derived backends merged
+    /// with `backends` (above), nothing more -- see
+    /// [`Self::with_backend_factory`]'s own doc
     /// for the full precedence and duplicate-kind rules.
     backend_factories: Vec<Arc<dyn BackendFactory>>,
-    /// Empty (the default) means
-    /// nothing changes from before this field existed -- see
+    /// Empty (the default) is a no-op -- see
     /// [`Self::with_declined_backend_kinds`]'s own doc for what a non-empty
     /// value does (purely diagnostic; it never removes, blocks, or replaces
     /// a registered [`BackendFactory`]).
@@ -305,15 +299,15 @@ pub struct ConwayBuilder {
     /// field: `ConwayConfig` has no `#[derive(Default)]` (`default_role` has
     /// no sensible built-in value), so every one of its existing struct-
     /// literal call sites across the workspace would have to name a new
-    /// field the moment one was added -- a blast radius with no relationship
-    /// to this item's own scope. `Conway`/`ConwayBuilder` are constructed
+    /// field the moment one was added -- a blast radius unrelated to what
+    /// this field is for. `Conway`/`ConwayBuilder` are constructed
     /// exclusively through this builder's own methods (never struct-
     /// literaled by a caller), so a field here costs nothing outside this
     /// file and `conway.rs`.
     root: Option<PathBuf>,
     /// Empty (the default) means [`Self::build`]'s agent-def step reads
-    /// exactly `config.agents.dir`, unchanged from before this field
-    /// existed. A non-empty list is folded in AFTER `config.agents.dir`
+    /// exactly `config.agents.dir`. A non-empty list is folded in AFTER
+    /// `config.agents.dir`
     /// (which therefore always wins a name collision against every entry
     /// here — `agents::load_agent_defs_from_roots`'s own precedence rule),
     /// each entry resolved against `cwd` the same way `config.agents.dir`
@@ -395,14 +389,14 @@ impl ConwayBuilder {
     /// to supply its own instead. Board item `01M0QK9GRM8HSNWRAR414TCX42`
     /// is what surfaced the gap: `[session].root`'s central-default
     /// resolution happens INSIDE `config::load` itself, using
-    /// `LoadOptions.cwd`/`.env` directly, so a caller that needs THAT
-    /// resolved against something other than this process's real
-    /// environment (a fixture's own isolated `CONWAY_CONFIG_DIR`/`cwd`, the
-    /// case every in-process test building a `Conway` against a temp-dir
-    /// fixture is in) previously had no way to get it -- a LATER
-    /// `CliOverrides.cwd`/`with_cli_overrides` fix-up, applied at `build()`
-    /// time, is too late for a resolution that already happened inside
-    /// `load`. Still the full five-source chain (`default < user < project
+    /// `LoadOptions.cwd`/`.env` directly -- a fixture's own isolated
+    /// `CONWAY_CONFIG_DIR`/`cwd` (the case every in-process test building a
+    /// `Conway` against a temp-dir fixture is in) needs THAT resolved
+    /// against something other than this process's real environment, which
+    /// a LATER `CliOverrides.cwd`/`with_cli_overrides` fix-up, applied at
+    /// `build()` time, cannot do -- it is too late for a resolution that
+    /// already happened inside `load`. Still the full five-source chain
+    /// (`default < user < project
     /// < env < CLI`) -- `options.env`'s own `CONWAY_CONFIG_DIR` still
     /// decides whether the "user" layer means a real `~/.conway/
     /// settings.json` or an isolated fixture directory with none;
@@ -565,13 +559,12 @@ impl ConwayBuilder {
     /// factory. Nothing about registering a factory promises any
     /// particular `[backends.<id>]` entry will ever select it.
     ///
-    /// **`[backends.<id>].kind` is now an open name** -- for
+    /// **`[backends.<id>].kind` is an open name** -- for
     /// every `[backends.<id>]` entry, `build()`'s own `resolve_backend_
     /// factory` resolves `entry.kind` against every registered factory's own
-    /// [`BackendFactory::id`] -- and against nothing else. The temporary
-    /// fallback to two compiled-in adapters is GONE -- this facade no longer links either
-    /// dialect, so an unregistered kind is an unknown-kind error, not a
-    /// silent built-in. See `resolve_backend_factory`'s own doc for the
+    /// [`BackendFactory::id`] -- and against nothing else. This facade
+    /// links neither dialect in, so an unregistered kind is an unknown-kind
+    /// error, not a silent built-in. See `resolve_backend_factory`'s own doc for the
     /// exact resolution order and the error shape. A matching
     /// factory's `build` is invoked with a [`BackendBuildContext`] resolved
     /// from THAT entry: `id` is the entry's own `[backends.<id>]` JSON key,
@@ -585,12 +578,12 @@ impl ConwayBuilder {
     /// `[backends.<id>]` entries naming the same kind invoke that kind's
     /// factory twice, with two different contexts -- exactly the "one
     /// installed kind, many configured instances" cardinality this method's
-    /// own doc above already promises (the "kimi" example), now actually
-    /// reachable for a third-party kind and not just the two built-in ones.
+    /// own doc above already promises (the "kimi" example), reachable for a
+    /// third-party kind, not just the two built-in ones.
     /// **Registering a factory whose kind no entry names is still fine, not
     /// an error** -- its `build` is simply never invoked, the literal case
     /// the paragraph above already covers. **Not called at all**, however,
-    /// is no longer a benign default: with no factory registered there is
+    /// is NOT a benign default: with no factory registered there is
     /// nothing left for a `kind` to resolve against, so every
     /// `[backends.<id>]` entry fails with an unknown-kind error and the
     /// build reaches no model at all. The `conway` CLI avoids this by
@@ -623,7 +616,7 @@ impl ConwayBuilder {
     /// diagnosis, not "conway has never heard of this," which is a different,
     /// worse-fitting claim about what happened). Not called at all (the
     /// default, empty list) means every unresolved `kind` is an unknown-kind
-    /// error exactly as before this method existed -- unchanged.
+    /// error.
     ///
     /// **`conway` (this binary's CLI) is the one caller wired today**:
     /// `crates/conway-cli/src/first_party_plugins.rs`'s `install` computes
@@ -689,11 +682,10 @@ impl ConwayBuilder {
     /// default_document`), and therefore what `ConwayBuilder::discover()`
     /// hands a host that changed nothing about permissions.
     ///
-    /// **This closes a gap this module's own doc used to disclose rather than
-    /// silently paper over**: before this method existed, the ONLY way to
-    /// satisfy an unmodified default config's `permissions.mode = "prompt"`
-    /// was [`Self::with_permission_gate`] -- which requires implementing the
-    /// whole [`PermissionGate`] trait (`check`'s full signature: tool name,
+    /// **The direct path to satisfying an unmodified default config's
+    /// `permissions.mode = "prompt"`.** The alternative,
+    /// [`Self::with_permission_gate`], requires implementing the whole
+    /// [`PermissionGate`] trait (`check`'s full signature: tool name,
     /// arguments, render kind, scope) just to answer one async question, "may
     /// this tool call proceed?" A host embedding conway to ask ITS OWN user
     /// (a dialog box, a terminal prompt, a chat UI's inline approval) almost
@@ -701,8 +693,8 @@ impl ConwayBuilder {
     /// gate. This method takes it directly: `Arc<dyn Fn(PermissionRequest) ->
     /// BoxFuture<'static, PermissionDecision> + Send + Sync>`
     /// ([`gates::PromptHandler`]), the same handler shape
-    /// [`gates::PromptingGate`] has always wrapped -- this method is the
-    /// missing builder-level path to it, not a new gate implementation.
+    /// [`gates::PromptingGate`] has always wrapped -- a builder-level path to
+    /// it, not a new gate implementation.
     ///
     /// **Precedence: [`Self::with_permission_gate`] wins unconditionally over
     /// this.** If both are called, `build()`'s gate step (9) never even
@@ -714,16 +706,14 @@ impl ConwayBuilder {
     /// never invoked, since `gates::from_config`'s `"deny"`/`"allowlist"`
     /// arms never read it.
     ///
-    /// **Not called at all (the default, unchanged from before this method
-    /// existed):** `permissions.mode = "prompt"` with no
-    /// `with_permission_gate` override still fails `build()` with a named
+    /// **Not called at all (the default):** `permissions.mode = "prompt"`
+    /// with no
+    /// `with_permission_gate` override fails `build()` with a named
     /// [`FacadeError::Config`] stating exactly that ("permissions.mode =
     /// \"prompt\" requires a prompt handler to be supplied") -- never a
     /// silent `AllowAlways`/`DenyAll` substitute. A host that wants the
-    /// friendliest default (ask, rather than deny or blanket-allow) to
-    /// actually build now has a direct path to it; a host that never calls
-    /// this (and never overrides `permissions.mode` some other way) keeps
-    /// getting exactly the same named refusal it always has.
+    /// friendliest default (ask, rather than deny or blanket-allow) has a
+    /// direct path to it via this method.
     pub fn with_prompt_handler(mut self, handler: gates::PromptHandler) -> Self {
         self.prompt_handler = Some(handler);
         self
@@ -733,9 +723,9 @@ impl ConwayBuilder {
     /// request (mask/system-prompt/tool-announcement curation) and, on a
     /// T-1 `ContextTooLarge`, for a bounded overflow-reassembly retry. No
     /// call to this method (the default) means `build()` never touches
-    /// `Runtime::set_context_hook` at all -- every agent's assembly,
-    /// routing, and overflow handling stays exactly as it was before this
-    /// item, with a hard `ContextTooLarge` on overflow.
+    /// `Runtime::set_context_hook` at all -- every agent's assembly and
+    /// routing has no curation step, with a hard `ContextTooLarge` on
+    /// overflow.
     pub fn with_context_hook(mut self, hook: Arc<dyn ContextHook>) -> Self {
         self.context_hook = Some(hook);
         self
@@ -910,8 +900,8 @@ impl ConwayBuilder {
     /// honest degenerate answer an injected `with_router` already falls back
     /// to).
     ///
-    /// **Not called at all (the default)** changes nothing: `build()`'s
-    /// router step behaves exactly as it did before this method existed --
+    /// **Not called at all (the default):** `build()`'s
+    /// router step compiles
     /// `MinimalRouter` over `[roles]`/`[routing]`, no capability or health
     /// filtering. `crates/conway-plugin-routing` is the first-party plugin
     /// that installs the richer `DeclarativeRouter` engine instead, either
@@ -925,8 +915,8 @@ impl ConwayBuilder {
     /// Installs the id-selected subset of three CALLER-SUPPLIED bundles
     /// against `self.config().plugins` in one pass -- the facade's own
     /// version of the ~70-line resolution `crates/conway-cli/src/
-    /// first_party_plugins.rs`'s `install` used to hand-roll (///; this method itself lands under
-    ///), now reachable by any embedder, not only
+    /// first_party_plugins.rs`'s `install` hand-rolls, now reachable by any
+    /// embedder, not only
     /// this workspace's own CLI binary.
     ///
     /// **The facade still depends on no plugin crate -- `plugins`,
@@ -1151,9 +1141,8 @@ impl ConwayBuilder {
     ///
     /// **This is the ergonomic surface a prior ruling required stay reachable
     /// through "Retire the harness-level confinement root once
-    /// `conway.fs` enforces its own":** a harness-level pre-gate check used
-    /// to be the ONLY thing this method's `root` fed; that check is retired.
-    /// `with_root` now feeds TWO things from the SAME single, once-resolved,
+    /// `conway.fs` enforces its own":** `with_root` feeds TWO things from
+    /// the SAME single, once-resolved,
     /// once-canonicalized `root` value: (1) `conway_runtime::runtime::
     /// RootSpec::root`, unchanged, which still confines the artifact-writer
     /// path (`conway_runtime::artifact_store::AgentArtifactWriter`); and (2)
@@ -1170,8 +1159,7 @@ impl ConwayBuilder {
     /// every depth, not only at the agent an operator directly started.
     ///
     /// **Not called at all (the default)** means every root agent this
-    /// `Conway` starts stays `Unconfined`, byte-for-byte identical to every
-    /// invocation before this method existed -- this is deliberately NOT the
+    /// `Conway` starts stays `Unconfined` -- this is deliberately NOT the
     /// default `build()` picks on its own; an operator opts in explicitly
     /// (`conway-cli`'s `--root`).
     ///
@@ -1499,9 +1487,7 @@ impl ConwayBuilder {
         //    `RouterFactory` (`with_router_factory`), when set, is invoked
         //    with the build context assembled from the preceding steps;
         //    else `conway_core::routing::MinimalRouter` -- the config-only
-        //    core resolver `conway` compiles with no plugin installed (board
-        //    item: this replaces the
-        //    `DeclarativeRouter` `build()` used to compile in directly).
+        //    core resolver `conway` compiles with no plugin installed.
         //    Whichever explainer the taken branch produces (`None` for an
         //    injected router, the factory's own `RouterBundle::explain`, or
         //    `MinimalRouter` itself) is kept alongside the type-erased
@@ -1560,8 +1546,7 @@ impl ConwayBuilder {
         //    already-disclosed ambient read three steps up,
         //    `provider_profile_file_paths`: that one only ever looks for an
         //    optional file, this one would go on to CREATE a directory),
-        //    an unresolved `root` falls back to the exact fixed default
-        //    `session.root` always had before this item existed,
+        //    an unresolved `root` falls back to the exact fixed default,
         //    `.conway/sessions` relative to `cwd` -- byte-identical
         //    behavior for every existing `from_parts` caller (this crate's
         //    own test suite included) that never named a `session.root` of
@@ -1597,9 +1582,8 @@ impl ConwayBuilder {
         //     a SIBLING of the effective session root the session store
         //     just resolved against -- see `build_default_path_store`'s own
         //     doc for exactly where (a sibling of the root itself, not of
-        //     its parent, since this item's central default nests the root
-        //     one level deeper than the fixed default/an explicit value
-        //     ever did).
+        //     its parent, since the central default nests the root one
+        //     level deeper than the fixed default/an explicit value does).
         let path_store: Arc<dyn PathStore> = match path_store {
             Some(path_store) => path_store,
             None => build_default_path_store(&cwd, &effective_session_root)?,
@@ -1861,9 +1845,8 @@ impl ConwayBuilder {
         // The refusal `CapabilityRegistry::from_registrations` returns on a
         // duplicate provider MUST reach `build()` as a real error -- an
         // `.unwrap_or_default()` or an ignored `Err` here would silently
-        // resolve to one arbitrary provider, which is worse than the no-op
-        // this item replaces (see that method's own doc: fail closed, never
-        // "last one wins").
+        // resolve to one arbitrary provider (see that method's own doc:
+        // fail closed, never "last one wins").
         let capability_registry = CapabilityRegistry::from_registrations(
             capability_registrations
                 .into_iter()
@@ -2010,13 +1993,12 @@ impl ConwayBuilder {
         // rather than each re-implementing its own "config rules plus
         // plugin rules" merge (P-14: one implementation of the classification
         // logic, not two that could drift). Every config-declared rule is
-        // tagged [`HookOrigin::Operator`], unchanged from every hook rule
-        // that existed before this item; every plugin-declared rule is
+        // tagged [`HookOrigin::Operator`]; every plugin-declared rule is
         // tagged [`HookOrigin::Plugin`] naming its declaring plugin, and its
         // bare `id` is host-prefixed with that plugin's own manifest id --
-        // this item's own decided answer to "should provenance be
-        // structural": an author never picks their own namespace, the SAME
-        // rule `declared_plugin_events`/`CommandRegistry::build` already
+        // provenance is structural: an author never picks their own
+        // namespace, the SAME rule `declared_plugin_events`/
+        // `CommandRegistry::build` already
         // enforce for event/command names -- so a plugin can never claim an
         // id an operator might also have written, and the resulting id is
         // what makes a plugin-registered hook distinguishable from an
@@ -2040,7 +2022,7 @@ impl ConwayBuilder {
         // operator-facing surface built on it (`[hooks].rules[]` TOML,
         // `config::merge::validate`), stays exactly as it was. Every
         // `[hooks].rules[]` entry gets `false` here -- an operator has no
-        // way to set this field at all, unchanged from before it existed.
+        // way to set this field at all.
         let mut effective_hook_rules: Vec<(HookOrigin, HookEntry, bool)> = config
             .hooks
             .rules
@@ -2146,9 +2128,8 @@ impl ConwayBuilder {
         // `01M03VKQ738DTGHHK2C4RWXC0E`). The status contributions are a
         // build-time SNAPSHOT (collected at session-open, before any
         // `status/1` notifications have arrived -- typically empty); kept
-        // for `Conway::plugin_status_contributions` exactly as before. This
-        // snapshot is no longer the ONLY reachable record, though --
-        // `live_plugins` immediately below is the live one (board item
+        // for `Conway::plugin_status_contributions`. `live_plugins`
+        // immediately below is the live counterpart (board item
         // `01M0Y3A8MYKKE0GMYKZE1K0QTD`, see that field's own doc). The
         // observe sinks are installed as `EventBus` subscribers: one forwarding
         // task per sink drives a `bus.subscribe()` stream and calls
@@ -2312,14 +2293,13 @@ impl ConwayBuilder {
         // contains -- `PermissionBroker::pre_tool_use_hook_denial`'s own
         // doc), filtering `effective_hook_rules` (`[hooks].rules[]` PLUS
         // every plugin-declared rule folded in above) to exactly the
-        // entries this item's own `HooksConfig` doc names as dispatched:
+        // entries `HooksConfig`'s own doc names as dispatched:
         // `event == "pre_tool_use"` and `enabled`. A plugin-registered
         // `pre_tool_use` rule lands in this SAME `Vec` a config-declared one
         // does, so it reaches `PermissionBroker::decide`'s hook-check step
         // at the IDENTICAL tier -- before the mode gate, the cache, pattern
         // allows, and `AutoAllow` -- by construction, not by a second,
-        // parallel dispatch path (board item `01M129QW0GV90QTQS6B3BY3DAR`
-        // acceptance 2).
+        // parallel dispatch path (board item `01M129QW0GV90QTQS6B3BY3DAR`).
         let pre_tool_use_specs: Vec<PreToolUseHookSpec> = effective_hook_rules
             .iter()
             .filter(|(_, rule, _)| rule.enabled && rule.event == "pre_tool_use")
@@ -3007,16 +2987,14 @@ impl ContextHook for ChainedContextHook {
 mod compose_context_hooks_tests {
     //! Covers [`compose_context_hooks`]'s 0/1/2+ branches and
     //! [`ChainedContextHook`]'s chaining, which nothing else in the tree
-    //! drives -- see this item's own filing (board item
-    //! `01M090HJEJBK24SX70Z9E25PZ4`): `grep -rln "compose_context_hooks\|
-    //! ChainedContextHook" crates/` matched only this file before these
-    //! tests existed.
+    //! drives (board item `01M090HJEJBK24SX70Z9E25PZ4`): `grep -rln
+    //! "compose_context_hooks\|ChainedContextHook" crates/` matched only
+    //! this file before these tests existed.
     //!
     //! **Characterization, not specification.** These tests pin the
     //! existing behavior of `compose_context_hooks`/`ChainedContextHook`;
     //! they do not change it. Where a finding below reads like a defect,
-    //! it is reported as one (see the worker's completion report for this
-    //! item), not silently "fixed" here.
+    //! it is reported as one, not silently "fixed" here.
     //!
     //! **The asymmetry with [`compose_curators_tests`], confirmed by
     //! reading the actual contract first** (`conway_core::ports::plugin`'s
@@ -3048,7 +3026,7 @@ mod compose_context_hooks_tests {
     //!   last output incoherent trips the guard. That is worth pinning, but
     //!   `GuardedContextHook::before_request`/`on_overflow` are
     //!   `pub(crate)` to `conway-runtime` (see that type's own doc) and
-    //!   this item's blast radius is `crates/conway/` only, so it is
+    //!   out of reach from a `crates/conway/` test, so it is
     //!   recorded here as a documented finding rather than exercised by a
     //!   test in this module -- `conway_runtime::context::hook_guard`'s own
     //!   `context_hook_wrapping_tests` module is where that guard's
@@ -3057,8 +3035,7 @@ mod compose_context_hooks_tests {
     //!   `on_overflow` runs exactly once per call to the composed hook.
     //!   The bounded re-attempt loop the doc for `on_overflow`'s retry
     //!   path might suggest (`MAX_OVERFLOW_ATTEMPTS`) is `AgentLoop::
-    //!   route_and_attempt`'s concern (`conway-runtime`, out of this
-    //!   item's scope), which simply calls the SAME composed (guarded)
+    //!   route_and_attempt`'s concern (`conway-runtime`), which simply calls the SAME composed (guarded)
     //!   hook's `on_overflow` again on a subsequent attempt -- nothing
     //!   about that requires `ChainedContextHook` itself to retry
     //!   anything.
@@ -3687,7 +3664,7 @@ mod compose_curators_tests {
 /// an equivalent provider-specific rejection -- never a panic, never a
 /// silently empty response).
 ///
-/// The key's *shape* is never inspected, same as before.
+/// The key's *shape* is never inspected.
 fn resolve_api_key(id: &str, entry: &BackendEntry) -> String {
     if !entry.api_key.is_empty() {
         return entry.api_key.clone();
@@ -3711,13 +3688,8 @@ fn resolve_api_key(id: &str, entry: &BackendEntry) -> String {
 /// Resolves one `[backends.<id>]` entry's `kind` against every registered
 /// [`BackendFactory`] (: `kind` is an
 /// open name, not a closed enum) -- ONLY against registered factories, with
-/// no compiled-in fallback: removed
-/// the temporary two-adapter fallback this function (then named
-/// `construct_backend`) used to fall through to (`"anthropic"`,
-/// `"openai-compat"` compiled directly into this facade), the deliberate,
-/// disclosed gap that item's own predecessor left standing so its slice
-/// could ship alone. Every kind this facade resolves today, including
-/// those two, is therefore a registered factory -- see
+/// no compiled-in fallback. Every kind this facade resolves, including
+/// `"anthropic"`/`"openai-compat"`, is therefore a registered factory -- see
 /// `conway_plugin_backends::factory`'s own module doc for what makes both
 /// attach by default with no `[plugins].install`/`with_backend_factory` call
 /// an operator has to write by hand.
@@ -3798,8 +3770,7 @@ fn resolve_backend_factory<'a>(
 /// and `extra` cloned verbatim from this same `entry`'s own
 /// [`BackendEntry::extra`], never
 /// from anywhere else: this is the ONLY place that map is read out of the
-/// loaded config and handed onward, closing the gap where it was previously
-/// captured at load time and then discarded before any factory saw it.
+/// loaded config and handed onward.
 fn build_backend_context(
     id: &str,
     entry: &BackendEntry,
@@ -3921,7 +3892,7 @@ fn build_default_store(_cwd: &Path, _root: &Path) -> Result<Arc<dyn SessionStore
 /// real central default rather than only a project-local fixture). The
 /// original formula -- `sessions_root.parent().join("paths")` -- silently
 /// assumed `sessions_root`'s parent is ALREADY project-exclusive, true of
-/// the old fixed default (`<cwd>/.conway/sessions`, parent `<cwd>/.conway`)
+/// the fixed default (`<cwd>/.conway/sessions`, parent `<cwd>/.conway`)
 /// and of an operator's own explicit `session.root`, but false of the new
 /// central, project-keyed default: `~/.conway/sessions/<project-key>/`'s
 /// parent is `~/.conway/sessions/`, the ONE directory shared by every
@@ -4114,7 +4085,7 @@ mod models_overrides_tests {
         let model = ModelId::new("glm-5.2");
 
         // What the runtime's T-1 gate reads directly (attempt.rs;
-        // out of this item's file scope, but this is its accessor).
+        // outside this crate, but this is its accessor).
         let direct = backend.capabilities(&model);
         assert_eq!(
             direct.max_context_tokens, 1_000_000,

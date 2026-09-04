@@ -164,16 +164,15 @@ pub trait Plugin: Send + Sync + 'static {
     /// `[0] SystemPrompt` (the agent definition's own base prompt, or a
     /// one-shot session's `--system-prompt` override -- both occupy the
     /// same `[0]` slot); [`FragmentPosition::AfterSystemPrompt`] fragments
-    /// (the default -- every fragment declared before this field existed
-    /// behaves exactly as it always did) render where `[1]
+    /// (the default) render where `[1]
     /// PluginInstructions*` always has, AFTER `[0]` and BEFORE `[1b]
     /// SkillFragments*` (the operator's own, directory-authored skills,
     /// `AgentDef.skills`). Within a position, [`InstructionFragment::order`]
     /// breaks ties (lower renders first; equal `order` keeps install
     /// order) -- process record `01M1FQ36PCW2J19AP219GKZH3R` (a plugin that
     /// wants to speak BEFORE an agent definition's own prompt, e.g.
-    /// `conway.idiom`'s base fragment, had no way to say so before this
-    /// field existed; the module doc on that plugin's own crate is the
+    /// `conway.idiom`'s base fragment -- the module doc on that plugin's
+    /// own crate is the
     /// worked example). Multiple plugins' fragments at the SAME position
     /// are injected in `with_plugin`/`install_selected` install order,
     /// stable-sorted by `(position, order, install_index)` -- the SAME
@@ -186,8 +185,7 @@ pub trait Plugin: Send + Sync + 'static {
     ///
     /// **Audience.** [`InstructionFragment::scope`] narrows WHICH agent a
     /// fragment reaches: [`FragmentScope::All`] (the default) reaches every
-    /// agent, root or child, exactly as every fragment did before this
-    /// field existed; [`FragmentScope::RootOnly`]/[`FragmentScope::ChildrenOnly`]
+    /// agent, root or child; [`FragmentScope::RootOnly`]/[`FragmentScope::ChildrenOnly`]
     /// restrict it to one or the other, keyed off the
     /// STRUCTURAL fact of whether an agent has a parent (`AgentLoop::
     /// parent`), never inferred from its tool set or role. A fragment
@@ -241,8 +239,8 @@ pub trait Plugin: Send + Sync + 'static {
     /// does the LIFETIME (bound to a plugin vs. bound to a file an
     /// operator manages directly), which is why this is a distinct
     /// contribution method rather than a widened `Self::commands`-shaped
-    /// reuse of skills' own directory-loading path -- and, since this
-    /// item, why the two no longer share a provenance stamp either.
+    /// reuse of skills' own directory-loading path -- and
+    /// why the two do not share a provenance stamp either.
     fn instructions(&self) -> Vec<InstructionFragment> {
         Vec::new()
     }
@@ -424,8 +422,8 @@ pub trait Plugin: Send + Sync + 'static {
     /// **Why this is a `Plugin` method rather than only a `ConwayBuilder`
     /// setter.** `ConwayBuilder::with_context_hook` remains the lower-level
     /// surface -- an embedder with a standalone hook and no plugin still
-    /// uses it directly. But before this method, a plugin-contributed tool
-    /// ([`Self::tools`]) had no way to ALSO contribute the context curation
+    /// uses it directly. But without this method, a plugin-contributed tool
+    /// ([`Self::tools`]) has no way to ALSO contribute the context curation
     /// that tool's value proposition often depends on: progressive skill
     /// disclosure, for instance, is a `ContextHook` that narrows a
     /// `Provenance::Skill` segment to a one-line index PLUS a `read_skill`
@@ -702,7 +700,7 @@ pub trait Plugin: Send + Sync + 'static {
     /// (decision `01M128AP39WXE01BBZV4RENC4M`); nothing here reopens it.
     ///
     /// **Provenance, made structural, not merely a comment an operator may
-    /// scroll past** (this item's own design question, decided): every
+    /// scroll past**: every
     /// rule this method returns is folded in carrying
     /// [`crate::hook::HookOrigin::Plugin`] (this plugin's own
     /// [`PluginManifest::id`]), never [`crate::hook::HookOrigin::
@@ -793,10 +791,8 @@ pub struct PluginHookRule {
     /// `child_spawned` (`conway_runtime::hook_dispatch::CHILD_SPAWNED`), the
     /// one dispatched event whose payload carries a `"mode"` field at all
     /// (`conway_runtime::subagent::SubagentHost::start`'s own `"mode":
-    /// spec.mode` dispatch). `false` (the default every pre-existing
-    /// `Plugin::hooks()` implementor keeps, since this field did not exist
-    /// before board item `01M129Y98V4C1050QBPPMY37X0`) fires for EVERY
-    /// mode, `Fork` included -- unchanged from `child_spawned`'s own
+    /// spec.mode` dispatch). `false` (the default) fires for EVERY
+    /// mode, `Fork` included -- matching `child_spawned`'s own
     /// long-standing "fires for both modes" contract
     /// (`crate::agent::SubagentMode`'s own doc, "fork vs spawn: the only
     /// two subagent modes, never blurred into one").
@@ -809,9 +805,9 @@ pub struct PluginHookRule {
     /// Task tool creates); conway's `child_spawned` fires for that AND for
     /// a `Fork` (the shape `/ask` and `conway_ask` use, where the current
     /// conversation continues in a child that inherits its context) --
-    /// before this field existed, a plugin author's `SubagentStart` hook
-    /// fired on every `/ask`, a thing its author never had in mind (board
-    /// item `01M129Y98V4C1050QBPPMY37X0`'s own finding). Set on any OTHER
+    /// without narrowing this to `Spawn`, a plugin author's `SubagentStart`
+    /// hook would fire on every `/ask`, a thing its author never had in
+    /// mind (board item `01M129Y98V4C1050QBPPMY37X0`'s own finding). Set on any OTHER
     /// event (one whose payload carries no `"mode"` field), it is
     /// harmlessly inert -- never matches, mirroring `match_tool`'s own
     /// toolless-event fallback -- rather than panicking.
@@ -1004,14 +1000,12 @@ pub struct InstructionFragment {
     /// sentence exists only for a turn that actually has
     /// `compose_context_path`.
     ///
-    /// **Board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` narrowed this field's own
-    /// scope.** Before that item, [`Self::text`] was the fragment's WHOLE
-    /// text and a separate whole-fragment `tool_ids` field withheld it
-    /// ENTIRELY the moment any one id was unreachable -- so a fragment that
-    /// wanted to say "verify with `bash`" alongside general, always-true
-    /// orientation text had no way to gate only that one sentence: naming
-    /// `bash` made the ENTIRE fragment vanish for a `bash`-less session.
-    /// [`Self::parts`] is what closes that gap -- see its own doc.
+    /// **`text`'s own scope is unconditional content only** (board
+    /// item `01M1FSRJJAB3ZYZXED4SVT2ZSF`) -- a fragment that wants to say
+    /// "verify with `bash`" alongside general, always-true orientation text
+    /// gates only that one sentence via [`Self::parts`], rather than the
+    /// whole fragment vanishing for a `bash`-less session just because it
+    /// names `bash` once -- see that field's own doc.
     pub text: String,
     /// Zero or more conditional sentences beyond [`Self::text`]'s
     /// unconditional body, each independently gated on a set of tool ids.
@@ -1024,34 +1018,28 @@ pub struct InstructionFragment {
     /// independently-gated parts instead). A reachable part's text is
     /// appended after [`Self::text`] (and after every earlier reachable
     /// part), each joined by a blank line, into the SAME single
-    /// `Role::System` segment [`Self::text`] alone used to render --
+    /// `Role::System` segment --
     /// gating is per-part, but the rendered result is still one segment,
     /// not one segment per part. An unreachable part is dropped from that
     /// join silently (per turn, never a build-time error) but recorded --
     /// see `InstructionFragmentEntry::withheld_parts`/`unreachable_tool_ids`
     /// (`conway_core::provenance`) for where. [`Self::text`] empty AND
-    /// every part unreachable is the per-part analog of the old
-    /// whole-fragment withholding: nothing renders for this turn at all
-    /// (no segment pushed), the SAME "the model never reads an instruction
-    /// naming a tool it cannot call" guarantee the old whole-fragment
-    /// `tool_ids` field made, now reached by construction rather than by a
-    /// second field.
+    /// every part unreachable means
+    /// nothing renders for this turn at all
+    /// (no segment pushed) -- the SAME "the model never reads an instruction
+    /// naming a tool it cannot call" guarantee, reached by construction
+    /// rather than by a separate field.
     pub parts: Vec<InstructionPart>,
     /// Which side of `[0] SystemPrompt` this fragment renders on. Default
-    /// [`FragmentPosition::AfterSystemPrompt`] -- every fragment declared
-    /// before this field existed keeps rendering exactly where it always
-    /// did. See [`Plugin::instructions`]'s own "Precedence" section.
+    /// [`FragmentPosition::AfterSystemPrompt`]. See [`Plugin::instructions`]'s own "Precedence" section.
     pub position: FragmentPosition,
     /// Render order within [`Self::position`] -- lower renders first; a tie
     /// (including the default `0` against another default `0`) keeps
-    /// install order. Default `0`, deliberately the same value every
-    /// fragment declared before this field existed implicitly had (nothing
-    /// broke ties before now, so `0` for everyone reproduces "install
-    /// order decides" exactly).
+    /// install order. Default `0`.
     pub order: i16,
     /// Which agent this fragment reaches. Default [`FragmentScope::All`] --
-    /// every fragment declared before this field existed reached every
-    /// agent, root or child, and keeps doing so. See [`Plugin::
+    /// reaches every
+    /// agent, root or child. See [`Plugin::
     /// instructions`]'s own "Audience" section for the structural fact this
     /// is keyed on.
     pub scope: FragmentScope,
@@ -1059,9 +1047,7 @@ pub struct InstructionFragment {
     /// own agent-def name (`SystemPromptSpec::agent_def`) matches exactly
     /// -- absent (including when `[0]` carries no agent def at all, e.g. a
     /// bare interactive session or a one-shot `--system-prompt` override)
-    /// otherwise. `None` (the default) means no such restriction: every
-    /// fragment declared before this field existed renders regardless of
-    /// which agent def, if any, supplied `[0]`.
+    /// otherwise. `None` (the default) means no such restriction.
     pub agent_def: Option<String>,
     /// Who actually wrote [`Self::text`] -- [`FragmentAuthor::Plugin`] (the
     /// default) for a fragment sourced from the declaring plugin's own crate
@@ -1084,8 +1070,7 @@ pub struct InstructionFragment {
 /// [`InstructionFragment::authored_by`]'s own vocabulary -- who actually
 /// wrote a fragment's [`InstructionFragment::text`], as distinct from which
 /// plugin's `Plugin::instructions()` call carried it to `ConwayBuilder::
-/// build`. Every fragment before this type existed was, in effect,
-/// [`FragmentAuthor::Plugin`] -- the default preserves that exactly.
+/// build`.
 ///
 /// Deliberately narrower than a general "who wrote this" enum: this exists
 /// to answer one question (`ContextBuilder::build`'s stamping decision), not
@@ -1096,8 +1081,7 @@ pub struct InstructionFragment {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum FragmentAuthor {
     /// The declaring plugin's own crate wrote this text -- a Rust string
-    /// literal or an `include_str!`'d file it ships. Every fragment
-    /// declared before this field existed behaves exactly as this variant.
+    /// literal or an `include_str!`'d file it ships. The default.
     #[default]
     Plugin,
     /// An operator wrote this text themselves, in a file the plugin merely
@@ -1113,8 +1097,8 @@ impl InstructionFragment {
     /// Construct a fragment with every optional field at its default:
     /// [`FragmentPosition::AfterSystemPrompt`], `order: 0`,
     /// [`FragmentScope::All`], `agent_def: None`, `parts: vec![]`,
-    /// [`FragmentAuthor::Plugin`] -- exactly today's (pre-this-field)
-    /// behavior. Use the `with_*` methods below to opt into anything else.
+    /// [`FragmentAuthor::Plugin`].
+    /// Use the `with_*` methods below to opt into anything else.
     pub fn new(name: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -1128,13 +1112,13 @@ impl InstructionFragment {
         }
     }
 
-    /// See [`Self::parts`]. Board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` --
-    /// replaces the removed whole-fragment `with_tool_ids`: a plugin whose
-    /// entire fragment used to gate on one tool (e.g.
+    /// See [`Self::parts`]. Board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`:
+    /// a plugin whose
+    /// entire fragment gates on one tool (e.g.
     /// `conway-plugin-path`/`conway-plugin-discover`, each naming the one
-    /// tool their own fragment is about) now leaves [`Self::text`] empty
+    /// tool their own fragment is about) leaves [`Self::text`] empty
     /// and supplies that same text as this call's one part instead --
-    /// see those crates' own `instructions()` for the worked migration.
+    /// see those crates' own `instructions()` for the worked example.
     pub fn with_parts(mut self, parts: Vec<InstructionPart>) -> Self {
         self.parts = parts;
         self
@@ -1379,8 +1363,8 @@ pub struct EventDecl {
 /// as if the operator had typed it. Bound to the invoking agent/session
 /// exactly like `ForkSession`/`MaskRecord` (see that variant's own doc for
 /// the full binding argument, which applies unchanged), and, like every
-/// widening above it, earned by a real consumer: this item's own
-/// file-backed command (see `conway_plugin_skeleton`'s `FilePromptCommand`)
+/// widening above it, earned by a real consumer:
+/// `conway_plugin_skeleton`'s `FilePromptCommand`
 /// is that consumer, not a speculative grant ahead of one.
 #[async_trait]
 pub trait Command: Send + Sync + 'static {
@@ -1581,7 +1565,7 @@ pub enum CommandOutcome {
     /// other than the invoking one; `Checkout` structurally MUST be able
     /// to, since checking out is the entire point -- there is no narrower
     /// shape that still does what `/checkout <session>` asks for. This is
-    /// the one new capability this crate grants for this item, and grants
+    /// the one new capability this crate grants, and grants
     /// nothing else: a command still cannot read another session's
     /// content, steer it, or act on it in any way other than "hand me a
     /// fresh fork of it to drive."
@@ -1607,8 +1591,7 @@ pub enum CommandOutcome {
     /// text into the conversation as a turn, which is what a
     /// prompt-template command's entire job is (`/review-this`, `/explain`,
     /// the shape Claude Code's own `commands/*.md` plugins are built almost
-    /// entirely on -- see that item's own spec for why this was filed
-    /// separately from the compatibility layer that first needed it).
+    /// entirely on).
     ///
     /// **Determine-first question 1 -- provenance, answered, not defaulted.**
     /// This text was authored by conway (a plugin's own template or logic),
@@ -1629,7 +1612,7 @@ pub enum CommandOutcome {
     /// **Determine-first question 2 -- port variant, not a renderer
     /// `Effect`, answered, not assumed.** `crate` (`conway-core`) cannot
     /// depend on `conway-cli`, so a TUI-only `Effect` could never live
-    /// here regardless; the real question this item's spec raises is
+    /// here regardless; the real question is
     /// whether the CAPABILITY should be TUI-only at all. This project's
     /// own rule (GP-05/C-03: "no capability may exist in only one mode")
     /// decides it: a library embedder holding a live `Conway`/
@@ -1781,10 +1764,8 @@ pub trait Tool: Send + Sync + 'static {
     /// shell-interpretable (it genuinely IS the string handed to a shell).
     ///
     /// **The default is [`RenderKind::ShellCommand`] -- the conservative
-    /// choice, matching the metacharacter gate's behavior before this
-    /// method existed** (every `rendered` string was gated, unconditionally,
-    /// for every tool). A tool that does not override this method is
-    /// exactly as gated as it was before this method existed: its pattern
+    /// choice**: a tool that does not override this method has every
+    /// `rendered` string gated, unconditionally; its pattern
     /// grants may stay inert if its `render` output happens to contain a
     /// shell metacharacter (as the trait's default JSON-dump `render` does,
     /// via `(`, `)`, `{`, `}`), but that is a missed convenience, never a
@@ -1831,9 +1812,8 @@ pub trait Tool: Send + Sync + 'static {
     /// `render_kind` (the permission broker's own root-containment walk,
     /// `PatternRule`'s metacharacter gate) still need answered honestly.
     ///
-    /// **The default is `false`** -- every tool declared before this method
-    /// existed, including `bash` itself, keeps behaving exactly as before:
-    /// the root+unconfinable-shell-tool warning still fires for it. A tool
+    /// **The default is `false`** -- the root+unconfinable-shell-tool
+    /// warning fires for every tool, `bash` included. A tool
     /// author sets this to `true` only when they can back the claim with a
     /// real, OS-enforced containment mechanism -- see `conway-plugin-
     /// confine`'s own module doc for the one shipped example, and P-14
@@ -1930,13 +1910,10 @@ impl Default for PathArgs {
 /// [`PluginManifest::optional_host_caps`]), and the host separately grants
 /// at build time (via `conway::HostCaps`), never implied by trust alone.
 ///
-/// **An OPEN, namespaced vocabulary -- not the closed two-variant enum this
-/// type used to be.** Until `docs/vision/DESIGN-plugin-dependencies.md` §2
-/// (Edge A) named the defect, a plugin could name a cap only from a fixed,
-/// `#[non_exhaustive]`-but-still-closed membership list (`Subagent`,
-/// `PersistentTransport`): a third party could never declare a capability
-/// core had not already blessed, and every new host surface was a breaking
-/// enum edit. This reuses the naming discipline that already solved the
+/// **An OPEN, namespaced vocabulary.** A third party can declare a
+/// capability core has not already blessed, without a breaking enum edit
+/// for every new host surface (`docs/vision/DESIGN-plugin-dependencies.md`
+/// §2 Edge A). This reuses the naming discipline that already solved the
 /// identical problem for a plugin's own event names
 /// (`crate::event_name`'s own module doc; design §2: *"That is the right
 /// model for a capability vocabulary"*): [`crate::event_name::
@@ -1960,7 +1937,7 @@ impl Default for PathArgs {
 /// this type answers "is `name` well-formed", never "does anything actually
 /// offer `name`". The latter is `conway::HostCaps::check_manifest`/
 /// `missing_optional`'s job, comparing a manifest's declared caps against
-/// what the host built at `ConwayBuilder::build` -- unchanged by this item,
+/// what the host built at `ConwayBuilder::build` --
 /// still a hard `PluginError::MissingHostCapability` for a missing
 /// *required* cap, still narrowing/safe.
 ///
@@ -2371,7 +2348,7 @@ impl CwdHandle {
 /// command) -- `conway_runtime::hook_dispatch::HookDispatcher::dispatch`,
 /// the SAME dispatch path every core observation event (`post_tool_use`,
 /// `session_starting`, ...) already goes through, implements this trait
-/// directly. **This is this item's own "one dispatch path" YAGNI, made
+/// directly. **One dispatch path, made
 /// structural**: a plugin-declared event is dispatched exactly like
 /// `post_tool_use` -- observation-only, fails open (a broken hook is
 /// logged and skipped, never propagated) -- never through a second,
@@ -2616,7 +2593,7 @@ impl ToolCtx {
     /// construction tax `ContextHookCtx` just shed"; that item's own
     /// precedent, [`ArtifactWriteHandle::noop`], is [`Self::plugin_events`]'s
     /// analog here -- `plugin_events` already had one via
-    /// [`PluginEventHandle::noop`] before this constructor existed).
+    /// [`PluginEventHandle::noop`]).
     ///
     /// **Deliberately NOT a silent no-op default for `subagents`/`events`,
     /// unlike `ArtifactWriteHandle::noop`.** A `ContextHookCtx` fixture for a
@@ -3191,8 +3168,8 @@ mod tests {
         // The session's OWN persisted value, written back when a WIDER
         // global default (or no ceiling at all) was in effect -- exactly
         // what a resume path that "reconstructs a root by any route other
-        // than the one that validated it" (this item's own hazard
-        // language) could otherwise let through unchecked.
+        // than the one that validated it" could otherwise let through
+        // unchecked.
         let persisted = config_with("acme.limit", 10);
 
         let err = current_global_default
@@ -3261,9 +3238,8 @@ mod tests {
     }
 
     /// `ArtifactWriteHandle::noop`
-    /// replaces what used to be a hand-rolled private `ArtifactWriter` double
-    /// here -- this module's own fixtures are exactly the boilerplate that
-    /// constructor exists to remove -- one implementation, reused rather than
+    /// is used here rather than a hand-rolled private `ArtifactWriter` double
+    /// -- one implementation, reused rather than
     /// restated. The REAL containment guarantee is exercised by
     /// `conway-runtime`'s `artifact_store` tests, against a real
     /// `AgentArtifactWriter` and a real filesystem; this module's own fixtures
@@ -3689,7 +3665,7 @@ mod tests {
         );
     }
 
-    /// **The discriminating observable this item exists to prove.**
+    /// **The discriminating observable this test proves.**
     /// `CommandOutcome::ForkSession` carries no session identifier of its
     /// own -- checkable directly, by destructuring: this pattern binds only
     /// `at_seq`/`directive`, and would fail to COMPILE if a third field

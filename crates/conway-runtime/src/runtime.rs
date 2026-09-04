@@ -18,38 +18,25 @@
 //!
 //! - **`ToolRunner`/`PermissionBroker` construction:** `ToolRunner::new` takes `Arc<PluginRegistry>`
 //!   and `Arc<PermissionBroker>`, not the unwrapped values the
-//!   prose's illustrative structs might suggest. This item wraps both in
-//!   `Arc` at construction, as that review already flagged for this item's
-//!   brief.
+//!   prose's illustrative structs might suggest. Both are wrapped in
+//!   `Arc` at construction.
 //! - **`RuntimeDeps` has no `subagents` field:** `LoopDeps::subagents`
 //!   (committed) requires an `Arc<dyn SubagentHost>` for every agent
-//!   task. Rather than accept this as an injected dependency (
-//!   an earlier review found: an embedder-supplied fake is not a real
+//!   task. This is deliberately NOT an injected dependency: an
+//!   embedder-supplied fake is not a real
 //!   dependency, and `conway_testkit::FakeSubagentHost` lives in a
 //!   test-only crate this crate's own `[dependencies]` never names (only
 //!   `[dev-dependencies]` does), so wiring it into a non-test `Runtime::new`
 //!   would be a layering violation either
-//!   way), `Runtime::new` now builds the real `subagent::WeakRuntimeHost`
-//!   from its own `Weak<Runtime>`, replacing the `NoSubagentHost`
-//!   stub this item originally shipped (every method of which returned a
-//!   `RuntimeError` naming the gap). See `Runtime::new`'s own doc for why a
+//!   way. Instead, `Runtime::new` builds the real `subagent::WeakRuntimeHost`
+//!   from its own `Weak<Runtime>`. See `Runtime::new`'s own doc for why a
 //!   `Weak`-backed delegator, not a literal `Arc<Runtime>`, is what
-//!   `LoopDeps::subagents` holds.
-//! - **An earlier file-scope note:** the work item's own scope section lists
-//!   only `subagent.rs`, `agent_loop.rs`, and its test file — not this file.
-//!   In practice `impl SubagentHost for Runtime` cannot be wired up without
-//!   touching `Runtime::new` (replacing `NoSubagentHost`, adding the
-//!   `TranscriptResolver` instance fork resolution needs) and without a
+//!   `LoopDeps::subagents` holds. `impl SubagentHost for Runtime`
+//!   (`subagent.rs`) reaches this file's otherwise-private state through a
 //!   handful of narrow `pub(crate)` accessors (`loop_deps`, `agent_defs`,
-//!   `tree_ref`, `resolver`, `agent_session`, `launch_agent`) letting
-//!   `subagent.rs` reach state that was, by design, made private to this
-//!   module. This is disclosed here as a reconciliation
-//!   rather than silently expanding scope: every added accessor is
-//!   `pub(crate)` (one `#[doc(hidden)] pub` test seam excepted, mirroring
-//!   `conway-session`'s own `peek_prefix` precedent), no existing public
-//!   method's signature or behavior changes, and `start_root` is left
-//!   untouched rather than refactored onto the new `launch_agent` helper,
-//!   to keep this file's diff as small as the underlying necessity allows.
+//!   `tree_ref`, `resolver`, `agent_session`, `launch_agent`) rather than
+//!   a widened public surface (one `#[doc(hidden)] pub` test seam
+//!   excepted, mirroring `conway-session`'s own `peek_prefix` precedent).
 //! - **Skill body resolution (resolved, board item
 //!   `01M03GKZ3MGZK3ETP6R27E2M9Y`):** `conway_core::config::AgentDef::skills`
 //!   is a `Vec<String>` of *names*; resolving a name to its `SkillDef` body
@@ -64,16 +51,15 @@
 //!   contain is `RuntimeError::InvalidSpec` at spawn time — never a silent
 //!   drop, matching `agents.rs`'s own loud-failure discipline for a
 //!   malformed def.
-//! - **Live `context_report` via a loop-pushed slot, not a bus fold:** an
-//!   earlier revision of this item reconstructed `ContextReport` by
+//! - **Live `context_report` via a loop-pushed slot, not a bus fold:**
+//!   reconstructing `ContextReport` by
 //!   subscribing to the bus and folding `TurnStarted`/`ContextSegmentAdded`
-//!   envelopes. An earlier review found: rejected that
-//!   design: `EventBus::subscribe` synthesizes `Event::Lagged` envelopes
+//!   envelopes would be unsafe: `EventBus::subscribe` synthesizes `Event::Lagged` envelopes
 //!   carrying a *freshly generated* `AgentId` on broadcast overflow
-//!   (`events.rs`), which the fold could never match back to the lagging
-//!   agent, so a slow subscriber's dropped envelopes silently and
-//!   permanently truncated that agent's live report with no error and no
-//!   signal. This item now follows the spec's own sketch instead: this
+//!   (`events.rs`), which such a fold could never match back to the lagging
+//!   agent, so a slow subscriber's dropped envelopes would silently and
+//!   permanently truncate that agent's live report with no error and no
+//!   signal. Following the spec's own sketch instead: this
 //!   crate's authorized, strictly-additive extension to `agent_loop.rs`
 //!   (`AgentSpec::report_slot`, an `Option<Arc<Mutex<Option<ContextReport>>>>`)
 //!   gives `AgentLoop` a slot to push its just-built `ContextReport` into
@@ -92,24 +78,19 @@
 //!   expect it to appear in the resulting `AgentResult` until `AgentLoop`
 //!   grows a way to accept one.
 //! - **`Runtime::cancel`'s return type:** the spec's illustrative signature
-//!   shows no return value; this item returns `Result<(), RuntimeError>`
+//!   shows no return value; `Runtime::cancel` returns `Result<(), RuntimeError>`
 //!   (erroring `AgentNotFound` for an unknown id) for consistency with
 //!   `prompt`'s and `context_report`'s error handling. A disclosed,
 //!   intentional deviation, not an oversight.
-//! - **`AgentHandle` sheds its own result channel and cancel
-//!   token.** Before this item, `AgentHandle` held its own
-//!   `watch::Receiver<Option<AgentResult>>` (populated by a bare
-//!   `tokio::spawn` that sent into a paired `Sender` on completion) and its
-//!   own `CancellationToken`, and `tree()`/`cancel()` read and
-//!   wrote them directly. Both are now owned by `AgentTree` instead (a
+//! - **`AgentHandle` holds no result channel or cancel
+//!   token of its own.** Both are owned by `AgentTree` instead (a
 //!   `start_root` agent is `attach`ed to it exactly like a future
 //!   child would be, with `kind: None` since a root is started, not
 //!   spawned — see `tree.rs`'s module doc), so `AgentHandle` keeps only
 //!   what nothing else already tracks: the session id (for `prompt`) and
 //!   the live report slot (for `context_report`). Routing both channels
 //!   through one owner is also what makes `tree().nodes[].status` accurate
-//!   for a finished root agent, which the old per-`AgentHandle` channel,
-//!   never read by the `tree()` stub that preceded it, did not actually provide.
+//!   for a finished root agent.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -550,7 +531,7 @@ impl Runtime {
     /// agent task under this runtime consults before each LLM request and
     /// on T-1 overflow (`AgentLoop::route_and_attempt`). A new, purely
     /// additive public method rather than a `RuntimeDeps` field: `RuntimeDeps`
-    /// is out of this item's file scope, and is also constructed by field
+    /// is constructed by field
     /// literal in several existing tests that a new required field would
     /// have broken. Intended to be called once, by the facade
     /// (`conway::ConwayBuilder::build`), before any session is started;
@@ -579,8 +560,8 @@ impl Runtime {
     /// [`Curator`](conway_core::ports::Curator) the runtime reads fresh
     /// every turn via `AgentLoop::apply_curator`. Mirrors
     /// [`Self::set_context_hook`]'s own shape exactly -- `RuntimeDeps` is
-    /// out of this item's file scope (also constructed by field literal in
-    /// several existing tests a new required field would break), so this is
+    /// constructed by field literal in
+    /// several existing tests a new required field would break, so this is
     /// a purely additive post-construction setter rather than a new
     /// `RuntimeDeps` field.
     ///
@@ -609,12 +590,12 @@ impl Runtime {
     /// `AutoAllow` included.
     ///
     /// Mirrors [`Self::set_context_hook`]'s own shape exactly, for the
-    /// identical reason: `RuntimeDeps` is out of this item's file scope
-    /// (also constructed by field literal in several existing tests a new
-    /// required field would break), so this is a purely additive
+    /// identical reason: `RuntimeDeps` is
+    /// constructed by field literal in several existing tests a new
+    /// required field would break, so this is a purely additive
     /// post-construction setter rather than a new `RuntimeDeps` field. Not
     /// called at all (the default) leaves `PermissionBroker::decide`
-    /// byte-for-byte unchanged from before this item -- the broker's own
+    /// unaffected -- the broker's own
     /// `hook_runner` field defaults to `None`, which the hook-check step
     /// treats as "nothing to consult" before it performs any I/O or even
     /// reads the installed hook list.
@@ -964,8 +945,8 @@ impl Runtime {
     }
 
     /// Appends a `LogRecord::UserTurn` to `agent`'s session before returning
-    /// (persist-before-act), then emits the live `Event::UserTurn` twin (this
-    /// item) so a subscriber on the event stream sees the SAME occurrence
+    /// (persist-before-act), then emits the live `Event::UserTurn` twin
+    /// so a subscriber on the event stream sees the SAME occurrence
     /// live that replay would later reconstruct from the log -- closing the
     /// The gap where only the TUI (via its own local `Entry::User` push) ever
     /// showed a prompt. Ordering-safe for every caller of this method: `agent`
@@ -1133,8 +1114,7 @@ impl Runtime {
     /// over the same store). An out-of-range `turn` returns a typed error
     /// naming the valid range (see `report::persisted_at_turn`'s doc for
     /// the `RuntimeError::Tool(ToolError::Internal)` "closest fit" mapping
-    /// this uses, `RuntimeError` having no dedicated variant and
-    /// `conway-core/src/error.rs` being out of this item's scope).
+    /// this uses, since `RuntimeError` has no dedicated variant for it).
     pub async fn context_report_at(
         &self,
         agent: AgentId,
@@ -1668,8 +1648,8 @@ impl Runtime {
         //
         // A failure HERE is the second half of the same disclosure
         // problem: the merge is fully durable and fully emitted, and only
-        // the purge failed -- yet before this item the caller got a bare
-        // `NotRemovable`, indistinguishable from pre-check guard 3, which
+        // the purge failed -- a bare
+        // `NotRemovable` here would be indistinguishable from pre-check guard 3, which
         // refuses before anything is written. A caller that read that as
         // "nothing happened" and retried would merge the ask TWICE. It
         // reports as `PullInIncomplete` with `merged == of` (nothing was

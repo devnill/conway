@@ -7,20 +7,20 @@
 //!
 //! ## mailboxes and steering
 //!
-//! `drain_inbox` (previously a documented no-op hook) now really drains
+//! `drain_inbox` drains
 //! this agent's inbox at every turn boundary and classifies what it finds
 //! (`crate::mailbox::classify`) -- see that function's doc and
 //! `drain_inbox`'s own doc for the turn-boundary and "no injection outside
-//! drain_inbox" guarantees this buys. `AgentLoop` gained three fields:
+//! drain_inbox" guarantees this buys. `AgentLoop` carries three relevant
+//! fields:
 //! `inbox` (this agent's own `MailboxReceiver`), `parent_mailbox` (used to
 //! deliver this agent's terminal `Result` upward on `finish`), and
 //! `pending_cancel` (turn-local bookkeeping a drained soft `Cancel`
 //! resolves into). A drained `Result` is classified but drives no
-//! drain-time action -- An earlier review found: removed the never-
-//! populated `pending_subagent` map this used to resolve; see
+//! drain-time action -- see
 //! `drain_inbox`'s own doc and `mailbox.rs`'s module doc for why
 //! `AgentTree::await_result` is the real, and only, resolution
-//! path. `LoopDeps` gained `tree`, used both to close the carried
+//! path. `LoopDeps` carries `tree`, used both to close the carried
 //!/ double-`AgentFinished` race in `finish` (this file's
 //! half of a two-sided fix -- see `supervisor.rs`'s module doc for the
 //! other half) -- see `finish`'s own doc.
@@ -30,22 +30,22 @@
 //! `AgentLoop` carries `inherited: Option<InheritedPrefix>`, resolved once at
 //! fork time by `subagent.rs`'s `SubagentHost::start` (via
 //! `conway_core::transcript::TranscriptResolver`, before any of the child's
-//! own records exist). Every turn's path assembly used to hand it to
-//! `path_from_legacy` unchanged; as of this item it calls
-//! `context::path::resolve_default_path` instead, which re-derives the same
+//! own records exist). Every turn's path assembly calls
+//! `context::path::resolve_default_path`, which re-derives the same
 //! inherited prefix itself, every turn, straight from the session's own
 //! `meta.origin` (read via the store) rather than from this cached field --
 //! see that function's own doc (`context/path.rs`, step 3) for the
 //! ancestry-walk fix that made this safe to wire in. `self.inherited` and its
-//! construction sites (`subagent.rs`, `runtime/root.rs`) stay unchanged --
-//! only `run_inner` stops reading the field, it is not dead: `subagent.rs`
+//! construction sites (`subagent.rs`, `runtime/root.rs`) are NOT dead code
+//! even though `run_inner` no longer reads the field for path assembly:
+//! `subagent.rs`
 //! also derives `inherited_upto` (`AgentNode` tree bookkeeping, unrelated to
 //! context assembly) from the SAME fork-time resolve call, so removing the
 //! construction site would take that with it too. `path_from_legacy` is
 //! kept as a cheaper, store-free test fixture builder (see its own doc).
 //!
-//! `AgentSpec::report_slot` (An earlier review found: ) is this item's
-//! one additive hook for a live caller: after each successful
+//! `AgentSpec::report_slot` is
+//! the one additive hook for a live caller: after each successful
 //! `ContextBuilder::build`, and before that turn's backend call, the loop
 //! pushes a clone of the just-built `ContextReport` into the slot if the
 //! caller supplied one. This is the only channel through which a turn's
@@ -55,14 +55,12 @@
 //! ## Reconciliations against the amendment's illustrative types
 //!
 //! The amendment's prose assumes a runtime-local `HeadroomPolicy` (in a
-//! `headroom.rs` this item would create) and a `RouteRequest.required.
+//! `headroom.rs` this crate would create) and a `RouteRequest.required.
 //! min_context` field carrying `est_tokens + headroom`. Neither exists in
 //! the committed workspace:
-//! - `HeadroomPolicy` is `conway_core::capabilities::HeadroomPolicy` (already
-//!   committed; relocated out of `conway-routing`'s `config` module
-//!   into `conway-core` by a later item, so this
-//!   engine no longer needs to depend on the whole routing crate for it) —
-//!   reused directly rather than duplicated.
+//! - `HeadroomPolicy` is `conway_core::capabilities::HeadroomPolicy` --
+//!   this engine does not need to depend on the whole routing crate for
+//!   it -- reused directly rather than duplicated.
 //! - `conway_core::routing::RequiredCaps` has no `min_context: u32` total;
 //!   it has `min_context: Option<u32>` (an independent absolute floor,
 //!   unrelated to headroom) and `headroom_tokens: u32` (the headroom
@@ -87,7 +85,7 @@
 //!   decisions until it lands.
 //!
 //! Event ordering also reconciles the amendment's step-9 prose ("run tools,
-//! emit `TurnFinished`") against this item's own binding criterion
+//! emit `TurnFinished`") against the binding criterion
 //! (`TurnStarted < ModelDecision < TextDelta* < TurnFinished <
 //! ToolCallProposed*`): `TurnFinished` is emitted immediately after the
 //! assistant record is appended, before any tool call is dispatched. A
@@ -107,41 +105,36 @@
 //! observing plugin installed that pass does not execute at all.
 //! plus an injected `SystemNote` the instant a `(tool, canonical-args)`
 //! digest is seen a 3rd time. Both are locals inside `AgentLoop::run_inner`,
-//! not new fields on `AgentLoop`/[`AgentSpec`] -- see `result.rs`'s module
-//! doc for why (both structs are constructed via field literals in files
-//! outside this item's original scope: `runtime.rs`, `subagent.rs`, and
+//! not fields on `AgentLoop`/[`AgentSpec`] -- see `result.rs`'s module
+//! doc for why (both structs are constructed via field literals in
+//! `runtime.rs`, `subagent.rs`, and
 //! existing tests).
 //!
 //! ## Non-natural terminations report what the agent actually did
 //!
-//! Board item `01M1FH114QA3A152W8H6E2YMGJ`'s extension. Before this item,
-//! every terminal path OTHER than a natural `Completed`/`Rejected` --
+//! Board item `01M1FH114QA3A152W8H6E2YMGJ`. Every terminal path OTHER than
+//! a natural `Completed`/`Rejected` --
 //! budget-exceeded (all four dimensions), cancellation (graceful and
-//! immediate), a deadline, and a bubbled-up backend/store failure -- called
-//! `AgentLoop::finish` with a literal `""` trailing text. A run that had
-//! already done real, disk-visible work then reported
+//! immediate), a deadline, and a bubbled-up backend/store failure -- calls
+//! `AgentLoop::terminal_account` rather than passing `AgentLoop::finish` a
+//! literal `""` trailing text -- a run that had
+//! already done real, disk-visible work would otherwise report
 //! `"(no output; terminal status: <name>)"`, indistinguishable from a run
-//! that had done nothing at all -- the incident this item documents cost an
-//! operator real time finding 69 lines of uncommitted, unreported work by
-//! hand. `LoopState` gained `last_assistant_text` (the most recent backend
+//! that had done nothing at all. `LoopState` carries `last_assistant_text`
+//! (the most recent backend
 //! response's own text, captured every turn -- see that field's own doc),
-//! and every one of the ten `""`-passing sites now calls
-//! `AgentLoop::terminal_account` instead, which resolves that text, or an
+//! and every one of the ten `""`-passing sites
+//! calls
+//! `AgentLoop::terminal_account`, which resolves that text, or an
 //! explicit "stopped mid-run" marker when there is no text but other
-//! evidence of real work, or `""` (genuinely unchanged) only when NEITHER
+//! evidence of real work, or `""` only when NEITHER
 //! holds. See `terminal_account`'s own doc for the full precedence.
 //!
-//! `AgentSpec` gained one field this item, `result_contract:
+//! `AgentSpec` carries `result_contract:
 //! Option<schemars::schema::RootSchema>`, carried through from
 //! `SubagentSpec::result_contract` by `subagent.rs`'s `SubagentHost::start`
 //! (`None` for a root agent -- `runtime.rs`'s `start_root` has no
-//! `SubagentSpec` to source one from). Adding it forced one-line, inert
-//! `result_contract: None,` additions to `runtime.rs` and the two existing
-//! test harnesses (`tests/agent_loop_e2e.rs`, `tests/steering.rs`) that
-//! construct `AgentSpec` by field literal -- a file-scope extension the
-//! coordinator explicitly authorized (this item's Self-Check) after the
-//! initial implementation flagged the conflict rather than silently
-//! expanding scope. The natural-completion branch of `AgentLoop::run_inner`
+//! `SubagentSpec` to source one from). The natural-completion branch of `AgentLoop::run_inner`
 //! enforces the contract when present: `Ok` proceeds to `Completed`;
 //! the first failure appends a `SystemNote { reason:
 //! "result_contract_violation" }` and gives the agent one more turn
@@ -333,17 +326,16 @@ pub struct LoopDeps {
     pub resolver: Arc<conway_core::transcript::TranscriptResolver>,
     /// Pluggable pre-assembly context curation (DESIGN-context-path §11.4).
     /// `RwLock` rather than a plain `Option` for the SAME reason
-    /// [`Self::context_hook`] is: `RuntimeDeps` (runtime.rs, out of this
-    /// item's file scope) has no field to source one from at `LoopDeps`
-    /// construction time -- `Runtime::set_context_curator` (a new, purely
-    /// additive method) sets this post-construction, before any agent
+    /// [`Self::context_hook`] is: `RuntimeDeps` (runtime.rs)
+    /// has no field to source one from at `LoopDeps`
+    /// construction time -- `Runtime::set_context_curator` (a
+    /// purely additive method) sets this post-construction, before any agent
     /// starts running, and every turn reads it fresh via
     /// `AgentLoop::context_curator`. `None` (the default every existing
-    /// construction site gets, unchanged) means the curator stage is a
+    /// construction site gets) means the curator stage is a
     /// zero-cost pass-through -- `apply_curator` returns the original
     /// `ResolvedPath` without allocating a `CurateCtx` or even reading the
-    /// lock's value's internals, so `run_inner`'s assembly stays
-    /// byte-identical to behavior before this port existed (the
+    /// lock's value's internals (the
     /// `context_golden` 11/11 gate is the load-bearing proof).
     ///
     /// **`Arc<dyn Curator>`, no guard wrapper** -- unlike
@@ -355,16 +347,15 @@ pub struct LoopDeps {
     /// need a second wrapper here.
     pub context_curator: RwLock<Option<Arc<dyn conway_core::ports::Curator>>>,
     /// Pluggable per-call context/tool curation. `RwLock` rather
-    /// than a plain `Option` because `RuntimeDeps` (`runtime.rs`, out of
-    /// this item's file scope) has no field to source one from at
-    /// `LoopDeps` construction time -- `Runtime::set_context_hook` (a new,
+    /// than a plain `Option` because `RuntimeDeps` (`runtime.rs`) has no
+    /// field to source one from at
+    /// `LoopDeps` construction time -- `Runtime::set_context_hook` (a
     /// purely additive method) sets this post-construction, before any
     /// agent starts running, and every turn reads it fresh via
     /// `AgentLoop::context_hook`. `None` (the default every existing
-    /// construction site gets, unchanged) means this loop never invokes
-    /// anything named `ContextHook` at all -- not even a no-op call -- so
-    /// `run_inner`'s assembly, routing, and overflow handling stay
-    /// byte-identical to behavior before the hook existed. `Some` is invoked once per
+    /// construction site gets) means this loop never invokes
+    /// anything named `ContextHook` at all -- not even a no-op call.
+    /// `Some` is invoked once per
     /// turn (`ContextHook::before_request`) and, only on a T-1
     /// `ContextTooLarge`, up to `MAX_OVERFLOW_ATTEMPTS` additional times
     /// (`ContextHook::on_overflow`) -- see `AgentLoop::route_and_attempt`.
@@ -562,10 +553,10 @@ impl Default for ResumeGate {
 /// Per-turn accumulator: turns executed and usage accrued so far. `Clone`
 /// so it can be captured into an error tuple without disturbing the loop's
 /// own copy (see [`AgentLoop::run_inner`]'s early-return sites) --
-/// `last_assistant_text` (below) is a `String`, so this is no longer `Copy`
-/// as of this item; every `try_rt!` site only ever moves `$state` on the
-/// `Err` arm's immediate `return`, so dropping `Copy` needed no call-site
-/// changes there. `check_budget`/`finish_cancelled`/`finish_error` take
+/// `last_assistant_text` (below) is a `String`, so this is not `Copy`;
+/// every `try_rt!` site only ever moves `$state` on the
+/// `Err` arm's immediate `return`, so that needs no call-site
+/// changes. `check_budget`/`finish_cancelled`/`finish_error` take
 /// `&LoopState` rather than an owned one for the same reason: none of them
 /// need ownership, and several `run_inner` call sites read `state` again
 /// after calling one.
@@ -584,7 +575,7 @@ struct LoopState {
     /// `turn`, so the budget bounds each user turn's tool-loop independently
     /// rather than the whole session's lifetime -- see that method's doc.
     /// Meaningless (never read) for a non-`keep_alive` agent: `check_budget`
-    /// gates that path on `turn` exactly as before this field existed.
+    /// gates that path on `turn`.
     turn_steps: u32,
     /// Tool calls DISPATCHED since the last keep-alive user-turn boundary,
     /// gating `Budget::max_tool_calls`. Counts the batch handed to
@@ -633,11 +624,12 @@ struct LoopState {
 
 /// [`AgentLoop::check_budget`]'s outcome. `Continue` (nothing tripped) is
 /// the overwhelmingly common case; `Finished` carries the SAME terminal
-/// `AgentResult` `check_budget` has always produced for a session-ending
-/// trip (unchanged by this item: `deadline`/`max_tokens` always, and
+/// `AgentResult` `check_budget` produces for a session-ending
+/// trip (`deadline`/`max_tokens` always, and
 /// `max_steps`/`max_tool_calls` for a non-`keep_alive` agent). `TurnAborted`
-/// is new: a `keep_alive` agent's turn-scoped dimension (`max_steps`/
-/// `max_tool_calls`) tripped. `check_budget` itself only has `&LoopState`
+/// is for
+/// a `keep_alive` agent's turn-scoped dimension (`max_steps`/
+/// `max_tool_calls`) tripping. `check_budget` itself only has `&LoopState`
 /// (several callers read `state` again right after calling it -- see
 /// `LoopState`'s own doc), so it cannot own the store-append/bus-emit
 /// fallibility the way a `finish` call already in progress can; it hands
@@ -646,7 +638,7 @@ struct LoopState {
 /// reason: "budget_turn_aborted", .. }`, emits `Event::TurnAborted`, and
 /// then performs the shared turn-boundary reset
 /// ([`AgentLoop::end_keep_alive_turn`]) before looping back to the prompt
-/// gate. Not `Option<AgentResult>` (this method's shape before this item)
+/// gate. Not `Option<AgentResult>`
 /// because a third, non-terminal outcome needs its own case rather than
 /// overloading `None` for both "nothing tripped" and "something tripped but
 /// nothing finished".
@@ -1142,7 +1134,8 @@ impl AgentLoop {
         let mut seen_segments = HashSet::new();
         // both are turn-loop-local, not `AgentLoop` fields -- see
         // `result.rs`'s module doc for why (both structs are constructed
-        // via field literals in files outside this item's scope).
+        // via field literals in `runtime.rs`, `subagent.rs`, and existing
+        // tests).
         let mut result_builder = ResultBuilder::new();
         // result-contract retry: `true` once this run has already
         // spent its one corrective turn (`self.spec.result_contract`'s
@@ -1469,7 +1462,7 @@ impl AgentLoop {
             // CONTENT: `report.segments` already carries the ordered
             // content this turn is made of, but shipping the full assembled
             // transcript to a subprocess every turn is a real, unbounded
-            // cost this item's own design question flags -- `segment_metadata_json`
+            // cost -- `segment_metadata_json`
             // ships each segment's id (needed to EXCLUDE it), role, and
             // provenance (enough for a role/provenance-driven policy, e.g.
             // "exclude every `ToolResult` older than N calls"), never
@@ -1792,8 +1785,7 @@ impl AgentLoop {
                 // [S1.5]: this agent's own EFFECTIVE per-agent config
                 // (`self.plugin_config`, resolved once at construction --
                 // see that field's own doc), not the shared, process-wide
-                // `self.deps.plugin_config` every agent used to read
-                // identically.
+                // `self.deps.plugin_config`.
                 plugin_config: self.plugin_config.clone(),
                 max_parallel_tools: self.spec.max_parallel_tools.max(1),
                 root: root.clone(),
@@ -1977,20 +1969,19 @@ impl AgentLoop {
 
     /// Synthesizes the `trailing_text` argument every non-natural terminal
     /// path (budget, cancellation, deadline, backend failure) passes to
-    /// [`Self::finish`] -- every one of those sites used to pass a literal
-    /// `""`, which `ResultBuilder::resolve`'s status-naming fallback then
-    /// turned into `"(no output; terminal status: <name>)"` regardless of
-    /// how much real work the run had already done. After this item, no
-    /// call to `finish(` in this file passes a bare `""` (`grep -n
-    /// 'finish(' agent_loop.rs` finds none) -- this method is what every
-    /// one of those ten sites calls instead.
+    /// [`Self::finish`] -- a bare `""` here, which `ResultBuilder::resolve`'s
+    /// status-naming fallback
+    /// turns into `"(no output; terminal status: <name>)"` regardless of
+    /// how much real work the run had already done, would misrepresent it:
+    /// this method is what every
+    /// one of those ten sites calls instead (`grep -n
+    /// 'finish(' agent_loop.rs` finds no bare `""` call).
     ///
     /// Precedence:
     /// 1. `state.last_assistant_text` -- the most recent backend response's
     ///    own text, captured every turn in [`Self::run_inner`] BEFORE that
     ///    same turn's own tool-dispatch/cancel/budget checks (see that
-    ///    field's own doc). This is the concrete fix for the incident this
-    ///    item exists to close: a turn that dispatched tool calls and was
+    ///    field's own doc): a turn that dispatched tool calls and was
     ///    then cut off -- by a budget check, a cancel, or a deadline --
     ///    before reaching a LATER turn's natural completion still reports
     ///    whatever the model said alongside those calls, not `""`.
@@ -1998,8 +1989,8 @@ impl AgentLoop {
     ///    captured text but other evidence shows real work happened this
     ///    run anyway (`state.turn > 0`, `state.tool_calls > 0`, or
     ///    `builder.has_activity()` -- a tool artifact or a `report` call
-    ///    already observed). This is acceptance criterion 2, "distinguishes
-    ///    'no work' from 'stopped before reporting'": a run that dispatched
+    ///    already observed): distinguishes
+    ///    "no work" from "stopped before reporting" -- a run that dispatched
     ///    tool calls with no accompanying assistant text (a model that only
     ///    ever emits tool calls, never prose) is not a run that did
     ///    nothing, and must not read like one.
@@ -2051,8 +2042,7 @@ impl AgentLoop {
     ///
     /// `seen_segments` (owned by `run_inner` itself, not `LoopState`) and
     /// `state.usage` are deliberately left untouched by this fn -- both must
-    /// persist across the whole keep-alive session, exactly as they did
-    /// before this item.
+    /// persist across the whole keep-alive session.
     fn end_keep_alive_turn(
         &mut self,
         state: &mut LoopState,
@@ -2077,14 +2067,9 @@ impl AgentLoop {
     }
 
     /// Checks every configured budget dimension at the top of a turn.
-    /// Before board item `01M1FSP1QJFCHA7H8QPYZ9GG1P`, EVERY exceeded
-    /// dimension called `self.finish` and ended the whole agent -- for a
-    /// `keep_alive` session that meant an ordinary per-turn runaway-loop
-    /// guard (`max_steps`, or `max_tool_calls`) silently killed the entire
-    /// interactive conversation, with only a terminal notice (no chance to
-    /// keep talking) as the operator's explanation. That is fixed now: see
-    /// [`BudgetCheck`] for the three-way outcome this method returns instead
-    /// of the old `Option<AgentResult>`, and [`Self::end_keep_alive_turn`]
+    /// See
+    /// [`BudgetCheck`] for the three-way outcome this method returns,
+    /// and [`Self::end_keep_alive_turn`]
     /// for the turn-boundary reset a `TurnAborted` outcome shares with a
     /// natural completion. A dimension a caller sets must still always
     /// BIND, though -- the whole reason to set one is to bound cost or
@@ -2109,14 +2094,14 @@ impl AgentLoop {
     /// simply never called for them in that case; the caller
     /// (`Self::run_inner`) does the SystemNote/event/reset work instead
     /// (`BudgetCheck`'s own doc explains why this method cannot do that
-    /// work itself). Non-`keep_alive` behavior is byte-for-byte unchanged:
-    /// `state.turn` gates `max_steps`/`max_tool_calls` exactly as before
-    /// this item, and a trip always produces `BudgetCheck::Finished`.
+    /// work itself). For a non-`keep_alive` agent,
+    /// `state.turn` gates `max_steps`/`max_tool_calls`, and a trip always
+    /// produces `BudgetCheck::Finished`.
     ///
     /// Every other budget dimension (`deadline`, `max_tokens`) is
     /// intentionally left session-lifetime for both keep-alive and
     /// non-keep-alive agents, and always produces `BudgetCheck::Finished`
-    /// -- ending the whole agent, unchanged by this item: `state.usage`
+    /// -- ending the whole agent: `state.usage`
     /// already accrues across every turn of a keep-alive session (never
     /// reset), and `deadline` is a wall-clock cutoff independent of turn
     /// boundaries by nature. A session-lifetime `max_tokens`/`deadline` can
@@ -2125,8 +2110,8 @@ impl AgentLoop {
     /// not fire in practice) -- the companion TUI-notice fix
     /// (`conway_cli::tui::state::AppState::apply_agent_finished`) is what
     /// makes any such termination visible rather than silent; making those
-    /// two dimensions turn-scoped too remains out of this item's scope,
-    /// exactly as it was out of the `runway` item's before it.
+    /// two dimensions turn-scoped too is a disclosed follow-up, not solved
+    /// here.
     ///
     /// A `Finished` outcome's `max_steps`/`max_tool_calls` trip still labels
     /// its `ResultStatus::BudgetExceeded { limit }` string with which
@@ -2258,8 +2243,7 @@ impl AgentLoop {
     /// but this fallback keeps that race harmless either way).
     ///
     /// Reports [`Self::terminal_account`] as its trailing text, not `""` --
-    /// a cancellation is exactly the non-natural termination this item's
-    /// fix targets: a cancelled agent that had already written real work
+    /// a cancelled agent that had already written real work
     /// (files, a partial reply) must not read as though it did nothing.
     async fn finish_cancelled(&self, state: &LoopState, builder: &ResultBuilder) -> AgentResult {
         let reason = self
@@ -2290,14 +2274,14 @@ impl AgentLoop {
     /// still loses any artifacts/report accumulated in earlier turns of a
     /// run that then hit a late I/O error (no criterion here requires
     /// facts/artifacts fidelity on a `Failed` result) -- but summary
-    /// fidelity is a DIFFERENT trade-off, and this item withdraws the
-    /// acceptance an earlier revision of this doc made of losing it too:
+    /// fidelity is a DIFFERENT trade-off this method does not accept losing
+    /// too:
     /// `state` -- the `(RuntimeError, LoopState)` error tuple every
     /// `try_rt!` site threads all the way out of `run_inner` -- still
     /// carries `last_assistant_text` from whatever turn last completed
     /// before the failure, and [`Self::terminal_account`] (not `""`) is
-    /// what this fn now passes as trailing text, so a late I/O error no
-    /// longer discards the agent's own account of what it said just because
+    /// what this fn passes as trailing text, so a late I/O error does not
+    /// discard the agent's own account of what it said just because
     /// the fresh `ResultBuilder` it discards along with it holds no report
     /// or tool artifacts of its own.
     ///
@@ -2325,8 +2309,7 @@ impl AgentLoop {
     /// whenever THIS agent was itself the direct target of the cancel.
     /// `None` (an unknown agent, or a descendant whose token was tripped
     /// only by an ancestor's cancellation propagating structurally --
-    /// `AgentTree::cancel`'s own doc) falls back to `err`'s own reason,
-    /// unchanged, exactly as before this item.
+    /// `AgentTree::cancel`'s own doc) falls back to `err`'s own reason.
     async fn finish_error(&self, state: &LoopState, err: RuntimeError) -> AgentResult {
         let builder = ResultBuilder::new();
         if let RuntimeError::Cancelled { reason, .. } = err {
@@ -2387,26 +2370,21 @@ impl AgentLoop {
     /// result), but produces no second event and no second parent
     /// delivery.
     ///
-    /// This is only ONE side of the race's closure — not, as an earlier
-    /// revision of this doc claimed, the whole of it. `supervisor.rs`'s
+    /// This is only ONE side of the race's closure. `supervisor.rs`'s
     /// `Outcome::Synthesized` branch (a caught panic, or a task still
     /// unresponsive after `grace` and `abort()`'d) must gate ITS emission
     /// on winning the very same `publish_result` CAS too: `task.abort()` is
     /// cooperative, so an aborted task can keep running past the abort
     /// request and reach this very `finish` method after the supervisor has
     /// already given up on joining it, legitimately winning the CAS in that
-    /// gap. Before An earlier review found: finding S1, `supervisor.rs` emitted
-    /// unconditionally on that path regardless of whether it had actually
-    /// won, so the race was only half-closed even with this gate in place.
-    /// See `supervisor.rs`'s own module doc for that side's fix; together
+    /// gap. See `supervisor.rs`'s own module doc for that side's fix; together
     /// the two gates make at most one `Event::AgentFinished` observable per
     /// agent, from whichever side wins.
     ///
     /// `publish_result`'s only error is `AgentNotFound` (this agent was
     /// never `attach`ed to the tree at all — true of some unit tests that
     /// construct an `AgentLoop` directly without a `Runtime`); that case
-    /// defaults to "first" so those tests keep observing `AgentFinished`
-    /// exactly as before this item.
+    /// defaults to "first" so those tests keep observing `AgentFinished`.
     async fn finish(
         &self,
         status: ResultStatus,
@@ -2534,7 +2512,7 @@ fn resolve_headroom(spec: &AgentSpec, policy: &HeadroomPolicy) -> u32 {
 /// `01KZRZZP6A4A27R3EN0HQAENBS`) -- id (needed to EXCLUDE a segment by it),
 /// role, provenance, and estimated tokens, deliberately NEVER `content`.
 ///
-/// **The design question this item's own spec asked to be settled first:**
+/// **The design question settled first:**
 /// "whether the script sees the whole payload or a summary." Shipping full
 /// segment bodies to a subprocess on every turn is an unbounded,
 /// content-proportional cost paid whether or not a hook ever looks at most
@@ -2724,7 +2702,7 @@ mod tests {
         }
     }
 
-    /// Acceptance point 4 (first assertion): `persist` allocates the record
+    /// `persist` allocates the record
     /// at the seq `SessionStore::head` reports right before the append --
     /// checked against a `head` read taken by the test itself immediately
     /// before calling `persist`, so this does not just trust `persist`'s
@@ -2757,16 +2735,10 @@ mod tests {
         assert_eq!(records[0].seq(), Some(seq));
     }
 
-    /// Acceptance point 4 (second assertion): a store failure surfaces as
+    /// A store failure surfaces as
     /// `persist`'s typed `Err` and appends nothing.
     ///
-    /// **Shown to fail first:** verified by temporarily editing `persist` to
-    /// swallow a failed append (`Err(_) => seq` instead of `?`) rather than
-    /// propagating it, then reverting before this commit. Under that
-    /// scratch edit this test's first assertion fails: `result` comes back
-    /// `Ok(LogSeq(0))` instead of `Err`, so `matches!(result, Err(..))` is
-    /// `false` and the `assert!` panics naming the unexpected `Ok` value.
-    /// `persist`'s real body has no such swallow -- it propagates via `?` --
+    /// `persist`'s real body has no swallow -- it propagates via `?` --
     /// which is what this test asserts against.
     #[tokio::test]
     async fn persist_surfaces_a_store_failure_and_appends_nothing() {
