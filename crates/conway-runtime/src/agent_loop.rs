@@ -1785,8 +1785,7 @@ impl AgentLoop {
                 // [S1.5]: this agent's own EFFECTIVE per-agent config
                 // (`self.plugin_config`, resolved once at construction --
                 // see that field's own doc), not the shared, process-wide
-                // `self.deps.plugin_config` every agent used to read
-                // identically.
+                // `self.deps.plugin_config`.
                 plugin_config: self.plugin_config.clone(),
                 max_parallel_tools: self.spec.max_parallel_tools.max(1),
                 root: root.clone(),
@@ -2703,7 +2702,7 @@ mod tests {
         }
     }
 
-    /// Acceptance point 4 (first assertion): `persist` allocates the record
+    /// `persist` allocates the record
     /// at the seq `SessionStore::head` reports right before the append --
     /// checked against a `head` read taken by the test itself immediately
     /// before calling `persist`, so this does not just trust `persist`'s
@@ -2736,16 +2735,10 @@ mod tests {
         assert_eq!(records[0].seq(), Some(seq));
     }
 
-    /// Acceptance point 4 (second assertion): a store failure surfaces as
+    /// A store failure surfaces as
     /// `persist`'s typed `Err` and appends nothing.
     ///
-    /// **Shown to fail first:** verified by temporarily editing `persist` to
-    /// swallow a failed append (`Err(_) => seq` instead of `?`) rather than
-    /// propagating it, then reverting before this commit. Under that
-    /// scratch edit this test's first assertion fails: `result` comes back
-    /// `Ok(LogSeq(0))` instead of `Err`, so `matches!(result, Err(..))` is
-    /// `false` and the `assert!` panics naming the unexpected `Ok` value.
-    /// `persist`'s real body has no such swallow -- it propagates via `?` --
+    /// `persist`'s real body has no swallow -- it propagates via `?` --
     /// which is what this test asserts against.
     #[tokio::test]
     async fn persist_surfaces_a_store_failure_and_appends_nothing() {
