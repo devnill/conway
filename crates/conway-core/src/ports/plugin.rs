@@ -702,7 +702,7 @@ pub trait Plugin: Send + Sync + 'static {
     /// (decision `01M128AP39WXE01BBZV4RENC4M`); nothing here reopens it.
     ///
     /// **Provenance, made structural, not merely a comment an operator may
-    /// scroll past** (this item's own design question, decided): every
+    /// scroll past**: every
     /// rule this method returns is folded in carrying
     /// [`crate::hook::HookOrigin::Plugin`] (this plugin's own
     /// [`PluginManifest::id`]), never [`crate::hook::HookOrigin::
@@ -1379,8 +1379,8 @@ pub struct EventDecl {
 /// as if the operator had typed it. Bound to the invoking agent/session
 /// exactly like `ForkSession`/`MaskRecord` (see that variant's own doc for
 /// the full binding argument, which applies unchanged), and, like every
-/// widening above it, earned by a real consumer: this item's own
-/// file-backed command (see `conway_plugin_skeleton`'s `FilePromptCommand`)
+/// widening above it, earned by a real consumer:
+/// `conway_plugin_skeleton`'s `FilePromptCommand`
 /// is that consumer, not a speculative grant ahead of one.
 #[async_trait]
 pub trait Command: Send + Sync + 'static {
