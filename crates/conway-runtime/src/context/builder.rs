@@ -90,7 +90,7 @@ use conway_core::error::RuntimeError;
 use conway_core::ids::{AgentId, ModelId, PrefixKey, SegmentId, SeqRange, SessionId, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::path::{NodeStamp, ResolvedPath};
-use conway_core::ports::{FragmentAuthor, FragmentPosition, FragmentScope};
+use conway_core::ports::{FragmentAuthor, FragmentPosition, FragmentScope, InstructionPart};
 use conway_core::provenance::{
     ContextReport, ContextReportEntry, InstructionFragmentEntry, Provenance,
 };
@@ -150,12 +150,19 @@ pub struct SkillFragment {
 pub struct PluginInstruction {
     pub plugin_id: String,
     pub name: String,
+    /// The fragment's unconditional body -- see
+    /// `conway_core::ports::plugin::InstructionFragment::text`'s own doc.
+    /// Always part of the rendered segment when this instruction renders
+    /// at all, regardless of `ContextInput.tools`.
     pub text: String,
-    /// Tool ids `text` assumes the model can call, exactly as the plugin
-    /// declared them. Checked HERE, in [`ContextBuilder::build`], against
+    /// Zero or more conditional parts beyond `text`, each independently
+    /// gated on its own tool ids -- see
+    /// `conway_core::ports::plugin::InstructionFragment::parts`'s own doc
+    /// (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`). Checked HERE, in
+    /// [`ContextBuilder::build`] (`filter_reachable_parts`), against
     /// `ContextInput.tools` -- see that method's own doc for why the check
     /// runs at this seam rather than at `ConwayBuilder::build` or in CI.
-    pub tool_ids: Vec<ToolName>,
+    pub parts: Vec<InstructionPart>,
     /// See `conway_core::ports::plugin::InstructionFragment::position`.
     /// Default [`FragmentPosition::AfterSystemPrompt`].
     pub position: FragmentPosition,
@@ -333,18 +340,38 @@ impl ContextBuilder {
         // that." This is the one seam that already knows, for THIS turn,
         // exactly which tools are reachable (`input.tools`, the tool set
         // this turn's request actually announces) -- the same set breakpoint
-        // A's `ToolSchemas` segment below is built from. An unreachable
-        // fragment's text is WITHHELD (never pushed as a segment, so the
-        // model never reads an instruction naming a tool it cannot call);
-        // it is still recorded in `report.instruction_fragments` (built
-        // below, via `instruction_reports`, in the SAME install order that
-        // list has always used -- unaffected by the position/order render
-        // sort above) so `/context`'s preamble section can render the
-        // omission inline rather than only warn once in a log line. A
-        // fragment naming a tool id its OWN declaring plugin also provides
-        // (`Plugin::tools`) can never land here -- both are contributed by
-        // the same `with_plugin` call, so they are reachable by
-        // construction; see `Plugin::instructions`'s own doc.
+        // A's `ToolSchemas` segment below is built from. **Board item
+        // `01M1FSRJJAB3ZYZXED4SVT2ZSF` moved this check from whole-fragment
+        // to PER PART** (`filter_reachable_parts` below): `instruction.text`
+        // (the body) always renders; each of `instruction.parts` renders
+        // independently, iff every id its OWN `tool_ids` names is reachable
+        // -- so a fragment can say "verify with `bash`" as one conditional
+        // sentence beside general, always-true orientation text, instead of
+        // the whole paragraph vanishing the moment one tool it merely
+        // mentions is absent. An unreachable part's text is WITHHELD (never
+        // joined into the rendered segment, so the model never reads an
+        // instruction naming a tool it cannot call); the fragment as a
+        // whole is only ENTIRELY withheld (no segment pushed at all) when
+        // its body is empty and every part was withheld -- the per-part
+        // analog of the old whole-fragment check. Every fragment is still
+        // recorded in `report.instruction_fragments` (built below, via
+        // `instruction_reports`, in the SAME install order that list has
+        // always used -- unaffected by the position/order render sort
+        // below) so `/context`'s preamble section can render the omission
+        // inline rather than only warn once in a log line. A part naming a
+        // tool id its OWN declaring plugin also provides (`Plugin::tools`)
+        // can never land here -- both are contributed by the same
+        // `with_plugin` call, so they are reachable by construction; see
+        // `Plugin::instructions`'s own doc.
+        //
+        // **Cache economics.** Which parts render is a pure function of
+        // `input.tools` -- the tool registry, fixed in the prompt prefix
+        // for the whole session (see `[2] ToolSchemas` below) -- so it is
+        // STABLE turn over turn for a given session, exactly the property
+        // `prefix::prefix_key` relies on for prompt-cache reuse. Per-part
+        // gating does not introduce any NEW source of turn-to-turn
+        // instability: it decides, once per session (not per turn), the
+        // same way the old whole-fragment `tool_ids` check already did.
         //
         // **The scope check runs alongside it.** `FragmentScope::All` (the
         // default) never excludes anyone; `RootOnly`/`ChildrenOnly` compare
@@ -363,6 +390,11 @@ impl ContextBuilder {
             input.system_prompt.as_ref().map(|sp| sp.agent_def.as_str());
         let mut instruction_reports: Vec<InstructionFragmentEntry> =
             Vec::with_capacity(input.instructions.len());
+        // The text actually rendered for `input.instructions[i]` this turn
+        // -- body plus every reachable part, joined (`filter_reachable_parts`)
+        // -- indexed identically to `input.instructions` so the render loops
+        // below can look it up by index without recomputing it.
+        let mut rendered_texts: Vec<String> = Vec::with_capacity(input.instructions.len());
         // Indices into `input.instructions` that will actually render,
         // split by position -- collected in ORIGINAL (install) order, so
         // the `sort_by_key` below (stable) breaks an `order` tie by install
@@ -370,12 +402,8 @@ impl ContextBuilder {
         let mut before_indices: Vec<usize> = Vec::new();
         let mut after_indices: Vec<usize> = Vec::new();
         for (index, instruction) in input.instructions.iter().enumerate() {
-            let unreachable_tool_ids: Vec<ToolName> = instruction
-                .tool_ids
-                .iter()
-                .filter(|id| !known_tool_ids.contains(id))
-                .cloned()
-                .collect();
+            let (rendered, withheld_parts, unreachable_tool_ids) =
+                filter_reachable_parts(instruction, &known_tool_ids);
             let scope_matches = match instruction.scope {
                 FragmentScope::All => true,
                 FragmentScope::RootOnly => input.agent_kind == AgentKind::Root,
@@ -386,8 +414,9 @@ impl ContextBuilder {
                 Some(name) => agent_def_name == Some(name.as_str()),
             };
             let skipped_by_scope = !scope_matches || !agent_def_matches;
+            let should_render = !rendered.is_empty();
 
-            if unreachable_tool_ids.is_empty() {
+            if should_render {
                 if skipped_by_scope {
                     tracing::debug!(
                         plugin_id = %instruction.plugin_id,
@@ -402,22 +431,37 @@ impl ContextBuilder {
                         FragmentPosition::AfterSystemPrompt => after_indices.push(index),
                     }
                 }
-            } else {
+            } else if !unreachable_tool_ids.is_empty() {
                 tracing::warn!(
                     plugin_id = %instruction.plugin_id,
                     fragment = %instruction.name,
                     missing = ?unreachable_tool_ids,
-                    "instruction fragment names a tool not reachable for this turn; its text is \
-                     withheld from the assembled context (see /context's preamble section)",
+                    withheld_parts = ?withheld_parts,
+                    "instruction fragment's body is empty and every part names a tool not \
+                     reachable for this turn; nothing is rendered for this turn (see /context's \
+                     preamble section)",
                 );
             }
+            // Sized from what actually rendered when something did (the
+            // segment's own real cost); when NOTHING rendered, sized from
+            // the fragment's whole declared text instead (body plus every
+            // part, reachable or not) so a fully-withheld fragment is still
+            // sized, never reported as a free 0-token entry -- see
+            // `InstructionFragmentEntry::tokens_est`'s own doc.
+            let tokens_source = if should_render {
+                rendered.clone()
+            } else {
+                full_instruction_text(instruction)
+            };
             instruction_reports.push(InstructionFragmentEntry {
                 plugin_id: instruction.plugin_id.clone(),
                 name: instruction.name.clone(),
-                tokens_est: estimate_tokens(&text_block(&instruction.text)),
+                tokens_est: estimate_tokens(&text_block(&tokens_source)),
                 unreachable_tool_ids,
+                withheld_parts,
                 skipped_by_scope,
             });
+            rendered_texts.push(rendered);
         }
         before_indices.sort_by_key(|&i| input.instructions[i].order);
         after_indices.sort_by_key(|&i| input.instructions[i].order);
@@ -427,7 +471,7 @@ impl ContextBuilder {
             let instruction = &input.instructions[i];
             segments.push(PromptSegment::new(
                 Role::System,
-                text_block(&instruction.text),
+                text_block(&rendered_texts[i]),
                 provenance_for_instruction(instruction),
             ));
         }
@@ -448,7 +492,7 @@ impl ContextBuilder {
             let instruction = &input.instructions[i];
             segments.push(PromptSegment::new(
                 Role::System,
-                text_block(&instruction.text),
+                text_block(&rendered_texts[i]),
                 provenance_for_instruction(instruction),
             ));
         }
@@ -1223,6 +1267,86 @@ fn derive_segment_id(
     SegmentId(ulid::Ulid::from(u128::from_be_bytes(bytes)))
 }
 
+/// The per-part reachability gate itself -- board item
+/// `01M1FSRJJAB3ZYZXED4SVT2ZSF`, the site `scripts/board-claims.md`'s
+/// "an instruction may only name a capability that is actually reachable"
+/// predicate is pinned to (replacing the old whole-fragment `if
+/// unreachable_tool_ids.is_empty()` gate this function's own name
+/// literally supersedes).
+///
+/// Joins `instruction.text` (the always-rendered body) with every part in
+/// `instruction.parts` whose OWN `tool_ids` are ALL present in
+/// `known_tool_ids` this turn -- an empty body contributes nothing to the
+/// join rather than a leading blank line, and each rendered piece (body,
+/// then every reachable part, in declaration order) is separated from the
+/// next by a blank line, matching ordinary markdown paragraph spacing.
+///
+/// Returns `(rendered_text, withheld_parts, unreachable_tool_ids)`:
+/// `rendered_text` is what `ContextBuilder::build` pushes as this
+/// instruction's segment content when non-empty; `withheld_parts` is the
+/// 0-based `instruction.parts` indices that were withheld this turn;
+/// `unreachable_tool_ids` is the UNION of tool ids named by every withheld
+/// part (deduplicated, in first-seen order) -- both feed
+/// `InstructionFragmentEntry` directly, unchanged, so the report and the
+/// render can never disagree about which parts survived.
+///
+/// An empty `rendered_text` means nothing survives for this instruction
+/// this turn -- the caller treats that as "no segment at all", the
+/// per-part analog of the old whole-fragment withholding, reached now only
+/// when the body is itself empty AND every part is withheld. A fragment
+/// that wants exactly the old all-or-nothing behavior gets it by
+/// construction: leave `text` empty and put the whole paragraph in one
+/// part (`conway-plugin-path`/`conway-plugin-discover`'s own migration,
+/// each naming the one tool their single-sentence fragment is about).
+fn filter_reachable_parts(
+    instruction: &PluginInstruction,
+    known_tool_ids: &HashSet<&ToolName>,
+) -> (String, Vec<u16>, Vec<ToolName>) {
+    let mut pieces: Vec<&str> = Vec::new();
+    if !instruction.text.is_empty() {
+        pieces.push(instruction.text.as_str());
+    }
+    let mut withheld_parts: Vec<u16> = Vec::new();
+    let mut unreachable_tool_ids: Vec<ToolName> = Vec::new();
+    for (index, part) in instruction.parts.iter().enumerate() {
+        let missing: Vec<&ToolName> = part
+            .tool_ids
+            .iter()
+            .filter(|id| !known_tool_ids.contains(id))
+            .collect();
+        if missing.is_empty() {
+            pieces.push(part.text.as_str());
+        } else {
+            withheld_parts.push(u16::try_from(index).unwrap_or(u16::MAX));
+            for id in missing {
+                if !unreachable_tool_ids.contains(id) {
+                    unreachable_tool_ids.push(id.clone());
+                }
+            }
+        }
+    }
+    (pieces.join("\n\n"), withheld_parts, unreachable_tool_ids)
+}
+
+/// `instruction.text` joined with EVERY part's text, regardless of
+/// reachability -- unlike [`filter_reachable_parts`], which this function
+/// deliberately does not share an implementation with (the two answer
+/// different questions: "what renders this turn" vs. "how big is the whole
+/// declared fragment"). Used only to size
+/// `InstructionFragmentEntry::tokens_est` when [`filter_reachable_parts`]
+/// rendered nothing this turn, so a fully-withheld fragment is still
+/// sized, from its own text, never reported as free.
+fn full_instruction_text(instruction: &PluginInstruction) -> String {
+    let mut pieces: Vec<&str> = Vec::new();
+    if !instruction.text.is_empty() {
+        pieces.push(instruction.text.as_str());
+    }
+    for part in &instruction.parts {
+        pieces.push(part.text.as_str());
+    }
+    pieces.join("\n\n")
+}
+
 /// Stamps a `PluginInstruction` fragment's rendered segment by
 /// [`PluginInstruction::authored_by`] -- board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`.
 /// [`FragmentAuthor::Plugin`] (every fragment's own default, and every
@@ -1616,8 +1740,11 @@ mod estimator_tests {
             instructions: vec![PluginInstruction {
                 plugin_id: "conway.trim".into(),
                 name: "when-to-compose".into(),
-                text: "Compose a focused context before a long task.".into(),
-                tool_ids: vec![tool.name.clone()],
+                text: "".into(),
+                parts: vec![InstructionPart::new(
+                    "Compose a focused context before a long task.",
+                    vec![tool.name.clone()],
+                )],
                 position: FragmentPosition::AfterSystemPrompt,
                 order: 0,
                 scope: FragmentScope::All,
@@ -1681,8 +1808,11 @@ mod estimator_tests {
             instructions: vec![PluginInstruction {
                 plugin_id: "conway.trim".into(),
                 name: "when-to-compose".into(),
-                text: "Compose a focused context before a long task.".into(),
-                tool_ids: vec![conway_core::ids::ToolName::new("compose_path")],
+                text: "".into(),
+                parts: vec![InstructionPart::new(
+                    "Compose a focused context before a long task.",
+                    vec![conway_core::ids::ToolName::new("compose_path")],
+                )],
                 position: FragmentPosition::AfterSystemPrompt,
                 order: 0,
                 scope: FragmentScope::All,
@@ -1723,10 +1853,182 @@ mod estimator_tests {
             entry.unreachable_tool_ids,
             vec![conway_core::ids::ToolName::new("compose_path")]
         );
+        assert_eq!(
+            entry.withheld_parts,
+            vec![0],
+            "the fragment's one part (index 0) is the one that was withheld"
+        );
         assert!(
             entry.tokens_est > 0,
             "a withheld fragment must still be sized, from its own text"
         );
+    }
+
+    /// Acceptance 1 (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`): a fragment
+    /// with a non-empty body and two parts -- one gated on a PRESENT tool,
+    /// one on an ABSENT tool -- renders body + the reachable part as ONE
+    /// `Role::System` segment; the entry names exactly the withheld part
+    /// (index 1) and exactly the absent tool. Falsified before this item:
+    /// `PluginInstruction` had no `parts` field at all, so this fragment
+    /// shape (a body plus two independently-gated parts) could not be
+    /// expressed -- confirmed by the fact that `parts` did not exist on
+    /// `PluginInstruction` until this same change introduced it.
+    #[test]
+    fn a_fragment_with_body_and_mixed_reachable_parts_renders_body_plus_reachable_part_as_one_segment(
+    ) {
+        let present = sample_tool("bash");
+        let absent = conway_core::ids::ToolName::new("report");
+        let input = ContextInput {
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode: CacheMode::None,
+            agent_kind: AgentKind::Root,
+            system_prompt: None,
+            instructions: vec![PluginInstruction {
+                plugin_id: "conway.idiom".into(),
+                name: "conway.idiom.base".into(),
+                text: "Conway idioms -- specific to this harness.".into(),
+                parts: vec![
+                    InstructionPart::new(
+                        "Verify with a tool call before you claim done: run the relevant \
+                         tests with `bash`.",
+                        vec![present.name.clone()],
+                    ),
+                    InstructionPart::new(
+                        "You are a child: finish by calling `report`.",
+                        vec![absent.clone()],
+                    ),
+                ],
+                position: FragmentPosition::AfterSystemPrompt,
+                order: 0,
+                scope: FragmentScope::All,
+                agent_def: None,
+                authored_by: FragmentAuthor::Plugin,
+            }],
+            skills: vec![],
+            tools: vec![present],
+            path: path_from_legacy(
+                None,
+                &[LogRecord::UserTurn {
+                    seq: LogSeq(0),
+                    ts: Utc::now(),
+                    text: "hi".into(),
+                    prov: Provenance::UserPrompt,
+                }],
+                SessionId::new(),
+            )
+            .unwrap(),
+            cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
+        };
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        let matching: Vec<&PromptSegment> = segments
+            .iter()
+            .filter(|s| {
+                matches!(&s.provenance, Provenance::PluginInstruction { name, .. } if name == "conway.idiom.base")
+            })
+            .collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "body plus the one reachable part must render as ONE segment, not two"
+        );
+        assert_eq!(
+            matching[0].content,
+            text_block(
+                "Conway idioms -- specific to this harness.\n\nVerify with a tool call \
+                 before you claim done: run the relevant tests with `bash`."
+            ),
+            "the segment must contain the body and the reachable part, joined by a blank \
+             line, and nothing from the withheld part"
+        );
+
+        assert_eq!(report.instruction_fragments.len(), 1);
+        let entry = &report.instruction_fragments[0];
+        assert_eq!(
+            entry.withheld_parts,
+            vec![1],
+            "part index 1 (the `report`-gated one) must be named as withheld"
+        );
+        assert_eq!(
+            entry.unreachable_tool_ids,
+            vec![absent],
+            "the withheld part's own missing tool id must be named"
+        );
+    }
+
+    /// Acceptance 2 (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`): a fragment
+    /// whose body is non-empty and EVERY part is unreachable still renders
+    /// its body -- the whole fragment is never withheld just because every
+    /// conditional part happened to gate out this turn. Falsified before
+    /// this item the same way as the test above: `parts` did not exist, so
+    /// a whole-fragment `tool_ids` (the pre-item mechanism) withheld the
+    /// ENTIRE fragment, body included, the moment its one tool was absent
+    /// -- exactly the defect this item exists to fix.
+    #[test]
+    fn a_fragment_with_a_body_and_only_unreachable_parts_still_renders_its_body() {
+        let absent = conway_core::ids::ToolName::new("conway_fork");
+        let input = ContextInput {
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode: CacheMode::None,
+            agent_kind: AgentKind::Root,
+            system_prompt: None,
+            instructions: vec![PluginInstruction {
+                plugin_id: "conway.idiom".into(),
+                name: "conway.idiom.base".into(),
+                text: "Conway idioms -- specific to this harness.".into(),
+                parts: vec![InstructionPart::new(
+                    "When the window is filling, fork the remaining exploration to a child.",
+                    vec![absent.clone()],
+                )],
+                position: FragmentPosition::AfterSystemPrompt,
+                order: 0,
+                scope: FragmentScope::All,
+                agent_def: None,
+                authored_by: FragmentAuthor::Plugin,
+            }],
+            skills: vec![],
+            tools: vec![], // conway_fork is NOT installed this turn
+            path: path_from_legacy(
+                None,
+                &[LogRecord::UserTurn {
+                    seq: LogSeq(0),
+                    ts: Utc::now(),
+                    text: "hi".into(),
+                    prov: Provenance::UserPrompt,
+                }],
+                SessionId::new(),
+            )
+            .unwrap(),
+            cache_ttl: CacheTtl::FiveMinutes,
+            curator_failed: None,
+        };
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        let matching: Vec<&PromptSegment> = segments
+            .iter()
+            .filter(|s| {
+                matches!(&s.provenance, Provenance::PluginInstruction { name, .. } if name == "conway.idiom.base")
+            })
+            .collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "the body must still render as its own segment even though every part was withheld"
+        );
+        assert_eq!(
+            matching[0].content,
+            text_block("Conway idioms -- specific to this harness.")
+        );
+
+        assert_eq!(report.instruction_fragments.len(), 1);
+        let entry = &report.instruction_fragments[0];
+        assert_eq!(entry.withheld_parts, vec![0]);
+        assert_eq!(entry.unreachable_tool_ids, vec![absent]);
     }
 
     /// Precedence (board item `01M0K5MD59YZRSHE31JKZKFRMY`, open question
@@ -1749,7 +2051,7 @@ mod estimator_tests {
                 plugin_id: "conway.trim".into(),
                 name: "when-to-compose".into(),
                 text: "plugin instruction".into(),
-                tool_ids: vec![],
+                parts: vec![],
                 position: FragmentPosition::AfterSystemPrompt,
                 order: 0,
                 scope: FragmentScope::All,
@@ -1830,7 +2132,7 @@ mod estimator_tests {
                     plugin_id: "conway.idiom".into(),
                     name: "conway.idiom.base".into(),
                     text: "shipped plugin text".into(),
-                    tool_ids: vec![],
+                    parts: vec![],
                     position: FragmentPosition::AfterSystemPrompt,
                     order: 0,
                     scope: FragmentScope::All,
@@ -1841,7 +2143,7 @@ mod estimator_tests {
                     plugin_id: "conway.idiom".into(),
                     name: "conway.idiom.operator.project".into(),
                     text: "operator's own words".into(),
-                    tool_ids: vec![],
+                    parts: vec![],
                     position: FragmentPosition::AfterSystemPrompt,
                     order: 0,
                     scope: FragmentScope::All,
@@ -1950,7 +2252,7 @@ mod estimator_tests {
             plugin_id: "test.before".into(),
             name: name.into(),
             text: format!("{name} text"),
-            tool_ids: vec![],
+            parts: vec![],
             position: FragmentPosition::BeforeSystemPrompt,
             order,
             scope: FragmentScope::All,

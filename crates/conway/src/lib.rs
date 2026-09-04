@@ -378,6 +378,11 @@ pub mod plugin {
     /// declares, the SAME "declare, host attributes/checks it" shape
     /// [`EventDecl`]/[`CommandSpec`] establish immediately above and below.
     pub use conway_core::ports::InstructionFragment;
+    /// [`InstructionFragment::parts`]'s own element type -- a plugin author
+    /// constructs one of these per conditional sentence they want gated on
+    /// a tool set narrower than the whole fragment (board item
+    /// `01M1FSRJJAB3ZYZXED4SVT2ZSF`); see that field's own doc.
+    pub use conway_core::ports::InstructionPart;
     /// [`Plugin::narrowable_keys`]'s own return-type element -- a plugin
     /// author constructs one of these per per-agent-configurable key it
     /// declares narrowable, pairing the bare key name with the pure

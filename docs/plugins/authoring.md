@@ -638,16 +638,22 @@ only points at the right row.
 Declares zero or more `InstructionFragment`s: paragraphs injected into an
 agent's assembled context as their own segment, so a plugin's guidance is
 DATA a host can inspect and order rather than text buried in a
-`ContextHook`'s edit. `ConwayBuilder::build` collects every installed
+`ContextHook`'s edit. Each fragment has an unconditional `text` body plus
+zero or more `parts` (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`), each gated
+on its own tool ids — `ConwayBuilder::build` collects every installed
 plugin's fragments; `ContextBuilder::build`'s "Plugin instruction fragments"
 step (`crates/conway-runtime/src/context/builder.rs`) renders them each turn,
-withholding any one fragment individually (never the whole build) when its
-declared `tool_ids` aren't reachable this turn. `conway-plugin-idiom`'s
-`IdiomPlugin::instructions` is the smallest real implementor — one fragment,
-sourced from `include_str!`. Multiple plugins' fragments union together and
-render in one deterministic order (`(position, order, install_index)`,
-stable-sorted) — no fragment wins by being first or last, every fragment
-renders unless withheld individually. See hooks.md point 17.
+joining the body with every part whose ids are ALL reachable this turn into
+ONE segment, withholding only the unreachable parts (never the whole
+fragment, unless the body is itself empty and every part gates out).
+`conway-plugin-idiom`'s `IdiomPlugin::instructions` is the smallest real
+implementor — one fragment, sourced from `include_str!` and parsed through
+its own `<!-- tools: ... -->` markdown convention
+(`parse_fragment_markdown`) to split body from parts. Multiple plugins'
+fragments union together and render in one deterministic order
+(`(position, order, install_index)`, stable-sorted) — no fragment wins by
+being first or last, every fragment's body renders unless scoped away, and
+every part renders unless withheld individually. See hooks.md point 17.
 
 ### `description()` — text for the operator, not the model
 

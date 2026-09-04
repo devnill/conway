@@ -12,10 +12,10 @@ A plugin that prepends a short, conway-specific instruction fragment near
 the front of a session's assembled context — the operator's own framing:
 *"this is a plugin which prepends a custom system prompt. Currently we send
 minimal data, and the purpose of this is to add a little extra if
-desired."* A little extra: 33 lines, 344 words, well inside a 40-line/
-400-word budget measured against Pi's own system-prompt template
-(`docs/vision/INTENT.md`'s citation of Pi as conway's extension-surface
-reference).
+desired."* A little extra: 40 lines, 357 words (raw source, `<!-- tools:
+-->` markers included), at the 40-line/400-word budget measured against
+Pi's own system-prompt template (`docs/vision/INTENT.md`'s citation of Pi
+as conway's extension-surface reference).
 
 ## Why this exists
 
@@ -85,13 +85,14 @@ plugin does by reordering itself." The fragment position/order/scope item
 runtime now lets a fragment say which side of `[0]` it wants, and this
 plugin's base fragment says "ahead."
 
-## What the fragment covers, and what it deliberately does not name as a tool dependency
+## What the fragment covers, and how per-part gating replaced the tool_ids trap
 
-Fork vs. spawn, how an agent ends (`report`, or plain text for a
-`report`-less interactive root), configuration-dependent tools, context
+Fork vs. spawn, ending a turn, configuration-dependent tools, context
 scarcity, permissions, budgets, and steering — see
 `crates/conway-plugin-idiom/fragments/idiom.md` for the fragment's own
-exact text.
+exact text. Those bullets are the fragment's unconditional **body**
+(`InstructionFragment::text`): always rendered, regardless of which tools
+this turn's session announces.
 
 **The budgets bullet's promise is made true by the runtime, in the same
 change that wrote it** (declaration honesty): the fragment tells the model
@@ -102,16 +103,40 @@ runway.rs`) is the mechanism that actually sends those warnings — see
 like on the wire and [`scripting.md`](../scripting.md#budget-flags) for the
 non-interactive framing.
 
-`tool_ids` is empty, deliberately. `ContextBuilder::build`'s reachability
-check withholds a fragment's text **entirely** when any id in its
-`tool_ids` is not among the turn's announced tools — one missing tool
-would silently drop the whole paragraph. The fragment names
-`conway_fork`/`conway_spawn`/`report` in prose, but nothing in it requires
-the model to be able to call any specific one for the rest of the text to
-still hold — and an interactive root specifically never has `report`
-(`App::session_spec`'s own `ToolSelector::Except(vec!["report".into()])`),
-so naming `report` in `tool_ids` would make the fragment vanish from the
-one session type this plugin exists for.
+**Board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` closed the gap this section used
+to disclose here.** Before that item, `InstructionFragment` had exactly one
+whole-fragment `tool_ids` list, and `ContextBuilder::build`'s reachability
+check withheld a fragment's text **entirely** the moment any one id in it
+was unreachable — so this plugin's base fragment had to leave `tool_ids`
+empty, deliberately, even though its prose named `conway_fork`/
+`conway_spawn`/`report` throughout: naming `report` would have made the
+WHOLE fragment vanish for the interactive root this plugin exists for
+(`App::session_spec`'s own `ToolSelector::Except(vec!["report".into()])`
+excludes it there). That meant the fragment could only ever describe those
+tools, never actually tell the model to use one.
+
+`InstructionFragment` now also carries `parts: Vec<InstructionPart>` —
+zero or more conditional sentences beyond the body, each independently
+gated on its own tool ids, rendered into the SAME segment as the body
+(joined by a blank line) only when every id it names is reachable this
+turn. `fragments/idiom.md` uses the markdown convention this crate's
+parser (`parse_fragment_markdown`) implements: a paragraph immediately
+preceded by an HTML comment `<!-- tools: id1, id2 -->` is a conditional
+part; every other paragraph is body. Three sentences that used to have no
+way to become genuinely actionable are now real parts:
+
+- `<!-- tools: bash -->` — verify with a tool call before claiming done;
+  run the relevant tests with `bash`.
+- `<!-- tools: report -->` — you are a child: finish by calling `report`
+  with a result.
+- `<!-- tools: conway_fork -->` — when the window is filling, fork the
+  remaining exploration to a child and keep only its distillate.
+
+Each renders only for a session that actually has the tool it names, and
+is withheld — recorded, never silently — otherwise, exactly the same
+per-turn discipline the old whole-fragment check had, now at finer grain.
+An operator's own `instructions.md` (below) can use the identical `<!--
+tools: -->` convention to gate their own sentences the same way.
 
 ## Reach: every agent, root or child — a ruling, not a bare description
 
@@ -235,8 +260,13 @@ answer "replace" a second way.
 renders every plugin-declared instruction fragment this turn's assembly
 considered — `conway.idiom.base` always, plus `conway.idiom.operator.
 project`/`conway.idiom.operator.global` whenever the corresponding file
-exists — each with its source plugin, its estimated token cost, and (had
-it been withheld) which tool id made it unreachable.
+exists — each with its source plugin, its estimated token cost, and, when
+one or more of its conditional parts (board item
+`01M1FSRJJAB3ZYZXED4SVT2ZSF`) were withheld this turn, how many and which
+tool ids made them unreachable. A fragment naming an unreachable part can
+still have rendered a real segment — its body, or another reachable part —
+so this line describes what was left out, not necessarily "nothing was
+sent."
 
 The per-segment listing further down `/context`'s output (and `conway
 sessions show`/`export`'s headless render of the same session log) names
