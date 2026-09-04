@@ -2119,6 +2119,7 @@ mod estimator_tests {
             .unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
             curator_failed: None,
+            tool_result_bound_tokens: 0,
         };
         let (segments, report) = ContextBuilder::new().build(&input).unwrap();
 
@@ -2204,6 +2205,7 @@ mod estimator_tests {
             .unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
             curator_failed: None,
+            tool_result_bound_tokens: 0,
         };
         let (segments, report) = ContextBuilder::new().build(&input).unwrap();
 

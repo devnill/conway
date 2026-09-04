@@ -2643,6 +2643,7 @@ mod tests {
             bus: bus.clone(),
             builder: Arc::new(ContextBuilder::new()),
             headroom: Arc::new(HeadroomPolicy::default()),
+            tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
             tree,
             resolver,
             context_curator: RwLock::new(None),
