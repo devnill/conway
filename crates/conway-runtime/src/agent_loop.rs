@@ -335,8 +335,7 @@ pub struct LoopDeps {
     /// construction site gets, unchanged) means the curator stage is a
     /// zero-cost pass-through -- `apply_curator` returns the original
     /// `ResolvedPath` without allocating a `CurateCtx` or even reading the
-    /// lock's value's internals, so `run_inner`'s assembly stays
-    /// byte-identical to behavior before this port existed (the
+    /// lock's value's internals (the
     /// `context_golden` 11/11 gate is the load-bearing proof).
     ///
     /// **`Arc<dyn Curator>`, no guard wrapper** -- unlike
@@ -348,16 +347,15 @@ pub struct LoopDeps {
     /// need a second wrapper here.
     pub context_curator: RwLock<Option<Arc<dyn conway_core::ports::Curator>>>,
     /// Pluggable per-call context/tool curation. `RwLock` rather
-    /// than a plain `Option` because `RuntimeDeps` (`runtime.rs`, out of
-    /// this item's file scope) has no field to source one from at
-    /// `LoopDeps` construction time -- `Runtime::set_context_hook` (a new,
+    /// than a plain `Option` because `RuntimeDeps` (`runtime.rs`) has no
+    /// field to source one from at
+    /// `LoopDeps` construction time -- `Runtime::set_context_hook` (a
     /// purely additive method) sets this post-construction, before any
     /// agent starts running, and every turn reads it fresh via
     /// `AgentLoop::context_hook`. `None` (the default every existing
-    /// construction site gets, unchanged) means this loop never invokes
-    /// anything named `ContextHook` at all -- not even a no-op call -- so
-    /// `run_inner`'s assembly, routing, and overflow handling stay
-    /// byte-identical to behavior before the hook existed. `Some` is invoked once per
+    /// construction site gets) means this loop never invokes
+    /// anything named `ContextHook` at all -- not even a no-op call.
+    /// `Some` is invoked once per
     /// turn (`ContextHook::before_request`) and, only on a T-1
     /// `ContextTooLarge`, up to `MAX_OVERFLOW_ATTEMPTS` additional times
     /// (`ContextHook::on_overflow`) -- see `AgentLoop::route_and_attempt`.
