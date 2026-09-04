@@ -553,10 +553,10 @@ impl Default for ResumeGate {
 /// Per-turn accumulator: turns executed and usage accrued so far. `Clone`
 /// so it can be captured into an error tuple without disturbing the loop's
 /// own copy (see [`AgentLoop::run_inner`]'s early-return sites) --
-/// `last_assistant_text` (below) is a `String`, so this is no longer `Copy`
-/// as of this item; every `try_rt!` site only ever moves `$state` on the
-/// `Err` arm's immediate `return`, so dropping `Copy` needed no call-site
-/// changes there. `check_budget`/`finish_cancelled`/`finish_error` take
+/// `last_assistant_text` (below) is a `String`, so this is not `Copy`;
+/// every `try_rt!` site only ever moves `$state` on the
+/// `Err` arm's immediate `return`, so that needs no call-site
+/// changes. `check_budget`/`finish_cancelled`/`finish_error` take
 /// `&LoopState` rather than an owned one for the same reason: none of them
 /// need ownership, and several `run_inner` call sites read `state` again
 /// after calling one.
@@ -575,7 +575,7 @@ struct LoopState {
     /// `turn`, so the budget bounds each user turn's tool-loop independently
     /// rather than the whole session's lifetime -- see that method's doc.
     /// Meaningless (never read) for a non-`keep_alive` agent: `check_budget`
-    /// gates that path on `turn` exactly as before this field existed.
+    /// gates that path on `turn`.
     turn_steps: u32,
     /// Tool calls DISPATCHED since the last keep-alive user-turn boundary,
     /// gating `Budget::max_tool_calls`. Counts the batch handed to
@@ -624,11 +624,12 @@ struct LoopState {
 
 /// [`AgentLoop::check_budget`]'s outcome. `Continue` (nothing tripped) is
 /// the overwhelmingly common case; `Finished` carries the SAME terminal
-/// `AgentResult` `check_budget` has always produced for a session-ending
-/// trip (unchanged by this item: `deadline`/`max_tokens` always, and
+/// `AgentResult` `check_budget` produces for a session-ending
+/// trip (`deadline`/`max_tokens` always, and
 /// `max_steps`/`max_tool_calls` for a non-`keep_alive` agent). `TurnAborted`
-/// is new: a `keep_alive` agent's turn-scoped dimension (`max_steps`/
-/// `max_tool_calls`) tripped. `check_budget` itself only has `&LoopState`
+/// is for
+/// a `keep_alive` agent's turn-scoped dimension (`max_steps`/
+/// `max_tool_calls`) tripping. `check_budget` itself only has `&LoopState`
 /// (several callers read `state` again right after calling it -- see
 /// `LoopState`'s own doc), so it cannot own the store-append/bus-emit
 /// fallibility the way a `finish` call already in progress can; it hands
@@ -637,7 +638,7 @@ struct LoopState {
 /// reason: "budget_turn_aborted", .. }`, emits `Event::TurnAborted`, and
 /// then performs the shared turn-boundary reset
 /// ([`AgentLoop::end_keep_alive_turn`]) before looping back to the prompt
-/// gate. Not `Option<AgentResult>` (this method's shape before this item)
+/// gate. Not `Option<AgentResult>`
 /// because a third, non-terminal outcome needs its own case rather than
 /// overloading `None` for both "nothing tripped" and "something tripped but
 /// nothing finished".
