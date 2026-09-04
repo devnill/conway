@@ -24,6 +24,15 @@ description = "First-party plugin (board item 01M0VR3BKW5N3V3WS28H7FV8ZK): conwa
 # crates pull in for `Tool`/`ToolSpec::schema`/`ToolCall::arguments` -- see
 # C-04, dependency minimalism: this only takes what it genuinely uses.
 conway = { path = "../conway" }
+# Board item 01M1FSTQT952QYM014G65EVW25: the environment fragment's one
+# non-`std` fact (the session-start date). Not a NEW dependency to the
+# workspace -- `chrono` is already a workspace dependency a dozen other
+# crates pull in (`conway-core`, `conway-runtime`, `conway-cli`, ...), this
+# is the first time THIS crate needs it. Git facts are read by parsing
+# `.git/HEAD` directly (`std::fs`), never by shelling out to `git` or
+# adding `git2` -- see this crate's own module doc, "The environment
+# block".
+chrono = { workspace = true }
 
 [dev-dependencies]
 # Board item 01M0TV8MSFRHHQ5BNZV3NHZCEW: this crate's tests reach

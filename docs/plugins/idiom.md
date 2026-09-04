@@ -8,14 +8,18 @@ precedence, and reach.
 
 ## What this is, in one sentence
 
-A plugin that prepends a short, conway-specific instruction fragment near
-the front of a session's assembled context — the operator's own framing:
-*"this is a plugin which prepends a custom system prompt. Currently we send
-minimal data, and the purpose of this is to add a little extra if
-desired."* A little extra: 40 lines, 357 words (raw source, `<!-- tools:
--->` markers included), at the 40-line/400-word budget measured against
-Pi's own system-prompt template (`docs/vision/INTENT.md`'s citation of Pi
-as conway's extension-surface reference).
+A plugin that prepends two short, conway-specific instruction fragments near
+the front of a session's assembled context — a session-static environment
+block (`conway.idiom.environment`, below) genuinely first, then this
+plugin's original idioms primer (`conway.idiom.base`) immediately behind
+it — the operator's own framing for the latter: *"this is a plugin which
+prepends a custom system prompt. Currently we send minimal data, and the
+purpose of this is to add a little extra if desired."* A little extra: the
+idioms primer is 40 lines, 357 words (raw source, `<!-- tools: -->` markers
+included), at the 40-line/400-word budget measured against Pi's own
+system-prompt template (`docs/vision/INTENT.md`'s citation of Pi as
+conway's extension-surface reference); the environment block (board item
+`01M1FSTQT952QYM014G65EVW25`) is a single short sentence.
 
 ## Why this exists
 
@@ -37,18 +41,34 @@ plugin is its first content-bearing occupant beyond a tool's own
 { "plugins": { "install": ["conway.idiom"] } }
 ```
 
-Uninstalled, nothing changes: no instruction fragment is contributed, and a
-bare interactive session keeps sending no system-prompt segment at all,
-exactly as before this plugin existed. Opt-in at the harness level, like
-every other member of the first-party tier — but **installed by default at
-first-run** by the `conway` binary's own guided setup (board item
-`01M1FS34GNZEVZP4ZBVC90VD6J`, decision `01M1FQFP5D0R3M9GC8R8Z24F5N`,
-2026-09-01): a fresh operator gets this fragment without asking for it by
-name, alongside five siblings — see
+Uninstalled, nothing changes: neither instruction fragment is contributed,
+and a bare interactive session keeps sending no system-prompt segment at
+all, exactly as before this plugin existed. Opt-in at the harness level,
+like every other member of the first-party tier — but **installed by
+default at first-run** by the `conway` binary's own guided setup (board
+item `01M1FS34GNZEVZP4ZBVC90VD6J`, decision `01M1FQFP5D0R3M9GC8R8Z24F5N`,
+2026-09-01): a fresh operator gets both fragments without asking for
+either by name, alongside five siblings — see
 [`docs/getting-started.md`](../getting-started.md#installing-a-first-party-plugin)
 for the full set and how to remove any one of them. That is a property of
 the binary's first run, not of `ConwayBuilder::build()` or the harness's
 own defaults, which are unchanged by this item.
+
+**Token cost, per turn:** the environment block is one short sentence, and
+— because it is computed exactly once at plugin construction and never
+changes for the life of the session (see "The environment block" below) —
+it is the cheapest possible thing to have sit ahead of the rest of the
+context on a prompt cache: after the first turn, it costs nothing extra to
+re-send, because the bytes are identical to what the cache already holds.
+The idioms primer costs its unconditional body plus whichever of its
+bash/report/conway_fork-gated sentences this turn's own tool set makes
+reachable (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`) — never the full
+~360-word raw source at once, only the parts that actually apply. Plus
+whatever an operator's own `instructions.md` file(s) cost, when either
+exists. `/context`'s preamble section names `conway.idiom.environment`,
+`conway.idiom.base`, `conway.idiom.operator.project`, and
+`conway.idiom.operator.global` separately, each with its own exact token
+cost.
 
 ## Where it lands, and why
 
@@ -56,17 +76,20 @@ own defaults, which are unchanged by this item.
 positions relative to `[0] SystemPrompt` (an agent def's own prompt, or a
 session's `system_prompt_override`/one-shot `--system-prompt` override):
 `BeforeSystemPrompt` or `AfterSystemPrompt` (`hooks.md` point 17 has the
-full ordering contract). This plugin's shipped base fragment
-(`conway.idiom.base`) declares `BeforeSystemPrompt` with `order: -100` —
-it renders **genuinely first**, ahead of even a curated `AgentDef`'s own,
-deliberately-authored prompt, and ahead of everything else in the
-assembled context when there is no `[0]` at all (a bare interactive
-session, this plugin's own primary case). Installing more than one
-`BeforeSystemPrompt`-declaring plugin orders their fragments by `order`
-first, then `[plugins].install`/`with_plugin` install order for a tie;
-nothing here guarantees `conway.idiom.base` renders first among several
-against a third-party plugin that also declares `BeforeSystemPrompt` with
-a lower `order`.
+full ordering contract). This plugin ships TWO `BeforeSystemPrompt`
+fragments, ordered against each other by `order`: the environment block
+(`conway.idiom.environment`) declares `order: -200`, and the idioms primer
+(`conway.idiom.base`) declares `order: -100` — so the environment block
+renders **genuinely first**, immediately followed by the idioms primer,
+both ahead of even a curated `AgentDef`'s own, deliberately-authored
+prompt, and ahead of everything else in the assembled context when there
+is no `[0]` at all (a bare interactive session, this plugin's own primary
+case). Installing more than one `BeforeSystemPrompt`-declaring plugin
+orders their fragments by `order` first, then `[plugins].install`/
+`with_plugin` install order for a tie; nothing here guarantees either of
+this plugin's own two fragments renders first among several against a
+third-party plugin that also declares `BeforeSystemPrompt` with a lower
+`order`.
 
 The operator's own project/global fragments (`conway.idiom.operator.
 project`/`conway.idiom.operator.global`, described below) stay at the
@@ -84,6 +107,69 @@ plugin does by reordering itself." The fragment position/order/scope item
 (process record `01M1FQ36PCW2J19AP219GKZH3R`) is that follow-up: the
 runtime now lets a fragment say which side of `[0]` it wants, and this
 plugin's base fragment says "ahead."
+
+## The environment block (board item `01M1FSTQT952QYM014G65EVW25`)
+
+A model running inside conway was previously never told what harness it is
+in, what directory it is working from, what OS it is on, or what day it
+is. `conway.idiom.environment` closes that gap with a single sentence,
+naming exactly four facts:
+
+- **`cwd`** — the session's own working directory, absolute, verbatim.
+- **`os`/arch** — `std::env::consts::OS`/`ARCH` (e.g. `macos aarch64`,
+  `linux x86_64`).
+- **`date`** — the session's start date (`YYYY-MM-DD`), explicitly labeled
+  "session start" in the sentence itself.
+- **`git`** — the current branch (or, in detached `HEAD` state, a short
+  commit sha), when `cwd` is inside a git work tree; omitted entirely,
+  never guessed at, when it is not.
+
+**It is a snapshot, not a clock.** Every one of these facts is computed
+exactly once, when the plugin is constructed (at session/agent-loop
+startup), and never again — `Plugin::instructions()` returns the
+byte-identical rendered text every time it is called for the life of that
+plugin instance. **A session that happens to cross midnight keeps
+reporting its ORIGINAL start date**, not the date the model's clock would
+now read; conway does not re-derive this block mid-session, on a fork, or
+on a spawn (a forked/spawned child inherits its own copy, computed at ITS
+OWN construction, immediately after the parent's — normally the same
+instant, for all practical purposes).
+
+**Why "session-static" is the entire design, not an oversight.** An
+`InstructionFragment` declared `BeforeSystemPrompt` with a very negative
+`order` sits ahead of everything else in the assembled context — which
+means it sits ahead of everything a prompt cache keys its cached prefix
+on. If this block's text changed from one turn to the next, EVERY turn
+would invalidate the cache for the entire rest of the context behind it,
+turn after turn, defeating the purpose of a prefix cache existing at all.
+Keeping this block byte-identical across a session's whole lifetime is
+what lets the rest of the context still benefit from caching.
+
+**Deliberately excluded, each for a reason tied to the property above (or
+to declaration honesty):**
+
+- **Clean/dirty git status.** This changes on nearly every turn (the
+  model's own edits dirty the tree) — exactly the kind of per-turn churn
+  this block exists to avoid. If you need this, `bash`/`git status` is the
+  live answer, not a prompt fragment.
+- **Model, context window, or budget headroom.** Not knowable at plugin
+  construction time (construction precedes route resolution), and already
+  covered by a different, per-turn mechanism — see
+  [`interactive.md`](../interactive.md#runway-notices)'s "runway notices."
+  Restating it here would be a second, potentially stale source of truth
+  for the same number.
+- **A tool list.** The wire-level tool schema announcement already states
+  exactly which tools this turn can call.
+- **Hostname, username, or any other environment variable.** No consumer
+  needs either; nothing here is added "just in case."
+
+**No new dependency, no subprocess.** Git facts come from parsing
+`.git/HEAD` directly (plain text, `std::fs` only) — never a `git`
+subprocess call, never the `git2` crate. A linked worktree checkout's own
+`.git` is a FILE (`gitdir: <path>`, not a directory) naming where its REAL
+`HEAD` actually lives; this plugin follows that pointer, so a worktree
+checkout correctly reports the worktree's own current branch, not the
+main checkout's.
 
 ## What the fragment covers, and how per-part gating replaced the tool_ids trap
 
@@ -258,21 +344,23 @@ answer "replace" a second way.
 
 `/context`'s preamble section (`crates/conway-cli/src/tui/commands.rs`)
 renders every plugin-declared instruction fragment this turn's assembly
-considered — `conway.idiom.base` always, plus `conway.idiom.operator.
-project`/`conway.idiom.operator.global` whenever the corresponding file
-exists — each with its source plugin, its estimated token cost, and, when
-one or more of its conditional parts (board item
-`01M1FSRJJAB3ZYZXED4SVT2ZSF`) were withheld this turn, how many and which
-tool ids made them unreachable. A fragment naming an unreachable part can
-still have rendered a real segment — its body, or another reachable part —
-so this line describes what was left out, not necessarily "nothing was
-sent."
+considered — `conway.idiom.environment` and `conway.idiom.base` always,
+plus `conway.idiom.operator.project`/`conway.idiom.operator.global`
+whenever the corresponding file exists — each with its source plugin, its
+estimated token cost, and, when one or more of the idioms primer's
+conditional parts (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`; the
+environment block declares none) were withheld this turn, how many and
+which tool ids made them unreachable. A fragment naming an unreachable
+part can still have rendered a real segment — its body, or another
+reachable part — so this line describes what was left out, not
+necessarily "nothing was sent."
 
 The per-segment listing further down `/context`'s output (and `conway
 sessions show`/`export`'s headless render of the same session log) names
-each segment's own provenance label, and the two now read apart: the
-shipped base fragment renders as `plugin:conway.idiom/conway.idiom.base`,
-while your own project/global text renders as
+each segment's own provenance label, and the two now read apart: the two
+shipped fragments render as `plugin:conway.idiom/conway.idiom.environment`
+and `plugin:conway.idiom/conway.idiom.base`, while your own project/global
+text renders as
 `operator:instructions.md` — the file's own basename, not "a skill" and not
 merely "`conway.idiom`". Nothing here is attributed to a skill anymore;
 a directory-authored `.conway/skills` body keeps its own, separate

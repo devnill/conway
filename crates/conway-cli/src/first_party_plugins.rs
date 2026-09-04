@@ -450,7 +450,7 @@ pub fn all_bundle_plugins(
     let browse_names: Arc<dyn AgentNames> =
         Arc::new(conway_plugin_names::InMemoryAgentNames::new());
     let idiom_plugin = resolve_idiom_plugin(cwd, env)
-        .unwrap_or_else(|_| Arc::new(conway_plugin_idiom::IdiomPlugin::new()) as Arc<dyn Plugin>);
+        .unwrap_or_else(|_| Arc::new(conway_plugin_idiom::IdiomPlugin::new(cwd)) as Arc<dyn Plugin>);
     // Unconditionally `unchecked` here (never `resolve_confine_plugin`):
     // this function returns EVERY linked candidate regardless of
     // selection (its own doc, "unfiltered"), so there is no `install_ids`
@@ -556,8 +556,11 @@ fn resolve_idiom_plugin(
     env: &HashMap<String, String>,
 ) -> conway::Result<Arc<dyn Plugin>> {
     let (project, global) = conway_plugin_idiom::resolve_operator_paths(cwd, env);
-    let plugin =
-        conway_plugin_idiom::IdiomPlugin::from_operator_files(Some(&project), global.as_deref())?;
+    let plugin = conway_plugin_idiom::IdiomPlugin::from_operator_files(
+        cwd,
+        Some(&project),
+        global.as_deref(),
+    )?;
     Ok(Arc::new(plugin))
 }
 
@@ -1009,8 +1012,9 @@ pub fn installed_plugins(
 ) -> conway::Result<Vec<Arc<dyn Plugin>>> {
     let install = &conway.config().plugins.install;
     let cwd = conway.config().cwd.clone();
-    let idiom_plugin = resolve_idiom_plugin(&cwd, env)
-        .unwrap_or_else(|_| Arc::new(conway_plugin_idiom::IdiomPlugin::new()) as Arc<dyn Plugin>);
+    let idiom_plugin = resolve_idiom_plugin(&cwd, env).unwrap_or_else(|_| {
+        Arc::new(conway_plugin_idiom::IdiomPlugin::new(&cwd)) as Arc<dyn Plugin>
+    });
     let confine_plugin = resolve_confine_plugin(install).unwrap_or_else(|_| {
         Arc::new(conway_plugin_confine::ConfinePlugin::unchecked(
             conway_plugin_confine::default_primitive_path(),
@@ -1093,9 +1097,13 @@ mod tests {
     /// `IdiomPlugin::new()` gives any other caller with no `instructions.md`
     /// on disk. None of this module's own tests exercise operator-file
     /// resolution itself (that is `conway-plugin-idiom`'s own coverage);
-    /// this helper just satisfies `bundle`'s signature.
-    fn test_idiom_plugin() -> Arc<dyn Plugin> {
-        Arc::new(conway_plugin_idiom::IdiomPlugin::new())
+    /// this helper just satisfies `bundle`'s signature. `cwd` is threaded
+    /// through only to seed `conway.idiom.environment`'s body (board item
+    /// `01M1FSTQT952QYM014G65EVW25`) -- none of this module's own tests
+    /// assert on that fragment's text either, so any caller-supplied `cwd`
+    /// works here.
+    fn test_idiom_plugin(cwd: &std::path::Path) -> Arc<dyn Plugin> {
+        Arc::new(conway_plugin_idiom::IdiomPlugin::new(cwd))
     }
 
     /// The `conway.confine` candidate every wiring-only check here passes
@@ -1127,7 +1135,7 @@ mod tests {
             &cwd,
             memory_store,
             test_agent_names(),
-            test_idiom_plugin(),
+            test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
         )
@@ -1152,7 +1160,7 @@ mod tests {
             &cwd,
             memory_store,
             test_agent_names(),
-            test_idiom_plugin(),
+            test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
         )
@@ -1212,7 +1220,7 @@ mod tests {
             &cwd,
             memory_store,
             test_agent_names(),
-            test_idiom_plugin(),
+            test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
         )
@@ -1239,7 +1247,7 @@ mod tests {
             &cwd,
             memory_store,
             test_agent_names(),
-            test_idiom_plugin(),
+            test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
         )
@@ -1268,7 +1276,7 @@ mod tests {
             &cwd,
             memory_store,
             test_agent_names(),
-            test_idiom_plugin(),
+            test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
         )
@@ -1311,7 +1319,7 @@ mod tests {
             &cwd,
             memory_store,
             test_agent_names(),
-            test_idiom_plugin(),
+            test_idiom_plugin(&cwd),
             test_confine_plugin(),
             Some(surface),
         );
@@ -1368,7 +1376,7 @@ mod tests {
             &cwd,
             memory_store,
             test_agent_names(),
-            test_idiom_plugin(),
+            test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
         )
@@ -1396,7 +1404,7 @@ mod tests {
             &cwd,
             memory_store,
             test_agent_names(),
-            test_idiom_plugin(),
+            test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
         )
@@ -1566,7 +1574,7 @@ mod tests {
             &cwd,
             memory_store,
             test_agent_names(),
-            test_idiom_plugin(),
+            test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
         )
@@ -1616,7 +1624,7 @@ mod tests {
             &cwd,
             memory_store,
             agent_names.clone(),
-            test_idiom_plugin(),
+            test_idiom_plugin(&cwd),
             test_confine_plugin(),
             None,
         );

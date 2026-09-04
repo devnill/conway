@@ -15,7 +15,9 @@ use std::sync::Arc;
 use conway::plugin::ContentBlock;
 use conway::test_support::{base_config_at, test_builder};
 use conway::{Conway, ForkSpec, SessionSpec, SpawnSpec};
-use conway_plugin_idiom::{IdiomPlugin, FRAGMENT_TEXT, INSTRUCTION_NAME, PLUGIN_ID};
+use conway_plugin_idiom::{
+    IdiomPlugin, ENVIRONMENT_INSTRUCTION_NAME, FRAGMENT_TEXT, INSTRUCTION_NAME, PLUGIN_ID,
+};
 use conway_testkit::{text_response, FakeStore, ScriptedBackend, ScriptedTurn};
 
 /// A real, fully-faked `Conway` with `IdiomPlugin` attached, mirroring
@@ -25,7 +27,8 @@ fn idiom_conway(
     backend: Arc<ScriptedBackend>,
     store: Arc<FakeStore>,
 ) -> Conway {
-    idiom_conway_with_plugin(cwd, backend, store, IdiomPlugin::new())
+    let plugin = IdiomPlugin::new(&cwd);
+    idiom_conway_with_plugin(cwd, backend, store, plugin)
 }
 
 /// The same fully-faked `Conway`, with a caller-supplied `IdiomPlugin` --
@@ -63,7 +66,8 @@ fn all_text(req: &conway::backend::GenerateRequest) -> String {
 #[test]
 fn manifest_id_matches_the_published_constant() {
     use conway::plugin::Plugin as _;
-    assert_eq!(IdiomPlugin::new().manifest().id, PLUGIN_ID);
+    let tmp = tempfile::tempdir().expect("tempdir");
+    assert_eq!(IdiomPlugin::new(tmp.path()).manifest().id, PLUGIN_ID);
 }
 
 /// Acceptance 2/9: installing `conway.idiom` on a bare session (no
@@ -191,9 +195,12 @@ async fn operator_project_instructions_reach_a_bare_sessions_wire_request() {
         ))])
         .with_id(conway::backend::BackendId::new("fake")),
     );
-    let plugin =
-        IdiomPlugin::from_operator_files(Some(&instructions_dir.join("instructions.md")), None)
-            .expect("a present, readable operator file must not error");
+    let plugin = IdiomPlugin::from_operator_files(
+        tmp.path(),
+        Some(&instructions_dir.join("instructions.md")),
+        None,
+    )
+    .expect("a present, readable operator file must not error");
     let conway = idiom_conway_with_plugin(tmp.path().to_path_buf(), backend.clone(), store, plugin);
 
     let session = conway
@@ -272,7 +279,7 @@ async fn operator_instructions_reach_a_forked_childs_wire_request() {
         ])
         .with_id(conway::backend::BackendId::new("fake")),
     );
-    let plugin = IdiomPlugin::from_operator_files(Some(&instructions_path), None)
+    let plugin = IdiomPlugin::from_operator_files(tmp.path(), Some(&instructions_path), None)
         .expect("a present, readable operator file must not error");
     let conway = idiom_conway_with_plugin(tmp.path().to_path_buf(), backend.clone(), store, plugin);
 
@@ -387,7 +394,7 @@ async fn a_session_with_conway_shell_installed_gets_the_bash_gated_part() {
         .with_backend(backend.clone())
         .with_session_store(store)
         .with_plugin(shell_plugin)
-        .with_plugin(Arc::new(IdiomPlugin::new()))
+        .with_plugin(Arc::new(IdiomPlugin::new(tmp.path())))
         .build()
         .expect("build should succeed with conway.shell and conway.idiom installed");
 
@@ -420,14 +427,102 @@ fn fragment_text_is_within_the_forty_line_four_hundred_word_budget() {
     assert!(words <= 400, "fragment has {words} words, over budget");
 }
 
-/// `INSTRUCTION_NAME` is exported so a caller (or this test) can name the
-/// fragment without re-deriving it -- checked here rather than merely
-/// assumed by the plugin's own doc comment.
+/// `INSTRUCTION_NAME`/`ENVIRONMENT_INSTRUCTION_NAME` are exported so a
+/// caller (or this test) can name either fragment without re-deriving it --
+/// checked here rather than merely assumed by the plugin's own doc
+/// comment. `instructions()`'s own declared order (environment, then base)
+/// is pinned by name-lookup here; the RENDERED order, through a real
+/// facade build, is
+/// [`environment_fragment_renders_first_ahead_of_the_base_fragment`]'s own
+/// job (acceptance 3), below.
 #[test]
-fn instruction_name_is_the_published_constant() {
+fn instruction_names_are_the_published_constants() {
     use conway::plugin::Plugin as _;
-    let instructions = IdiomPlugin::new().instructions();
-    assert_eq!(instructions[0].name, INSTRUCTION_NAME);
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let instructions = IdiomPlugin::new(tmp.path()).instructions();
+    assert_eq!(instructions.len(), 2);
+    assert_eq!(instructions[0].name, ENVIRONMENT_INSTRUCTION_NAME);
+    assert_eq!(instructions[1].name, INSTRUCTION_NAME);
+}
+
+/// Acceptance 3: with `conway.idiom` installed and a real `AgentDef`
+/// prompt present, the FIRST rendered instruction segment is
+/// `conway.idiom.environment` and the second is `conway.idiom.base` --
+/// driven through a real facade build (`ConwayBuilder`/
+/// `SessionHandle::context_report_current`), the same data source
+/// `/context` renders from, mirroring `crates/conway/tests/builder.rs`'s
+/// `a_before_system_prompt_fragment_renders_ahead_of_a_real_agent_defs_prompt`
+/// pattern for asserting on `report.segments[N].provenance` directly
+/// rather than on `Plugin::instructions()` inspected in isolation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn environment_fragment_renders_first_ahead_of_the_base_fragment() {
+    use conway::plugin::Provenance;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let agents_dir = tmp.path().join(".conway").join("agents");
+    std::fs::create_dir_all(&agents_dir).expect("mkdir");
+    std::fs::write(
+        agents_dir.join("reviewer.md"),
+        "---\nname: reviewer\n---\nYou are a careful reviewer.\n",
+    )
+    .expect("write agent def");
+
+    let store = Arc::new(FakeStore::new());
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response(
+            "hello from the model",
+        ))])
+        .with_id(conway::backend::BackendId::new("fake")),
+    );
+    let conway = idiom_conway(tmp.path().to_path_buf(), backend.clone(), store);
+
+    let session = conway
+        .new_session(SessionSpec {
+            agent_def: Some("reviewer".to_string()),
+            ..SessionSpec::default()
+        })
+        .await
+        .expect("new_session naming a real agent def should succeed");
+    let turn = session.prompt("hi").await.expect("prompt");
+    turn.result().await.expect("turn completes");
+
+    let report = session
+        .context_report_current(root_agent(&session))
+        .await
+        .expect("context_report_current");
+    assert!(
+        report.segments.len() >= 3,
+        "expected at least the environment fragment, the base fragment, and the agent-def \
+         system prompt: {:?}",
+        report.segments
+    );
+    assert!(
+        matches!(
+            &report.segments[0].provenance,
+            Provenance::PluginInstruction { plugin_id, name }
+                if plugin_id == PLUGIN_ID && name == ENVIRONMENT_INSTRUCTION_NAME
+        ),
+        "the environment fragment must be the very first segment: {:?}",
+        report
+            .segments
+            .iter()
+            .map(|s| s.provenance.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(
+            &report.segments[1].provenance,
+            Provenance::PluginInstruction { plugin_id, name }
+                if plugin_id == PLUGIN_ID && name == INSTRUCTION_NAME
+        ),
+        "the base fragment must be the second segment, immediately after the environment \
+         fragment and still ahead of the agent def's own prompt: {:?}",
+        report
+            .segments
+            .iter()
+            .map(|s| s.provenance.clone())
+            .collect::<Vec<_>>()
+    );
 }
 
 /// Acceptance 3, board item `01M1FSNBRE5XJ0GQ04RT5HZ1PS`: a real turn's
@@ -458,7 +553,7 @@ async fn context_report_segments_carry_plugin_and_operator_provenance() {
         ))])
         .with_id(conway::backend::BackendId::new("fake")),
     );
-    let plugin = IdiomPlugin::from_operator_files(Some(&instructions_path), None)
+    let plugin = IdiomPlugin::from_operator_files(tmp.path(), Some(&instructions_path), None)
         .expect("a present, readable operator file must not error");
     let conway = idiom_conway_with_plugin(tmp.path().to_path_buf(), backend.clone(), store, plugin);
 
