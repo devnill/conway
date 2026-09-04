@@ -143,6 +143,79 @@
 //! whenever THIS child's own tool set actually has `report` -- see "The
 //! `tool_ids` trap" above for the per-part gate this composes through.
 //!
+//! # The environment block (board item `01M1FSTQT952QYM014G65EVW25`)
+//!
+//! A model running inside conway was never told what harness it is in, what
+//! directory it is working from, what OS it is on, or what day it is --
+//! [`FRAGMENT_TEXT`] talks ABOUT `conway_fork`/`report`/context scarcity but
+//! never states the handful of session-static facts a model would otherwise
+//! have to guess (or misremember from a general-purpose prior) from the
+//! transcript alone. [`ENVIRONMENT_INSTRUCTION_NAME`] is a second, small
+//! fragment closing that gap, declared `BeforeSystemPrompt` with
+//! `order: -200` -- ahead of even [`INSTRUCTION_NAME`]'s own `order: -100`
+//! (see "Where the base fragment lands" above) -- so it is genuinely the
+//! FIRST thing in the assembled context, ahead of conway's own idioms
+//! primer and ahead of an agent def's own prompt.
+//!
+//! **Computed exactly once, at [`IdiomPlugin::new`]/[`IdiomPlugin::
+//! from_operator_files`] construction time, never re-derived per call to
+//! [`IdiomPlugin::instructions`].** This is the entire point: an
+//! `InstructionFragment` this early in the assembled context sits ahead of
+//! everything a prompt cache keys on, so any line that changes between two
+//! turns of the SAME session invalidates the cached prefix for the whole
+//! rest of the context behind it. [`IdiomPlugin`] stores the rendered
+//! fragment as a field, computed once in the constructor, rather than
+//! re-deriving it the way [`FRAGMENT_TEXT`] is re-parsed on every call --
+//! `environment_fragment_is_byte_identical_across_two_calls` (below) pins
+//! this literally: two consecutive `instructions()` calls on the same
+//! instance return the identical rendered text for this fragment.
+//!
+//! **Four facts, each named only when conway actually established it
+//! (declaration honesty) -- see `build_environment_text`:**
+//!
+//! - `cwd` -- the constructor's own `cwd` argument, verbatim.
+//! - `os`/arch -- `std::env::consts::OS`/`std::env::consts::ARCH`.
+//! - `date` -- `chrono::Local::now()` at construction time, formatted
+//!   `YYYY-MM-DD` and labeled "session start" IN the sentence itself, so
+//!   the model is told, not left to assume, that this will not update if
+//!   the session happens to cross midnight -- it is a snapshot, not a
+//!   clock.
+//! - `git` -- `.git/HEAD`, read directly (`std::fs`, no `git` subprocess,
+//!   no `git2` dependency) and parsed by `resolve_head_path`/
+//!   `parse_head_contents`: `ref: refs/heads/<branch>` names the branch;
+//!   a raw 40-hex-character SHA (detached HEAD) is shortened to its first
+//!   8 characters. A linked worktree's own `.git` is a FILE (`gitdir:
+//!   <path>`, not a directory) naming where its REAL `HEAD` actually lives
+//!   -- `resolve_head_path` follows that pointer, so a worktree checkout
+//!   (like the one this very item was implemented in) reports the
+//!   worktree's own current branch, not the main checkout's. Omitted
+//!   entirely from the sentence -- never "git unknown", never a guess --
+//!   when `.git` is absent, unreadable, or `HEAD`'s contents parse as
+//!   neither shape.
+//!
+//! **Deliberately excludes three things**, each because including it would
+//! break the one property this fragment exists for (byte-identical across
+//! the plugin's whole lifetime) or duplicate a fact conway already states
+//! elsewhere, more reliably:
+//!
+//! - **Clean/dirty git status.** Changes on nearly every turn (the model's
+//!   own edits dirty the tree) -- the antithesis of session-static, and the
+//!   single fact most likely to shred the cache prefix if it were included.
+//! - **Model/window/headroom.** Not knowable at construction time --
+//!   plugin construction precedes route resolution -- and a different,
+//!   already-shipped mechanism (`conway_runtime::runway`, `docs/
+//!   interactive.md`'s "runway notices") already carries per-turn window/
+//!   budget information; restating it here would be a second, potentially
+//!   stale source of truth for the same number.
+//! - **A tool list.** The wire-level tool schema announcement already
+//!   states exactly which tools this turn can call; a prose restatement
+//!   here has nothing to add and every chance to go stale against it.
+//!
+//! No hostname, no username, no arbitrary environment variables -- none of
+//! this fragment's four facts need either, and GP-14 (declaration honesty:
+//! say only what is true and needed, nothing added "just in case") argues
+//! against naming a fact no consumer actually asked for.
+//!
 //! # Naming
 //!
 //! `conway.idiom` -- the exact id `conway_core::ports::plugin::Plugin::
@@ -292,8 +365,16 @@ use conway::plugin::{
 /// against this constant.
 pub const PLUGIN_ID: &str = "conway.idiom";
 
-/// The bare name of this plugin's one shipped [`InstructionFragment`].
+/// The bare name of this plugin's shipped idioms-primer [`InstructionFragment`]
+/// -- see [`ENVIRONMENT_INSTRUCTION_NAME`] for the second shipped fragment,
+/// this plugin's environment block.
 pub const INSTRUCTION_NAME: &str = "conway.idiom.base";
+
+/// The bare name of this plugin's shipped environment-block
+/// [`InstructionFragment`] -- see this module's own doc, "The environment
+/// block" (board item `01M1FSTQT952QYM014G65EVW25`), for what it says, why
+/// it says only those four facts, and why it is computed exactly once.
+pub const ENVIRONMENT_INSTRUCTION_NAME: &str = "conway.idiom.environment";
 
 /// The name of the operator's project-scope instruction fragment, sourced
 /// from `<cwd>/.conway/instructions.md` when that file exists, is
@@ -323,6 +404,118 @@ pub const OPERATOR_INSTRUCTIONS_FILENAME: &str = "instructions.md";
 /// module's own doc, "Reach: every agent, root or child", for who actually
 /// reads this text.
 pub const FRAGMENT_TEXT: &str = include_str!("../fragments/idiom.md");
+
+/// Builds [`ENVIRONMENT_INSTRUCTION_NAME`]'s body text for `cwd` -- called
+/// exactly once, at [`IdiomPlugin::new`]/[`IdiomPlugin::from_operator_files`]
+/// construction time, never per call to [`IdiomPlugin::instructions`]. See
+/// this module's own doc, "The environment block", for the cache-economics
+/// argument that single-call-site discipline exists for, and for why each
+/// of the four facts below is included (or, for the three named there,
+/// deliberately not).
+///
+/// Every clause names a fact this call actually established -- when
+/// `resolve_head_ref` returns `None` (no `.git`, an unreadable one, or
+/// `HEAD` contents that parse as neither a symbolic ref nor a raw SHA), the
+/// `git` clause is omitted from the sentence entirely rather than replaced
+/// with a guess or a placeholder like "git unknown" (declaration honesty,
+/// GP-14).
+fn build_environment_text(cwd: &Path) -> String {
+    let cwd_display = cwd.display();
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let date = chrono::Local::now().format("%Y-%m-%d");
+    let mut text = format!(
+        "You are running in conway, an agent harness. Environment: cwd {cwd_display}; os {os} \
+         {arch}; date {date}, session start"
+    );
+    if let Some(git_ref) = resolve_head_ref(cwd) {
+        text.push_str("; git ");
+        text.push_str(&git_ref);
+    }
+    text.push('.');
+    text
+}
+
+/// Resolves `cwd`'s current git ref for `build_environment_text` -- the
+/// short label (`parse_head_contents`) parsed out of `cwd`'s `HEAD` file,
+/// wherever `resolve_head_path` finds it actually lives. `None` covers
+/// every way this can fail to name a real fact: no `.git` at all (`cwd` is
+/// not inside a git work tree), a `.git` that is neither a directory nor a
+/// well-formed worktree pointer file, a `HEAD` that cannot be read, or
+/// `HEAD` contents that parse as neither shape `parse_head_contents`
+/// recognizes.
+fn resolve_head_ref(cwd: &Path) -> Option<String> {
+    let head_path = resolve_head_path(cwd)?;
+    let contents = std::fs::read_to_string(head_path).ok()?;
+    parse_head_contents(&contents)
+}
+
+/// Finds the actual `HEAD` file for `cwd`'s repository or worktree.
+///
+/// `cwd/.git` is ordinarily a DIRECTORY (an ordinary clone, or the primary
+/// checkout of a repository that also has linked worktrees) -- in which
+/// case `cwd/.git/HEAD` is the answer directly. For a LINKED WORKTREE
+/// checkout, though, `cwd/.git` is instead a FILE containing one line,
+/// `gitdir: <path>`, naming this worktree's own metadata directory
+/// (typically `<main-repo>/.git/worktrees/<name>`) -- that directory
+/// carries this worktree's OWN `HEAD`, distinct from the main checkout's
+/// (each linked worktree can be on its own branch), so this function
+/// follows the pointer rather than trying to read `cwd/.git/HEAD` as
+/// though `.git` were a directory and failing. Returns `None` when
+/// `cwd/.git` does not exist at all, or exists as neither a directory nor
+/// a well-formed `gitdir:` pointer file -- callers treat that identically
+/// to "no git ref to report" (see `resolve_head_ref`).
+fn resolve_head_path(cwd: &Path) -> Option<PathBuf> {
+    let dot_git = cwd.join(".git");
+    let metadata = std::fs::symlink_metadata(&dot_git).ok()?;
+    if metadata.is_dir() {
+        return Some(dot_git.join("HEAD"));
+    }
+    let pointer = std::fs::read_to_string(&dot_git).ok()?;
+    let gitdir = pointer.trim().strip_prefix("gitdir:")?.trim();
+    if gitdir.is_empty() {
+        return None;
+    }
+    let gitdir_path = PathBuf::from(gitdir);
+    let resolved = if gitdir_path.is_absolute() {
+        gitdir_path
+    } else {
+        // A relative `gitdir:` line is relative to the pointer FILE's own
+        // parent directory (`cwd`), not this process's own cwd -- matching
+        // how git itself resolves it.
+        cwd.join(gitdir_path)
+    };
+    Some(resolved.join("HEAD"))
+}
+
+/// Parses a `HEAD` file's raw contents into the short git ref
+/// `build_environment_text` reports. `ref: refs/heads/<branch>` names the
+/// branch (the `refs/heads/` prefix is stripped; anything else after
+/// `ref:` -- e.g. a ref outside `refs/heads/` -- is reported verbatim
+/// rather than guessed at). A raw, exactly-40-hex-character SHA (a
+/// detached `HEAD`) is shortened to its first 8 characters. Anything else
+/// -- an empty file, a blank `ref:` line, bytes that are neither shape --
+/// yields `None`: better to omit the `git` clause than report something
+/// this function is not actually sure of.
+fn parse_head_contents(contents: &str) -> Option<String> {
+    let line = contents.lines().next()?.trim();
+    if let Some(rest) = line.strip_prefix("ref:") {
+        let ref_name = rest.trim();
+        if ref_name.is_empty() {
+            return None;
+        }
+        return Some(
+            ref_name
+                .strip_prefix("refs/heads/")
+                .unwrap_or(ref_name)
+                .to_string(),
+        );
+    }
+    if line.len() == 40 && line.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Some(line[..8].to_string());
+    }
+    None
+}
 
 /// Board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` -- see this module's own doc,
 /// "The `tool_ids` trap", for the full argument this implements. Parses
@@ -525,40 +718,206 @@ mod parse_fragment_markdown_tests {
     }
 }
 
-/// The `conway.idiom` plugin: contributes no tool, one shipped instruction
-/// fragment -- conway's own short idioms primer, rendered genuinely first
-/// in the assembled context, ahead of even an `AgentDef`'s own system
-/// prompt (see this crate's own module doc, "Where the base fragment
-/// lands") -- plus up to two more, optional fragments sourced from an
-/// operator's own `instructions.md` (see this module's own doc, "Operator
-/// instructions"), which stay positioned AFTER `[0]` like every ordinary
-/// fragment.
+/// Unit coverage for the environment block's own text-building and git
+/// parsing, in isolation from a real `IdiomPlugin`/`Conway` build -- board
+/// item `01M1FSTQT952QYM014G65EVW25`. `operator_file_tests` (below,
+/// existing) is the precedent this mirrors for `conway-plugin-idiom`'s own
+/// file-reading logic; `tests/idiom_end_to_end.rs`'s
+/// `environment_fragment_renders_first_ahead_of_the_base_fragment` is this
+/// item's facade-level, acceptance-3 proof.
 ///
-/// `Default`/[`IdiomPlugin::new`] carry no operator fragments at all --
-/// the shape every existing caller of bare `IdiomPlugin` already gets.
+/// **Written before the implementation existed, and confirmed to fail
+/// first** (this item's own stated convention): before
+/// [`ENVIRONMENT_INSTRUCTION_NAME`]/`build_environment_text`/
+/// `resolve_head_path`/`parse_head_contents` existed, every test in
+/// this module failed to compile (the names it references did not exist);
+/// after implementing them, every test below passes.
+#[cfg(test)]
+mod environment_tests {
+    use super::*;
+
+    /// Acceptance 1, the positive git half: a temp dir with a fabricated,
+    /// non-worktree `.git/HEAD` of `ref: refs/heads/main` yields
+    /// `git main`.
+    #[test]
+    fn a_plain_git_dir_on_a_branch_yields_the_branch_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dot_git = tmp.path().join(".git");
+        std::fs::create_dir_all(&dot_git).expect("mkdir .git");
+        std::fs::write(dot_git.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
+        assert_eq!(resolve_head_ref(tmp.path()), Some("main".to_string()));
+    }
+
+    /// Acceptance 1, the negative half: a temp dir with no `.git` at all
+    /// yields no git ref -- and the rendered environment text carries no
+    /// `git` token anywhere.
+    #[test]
+    fn no_git_dir_at_all_yields_no_git_ref_or_token() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert_eq!(resolve_head_ref(tmp.path()), None);
+        let text = build_environment_text(tmp.path());
+        assert!(
+            !text.contains("git"),
+            "no `.git` at all must omit the `git` clause entirely, never a placeholder: {text}"
+        );
+    }
+
+    /// A detached `HEAD` (a raw 40-hex-character SHA, no `ref:` line) is
+    /// shortened to its first 8 characters, not reported in full.
+    #[test]
+    fn a_detached_head_yields_an_eight_character_short_sha() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dot_git = tmp.path().join(".git");
+        std::fs::create_dir_all(&dot_git).expect("mkdir .git");
+        std::fs::write(
+            dot_git.join("HEAD"),
+            "3f786850e387550fdab836ed7e6dc881de230012\n",
+        )
+        .expect("write HEAD");
+        assert_eq!(resolve_head_ref(tmp.path()), Some("3f786850".to_string()));
+    }
+
+    /// A linked worktree's `.git` is a FILE, not a directory -- `gitdir:
+    /// <path>` names the worktree's own metadata directory, which carries
+    /// its OWN `HEAD`, distinct from whatever the main checkout is on.
+    /// This is the exact shape the repo this item was implemented in
+    /// actually has (a linked worktree checkout) -- see this module's own
+    /// doc, "The environment block".
+    #[test]
+    fn a_linked_worktrees_git_file_follows_the_gitdir_pointer_to_its_own_head() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let worktree_dir = tmp.path().join("worktree");
+        let real_gitdir = tmp.path().join("main-repo/.git/worktrees/feature-x");
+        std::fs::create_dir_all(&worktree_dir).expect("mkdir worktree");
+        std::fs::create_dir_all(&real_gitdir).expect("mkdir real gitdir");
+        std::fs::write(
+            worktree_dir.join(".git"),
+            format!("gitdir: {}\n", real_gitdir.display()),
+        )
+        .expect("write .git pointer file");
+        // The worktree's OWN HEAD, at the resolved gitdir -- deliberately a
+        // DIFFERENT branch than any HEAD `main-repo/.git` itself might
+        // carry (none is fabricated here at all), so a test that
+        // accidentally read the wrong file would fail loudly rather than
+        // coincidentally pass.
+        std::fs::write(real_gitdir.join("HEAD"), "ref: refs/heads/feature-x\n")
+            .expect("write worktree HEAD");
+        assert_eq!(
+            resolve_head_ref(&worktree_dir),
+            Some("feature-x".to_string()),
+            "must follow the `gitdir:` pointer to the worktree's own HEAD, not fail because \
+             `.git` is a file rather than a directory"
+        );
+    }
+
+    /// A relative `gitdir:` line is resolved against the pointer file's own
+    /// parent directory (`cwd`), matching git's own resolution rule.
+    #[test]
+    fn a_relative_gitdir_pointer_resolves_against_cwd() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let worktree_dir = tmp.path().join("worktree");
+        std::fs::create_dir_all(&worktree_dir).expect("mkdir worktree");
+        let real_gitdir = worktree_dir.join("../real-gitdir");
+        std::fs::create_dir_all(&real_gitdir).expect("mkdir real gitdir");
+        std::fs::write(worktree_dir.join(".git"), "gitdir: ../real-gitdir\n")
+            .expect("write relative .git pointer file");
+        std::fs::write(
+            real_gitdir.join("HEAD"),
+            "ref: refs/heads/relative-branch\n",
+        )
+        .expect("write HEAD");
+        assert_eq!(
+            resolve_head_ref(&worktree_dir),
+            Some("relative-branch".to_string())
+        );
+    }
+
+    /// Malformed `HEAD` contents (neither a `ref:` line nor a valid-length
+    /// hex SHA) yield `None` -- declaration honesty: no guess, no
+    /// placeholder.
+    #[test]
+    fn malformed_head_contents_yield_no_ref() {
+        assert_eq!(parse_head_contents(""), None);
+        assert_eq!(parse_head_contents("ref:\n"), None);
+        assert_eq!(parse_head_contents("not-a-ref-or-a-sha\n"), None);
+        // Too short to be a real SHA -- must not be misreported as one.
+        assert_eq!(parse_head_contents("abc123\n"), None);
+    }
+
+    /// `build_environment_text`'s exact shape (acceptance 1): every one
+    /// of `cwd`/`os`/`date`/`git` appears, in that reading order, when
+    /// `.git` resolves cleanly.
+    #[test]
+    fn environment_text_names_cwd_os_date_and_git() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dot_git = tmp.path().join(".git");
+        std::fs::create_dir_all(&dot_git).expect("mkdir .git");
+        std::fs::write(dot_git.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
+
+        let text = build_environment_text(tmp.path());
+        assert!(
+            text.contains(&format!("cwd {}", tmp.path().display())),
+            "must name the exact cwd: {text}"
+        );
+        assert!(text.contains("os "), "must name the OS: {text}");
+        assert!(text.contains("date "), "must name the date: {text}");
+        assert!(
+            text.contains("git main"),
+            "must name the git branch: {text}"
+        );
+    }
+}
+
+/// The `conway.idiom` plugin: contributes no tool, two shipped instruction
+/// fragments -- [`ENVIRONMENT_INSTRUCTION_NAME`] (a session-static
+/// environment block, board item `01M1FSTQT952QYM014G65EVW25`, rendered
+/// genuinely first) then [`INSTRUCTION_NAME`] (conway's own short idioms
+/// primer, immediately behind it), both ahead of even an `AgentDef`'s own
+/// system prompt (see this crate's own module doc, "Where the base
+/// fragment lands") -- plus up to two more, optional fragments sourced
+/// from an operator's own `instructions.md` (see this module's own doc,
+/// "Operator instructions"), which stay positioned AFTER `[0]` like every
+/// ordinary fragment.
+///
+/// [`IdiomPlugin::new`] carries no operator fragments -- the shape every
+/// caller with no `instructions.md` on disk gets.
 /// [`IdiomPlugin::from_operator_files`] is the constructor that actually
 /// reads an operator's files; `first_party_plugins::bundle` is this
-/// binary's one production call site.
-#[derive(Default)]
+/// binary's one production call site. Both constructors take `cwd`, used
+/// to seed [`ENVIRONMENT_INSTRUCTION_NAME`]'s body
+/// (`build_environment_text`) -- computed exactly once, here, and
+/// stored as `Self::environment`, never re-derived by
+/// [`IdiomPlugin::instructions`] (see this module's own doc, "The
+/// environment block", for why that single-computation discipline is the
+/// whole point).
 pub struct IdiomPlugin {
+    environment: InstructionFragment,
     operator_project: Option<InstructionFragment>,
     operator_global: Option<InstructionFragment>,
 }
 
 impl IdiomPlugin {
-    /// No operator fragments -- equivalent to `Default::default()`, spelled
-    /// out for a caller (or test) that wants a plain constructor rather
-    /// than a trait method.
-    pub fn new() -> Self {
-        Self::default()
+    /// No operator fragments -- the shape every caller with no
+    /// `instructions.md` on disk gets. `cwd` seeds
+    /// [`ENVIRONMENT_INSTRUCTION_NAME`]'s body, computed once, here (see
+    /// `environment_fragment`).
+    pub fn new(cwd: &Path) -> Self {
+        Self {
+            environment: environment_fragment(cwd),
+            operator_project: None,
+            operator_global: None,
+        }
     }
 
     /// Reads `project_path`/`global_path` (each `None` when that scope has
     /// no resolvable location at all -- see [`resolve_operator_paths`]) into
-    /// this plugin's two optional operator fragments. Point 4 of this
-    /// module's own "Operator instructions" doc for the missing/empty/
-    /// unreadable/malformed policy this implements.
+    /// this plugin's two optional operator fragments, and builds
+    /// [`ENVIRONMENT_INSTRUCTION_NAME`] from `cwd` the same way
+    /// [`IdiomPlugin::new`] does. Point 4 of this module's own "Operator
+    /// instructions" doc for the missing/empty/unreadable/malformed policy
+    /// this implements.
     pub fn from_operator_files(
+        cwd: &Path,
         project_path: Option<&Path>,
         global_path: Option<&Path>,
     ) -> conway::Result<Self> {
@@ -567,10 +926,28 @@ impl IdiomPlugin {
         let operator_global =
             read_operator_fragment(global_path, OPERATOR_GLOBAL_INSTRUCTION_NAME)?;
         Ok(Self {
+            environment: environment_fragment(cwd),
             operator_project,
             operator_global,
         })
     }
+}
+
+/// Builds [`ENVIRONMENT_INSTRUCTION_NAME`] itself from
+/// `build_environment_text`'s rendered body -- pulled out as its own
+/// function so both [`IdiomPlugin::new`] and [`IdiomPlugin::
+/// from_operator_files`] construct it identically. `position`/`order`/
+/// `scope`/`authored_by` are all spelled out explicitly, even though
+/// `scope`/`authored_by` equal `InstructionFragment::new`'s own defaults,
+/// so this reads as a deliberate choice -- see this module's own doc, "The
+/// environment block", for why `order: -200` (ahead of even
+/// [`INSTRUCTION_NAME`]'s own `order: -100`).
+fn environment_fragment(cwd: &Path) -> InstructionFragment {
+    InstructionFragment::new(ENVIRONMENT_INSTRUCTION_NAME, build_environment_text(cwd))
+        .with_position(FragmentPosition::BeforeSystemPrompt)
+        .with_order(-200)
+        .with_scope(FragmentScope::All)
+        .with_authored_by(FragmentAuthor::Plugin)
 }
 
 /// The default project-scope operator file: `<cwd>/.conway/instructions.md`
@@ -755,36 +1132,45 @@ impl Plugin for IdiomPlugin {
 
     fn description(&self) -> PluginDescription {
         PluginDescription {
-            summary: "prepends a short conway-idioms primer to a session's system-prompt \
-                       segment, plus an operator's own project/global instructions.md when \
-                       either exists"
+            summary: "prepends a session-static environment block (cwd, OS, date, git branch) \
+                       and a short conway-idioms primer to a session's system-prompt segment, \
+                       plus an operator's own project/global instructions.md when either exists"
                 .to_string(),
-            you_get: "one shipped instruction fragment (fork vs. spawn, how an agent ends, \
-                      configuration-dependent tools, context scarcity, permissions, budgets, \
-                      steering) injected genuinely first in the assembled context, ahead of \
-                      even an agent def's own system prompt -- and ahead of the whole context \
-                      when no agent def supplies one, which is the ordinary interactive-TUI \
-                      case this plugin exists for. Reaches every forked or spawned child too, \
-                      not the root alone (board item \
+            you_get: "two shipped instruction fragments. First, a small session-static \
+                      environment block (board item 01M1FSTQT952QYM014G65EVW25) -- cwd, OS/arch, \
+                      the session's start date, and (when cwd is inside a git work tree) the \
+                      current branch or a short commit sha -- computed once, at install time, \
+                      and rendered genuinely first, ahead of everything else including this \
+                      plugin's own idioms primer. Second, that idioms primer itself (fork vs. \
+                      spawn, how an agent ends, configuration-dependent tools, context scarcity, \
+                      permissions, budgets, steering), immediately behind the environment block, \
+                      both ahead of even an agent def's own system prompt -- and ahead of the \
+                      whole context when no agent def supplies one, which is the ordinary \
+                      interactive-TUI case this plugin exists for. Both reach every forked or \
+                      spawned child too, not the root alone (board item \
                       01M0VSKA76NSEHDSH25XJGJ2J5's ruling: an instruction fragment is harness \
                       configuration, not transcript context, so fork/spawn's inheritance split \
                       does not govern it) -- the permissions/steering bullets, and the \
                       `report`-gated part specifically, describe how a *child* agent should \
                       behave, and now reach exactly that agent. Also up to two more fragments, \
-                      additive alongside the shipped one, \
+                      additive alongside the two shipped ones, \
                       read from an operator's own `.conway/instructions.md` (project scope) and \
                       `<home>/.conway/instructions.md` (global scope) when either file exists -- \
                       reaching a forked/spawned child exactly the same way, for the same reason"
                 .to_string(),
             you_lose: "nothing else".to_string(),
-            costs: "one system-prompt segment's worth of tokens per turn for the shipped \
-                    fragment's unconditional body plus whichever of its bash/report/ \
-                    conway_fork-gated sentences this turn's own tool set makes reachable \
-                    (board item 01M1FSRJJAB3ZYZXED4SVT2ZSF) -- never the full ~360-word raw \
-                    source at once, only the parts that actually apply -- plus whatever an \
-                    operator's own instructions.md file(s) cost -- /context's preamble section \
-                    names conway.idiom.base, conway.idiom.operator.project, and \
-                    conway.idiom.operator.global separately, each with its own exact token cost"
+            costs: "one system-prompt segment's worth of tokens per turn for the environment \
+                    block (a single short sentence, byte-identical across the whole session -- \
+                    the same stable prefix every turn re-sends, so it costs nothing extra on a \
+                    prompt cache after the first turn) plus the idioms primer's own \
+                    unconditional body plus whichever of its bash/report/conway_fork-gated \
+                    sentences this turn's own tool set makes reachable (board item \
+                    01M1FSRJJAB3ZYZXED4SVT2ZSF) -- never the full ~360-word raw source at once, \
+                    only the parts that actually apply -- plus whatever an operator's own \
+                    instructions.md file(s) cost -- /context's preamble section names \
+                    conway.idiom.environment, conway.idiom.base, conway.idiom.operator.project, \
+                    and conway.idiom.operator.global separately, each with its own exact token \
+                    cost"
                 .to_string(),
         }
     }
@@ -803,17 +1189,28 @@ impl Plugin for IdiomPlugin {
         // exercises this exact call.
         let (body, parts) = parse_fragment_markdown(FRAGMENT_TEXT)
             .expect("FRAGMENT_TEXT is this crate's own shipped file and must parse");
-        let mut fragments = vec![InstructionFragment::new(INSTRUCTION_NAME, body)
-            .with_parts(parts)
-            // `BeforeSystemPrompt`, `order: -100` -- see this module's
-            // own doc, "Where the base fragment lands": conway's own
-            // harness orientation now precedes even an agent
-            // definition's own carefully-authored prompt, the position
-            // this plugin's own premise (a bare interactive session with
-            // no `[0]` at all) never needed but a curated `AgentDef`
-            // always did.
-            .with_position(FragmentPosition::BeforeSystemPrompt)
-            .with_order(-100)];
+        // `self.environment` was computed exactly once, at construction
+        // time (`IdiomPlugin::new`/`IdiomPlugin::from_operator_files`) --
+        // cloned here, never re-derived, so two calls to `instructions()`
+        // return byte-identical text for it (see this module's own doc,
+        // "The environment block", and
+        // `environment_fragment_is_byte_identical_across_two_calls` below).
+        // `order: -200` renders it ahead of even the base fragment's own
+        // `order: -100` immediately below.
+        let mut fragments = vec![self.environment.clone()];
+        fragments.push(
+            InstructionFragment::new(INSTRUCTION_NAME, body)
+                .with_parts(parts)
+                // `BeforeSystemPrompt`, `order: -100` -- see this module's
+                // own doc, "Where the base fragment lands": conway's own
+                // harness orientation now precedes even an agent
+                // definition's own carefully-authored prompt, the position
+                // this plugin's own premise (a bare interactive session with
+                // no `[0]` at all) never needed but a curated `AgentDef`
+                // always did.
+                .with_position(FragmentPosition::BeforeSystemPrompt)
+                .with_order(-100),
+        );
         fragments.extend(self.operator_project.clone());
         fragments.extend(self.operator_global.clone());
         fragments
@@ -829,7 +1226,8 @@ mod plugin_tests {
     /// trait's empty default.
     #[test]
     fn description_is_non_empty() {
-        let description = IdiomPlugin::new().description();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let description = IdiomPlugin::new(tmp.path()).description();
         assert!(!description.summary.is_empty());
         assert!(!description.you_get.is_empty());
         assert!(!description.you_lose.is_empty());
@@ -845,7 +1243,8 @@ mod plugin_tests {
     /// description, not the source.
     #[test]
     fn you_get_names_the_subagent_reach() {
-        let description = IdiomPlugin::new().description();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let description = IdiomPlugin::new(tmp.path()).description();
         assert!(
             description.you_get.to_lowercase().contains("subagent")
                 || description.you_get.to_lowercase().contains("child"),
@@ -854,26 +1253,37 @@ mod plugin_tests {
         );
     }
 
-    /// Exactly one fragment, contributing no tool -- `manifest().tools` is
-    /// empty, so the reachability check's "same plugin also provides the
-    /// tool" shortcut never applies here; every id any of this fragment's
-    /// parts names (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` -- `bash`,
-    /// `report`, `conway_fork`) has to be reachable through a DIFFERENT
-    /// installed plugin. The body itself stays unconditional.
+    /// Exactly two fragments (the environment block, then the idioms
+    /// primer), contributing no tool -- `manifest().tools` is empty, so
+    /// the reachability check's "same plugin also provides the tool"
+    /// shortcut never applies here; every id any of the primer's parts
+    /// names (board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` -- `bash`, `report`,
+    /// `conway_fork`) has to be reachable through a DIFFERENT installed
+    /// plugin. Both fragments' bodies stay unconditional; only the
+    /// primer's own extra sentences are gated.
     #[test]
-    fn contributes_exactly_one_fragment_and_no_tool() {
-        let plugin = IdiomPlugin::new();
+    fn contributes_exactly_two_fragments_and_no_tool() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let plugin = IdiomPlugin::new(tmp.path());
         assert!(plugin.tools().is_empty());
         assert!(plugin.manifest().tools.is_empty());
         let instructions = plugin.instructions();
-        assert_eq!(instructions.len(), 1);
-        assert_eq!(instructions[0].name, INSTRUCTION_NAME);
-        assert!(
-            !instructions[0].text.is_empty(),
-            "the body must be non-empty"
+        assert_eq!(instructions.len(), 2);
+        assert_eq!(
+            instructions[0].name, ENVIRONMENT_INSTRUCTION_NAME,
+            "the environment block must be the FIRST fragment"
         );
         assert!(
-            !instructions[0].parts.is_empty(),
+            !instructions[0].text.is_empty(),
+            "the environment block's body must be non-empty"
+        );
+        assert_eq!(instructions[1].name, INSTRUCTION_NAME);
+        assert!(
+            !instructions[1].text.is_empty(),
+            "the base fragment's body must be non-empty"
+        );
+        assert!(
+            !instructions[1].parts.is_empty(),
             "the base fragment must declare at least one conditional part"
         );
     }
@@ -887,7 +1297,8 @@ mod plugin_tests {
     /// `ContextBuilder::build` pass; this is the declaration-level pin.
     #[test]
     fn base_fragment_declares_before_system_prompt_with_negative_order() {
-        let plugin = IdiomPlugin::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let plugin = IdiomPlugin::new(tmp.path());
         let instructions = plugin.instructions();
         let base = instructions
             .iter()
@@ -895,6 +1306,69 @@ mod plugin_tests {
             .expect("base fragment present");
         assert_eq!(base.position, FragmentPosition::BeforeSystemPrompt);
         assert_eq!(base.order, -100);
+    }
+
+    /// The environment block declares `BeforeSystemPrompt`/`order: -200` --
+    /// ahead of even the base fragment's own `order: -100` -- see this
+    /// module's own doc, "The environment block".
+    /// `tests/idiom_end_to_end.rs`'s
+    /// `environment_fragment_renders_first_ahead_of_the_base_fragment`
+    /// proves the RENDERED ordering effect through a real facade build
+    /// (acceptance 3); this is the declaration-level pin.
+    #[test]
+    fn environment_fragment_declares_before_system_prompt_with_a_more_negative_order() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let plugin = IdiomPlugin::new(tmp.path());
+        let instructions = plugin.instructions();
+        let environment = instructions
+            .iter()
+            .find(|f| f.name == ENVIRONMENT_INSTRUCTION_NAME)
+            .expect("environment fragment present");
+        assert_eq!(environment.position, FragmentPosition::BeforeSystemPrompt);
+        assert_eq!(environment.order, -200);
+        let base = instructions
+            .iter()
+            .find(|f| f.name == INSTRUCTION_NAME)
+            .expect("base fragment present");
+        assert!(
+            environment.order < base.order,
+            "the environment block's order ({}) must be more negative than the base \
+             fragment's ({}), so it renders first",
+            environment.order,
+            base.order
+        );
+    }
+
+    /// Acceptance 2: two consecutive `instructions()` calls on the SAME
+    /// `IdiomPlugin` instance return byte-identical text for the
+    /// environment fragment specifically -- the core cache-prefix-
+    /// stability property this fragment exists to preserve (see this
+    /// module's own doc, "The environment block"). Also pins that the
+    /// fragment's declared position/order/scope/authored_by are identical
+    /// across both calls, not merely its text.
+    #[test]
+    fn environment_fragment_is_byte_identical_across_two_calls() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dot_git = tmp.path().join(".git");
+        std::fs::create_dir_all(&dot_git).expect("mkdir .git");
+        std::fs::write(dot_git.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
+
+        let plugin = IdiomPlugin::new(tmp.path());
+        let first = plugin
+            .instructions()
+            .into_iter()
+            .find(|f| f.name == ENVIRONMENT_INSTRUCTION_NAME)
+            .expect("environment fragment present on first call");
+        let second = plugin
+            .instructions()
+            .into_iter()
+            .find(|f| f.name == ENVIRONMENT_INSTRUCTION_NAME)
+            .expect("environment fragment present on second call");
+        assert_eq!(
+            first, second,
+            "two consecutive instructions() calls must return a byte-identical environment \
+             fragment"
+        );
     }
 
     /// The operator project/global fragments, by contrast, must stay at the
@@ -905,7 +1379,8 @@ mod plugin_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("instructions.md");
         std::fs::write(&path, "Always run tests.\n").expect("write");
-        let plugin = IdiomPlugin::from_operator_files(Some(&path), None).expect("read ok");
+        let plugin =
+            IdiomPlugin::from_operator_files(tmp.path(), Some(&path), None).expect("read ok");
         let operator = plugin
             .instructions()
             .into_iter()
@@ -923,7 +1398,8 @@ mod plugin_tests {
     /// wrote every word of it.
     #[test]
     fn base_fragment_is_authored_by_the_plugin() {
-        let plugin = IdiomPlugin::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let plugin = IdiomPlugin::new(tmp.path());
         let instructions = plugin.instructions();
         let base = instructions
             .iter()
@@ -944,8 +1420,9 @@ mod plugin_tests {
         let global_path = tmp.path().join("global-instructions.md");
         std::fs::write(&project_path, "Project convention.\n").expect("write");
         std::fs::write(&global_path, "House-wide preference.\n").expect("write");
-        let plugin = IdiomPlugin::from_operator_files(Some(&project_path), Some(&global_path))
-            .expect("read ok");
+        let plugin =
+            IdiomPlugin::from_operator_files(tmp.path(), Some(&project_path), Some(&global_path))
+                .expect("read ok");
         let instructions = plugin.instructions();
 
         let project = instructions
@@ -1004,9 +1481,13 @@ mod operator_file_tests {
     fn missing_file_is_silent_and_contributes_nothing() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("does-not-exist.md");
-        let plugin = IdiomPlugin::from_operator_files(Some(&path), None)
+        let plugin = IdiomPlugin::from_operator_files(tmp.path(), Some(&path), None)
             .expect("a missing file must not be an error");
-        assert_eq!(plugin.instructions().len(), 1, "base fragment only");
+        assert_eq!(
+            plugin.instructions().len(),
+            2,
+            "environment block and base fragment only"
+        );
     }
 
     /// An empty (or whitespace-only) file communicates nothing, same as an
@@ -1016,9 +1497,13 @@ mod operator_file_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("instructions.md");
         std::fs::write(&path, "   \n\n\t\n").expect("write");
-        let plugin = IdiomPlugin::from_operator_files(Some(&path), None)
+        let plugin = IdiomPlugin::from_operator_files(tmp.path(), Some(&path), None)
             .expect("a whitespace-only file must not be an error");
-        assert_eq!(plugin.instructions().len(), 1, "base fragment only");
+        assert_eq!(
+            plugin.instructions().len(),
+            2,
+            "environment block and base fragment only"
+        );
     }
 
     /// The positive path: a real, non-empty file becomes a real fragment,
@@ -1028,9 +1513,10 @@ mod operator_file_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("instructions.md");
         std::fs::write(&path, "Always run `cargo test` before reporting done.\n").expect("write");
-        let plugin = IdiomPlugin::from_operator_files(Some(&path), None).expect("read ok");
+        let plugin =
+            IdiomPlugin::from_operator_files(tmp.path(), Some(&path), None).expect("read ok");
         let instructions = plugin.instructions();
-        assert_eq!(instructions.len(), 2);
+        assert_eq!(instructions.len(), 3);
         let operator = instructions
             .iter()
             .find(|f| f.name == OPERATOR_PROJECT_INSTRUCTION_NAME)
@@ -1055,7 +1541,8 @@ mod operator_file_tests {
              `cargo test` before reporting done.\n",
         )
         .expect("write");
-        let plugin = IdiomPlugin::from_operator_files(Some(&path), None).expect("read ok");
+        let plugin =
+            IdiomPlugin::from_operator_files(tmp.path(), Some(&path), None).expect("read ok");
         let instructions = plugin.instructions();
         let operator = instructions
             .iter()
@@ -1087,7 +1574,7 @@ mod operator_file_tests {
             "<!-- bash -->\nAlways run `cargo test` before reporting done.\n",
         )
         .expect("write");
-        let result = IdiomPlugin::from_operator_files(Some(&path), None);
+        let result = IdiomPlugin::from_operator_files(tmp.path(), Some(&path), None);
         assert!(
             result.is_err(),
             "a malformed `<!-- tools: ... -->` comment must surface as an error, not be \
@@ -1112,7 +1599,7 @@ mod operator_file_tests {
         // on a platform-specific permissions setup.
         let path = tmp.path().join("instructions.md");
         std::fs::create_dir(&path).expect("mkdir");
-        let result = IdiomPlugin::from_operator_files(Some(&path), None);
+        let result = IdiomPlugin::from_operator_files(tmp.path(), Some(&path), None);
         assert!(
             result.is_err(),
             "an unreadable operator file must surface as an error, not be silently dropped"
@@ -1128,7 +1615,7 @@ mod operator_file_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("instructions.md");
         std::fs::write(&path, [0xff, 0xfe, 0x00, 0xff]).expect("write invalid utf-8");
-        let result = IdiomPlugin::from_operator_files(Some(&path), None);
+        let result = IdiomPlugin::from_operator_files(tmp.path(), Some(&path), None);
         assert!(
             result.is_err(),
             "invalid UTF-8 in an operator file must surface as an error"
@@ -1140,8 +1627,9 @@ mod operator_file_tests {
     /// fragment, no error.
     #[test]
     fn none_path_is_silent_and_contributes_nothing() {
-        let plugin = IdiomPlugin::from_operator_files(None, None).expect("ok");
-        assert_eq!(plugin.instructions().len(), 1);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let plugin = IdiomPlugin::from_operator_files(tmp.path(), None, None).expect("ok");
+        assert_eq!(plugin.instructions().len(), 2);
     }
 
     /// Both scopes present at once: two additional, independently named
@@ -1153,10 +1641,10 @@ mod operator_file_tests {
         let global = tmp.path().join("global-instructions.md");
         std::fs::write(&project, "Project-specific convention.\n").expect("write");
         std::fs::write(&global, "House-wide preference.\n").expect("write");
-        let plugin =
-            IdiomPlugin::from_operator_files(Some(&project), Some(&global)).expect("read ok");
+        let plugin = IdiomPlugin::from_operator_files(tmp.path(), Some(&project), Some(&global))
+            .expect("read ok");
         let instructions = plugin.instructions();
-        assert_eq!(instructions.len(), 3);
+        assert_eq!(instructions.len(), 4);
         assert!(instructions
             .iter()
             .any(|f| f.name == OPERATOR_PROJECT_INSTRUCTION_NAME

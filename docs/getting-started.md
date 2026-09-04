@@ -352,10 +352,11 @@ conway
 plugins into `plugins.install` and printed a table naming each one and how
 to remove it, then asked whether to enable bash — see "Installing a
 first-party plugin" above for the exact `settings.json` shape this leaves
-you with. What each one does: `conway.idiom` prepends a short
-conway-idioms instruction fragment near the front of the session's
-context — fork vs. spawn, how an agent ends, the tool set being
-configuration-dependent — the closest thing this binary ships to a system
+you with. What each one does: `conway.idiom` prepends a session-static
+environment block (cwd, OS, the session's start date, git branch) and a
+short conway-idioms instruction fragment — fork vs. spawn, how an agent
+ends, the tool set being configuration-dependent — genuinely first in the
+session's context; the closest thing this binary ships to a system
 prompt. `conway.stepguard` notices when an agent calls the same tool with
 the same arguments three times and writes a note saying so. `conway.skills`
 narrows full skill bodies (`.conway/skills`) to a one-line index until the
