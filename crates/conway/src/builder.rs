@@ -1142,9 +1142,8 @@ impl ConwayBuilder {
     ///
     /// **This is the ergonomic surface a prior ruling required stay reachable
     /// through "Retire the harness-level confinement root once
-    /// `conway.fs` enforces its own":** a harness-level pre-gate check used
-    /// to be the ONLY thing this method's `root` fed; that check is retired.
-    /// `with_root` now feeds TWO things from the SAME single, once-resolved,
+    /// `conway.fs` enforces its own":** `with_root` feeds TWO things from
+    /// the SAME single, once-resolved,
     /// once-canonicalized `root` value: (1) `conway_runtime::runtime::
     /// RootSpec::root`, unchanged, which still confines the artifact-writer
     /// path (`conway_runtime::artifact_store::AgentArtifactWriter`); and (2)
@@ -1161,8 +1160,7 @@ impl ConwayBuilder {
     /// every depth, not only at the agent an operator directly started.
     ///
     /// **Not called at all (the default)** means every root agent this
-    /// `Conway` starts stays `Unconfined`, byte-for-byte identical to every
-    /// invocation before this method existed -- this is deliberately NOT the
+    /// `Conway` starts stays `Unconfined` -- this is deliberately NOT the
     /// default `build()` picks on its own; an operator opts in explicitly
     /// (`conway-cli`'s `--root`).
     ///
@@ -1490,9 +1488,7 @@ impl ConwayBuilder {
         //    `RouterFactory` (`with_router_factory`), when set, is invoked
         //    with the build context assembled from the preceding steps;
         //    else `conway_core::routing::MinimalRouter` -- the config-only
-        //    core resolver `conway` compiles with no plugin installed (board
-        //    item: this replaces the
-        //    `DeclarativeRouter` `build()` used to compile in directly).
+        //    core resolver `conway` compiles with no plugin installed.
         //    Whichever explainer the taken branch produces (`None` for an
         //    injected router, the factory's own `RouterBundle::explain`, or
         //    `MinimalRouter` itself) is kept alongside the type-erased
