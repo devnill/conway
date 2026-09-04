@@ -714,7 +714,10 @@ impl AgentLoop {
     /// than routing through `try_rt!`. That is a caller-side choice about
     /// how to HANDLE the `Result`, not a second persist path: there is
     /// still exactly one `append` call, made here, either way.
-    async fn persist(&self, make: impl FnOnce(LogSeq) -> LogRecord) -> Result<LogSeq, RuntimeError> {
+    async fn persist(
+        &self,
+        make: impl FnOnce(LogSeq) -> LogRecord,
+    ) -> Result<LogSeq, RuntimeError> {
         let seq = self.deps.store.head(&self.session).await?;
         let record = make(seq);
         let seq = self.deps.store.append(&self.session, record).await?;
@@ -2584,7 +2587,11 @@ mod tests {
     /// other `LoopDeps` dependency a fake that is never actually invoked --
     /// `persist` reads only `self.deps.store` and `self.session`, so
     /// everything else here only needs to type-check, not do real work.
-    async fn test_loop(store: Arc<dyn SessionStore>, session: SessionId, agent: AgentId) -> AgentLoop {
+    async fn test_loop(
+        store: Arc<dyn SessionStore>,
+        session: SessionId,
+        agent: AgentId,
+    ) -> AgentLoop {
         let bus = EventBus::new(16);
         let health: Arc<dyn HealthRegistry> = Arc::new(FakeHealth::new());
         let attempt = Arc::new(AttemptEngine::new(HashMap::new(), health, bus.clone()));
@@ -2708,7 +2715,10 @@ mod tests {
         let session = seeded_session(store.as_ref(), agent).await;
         let agent_loop = test_loop(store.clone(), session, agent).await;
 
-        let head_before = store.head(&session).await.expect("fresh session has a head");
+        let head_before = store
+            .head(&session)
+            .await
+            .expect("fresh session has a head");
         let seq = agent_loop
             .persist(note("hello"))
             .await
