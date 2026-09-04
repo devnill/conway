@@ -2923,6 +2923,46 @@ mod tool_call_pairing_tests {
         assert!(!text.contains("compact"), "{text:?}");
     }
 
+    /// Boundary: `admit_tool_result`'s own check is `tokens_est <=
+    /// bound_tokens`, the analogous boundary condition to
+    /// `context_boundary_exact_fit_passes_one_over_fails` in
+    /// `conway_core::capabilities` -- exact fit admits, one token over does
+    /// not. Pinned here rather than trusted from inspection: an off-by-one
+    /// in either direction would refuse a result that exactly fits, or
+    /// admit one token too many.
+    #[test]
+    fn tool_result_at_exactly_the_bound_admits_one_token_over_does_not() {
+        let result = tool_result(2, "a");
+        let LogRecord::ToolResultRecord { result, .. } = &result else {
+            unreachable!()
+        };
+        let exact = estimate_tokens(&tool_result_block(result));
+
+        let admitted_input = input_with_bound(
+            vec![assistant(1, vec![tool_use("a")]), tool_result(2, "a")],
+            exact,
+        );
+        let (segments, report) = ContextBuilder::new().build(&admitted_input).unwrap();
+        assert!(
+            report.not_admitted.is_empty(),
+            "a result exactly at the bound must be admitted: {:?}",
+            report.not_admitted
+        );
+        assert!(all_rendered_text(&segments).contains("contents of a"));
+
+        let refused_input = input_with_bound(
+            vec![assistant(1, vec![tool_use("a")]), tool_result(2, "a")],
+            exact - 1,
+        );
+        let (_segments, report) = ContextBuilder::new().build(&refused_input).unwrap();
+        assert_eq!(
+            report.not_admitted.len(),
+            1,
+            "one token over the bound must be refused: {:?}",
+            report.not_admitted
+        );
+    }
+
     /// Every `ToolUse` `call_id` the assembled segments actually render.
     fn rendered_call_ids(segments: &[PromptSegment]) -> Vec<String> {
         segments

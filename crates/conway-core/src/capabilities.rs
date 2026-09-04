@@ -393,10 +393,31 @@ impl RequiredCaps {
 /// own spec names as an example cap, chosen deliberately rather than an
 /// unrelated round number: large enough to admit a typical file read or
 /// search result, small enough that one oversized result cannot alone
-/// consume a meaningful fraction of even the smallest realistic window this
-/// codebase routes to (32768 tokens, `ollama-cloud/glm-5.2` in this item's
-/// own walked scenario).
+/// consume a meaningful fraction of even a mid-sized window. This is a
+/// CEILING, not evidence that every reachable window is at least this
+/// large -- `docs/providers.md` documents Ollama alone serving windows from
+/// 4K to 1M tokens, well under this cap on the small end, which is exactly
+/// why [`DEFAULT_TOOL_RESULT_BOUND_FLOOR`] exists: the fraction-computed
+/// bound below this cap still needs its own floor.
 pub const DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS: u32 = 8_192;
+
+/// Floor a fraction-computed tool-result bound (`window / fraction`) is
+/// raised to before the [`DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS`] cap is
+/// applied -- mirrors the sibling `conway::config::schema::HEADROOM_FLOOR`
+/// at the same value, for the same reason: without it, a small enough
+/// window divides down to a bound
+/// that is not a size safety valve but a role-breaking default (a 4096-token
+/// window at the default 1/5 fraction computes to 819 tokens -- under the
+/// content of a routine file read or grep result), and integer division can
+/// land on exactly `0`, which collides with `ToolResultBoundPolicy::
+/// resolve`'s own "0 means unlimited" sentinel and silently INVERTS intent
+/// (an unreachably strict bound becoming no bound at all) instead of merely
+/// being too strict. `2_048` tokens (~8KB) is chosen to match the headroom
+/// floor's own already-reviewed number rather than invent a second one; see
+/// that constant's doc for the "does not starve a small model" reasoning,
+/// which applies here identically since the concern (a computed value on a
+/// tiny window must stay usable) is the same shape.
+pub const DEFAULT_TOOL_RESULT_BOUND_FLOOR: u32 = 2_048;
 
 /// Default divisor for the adaptive tool-result bound: `window / d`. `d = 5`
 /// (20%) sits at the generous end of this board item's own suggested 10-20%
@@ -463,6 +484,95 @@ impl ToolResultBoundPolicy {
             .get(role)
             .copied()
             .unwrap_or(self.default_bound_tokens)
+    }
+}
+
+/// `window / fraction`, floored then capped -- the pure arithmetic
+/// `conway::builder::ConwayBuilder::build` uses to compute one role's
+/// adaptive per-`per_role` entry in [`ToolResultBoundPolicy`], pulled out
+/// here so it is unit-testable without going through the whole builder
+/// (which needs a real `ConwayConfig` plus model metadata to reach it).
+/// `fraction == 0` (adaptive disabled) and "no model metadata reachable for
+/// this role's chain" are both handled by the caller BEFORE this is called
+/// -- this function's only job is the three-number arithmetic once a
+/// `smallest_window` is already known and `fraction > 0`; it never returns
+/// `0` given a nonzero `floor`, which is the point: `window / fraction`
+/// alone can integer-divide down to exactly `0` on a small enough window,
+/// colliding with [`ToolResultBoundPolicy::resolve`]'s own "0 means
+/// unlimited" sentinel and silently inverting intent. `floor` is applied
+/// BEFORE `cap`, so an operator who sets `cap < floor` still gets `cap`
+/// (the cap is the harder ceiling either way) rather than a bound that
+/// exceeds their own configured cap.
+pub fn resolve_adaptive_tool_result_bound(
+    smallest_window: u32,
+    fraction: u32,
+    cap: u32,
+    floor: u32,
+) -> u32 {
+    debug_assert!(fraction > 0, "caller must handle fraction == 0 itself");
+    (smallest_window / fraction).max(floor).min(cap)
+}
+
+#[cfg(test)]
+mod tool_result_bound_tests {
+    use super::*;
+
+    #[test]
+    fn a_tiny_window_is_raised_to_the_floor_not_left_near_zero() {
+        // 4096 / 5 = 819, well under a usable bound -- the floor must win.
+        let bound = resolve_adaptive_tool_result_bound(
+            4_096,
+            5,
+            DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS,
+            DEFAULT_TOOL_RESULT_BOUND_FLOOR,
+        );
+        assert_eq!(bound, DEFAULT_TOOL_RESULT_BOUND_FLOOR);
+    }
+
+    #[test]
+    fn a_window_smaller_than_the_fraction_never_computes_to_the_unlimited_sentinel() {
+        // Integer division alone would land on exactly 0 here (3 / 5 == 0),
+        // which collides with `resolve`'s own "0 means unlimited" sentinel.
+        let bound = resolve_adaptive_tool_result_bound(
+            3,
+            5,
+            DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS,
+            DEFAULT_TOOL_RESULT_BOUND_FLOOR,
+        );
+        assert_ne!(bound, 0);
+        assert_eq!(bound, DEFAULT_TOOL_RESULT_BOUND_FLOOR);
+    }
+
+    #[test]
+    fn a_huge_window_is_clamped_to_the_cap_not_left_at_twenty_percent() {
+        // 1_000_000 / 5 = 200_000, far past the cap.
+        let bound = resolve_adaptive_tool_result_bound(
+            1_000_000,
+            5,
+            DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS,
+            DEFAULT_TOOL_RESULT_BOUND_FLOOR,
+        );
+        assert_eq!(bound, DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS);
+    }
+
+    #[test]
+    fn a_mid_sized_window_is_governed_by_neither_the_floor_nor_the_cap() {
+        // 30_000 / 5 = 6_000: above the 2_048 floor, below the 8_192 cap --
+        // the fraction's own arithmetic must be what wins.
+        let bound = resolve_adaptive_tool_result_bound(
+            30_000,
+            5,
+            DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS,
+            DEFAULT_TOOL_RESULT_BOUND_FLOOR,
+        );
+        assert_eq!(bound, 6_000);
+    }
+
+    #[test]
+    fn an_operators_cap_below_the_floor_still_wins_as_the_harder_ceiling() {
+        let bound =
+            resolve_adaptive_tool_result_bound(4_096, 5, 1_000, DEFAULT_TOOL_RESULT_BOUND_FLOOR);
+        assert_eq!(bound, 1_000);
     }
 }
 

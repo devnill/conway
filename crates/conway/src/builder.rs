@@ -1456,6 +1456,7 @@ impl ConwayBuilder {
         let tool_result_bound_policy = {
             let fraction = config.routing.tool_result_bound_fraction;
             let cap = config.routing.tool_result_bound_cap_tokens;
+            let floor = conway_core::capabilities::DEFAULT_TOOL_RESULT_BOUND_FLOOR;
             let mut per_role = std::collections::BTreeMap::new();
             for (name, entry) in &config.roles {
                 let bound = if let Some(explicit) = entry.tool_result_bound_tokens {
@@ -1477,7 +1478,11 @@ impl ConwayBuilder {
                         // at all -- the disclosed cap is the fallback, same
                         // as `default_bound_tokens` below.
                         None => continue,
-                        Some(window) => (window / fraction).min(cap),
+                        Some(window) => {
+                            conway_core::capabilities::resolve_adaptive_tool_result_bound(
+                                window, fraction, cap, floor,
+                            )
+                        }
                     }
                 };
                 per_role.insert(conway_core::ids::RoleAlias::new(name.clone()), bound);
