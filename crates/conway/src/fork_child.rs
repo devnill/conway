@@ -30,7 +30,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use conway_core::agent::{Budget, ToolSelector};
+use conway_core::agent::{AgentKnobs, Budget, ToolSelector};
 use conway_core::error::RuntimeError;
 use conway_core::ids::{AgentId, LogSeq, RoleAlias, SessionId};
 use conway_core::log::SessionMeta;
@@ -166,18 +166,21 @@ pub(crate) async fn fork_child(
     let agent = rt
         .resume_root(ResumeSpec {
             session: child,
-            agent_def: None,
-            role: None,
-            // `fork_from`/`ForkChildRequest` exposes no model-pin override
-            // today -- the persisted child resolves its pin the same way an
-            // ordinary resume does (agent_def's own configured model, if
-            // any). Adding one is a natural follow-on, not this item's scope.
-            model: None,
-            tools: req.tools,
-            budget: req.budget,
+            knobs: AgentKnobs {
+                agent_def: None,
+                role: None,
+                // `fork_from`/`ForkChildRequest` exposes no model-pin
+                // override today -- the persisted child resolves its pin
+                // the same way an ordinary resume does (agent_def's own
+                // configured model, if any). Adding one is a natural
+                // follow-on, not this item's scope.
+                model: None,
+                tools: req.tools,
+                budget: req.budget,
+                result_contract: req.result_contract,
+                keep_alive: req.keep_alive,
+            },
             cwd: None,
-            result_contract: req.result_contract,
-            keep_alive: req.keep_alive,
         })
         .await
         .map_err(|err| match err {

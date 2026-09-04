@@ -117,16 +117,14 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::Utc;
 use conway_core::agent::{
-    AgentDefRef, AgentResult, AgentStatus, AgentTreeSnapshot, Budget, SubagentSpec, ToolSelector,
+    AgentDefRef, AgentKnobs, AgentResult, AgentStatus, AgentTreeSnapshot, SubagentSpec,
 };
 use conway_core::capabilities::{CacheMode, HeadroomPolicy};
 use conway_core::config::{AgentDef, SkillDef, DEFAULT_MAX_PARALLEL_TOOLS};
 use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::error::{ConwayError, RuntimeError, StoreError};
 use conway_core::event::Event;
-use conway_core::ids::{
-    AgentId, BackendId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId, ToolName,
-};
+use conway_core::ids::{AgentId, BackendId, LogSeq, RoleAlias, SeqRange, SessionId, ToolName};
 use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 use conway_core::ports::{
     Backend, CapabilityHost, ContextHook, HealthRegistry, HookRunner, PathStore, PermissionGate,

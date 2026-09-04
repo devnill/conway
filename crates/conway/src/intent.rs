@@ -146,7 +146,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use conway_core::agent::{Budget, ResultStatus, SubagentMode, SubagentSpec, ToolSelector};
+use conway_core::agent::{
+    AgentKnobs, Budget, ResultStatus, SubagentMode, SubagentSpec, ToolSelector,
+};
 use conway_core::config::AgentDef;
 use conway_core::ids::{AgentId, RoleAlias};
 use conway_runtime::runtime::Runtime;
@@ -270,15 +272,17 @@ pub(crate) async fn classify(
     let spec = SubagentSpec {
         mode: SubagentMode::Spawn,
         prompt: classification_prompt(text, &known_defs),
-        agent_def: None,
-        role: Some(RoleAlias::new(INTENT_ROLE)),
-        // Intent classification never switches models -- inherit whatever
-        // the parent (or its agent_def) already resolves.
-        pin: None,
-        tools: Some(ToolSelector::Only(Vec::new())),
-        budget: INTENT_BUDGET,
-        result_contract: None,
-        keep_alive: false,
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: Some(RoleAlias::new(INTENT_ROLE)),
+            // Intent classification never switches models -- inherit
+            // whatever the parent (or its agent_def) already resolves.
+            model: None,
+            tools: Some(ToolSelector::Only(Vec::new())),
+            budget: INTENT_BUDGET,
+            result_contract: None,
+            keep_alive: false,
+        },
         ephemeral: true,
         // Not an ask of either kind — see the module doc. The sweep only
         // touches `ModalAsk`, and this session is purged inline below.

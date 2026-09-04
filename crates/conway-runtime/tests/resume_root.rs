@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use conway_core::agent::{Budget, PermissionDecision};
+use conway_core::agent::{AgentKnobs, Budget, PermissionDecision};
 use conway_core::capabilities::HeadroomPolicy;
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
@@ -64,17 +64,19 @@ fn build_runtime_over(
 fn root_spec(prompt: &str) -> RootSpec {
     RootSpec {
         session: None,
-        agent_def: None,
-        role: Some(RoleAlias::new("planner")),
-        tools: None,
-        budget: Budget::default(),
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: Some(RoleAlias::new("planner")),
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         cwd: PathBuf::from("/tmp"),
         root: None,
         prompt: Some(prompt.to_string()),
-        keep_alive: false,
-        model: None,
         system_prompt_override: None,
-        result_contract: None,
         labels: Vec::new(),
     }
 }
@@ -82,14 +84,16 @@ fn root_spec(prompt: &str) -> RootSpec {
 fn resume_spec(session: SessionId) -> ResumeSpec {
     ResumeSpec {
         session,
-        agent_def: None,
-        role: None,
-        model: None,
-        tools: None,
-        budget: Budget::default(),
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: None,
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         cwd: None,
-        result_contract: None,
-        keep_alive: false,
     }
 }
 

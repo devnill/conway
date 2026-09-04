@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway_core::agent::{Budget, PermissionDecision};
+use conway_core::agent::{AgentKnobs, Budget, PermissionDecision};
 use conway_core::capabilities::{
     CacheMode, Capabilities, HeadroomPolicy, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
@@ -209,17 +209,19 @@ fn build_runtime(
 fn root_spec(prompt: &str, budget: Budget, keep_alive: bool) -> RootSpec {
     RootSpec {
         session: None,
-        agent_def: None,
-        role: Some(RoleAlias::new("planner")),
-        tools: None,
-        budget,
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: Some(RoleAlias::new("planner")),
+            model: None,
+            tools: None,
+            budget,
+            result_contract: None,
+            keep_alive,
+        },
         cwd: PathBuf::from("/tmp"),
         root: None,
         prompt: Some(prompt.to_string()),
-        keep_alive,
-        model: None,
         system_prompt_override: None,
-        result_contract: None,
         labels: Vec::new(),
     }
 }

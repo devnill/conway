@@ -299,6 +299,81 @@ impl Default for Budget {
     }
 }
 
+/// The knobs shared by every way of starting an agent -- root, resume,
+/// fork, and spawn alike -- factored out once (board item
+/// `01M1FSPP9D80FNXH9QFZ9927DH`, "shared agent knobs by composition,
+/// conversions become spreads") instead of repeated field-for-field on each
+/// of the six public specs that carry them: [`SubagentSpec`] (this module,
+/// embedded via `#[serde(flatten)]` so its wire form is unchanged),
+/// `conway_runtime::runtime::RootSpec`/`ResumeSpec`, and `conway`'s
+/// `ForkSpec`/`SpawnSpec`/`SessionSpec` (the last composes it differently --
+/// see that struct's own doc for why).
+///
+/// **What belongs here:** a setting every primitive that starts an agent
+/// accepts, with the same meaning everywhere it appears -- which agent
+/// definition to resolve, which role/model to route on, which tools to
+/// announce, the step/token/deadline budget, the result contract to
+/// validate against, and whether the agent idles for another prompt
+/// instead of finishing.
+///
+/// **What does NOT belong here:** anything one of the six primitives
+/// rejects outright, because giving every spec the field would either be
+/// meaningless for some of them or require a value that is incoherent for
+/// at least one caller. `cwd` and `root` are the standing example: a
+/// forked child inherits the forker's ENTIRE context (all of it or none),
+/// so a `ForkSpec` field saying "but scope this fork to a different
+/// working directory" would describe a child whose own transcript still
+/// narrates the forker's directory while its tools silently resolved
+/// relative paths somewhere else -- see `conway::ForkSpec`'s own `From`
+/// impl comment for the fork-vs-spawn argument this repeats.
+/// `plugin_config`, `context`, `ephemeral`, `ask_origin`, `tag`, `labels`,
+/// and `system_prompt_override` are each deliberately per-spec for their
+/// own, narrower reasons (see each field's own doc on the struct that
+/// still carries it) -- none of the six currently share more than these
+/// seven.
+///
+/// Canonical field name for the model-pin knob: **`model`**, not `pin`.
+/// Three of the four non-`SubagentSpec` specs that carry it (`ForkSpec`,
+/// `RootSpec`, `ResumeSpec` -- and `SessionSpec` too, informally, before
+/// this item) already spelled it `model`; `SubagentSpec::pin` was the
+/// outlier, and it alone has a wire form to preserve, via
+/// `#[serde(rename = "pin")]` on this field specifically (see that
+/// attribute's own comment below) -- so renaming costs one attribute here
+/// instead of four call-site renames everywhere else.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AgentKnobs {
+    pub agent_def: Option<AgentDefRef>,
+    pub role: Option<RoleAlias>,
+    /// Pins the agent's model outright, overriding whatever it would
+    /// otherwise resolve. See [`SubagentSpec`]'s former field doc (still
+    /// accurate below, only the field's home moved) for the full
+    /// precedence and the loud-refusal-not-silent-trim contract this
+    /// implements for a fork; `RootSpec`/`ResumeSpec::model`'s own docs
+    /// give the root/resume-specific callers.
+    ///
+    /// `#[serde(rename = "pin", default)]`: `SubagentSpec`'s own committed
+    /// wire form used the key `"pin"` before this field had a home outside
+    /// that struct -- the rename keeps `SubagentSpec`'s JSON unchanged
+    /// under `#[serde(flatten)]` despite this struct's own Rust-side name
+    /// being `model`. `default` reproduces `SubagentSpec::pin`'s
+    /// pre-existing `#[serde(default)]` exactly, so a `SubagentSpec`
+    /// serialized before this field existed still deserializes with it
+    /// `None`.
+    #[serde(rename = "pin", default)]
+    pub model: Option<ModelRef>,
+    pub tools: Option<ToolSelector>,
+    pub budget: Budget,
+    /// A schema the agent's final answer must satisfy. See
+    /// [`SubagentSpec::validate`]'s own doc for the `keep_alive`
+    /// incompatibility this is one half of.
+    pub result_contract: Option<schemars::schema::RootSchema>,
+    /// Opt-in interactive keep-alive: the agent idles for the caller's next
+    /// prompt after each turn instead of finishing on natural completion.
+    /// See [`SubagentSpec::validate`]'s own doc for the `result_contract`
+    /// incompatibility this is the other half of.
+    pub keep_alive: bool,
+}
+
 /// The complete specification for spawning or forking a subagent. `fork` and
 /// `spawn` are the only two subagent modes, and they are never blurred into one
 /// parameterized operation; `mode` is
@@ -307,65 +382,16 @@ impl Default for Budget {
 pub struct SubagentSpec {
     pub mode: SubagentMode,
     pub prompt: String,
-    pub agent_def: Option<AgentDefRef>,
-    pub role: Option<RoleAlias>,
-    /// Pins the child's model outright, overriding whatever it would
-    /// otherwise resolve (the fork-only inheritance fill's `agent_def.model`,
-    /// or -- absent that -- ordinary role-based routing). `None` (the
-    /// `fork`/`spawn` constructors' default) preserves the pre-existing
-    /// behavior exactly: `conway_runtime`'s `SubagentHost::start` derives the
-    /// child's pin solely from its (possibly inherited) `agent_def.model`,
-    /// with no way for a caller to name a specific model directly. `Some`
-    /// is the mechanism `conway`'s `ForkSpec::model` (INTENT.md §5c: "changing
-    /// model mid-session is ordinary") uses to switch a live conversation to
-    /// a named model without touching `role` at all -- the child still
-    /// inherits the forker's ENTIRE prior context (selection, per §5c,
-    /// survives a model change unchanged); only this pin, and therefore the
-    /// rendering the new model receives, differs. A pin the child's
-    /// inherited context does not fit produces the same loud
-    /// `RoutingError::ContextTooLarge` refusal an ordinary turn's admission
-    /// gate already gives -- never a silent fallback to the old model, and
-    /// never a silent trim.
-    ///
-    /// `#[serde(default)]` keeps already-persisted data readable: a
-    /// `SubagentSpec` serialized before this field existed still
-    /// deserializes, as `None` -- the pre-existing agent-def-only pin
-    /// resolution for every such spec.
-    #[serde(default)]
-    pub pin: Option<ModelRef>,
-    pub tools: Option<ToolSelector>,
-    pub budget: Budget,
-    /// A schema the child's final answer must satisfy. Evaluated on a
-    /// completing turn; a violation appends a `SystemNote` with reason
-    /// `result_contract_violation` and grants one corrective turn.
-    ///
-    /// **Cannot be combined with [`Self::keep_alive`]** -- the pair is
-    /// rejected by [`Self::validate`]. A kept-alive agent never finishes, so a
-    /// result it validated has nowhere to be delivered and the caller's
-    /// `await_result` would hang forever. See `validate`'s own doc for the
-    /// mechanism and for why this is a rejection rather than a delivery
-    /// feature.
-    pub result_contract: Option<schemars::schema::RootSchema>,
-    /// Opt-in interactive keep-alive (mirrors `conway_runtime`'s
-    /// `agent_loop::AgentSpec::keep_alive`/`runtime::RootSpec::keep_alive`):
-    /// the child idles for the caller's next prompt after each turn instead
-    /// of finishing on natural completion. Defaults `false` via the `fork`/
-    /// `spawn` constructors below, preserving the pre-existing autonomous
-    /// (one-shot, awaitable via `conway_core::ports::SubagentHost::
-    /// await_result`) fork/spawn behavior unchanged. When
-    /// this is `true` AND `prompt` is empty, `conway_runtime`'s
-    /// `SubagentHost::start` additionally starts the child IDLE (no
-    /// placeholder turn run against blank input) -- the shape a caller
-    /// wanting a fresh, interactive, re-promptable session (the TUI's bare
-    /// `/spawn`/`/fork`) constructs via `conway`'s `SpawnSpec::keep_alive`/
-    /// `ForkSpec::keep_alive`.
-    ///
-    /// **Cannot be combined with [`Self::result_contract`]** -- the pair is
-    /// rejected by [`Self::validate`]. Keeping the child open is precisely what
-    /// stops its validated result from ever being delivered, so the two
-    /// requests contradict each other; asking for both used to hang the
-    /// caller silently.
-    pub keep_alive: bool,
+    /// `agent_def`/`role`/`pin` (wire name; `model` in Rust)/`tools`/
+    /// `budget`/`result_contract`/`keep_alive` -- see [`AgentKnobs`]'s own
+    /// doc for what each means and why these seven, specifically, are
+    /// shared. `#[serde(flatten)]` keeps this struct's wire form
+    /// byte-for-byte what it was before this field existed: every knob
+    /// still serializes as a top-level key on `SubagentSpec`'s own JSON
+    /// object, pinned by `crates/conway-core/tests/
+    /// subagent_spec_wire_identity.rs`'s committed fixture.
+    #[serde(flatten)]
+    pub knobs: AgentKnobs,
     /// `ephemeral` is a [`crate::log::SessionMeta`] listing-visibility bit,
     /// NOT a mode -- it filters the child out of default session catalog
     /// listings and the TUI `/agents` panel while keeping it attached to the
@@ -468,7 +494,7 @@ pub struct SubagentSpec {
     /// either hand a conway-enforced invariant to the caller or force two
     /// surfaces for one operation. The tag is the shape that survives, and
     /// the whole point of that shape is that it carries no meaning conway
-    /// acts on -- unlike [`Self::role`] (a routing input,
+    /// acts on -- unlike [`AgentKnobs::role`] (a routing input,
     /// `conway_runtime::agent_loop`'s `policy.resolve(&spec.role)`) or
     /// [`Self::ask_origin`] (branched on in `conway_runtime::subagent`'s
     /// `start`, gating whether a `result_contract` may attach), which look
@@ -669,7 +695,7 @@ impl SubagentSpec {
     /// Stays a pure internal-consistency check performing no I/O: this is a
     /// cross-field comparison of two values already in hand.
     pub fn validate(&self) -> Result<(), ConwayError> {
-        if self.keep_alive && self.result_contract.is_some() {
+        if self.knobs.keep_alive && self.knobs.result_contract.is_some() {
             return Err(ConwayError::Config {
                 detail: "`keep_alive` and `result_contract` cannot be combined on one \
                          subagent: a kept-alive agent never finishes, so its validated \
@@ -687,13 +713,15 @@ impl SubagentSpec {
         Self {
             mode: SubagentMode::Fork,
             prompt: prompt.into(),
-            agent_def: None,
-            role: None,
-            pin: None,
-            tools: None,
-            budget,
-            result_contract: None,
-            keep_alive: false,
+            // `..Default::default()` for the rest -- deliberately, not just
+            // for brevity: it means a brand-new `AgentKnobs` field (this
+            // item's own scratch-knob compile proof) reaches this
+            // constructor with NO edit here, since `#[derive(Default)]`
+            // fills it in automatically. See `AgentKnobs`'s own doc.
+            knobs: AgentKnobs {
+                budget,
+                ..Default::default()
+            },
             ephemeral: false,
             ask_origin: None,
             cwd: None,
@@ -709,13 +737,13 @@ impl SubagentSpec {
         Self {
             mode: SubagentMode::Spawn,
             prompt: prompt.into(),
-            agent_def: Some(agent_def),
-            role: None,
-            pin: None,
-            tools: None,
-            budget,
-            result_contract: None,
-            keep_alive: false,
+            // See `fork`'s own comment just above for why `..Default::
+            // default()` is deliberate here, not merely shorter.
+            knobs: AgentKnobs {
+                agent_def: Some(agent_def),
+                budget,
+                ..Default::default()
+            },
             ephemeral: false,
             ask_origin: None,
             cwd: None,
@@ -1180,13 +1208,7 @@ mod tests {
         let spec = SubagentSpec {
             mode: SubagentMode::Spawn,
             prompt: "do it".into(),
-            agent_def: None,
-            role: None,
-            pin: None,
-            tools: None,
-            budget: Budget::default(),
-            result_contract: None,
-            keep_alive: false,
+            knobs: AgentKnobs::default(),
             ephemeral: false,
             ask_origin: None,
             cwd: None,
@@ -1245,8 +1267,8 @@ mod tests {
         // legacy shape, just today's shape minus the one new key.
         assert_eq!(legacy.mode, spec.mode);
         assert_eq!(legacy.prompt, spec.prompt);
-        assert_eq!(legacy.agent_def, spec.agent_def);
-        assert_eq!(legacy.budget, spec.budget);
+        assert_eq!(legacy.knobs.agent_def, spec.knobs.agent_def);
+        assert_eq!(legacy.knobs.budget, spec.knobs.budget);
     }
 
     #[test]
@@ -1283,8 +1305,8 @@ mod tests {
         );
         assert_eq!(legacy.mode, spec.mode);
         assert_eq!(legacy.prompt, spec.prompt);
-        assert_eq!(legacy.agent_def, spec.agent_def);
-        assert_eq!(legacy.budget, spec.budget);
+        assert_eq!(legacy.knobs.agent_def, spec.knobs.agent_def);
+        assert_eq!(legacy.knobs.budget, spec.knobs.budget);
     }
 
     #[test]
@@ -1323,8 +1345,8 @@ mod tests {
         );
         assert_eq!(legacy.mode, spec.mode);
         assert_eq!(legacy.prompt, spec.prompt);
-        assert_eq!(legacy.agent_def, spec.agent_def);
-        assert_eq!(legacy.budget, spec.budget);
+        assert_eq!(legacy.knobs.agent_def, spec.knobs.agent_def);
+        assert_eq!(legacy.knobs.budget, spec.knobs.budget);
     }
 
     #[test]

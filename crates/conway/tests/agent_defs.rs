@@ -27,7 +27,9 @@ mod result_contract_via_def {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use conway_core::agent::{AgentDefRef, Budget, PermissionDecision, ResultStatus, SubagentSpec};
+    use conway_core::agent::{
+        AgentDefRef, AgentKnobs, Budget, PermissionDecision, ResultStatus, SubagentSpec,
+    };
     use conway_core::capabilities::HeadroomPolicy;
     use conway_core::capabilities::{
         CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
@@ -152,17 +154,19 @@ mod result_contract_via_def {
         let parent = runtime
             .start_root(RootSpec {
                 session: None,
-                agent_def: None,
-                role: Some(RoleAlias::new("parent")),
-                tools: None,
-                budget: Budget::default(),
+                knobs: AgentKnobs {
+                    agent_def: None,
+                    role: Some(RoleAlias::new("parent")),
+                    model: None,
+                    tools: None,
+                    budget: Budget::default(),
+                    result_contract: None,
+                    keep_alive: false,
+                },
                 cwd: PathBuf::from("/tmp"),
                 root: None,
                 prompt: Some("go".to_string()),
-                keep_alive: false,
-                model: None,
                 system_prompt_override: None,
-                result_contract: None,
                 labels: Vec::new(),
             })
             .await
@@ -203,7 +207,7 @@ mod result_contract_via_def {
             Budget::default(),
         );
         assert!(
-            spec.result_contract.is_none(),
+            spec.knobs.result_contract.is_none(),
             "this test's whole point is a call site that supplies NO contract of its own"
         );
 
@@ -288,7 +292,7 @@ mod result_contract_via_def {
         // `null` this child's structured output resolves to -- deliberately
         // permissive so ONLY the precedence rule (not contract strictness)
         // determines the outcome.
-        spec.result_contract =
+        spec.knobs.result_contract =
             Some(serde_json::from_value(serde_json::json!({})).expect("empty schema compiles"));
 
         let child = SubagentHost::start(&*runtime, parent, parent, spec)

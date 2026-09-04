@@ -29,7 +29,9 @@
 //! conversion; see [`crate::SessionHandle::fork`]/`::spawn` for the
 //! delegation itself.
 
-use conway_core::agent::{AgentDefRef, Budget, SubagentMode, SubagentSpec, ToolSelector};
+use conway_core::agent::{
+    AgentDefRef, AgentKnobs, Budget, SubagentMode, SubagentSpec, ToolSelector,
+};
 use conway_core::ids::{ModelRef, RoleAlias};
 use conway_core::log::AskOrigin;
 use conway_core::path::RecordRef;
@@ -60,53 +62,56 @@ pub struct ForkSpec {
     /// additional instruction to the child, layered on top of everything
     /// the child inherits.
     pub directive: String,
-    /// Overrides the forker's own system prompt. `None` means the child
-    /// keeps whatever the forker was running under -- system prompt, tools
-    /// selector, and model pin (`SubagentHost::start`'s Fork-only
-    /// inheritance fill). **Except**
-    /// that def's own `result_contract`, which this inheritance never
-    /// carries along -- see [`ForkSpec::result_contract`]'s own doc.
-    pub agent_def: Option<String>,
-    pub role: Option<RoleAlias>,
-    /// Pins the child's model outright, overriding whatever it would
-    /// otherwise resolve -- the mechanism `conway-cli`'s `/model
+    /// `agent_def`/`role`/`model`/`tools`/`budget`/`result_contract`/
+    /// `keep_alive` -- see [`conway_core::agent::AgentKnobs`]'s own doc for
+    /// what each means and why these seven, specifically, are shared with
+    /// `SubagentSpec`, `SpawnSpec`, `SessionSpec`, and `conway_runtime`'s
+    /// `RootSpec`/`ResumeSpec`. Set via the same-named builder methods below
+    /// ([`ForkSpec::agent_def`]/[`ForkSpec::role`]/[`ForkSpec::model`]/
+    /// [`ForkSpec::tools`]/[`ForkSpec::budget`]/
+    /// [`ForkSpec::result_contract`]/[`ForkSpec::keep_alive`]), which are
+    /// unchanged from before this field existed -- an external embedder
+    /// calling them still compiles unchanged; only a caller constructing a
+    /// `ForkSpec` as a bare struct literal naming these fields directly
+    /// needs to nest them under `.knobs` now (see `CHANGELOG.md`).
+    ///
+    /// **Field-specific notes preserved from before this field existed:**
+    /// `agent_def` overrides the forker's own system prompt; `None` means
+    /// the child keeps whatever the forker was running under -- system
+    /// prompt, tools selector, and model pin (`SubagentHost::start`'s
+    /// Fork-only inheritance fill). **Except** that def's own
+    /// `result_contract`, which this inheritance never carries along -- see
+    /// [`AgentKnobs::result_contract`]'s own doc. `model` pins the child's
+    /// model outright -- the mechanism `conway-cli`'s `/model
     /// <backend/model>` builds on (INTENT.md §5c: "changing model
-    /// mid-session is ordinary, and stays cheap"). `None` (the
+    /// mid-session is ordinary, and stays cheap"); `None` (the
     /// [`ForkSpec::new`] default) preserves the pre-existing fork-only
-    /// inheritance fill unchanged: the child's pin comes from its
-    /// (possibly-inherited) `agent_def.model`, exactly as before this field
-    /// existed. `Some` wins outright over that fill -- see
-    /// [`conway_core::agent::SubagentSpec::pin`]'s own doc for the full
+    /// inheritance fill unchanged, `Some` wins outright over that fill --
+    /// see [`conway_core::agent::AgentKnobs::model`]'s own doc for the full
     /// precedence and for why a pin the inherited context does not fit is a
-    /// loud refusal, never a silent fallback or trim. Set via
-    /// [`ForkSpec::model`].
-    pub model: Option<ModelRef>,
-    /// Selects which of the registered tools are announced to the child,
-    /// replacing whatever it would otherwise inherit (an `agent_def`'s own
-    /// selector) rather than narrowing it -- this can name a tool the forker's own
-    /// set excludes, and the runtime performs no intersection anywhere. It
-    /// selects what the model is offered, never what it may execute: the
+    /// loud refusal, never a silent fallback or trim. `tools` selects which
+    /// of the registered tools are announced to the child, replacing
+    /// whatever it would otherwise inherit (an `agent_def`'s own selector)
+    /// rather than narrowing it -- this can name a tool the forker's own
+    /// set excludes, and the runtime performs no intersection anywhere; it
+    /// selects what the model is offered, never what it may execute -- the
     /// permission gate and the confinement root are the actual capability
-    /// boundary.
-    pub tools: Option<ToolSelector>,
-    pub budget: Budget,
-    /// **Never sourced from an INHERITED `agent_def`** -- leaving this `None` on a `ForkSpec` that
-    /// also leaves `agent_def: None` does NOT pick up the def the forker
-    /// itself happens to be running under, even though `SubagentHost::
-    /// start` fills that def's system prompt/tools/model pin onto the
-    /// child. A result contract is declared at a call site -- this field,
-    /// or naming the def explicitly via [`ForkSpec::agent_def`] -- never by
-    /// inheritance alone. See `AgentDef::result_contract`'s own doc for the
-    /// full rule.
-    pub result_contract: Option<schemars::schema::RootSchema>,
-    /// Opt-in interactive keep-alive (WI "bare /spawn & /fork open an
-    /// interactive session"): the child idles for the caller's next
-    /// [`crate::SessionHandle::prompt_agent`] after each turn instead of
-    /// finishing on natural completion. Defaults `false` via
-    /// [`ForkSpec::new`], matching `conway_core::agent::SubagentSpec::fork`'s
-    /// own default and preserving the existing autonomous, one-shot fork
-    /// behavior unchanged. Set via [`ForkSpec::keep_alive`].
-    pub keep_alive: bool,
+    /// boundary. `result_contract` is **never sourced from an INHERITED
+    /// `agent_def`** -- leaving it unset on a `ForkSpec` that also leaves
+    /// `agent_def` unnamed does NOT pick up the def the forker itself
+    /// happens to be running under, even though `SubagentHost::start` fills
+    /// that def's system prompt/tools/model pin onto the child. A result
+    /// contract is declared at a call site -- this knob, or naming the def
+    /// explicitly via [`ForkSpec::agent_def`] -- never by inheritance
+    /// alone. See `AgentDef::result_contract`'s own doc for the full rule.
+    /// `keep_alive` is opt-in interactive keep-alive (WI "bare /spawn &
+    /// /fork open an interactive session"): the child idles for the
+    /// caller's next [`crate::SessionHandle::prompt_agent`] after each turn
+    /// instead of finishing on natural completion; defaults `false` via
+    /// [`ForkSpec::new`], matching `conway_core::agent::SubagentSpec::
+    /// fork`'s own default and preserving the existing autonomous,
+    /// one-shot fork behavior unchanged.
+    pub knobs: AgentKnobs,
     /// A `SessionMeta`-listing-visibility bit (provenance is unaffected
     /// -- the child stays attached to the live `AgentTreeSnapshot`
     /// regardless), NOT a third subagent mode (`ask` is fork+await-text,
@@ -181,13 +186,11 @@ impl ForkSpec {
     pub fn new(directive: impl Into<String>) -> Self {
         Self {
             directive: directive.into(),
-            agent_def: None,
-            role: None,
-            model: None,
-            tools: None,
-            budget: Budget::default(),
-            result_contract: None,
-            keep_alive: false,
+            // `AgentKnobs::default()` -- deliberately, not just for
+            // brevity: it means a brand-new shared knob field reaches this
+            // constructor with no edit here, since `#[derive(Default)]`
+            // fills it in automatically. See that struct's own doc.
+            knobs: AgentKnobs::default(),
             ephemeral: false,
             ask_origin: None,
             plugin_config: None,
@@ -196,18 +199,18 @@ impl ForkSpec {
     }
 
     pub fn agent_def(mut self, agent_def: impl Into<String>) -> Self {
-        self.agent_def = Some(agent_def.into());
+        self.knobs.agent_def = Some(AgentDefRef(agent_def.into()));
         self
     }
 
     pub fn role(mut self, role: RoleAlias) -> Self {
-        self.role = Some(role);
+        self.knobs.role = Some(role);
         self
     }
 
-    /// See [`ForkSpec::model`]'s own field doc.
+    /// See [`ForkSpec::knobs`]'s own doc (the `model` knob's section).
     pub fn model(mut self, model: ModelRef) -> Self {
-        self.model = Some(model);
+        self.knobs.model = Some(model);
         self
     }
 
@@ -218,23 +221,23 @@ impl ForkSpec {
     }
 
     pub fn tools(mut self, tools: ToolSelector) -> Self {
-        self.tools = Some(tools);
+        self.knobs.tools = Some(tools);
         self
     }
 
     pub fn budget(mut self, budget: Budget) -> Self {
-        self.budget = budget;
+        self.knobs.budget = budget;
         self
     }
 
     pub fn result_contract(mut self, result_contract: schemars::schema::RootSchema) -> Self {
-        self.result_contract = Some(result_contract);
+        self.knobs.result_contract = Some(result_contract);
         self
     }
 
-    /// See [`ForkSpec::keep_alive`]'s own field doc.
+    /// See [`ForkSpec::knobs`]'s own doc (the `keep_alive` knob's section).
     pub fn keep_alive(mut self, keep_alive: bool) -> Self {
-        self.keep_alive = keep_alive;
+        self.knobs.keep_alive = keep_alive;
         self
     }
 
@@ -262,14 +265,13 @@ impl From<ForkSpec> for SubagentSpec {
         SubagentSpec {
             mode: SubagentMode::Fork,
             prompt: spec.directive,
-            agent_def: spec.agent_def.map(AgentDefRef),
-            role: spec.role,
-            // See [`ForkSpec::model`]'s own doc.
-            pin: spec.model,
-            tools: spec.tools,
-            budget: spec.budget,
-            result_contract: spec.result_contract,
-            keep_alive: spec.keep_alive,
+            // The seven shared knobs, spread straight through -- see
+            // [`ForkSpec::knobs`]'s own doc for what each means.
+            // `AgentKnobs::agent_def` is already `Option<AgentDefRef>`
+            // (this crate's `.agent_def(impl Into<String>)` builder method
+            // constructs it directly), so there is no per-field `.map(..)`
+            // conversion left to do here, unlike before this item.
+            knobs: spec.knobs,
             ephemeral: spec.ephemeral,
             ask_origin: spec.ask_origin,
             // Deliberately NOT exposed on `ForkSpec` (C1): a fork inherits
@@ -333,15 +335,18 @@ impl From<ForkSpec> for SubagentSpec {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpawnSpec {
     pub prompt: String,
-    pub agent_def: Option<String>,
-    pub role: Option<RoleAlias>,
-    pub tools: Option<ToolSelector>,
-    pub budget: Budget,
-    pub result_contract: Option<schemars::schema::RootSchema>,
-    /// See [`ForkSpec::keep_alive`]'s own field doc -- identical semantics,
-    /// mapped through `From<SpawnSpec> for SubagentSpec` the same way.
-    /// Defaults `false` via [`SpawnSpec::new`].
-    pub keep_alive: bool,
+    /// `agent_def`/`role`/`model` (no builder method here -- see this
+    /// struct's own doc for why a model pin is fork-only)/`tools`/
+    /// `budget`/`result_contract`/`keep_alive` -- see
+    /// [`conway_core::agent::AgentKnobs`]'s own doc for what each means and
+    /// why these seven, specifically, are shared with `SubagentSpec`,
+    /// `ForkSpec`, `SessionSpec`, and `conway_runtime`'s
+    /// `RootSpec`/`ResumeSpec`. Set via the same-named builder methods
+    /// below, unchanged from before this field existed. `keep_alive`
+    /// mirrors [`ForkSpec::knobs`]'s `keep_alive` section exactly --
+    /// identical semantics, mapped through `From<SpawnSpec> for
+    /// SubagentSpec` the same way, defaulting `false` via [`SpawnSpec::new`].
+    pub knobs: AgentKnobs,
     /// (C1) Scopes the spawned child to its own working directory instead
     /// of unconditionally inheriting this session's -- an embedder (Kepler)
     /// scoping a drill-down explorer child to one region of a codebase is
@@ -419,12 +424,13 @@ impl SpawnSpec {
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
             prompt: prompt.into(),
-            agent_def: None,
-            role: None,
-            tools: None,
-            budget: Budget::default(),
-            result_contract: None,
-            keep_alive: false,
+            // `AgentKnobs::default()` -- see `ForkSpec::new`'s identical
+            // comment. `model` in particular stays at its default `None`
+            // forever on a `SpawnSpec`: it never exposes a builder method
+            // for that knob -- see `From<SpawnSpec> for SubagentSpec`'s own
+            // comment for why the model-pin override is scoped to fork
+            // only.
+            knobs: AgentKnobs::default(),
             cwd: None,
             root: None,
             plugin_config: None,
@@ -433,33 +439,33 @@ impl SpawnSpec {
     }
 
     pub fn agent_def(mut self, agent_def: impl Into<String>) -> Self {
-        self.agent_def = Some(agent_def.into());
+        self.knobs.agent_def = Some(AgentDefRef(agent_def.into()));
         self
     }
 
     pub fn role(mut self, role: RoleAlias) -> Self {
-        self.role = Some(role);
+        self.knobs.role = Some(role);
         self
     }
 
     pub fn tools(mut self, tools: ToolSelector) -> Self {
-        self.tools = Some(tools);
+        self.knobs.tools = Some(tools);
         self
     }
 
     pub fn budget(mut self, budget: Budget) -> Self {
-        self.budget = budget;
+        self.knobs.budget = budget;
         self
     }
 
     pub fn result_contract(mut self, result_contract: schemars::schema::RootSchema) -> Self {
-        self.result_contract = Some(result_contract);
+        self.knobs.result_contract = Some(result_contract);
         self
     }
 
-    /// See [`ForkSpec::keep_alive`]'s own field doc.
+    /// See [`ForkSpec::knobs`]'s own doc (the `keep_alive` knob's section).
     pub fn keep_alive(mut self, keep_alive: bool) -> Self {
-        self.keep_alive = keep_alive;
+        self.knobs.keep_alive = keep_alive;
         self
     }
 
@@ -493,15 +499,12 @@ impl From<SpawnSpec> for SubagentSpec {
         SubagentSpec {
             mode: SubagentMode::Spawn,
             prompt: spec.prompt,
-            agent_def: spec.agent_def.map(AgentDefRef),
-            role: spec.role,
-            // `SpawnSpec` has no `model` field -- see [`ForkSpec::model`]'s
-            // own doc for why the override is scoped to fork only for now.
-            pin: None,
-            tools: spec.tools,
-            budget: spec.budget,
-            result_contract: spec.result_contract,
-            keep_alive: spec.keep_alive,
+            // The seven shared knobs, spread straight through -- see
+            // [`SpawnSpec::knobs`]'s own doc. `knobs.model` is structurally
+            // always `None` here: `SpawnSpec` never exposes a builder
+            // method that can set it -- see that doc for why the
+            // model-pin override is scoped to fork only for now.
+            knobs: spec.knobs,
             ephemeral: false,
             ask_origin: None,
             cwd: spec.cwd,
@@ -542,19 +545,22 @@ mod tests {
         let converted: SubagentSpec = spec.into();
         assert_eq!(converted.mode, SubagentMode::Fork);
         assert_eq!(converted.prompt, "do the thing");
-        assert_eq!(converted.agent_def, Some(AgentDefRef("reviewer".into())));
-        assert_eq!(converted.role, Some(RoleAlias::new("planner")));
         assert_eq!(
-            converted.pin,
+            converted.knobs.agent_def,
+            Some(AgentDefRef("reviewer".into()))
+        );
+        assert_eq!(converted.knobs.role, Some(RoleAlias::new("planner")));
+        assert_eq!(
+            converted.knobs.model,
             Some(pin),
-            "ForkSpec::model maps to SubagentSpec::pin"
+            "ForkSpec::model maps to SubagentSpec::knobs.model (wire key \"pin\")"
         );
         assert_eq!(
-            converted.tools,
+            converted.knobs.tools,
             Some(ToolSelector::Only(vec!["read".into()]))
         );
-        assert_eq!(converted.budget, budget);
-        assert!(converted.result_contract.is_none());
+        assert_eq!(converted.knobs.budget, budget);
+        assert!(converted.knobs.result_contract.is_none());
         assert_eq!(
             converted.cwd, None,
             "ForkSpec has no cwd field at all -- a fork always inherits the forker's cwd"
@@ -581,32 +587,32 @@ mod tests {
     #[test]
     fn fork_spec_default_model_is_none_and_the_builder_maps_through() {
         let default_spec = ForkSpec::new("x");
-        assert_eq!(default_spec.model, None);
+        assert_eq!(default_spec.knobs.model, None);
         let default_converted: SubagentSpec = default_spec.into();
         assert_eq!(
-            default_converted.pin, None,
-            "no ForkSpec::model set -> SubagentSpec::pin stays None"
+            default_converted.knobs.model, None,
+            "no ForkSpec::model set -> SubagentSpec::knobs.model stays None"
         );
 
         let pin: ModelRef = "ollama_cloud/glm-5.2".parse().unwrap();
         let pinned = ForkSpec::new("x").model(pin.clone());
-        assert_eq!(pinned.model, Some(pin.clone()));
+        assert_eq!(pinned.knobs.model, Some(pin.clone()));
         let converted: SubagentSpec = pinned.into();
-        assert_eq!(converted.pin, Some(pin));
+        assert_eq!(converted.knobs.model, Some(pin));
     }
 
     #[test]
     fn fork_spec_default_keep_alive_is_false_and_the_builder_maps_through() {
         // Existing autonomous fork behavior must be unchanged by default.
         let default_spec = ForkSpec::new("x");
-        assert!(!default_spec.keep_alive);
+        assert!(!default_spec.knobs.keep_alive);
         let default_converted: SubagentSpec = default_spec.into();
-        assert!(!default_converted.keep_alive);
+        assert!(!default_converted.knobs.keep_alive);
 
         let opted_in = ForkSpec::new("x").keep_alive(true);
-        assert!(opted_in.keep_alive);
+        assert!(opted_in.knobs.keep_alive);
         let converted: SubagentSpec = opted_in.into();
-        assert!(converted.keep_alive);
+        assert!(converted.knobs.keep_alive);
     }
 
     /// The ephemeral-ask shape (`ask` is fork+await-text, not a third
@@ -659,10 +665,13 @@ mod tests {
         let converted: SubagentSpec = spec.into();
         assert_eq!(converted.mode, SubagentMode::Spawn);
         assert_eq!(converted.prompt, "review this");
-        assert_eq!(converted.agent_def, Some(AgentDefRef("reviewer".into())));
-        assert_eq!(converted.role, Some(RoleAlias::new("fast")));
-        assert_eq!(converted.tools, Some(ToolSelector::All));
-        assert_eq!(converted.budget, budget);
+        assert_eq!(
+            converted.knobs.agent_def,
+            Some(AgentDefRef("reviewer".into()))
+        );
+        assert_eq!(converted.knobs.role, Some(RoleAlias::new("fast")));
+        assert_eq!(converted.knobs.tools, Some(ToolSelector::All));
+        assert_eq!(converted.knobs.budget, budget);
         assert_eq!(converted.cwd, None, "cwd defaults to None (inherit)");
         assert_eq!(converted.root, None, "root defaults to None (inherit)");
     }
@@ -811,23 +820,23 @@ mod tests {
         // `SubagentHost::start` takes the "inherit the parent's role/model"
         // path.
         let spec = SpawnSpec::new("please review");
-        assert_eq!(spec.agent_def, None);
+        assert_eq!(spec.knobs.agent_def, None);
 
         let converted: SubagentSpec = spec.into();
         assert_eq!(converted.mode, SubagentMode::Spawn);
-        assert_eq!(converted.agent_def, None);
+        assert_eq!(converted.knobs.agent_def, None);
     }
 
     #[test]
     fn spawn_spec_default_keep_alive_is_false_and_the_builder_maps_through() {
         let default_spec = SpawnSpec::new("x");
-        assert!(!default_spec.keep_alive);
+        assert!(!default_spec.knobs.keep_alive);
         let default_converted: SubagentSpec = default_spec.into();
-        assert!(!default_converted.keep_alive);
+        assert!(!default_converted.knobs.keep_alive);
 
         let opted_in = SpawnSpec::new("x").keep_alive(true);
-        assert!(opted_in.keep_alive);
+        assert!(opted_in.knobs.keep_alive);
         let converted: SubagentSpec = opted_in.into();
-        assert!(converted.keep_alive);
+        assert!(converted.knobs.keep_alive);
     }
 }

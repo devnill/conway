@@ -18,7 +18,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use conway_core::agent::{
-    AgentDefRef, AgentResult, AgentTreeSnapshot, Budget, CancelMode, SubagentMode, SubagentSpec,
+    AgentDefRef, AgentKnobs, AgentResult, AgentTreeSnapshot, Budget, CancelMode, SubagentMode,
+    SubagentSpec,
 };
 use conway_core::content::{ContentBlock, ToolResult, Usage};
 use conway_core::error::{RuntimeError, StoreError};
@@ -324,21 +325,24 @@ impl SessionHandle {
         let spec = SubagentSpec {
             mode: SubagentMode::Fork,
             prompt: text.into(),
-            // Inherit this session's own agent def (system prompt + tool
-            // selector); `SubagentHost::start` resolves it through the same
-            // registry the parent's own start did.
-            agent_def: parent_meta.agent_def.map(AgentDefRef),
-            // `None` -> the runtime inherits the parent's effective role
-            // (`subagent.rs`'s inheritance fallback), same routing as the asker.
-            role: None,
-            // `None` -> the runtime inherits the parent's (possibly
-            // inherited-def) model pin, unchanged -- an ask is not a model
-            // switch.
-            pin: None,
-            tools: None,
-            budget: Budget::default(),
-            result_contract: None,
-            keep_alive: false,
+            knobs: AgentKnobs {
+                // Inherit this session's own agent def (system prompt +
+                // tool selector); `SubagentHost::start` resolves it through
+                // the same registry the parent's own start did.
+                agent_def: parent_meta.agent_def.map(AgentDefRef),
+                // `None` -> the runtime inherits the parent's effective
+                // role (`subagent.rs`'s inheritance fallback), same routing
+                // as the asker.
+                role: None,
+                // `None` -> the runtime inherits the parent's (possibly
+                // inherited-def) model pin, unchanged -- an ask is not a
+                // model switch.
+                model: None,
+                tools: None,
+                budget: Budget::default(),
+                result_contract: None,
+                keep_alive: false,
+            },
             ephemeral: true,
             // B5: tag this child as MODAL-ask residue (the TUI's `/ask
             // <prompt>` modal drives this method) -- DISTINCT from a

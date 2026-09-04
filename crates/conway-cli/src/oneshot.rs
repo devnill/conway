@@ -563,14 +563,18 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
                 .as_ref()
                 .map(|r| RoleAlias::new(r.clone()));
             let mut spec = ForkSpec::new(String::new());
-            spec.role = role;
+            if let Some(role) = role {
+                spec = spec.role(role);
+            }
             // `--agent` genuinely wires here (unlike `--system-prompt`/
             // budget -- see this module's doc comment, reconciliation #4):
             // `ForkSpec::agent_def` already exists and, per its own doc,
             // overrides the forked child's system prompt/tools/model pin
             // with the named def's, exactly the same "select a persona"
             // capability `--agent` gives a fresh session.
-            spec.agent_def = cli.agent.clone();
+            if let Some(agent) = cli.agent.clone() {
+                spec = spec.agent_def(agent);
+            }
             // `--output-schema` now genuinely wires here too (board item
             // `01M03FQDF33AZ8G258516EDWQD`; see this module's doc comment,
             // reconciliation #6) -- `ForkSpec::result_contract` is honored
@@ -579,14 +583,18 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
             // above already use (`--output-schema`, or else the resolved
             // `--agent`'s own `AgentDef::result_contract`) is set here too,
             // rather than left at `ForkSpec::new`'s default `None`.
-            spec.result_contract = result_contract;
+            if let Some(result_contract) = result_contract {
+                spec = spec.result_contract(result_contract);
+            }
             // `--allowed-tools`/`--deny-tools`/`--permission-mode` narrow
             // the forked child's announced set exactly as they do the
             // flag-free/`--session` arms above (see [`resolve_tools`]) --
             // `ForkSpec::tools` already exists and is honored by
             // `Conway::fork_from` (`SubagentSpec::tools`, the same field a
             // `conway_fork` tool call itself sets).
-            spec.tools = tools;
+            if let Some(tools) = tools {
+                spec = spec.tools(tools);
+            }
             conway
                 .fork_from(parent, at, spec)
                 .await

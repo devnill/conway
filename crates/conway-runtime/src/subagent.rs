@@ -170,7 +170,7 @@ impl SubagentHost for Runtime {
     /// 4. Append the head record: `LogRecord::ForkDirective` (fork) or
     ///    `LogRecord::UserTurn` (spawn) — `agent_loop::path_from_legacy`
     ///    (///    unmodified) stamps it `Head` and renders it via `own_segment`.
-    ///    **Skipped** when `spec.keep_alive` is set AND `spec.prompt` is
+    ///    **Skipped** when `spec.knobs.keep_alive` is set AND `spec.prompt` is
     ///    empty (the interactive keep-alive case, this item's addition): no
     ///    placeholder record is written and the child's `resume_gate` starts
     ///    `awaiting_prompt: true` instead, so it idles until the caller's
@@ -472,7 +472,7 @@ impl SubagentHost for Runtime {
         // sync by hand.
         //
         // ORDERING, load-bearing for `result_contract` below: `def_was_inherited`
-        // is captured from `spec.agent_def` BEFORE this fill mutates it, so
+        // is captured from `spec.knobs.agent_def` BEFORE this fill mutates it, so
         // the `result_contract` computation further down can tell "the call
         // site named this def" apart from "this def only got here via
         // inheritance" and never source a contract from the latter. A result
@@ -483,16 +483,18 @@ impl SubagentHost for Runtime {
         // the full reasoning (the contract chain is exactly two-deep;
         // sourcing from an inherited def would be a third, undocumented
         // step).
-        let def_was_inherited = spec.mode == SubagentMode::Fork && spec.agent_def.is_none();
+        let def_was_inherited = spec.mode == SubagentMode::Fork && spec.knobs.agent_def.is_none();
         if def_was_inherited {
-            spec.agent_def = parent_meta.agent_def.clone().map(AgentDefRef);
+            spec.knobs.agent_def = parent_meta.agent_def.clone().map(AgentDefRef);
         }
 
         let agent_def = spec
+            .knobs
             .agent_def
             .as_ref()
             .and_then(|r| self.agent_defs().get(r.0.as_str()));
         let role = spec
+            .knobs
             .role
             .clone()
             .or_else(|| agent_def.and_then(|d| d.role.clone()))
@@ -526,25 +528,28 @@ impl SubagentHost for Runtime {
         let instructions = crate::runtime::root::resolve_instructions(self.instructions());
         let skills = crate::runtime::root::resolve_skills(agent_def, self.skills())?;
         let tools = spec
+            .knobs
             .tools
             .clone()
             .or_else(|| agent_def.map(|d| d.tools.clone()));
-        // `spec.pin` (a caller-supplied override, e.g. `ForkSpec::model`)
-        // takes precedence over the (possibly fork-inherited) agent_def's
-        // own configured model -- the same "call-site override wins" shape
-        // `tools`/`role` just above already use. `None` preserves the
-        // pre-existing behavior exactly: the pin comes solely from
-        // `agent_def.model`.
+        // `spec.knobs.model` (a caller-supplied override, e.g. `ForkSpec::
+        // model`) takes precedence over the (possibly fork-inherited)
+        // agent_def's own configured model -- the same "call-site override
+        // wins" shape `tools`/`role` just above already use. `None`
+        // preserves the pre-existing behavior exactly: the pin comes solely
+        // from `agent_def.model`.
         let pin = spec
-            .pin
+            .knobs
+            .model
             .clone()
             .or_else(|| agent_def.and_then(|d| d.model.clone()));
-        // Precedence: the explicit call-site contract (`spec.result_contract`
-        // -- the model's `conway_fork`/`conway_spawn` `result_contract` arg, or an
-        // embedder's `ForkSpec`/`SpawnSpec::result_contract` builder) wins
-        // over the def's; the def supplies only the DEFAULT applied when the
-        // call site left its own contract unset. This mirrors `tools` just
-        // above (`spec.tools` shadows `agent_def.tools`) rather than `role`,
+        // Precedence: the explicit call-site contract
+        // (`spec.knobs.result_contract` -- the model's `conway_fork`/
+        // `conway_spawn` `result_contract` arg, or an embedder's
+        // `ForkSpec`/`SpawnSpec::result_contract` builder) wins over the
+        // def's; the def supplies only the DEFAULT applied when the call
+        // site left its own contract unset. This mirrors `tools` just above
+        // (`spec.knobs.tools` shadows `agent_def.tools`) rather than `role`,
         // which additionally falls back to the parent -- a subagent's result
         // contract has no such "inherit from parent" step, so the fallback
         // chain here is exactly two-deep.
@@ -606,7 +611,7 @@ impl SubagentHost for Runtime {
         // `ToolError::InvalidArguments`, so a dedicated variant would add a
         // second, structurally identical path for zero behavioral gain.
         let result_contract = if spec.ask_origin.is_some() {
-            match spec.result_contract.clone() {
+            match spec.knobs.result_contract.clone() {
                 Some(_) => {
                     return Err(invalid_spec(ConwayError::Config {
                         detail: "an ask spec (ask_origin is set) may not carry its own \
@@ -619,7 +624,7 @@ impl SubagentHost for Runtime {
                 None => None,
             }
         } else {
-            spec.result_contract.clone().or_else(|| {
+            spec.knobs.result_contract.clone().or_else(|| {
                 if def_was_inherited {
                     None
                 } else {
@@ -850,7 +855,7 @@ impl SubagentHost for Runtime {
         // `keep_alive` alone means "idle after this turn ends", per
         // `AgentSpec::keep_alive`'s own doc; `keep_alive` PLUS an empty
         // prompt is what additionally means "idle from the very start".
-        let starts_idle = spec.keep_alive && spec.prompt.is_empty();
+        let starts_idle = spec.knobs.keep_alive && spec.prompt.is_empty();
         if !starts_idle {
             let head_record = match spec.mode {
                 SubagentMode::Fork => LogRecord::ForkDirective {
@@ -887,7 +892,7 @@ impl SubagentHost for Runtime {
             tools,
             role: role.clone(),
             pin,
-            budget: spec.budget.clone(),
+            budget: spec.knobs.budget.clone(),
             // Pre-routing placeholder -- see this module's doc, "`CacheMode`
             // is hardcoded, not caller-supplied".
             cache_mode: CacheMode::None,
@@ -895,7 +900,7 @@ impl SubagentHost for Runtime {
             headroom_override: None,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
-            // carried `spec.result_contract` straight through as a
+            // carried `spec.knobs.result_contract` straight through as a
             // plain value handoff. This item adds the def as a second,
             // lower-precedence source: `result_contract` (computed above)
             // is the call site's contract when the caller supplied one,
@@ -910,7 +915,7 @@ impl SubagentHost for Runtime {
             // an explicit opt-in only an interactive-session caller (the
             // TUI's bare `/spawn`/`/fork`, via `conway`'s `SpawnSpec::
             // keep_alive`/`ForkSpec::keep_alive`) sets.
-            keep_alive: spec.keep_alive,
+            keep_alive: spec.knobs.keep_alive,
             // threaded straight
             // through, unread by this loop -- see `AgentSpec::tag`'s own
             // doc for the "conway never interprets this" guarantee.
@@ -971,7 +976,7 @@ impl SubagentHost for Runtime {
             kind: Some(spec.mode),
             agent_def: agent_def.map(|d| d.name.clone()),
             role: Some(role),
-            budget: spec.budget,
+            budget: spec.knobs.budget,
             cancel,
             inherited_upto,
             // `meta.ephemeral` is `spec.ephemeral` (see the literal above): a
@@ -1290,21 +1295,21 @@ impl SubagentHost for Runtime {
         // in favor of `start`'s own Fork-only inheritance fill (see that
         // method's doc, right before its `agent_def` resolution) -- `ask` is
         // fork-only (the `spec.mode != Fork` guard just above), so passing
-        // `spec.agent_def: None` straight through to `self.start` below now
+        // `spec.knobs.agent_def: None` straight through to `self.start` below now
         // reaches the SAME fallback fill an ordinary def-less `conway_fork`
         // does, with no second copy to keep in sync by hand. A caller that
-        // DOES supply `spec.agent_def` itself (an embedder's own `ForkSpec`,
+        // DOES supply `spec.knobs.agent_def` itself (an embedder's own `ForkSpec`,
         // hypothetically) is unaffected either way -- both this method's old
         // fill and `start`'s new one are fallbacks, never overrides.
         //
         // Before either fill existed, an ask child got NO agent_def at all:
         // no system-prompt segment (it silently read a transcript authored
-        // by an agent it is not), and -- since an absent `spec.tools` PLUS
+        // by an agent it is not), and -- since an absent `spec.knobs.tools` PLUS
         // an absent `agent_def.tools` resolves to `PluginRegistry::specs`'s
         // `selector.is_none_or(..)` "no selector -> everything" fallback --
         // the FULL tool registry rather than the parent def's own
         // restrictive selector: a capability escalation one `conway_ask`
-        // hop away from a def-restricted parent. `spec.tools` (a caller-
+        // hop away from a def-restricted parent. `spec.knobs.tools` (a caller-
         // narrowing arg, e.g. `AskArgs::tools`) still takes precedence over
         // whatever the filled-in `agent_def.tools` supplies -- unchanged,
         // see `start`'s own `tools` precedence.

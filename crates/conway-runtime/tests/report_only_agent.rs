@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use conway_core::agent::{Budget, PermissionDecision, ResultStatus, ToolSelector};
+use conway_core::agent::{AgentKnobs, Budget, PermissionDecision, ResultStatus, ToolSelector};
 use conway_core::capabilities::{
     CacheMode, Capabilities, HeadroomPolicy, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
@@ -711,17 +711,19 @@ fn runtime_with_plugins(
 fn root_spec_no_tools(prompt: &str) -> RootSpec {
     RootSpec {
         session: None,
-        agent_def: None,
-        role: Some(RoleAlias::new("root")),
-        tools: Some(ToolSelector::Only(vec![])),
-        budget: Budget::default(),
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: Some(RoleAlias::new("root")),
+            model: None,
+            tools: Some(ToolSelector::Only(vec![])),
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         cwd: PathBuf::from("/tmp"),
         root: None,
         prompt: Some(prompt.to_string()),
-        keep_alive: false,
-        model: None,
         system_prompt_override: None,
-        result_contract: None,
         labels: Vec::new(),
     }
 }
@@ -776,8 +778,8 @@ async fn report_only_proposer_spawned_via_subagent_host_runs_end_to_end() {
         conway_core::agent::AgentDefRef("proposer".to_string()),
         Budget::default(),
     );
-    spec.tools = Some(ToolSelector::Only(vec!["report".into()]));
-    spec.result_contract = Some(schema_requiring("ok"));
+    spec.knobs.tools = Some(ToolSelector::Only(vec!["report".into()]));
+    spec.knobs.result_contract = Some(schema_requiring("ok"));
 
     let child = conway_core::ports::SubagentHost::start(&*runtime, root, root, spec)
         .await

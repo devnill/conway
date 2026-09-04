@@ -19,7 +19,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway_core::agent::{Budget, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec};
+use conway_core::agent::{
+    AgentKnobs, Budget, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec,
+};
 use conway_core::capabilities::{HeadroomPolicy, ProbeReport};
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::error::BackendError;
@@ -219,17 +221,19 @@ fn build_runtime_with_backend(backend: Arc<dyn Backend>, bus: Arc<EventBus>) -> 
 fn root_spec(prompt: &str) -> RootSpec {
     RootSpec {
         session: None,
-        agent_def: None,
-        role: Some(RoleAlias::new("planner")),
-        tools: None,
-        budget: Budget::default(),
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: Some(RoleAlias::new("planner")),
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         cwd: PathBuf::from("/tmp"),
         root: None,
         prompt: Some(prompt.to_string()),
-        keep_alive: false,
-        model: None,
         system_prompt_override: None,
-        result_contract: None,
         labels: Vec::new(),
     }
 }
@@ -241,13 +245,15 @@ fn ask_fork_spec(prompt: &str) -> SubagentSpec {
     SubagentSpec {
         mode: SubagentMode::Fork,
         prompt: prompt.to_string(),
-        agent_def: None,
-        role: None,
-        pin: None,
-        tools: None,
-        budget: Budget::default(),
-        result_contract: None,
-        keep_alive: false,
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: None,
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         ephemeral: true,
         ask_origin: None,
         cwd: None,
@@ -693,7 +699,7 @@ async fn ask_child_inherits_the_parents_agent_def_for_system_prompt_and_tools() 
     let runtime = build_runtime_with_backend_and_defs(backend, bus, defs);
 
     let mut spec = root_spec("investigate");
-    spec.agent_def = Some(conway_core::agent::AgentDefRef("asker".to_string()));
+    spec.knobs.agent_def = Some(conway_core::agent::AgentDefRef("asker".to_string()));
     let mut stream = runtime.subscribe();
     let parent = runtime.start_root(spec).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -713,7 +719,7 @@ async fn ask_child_inherits_the_parents_agent_def_for_system_prompt_and_tools() 
     // `AskTool::invoke` always builds its `SubagentSpec` with `agent_def:
     // None` -- this test's whole point is that `Runtime::ask` (not the
     // call site) is what fills it in.
-    assert!(ask_spec.agent_def.is_none());
+    assert!(ask_spec.knobs.agent_def.is_none());
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(5),

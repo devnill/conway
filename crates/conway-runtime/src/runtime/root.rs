@@ -175,10 +175,14 @@ pub struct RootSpec {
     /// Overrides the store-assigned session id (useful for reproducible
     /// tests); `None` generates a fresh one.
     pub session: Option<SessionId>,
-    pub agent_def: Option<AgentDefRef>,
-    pub role: Option<RoleAlias>,
-    pub tools: Option<ToolSelector>,
-    pub budget: Budget,
+    /// `agent_def`/`role`/`model`/`tools`/`budget`/`result_contract`/
+    /// `keep_alive` -- see [`AgentKnobs`]'s own doc for what each means and
+    /// why these seven, specifically, are shared with [`ResumeSpec`],
+    /// `SubagentSpec`, and `conway`'s `ForkSpec`/`SpawnSpec`/`SessionSpec`.
+    /// Each individual knob's own former field doc (precedence,
+    /// call-site-wins-over-agent-def rules, etc.) is preserved verbatim on
+    /// [`AgentKnobs`]'s own fields; only the field's home moved.
+    pub knobs: AgentKnobs,
     pub cwd: PathBuf,
     /// This root agent's own
     /// confinement root -- the S3/S5 primitive (`SubagentSpec::root`,
@@ -207,16 +211,6 @@ pub struct RootSpec {
     /// an operator cannot confuse them.
     pub root: Option<PathBuf>,
     pub prompt: Option<String>,
-    /// Opt-in multi-turn keep-alive (see `agent_loop::AgentSpec::keep_alive`'s
-    /// own doc for the bug this fixes and why it must stay opt-in). `false`
-    /// preserves this crate's pre-existing behavior exactly: the started
-    /// agent's task terminates after its first `Completed` turn, same as
-    /// every `RootSpec` caller before this field existed.
-    pub keep_alive: bool,
-    /// Pins the model for this session, overriding the role's chain.
-    /// `start_root` prefers this over the `agent_def`-sourced pin when
-    /// present -- see that method's own doc for the precedence.
-    pub model: Option<ModelRef>,
     /// Replaces the `[0] SystemPrompt` segment's text outright when `Some`,
     /// regardless of whether `agent_def` also resolves to a known def --
     /// `start_root` still resolves `agent_def` for `role`/`tools`/`model`
@@ -229,25 +223,6 @@ pub struct RootSpec {
     /// `SessionSpec::system_prompt_override`) -- see that field's own doc
     /// for how the two flags combine into the single string landing here.
     pub system_prompt_override: Option<String>,
-    /// The schema this root agent's `structured` result must satisfy,
-    /// threaded straight into `AgentSpec::result_contract` -- see that
-    /// field's own doc for the enforcement mechanism (`AgentLoop::
-    /// run_inner`'s natural-completion branch: `Ok` proceeds, a first
-    /// failure gets one corrective retry via a `SystemNote`, a second is
-    /// terminal `ResultStatus::Rejected { missing }`). Before this field
-    /// existed, a root agent had no way to carry a contract at all --
-    /// `start_root` always passed `AgentSpec::result_contract: None`
-    /// (only a fork/spawn child, via `SubagentSpec::result_contract`,
-    /// could declare one) -- so the identical, already-tested enforcement
-    /// mechanism simply never reached the one agent an operator's own
-    /// prompt talks to. `None` (every caller before this field existed)
-    /// preserves that exact behavior. `conway-cli`'s `--output-schema` is
-    /// this field's motivating caller, via `conway::SessionSpec::
-    /// result_contract` (`conway::Conway::new_session`) -- see that
-    /// field's own doc for the call-site-wins-over-agent-def precedence,
-    /// mirrored from `subagent.rs`'s identical rule for a forked/spawned
-    /// child's own contract.
-    pub result_contract: Option<schemars::schema::RootSchema>,
     /// Operator-set marks on THIS session alone, threaded straight into
     /// `SessionMeta.labels` -- see that field's own doc and
     /// `SessionFilter::label`/`SessionStore::list` for the read side, which
@@ -289,75 +264,46 @@ pub struct ResumeSpec {
     /// The session to resume. Must already exist in the store — `resume_root`
     /// reads its `SessionMeta` via `store.meta` and does NOT `store.create`.
     pub session: SessionId,
-    pub agent_def: Option<AgentDefRef>,
-    pub role: Option<RoleAlias>,
-    /// Pins the resumed agent's model outright, overriding the
-    /// (possibly-persisted-`agent_def`-sourced) chain it would otherwise
-    /// resolve -- the `ResumeSpec` counterpart of [`RootSpec::model`].
-    /// `None` (every caller before this field existed, and `Conway::resume`'s
-    /// own caller today) preserves the pre-existing behavior exactly: the
-    /// resumed agent's pin comes solely from its resolved `agent_def.model`.
-    /// `Some` is what `conway::Conway::resume_with` (`--model`/
-    /// `--role-override` combined with `--resume`, INTENT.md §5c) threads
-    /// through when an operator names a model at resume time; a pin the
-    /// session's persisted transcript does not fit surfaces as the same loud
-    /// `RoutingError::ContextTooLarge` refusal an ordinary turn's admission
-    /// gate already gives, never a silent fallback or trim.
-    pub model: Option<ModelRef>,
-    pub tools: Option<ToolSelector>,
-    pub budget: Budget,
-    /// Overrides the persisted `SessionMeta::cwd`; `None` reuses it.
-    pub cwd: Option<PathBuf>,
-    /// The schema this resumed agent's `structured` result must satisfy,
-    /// threaded straight into `AgentSpec::result_contract` -- see
-    /// [`RootSpec::result_contract`]'s own doc for the enforcement mechanism,
-    /// which is identical here (the field feeds the same `AgentLoop::
-    /// run_inner` natural-completion check regardless of which spec started
-    /// the agent).
+    /// `agent_def`/`role`/`model`/`tools`/`budget`/`result_contract`/
+    /// `keep_alive` -- see [`AgentKnobs`]'s own doc for what each means.
+    /// Every individual knob's own former field doc is preserved on
+    /// [`AgentKnobs`] itself (only the field's home moved), with two
+    /// gap-closing rulings worth restating here since they are specific to
+    /// resume:
     ///
-    /// **Closes a real gap (board item `01M03FQDF33AZ8G258516EDWQD`):**
-    /// before this field existed, `resume_root` always passed `AgentSpec::
+    /// **`result_contract` closes a real gap (board item
+    /// `01M03FQDF33AZ8G258516EDWQD`):** before this knob reached
+    /// `ResumeSpec`, `resume_root` always passed `AgentSpec::
     /// result_contract: None`, unconditionally -- not because resuming a
-    /// session is incoherent with a contract (it is not: the SAME `AgentLoop`
-    /// enforcement this field now reaches for a resumed agent is already
-    /// exercised for a freshly `start_root`ed one via `RootSpec::
-    /// result_contract`, and for a live fork/spawn child via `SubagentSpec::
-    /// result_contract`), but because `ResumeSpec` itself had no field to
-    /// carry one through. That made `conway::Conway::fork_from` -- the ONE
-    /// caller of `resume_root` that receives a fresh, per-call spec
-    /// (`ForkSpec`) with its own `result_contract` field already on it --
-    /// silently drop a contract an embedder set: `ForkSpec::result_contract`
-    /// round-tripped through `From<ForkSpec> for SubagentSpec` (honored on
-    /// the live `SessionHandle::fork` path) but was never even read by
-    /// `crate::fork_child::fork_child` (`conway`'s own module), which built a
-    /// `ResumeSpec` with no way to carry it. `None` (`conway::Conway::
+    /// session is incoherent with a contract (it is not: the SAME
+    /// `AgentLoop` enforcement this knob now reaches for a resumed agent is
+    /// already exercised for a freshly `start_root`ed one via
+    /// `RootSpec::knobs.result_contract`, and for a live fork/spawn child
+    /// via `SubagentSpec::knobs.result_contract`), but because `ResumeSpec`
+    /// itself had no field to carry one through. That made
+    /// `conway::Conway::fork_from` -- the ONE caller of `resume_root` that
+    /// receives a fresh, per-call spec (`ForkSpec`) with its own
+    /// `result_contract` knob already on it -- silently drop a contract an
+    /// embedder set: `ForkSpec`'s `result_contract` round-tripped through
+    /// `From<ForkSpec> for SubagentSpec` (honored on the live
+    /// `SessionHandle::fork` path) but was never even read by
+    /// `crate::fork_child::fork_child` (`conway`'s own module), which built
+    /// a `ResumeSpec` with no way to carry it. `None` (`conway::Conway::
     /// resume`'s own caller, which has no per-call spec at all -- `resume`
     /// takes only a `SessionId` -- and so always passes `None` here,
     /// preserving that binding's existing behavior exactly) is the only
-    /// value that can reach this field for a genuine resume; `fork_from`'s
-    /// `ForkChildRequest::result_contract` is the one caller that can supply
-    /// `Some`.
-    pub result_contract: Option<schemars::schema::RootSchema>,
-    /// Opt-in multi-turn keep-alive for a resumed/forked agent -- the
-    /// `ResumeSpec` counterpart of [`RootSpec::keep_alive`], threaded
-    /// straight into `AgentSpec::keep_alive` (see that field's own doc for
-    /// the `ResumeGate` re-arming mechanism that makes a `keep_alive` agent
-    /// idle for its next prompt instead of terminating on natural
-    /// completion).
+    /// value that can reach this knob for a genuine resume; `fork_from`'s
+    /// `ForkChildRequest::result_contract` is the one caller that can
+    /// supply `Some`.
     ///
-    /// **Closes a real gap (board item `01M03KZXR1KF77YRAW4W4GE6KK`):**
-    /// before this field existed, `resume_root` hardcoded
-    /// `AgentSpec::keep_alive: false`, so `conway::Conway::fork_from` -- the
-    /// ONE caller of `resume_root` that receives a fresh, per-call spec
-    /// (`ForkSpec`) with its own `keep_alive` field already on it --
-    /// silently dropped the flag: `ForkSpec::keep_alive(true)` round-tripped
-    /// through `From<ForkSpec> for SubagentSpec` (honored on the live
-    /// `SessionHandle::fork` path) but was never even read by
-    /// `crate::fork_child::fork_child` (`conway`'s own module), which built a
-    /// `ResumeSpec` with no way to carry it through. A caller that set
-    /// `keep_alive(true)` on a `fork_from` got a one-shot child that
-    /// terminated on its first completed turn, with no error -- a silent
-    /// behavioural difference between two ways of doing the same thing.
+    /// **`keep_alive` closes a real gap (board item
+    /// `01M03KZXR1KF77YRAW4W4GE6KK`):** before this knob reached
+    /// `ResumeSpec`, `resume_root` hardcoded `AgentSpec::keep_alive: false`,
+    /// so `conway::Conway::fork_from` silently dropped a `ForkSpec::
+    /// keep_alive(true)` the same way. A caller that set that got a
+    /// one-shot child that terminated on its first completed turn, with no
+    /// error -- a silent behavioural difference between two ways of doing
+    /// the same thing.
     ///
     /// **Re-arming semantics (the design decision the spec demanded before
     /// wiring):** `resume_root` always sets `ResumeGate::awaiting_prompt:
@@ -370,16 +316,15 @@ pub struct ResumeSpec {
     /// `awaiting_prompt: true` and wait on the SAME `notify`, so there is no
     /// second mechanism and no conflict: the first-turn gate ensures the
     /// child never runs before the caller's first prompt, and `keep_alive`
-    /// ensures the child never finishes after a completed turn. The previous
-    /// item left this field out not because of a real interaction problem
-    /// but to reason about it separately; that reasoning confirms the
-    /// composition is safe. `false` (the `Conway::resume` caller, which has
-    /// no per-call spec and so always passes `false` here, preserving that
-    /// binding's existing one-shot behaviour exactly) is the only value that
-    /// can reach this field for a genuine resume; `fork_from`'s
-    /// `ForkChildRequest::keep_alive` is the one caller that can supply
-    /// `true`.
-    pub keep_alive: bool,
+    /// ensures the child never finishes after a completed turn. `false`
+    /// (the `Conway::resume` caller, which has no per-call spec and so
+    /// always passes `false` here, preserving that binding's existing
+    /// one-shot behaviour exactly) is the only value that can reach this
+    /// knob for a genuine resume; `fork_from`'s `ForkChildRequest::
+    /// keep_alive` is the one caller that can supply `true`.
+    pub knobs: AgentKnobs,
+    /// Overrides the persisted `SessionMeta::cwd`; `None` reuses it.
+    pub cwd: Option<PathBuf>,
 }
 
 impl Runtime {
@@ -417,11 +362,13 @@ impl Runtime {
         }
 
         let agent_def = spec
+            .knobs
             .agent_def
             .as_ref()
             .and_then(|r| self.agent_defs.get(r.0.as_str()));
 
         let role = spec
+            .knobs
             .role
             .clone()
             .or_else(|| agent_def.and_then(|d| d.role.clone()))
@@ -452,12 +399,14 @@ impl Runtime {
         // -- see `resolve_instructions`'s own doc.
         let instructions = resolve_instructions(&self.instructions);
         let tools = spec
+            .knobs
             .tools
             .clone()
             .or_else(|| agent_def.map(|d| d.tools.clone()));
-        // `spec.model` (a caller-supplied pin, e.g. `--model`) takes
+        // `spec.knobs.model` (a caller-supplied pin, e.g. `--model`) takes
         // precedence over the `agent_def`'s own configured model.
         let pin = spec
+            .knobs
             .model
             .clone()
             .or_else(|| agent_def.and_then(|d| d.model.clone()));
@@ -644,7 +593,7 @@ impl Runtime {
             tools,
             role: role.clone(),
             pin,
-            budget: spec.budget.clone(),
+            budget: spec.knobs.budget.clone(),
             // Deliberately `None`, not a gap: `ContextBuilder::build` runs
             // before routing resolves a concrete model, so this can only
             // ever be a pre-routing placeholder. The prompt-caching item's
@@ -658,11 +607,12 @@ impl Runtime {
             headroom_override: None,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
-            // `RootSpec::result_contract` -- see that field's own doc for
-            // the mechanism this finally makes reachable for a root agent
-            // (previously always `None` here, unconditionally).
-            result_contract: spec.result_contract,
-            keep_alive: spec.keep_alive,
+            // `RootSpec::knobs.result_contract` -- see `AgentKnobs::
+            // result_contract`'s own doc for the mechanism this finally
+            // makes reachable for a root agent (previously always `None`
+            // here, unconditionally).
+            result_contract: spec.knobs.result_contract,
+            keep_alive: spec.knobs.keep_alive,
             // A root agent has no `SubagentSpec` to source a consumer tag
             // from either -- `RootSpec` gains
             // no counterpart field; out of this item's scope.
@@ -731,7 +681,7 @@ impl Runtime {
             kind: None,
             agent_def: agent_def.map(|d| d.name.clone()),
             role: Some(role),
-            budget: spec.budget.clone(),
+            budget: spec.knobs.budget.clone(),
             cancel: cancel.clone(),
             inherited_upto: None,
             // A root is never ephemeral (:
@@ -747,7 +697,7 @@ impl Runtime {
             agent: agent_id,
             session: session_id,
             cancel,
-            deadline: spec.budget.deadline,
+            deadline: spec.knobs.budget.deadline,
             grace: supervisor::DEFAULT_GRACE,
             task,
             hooks: self.hooks.clone(),
@@ -895,6 +845,7 @@ impl Runtime {
         };
 
         let agent_def_ref = spec
+            .knobs
             .agent_def
             .clone()
             .or_else(|| meta.agent_def.clone().map(AgentDefRef));
@@ -903,6 +854,7 @@ impl Runtime {
             .and_then(|r| self.agent_defs.get(r.0.as_str()));
 
         let role = spec
+            .knobs
             .role
             .clone()
             .or_else(|| meta.role.clone())
@@ -921,14 +873,16 @@ impl Runtime {
         // -- see `resolve_instructions`'s own doc.
         let instructions = resolve_instructions(&self.instructions);
         let tools = spec
+            .knobs
             .tools
             .clone()
             .or_else(|| agent_def.map(|d| d.tools.clone()));
-        // `spec.model` (a caller-supplied pin, e.g. `--model` combined with
-        // `--resume`) takes precedence over the `agent_def`'s own configured
-        // model -- mirroring `start_root`'s identical precedence for
-        // `spec.model` immediately above in this same file.
+        // `spec.knobs.model` (a caller-supplied pin, e.g. `--model` combined
+        // with `--resume`) takes precedence over the `agent_def`'s own
+        // configured model -- mirroring `start_root`'s identical precedence
+        // for `spec.knobs.model` immediately above in this same file.
         let pin = spec
+            .knobs
             .model
             .clone()
             .or_else(|| agent_def.and_then(|d| d.model.clone()));
@@ -1073,7 +1027,7 @@ impl Runtime {
             tools,
             role: role.clone(),
             pin,
-            budget: spec.budget.clone(),
+            budget: spec.knobs.budget.clone(),
             // Pre-routing placeholder, same as `start_root` above -- see
             // that field's comment there for the full rationale.
             cache_mode: CacheMode::None,
@@ -1081,25 +1035,27 @@ impl Runtime {
             headroom_override: None,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
-            // `ResumeSpec::result_contract` -- see that field's own doc
-            // (board item `01M03FQDF33AZ8G258516EDWQD`) for the gap this
-            // closes: `conway::Conway::resume` always passes `None` here
-            // (it has no per-call spec to source one from), but
+            // `ResumeSpec::knobs.result_contract` -- see `AgentKnobs::
+            // result_contract`'s own doc (board item
+            // `01M03FQDF33AZ8G258516EDWQD`) for the gap this closes:
+            // `conway::Conway::resume` always passes `None` here (it has no
+            // per-call spec to source one from), but
             // `conway::Conway::fork_from` -- the other `resume_root` caller
             // -- now threads its own `ForkSpec::result_contract` through
             // `crate::fork_child::fork_child`'s `ForkChildRequest`, so it no
             // longer silently drops a contract set on the facade fork path.
-            result_contract: spec.result_contract,
-            // `ResumeSpec::keep_alive` -- see that field's own doc (board
-            // item `01M03KZXR1KF77YRAW4W4GE6KK`) for the gap this closes:
-            // `conway::Conway::resume` always passes `false` here (it has no
-            // per-call spec to source the flag from, preserving the one-shot
-            // resume behaviour exactly), but `conway::Conway::fork_from` --
-            // the other `resume_root` caller -- now threads its own
-            // `ForkSpec::keep_alive` through `crate::fork_child::fork_child`'s
-            // `ForkChildRequest`, so a `keep_alive(true)` fork_from child no
-            // longer silently terminates on its first completed turn.
-            keep_alive: spec.keep_alive,
+            result_contract: spec.knobs.result_contract,
+            // `ResumeSpec::knobs.keep_alive` -- see `AgentKnobs::keep_alive`'s
+            // own doc (board item `01M03KZXR1KF77YRAW4W4GE6KK`) for the gap
+            // this closes: `conway::Conway::resume` always passes `false`
+            // here (it has no per-call spec to source the flag from,
+            // preserving the one-shot resume behaviour exactly), but
+            // `conway::Conway::fork_from` -- the other `resume_root` caller
+            // -- now threads its own `ForkSpec::keep_alive` through
+            // `crate::fork_child::fork_child`'s `ForkChildRequest`, so a
+            // `keep_alive(true)` fork_from child no longer silently
+            // terminates on its first completed turn.
+            keep_alive: spec.knobs.keep_alive,
             // A resumed root has no `SubagentSpec` to source a consumer tag
             // from either -- same as
             // `start_root`.
@@ -1168,7 +1124,7 @@ impl Runtime {
                 .map(|d| d.name.clone())
                 .or_else(|| meta.agent_def.clone()),
             role: Some(role),
-            budget: spec.budget.clone(),
+            budget: spec.knobs.budget.clone(),
             cancel: cancel.clone(),
             inherited_upto: None,
             // Stamped from the persisted `SessionMeta::ephemeral`: a session

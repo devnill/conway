@@ -34,7 +34,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use conway_core::agent::{
-    AgentDefRef, AgentResult, Budget, ResultStatus, SubagentSpec, ToolSelector,
+    AgentDefRef, AgentKnobs, AgentResult, Budget, ResultStatus, SubagentSpec, ToolSelector,
 };
 use conway_core::content::{
     ContentBlock, PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy,
@@ -331,23 +331,25 @@ async fn start_and_maybe_await(
     let spec = SubagentSpec {
         mode,
         prompt: req.prompt,
-        agent_def: req.agent_def.map(AgentDefRef),
-        role: req.role.map(RoleAlias::new),
-        // The model-invoked `conway_fork`/`conway_spawn` tools have no
-        // model-pin argument -- pinning a specific model is an
-        // operator-only surface (`ForkSpec::model`, the TUI's `/model`),
-        // never something the model itself can invoke on its own behalf.
-        pin: None,
-        tools: req.tools.map(ToolSelector::Only),
-        budget: resolve_budget(req.budget, &ctx.config)?,
-        result_contract,
-        // The model-invoked `conway_fork`/`conway_spawn` tools are always
-        // the autonomous, one-shot fork/spawn primitives ("exactly two
-        // subagent primitives") -- `keep_alive` is an opt-in only the
-        // interactive-session facade paths (`conway`'s `SpawnSpec`/
-        // `ForkSpec::keep_alive`, the TUI's bare `/spawn`/`/fork`) ever
-        // set.
-        keep_alive: false,
+        knobs: AgentKnobs {
+            agent_def: req.agent_def.map(AgentDefRef),
+            role: req.role.map(RoleAlias::new),
+            // The model-invoked `conway_fork`/`conway_spawn` tools have no
+            // model-pin argument -- pinning a specific model is an
+            // operator-only surface (`ForkSpec::model`, the TUI's `/model`),
+            // never something the model itself can invoke on its own behalf.
+            model: None,
+            tools: req.tools.map(ToolSelector::Only),
+            budget: resolve_budget(req.budget, &ctx.config)?,
+            result_contract,
+            // The model-invoked `conway_fork`/`conway_spawn` tools are
+            // always the autonomous, one-shot fork/spawn primitives
+            // ("exactly two subagent primitives") -- `keep_alive` is an
+            // opt-in only the interactive-session facade paths (`conway`'s
+            // `SpawnSpec`/`ForkSpec::keep_alive`, the TUI's bare
+            // `/spawn`/`/fork`) ever set.
+            keep_alive: false,
+        },
         ephemeral: false,
         // Not an `/ask` child (B5): the `conway_ask` tool (`ask.rs`)
         // stamps `AskOrigin::ToolAsk`, the TUI's modal `/ask` stamps

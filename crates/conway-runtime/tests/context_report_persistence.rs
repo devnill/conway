@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway_core::agent::{AgentDefRef, Budget, PermissionDecision, SubagentSpec};
+use conway_core::agent::{AgentDefRef, AgentKnobs, Budget, PermissionDecision, SubagentSpec};
 use conway_core::capabilities::HeadroomPolicy;
 use conway_core::config::AgentDef;
 use conway_core::content::{
@@ -183,17 +183,19 @@ fn build_runtime(
 fn root_spec(prompt: &str, agent_def: Option<AgentDefRef>) -> RootSpec {
     RootSpec {
         session: None,
-        agent_def,
-        role: Some(RoleAlias::new("planner")),
-        tools: None,
-        budget: Budget::default(),
+        knobs: AgentKnobs {
+            agent_def,
+            role: Some(RoleAlias::new("planner")),
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         cwd: PathBuf::from("/tmp"),
         root: None,
         prompt: Some(prompt.to_string()),
-        keep_alive: false,
-        model: None,
         system_prompt_override: None,
-        result_contract: None,
         labels: Vec::new(),
     }
 }
