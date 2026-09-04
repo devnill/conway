@@ -171,7 +171,7 @@
 //! instance return the identical rendered text for this fragment.
 //!
 //! **Four facts, each named only when conway actually established it
-//! (declaration honesty) -- see [`build_environment_text`]:**
+//! (declaration honesty) -- see `build_environment_text`:**
 //!
 //! - `cwd` -- the constructor's own `cwd` argument, verbatim.
 //! - `os`/arch -- `std::env::consts::OS`/`std::env::consts::ARCH`.
@@ -181,12 +181,12 @@
 //!   the session happens to cross midnight -- it is a snapshot, not a
 //!   clock.
 //! - `git` -- `.git/HEAD`, read directly (`std::fs`, no `git` subprocess,
-//!   no `git2` dependency) and parsed by [`resolve_head_path`]/
-//!   [`parse_head_contents`]: `ref: refs/heads/<branch>` names the branch;
+//!   no `git2` dependency) and parsed by `resolve_head_path`/
+//!   `parse_head_contents`: `ref: refs/heads/<branch>` names the branch;
 //!   a raw 40-hex-character SHA (detached HEAD) is shortened to its first
 //!   8 characters. A linked worktree's own `.git` is a FILE (`gitdir:
 //!   <path>`, not a directory) naming where its REAL `HEAD` actually lives
-//!   -- [`resolve_head_path`] follows that pointer, so a worktree checkout
+//!   -- `resolve_head_path` follows that pointer, so a worktree checkout
 //!   (like the one this very item was implemented in) reports the
 //!   worktree's own current branch, not the main checkout's. Omitted
 //!   entirely from the sentence -- never "git unknown", never a guess --
@@ -414,7 +414,7 @@ pub const FRAGMENT_TEXT: &str = include_str!("../fragments/idiom.md");
 /// deliberately not).
 ///
 /// Every clause names a fact this call actually established -- when
-/// [`resolve_head_ref`] returns `None` (no `.git`, an unreadable one, or
+/// `resolve_head_ref` returns `None` (no `.git`, an unreadable one, or
 /// `HEAD` contents that parse as neither a symbolic ref nor a raw SHA), the
 /// `git` clause is omitted from the sentence entirely rather than replaced
 /// with a guess or a placeholder like "git unknown" (declaration honesty,
@@ -436,13 +436,13 @@ fn build_environment_text(cwd: &Path) -> String {
     text
 }
 
-/// Resolves `cwd`'s current git ref for [`build_environment_text`] -- the
-/// short label ([`parse_head_contents`]) parsed out of `cwd`'s `HEAD` file,
-/// wherever [`resolve_head_path`] finds it actually lives. `None` covers
+/// Resolves `cwd`'s current git ref for `build_environment_text` -- the
+/// short label (`parse_head_contents`) parsed out of `cwd`'s `HEAD` file,
+/// wherever `resolve_head_path` finds it actually lives. `None` covers
 /// every way this can fail to name a real fact: no `.git` at all (`cwd` is
 /// not inside a git work tree), a `.git` that is neither a directory nor a
 /// well-formed worktree pointer file, a `HEAD` that cannot be read, or
-/// `HEAD` contents that parse as neither shape [`parse_head_contents`]
+/// `HEAD` contents that parse as neither shape `parse_head_contents`
 /// recognizes.
 fn resolve_head_ref(cwd: &Path) -> Option<String> {
     let head_path = resolve_head_path(cwd)?;
@@ -464,7 +464,7 @@ fn resolve_head_ref(cwd: &Path) -> Option<String> {
 /// though `.git` were a directory and failing. Returns `None` when
 /// `cwd/.git` does not exist at all, or exists as neither a directory nor
 /// a well-formed `gitdir:` pointer file -- callers treat that identically
-/// to "no git ref to report" (see [`resolve_head_ref`]).
+/// to "no git ref to report" (see `resolve_head_ref`).
 fn resolve_head_path(cwd: &Path) -> Option<PathBuf> {
     let dot_git = cwd.join(".git");
     let metadata = std::fs::symlink_metadata(&dot_git).ok()?;
@@ -489,7 +489,7 @@ fn resolve_head_path(cwd: &Path) -> Option<PathBuf> {
 }
 
 /// Parses a `HEAD` file's raw contents into the short git ref
-/// [`build_environment_text`] reports. `ref: refs/heads/<branch>` names the
+/// `build_environment_text` reports. `ref: refs/heads/<branch>` names the
 /// branch (the `refs/heads/` prefix is stripped; anything else after
 /// `ref:` -- e.g. a ref outside `refs/heads/` -- is reported verbatim
 /// rather than guessed at). A raw, exactly-40-hex-character SHA (a
@@ -728,8 +728,8 @@ mod parse_fragment_markdown_tests {
 ///
 /// **Written before the implementation existed, and confirmed to fail
 /// first** (this item's own stated convention): before
-/// [`ENVIRONMENT_INSTRUCTION_NAME`]/[`build_environment_text`]/
-/// [`resolve_head_path`]/[`parse_head_contents`] existed, every test in
+/// [`ENVIRONMENT_INSTRUCTION_NAME`]/`build_environment_text`/
+/// `resolve_head_path`/`parse_head_contents` existed, every test in
 /// this module failed to compile (the names it references did not exist);
 /// after implementing them, every test below passes.
 #[cfg(test)]
@@ -771,7 +771,7 @@ mod environment_tests {
         std::fs::create_dir_all(&dot_git).expect("mkdir .git");
         std::fs::write(
             dot_git.join("HEAD"),
-            "3f786850e387550fdab836ed7e6dc881de23001\n",
+            "3f786850e387550fdab836ed7e6dc881de230012\n",
         )
         .expect("write HEAD");
         assert_eq!(resolve_head_ref(tmp.path()), Some("3f786850".to_string()));
@@ -821,8 +821,11 @@ mod environment_tests {
         std::fs::create_dir_all(&real_gitdir).expect("mkdir real gitdir");
         std::fs::write(worktree_dir.join(".git"), "gitdir: ../real-gitdir\n")
             .expect("write relative .git pointer file");
-        std::fs::write(real_gitdir.join("HEAD"), "ref: refs/heads/relative-branch\n")
-            .expect("write HEAD");
+        std::fs::write(
+            real_gitdir.join("HEAD"),
+            "ref: refs/heads/relative-branch\n",
+        )
+        .expect("write HEAD");
         assert_eq!(
             resolve_head_ref(&worktree_dir),
             Some("relative-branch".to_string())
@@ -841,7 +844,7 @@ mod environment_tests {
         assert_eq!(parse_head_contents("abc123\n"), None);
     }
 
-    /// [`build_environment_text`]'s exact shape (acceptance 1): every one
+    /// `build_environment_text`'s exact shape (acceptance 1): every one
     /// of `cwd`/`os`/`date`/`git` appears, in that reading order, when
     /// `.git` resolves cleanly.
     #[test]
@@ -858,7 +861,10 @@ mod environment_tests {
         );
         assert!(text.contains("os "), "must name the OS: {text}");
         assert!(text.contains("date "), "must name the date: {text}");
-        assert!(text.contains("git main"), "must name the git branch: {text}");
+        assert!(
+            text.contains("git main"),
+            "must name the git branch: {text}"
+        );
     }
 }
 
@@ -879,8 +885,8 @@ mod environment_tests {
 /// reads an operator's files; `first_party_plugins::bundle` is this
 /// binary's one production call site. Both constructors take `cwd`, used
 /// to seed [`ENVIRONMENT_INSTRUCTION_NAME`]'s body
-/// ([`build_environment_text`]) -- computed exactly once, here, and
-/// stored as [`Self::environment`], never re-derived by
+/// (`build_environment_text`) -- computed exactly once, here, and
+/// stored as `Self::environment`, never re-derived by
 /// [`IdiomPlugin::instructions`] (see this module's own doc, "The
 /// environment block", for why that single-computation discipline is the
 /// whole point).
@@ -894,7 +900,7 @@ impl IdiomPlugin {
     /// No operator fragments -- the shape every caller with no
     /// `instructions.md` on disk gets. `cwd` seeds
     /// [`ENVIRONMENT_INSTRUCTION_NAME`]'s body, computed once, here (see
-    /// [`environment_fragment`]).
+    /// `environment_fragment`).
     pub fn new(cwd: &Path) -> Self {
         Self {
             environment: environment_fragment(cwd),
@@ -928,7 +934,7 @@ impl IdiomPlugin {
 }
 
 /// Builds [`ENVIRONMENT_INSTRUCTION_NAME`] itself from
-/// [`build_environment_text`]'s rendered body -- pulled out as its own
+/// `build_environment_text`'s rendered body -- pulled out as its own
 /// function so both [`IdiomPlugin::new`] and [`IdiomPlugin::
 /// from_operator_files`] construct it identically. `position`/`order`/
 /// `scope`/`authored_by` are all spelled out explicitly, even though
@@ -1414,12 +1420,9 @@ mod plugin_tests {
         let global_path = tmp.path().join("global-instructions.md");
         std::fs::write(&project_path, "Project convention.\n").expect("write");
         std::fs::write(&global_path, "House-wide preference.\n").expect("write");
-        let plugin = IdiomPlugin::from_operator_files(
-            tmp.path(),
-            Some(&project_path),
-            Some(&global_path),
-        )
-        .expect("read ok");
+        let plugin =
+            IdiomPlugin::from_operator_files(tmp.path(), Some(&project_path), Some(&global_path))
+                .expect("read ok");
         let instructions = plugin.instructions();
 
         let project = instructions
@@ -1510,8 +1513,8 @@ mod operator_file_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("instructions.md");
         std::fs::write(&path, "Always run `cargo test` before reporting done.\n").expect("write");
-        let plugin = IdiomPlugin::from_operator_files(tmp.path(), Some(&path), None)
-            .expect("read ok");
+        let plugin =
+            IdiomPlugin::from_operator_files(tmp.path(), Some(&path), None).expect("read ok");
         let instructions = plugin.instructions();
         assert_eq!(instructions.len(), 3);
         let operator = instructions
@@ -1538,8 +1541,8 @@ mod operator_file_tests {
              `cargo test` before reporting done.\n",
         )
         .expect("write");
-        let plugin = IdiomPlugin::from_operator_files(tmp.path(), Some(&path), None)
-            .expect("read ok");
+        let plugin =
+            IdiomPlugin::from_operator_files(tmp.path(), Some(&path), None).expect("read ok");
         let instructions = plugin.instructions();
         let operator = instructions
             .iter()

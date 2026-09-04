@@ -449,8 +449,9 @@ pub fn all_bundle_plugins(
     // fallback for an unselected build ("unused, cheap, no I/O").
     let browse_names: Arc<dyn AgentNames> =
         Arc::new(conway_plugin_names::InMemoryAgentNames::new());
-    let idiom_plugin = resolve_idiom_plugin(cwd, env)
-        .unwrap_or_else(|_| Arc::new(conway_plugin_idiom::IdiomPlugin::new(cwd)) as Arc<dyn Plugin>);
+    let idiom_plugin = resolve_idiom_plugin(cwd, env).unwrap_or_else(|_| {
+        Arc::new(conway_plugin_idiom::IdiomPlugin::new(cwd)) as Arc<dyn Plugin>
+    });
     // Unconditionally `unchecked` here (never `resolve_confine_plugin`):
     // this function returns EVERY linked candidate regardless of
     // selection (its own doc, "unfiltered"), so there is no `install_ids`
