@@ -2037,9 +2037,10 @@ const PULL_IN_TRUNCATED: &str = "pull_in_truncated";
 /// replay produces for the SAME record kinds. `conway-runtime` cannot call
 /// that function directly -- `conway` (the facade crate) depends on
 /// `conway-runtime`, never the other way around -- so this is a narrow,
-/// the same two arms `record_to_event` maps when REPLAYING a resumed
-/// session, so a live pull-in and a resumed one render identically. The
-/// text narrowing they share is `conway_core::content::assistant_text` --
+/// standalone mapping function that duplicates the same two arms
+/// `record_to_event` maps when REPLAYING a resumed session, so a live
+/// pull-in and a resumed one render identically. The text narrowing they
+/// share is `conway_core::content::assistant_text` --
 /// one implementation, called from both, rather than two that a comment
 /// asks someone to keep in step.
 ///
