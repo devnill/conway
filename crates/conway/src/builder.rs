@@ -2997,16 +2997,14 @@ impl ContextHook for ChainedContextHook {
 mod compose_context_hooks_tests {
     //! Covers [`compose_context_hooks`]'s 0/1/2+ branches and
     //! [`ChainedContextHook`]'s chaining, which nothing else in the tree
-    //! drives -- see this item's own filing (board item
-    //! `01M090HJEJBK24SX70Z9E25PZ4`): `grep -rln "compose_context_hooks\|
-    //! ChainedContextHook" crates/` matched only this file before these
-    //! tests existed.
+    //! drives (board item `01M090HJEJBK24SX70Z9E25PZ4`): `grep -rln
+    //! "compose_context_hooks\|ChainedContextHook" crates/` matched only
+    //! this file before these tests existed.
     //!
     //! **Characterization, not specification.** These tests pin the
     //! existing behavior of `compose_context_hooks`/`ChainedContextHook`;
     //! they do not change it. Where a finding below reads like a defect,
-    //! it is reported as one (see the worker's completion report for this
-    //! item), not silently "fixed" here.
+    //! it is reported as one, not silently "fixed" here.
     //!
     //! **The asymmetry with [`compose_curators_tests`], confirmed by
     //! reading the actual contract first** (`conway_core::ports::plugin`'s
@@ -3038,7 +3036,7 @@ mod compose_context_hooks_tests {
     //!   last output incoherent trips the guard. That is worth pinning, but
     //!   `GuardedContextHook::before_request`/`on_overflow` are
     //!   `pub(crate)` to `conway-runtime` (see that type's own doc) and
-    //!   this item's blast radius is `crates/conway/` only, so it is
+    //!   out of reach from a `crates/conway/` test, so it is
     //!   recorded here as a documented finding rather than exercised by a
     //!   test in this module -- `conway_runtime::context::hook_guard`'s own
     //!   `context_hook_wrapping_tests` module is where that guard's
@@ -4104,7 +4102,7 @@ mod models_overrides_tests {
         let model = ModelId::new("glm-5.2");
 
         // What the runtime's T-1 gate reads directly (attempt.rs;
-        // out of this item's file scope, but this is its accessor).
+        // outside this crate, but this is its accessor).
         let direct = backend.capabilities(&model);
         assert_eq!(
             direct.max_context_tokens, 1_000_000,
