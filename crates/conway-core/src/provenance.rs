@@ -37,20 +37,22 @@ use crate::ports::SessionStore;
 
 /// Why a segment of assembled context exists.
 ///
-/// Fifteen variants: the original nine of architecture §5.3, plus
+/// Sixteen variants: the original nine of architecture §5.3, plus
 /// [`Provenance::MergedAsk`] (B4), plus
 /// [`Provenance::ChildResult`], plus [`Provenance::Memory`] (board item
 /// `01M09P2T8E5M292WMSMS64CVC4`), plus [`Provenance::CommandPrompt`]
 /// (board item `01M0VSMF71S6VXX81YRAAF5S8Q`), plus
 /// [`Provenance::PluginInstruction`] and [`Provenance::Operator`] (board
-/// item `01M1FSNBRE5XJ0GQ04RT5HZ1PS` -- see those two variants' own docs).
-/// Adding another is a breaking wire-format change and must be treated as
-/// such -- this one is: an OLDER binary reading a NEWER log that contains a
-/// `plugin_instruction`- or `operator`-tagged record fails to deserialize
-/// that one record (the `#[serde(tag = "type", ...)]` internal tagging has
-/// no "unknown tag" fallback), exactly the same forward-compatibility cost
+/// item `01M1FSNBRE5XJ0GQ04RT5HZ1PS` -- see those two variants' own docs),
+/// plus [`Provenance::Assistant`] (board item `01M1FSS152J8NQPJAQZV2V2M3K`
+/// -- see that variant's own doc). Adding another is a breaking
+/// wire-format change and must be treated as such -- this one is: an OLDER
+/// binary reading a NEWER log that contains a `plugin_instruction`-,
+/// `operator`-, or `assistant`-tagged record fails to deserialize that one
+/// record (the `#[serde(tag = "type", ...)]` internal tagging has no
+/// "unknown tag" fallback), exactly the same forward-compatibility cost
 /// every prior addition to this enum (`MergedAsk`, `ChildResult`, `Memory`,
-/// `CommandPrompt`) already paid. Every record written BEFORE these two
+/// `CommandPrompt`) already paid. Every record written BEFORE these
 /// variants existed is unaffected: its own `type` tag is still one of the
 /// original thirteen, so it decodes exactly as it always has -- this is a
 /// forward-compat gap for a NEWER record read by an OLDER binary, never a
@@ -59,7 +61,9 @@ use crate::ports::SessionStore;
 /// no rewrite of any prior log is required or performed -- the new tags
 /// appear only in NEW records, going forward, from the moment a fragment
 /// with `authored_by: FragmentAuthor::Operator` (or the ordinary plugin
-/// default) is first assembled by a binary that carries this change.
+/// default) is first assembled, or a context is built for a turn whose
+/// prior own record is a `LogRecord::Assistant`, by a binary that carries
+/// the respective change.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -187,6 +191,37 @@ pub enum Provenance {
     /// vs. "is this MY OWN text" (`Operator`) -- collapsing them into one
     /// variant with an optional path would answer neither cleanly.
     Operator { name: String, path: PathBuf },
+    /// The model's own prior turn, re-read as an own (never inherited)
+    /// record on a later turn of the SAME session -- `LogRecord::Assistant`
+    /// carries no `prov` field of its own (that would be a separate, bigger
+    /// wire decision, out of this variant's scope: see board item
+    /// `01M1FSS152J8NQPJAQZV2V2M3K`), so `conway_runtime::context::builder::
+    /// ContextBuilder::build` derives this provenance at assembly time from
+    /// the record's KIND alone, the same way it derives `Provenance::
+    /// ToolResult`/`Provenance::ForkDirective` for their own record kinds.
+    ///
+    /// **Replaces a fabricated `SystemNote` placeholder, not an addition
+    /// alongside it.** Before this variant existed, every one of the
+    /// model's own prior turns -- often close to half the segments in a
+    /// long session -- was stamped with a made-up `SystemNote` reason,
+    /// indistinguishable in the record from an actual runtime-authored note
+    /// (`"repeated_step"`, `"result_contract_violation"`). That collision
+    /// was the very thing `Provenance`'s own discipline exists to prevent:
+    /// a curator driven by this enum (INTENT.md §5a) could not tell "the
+    /// model's own reasoning"
+    /// from "a system note" and, curating conservatively around system
+    /// notes, would have deleted the model's entire prior reasoning along
+    /// with them. An assistant turn a fork child INHERITS from its parent
+    /// is unaffected -- it stays `Provenance::Inherited`, matching how
+    /// every other own-vs-inherited distinction in this crate already
+    /// works; only an agent's own record, re-read on its own later turn,
+    /// gets this stamp.
+    ///
+    /// No payload: unlike `ToolResult`/`ChildResult`, nothing about an
+    /// assistant turn's identity needs naming beyond "this is the model's
+    /// own prior output" -- the segment's own content already carries what
+    /// was said.
+    Assistant,
 }
 
 /// Where a segment sits in the fixed §5.3 ordering: `Static` segments are
@@ -253,7 +288,8 @@ impl Provenance {
             | Provenance::SystemNote { .. }
             | Provenance::MergedAsk { .. }
             | Provenance::ChildResult { .. }
-            | Provenance::CommandPrompt { .. } => SegmentTier::Volatile,
+            | Provenance::CommandPrompt { .. }
+            | Provenance::Assistant => SegmentTier::Volatile,
         }
     }
 }
@@ -550,6 +586,7 @@ mod tests {
                 },
                 "operator",
             ),
+            (Provenance::Assistant, "assistant"),
         ]
     }
 
@@ -561,8 +598,8 @@ mod tests {
             let back: Provenance = serde_json::from_value(value).unwrap();
             assert_eq!(back, prov);
         }
-        // Fifteen variants, no more, no fewer.
-        assert_eq!(all_tagged().len(), 15);
+        // Sixteen variants, no more, no fewer.
+        assert_eq!(all_tagged().len(), 16);
     }
 
     #[test]
@@ -619,6 +656,13 @@ mod tests {
             }
             other => panic!("expected Operator, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn deserializes_assistant_example() {
+        let json = r#"{"type":"assistant"}"#;
+        let prov: Provenance = serde_json::from_str(json).unwrap();
+        assert_eq!(prov, Provenance::Assistant);
     }
 
     /// P-15's "shown to fail" bar for wire-format additivity: a session log
@@ -731,6 +775,9 @@ mod tests {
 
         assert!(SegmentTier::Static < SegmentTier::Inherited);
         assert!(SegmentTier::Inherited < SegmentTier::Volatile);
+
+        assert!(!Provenance::Assistant.is_static());
+        assert_eq!(Provenance::Assistant.tier(), SegmentTier::Volatile);
     }
 
     #[test]

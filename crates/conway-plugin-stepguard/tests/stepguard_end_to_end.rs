@@ -288,10 +288,14 @@ async fn differing_arguments_never_produce_a_note() {
         "distinct arguments must never be conflated into a repeated-step note: {records:#?}"
     );
 
-    // Scoped to stepguard's own reason, not "any SystemNote": the context
-    // assembler also emits unrelated `SystemNote { reason: "assistant_turn" }`
-    // turn-boundary markers on every turn, which are not this plugin's
-    // concern and must not make this assertion fail.
+    // Scoped to stepguard's own reason, not "any SystemNote": other
+    // components (e.g. `agent_loop`'s own `"budget_turn_aborted"` note, or
+    // `runway`'s `"runway"` note) emit unrelated `SystemNote`s of their
+    // own, which are not this plugin's concern and must not make this
+    // assertion fail. (The context assembler's own turn-boundary marker
+    // for the model's own prior turn is `Provenance::Assistant`, not a
+    // `SystemNote`, as of board item `01M1FSS152J8NQPJAQZV2V2M3K` -- it
+    // was never a real system note in the first place.)
     let report = session
         .context_report(session.root())
         .await

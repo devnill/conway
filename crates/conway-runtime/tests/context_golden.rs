@@ -461,6 +461,7 @@ fn discriminant(provenance: &Provenance) -> &'static str {
         Provenance::ToolResult { .. } => "tool_result",
         Provenance::SystemNote { .. } => "system_note",
         Provenance::ChildResult { .. } => "child_result",
+        Provenance::Assistant => "assistant",
         _ => "unknown",
     }
 }
@@ -567,9 +568,9 @@ fn context_with_steer_and_toolresults() {
             "skill",
             "tool_registry",
             "user_prompt",
-            // assistant turn — see builder.rs module doc for the
-            // documented `system_note` interpretation gap.
-            "system_note",
+            // the model's own prior turn — board item
+            // `01M1FSS152J8NQPJAQZV2V2M3K`; see builder.rs module doc.
+            "assistant",
             "tool_result",
             "parent_steer",
         ]

@@ -138,10 +138,18 @@ impl From<&Provenance> for SegmentKind {
             // A child's terminal result, recorded into this agent's own
             // `[5..]` volatile records by `mailbox::classify` -- same slot
             // as a steer or a tool result, not a model-turn artifact either.
+            //
+            // `Provenance::Assistant` (board item
+            // `01M1FSS152J8NQPJAQZV2V2M3K`) joins the same `[5..]` slot: the
+            // model's own prior turn is exactly the kind of volatile,
+            // per-turn record this slot exists for, and was already
+            // rendered as `Turn` before this variant existed (via a
+            // fabricated `SystemNote` reason this change retires).
             Provenance::ParentSteer { .. }
             | Provenance::ToolResult { .. }
             | Provenance::SystemNote { .. }
-            | Provenance::ChildResult { .. } => SegmentKind::Turn,
+            | Provenance::ChildResult { .. }
+            | Provenance::Assistant => SegmentKind::Turn,
             Provenance::Memory { .. } => SegmentKind::Memory,
         }
     }
@@ -259,5 +267,6 @@ mod tests {
             }),
             SegmentKind::Memory
         );
+        assert_eq!(SegmentKind::from(&Provenance::Assistant), SegmentKind::Turn);
     }
 }
