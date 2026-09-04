@@ -165,7 +165,7 @@ use crate::skills;
 /// criterion pins this value and `conway-runtime` exports no default
 /// constant; picked generously (matching the order of magnitude
 /// `conway-runtime`'s own tests use for a long-lived bus) rather than
-/// inventing a config surface this item has no mandate to add.
+/// inventing a config surface for it.
 const EVENT_BUS_CAPACITY: usize = 1024;
 
 /// Which built-in plugins [`ConwayBuilder::build`] auto-registers, filtered
@@ -187,10 +187,10 @@ const EVENT_BUS_CAPACITY: usize = 1024;
 /// by this type.** Calling `with_plugin` IS already the explicit,
 /// per-plugin declaration the one extension mechanism requires of a third
 /// party -- nothing about
-/// that call is privileged or automatic. What this item corrects is the
-/// other direction: conway's own built-ins were the ONE bundle that
-/// installed itself with no equivalent declaration, `bash` included. This
-/// type extends the SAME "explicit declaration" requirement to built-ins
+/// that call is privileged or automatic. This type corrects the other
+/// direction: conway's own built-ins were the ONE bundle that installed
+/// itself with no equivalent declaration, `bash` included. It extends the
+/// SAME "explicit declaration" requirement to built-ins
 /// (letting three of the four opt back in by default, purely as a matter of
 /// today's chosen default -- see [`crate::config::schema::ToolsConfig`]'s
 /// doc), not the reverse: an already-explicit `with_plugin` call gains no
@@ -300,15 +300,15 @@ pub struct ConwayBuilder {
     /// field: `ConwayConfig` has no `#[derive(Default)]` (`default_role` has
     /// no sensible built-in value), so every one of its existing struct-
     /// literal call sites across the workspace would have to name a new
-    /// field the moment one was added -- a blast radius with no relationship
-    /// to this item's own scope. `Conway`/`ConwayBuilder` are constructed
+    /// field the moment one was added -- a blast radius unrelated to what
+    /// this field is for. `Conway`/`ConwayBuilder` are constructed
     /// exclusively through this builder's own methods (never struct-
     /// literaled by a caller), so a field here costs nothing outside this
     /// file and `conway.rs`.
     root: Option<PathBuf>,
     /// Empty (the default) means [`Self::build`]'s agent-def step reads
-    /// exactly `config.agents.dir`, unchanged from before this field
-    /// existed. A non-empty list is folded in AFTER `config.agents.dir`
+    /// exactly `config.agents.dir`. A non-empty list is folded in AFTER
+    /// `config.agents.dir`
     /// (which therefore always wins a name collision against every entry
     /// here — `agents::load_agent_defs_from_roots`'s own precedence rule),
     /// each entry resolved against `cwd` the same way `config.agents.dir`
