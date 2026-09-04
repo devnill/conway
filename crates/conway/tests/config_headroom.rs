@@ -327,6 +327,21 @@ fn headroom_exceeding_smallest_reachable_context_warns_without_clamping() {
 /// pre-change code: before this item, `validate`'s step 7 only ever
 /// produced `HeadroomExceedsContext`, never this variant, so
 /// `outcome.warnings` would be empty here.
+///
+/// **`headroom_fraction: 0` here, explicitly** -- this same board item's
+/// OWN later work (`headroom_fraction`'s finishing pass, this file's
+/// `default_headroom_fraction_computes_headroom_adaptively_with_no_config`
+/// test below) makes the adaptive fraction conway's actual DEFAULT. Left at
+/// that default, THIS config's flat `8192` would itself be adaptively
+/// overridden to `max(32768/10, 2048) = 3276` before `validate` ever sees
+/// it -- 3276/32768 is ~10%, under the 25% threshold, so the warning this
+/// test exists to pin would stop firing and the scenario it walks (an
+/// operator who set a flat headroom that happens to consume a large
+/// fraction) would no longer be reachable through the default path. Setting
+/// `headroom_fraction: 0` opts back out, reproducing that exact reachable
+/// case: an operator who explicitly disabled (or predates) the adaptive
+/// fraction still gets the "warn, never clamp" protection this test
+/// verifies.
 #[test]
 fn headroom_consuming_a_large_fraction_of_context_warns_without_exceeding_it() {
     let dir = support::unique_temp_dir("headroom-large-fraction");
@@ -342,7 +357,7 @@ fn headroom_consuming_a_large_fraction_of_context_warns_without_exceeding_it() {
         "roles": {
             "coder": { "chain": ["anthropic/claude-haiku-4-5"] },
         },
-        "routing": { "default_headroom_tokens": 8192 },
+        "routing": { "default_headroom_tokens": 8192, "headroom_fraction": 0 },
         "backends": { "anthropic": { "kind": "anthropic" } },
         "models": { "metadata_path": metadata_path.to_string_lossy() },
     });
@@ -372,6 +387,117 @@ fn headroom_consuming_a_large_fraction_of_context_warns_without_exceeding_it() {
 
     // Not clamped -- same guarantee the literal-exceeds warning makes.
     assert_eq!(outcome.config.headroom_for(&RoleAlias::new("coder")), 8_192);
+}
+
+/// Finishing pass on board item `01M1AVZPTRSWVE33G4DTJY7Q1B` (move 2, the
+/// operator's 2026-09-01 ruling): `headroom_fraction` landed OPT-IN in a
+/// prior commit (`RoutingSection::default().headroom_fraction == None`);
+/// this item's job was to make it the actual default. The identical
+/// scenario the test immediately above disables (`headroom_fraction: 0`) to
+/// stay reachable now happens on its own with NO `[routing]` section at
+/// all: a role whose chain resolves a 32768-token window gets
+/// `max(32768/10, HEADROOM_FLOOR) = 3276` tokens of headroom, not the flat
+/// `8192` `DEFAULT_HEADROOM_TOKENS` used to hand back unconditionally.
+/// `3276/32768` is ~10%, under the 25%
+/// `HeadroomConsumesLargeFractionOfContext` threshold, so this ALSO proves
+/// the adaptive default structurally avoids the exact problem the item's
+/// own walked scenario hit (a flat `8192` against a 32768-token window
+/// sitting at a dangerous 25%) rather than merely warning about it.
+#[test]
+fn default_headroom_fraction_computes_headroom_adaptively_with_no_config() {
+    let dir = support::unique_temp_dir("headroom-adaptive-default");
+    let metadata_path = dir.join("models.json");
+    std::fs::write(
+        &metadata_path,
+        r#"{"models":{"anthropic/claude-haiku-4-5":{"max_context_tokens":32768,"tool_calling":"streaming","reasoning":false,"reliability_tier":"verified"}}}"#,
+    )
+    .unwrap();
+
+    let config_value = serde_json::json!({
+        "default_role": "coder",
+        "roles": {
+            "coder": { "chain": ["anthropic/claude-haiku-4-5"] },
+        },
+        "backends": { "anthropic": { "kind": "anthropic" } },
+        "models": { "metadata_path": metadata_path.to_string_lossy() },
+    });
+    let path = dir.join("settings.json");
+    std::fs::write(&path, serde_json::to_vec(&config_value).unwrap()).unwrap();
+
+    let outcome = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(path),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .unwrap();
+
+    assert!(
+        outcome.warnings.is_empty(),
+        "the adaptive default should not need the large-fraction warning at all: {:?}",
+        outcome.warnings
+    );
+    assert_eq!(outcome.config.headroom_for(&RoleAlias::new("coder")), 3_276);
+}
+
+/// The per-role explicit override still wins over the adaptive default --
+/// same precedence `headroom_tokens` vs. `headroom_fraction` has always
+/// documented, re-pinned now that the fraction applies without any
+/// `[routing]` section naming it.
+#[test]
+fn explicit_per_role_headroom_still_wins_over_the_adaptive_default() {
+    let dir = support::unique_temp_dir("headroom-explicit-beats-adaptive-default");
+    let metadata_path = dir.join("models.json");
+    std::fs::write(
+        &metadata_path,
+        r#"{"models":{"anthropic/claude-haiku-4-5":{"max_context_tokens":32768,"tool_calling":"streaming","reasoning":false,"reliability_tier":"verified"}}}"#,
+    )
+    .unwrap();
+
+    let config_value = serde_json::json!({
+        "default_role": "coder",
+        "roles": {
+            "coder": { "chain": ["anthropic/claude-haiku-4-5"], "headroom_tokens": 5_000 },
+        },
+        "backends": { "anthropic": { "kind": "anthropic" } },
+        "models": { "metadata_path": metadata_path.to_string_lossy() },
+    });
+    let path = dir.join("settings.json");
+    std::fs::write(&path, serde_json::to_vec(&config_value).unwrap()).unwrap();
+
+    let outcome = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(path),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .unwrap();
+
+    assert_eq!(outcome.config.headroom_for(&RoleAlias::new("coder")), 5_000);
+}
+
+/// No model metadata reachable for a role's chain at all -- the fixed
+/// `DEFAULT_HEADROOM_TOKENS` is the fallback, exactly as the item's ruling
+/// states ("the fixed default is the fallback only when no model window is
+/// known"), even though the adaptive fraction is on by default.
+#[test]
+fn adaptive_default_falls_back_to_the_fixed_constant_with_no_model_metadata() {
+    let dir = support::unique_temp_dir("headroom-adaptive-default-no-metadata");
+    let outcome = load(LoadOptions {
+        cwd: dir,
+        explicit_path: None,
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .unwrap();
+
+    assert_eq!(
+        outcome.config.headroom_for(&RoleAlias::new("anything")),
+        DEFAULT_HEADROOM_TOKENS
+    );
 }
 
 /// Negative control (a check is not established until it has been shown to
