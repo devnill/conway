@@ -1959,7 +1959,7 @@ impl Default for PathArgs {
 /// this type answers "is `name` well-formed", never "does anything actually
 /// offer `name`". The latter is `conway::HostCaps::check_manifest`/
 /// `missing_optional`'s job, comparing a manifest's declared caps against
-/// what the host built at `ConwayBuilder::build` -- unchanged by this item,
+/// what the host built at `ConwayBuilder::build` --
 /// still a hard `PluginError::MissingHostCapability` for a missing
 /// *required* cap, still narrowing/safe.
 ///
@@ -2370,7 +2370,7 @@ impl CwdHandle {
 /// command) -- `conway_runtime::hook_dispatch::HookDispatcher::dispatch`,
 /// the SAME dispatch path every core observation event (`post_tool_use`,
 /// `session_starting`, ...) already goes through, implements this trait
-/// directly. **This is this item's own "one dispatch path" YAGNI, made
+/// directly. **One dispatch path, made
 /// structural**: a plugin-declared event is dispatched exactly like
 /// `post_tool_use` -- observation-only, fails open (a broken hook is
 /// logged and skipped, never propagated) -- never through a second,
