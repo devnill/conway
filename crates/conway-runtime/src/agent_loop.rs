@@ -2244,8 +2244,7 @@ impl AgentLoop {
     /// but this fallback keeps that race harmless either way).
     ///
     /// Reports [`Self::terminal_account`] as its trailing text, not `""` --
-    /// a cancellation is exactly the non-natural termination this item's
-    /// fix targets: a cancelled agent that had already written real work
+    /// a cancelled agent that had already written real work
     /// (files, a partial reply) must not read as though it did nothing.
     async fn finish_cancelled(&self, state: &LoopState, builder: &ResultBuilder) -> AgentResult {
         let reason = self
@@ -2276,14 +2275,14 @@ impl AgentLoop {
     /// still loses any artifacts/report accumulated in earlier turns of a
     /// run that then hit a late I/O error (no criterion here requires
     /// facts/artifacts fidelity on a `Failed` result) -- but summary
-    /// fidelity is a DIFFERENT trade-off, and this item withdraws the
-    /// acceptance an earlier revision of this doc made of losing it too:
+    /// fidelity is a DIFFERENT trade-off this method does not accept losing
+    /// too:
     /// `state` -- the `(RuntimeError, LoopState)` error tuple every
     /// `try_rt!` site threads all the way out of `run_inner` -- still
     /// carries `last_assistant_text` from whatever turn last completed
     /// before the failure, and [`Self::terminal_account`] (not `""`) is
-    /// what this fn now passes as trailing text, so a late I/O error no
-    /// longer discards the agent's own account of what it said just because
+    /// what this fn passes as trailing text, so a late I/O error does not
+    /// discard the agent's own account of what it said just because
     /// the fresh `ResultBuilder` it discards along with it holds no report
     /// or tool artifacts of its own.
     ///
@@ -2311,8 +2310,7 @@ impl AgentLoop {
     /// whenever THIS agent was itself the direct target of the cancel.
     /// `None` (an unknown agent, or a descendant whose token was tripped
     /// only by an ancestor's cancellation propagating structurally --
-    /// `AgentTree::cancel`'s own doc) falls back to `err`'s own reason,
-    /// unchanged, exactly as before this item.
+    /// `AgentTree::cancel`'s own doc) falls back to `err`'s own reason.
     async fn finish_error(&self, state: &LoopState, err: RuntimeError) -> AgentResult {
         let builder = ResultBuilder::new();
         if let RuntimeError::Cancelled { reason, .. } = err {
