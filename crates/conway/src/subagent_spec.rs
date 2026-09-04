@@ -186,15 +186,11 @@ impl ForkSpec {
     pub fn new(directive: impl Into<String>) -> Self {
         Self {
             directive: directive.into(),
-            knobs: AgentKnobs {
-                agent_def: None,
-                role: None,
-                model: None,
-                tools: None,
-                budget: Budget::default(),
-                result_contract: None,
-                keep_alive: false,
-            },
+            // `AgentKnobs::default()` -- deliberately, not just for
+            // brevity: it means a brand-new shared knob field reaches this
+            // constructor with no edit here, since `#[derive(Default)]`
+            // fills it in automatically. See that struct's own doc.
+            knobs: AgentKnobs::default(),
             ephemeral: false,
             ask_origin: None,
             plugin_config: None,
@@ -428,18 +424,13 @@ impl SpawnSpec {
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
             prompt: prompt.into(),
-            knobs: AgentKnobs {
-                agent_def: None,
-                role: None,
-                // `SpawnSpec` never exposes a builder method for this knob
-                // -- see `From<SpawnSpec> for SubagentSpec`'s own comment
-                // for why the model-pin override is scoped to fork only.
-                model: None,
-                tools: None,
-                budget: Budget::default(),
-                result_contract: None,
-                keep_alive: false,
-            },
+            // `AgentKnobs::default()` -- see `ForkSpec::new`'s identical
+            // comment. `model` in particular stays at its default `None`
+            // forever on a `SpawnSpec`: it never exposes a builder method
+            // for that knob -- see `From<SpawnSpec> for SubagentSpec`'s own
+            // comment for why the model-pin override is scoped to fork
+            // only.
+            knobs: AgentKnobs::default(),
             cwd: None,
             root: None,
             plugin_config: None,

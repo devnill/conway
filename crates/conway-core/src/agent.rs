@@ -713,14 +713,14 @@ impl SubagentSpec {
         Self {
             mode: SubagentMode::Fork,
             prompt: prompt.into(),
+            // `..Default::default()` for the rest -- deliberately, not just
+            // for brevity: it means a brand-new `AgentKnobs` field (this
+            // item's own scratch-knob compile proof) reaches this
+            // constructor with NO edit here, since `#[derive(Default)]`
+            // fills it in automatically. See `AgentKnobs`'s own doc.
             knobs: AgentKnobs {
-                agent_def: None,
-                role: None,
-                model: None,
-                tools: None,
                 budget,
-                result_contract: None,
-                keep_alive: false,
+                ..Default::default()
             },
             ephemeral: false,
             ask_origin: None,
@@ -737,14 +737,12 @@ impl SubagentSpec {
         Self {
             mode: SubagentMode::Spawn,
             prompt: prompt.into(),
+            // See `fork`'s own comment just above for why `..Default::
+            // default()` is deliberate here, not merely shorter.
             knobs: AgentKnobs {
                 agent_def: Some(agent_def),
-                role: None,
-                model: None,
-                tools: None,
                 budget,
-                result_contract: None,
-                keep_alive: false,
+                ..Default::default()
             },
             ephemeral: false,
             ask_origin: None,
@@ -1210,15 +1208,7 @@ mod tests {
         let spec = SubagentSpec {
             mode: SubagentMode::Spawn,
             prompt: "do it".into(),
-            knobs: AgentKnobs {
-                agent_def: None,
-                role: None,
-                model: None,
-                tools: None,
-                budget: Budget::default(),
-                result_contract: None,
-                keep_alive: false,
-            },
+            knobs: AgentKnobs::default(),
             ephemeral: false,
             ask_origin: None,
             cwd: None,
