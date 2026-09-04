@@ -18,22 +18,19 @@
 //!   async context and care about that should do so via `spawn_blocking`.
 //!   This is a load-bearing, disclosed deviation forced by the sync/async
 //!   mismatch between the golden criterion and the lower crates' committed
-//!   `async` signatures — not an oversight. The optional startup capability
-//!   probe used to be the OTHER caller of this same bridge, directly in this
-//!   module;
+//!   `async` signatures — not an oversight.
 //!   `conway_plugin_backends::OpenAiCompatBackendFactory::
-//!   probe_capabilities` now runs its own probe behind its own,
+//!   probe_capabilities` runs its own probe behind its own,
 //!   independently-maintained bridge — see that method's own doc — so this
-//!   module's `block_on` is used by [`build_default_store`] alone today.)
-//! - **`with_prompt_handler` now exists** (board item
-//!   01M00QGYR1M8F71HTAA1S3PEKS closed the gap this bullet used to disclose
-//!   as unresolved): `gates::from_config` is called with whatever handler
+//!   module's `block_on` is used by [`build_default_store`] alone.)
+//! - **`with_prompt_handler` exists**: `gates::from_config` is called with
+//!   whatever handler
 //!   [`ConwayBuilder::with_prompt_handler`] supplied, `None` when it was
 //!   never called. Since `permissions.mode` defaults to `"prompt"`
 //!   (`config::merge::default_document`), an embedder using an unmodified
 //!   default config and neither `with_prompt_handler` nor
-//!   `with_permission_gate` still gets a named `FacadeError::Config` from
-//!   `build()` — unchanged, and deliberately so (see that method's own doc):
+//!   `with_permission_gate` gets a named `FacadeError::Config` from
+//!   `build()` — deliberately (see that method's own doc):
 //!   the fix is a direct path to the one closure a host almost always
 //!   already has, not a silent default gate choice.
 //! - **Backend construction, dialect/profile resolution, and startup
@@ -91,9 +88,8 @@
 //!   has no field for either). `models.json`'s `tool_calling` and
 //!   `reasoning` fields, however, still reach neither the router nor
 //!   `Backend::capabilities()`: `ModelOverrides` (owned by `conway-core`)
-//!   has no field for them, and extending it is outside this item's file
-//!   scope — see `conway_plugin_backends::capabilities`'s module doc and
-//!   this item's scope-boundary note.
+//!   has no field for them — see `conway_plugin_backends::capabilities`'s
+//!   module doc.
 //! - **Startup capability probing is a per-kind opt-in
 //!   ([`BackendFactory::probe_capabilities`]'s own doc), and only
 //!   `conway_plugin_backends::OpenAiCompatBackendFactory` implements it** —
@@ -101,8 +97,7 @@
 //!   this facade's plugin speaks (`Backend::probe()`'s own `ProbeReport`
 //!   carries no `max_context_tokens`/capability data to overlay either).
 //!   `probe_on_startup` therefore only ever affects `"openai-compat"`-kind
-//!   backends; this is disclosed, not silently no-op'd, and is unchanged
-//!   from before this item's relocation. **The RESTRICT eligibility
+//!   backends; this is disclosed, not silently no-op'd. **The RESTRICT eligibility
 //!   filter — a probed pair only overlays the router's `CapabilityIndex`
 //!   when its key already appears in that entry's own `BackendBuildContext
 //!   ::models` (i.e. `models.json` already declared it for this backend) —
