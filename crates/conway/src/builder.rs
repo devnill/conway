@@ -235,8 +235,8 @@ pub struct ConwayBuilder {
     gate: Option<Arc<dyn PermissionGate>>,
     /// The handler [`Self::build`]'s step 9 passes to `gates::from_config`
     /// when `permissions.mode = "prompt"` and no [`Self::with_permission_gate`]
-    /// override is set. `None` (the default) is unchanged from before this
-    /// field existed: an unmodified default config (`permissions.mode`
+    /// override is set. `None` (the default) means an unmodified default
+    /// config (`permissions.mode`
     /// defaults to `"prompt"` -- `config::merge::default_document`) with
     /// neither this nor `with_permission_gate` set still fails `build()`
     /// with a named `FacadeError::Config` naming exactly that, rather than
@@ -253,17 +253,16 @@ pub struct ConwayBuilder {
     router: Option<Arc<dyn Router>>,
     /// `None` (the default) means
     /// `build()`'s router step falls through to compiling its own
-    /// `DeclarativeRouter`, exactly as it did before this field existed --
-    /// see [`Self::with_router_factory`]'s own doc for the full precedence.
+    /// `DeclarativeRouter` -- see [`Self::with_router_factory`]'s own doc
+    /// for the full precedence.
     router_factory: Option<Arc<dyn RouterFactory>>,
     /// Empty (the default) means
-    /// `build()`'s backend step is byte-for-byte what it was before this
-    /// field existed -- config-derived backends merged with `backends`
-    /// (above), nothing more -- see [`Self::with_backend_factory`]'s own doc
+    /// `build()`'s backend step is exactly config-derived backends merged
+    /// with `backends` (above), nothing more -- see
+    /// [`Self::with_backend_factory`]'s own doc
     /// for the full precedence and duplicate-kind rules.
     backend_factories: Vec<Arc<dyn BackendFactory>>,
-    /// Empty (the default) means
-    /// nothing changes from before this field existed -- see
+    /// Empty (the default) is a no-op -- see
     /// [`Self::with_declined_backend_kinds`]'s own doc for what a non-empty
     /// value does (purely diagnostic; it never removes, blocks, or replaces
     /// a registered [`BackendFactory`]).
@@ -390,14 +389,14 @@ impl ConwayBuilder {
     /// to supply its own instead. Board item `01M0QK9GRM8HSNWRAR414TCX42`
     /// is what surfaced the gap: `[session].root`'s central-default
     /// resolution happens INSIDE `config::load` itself, using
-    /// `LoadOptions.cwd`/`.env` directly, so a caller that needs THAT
-    /// resolved against something other than this process's real
-    /// environment (a fixture's own isolated `CONWAY_CONFIG_DIR`/`cwd`, the
-    /// case every in-process test building a `Conway` against a temp-dir
-    /// fixture is in) previously had no way to get it -- a LATER
-    /// `CliOverrides.cwd`/`with_cli_overrides` fix-up, applied at `build()`
-    /// time, is too late for a resolution that already happened inside
-    /// `load`. Still the full five-source chain (`default < user < project
+    /// `LoadOptions.cwd`/`.env` directly -- a fixture's own isolated
+    /// `CONWAY_CONFIG_DIR`/`cwd` (the case every in-process test building a
+    /// `Conway` against a temp-dir fixture is in) needs THAT resolved
+    /// against something other than this process's real environment, which
+    /// a LATER `CliOverrides.cwd`/`with_cli_overrides` fix-up, applied at
+    /// `build()` time, cannot do -- it is too late for a resolution that
+    /// already happened inside `load`. Still the full five-source chain
+    /// (`default < user < project
     /// < env < CLI`) -- `options.env`'s own `CONWAY_CONFIG_DIR` still
     /// decides whether the "user" layer means a real `~/.conway/
     /// settings.json` or an isolated fixture directory with none;
