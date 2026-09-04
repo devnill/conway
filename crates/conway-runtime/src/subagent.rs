@@ -483,8 +483,7 @@ impl SubagentHost for Runtime {
         // the full reasoning (the contract chain is exactly two-deep;
         // sourcing from an inherited def would be a third, undocumented
         // step).
-        let def_was_inherited =
-            spec.mode == SubagentMode::Fork && spec.knobs.agent_def.is_none();
+        let def_was_inherited = spec.mode == SubagentMode::Fork && spec.knobs.agent_def.is_none();
         if def_was_inherited {
             spec.knobs.agent_def = parent_meta.agent_def.clone().map(AgentDefRef);
         }

@@ -575,7 +575,10 @@ async fn ask_max_tool_calls_comes_from_the_arg_then_the_config_key() {
         .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
         .await
         .unwrap();
-    assert_eq!(handles.subagents.asks()[0].1.knobs.budget.max_tool_calls, Some(9));
+    assert_eq!(
+        handles.subagents.asks()[0].1.knobs.budget.max_tool_calls,
+        Some(9)
+    );
 
     // Tier 1: the call's argument outranks it.
     let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
@@ -595,7 +598,10 @@ async fn ask_max_tool_calls_comes_from_the_arg_then_the_config_key() {
         )
         .await
         .unwrap();
-    assert_eq!(handles.subagents.asks()[0].1.knobs.budget.max_tool_calls, Some(2));
+    assert_eq!(
+        handles.subagents.asks()[0].1.knobs.budget.max_tool_calls,
+        Some(2)
+    );
 
     // Absent from both: no ceiling, matching `max_tokens`'s own default.
     let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
@@ -603,7 +609,10 @@ async fn ask_max_tool_calls_comes_from_the_arg_then_the_config_key() {
         .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
         .await
         .unwrap();
-    assert_eq!(handles.subagents.asks()[0].1.knobs.budget.max_tool_calls, None);
+    assert_eq!(
+        handles.subagents.asks()[0].1.knobs.budget.max_tool_calls,
+        None
+    );
 }
 
 #[tokio::test]
