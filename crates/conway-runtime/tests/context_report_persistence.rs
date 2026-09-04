@@ -184,7 +184,7 @@ fn root_spec(prompt: &str, agent_def: Option<AgentDefRef>) -> RootSpec {
     RootSpec {
         session: None,
         knobs: AgentKnobs {
-            agent_def: agent_def,
+            agent_def,
             role: Some(RoleAlias::new("planner")),
             model: None,
             tools: None,

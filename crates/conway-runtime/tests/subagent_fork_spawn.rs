@@ -1824,7 +1824,7 @@ fn spawn_spec_with_cwd(prompt: &str, cwd: Option<PathBuf>) -> SubagentSpec {
         },
         ephemeral: false,
         ask_origin: None,
-        cwd: cwd,
+        cwd,
         root: None,
         tag: None,
         plugin_config: None,

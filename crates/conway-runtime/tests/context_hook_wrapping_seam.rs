@@ -125,7 +125,7 @@ fn root_spec(prompt: &str) -> RootSpec {
 
 fn resume_spec(session: SessionId) -> ResumeSpec {
     ResumeSpec {
-        session: session,
+        session,
         knobs: AgentKnobs {
             agent_def: None,
             role: None,

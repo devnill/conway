@@ -494,7 +494,7 @@ pub struct SubagentSpec {
     /// either hand a conway-enforced invariant to the caller or force two
     /// surfaces for one operation. The tag is the shape that survives, and
     /// the whole point of that shape is that it carries no meaning conway
-    /// acts on -- unlike [`Self::role`] (a routing input,
+    /// acts on -- unlike [`AgentKnobs::role`] (a routing input,
     /// `conway_runtime::agent_loop`'s `policy.resolve(&spec.role)`) or
     /// [`Self::ask_origin`] (branched on in `conway_runtime::subagent`'s
     /// `start`, gating whether a `result_contract` may attach), which look
