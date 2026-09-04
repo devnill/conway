@@ -35,8 +35,8 @@
 //! `(parent, at_seq)` each trigger the same cache key, so all three
 //! `resolve` calls return `Arc::clone`s of the identical backing
 //! allocation (`Arc::ptr_eq`) — sibling sharing falls out of
-//! `conway-session`'s own memoization, with no second cache added here
-//! (per this item's binding notes). Tests assert that sharing via
+//! `conway-session`'s own memoization, with no second cache added here.
+//! Tests assert that sharing via
 //! `peek_prefix` directly (a legitimate test-only use of the seam); this
 //! module's own production path never calls it.
 //!
@@ -58,7 +58,7 @@
 //! recovering true per-record authorship at arbitrary depth would require
 //! per-record session tracking that does not exist upstream — neither
 //! `conway_core::log::LogRecord` nor `conway_core::transcript`'s resolver carries an
-//! originating-session field per record — which is out of this item's scope. It
+//! originating-session field per record. It
 //! is queued as a refinement question rather than attempted here.
 //!
 //! Once resolved, the `InheritedPrefix` is stored once on the child's
@@ -91,19 +91,17 @@
 //! the spec is wrong at all).
 //!
 //! Relatedly, the spec's "every child has a budget, by construction"
-//! criterion describes a runtime check this item cannot perform: committed
+//! criterion describes a check that nothing here needs to perform at runtime: committed
 //! `SubagentSpec::budget` is a non-`Option<Budget>` `Budget` value, and
 //! `Budget::max_steps` is a required `u32` (default 40) with no "unset"
 //! sentinel — there is no way for a spec to arrive here with an absent
 //! budget or an absent `max_steps`. The property holds vacuously, by the
 //! type, rather than by a runtime check added here.
 //!
-//! ## `steer` (supersedes this item's stub)
+//! ## `steer`
 //!
-//! Real mailbox delivery now backs `steer`.
-//! added the trait's `caller` parameter and
-//! changed `from`/`at_parent_seq` to derive from it directly -- see that
-//! method's own doc.
+//! Real mailbox delivery backs `steer`; the `caller` parameter and the
+//! `from`/`at_parent_seq` derivation are documented on that method itself.
 //!
 //! ## `CacheMode` is hardcoded, not caller-supplied
 //!
@@ -117,10 +115,8 @@
 //! unconditionally, not gated on any caller-supplied `cache_mode`) happens
 //! as a post-pass in `AttemptEngine::execute`, keyed on the ACTUALLY
 //! resolved model's declared `Capabilities::cache` for each candidate in
-//! the fallback chain. (`SubagentSpec::cache_hint`, the caller-intent field
-//! this section used to describe as unconsumed here, was deleted outright
-//! rather than wired to anything, since nothing anywhere ever read it
-//! either -- the same conclusion `await_result` reached before it.)
+//! the fallback chain. `SubagentSpec` carries no `cache_hint` field: nothing
+//! anywhere ever read one, so there is nothing here for a caller to set.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
@@ -171,7 +167,7 @@ impl SubagentHost for Runtime {
     ///    `LogRecord::UserTurn` (spawn) — `agent_loop::path_from_legacy`
     ///    (///    unmodified) stamps it `Head` and renders it via `own_segment`.
     ///    **Skipped** when `spec.knobs.keep_alive` is set AND `spec.prompt` is
-    ///    empty (the interactive keep-alive case, this item's addition): no
+    ///    empty (the interactive keep-alive case): no
     ///    placeholder record is written and the child's `resume_gate` starts
     ///    `awaiting_prompt: true` instead, so it idles until the caller's
     ///    first real message arrives via `Runtime::prompt` — mirrors
@@ -209,8 +205,7 @@ impl SubagentHost for Runtime {
         // header says one directory while its tools actually resolve
         // relative paths against another would be incoherent. `spec.cwd:
         // None` (still what `SubagentSpec::fork`/`::spawn` produce) means
-        // "inherit the parent's cwd", exactly the behavior from before this
-        // field existed. `Some(path)`: an absolute path is used as-is; a
+        // "inherit the parent's cwd". `Some(path)`: an absolute path is used as-is; a
         // relative path is resolved against the PARENT's cwd -- the child
         // has no cwd of its own yet to resolve against, and re-resolving a
         // relative override against the child's own (not-yet-existent) cwd
@@ -464,12 +459,10 @@ impl SubagentHost for Runtime {
         // role/model, but not a def" behavior -- see `SpawnSpec`'s doc --
         // and is left alone).
         //
-        // This supersedes the near-identical fill `ask` (below) used to
-        // perform on the parent's `agent_def` before calling this method:
-        // `ask` is fork-only (the `spec.mode != Fork` guard at the top
-        // of that method), so this Fork arm now covers every path that used
-        // to need it, and the second copy was deleted rather than kept in
-        // sync by hand.
+        // `ask` (below) relies on this SAME fill rather than performing its
+        // own separate one: `ask` is fork-only (the `spec.mode != Fork`
+        // guard at the top of that method), so this Fork arm covers every
+        // path it needs -- see that method's own doc for the reasoning.
         //
         // ORDERING, load-bearing for `result_contract` below: `def_was_inherited`
         // is captured from `spec.knobs.agent_def` BEFORE this fill mutates it, so
@@ -524,7 +517,7 @@ impl SubagentHost for Runtime {
         // own already-resolved `agent_def` (just above), never the
         // parent's: a skill is name-scoped through `AgentDef.skills`, so a
         // fork that inherited no def (and whose parent had none either)
-        // still gets none, exactly as before this item.
+        // still gets none.
         let instructions = crate::runtime::root::resolve_instructions(self.instructions());
         let skills = crate::runtime::root::resolve_skills(agent_def, self.skills())?;
         let tools = spec
@@ -653,8 +646,8 @@ impl SubagentHost for Runtime {
             // is silent and compounding, the worst shape: nothing errors,
             // context just quietly fills with material nobody chose.
             // `SubagentSpec` (`conway-core/src/agent.rs`) has no `labels`
-            // field today -- a labelled child is a separate, deliberate
-            // feature this item does not add. The conservative default is
+            // field today -- a labelled child would be a separate,
+            // deliberate feature. The conservative default is
             // also the reversible one: an unlabelled child can be labelled
             // later by a caller that wants that, but a wrongly-inherited
             // label has already polluted recall by the time anyone notices.
@@ -883,10 +876,10 @@ impl SubagentHost for Runtime {
         let agent_spec = AgentSpec {
             system_prompt,
             // Resolved above, board item `01M0VSKA76NSEHDSH25XJGJ2J5` -- a
-            // forked/spawned child now gets the SAME plugin instruction
+            // forked/spawned child gets the SAME plugin instruction
             // fragments a root gets (unconditional, `tool_ids`-gated per
             // turn same as root) and this child's OWN agent def's named
-            // skills (empty when it has none, exactly as before this item).
+            // skills (empty when it has none).
             instructions,
             skills,
             tools,
@@ -900,14 +893,12 @@ impl SubagentHost for Runtime {
             headroom_override: None,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
-            // carried `spec.knobs.result_contract` straight through as a
-            // plain value handoff. This item adds the def as a second,
-            // lower-precedence source: `result_contract` (computed above)
-            // is the call site's contract when the caller supplied one,
-            // else the spawning `AgentDef`'s own `result_contract` -- see
-            // that computation's own comment for the full precedence rule.
+            // `result_contract` (computed above) is the call site's
+            // contract when the caller supplied one, else the spawning
+            // `AgentDef`'s own `result_contract` -- see that computation's
+            // own comment for the full precedence rule.
             result_contract,
-            // Threaded straight from the spec (WI keep-alive item): a
+            // Threaded straight from the spec: a
             // fork/spawn child that `await_result`s (`AgentTree::
             // await_result`) still depends on `keep_alive: false`
             // (`SubagentSpec::fork`/`::spawn`'s own constructor default,
@@ -950,10 +941,9 @@ impl SubagentHost for Runtime {
             inbox: mailbox_rx,
             parent_mailbox: Some(parent_mailbox),
             pending_cancel: None,
-            // only `Runtime::resume_root` and (this item's
-            // addition) an interactive keep-alive child with no initial
-            // prompt gate a loop's first iteration -- every other fork/spawn
-            // child still starts ungated (`Default`), exactly as before.
+            // only `Runtime::resume_root` and an interactive keep-alive
+            // child with no initial prompt gate a loop's first iteration --
+            // every other fork/spawn child starts ungated (`Default`).
             // `launch_agent` clones this SAME `notify` out before spawning
             // the task (see that method's own comment), so
             // `Runtime::prompt`/`SessionHandle::prompt_agent` wake this
@@ -984,13 +974,13 @@ impl SubagentHost for Runtime {
             // `AgentNode` and thus `Event::AgentSpawned`/`Event::AgentFinished`;
             // a legacy `conway_fork`/`conway_spawn` (`SubagentSpec::fork`/
             // `::spawn`, `ephemeral: false` by construction) keeps `false` all
-            // the way through, exactly as before this field existed.
+            // the way through.
             ephemeral,
         };
 
         self.launch_agent(node, agent_loop, last_report, mailbox_tx)?;
 
-        // The live `Event::UserTurn` twin (this item) of the `LogRecord::
+        // The live `Event::UserTurn` twin of the `LogRecord::
         // UserTurn` head record appended above for a `Spawn` with a
         // non-empty initial prompt (a library caller's own `SpawnSpec`, or
         // -- the common production case -- the model-invoked
@@ -1004,11 +994,11 @@ impl SubagentHost for Runtime {
         // append site (mirroring `Runtime::prompt`'s own placement, which
         // is always ordering-safe because ITS target is already attached)
         // would invert the "`AgentSpawned` precedes every event for its
-        // agent" guarantee for exactly this one path -- this is the
-        // pre-spawn-ordering hazard this item's completion notes disclose.
+        // agent" guarantee for exactly this one path -- a real
+        // pre-spawn-ordering hazard.
         // A `Fork`'s own head record (`ForkDirective`) has no `Event`
-        // counterpart yet (see `record_to_event`'s doc for why that's this
-        // item's own deliberate, disclosed decision) so nothing is emitted
+        // counterpart yet (see `record_to_event`'s doc for why that's a
+        // deliberate, disclosed decision) so nothing is emitted
         // here for that branch.
         if !starts_idle && spec.mode == SubagentMode::Spawn {
             self.loop_deps().bus.emit(
@@ -1039,7 +1029,7 @@ impl SubagentHost for Runtime {
         // QUESTION, DELIBERATELY DEFERRED. Unlike `post_tool_use` -- where the
         // call has already run, so there is nothing left to refuse -- nothing
         // structurally prevents a spawn from being refused. It is not refusable
-        // here because refusing raises questions that item did not scope: what
+        // here because refusing raises unresolved questions: what
         // does the parent agent see when its own spawn is denied, a tool error
         // or a silent no-op? Does the caller need new error handling? Those are
         // not answered by giving this dispatch a denial-shaped return type and
@@ -1074,19 +1064,17 @@ impl SubagentHost for Runtime {
     /// `target` itself or one of its ancestors (`ensure_own_subtree`,
     /// below) -- a sibling (or any other unrelated agent) is rejected with
     /// `RuntimeError::AgentNotInSubtree` before the mailbox is even
-    /// resolved. `from`/`at_parent_seq` are now derived from `caller`
-    /// DIRECTLY (never from `target`'s own tree parent, the pre-fix
-    /// behavior this item replaces): deriving attribution from `target`
-    /// side-stepped the very check above and made a forged steer
-    /// indistinguishable, from the recipient's side, from a genuine parent
+    /// resolved. `from`/`at_parent_seq` are derived from `caller`
+    /// DIRECTLY, never from `target`'s own tree parent: deriving attribution
+    /// from `target` would side-step the very check above and make a forged
+    /// steer indistinguishable, from the recipient's side, from a genuine parent
     /// instruction. A child steering ITS OWN parent (the other direction
     /// bidirectionality requires) does not go through this method at all:
     /// it already holds its own `agent_id` and its `parent_mailbox` sender
     /// directly (`AgentLoop`), and can send correctly-attributed messages
     /// without needing this trait's help -- see `tests/steering.rs` for
     /// both directions exercised at the mailbox level, and this module's
-    /// own doc's "`steer` (supersedes this item's stub)" section for
-    /// the prior gap this replaces.
+    /// own doc's "`steer`" section for the mailbox-delivery mechanism.
     async fn steer(
         &self,
         caller: AgentId,
@@ -1261,10 +1249,8 @@ impl SubagentHost for Runtime {
     /// `caller` straight through to `self.start(caller, parent, spec)` below
     /// is what enforces "`caller` must own `parent`" here too, reusing
     /// `start`'s own `ensure_own_subtree` call rather than duplicating it.
-    /// Before this item, `ask` took only `parent` and forked THAT agent's
-    /// context directly with no ownership check at all -- the cross-tree
-    /// exfiltration this item's own module doc names: `tree()` (itself
-    /// unguarded pre-fix) to find a sibling's `AgentId`, then
+    /// Without this check, `ask` would be a cross-tree exfiltration vector:
+    /// `tree()` to find a sibling's `AgentId`, then
     /// `ask(sibling, ..)` to fork the sibling's entire context and read the
     /// reply back as plain model output.
     async fn ask(
@@ -1286,33 +1272,32 @@ impl SubagentHost for Runtime {
         if spec.mode != SubagentMode::Fork {
             return Err(RuntimeError::AskRequiresFork { mode: spec.mode });
         }
-        // MOVED (a later decision): the `conway_ask` tool
+        // The `conway_ask` tool
         // (`crates/conway-tools/src/subagent/ask.rs`) always builds its
         // `SubagentSpec` with `agent_def: None` -- it has no
         // `SessionMeta`/`AgentDef` lookup surface of its own, only a
-        // `ToolCtx`. This method used to fill that in itself, HERE, from the
-        // PARENT's own `SessionMeta::agent_def`; that fill has been deleted
-        // in favor of `start`'s own Fork-only inheritance fill (see that
-        // method's doc, right before its `agent_def` resolution) -- `ask` is
-        // fork-only (the `spec.mode != Fork` guard just above), so passing
-        // `spec.knobs.agent_def: None` straight through to `self.start` below now
-        // reaches the SAME fallback fill an ordinary def-less `conway_fork`
-        // does, with no second copy to keep in sync by hand. A caller that
-        // DOES supply `spec.knobs.agent_def` itself (an embedder's own `ForkSpec`,
-        // hypothetically) is unaffected either way -- both this method's old
-        // fill and `start`'s new one are fallbacks, never overrides.
+        // `ToolCtx`. Passing `spec.knobs.agent_def: None` straight through
+        // to `self.start` below reaches `start`'s own Fork-only inheritance
+        // fill (see that method's doc, right before its `agent_def`
+        // resolution) -- `ask` is fork-only (the `spec.mode != Fork` guard
+        // just above), so this is the SAME fallback fill an ordinary
+        // def-less `conway_fork` gets, with no second copy to keep in sync
+        // by hand. A caller that DOES supply `spec.knobs.agent_def` itself
+        // (an embedder's own `ForkSpec`, hypothetically) is unaffected
+        // either way -- the fill is a fallback, never an override.
         //
-        // Before either fill existed, an ask child got NO agent_def at all:
-        // no system-prompt segment (it silently read a transcript authored
-        // by an agent it is not), and -- since an absent `spec.knobs.tools` PLUS
-        // an absent `agent_def.tools` resolves to `PluginRegistry::specs`'s
-        // `selector.is_none_or(..)` "no selector -> everything" fallback --
-        // the FULL tool registry rather than the parent def's own
-        // restrictive selector: a capability escalation one `conway_ask`
-        // hop away from a def-restricted parent. `spec.knobs.tools` (a caller-
-        // narrowing arg, e.g. `AskArgs::tools`) still takes precedence over
-        // whatever the filled-in `agent_def.tools` supplies -- unchanged,
-        // see `start`'s own `tools` precedence.
+        // Without this fill, an ask child gets NO agent_def at all:
+        // no system-prompt segment (it would silently read a transcript
+        // authored by an agent it is not), and -- since an absent
+        // `spec.knobs.tools` PLUS an absent `agent_def.tools` resolves to
+        // `PluginRegistry::specs`'s `selector.is_none_or(..)` "no selector
+        // -> everything" fallback -- the FULL tool registry rather than
+        // the parent def's own restrictive selector: a capability
+        // escalation one `conway_ask` hop away from a def-restricted
+        // parent. `spec.knobs.tools` (a caller-narrowing arg, e.g.
+        // `AskArgs::tools`) still takes precedence over whatever the
+        // filled-in `agent_def.tools` supplies -- see `start`'s own
+        // `tools` precedence.
         //
         // 1. Subscribe BEFORE launch so the first TextDelta is not missed.
         let mut stream = Runtime::subscribe(self);
@@ -1400,12 +1385,11 @@ impl Runtime {
     /// runtime at all (`AgentTree::path`'s own doc).
     ///
     /// `target` unknown entirely -> `RuntimeError::AgentNotFound`, matching
-    /// what every one of these three methods already returned for an
-    /// unknown `target` before this check existed (`steer` via
-    /// `agent_mailbox`, `await_result` via `AgentTree::await_result`,
-    /// `cancel` via `Runtime::cancel`, all resolve the same lookup this
-    /// check performs first, so an unknown id is diagnosed identically
-    /// either way). `target` known but outside `caller`'s subtree ->
+    /// what `steer` (via `agent_mailbox`), `await_result` (via
+    /// `AgentTree::await_result`), and `cancel` (via `Runtime::cancel`)
+    /// each independently return for an unknown `target` on their own
+    /// lookup -- this check performs the same lookup first, so an unknown
+    /// id is diagnosed identically either way. `target` known but outside `caller`'s subtree ->
     /// `RuntimeError::AgentNotInSubtree`, never a panic (both ids are untrusted and may
     /// be model-supplied).
     fn ensure_own_subtree(&self, caller: AgentId, target: AgentId) -> Result<(), RuntimeError> {
