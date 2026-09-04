@@ -1910,13 +1910,10 @@ impl Default for PathArgs {
 /// [`PluginManifest::optional_host_caps`]), and the host separately grants
 /// at build time (via `conway::HostCaps`), never implied by trust alone.
 ///
-/// **An OPEN, namespaced vocabulary -- not the closed two-variant enum this
-/// type used to be.** Until `docs/vision/DESIGN-plugin-dependencies.md` §2
-/// (Edge A) named the defect, a plugin could name a cap only from a fixed,
-/// `#[non_exhaustive]`-but-still-closed membership list (`Subagent`,
-/// `PersistentTransport`): a third party could never declare a capability
-/// core had not already blessed, and every new host surface was a breaking
-/// enum edit. This reuses the naming discipline that already solved the
+/// **An OPEN, namespaced vocabulary.** A third party can declare a
+/// capability core has not already blessed, without a breaking enum edit
+/// for every new host surface (`docs/vision/DESIGN-plugin-dependencies.md`
+/// §2 Edge A). This reuses the naming discipline that already solved the
 /// identical problem for a plugin's own event names
 /// (`crate::event_name`'s own module doc; design §2: *"That is the right
 /// model for a capability vocabulary"*): [`crate::event_name::
@@ -2596,7 +2593,7 @@ impl ToolCtx {
     /// construction tax `ContextHookCtx` just shed"; that item's own
     /// precedent, [`ArtifactWriteHandle::noop`], is [`Self::plugin_events`]'s
     /// analog here -- `plugin_events` already had one via
-    /// [`PluginEventHandle::noop`] before this constructor existed).
+    /// [`PluginEventHandle::noop`]).
     ///
     /// **Deliberately NOT a silent no-op default for `subagents`/`events`,
     /// unlike `ArtifactWriteHandle::noop`.** A `ContextHookCtx` fixture for a
