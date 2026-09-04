@@ -85,7 +85,7 @@
 //!   decisions until it lands.
 //!
 //! Event ordering also reconciles the amendment's step-9 prose ("run tools,
-//! emit `TurnFinished`") against this item's own binding criterion
+//! emit `TurnFinished`") against the binding criterion
 //! (`TurnStarted < ModelDecision < TextDelta* < TurnFinished <
 //! ToolCallProposed*`): `TurnFinished` is emitted immediately after the
 //! assistant record is appended, before any tool call is dispatched. A
@@ -105,41 +105,36 @@
 //! observing plugin installed that pass does not execute at all.
 //! plus an injected `SystemNote` the instant a `(tool, canonical-args)`
 //! digest is seen a 3rd time. Both are locals inside `AgentLoop::run_inner`,
-//! not new fields on `AgentLoop`/[`AgentSpec`] -- see `result.rs`'s module
-//! doc for why (both structs are constructed via field literals in files
-//! outside this item's original scope: `runtime.rs`, `subagent.rs`, and
+//! not fields on `AgentLoop`/[`AgentSpec`] -- see `result.rs`'s module
+//! doc for why (both structs are constructed via field literals in
+//! `runtime.rs`, `subagent.rs`, and
 //! existing tests).
 //!
 //! ## Non-natural terminations report what the agent actually did
 //!
-//! Board item `01M1FH114QA3A152W8H6E2YMGJ`'s extension. Before this item,
-//! every terminal path OTHER than a natural `Completed`/`Rejected` --
+//! Board item `01M1FH114QA3A152W8H6E2YMGJ`. Every terminal path OTHER than
+//! a natural `Completed`/`Rejected` --
 //! budget-exceeded (all four dimensions), cancellation (graceful and
-//! immediate), a deadline, and a bubbled-up backend/store failure -- called
-//! `AgentLoop::finish` with a literal `""` trailing text. A run that had
-//! already done real, disk-visible work then reported
+//! immediate), a deadline, and a bubbled-up backend/store failure -- calls
+//! `AgentLoop::terminal_account` rather than passing `AgentLoop::finish` a
+//! literal `""` trailing text -- a run that had
+//! already done real, disk-visible work would otherwise report
 //! `"(no output; terminal status: <name>)"`, indistinguishable from a run
-//! that had done nothing at all -- the incident this item documents cost an
-//! operator real time finding 69 lines of uncommitted, unreported work by
-//! hand. `LoopState` gained `last_assistant_text` (the most recent backend
+//! that had done nothing at all. `LoopState` carries `last_assistant_text`
+//! (the most recent backend
 //! response's own text, captured every turn -- see that field's own doc),
-//! and every one of the ten `""`-passing sites now calls
-//! `AgentLoop::terminal_account` instead, which resolves that text, or an
+//! and every one of the ten `""`-passing sites
+//! calls
+//! `AgentLoop::terminal_account`, which resolves that text, or an
 //! explicit "stopped mid-run" marker when there is no text but other
-//! evidence of real work, or `""` (genuinely unchanged) only when NEITHER
+//! evidence of real work, or `""` only when NEITHER
 //! holds. See `terminal_account`'s own doc for the full precedence.
 //!
-//! `AgentSpec` gained one field this item, `result_contract:
+//! `AgentSpec` carries `result_contract:
 //! Option<schemars::schema::RootSchema>`, carried through from
 //! `SubagentSpec::result_contract` by `subagent.rs`'s `SubagentHost::start`
 //! (`None` for a root agent -- `runtime.rs`'s `start_root` has no
-//! `SubagentSpec` to source one from). Adding it forced one-line, inert
-//! `result_contract: None,` additions to `runtime.rs` and the two existing
-//! test harnesses (`tests/agent_loop_e2e.rs`, `tests/steering.rs`) that
-//! construct `AgentSpec` by field literal -- a file-scope extension the
-//! coordinator explicitly authorized (this item's Self-Check) after the
-//! initial implementation flagged the conflict rather than silently
-//! expanding scope. The natural-completion branch of `AgentLoop::run_inner`
+//! `SubagentSpec` to source one from). The natural-completion branch of `AgentLoop::run_inner`
 //! enforces the contract when present: `Ok` proceeds to `Completed`;
 //! the first failure appends a `SystemNote { reason:
 //! "result_contract_violation" }` and gives the agent one more turn
