@@ -57,18 +57,13 @@ pub(crate) const CONWAY_FS_ROOT_CONFIG_KEY: &str = "conway.fs.root";
 ///
 /// **This is what makes `--root`/`ConwayBuilder::with_root` (and a spawned
 /// child's `SubagentSpec::root`) still confine ordinary `read`/`write`/
-/// `edit`/`cd`/`glob`/`grep` calls after the retirement.** Before
-/// (`PermissionBroker::check_root`'s
-/// per-tool `PathArgs::Named` walk retired), `root` alone was sufficient --
-/// the harness checked every declared path argument against it directly,
-/// and nothing needed to tell `conway.fs` anything. Now `conway.fs`
-/// enforces its OWN root, read from PER-AGENT PLUGIN CONFIG
-/// (`conway_core::ports::Plugin::narrowable_keys`), which `root`
-/// alone does not populate -- without this derivation, an operator's
-/// `--root` (or a caller's `SubagentSpec::root`) would keep confining
-/// artifact writes (the OTHER, still-live consumer of `AgentRoot`) while
-/// SILENTLY no longer confining any ordinary tool call at all, which is
-/// exactly the regression this item's own security preamble forbids.
+/// `edit`/`cd`/`glob`/`grep` calls.** `conway.fs` enforces its OWN root,
+/// read from PER-AGENT PLUGIN CONFIG (`conway_core::ports::Plugin::
+/// narrowable_keys`), which `root` alone does not populate -- without this
+/// derivation, an operator's `--root` (or a caller's `SubagentSpec::root`)
+/// would keep confining artifact writes (the OTHER, still-live consumer of
+/// `AgentRoot`) while SILENTLY no longer confining any ordinary tool call
+/// at all.
 ///
 /// **A derivation, not a second validation.** `root` reaching this function
 /// has ALREADY been resolved, canonicalized, and (for a spawned child)
@@ -94,9 +89,9 @@ pub(crate) const CONWAY_FS_ROOT_CONFIG_KEY: &str = "conway.fs.root";
 /// `AgentArtifactWriter`, needs no plugin at all) into a hard failure it
 /// never asked for. The caller passes whether ITS OWN currently-installed
 /// plugin set actually declares the key (`PluginRegistry::narrowing_rules`)
-/// -- `false` skips the derivation entirely (byte-for-byte the pre-this-
-/// function behavior: `root` still confines the artifact-writer path,
-/// simply does not reach a plugin that isn't there to be reached).
+/// -- `false` skips the derivation entirely: `root` still confines the
+/// artifact-writer path, simply does not reach a plugin that isn't there
+/// to be reached.
 pub(crate) fn derive_fs_root_config(
     root: Option<&Path>,
     requested: Option<&conway_core::ports::PluginConfig>,
@@ -738,11 +733,7 @@ pub struct PermissionBroker {
     deny_patterns: RwLock<NarrowingRuleStore>,
     /// Prefix-pattern PROMPT rules --
     /// the second narrowing effect the extension design grants a plugin-contributed rule (`then: prompt`, alongside
-    /// `deny`), which had NOTHING evaluating it anywhere in this broker
-    /// before this item: `must_reach_gate` was set exclusively by
-    /// `check_root`, so a `prompt` rule could never force `gate.check` and
-    /// was inert in every mode (see this item's own board record for the
-    /// two concrete failures this caused).
+    /// `deny`).
     ///
     /// Structurally identical to `deny_patterns` -- no `GrantScope` (a
     /// narrowing rule applies to every requester, D4 §3's asymmetry extends
@@ -1431,9 +1422,9 @@ impl PermissionBroker {
     ///   scope render as two distinguishable rows, and revoking one removes
     ///   THAT instance: "what you saw is what you revoke" holds exactly. A
     ///   scope-blind first-match could remove the session-scoped instance
-    ///   when the operator pointed at the agent-scoped row (code-review
-    ///   finding on this item; the failure direction was safe -- net
-    ///   authority only shrank -- but the mismatch was user-visible).
+    ///   when the operator pointed at the agent-scoped row (a code-review
+    ///   finding; the failure direction was safe -- net authority only
+    ///   shrank -- but the mismatch was user-visible).
     /// - **Any stored allow rule matches, not only structured ones.** A
     ///   flat-desugarable rule IS a `Rule` in the store, so equality can
     ///   name it too. That overlap is harmless: the review surface
