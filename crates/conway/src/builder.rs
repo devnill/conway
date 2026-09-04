@@ -617,7 +617,7 @@ impl ConwayBuilder {
     /// diagnosis, not "conway has never heard of this," which is a different,
     /// worse-fitting claim about what happened). Not called at all (the
     /// default, empty list) means every unresolved `kind` is an unknown-kind
-    /// error exactly as before this method existed -- unchanged.
+    /// error.
     ///
     /// **`conway` (this binary's CLI) is the one caller wired today**:
     /// `crates/conway-cli/src/first_party_plugins.rs`'s `install` computes
@@ -683,11 +683,10 @@ impl ConwayBuilder {
     /// default_document`), and therefore what `ConwayBuilder::discover()`
     /// hands a host that changed nothing about permissions.
     ///
-    /// **This closes a gap this module's own doc used to disclose rather than
-    /// silently paper over**: before this method existed, the ONLY way to
-    /// satisfy an unmodified default config's `permissions.mode = "prompt"`
-    /// was [`Self::with_permission_gate`] -- which requires implementing the
-    /// whole [`PermissionGate`] trait (`check`'s full signature: tool name,
+    /// **The direct path to satisfying an unmodified default config's
+    /// `permissions.mode = "prompt"`.** The alternative,
+    /// [`Self::with_permission_gate`], requires implementing the whole
+    /// [`PermissionGate`] trait (`check`'s full signature: tool name,
     /// arguments, render kind, scope) just to answer one async question, "may
     /// this tool call proceed?" A host embedding conway to ask ITS OWN user
     /// (a dialog box, a terminal prompt, a chat UI's inline approval) almost
@@ -695,8 +694,8 @@ impl ConwayBuilder {
     /// gate. This method takes it directly: `Arc<dyn Fn(PermissionRequest) ->
     /// BoxFuture<'static, PermissionDecision> + Send + Sync>`
     /// ([`gates::PromptHandler`]), the same handler shape
-    /// [`gates::PromptingGate`] has always wrapped -- this method is the
-    /// missing builder-level path to it, not a new gate implementation.
+    /// [`gates::PromptingGate`] has always wrapped -- a builder-level path to
+    /// it, not a new gate implementation.
     ///
     /// **Precedence: [`Self::with_permission_gate`] wins unconditionally over
     /// this.** If both are called, `build()`'s gate step (9) never even
@@ -708,16 +707,14 @@ impl ConwayBuilder {
     /// never invoked, since `gates::from_config`'s `"deny"`/`"allowlist"`
     /// arms never read it.
     ///
-    /// **Not called at all (the default, unchanged from before this method
-    /// existed):** `permissions.mode = "prompt"` with no
-    /// `with_permission_gate` override still fails `build()` with a named
+    /// **Not called at all (the default):** `permissions.mode = "prompt"`
+    /// with no
+    /// `with_permission_gate` override fails `build()` with a named
     /// [`FacadeError::Config`] stating exactly that ("permissions.mode =
     /// \"prompt\" requires a prompt handler to be supplied") -- never a
     /// silent `AllowAlways`/`DenyAll` substitute. A host that wants the
-    /// friendliest default (ask, rather than deny or blanket-allow) to
-    /// actually build now has a direct path to it; a host that never calls
-    /// this (and never overrides `permissions.mode` some other way) keeps
-    /// getting exactly the same named refusal it always has.
+    /// friendliest default (ask, rather than deny or blanket-allow) has a
+    /// direct path to it via this method.
     pub fn with_prompt_handler(mut self, handler: gates::PromptHandler) -> Self {
         self.prompt_handler = Some(handler);
         self
@@ -727,9 +724,9 @@ impl ConwayBuilder {
     /// request (mask/system-prompt/tool-announcement curation) and, on a
     /// T-1 `ContextTooLarge`, for a bounded overflow-reassembly retry. No
     /// call to this method (the default) means `build()` never touches
-    /// `Runtime::set_context_hook` at all -- every agent's assembly,
-    /// routing, and overflow handling stays exactly as it was before this
-    /// item, with a hard `ContextTooLarge` on overflow.
+    /// `Runtime::set_context_hook` at all -- every agent's assembly and
+    /// routing has no curation step, with a hard `ContextTooLarge` on
+    /// overflow.
     pub fn with_context_hook(mut self, hook: Arc<dyn ContextHook>) -> Self {
         self.context_hook = Some(hook);
         self
