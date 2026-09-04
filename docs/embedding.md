@@ -449,18 +449,23 @@ let child = conway.fork_from(parent_session, at_seq, spec).await?;
 
 **Internal shape (informational, not a required reading):** `result_contract`
 is one of seven knobs (`agent_def`/`role`/`model`/`tools`/`budget`/
-`result_contract`/`keep_alive`) that `SessionSpec`, `ForkSpec`, `SpawnSpec`,
+`result_contract`/`keep_alive`) that `SubagentSpec`, `ForkSpec`, `SpawnSpec`,
 and the runtime's own root/resume specs all carry — they're composed from one
 shared `conway_core::agent::AgentKnobs` struct internally, so a change to one
-of them reaches every spec at once. This is a Rust-shape detail, not an API
-change: `.result_contract(...)`/`.role(...)`/`.budget(...)`/etc. stay exactly
-the same builder methods described above and elsewhere in this guide. It
-only matters if you build a `ForkSpec`/`SpawnSpec` as a bare struct literal
-instead of through `::new()` plus the builder methods — those seven fields
-now live under a nested `.knobs` field (e.g. `ForkSpec { knobs: AgentKnobs {
-result_contract: Some(contract), ..Default::default() }, ..ForkSpec::new(..)
-}`) rather than directly on `ForkSpec` itself; the builder methods remain the
-recommended way to set them either way.
+of them reaches every one of those specs at once. `SessionSpec` deliberately
+stays outside this composition: its `budget` is `Option<Budget>`, deferred to
+`ConwayConfig` when absent, while `AgentKnobs::budget` is a required, already-
+resolved `Budget` — folding it in would silently change what an omitted
+budget means, so `SessionSpec` still carries its own seven fields directly.
+For the specs that DO compose `AgentKnobs`, this is a Rust-shape detail, not
+an API change: `.result_contract(...)`/`.role(...)`/`.budget(...)`/etc. stay
+exactly the same builder methods described above and elsewhere in this guide.
+It only matters if you build a `ForkSpec`/`SpawnSpec` as a bare struct
+literal instead of through `::new()` plus the builder methods — those seven
+fields now live under a nested `.knobs` field (e.g. `ForkSpec { knobs:
+AgentKnobs { result_contract: Some(contract), ..Default::default() },
+..ForkSpec::new(..) }`) rather than directly on `ForkSpec` itself; the
+builder methods remain the recommended way to set them either way.
 
 `Conway::resume` has no result-contract override surface at all — it takes
 only the `SessionId` to reattach, with no per-call spec of any kind to carry
