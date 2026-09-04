@@ -7,20 +7,20 @@
 //!
 //! ## mailboxes and steering
 //!
-//! `drain_inbox` (previously a documented no-op hook) now really drains
+//! `drain_inbox` drains
 //! this agent's inbox at every turn boundary and classifies what it finds
 //! (`crate::mailbox::classify`) -- see that function's doc and
 //! `drain_inbox`'s own doc for the turn-boundary and "no injection outside
-//! drain_inbox" guarantees this buys. `AgentLoop` gained three fields:
+//! drain_inbox" guarantees this buys. `AgentLoop` carries three relevant
+//! fields:
 //! `inbox` (this agent's own `MailboxReceiver`), `parent_mailbox` (used to
 //! deliver this agent's terminal `Result` upward on `finish`), and
 //! `pending_cancel` (turn-local bookkeeping a drained soft `Cancel`
 //! resolves into). A drained `Result` is classified but drives no
-//! drain-time action -- An earlier review found: removed the never-
-//! populated `pending_subagent` map this used to resolve; see
+//! drain-time action -- see
 //! `drain_inbox`'s own doc and `mailbox.rs`'s module doc for why
 //! `AgentTree::await_result` is the real, and only, resolution
-//! path. `LoopDeps` gained `tree`, used both to close the carried
+//! path. `LoopDeps` carries `tree`, used both to close the carried
 //!/ double-`AgentFinished` race in `finish` (this file's
 //! half of a two-sided fix -- see `supervisor.rs`'s module doc for the
 //! other half) -- see `finish`'s own doc.
@@ -30,22 +30,22 @@
 //! `AgentLoop` carries `inherited: Option<InheritedPrefix>`, resolved once at
 //! fork time by `subagent.rs`'s `SubagentHost::start` (via
 //! `conway_core::transcript::TranscriptResolver`, before any of the child's
-//! own records exist). Every turn's path assembly used to hand it to
-//! `path_from_legacy` unchanged; as of this item it calls
-//! `context::path::resolve_default_path` instead, which re-derives the same
+//! own records exist). Every turn's path assembly calls
+//! `context::path::resolve_default_path`, which re-derives the same
 //! inherited prefix itself, every turn, straight from the session's own
 //! `meta.origin` (read via the store) rather than from this cached field --
 //! see that function's own doc (`context/path.rs`, step 3) for the
 //! ancestry-walk fix that made this safe to wire in. `self.inherited` and its
-//! construction sites (`subagent.rs`, `runtime/root.rs`) stay unchanged --
-//! only `run_inner` stops reading the field, it is not dead: `subagent.rs`
+//! construction sites (`subagent.rs`, `runtime/root.rs`) are NOT dead code
+//! even though `run_inner` no longer reads the field for path assembly:
+//! `subagent.rs`
 //! also derives `inherited_upto` (`AgentNode` tree bookkeeping, unrelated to
 //! context assembly) from the SAME fork-time resolve call, so removing the
 //! construction site would take that with it too. `path_from_legacy` is
 //! kept as a cheaper, store-free test fixture builder (see its own doc).
 //!
-//! `AgentSpec::report_slot` (An earlier review found: ) is this item's
-//! one additive hook for a live caller: after each successful
+//! `AgentSpec::report_slot` is
+//! the one additive hook for a live caller: after each successful
 //! `ContextBuilder::build`, and before that turn's backend call, the loop
 //! pushes a clone of the just-built `ContextReport` into the slot if the
 //! caller supplied one. This is the only channel through which a turn's
@@ -55,14 +55,12 @@
 //! ## Reconciliations against the amendment's illustrative types
 //!
 //! The amendment's prose assumes a runtime-local `HeadroomPolicy` (in a
-//! `headroom.rs` this item would create) and a `RouteRequest.required.
+//! `headroom.rs` this crate would create) and a `RouteRequest.required.
 //! min_context` field carrying `est_tokens + headroom`. Neither exists in
 //! the committed workspace:
-//! - `HeadroomPolicy` is `conway_core::capabilities::HeadroomPolicy` (already
-//!   committed; relocated out of `conway-routing`'s `config` module
-//!   into `conway-core` by a later item, so this
-//!   engine no longer needs to depend on the whole routing crate for it) —
-//!   reused directly rather than duplicated.
+//! - `HeadroomPolicy` is `conway_core::capabilities::HeadroomPolicy` --
+//!   this engine does not need to depend on the whole routing crate for
+//!   it -- reused directly rather than duplicated.
 //! - `conway_core::routing::RequiredCaps` has no `min_context: u32` total;
 //!   it has `min_context: Option<u32>` (an independent absolute floor,
 //!   unrelated to headroom) and `headroom_tokens: u32` (the headroom
