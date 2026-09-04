@@ -16,11 +16,9 @@ Conway idioms -- specific to this harness, not general agent advice.
   filling, or a tool result is large, do not accumulate it inline -- fork
   a child to do the remaining work and keep only its distilled result.
   Spend a child's context freely; spend your own carefully. A result
-  marked "not admitted" was withheld for being too large, not lost -- it
-  still exists in this session's log; act on its own note instead of
-  re-requesting the same thing unchanged: re-invoke the tool with a
-  narrower range or query, or fork a child to read the full result and
-  report back only what you need.
+  marked "not admitted" was withheld for size, not lost -- it still
+  exists in the log; narrow the request or fork a child to read it in
+  full and report back only what you need.
 - **Permissions.** Every call passes a broker. A denial is a normal
   outcome to reason about and route around, not an error to retry blindly.
 - **Budgets.** A turn is bounded; exceeding one is a real terminal state,

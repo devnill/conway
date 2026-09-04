@@ -275,7 +275,7 @@ pub struct ContextInput {
     /// `0` means unlimited: a single tool result, however large, always
     /// renders in full. Applied identically to this session's own tool
     /// results and a fork child's inherited ones -- see
-    /// [`admit_tool_result`]'s own doc.
+    /// `admit_tool_result`'s own doc.
     pub tool_result_bound_tokens: u32,
     /// Why the pre-assembly curator declined to curate this turn, if it
     /// failed (DESIGN §11.6). `None` -- the overwhelmingly common case --
@@ -706,15 +706,19 @@ impl ContextBuilder {
 /// "this plugin declared no such fragment" -- re-deriving here would
 /// silently lose both the withheld fragment's record and every reachable
 /// one's plugin attribution.
+///
+/// The four fields above travel as one [`CarriedReportFields`] value rather
+/// than as separate parameters -- they are already one thing (everything a
+/// re-total must carry forward because it cannot be re-derived from
+/// `segments`), and folding `not_admitted` in as a fifth positional
+/// parameter alongside `agent_id`/`turn`/`segments`/`tools` pushed this
+/// function's arity past clippy's `too_many_arguments` threshold.
 pub(crate) fn retotal(
     agent_id: AgentId,
     turn: u32,
     segments: &mut [PromptSegment],
     tools: &[ToolSpec],
-    dropped: Vec<String>,
-    curator_failed: Option<String>,
-    instruction_fragments: Vec<InstructionFragmentEntry>,
-    not_admitted: Vec<NotAdmittedEntry>,
+    carried: CarriedReportFields,
 ) -> ContextReport {
     for segment in segments.iter_mut() {
         segment.tokens_est = Some(estimate_tokens(&segment.content));
@@ -730,11 +734,21 @@ pub(crate) fn retotal(
         agent_id,
         turn,
         segments,
-        dropped,
-        curator_failed,
-        instruction_fragments,
-        not_admitted,
+        carried.dropped,
+        carried.curator_failed,
+        carried.instruction_fragments,
+        carried.not_admitted,
     )
+}
+
+/// The report fields a re-total must carry forward unchanged rather than
+/// re-derive from `segments` -- see [`retotal`]'s own doc for why each one
+/// is unrecoverable by report-build time.
+pub(crate) struct CarriedReportFields {
+    pub(crate) dropped: Vec<String>,
+    pub(crate) curator_failed: Option<String>,
+    pub(crate) instruction_fragments: Vec<InstructionFragmentEntry>,
+    pub(crate) not_admitted: Vec<NotAdmittedEntry>,
 }
 
 /// `dropped` is threaded in rather than recomputed: by the time a report is
@@ -896,7 +910,7 @@ fn admit_tool_result(
 }
 
 /// The text a not-admitted tool result's segment carries in place of the
-/// real result -- see [`admit_tool_result`]'s own doc. Names the size
+/// real result -- see `admit_tool_result`'s own doc. Names the size
 /// against the bound (both a hard byte fact and the same heuristic token
 /// estimate every other figure in a `ContextReport` uses), WHERE the full
 /// result still lives (this session's own durable log -- no new port: the
@@ -1176,7 +1190,7 @@ fn artifact_kind_label(kind: ArtifactKind) -> &'static str {
 /// `bound_tokens`/`turn`/`not_admitted`: the tool-result admission gate
 /// (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`, move 1) applies HERE, to a
 /// fork child's INHERITED tool results, identically to [`own_segment`]'s own
-/// application to a session's OWN results -- see [`admit_tool_result`]'s own
+/// application to a session's OWN results -- see `admit_tool_result`'s own
 /// doc for why this is the one seam that can cover both without
 /// duplicating the check: it is the sole place a raw `ToolResult` is turned
 /// into the `ContentBlock`s a segment renders, for either kind of record.
@@ -1638,10 +1652,12 @@ mod estimator_tests {
             3,
             &mut segments,
             &[],
-            Vec::new(),
-            None,
-            Vec::new(),
-            Vec::new(),
+            CarriedReportFields {
+                dropped: Vec::new(),
+                curator_failed: None,
+                instruction_fragments: Vec::new(),
+                not_admitted: Vec::new(),
+            },
         );
 
         let expected = estimate_tokens(&segments[0].content);
@@ -1665,10 +1681,12 @@ mod estimator_tests {
             0,
             &mut segments,
             &[],
-            Vec::new(),
-            None,
-            Vec::new(),
-            Vec::new(),
+            CarriedReportFields {
+                dropped: Vec::new(),
+                curator_failed: None,
+                instruction_fragments: Vec::new(),
+                not_admitted: Vec::new(),
+            },
         );
         assert_eq!(report.segments.len(), 1);
     }
@@ -1722,10 +1740,12 @@ mod estimator_tests {
             0,
             &mut segments,
             &tools,
-            Vec::new(),
-            None,
-            Vec::new(),
-            Vec::new(),
+            CarriedReportFields {
+                dropped: Vec::new(),
+                curator_failed: None,
+                instruction_fragments: Vec::new(),
+                not_admitted: Vec::new(),
+            },
         );
 
         let expected = estimate_tool_schemas_tokens(&tools);
@@ -2382,9 +2402,13 @@ mod own_segment_provenance_tests {
     fn own_segment_honors_stored_provenance_on_a_merged_user_turn() {
         let from = SessionId::new();
         let mut not_admitted = Vec::new();
-        let (role, _content, prov) =
-            own_segment(&user_turn(Provenance::MergedAsk { from }), 0, 0, &mut not_admitted)
-                .expect("a UserTurn maps");
+        let (role, _content, prov) = own_segment(
+            &user_turn(Provenance::MergedAsk { from }),
+            0,
+            0,
+            &mut not_admitted,
+        )
+        .expect("a UserTurn maps");
         assert_eq!(role, Role::User);
         assert_eq!(prov, Provenance::MergedAsk { from });
     }
@@ -3102,10 +3126,12 @@ mod tool_call_pairing_tests {
             input.turn,
             &mut segments,
             &[],
-            report.dropped.clone(),
-            Some("synthetic curator failure".to_string()),
-            report.instruction_fragments.clone(),
-            report.not_admitted.clone(),
+            CarriedReportFields {
+                dropped: report.dropped.clone(),
+                curator_failed: Some("synthetic curator failure".to_string()),
+                instruction_fragments: report.instruction_fragments.clone(),
+                not_admitted: report.not_admitted.clone(),
+            },
         );
         assert_eq!(after.dropped, vec!["b".to_string()]);
         // §11.6: a re-totalled report must not lose the curator record --

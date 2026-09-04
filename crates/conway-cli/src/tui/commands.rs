@@ -2943,7 +2943,10 @@ fn render_context_report(report: &ContextReport, state: &mut AppState) {
                     "tool result {} ({}) not admitted: {} bytes (~{} tokens) exceeded the \
                      {}-token bound; the full result stays in this session's log, not in this \
                      request",
-                    entry.tool, entry.call_id, entry.original_bytes, entry.tokens_est,
+                    entry.tool,
+                    entry.call_id,
+                    entry.original_bytes,
+                    entry.tokens_est,
                     entry.bound_tokens,
                 ),
             );

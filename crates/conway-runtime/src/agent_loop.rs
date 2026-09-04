@@ -1056,10 +1056,12 @@ impl AgentLoop {
                 turn,
                 &mut segments,
                 &tools,
-                report.dropped,
-                report.curator_failed,
-                report.instruction_fragments,
-                report.not_admitted,
+                crate::context::builder::CarriedReportFields {
+                    dropped: report.dropped,
+                    curator_failed: report.curator_failed,
+                    instruction_fragments: report.instruction_fragments,
+                    not_admitted: report.not_admitted,
+                },
             );
         }
     }
@@ -1379,10 +1381,12 @@ impl AgentLoop {
                     state.turn,
                     &mut segments,
                     &announced_tools,
-                    report.dropped,
-                    report.curator_failed,
-                    report.instruction_fragments,
-                    report.not_admitted,
+                    crate::context::builder::CarriedReportFields {
+                        dropped: report.dropped,
+                        curator_failed: report.curator_failed,
+                        instruction_fragments: report.instruction_fragments,
+                        not_admitted: report.not_admitted,
+                    },
                 );
             }
 
@@ -1477,10 +1481,12 @@ impl AgentLoop {
                         state.turn,
                         &mut segments,
                         &announced_tools,
-                        report.dropped,
-                        report.curator_failed,
-                        report.instruction_fragments,
-                        report.not_admitted,
+                        crate::context::builder::CarriedReportFields {
+                            dropped: report.dropped,
+                            curator_failed: report.curator_failed,
+                            instruction_fragments: report.instruction_fragments,
+                            not_admitted: report.not_admitted,
+                        },
                     );
                 }
             }
