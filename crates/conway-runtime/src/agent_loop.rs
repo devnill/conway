@@ -2371,26 +2371,21 @@ impl AgentLoop {
     /// result), but produces no second event and no second parent
     /// delivery.
     ///
-    /// This is only ONE side of the race's closure — not, as an earlier
-    /// revision of this doc claimed, the whole of it. `supervisor.rs`'s
+    /// This is only ONE side of the race's closure. `supervisor.rs`'s
     /// `Outcome::Synthesized` branch (a caught panic, or a task still
     /// unresponsive after `grace` and `abort()`'d) must gate ITS emission
     /// on winning the very same `publish_result` CAS too: `task.abort()` is
     /// cooperative, so an aborted task can keep running past the abort
     /// request and reach this very `finish` method after the supervisor has
     /// already given up on joining it, legitimately winning the CAS in that
-    /// gap. Before An earlier review found: finding S1, `supervisor.rs` emitted
-    /// unconditionally on that path regardless of whether it had actually
-    /// won, so the race was only half-closed even with this gate in place.
-    /// See `supervisor.rs`'s own module doc for that side's fix; together
+    /// gap. See `supervisor.rs`'s own module doc for that side's fix; together
     /// the two gates make at most one `Event::AgentFinished` observable per
     /// agent, from whichever side wins.
     ///
     /// `publish_result`'s only error is `AgentNotFound` (this agent was
     /// never `attach`ed to the tree at all — true of some unit tests that
     /// construct an `AgentLoop` directly without a `Runtime`); that case
-    /// defaults to "first" so those tests keep observing `AgentFinished`
-    /// exactly as before this item.
+    /// defaults to "first" so those tests keep observing `AgentFinished`.
     async fn finish(
         &self,
         status: ResultStatus,
@@ -2518,7 +2513,7 @@ fn resolve_headroom(spec: &AgentSpec, policy: &HeadroomPolicy) -> u32 {
 /// `01KZRZZP6A4A27R3EN0HQAENBS`) -- id (needed to EXCLUDE a segment by it),
 /// role, provenance, and estimated tokens, deliberately NEVER `content`.
 ///
-/// **The design question this item's own spec asked to be settled first:**
+/// **The design question settled first:**
 /// "whether the script sees the whole payload or a summary." Shipping full
 /// segment bodies to a subprocess on every turn is an unbounded,
 /// content-proportional cost paid whether or not a hook ever looks at most
