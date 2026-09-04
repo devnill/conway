@@ -3667,7 +3667,7 @@ mod compose_curators_tests {
 /// an equivalent provider-specific rejection -- never a panic, never a
 /// silently empty response).
 ///
-/// The key's *shape* is never inspected, same as before.
+/// The key's *shape* is never inspected.
 fn resolve_api_key(id: &str, entry: &BackendEntry) -> String {
     if !entry.api_key.is_empty() {
         return entry.api_key.clone();
@@ -3691,13 +3691,8 @@ fn resolve_api_key(id: &str, entry: &BackendEntry) -> String {
 /// Resolves one `[backends.<id>]` entry's `kind` against every registered
 /// [`BackendFactory`] (: `kind` is an
 /// open name, not a closed enum) -- ONLY against registered factories, with
-/// no compiled-in fallback: removed
-/// the temporary two-adapter fallback this function (then named
-/// `construct_backend`) used to fall through to (`"anthropic"`,
-/// `"openai-compat"` compiled directly into this facade), the deliberate,
-/// disclosed gap that item's own predecessor left standing so its slice
-/// could ship alone. Every kind this facade resolves today, including
-/// those two, is therefore a registered factory -- see
+/// no compiled-in fallback. Every kind this facade resolves, including
+/// `"anthropic"`/`"openai-compat"`, is therefore a registered factory -- see
 /// `conway_plugin_backends::factory`'s own module doc for what makes both
 /// attach by default with no `[plugins].install`/`with_backend_factory` call
 /// an operator has to write by hand.
