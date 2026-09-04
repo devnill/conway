@@ -422,8 +422,8 @@ pub trait Plugin: Send + Sync + 'static {
     /// **Why this is a `Plugin` method rather than only a `ConwayBuilder`
     /// setter.** `ConwayBuilder::with_context_hook` remains the lower-level
     /// surface -- an embedder with a standalone hook and no plugin still
-    /// uses it directly. But before this method, a plugin-contributed tool
-    /// ([`Self::tools`]) had no way to ALSO contribute the context curation
+    /// uses it directly. But without this method, a plugin-contributed tool
+    /// ([`Self::tools`]) has no way to ALSO contribute the context curation
     /// that tool's value proposition often depends on: progressive skill
     /// disclosure, for instance, is a `ContextHook` that narrows a
     /// `Provenance::Skill` segment to a one-line index PLUS a `read_skill`
@@ -1764,10 +1764,8 @@ pub trait Tool: Send + Sync + 'static {
     /// shell-interpretable (it genuinely IS the string handed to a shell).
     ///
     /// **The default is [`RenderKind::ShellCommand`] -- the conservative
-    /// choice, matching the metacharacter gate's behavior before this
-    /// method existed** (every `rendered` string was gated, unconditionally,
-    /// for every tool). A tool that does not override this method is
-    /// exactly as gated as it was before this method existed: its pattern
+    /// choice**: a tool that does not override this method has every
+    /// `rendered` string gated, unconditionally; its pattern
     /// grants may stay inert if its `render` output happens to contain a
     /// shell metacharacter (as the trait's default JSON-dump `render` does,
     /// via `(`, `)`, `{`, `}`), but that is a missed convenience, never a
@@ -1814,9 +1812,8 @@ pub trait Tool: Send + Sync + 'static {
     /// `render_kind` (the permission broker's own root-containment walk,
     /// `PatternRule`'s metacharacter gate) still need answered honestly.
     ///
-    /// **The default is `false`** -- every tool declared before this method
-    /// existed, including `bash` itself, keeps behaving exactly as before:
-    /// the root+unconfinable-shell-tool warning still fires for it. A tool
+    /// **The default is `false`** -- the root+unconfinable-shell-tool
+    /// warning fires for every tool, `bash` included. A tool
     /// author sets this to `true` only when they can back the claim with a
     /// real, OS-enforced containment mechanism -- see `conway-plugin-
     /// confine`'s own module doc for the one shipped example, and P-14
