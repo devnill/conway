@@ -596,10 +596,17 @@ actually-built shape:
    concrete remedies (re-invoke the tool narrower, or fork a child to
    distill it) — see `ContextBuilder`'s `admit_tool_result`
    (`conway-runtime`'s `context::builder`) and
-   `ContextReport::not_admitted`. **Deliberately NOT truncation**: the
-   choice is binary (the whole result, or a note), never a lossy middle —
-   `TruncationPolicy` (`conway_core::content`) stays unpopulated by any
-   caller, exactly as it was before this item; see that type's own doc.
+   `ContextReport::not_admitted`. **Deliberately NOT truncation, at this
+   seam**: the choice is binary (the whole result as this gate receives
+   it, or a note), never a lossy middle. This is distinct from — and does
+   not touch — `conway_runtime::tools::runner::apply_truncation`, a
+   separate, pre-existing, ALREADY-ACTIVE mechanism that caps a few
+   built-in tools' own raw output at a fixed byte budget right after the
+   tool runs (`read`'s 65536-byte head, `grep`'s 32768-byte head, `bash`'s
+   head+tail) — unconditional and model-agnostic, there to bound one
+   absurdly large tool invocation, never to fit a specific model's window.
+   The two compose: a tool-truncated 65536-byte result can still exceed a
+   small role's small admission bound, so this gate still applies to it.
    Applies identically to a fork child's INHERITED tool results, not only a
    session's own, so "forking is cheap" stays true on a non-caching
    provider. **Cost:** none to ordinary results — the gate is a size check

@@ -826,11 +826,30 @@ fn tool_result_block(result: &ToolResult) -> Vec<ContentBlock> {
 /// is durably recorded (`ContextReport::not_admitted`) rather than
 /// invisible in the transcript.
 ///
-/// **Never a partial/truncated middle.** The choice is binary: the whole
-/// result, or a note -- `TruncationPolicy` (`conway_core::content`) is a
-/// SEPARATE, still-unused-by-any-caller mechanism this function does not
-/// touch; see that type's own doc for why this codebase deliberately has no
-/// silent-truncation path to reach for instead.
+/// **Never a partial/truncated middle, at THIS seam.** The choice here is
+/// binary: the whole result (as this function receives it), or a note.
+/// `TruncationPolicy` (`conway_core::content`) is a SEPARATE, genuinely
+/// active mechanism this function does not touch or duplicate --
+/// `conway_runtime::tools::runner::apply_truncation` already caps a few
+/// built-in tools' own raw output at a fixed, tool-declared byte budget
+/// (`read`'s 65536-byte head, `grep`'s 32768-byte head, `bash`'s
+/// head+tail) BEFORE a `ToolResult` is ever persisted -- a correction of
+/// this item's own "nothing populates `TruncationRecord` today" premise,
+/// stale by the time this item was actually built (multiple sibling items
+/// landed in the same session). That existing mechanism is unconditional
+/// and model-agnostic: the SAME fixed cap applies to a tiny local model and
+/// a 1M-token cloud one alike, and exists to keep one absurdly large tool
+/// invocation (a multi-gigabyte file read) from producing an unbounded
+/// `ToolResult` at all, never to fit a specific model's window. This
+/// function's own gate runs LATER, at context-assembly time, over
+/// WHATEVER content actually reaches it (already tool-truncated, or not),
+/// and is model/role-aware where the tool-level cap is not -- a
+/// tool-truncated 65536-byte read can still exceed a small role's small
+/// bound, so the two compose rather than duplicate. Neither one is a
+/// lossy MIDDLE ground on its own: the tool-level cap is itself a
+/// head/tail cut (a real truncation, just fixed and pre-existing, out of
+/// this item's file boundaries to revisit), and this gate's own choice
+/// stays binary given whatever it receives.
 ///
 /// The ONE seam both [`own_segment`] (this session's own tool results) and
 /// [`record_role_and_content`] (a fork child's INHERITED tool results) call
