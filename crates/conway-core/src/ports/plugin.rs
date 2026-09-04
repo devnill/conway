@@ -164,16 +164,15 @@ pub trait Plugin: Send + Sync + 'static {
     /// `[0] SystemPrompt` (the agent definition's own base prompt, or a
     /// one-shot session's `--system-prompt` override -- both occupy the
     /// same `[0]` slot); [`FragmentPosition::AfterSystemPrompt`] fragments
-    /// (the default -- every fragment declared before this field existed
-    /// behaves exactly as it always did) render where `[1]
+    /// (the default) render where `[1]
     /// PluginInstructions*` always has, AFTER `[0]` and BEFORE `[1b]
     /// SkillFragments*` (the operator's own, directory-authored skills,
     /// `AgentDef.skills`). Within a position, [`InstructionFragment::order`]
     /// breaks ties (lower renders first; equal `order` keeps install
     /// order) -- process record `01M1FQ36PCW2J19AP219GKZH3R` (a plugin that
     /// wants to speak BEFORE an agent definition's own prompt, e.g.
-    /// `conway.idiom`'s base fragment, had no way to say so before this
-    /// field existed; the module doc on that plugin's own crate is the
+    /// `conway.idiom`'s base fragment -- the module doc on that plugin's
+    /// own crate is the
     /// worked example). Multiple plugins' fragments at the SAME position
     /// are injected in `with_plugin`/`install_selected` install order,
     /// stable-sorted by `(position, order, install_index)` -- the SAME
@@ -186,8 +185,7 @@ pub trait Plugin: Send + Sync + 'static {
     ///
     /// **Audience.** [`InstructionFragment::scope`] narrows WHICH agent a
     /// fragment reaches: [`FragmentScope::All`] (the default) reaches every
-    /// agent, root or child, exactly as every fragment did before this
-    /// field existed; [`FragmentScope::RootOnly`]/[`FragmentScope::ChildrenOnly`]
+    /// agent, root or child; [`FragmentScope::RootOnly`]/[`FragmentScope::ChildrenOnly`]
     /// restrict it to one or the other, keyed off the
     /// STRUCTURAL fact of whether an agent has a parent (`AgentLoop::
     /// parent`), never inferred from its tool set or role. A fragment
