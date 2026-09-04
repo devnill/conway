@@ -1,0 +1,49 @@
+{
+  "agent_def": "reviewer",
+  "ask_origin": "tool_ask",
+  "budget": {
+    "deadline": "2026-01-01T00:00:00Z",
+    "max_steps": 7,
+    "max_tokens": 100,
+    "max_tool_calls": 3
+  },
+  "context": [
+    {
+      "seq": 3,
+      "session": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    }
+  ],
+  "cwd": "/tmp/child",
+  "ephemeral": true,
+  "keep_alive": false,
+  "mode": "fork",
+  "pin": {
+    "backend": "anthropic",
+    "model": "claude-haiku"
+  },
+  "plugin_config": {
+    "values": {
+      "conway.fs.root": "/scoped"
+    }
+  },
+  "prompt": "do the thing",
+  "result_contract": {
+    "properties": {
+      "answer": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "answer"
+    ],
+    "type": "object"
+  },
+  "role": "planner",
+  "root": "/tmp/root",
+  "tag": "my-tag",
+  "tools": {
+    "only": [
+      "read"
+    ]
+  }
+}
