@@ -2716,9 +2716,9 @@ mod tests {
     }
 
     /// Sibling of `decide_is_unchanged_when_no_hook_runner_is_installed`: an
-    /// ABSENT matcher (not merely an absent runner) preserves today's
+    /// ABSENT matcher (not merely an absent runner) preserves the
     /// fire-for-every-tool behavior -- a hook with no `matcher` set still
-    /// denies every tool, exactly as before this field existed.
+    /// denies every tool.
     #[tokio::test]
     async fn an_absent_matcher_denies_every_tool() {
         let gate = RecordingGate::new();
@@ -3193,11 +3193,11 @@ mod tests {
     }
 
     /// **A plugin `Prompt` verdict forces the operator's gate even under
-    /// `AutoAllow`.** This is acceptance criterion 1's first half: a plugin
-    /// declaring its tool dangerous (mapped to `prompt`) causes an approval
-    /// prompt -- the call is NOT silently auto-allowed. `AutoAllow` is the
-    /// mode a plugin's prompt matters most in (no human already in the
-    /// loop); proving it here is the load-bearing case.
+    /// `AutoAllow`.** A plugin declaring its tool dangerous (mapped to
+    /// `prompt`) causes an approval prompt -- the call is NOT silently
+    /// auto-allowed. `AutoAllow` is the mode a plugin's prompt matters most
+    /// in (no human already in the loop); proving it here is the
+    /// load-bearing case.
     #[tokio::test]
     async fn plugin_prompt_forces_the_gate_even_under_autoallow() {
         let gate = RecordingGate::new();
