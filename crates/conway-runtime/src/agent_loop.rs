@@ -1134,7 +1134,8 @@ impl AgentLoop {
         let mut seen_segments = HashSet::new();
         // both are turn-loop-local, not `AgentLoop` fields -- see
         // `result.rs`'s module doc for why (both structs are constructed
-        // via field literals in files outside this item's scope).
+        // via field literals in `runtime.rs`, `subagent.rs`, and existing
+        // tests).
         let mut result_builder = ResultBuilder::new();
         // result-contract retry: `true` once this run has already
         // spent its one corrective turn (`self.spec.result_contract`'s
@@ -1461,7 +1462,7 @@ impl AgentLoop {
             // CONTENT: `report.segments` already carries the ordered
             // content this turn is made of, but shipping the full assembled
             // transcript to a subprocess every turn is a real, unbounded
-            // cost this item's own design question flags -- `segment_metadata_json`
+            // cost -- `segment_metadata_json`
             // ships each segment's id (needed to EXCLUDE it), role, and
             // provenance (enough for a role/provenance-driven policy, e.g.
             // "exclude every `ToolResult` older than N calls"), never
