@@ -41,9 +41,8 @@ pub struct HookEvent {
     pub name: String,
     /// What the hook actually receives for this event. Untyped
     /// (`serde_json::Value`) because the concrete shape is event-specific,
-    /// decided by whichever later item wires a concrete event onto this
-    /// runner -- this item ships no event, so nothing here constrains the
-    /// shape beyond "valid JSON."
+    /// decided by whichever later feature wires a concrete event onto this
+    /// runner, so nothing here constrains the shape beyond "valid JSON."
     pub payload: serde_json::Value,
 }
 
@@ -293,18 +292,10 @@ pub enum HookOnFailure {
 /// surface -- but that means a downloaded plugin's hook can
 /// now deny a real tool call or a submitted prompt exactly as an
 /// operator-authored rule can, with nothing distinguishing the two once
-/// they are both just entries in a dispatch list.** Before this type
-/// existed, `crates/conway/src/conway.rs`'s `HookRuleView::origin` had
-/// exactly one honest value to report (`"settings.json (merged config)"`)
-/// because `[hooks].rules[]` really was the only place a hook rule could
-/// come from -- see that constant's own doc for the reasoning this type's
-/// addition supersedes. Once a plugin can register a hook directly, that
-/// claim would silently become false for a plugin-contributed rule unless
-/// something threads the real source through to the same review surface;
-/// this is that something. An operator must be able to inspect every
-/// active rule, including one contributed by an untrusted repo, which
-/// is the reason this is a real field carried on every dispatched hook
-/// spec, not a comment.
+/// they are both just entries in a dispatch list.** An operator must be
+/// able to inspect every active rule, including one contributed by an
+/// untrusted repo, which is the reason this is a real field carried on
+/// every dispatched hook spec, not a comment.
 ///
 /// **No variant here can ever be more permissive than another** -- this
 /// type carries provenance only, never a verdict; `HookPermissionVerdict`/
@@ -322,8 +313,7 @@ pub enum HookOnFailure {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HookOrigin {
     /// This rule reached dispatch from the operator's own merged
-    /// `[hooks].rules[]` config -- unchanged from every hook rule that
-    /// existed before this type did.
+    /// `[hooks].rules[]` config.
     Operator,
     /// This rule reached dispatch because an installed plugin declared it
     /// via `Plugin::hooks()`. Carries that plugin's own
@@ -336,11 +326,9 @@ pub enum HookOrigin {
 }
 
 impl Default for HookOrigin {
-    /// `Operator` -- every hook rule that reached dispatch before this type
-    /// existed came from `[hooks].rules[]`, so a caller that never sets
-    /// this explicitly (every construction site that predates board item
-    /// `01M129QW0GV90QTQS6B3BY3DAR`) keeps reporting exactly that,
-    /// byte-for-byte.
+    /// `Operator` -- the conservative default: absent an explicit origin,
+    /// a rule is assumed operator-authored, since `[hooks].rules[]` is the
+    /// only source a caller not threading provenance through would have.
     fn default() -> Self {
         HookOrigin::Operator
     }
@@ -366,9 +354,9 @@ pub struct ContextDelta {
     /// Opaque content this hook is appending. Left untyped here
     /// (`serde_json::Value`): the concrete per-item shape (`{role,
     /// blocks}`, mirroring the extension design's
-    /// `context.hook/1`) is a later item's concern, once a concrete context
-    /// event is actually wired onto this runner -- this item proves the
-    /// SHAPE (append, never replace) is representable, nothing more.
+    /// `context.hook/1`) is left for whenever a concrete context event is
+    /// actually wired onto this runner -- only the SHAPE (append, never
+    /// replace) is proven representable here, nothing more.
     #[serde(default)]
     pub appends: Vec<serde_json::Value>,
     /// Identifiers (e.g. a stringified segment/log-seq identity) this hook
@@ -393,9 +381,9 @@ impl ContextDelta {
 /// see `crates/conway/src/config/schema.rs`'s `HookEntry::match_tool`,
 /// which is the only producer of `pattern` in practice).
 ///
-/// **Two forms, deliberately no more** (that item's own ACCEPTANCE: "exact
-/// plus glob covers the page's two [`PHILOSOPHY.md` §5] examples... do not
-/// build a regex dialect without a stated need"):
+/// **Two forms, deliberately no more**: exact plus glob covers the page's
+/// two [`PHILOSOPHY.md` §5] examples, and nothing here builds a broader
+/// regex dialect without a stated need:
 /// - `pattern` contains no `*`: exact string equality against `tool`. This
 ///   is the only form either of `PHILOSOPHY.md`'s own examples (`"bash"`,
 ///   `"fs.write"`) needs.
