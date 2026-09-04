@@ -1002,14 +1002,12 @@ pub struct InstructionFragment {
     /// sentence exists only for a turn that actually has
     /// `compose_context_path`.
     ///
-    /// **Board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` narrowed this field's own
-    /// scope.** Before that item, [`Self::text`] was the fragment's WHOLE
-    /// text and a separate whole-fragment `tool_ids` field withheld it
-    /// ENTIRELY the moment any one id was unreachable -- so a fragment that
-    /// wanted to say "verify with `bash`" alongside general, always-true
-    /// orientation text had no way to gate only that one sentence: naming
-    /// `bash` made the ENTIRE fragment vanish for a `bash`-less session.
-    /// [`Self::parts`] is what closes that gap -- see its own doc.
+    /// **`text`'s own scope is unconditional content only** (board
+    /// item `01M1FSRJJAB3ZYZXED4SVT2ZSF`) -- a fragment that wants to say
+    /// "verify with `bash`" alongside general, always-true orientation text
+    /// gates only that one sentence via [`Self::parts`], rather than the
+    /// whole fragment vanishing for a `bash`-less session just because it
+    /// names `bash` once -- see that field's own doc.
     pub text: String,
     /// Zero or more conditional sentences beyond [`Self::text`]'s
     /// unconditional body, each independently gated on a set of tool ids.
@@ -1022,34 +1020,28 @@ pub struct InstructionFragment {
     /// independently-gated parts instead). A reachable part's text is
     /// appended after [`Self::text`] (and after every earlier reachable
     /// part), each joined by a blank line, into the SAME single
-    /// `Role::System` segment [`Self::text`] alone used to render --
+    /// `Role::System` segment --
     /// gating is per-part, but the rendered result is still one segment,
     /// not one segment per part. An unreachable part is dropped from that
     /// join silently (per turn, never a build-time error) but recorded --
     /// see `InstructionFragmentEntry::withheld_parts`/`unreachable_tool_ids`
     /// (`conway_core::provenance`) for where. [`Self::text`] empty AND
-    /// every part unreachable is the per-part analog of the old
-    /// whole-fragment withholding: nothing renders for this turn at all
-    /// (no segment pushed), the SAME "the model never reads an instruction
-    /// naming a tool it cannot call" guarantee the old whole-fragment
-    /// `tool_ids` field made, now reached by construction rather than by a
-    /// second field.
+    /// every part unreachable means
+    /// nothing renders for this turn at all
+    /// (no segment pushed) -- the SAME "the model never reads an instruction
+    /// naming a tool it cannot call" guarantee, reached by construction
+    /// rather than by a separate field.
     pub parts: Vec<InstructionPart>,
     /// Which side of `[0] SystemPrompt` this fragment renders on. Default
-    /// [`FragmentPosition::AfterSystemPrompt`] -- every fragment declared
-    /// before this field existed keeps rendering exactly where it always
-    /// did. See [`Plugin::instructions`]'s own "Precedence" section.
+    /// [`FragmentPosition::AfterSystemPrompt`]. See [`Plugin::instructions`]'s own "Precedence" section.
     pub position: FragmentPosition,
     /// Render order within [`Self::position`] -- lower renders first; a tie
     /// (including the default `0` against another default `0`) keeps
-    /// install order. Default `0`, deliberately the same value every
-    /// fragment declared before this field existed implicitly had (nothing
-    /// broke ties before now, so `0` for everyone reproduces "install
-    /// order decides" exactly).
+    /// install order. Default `0`.
     pub order: i16,
     /// Which agent this fragment reaches. Default [`FragmentScope::All`] --
-    /// every fragment declared before this field existed reached every
-    /// agent, root or child, and keeps doing so. See [`Plugin::
+    /// reaches every
+    /// agent, root or child. See [`Plugin::
     /// instructions`]'s own "Audience" section for the structural fact this
     /// is keyed on.
     pub scope: FragmentScope,
@@ -1057,9 +1049,7 @@ pub struct InstructionFragment {
     /// own agent-def name (`SystemPromptSpec::agent_def`) matches exactly
     /// -- absent (including when `[0]` carries no agent def at all, e.g. a
     /// bare interactive session or a one-shot `--system-prompt` override)
-    /// otherwise. `None` (the default) means no such restriction: every
-    /// fragment declared before this field existed renders regardless of
-    /// which agent def, if any, supplied `[0]`.
+    /// otherwise. `None` (the default) means no such restriction.
     pub agent_def: Option<String>,
     /// Who actually wrote [`Self::text`] -- [`FragmentAuthor::Plugin`] (the
     /// default) for a fragment sourced from the declaring plugin's own crate
@@ -1082,8 +1072,7 @@ pub struct InstructionFragment {
 /// [`InstructionFragment::authored_by`]'s own vocabulary -- who actually
 /// wrote a fragment's [`InstructionFragment::text`], as distinct from which
 /// plugin's `Plugin::instructions()` call carried it to `ConwayBuilder::
-/// build`. Every fragment before this type existed was, in effect,
-/// [`FragmentAuthor::Plugin`] -- the default preserves that exactly.
+/// build`.
 ///
 /// Deliberately narrower than a general "who wrote this" enum: this exists
 /// to answer one question (`ContextBuilder::build`'s stamping decision), not
@@ -1094,8 +1083,7 @@ pub struct InstructionFragment {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum FragmentAuthor {
     /// The declaring plugin's own crate wrote this text -- a Rust string
-    /// literal or an `include_str!`'d file it ships. Every fragment
-    /// declared before this field existed behaves exactly as this variant.
+    /// literal or an `include_str!`'d file it ships. The default.
     #[default]
     Plugin,
     /// An operator wrote this text themselves, in a file the plugin merely
@@ -1111,8 +1099,8 @@ impl InstructionFragment {
     /// Construct a fragment with every optional field at its default:
     /// [`FragmentPosition::AfterSystemPrompt`], `order: 0`,
     /// [`FragmentScope::All`], `agent_def: None`, `parts: vec![]`,
-    /// [`FragmentAuthor::Plugin`] -- exactly today's (pre-this-field)
-    /// behavior. Use the `with_*` methods below to opt into anything else.
+    /// [`FragmentAuthor::Plugin`].
+    /// Use the `with_*` methods below to opt into anything else.
     pub fn new(name: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -1126,13 +1114,13 @@ impl InstructionFragment {
         }
     }
 
-    /// See [`Self::parts`]. Board item `01M1FSRJJAB3ZYZXED4SVT2ZSF` --
-    /// replaces the removed whole-fragment `with_tool_ids`: a plugin whose
-    /// entire fragment used to gate on one tool (e.g.
+    /// See [`Self::parts`]. Board item `01M1FSRJJAB3ZYZXED4SVT2ZSF`:
+    /// a plugin whose
+    /// entire fragment gates on one tool (e.g.
     /// `conway-plugin-path`/`conway-plugin-discover`, each naming the one
-    /// tool their own fragment is about) now leaves [`Self::text`] empty
+    /// tool their own fragment is about) leaves [`Self::text`] empty
     /// and supplies that same text as this call's one part instead --
-    /// see those crates' own `instructions()` for the worked migration.
+    /// see those crates' own `instructions()` for the worked example.
     pub fn with_parts(mut self, parts: Vec<InstructionPart>) -> Self {
         self.parts = parts;
         self
