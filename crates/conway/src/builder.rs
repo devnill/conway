@@ -1437,6 +1437,56 @@ impl ConwayBuilder {
             message,
         })?;
         let headroom_policy = HeadroomPolicy::from_routing_config(&routing_config);
+
+        // 6b. Tool-result admission bound (board item
+        //     `01M1AVZPTRSWVE33G4DTJY7Q1B`, move 1, operator ruling
+        //     2026-09-01): built HERE, not from `routing_config` --
+        //     `ToolResultBoundPolicy` is a context-assembly concern the
+        //     router never consults, so unlike `headroom_policy` immediately
+        //     above it has no reason to round-trip through
+        //     `conway_core::routing::RoutingConfig`/`RoleConfig` (see that
+        //     type's own doc). Computed directly from `config.roles` (the
+        //     facade's own `RoleEntry`, still in scope with `chain: Vec<
+        //     String>`) against `metadata` (loaded at step 2, also still in
+        //     scope) -- the IDENTICAL smallest-reachable-window technique
+        //     `config::merge::load_impl`'s adaptive-headroom block already
+        //     uses for the analogous `headroom_fraction` computation, just
+        //     not persisted back into `config` (nothing downstream of this
+        //     policy ever re-reads `config.roles` for it).
+        let tool_result_bound_policy = {
+            let fraction = config.routing.tool_result_bound_fraction;
+            let cap = config.routing.tool_result_bound_cap_tokens;
+            let mut per_role = std::collections::BTreeMap::new();
+            for (name, entry) in &config.roles {
+                let bound = if let Some(explicit) = entry.tool_result_bound_tokens {
+                    explicit
+                } else if fraction == 0 {
+                    // Adaptive fraction disabled -- this role falls through
+                    // to `default_bound_tokens` (the cap) at resolve time;
+                    // no per-role entry needed.
+                    continue;
+                } else {
+                    let smallest = entry
+                        .chain
+                        .iter()
+                        .filter_map(|raw| metadata.models.get(raw.as_str()))
+                        .map(|m| m.max_context_tokens)
+                        .min();
+                    match smallest {
+                        // No model metadata reachable for this role's chain
+                        // at all -- the disclosed cap is the fallback, same
+                        // as `default_bound_tokens` below.
+                        None => continue,
+                        Some(window) => (window / fraction).min(cap),
+                    }
+                };
+                per_role.insert(conway_core::ids::RoleAlias::new(name.clone()), bound);
+            }
+            Arc::new(conway_core::capabilities::ToolResultBoundPolicy {
+                default_bound_tokens: cap,
+                per_role,
+            })
+        };
         let health: Arc<dyn HealthRegistry> = Arc::new(AlwaysClosedHealthRegistry);
 
         // 7. Router: injected `router` wins UNCONDITIONALLY over everything
@@ -2204,6 +2254,7 @@ impl ConwayBuilder {
             skills: skill_defs,
             event_bus,
             headroom: Arc::new(headroom_policy),
+            tool_result_bound: tool_result_bound_policy,
             session_discovery,
             capabilities: Arc::new(capability_registry)
                 as Arc<dyn conway_core::ports::CapabilityHost>,

@@ -52,6 +52,7 @@ fn report(turn: u32, segments: Vec<ContextReportEntry>) -> ContextReport {
         dropped: Vec::new(),
         curator_failed: None,
         instruction_fragments: Vec::new(),
+        not_admitted: Vec::new(),
     }
 }
 

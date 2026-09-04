@@ -126,6 +126,18 @@ fn default_headroom_tokens() -> u32 {
     DEFAULT_HEADROOM_TOKENS
 }
 
+/// Default divisor for `conway::config::schema::RoutingSection::
+/// headroom_fraction`: `window / d`. `d = 10` (10%) is the exact figure
+/// that field's own doc comment has illustrated since the fraction was
+/// introduced (board item `01M1AVZPTRSWVE33G4DTJY7Q1B` finishes what an
+/// earlier commit landed opt-in with this same worked example) -- reused
+/// here rather than a fresh number, so the default this constant now drives
+/// is not a silent departure from what the doc already promised: `8192`
+/// fixed tokens is 25% of a 32K window but under 1% of a 976K one, and a
+/// 10% reservation lands generously between those two extremes for most
+/// configured models.
+pub const DEFAULT_HEADROOM_FRACTION: u32 = 10;
+
 /// A declarative, config-time-resolved reservation of output/reasoning
 /// tokens: a global default with per-role overrides.
 ///
@@ -360,6 +372,97 @@ impl RequiredCaps {
         } else {
             Err(missing)
         }
+    }
+}
+
+/// Tokens a single tool result may occupy in an assembled request before
+/// [`crate::provenance::Provenance::ToolResult`] admission (board item
+/// `01M1AVZPTRSWVE33G4DTJY7Q1B`) replaces its content with a not-admitted
+/// note, when no more specific bound is configured or computable. `0` is the
+/// distinct "unlimited" sentinel this constant is never itself set to --
+/// `ToolResultBoundPolicy::resolve` returns it verbatim only when a role, or
+/// the global default, is explicitly configured to `0`.
+///
+/// Also doubles as the fixed cap a fraction-computed bound
+/// (`conway::config::schema::RoutingSection::tool_result_bound_fraction`) is
+/// clamped to, so a 1M-window model does not admit a huge single tool result
+/// that would still degrade attention even though it is a small fraction of
+/// the window. `8_192` tokens is about 32KB of text under this crate's own
+/// `chars/4` estimator (`conway_runtime::context::builder::
+/// estimate_block_tokens`) -- the same "32K bytes" figure this board item's
+/// own spec names as an example cap, chosen deliberately rather than an
+/// unrelated round number: large enough to admit a typical file read or
+/// search result, small enough that one oversized result cannot alone
+/// consume a meaningful fraction of even the smallest realistic window this
+/// codebase routes to (32768 tokens, `ollama-cloud/glm-5.2` in this item's
+/// own walked scenario).
+pub const DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS: u32 = 8_192;
+
+/// Default divisor for the adaptive tool-result bound: `window / d`. `d = 5`
+/// (20%) sits at the generous end of this board item's own suggested 10-20%
+/// range -- move 1's gate exists to catch one outlier result blowing the
+/// whole window, not to ration ordinary large-but-legitimate results (a big
+/// file read, a wide search), so this leaves more room per-result than
+/// [`crate::capabilities`]'s headroom fraction (10%, reserved for the
+/// model's OWN output across the whole turn, a stingier budget by
+/// necessity). Combined with [`DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS`] via
+/// `min`, so a huge window still cannot admit an unreasonably large single
+/// result.
+pub const DEFAULT_TOOL_RESULT_BOUND_FRACTION: u32 = 5;
+
+/// A resolved bound on how many tokens a single tool result may occupy in
+/// assembled context before admission replaces it with a not-admitted note
+/// (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`, "refuse-to-admit", per the
+/// operator's 2026-09-01 ruling -- NOT silent truncation). Shape mirrors
+/// [`HeadroomPolicy`] (a global default plus a `per_role` table, resolved
+/// once and total), but is deliberately NOT built by a `from_routing_config`
+/// sibling the way [`HeadroomPolicy`] is: this bound is a context-ASSEMBLY
+/// concern, never consulted by routing/admission (`RequiredCaps`,
+/// `RoutingConfig`), so it has no reason to live on
+/// `conway_core::routing::RoleConfig` the way `headroom_tokens` does, and
+/// every reason not to -- adding a field there would touch `RoutingConfig`'s
+/// and `RoleConfig`'s many existing call sites across `conway-plugin-routing`
+/// and every crate that constructs a `RouteRequest`, for a value routing
+/// itself never reads. `conway::builder::ConwayBuilder::build` (the sole
+/// production constructor) builds this directly from `RoutingSection::
+/// tool_result_bound_fraction`/`tool_result_bound_cap_tokens` and each
+/// role's own chain against model metadata -- the identical
+/// smallest-reachable-window technique `headroom_fraction` already uses,
+/// just not routed back through `RoutingConfig` to get there.
+///
+/// `0` means unlimited (the gate never fires) -- an explicit operator
+/// choice, at either the global or the per-role level, never a value this
+/// policy computes on its own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ToolResultBoundPolicy {
+    /// Mirrors the `[routing] tool_result_bound_cap_tokens`/
+    /// `tool_result_bound_fraction` config keys' resolved fallback (used
+    /// whenever a role has no adaptively-computed or explicitly-overridden
+    /// entry in `per_role`).
+    pub default_bound_tokens: u32,
+    #[serde(skip)]
+    pub per_role: BTreeMap<RoleAlias, u32>,
+}
+
+impl Default for ToolResultBoundPolicy {
+    fn default() -> Self {
+        Self {
+            default_bound_tokens: DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS,
+            per_role: BTreeMap::new(),
+        }
+    }
+}
+
+impl ToolResultBoundPolicy {
+    /// The per-role entry when present, else `default_bound_tokens`. Total:
+    /// never errors, never panics. `0` (from either source) means
+    /// unlimited.
+    pub fn resolve(&self, role: &RoleAlias) -> u32 {
+        self.per_role
+            .get(role)
+            .copied()
+            .unwrap_or(self.default_bound_tokens)
     }
 }
 
@@ -602,6 +705,62 @@ mod tests {
         assert!(!err.is_empty());
         assert_eq!(required.total_required(u32::MAX), u32::MAX);
         assert_eq!(required.shortfall(&model_caps, u32::MAX), u32::MAX - 32_768);
+    }
+
+    // -----------------------------------------------------------------
+    // ToolResultBoundPolicy (board item 01M1AVZPTRSWVE33G4DTJY7Q1B, move 1)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn tool_result_bound_policy_default_is_the_disclosed_cap_and_empty_per_role() {
+        let policy = ToolResultBoundPolicy::default();
+        assert_eq!(
+            policy.default_bound_tokens,
+            DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS
+        );
+        assert!(policy.per_role.is_empty());
+    }
+
+    #[test]
+    fn tool_result_bound_resolve_per_role_hit_and_miss() {
+        let mut per_role = BTreeMap::new();
+        per_role.insert(RoleAlias::new("planner"), 2_000);
+        let policy = ToolResultBoundPolicy {
+            default_bound_tokens: 8_192,
+            per_role,
+        };
+        assert_eq!(policy.resolve(&RoleAlias::new("planner")), 2_000);
+        // "fast" has no override -> falls back to the global default.
+        assert_eq!(policy.resolve(&RoleAlias::new("fast")), 8_192);
+    }
+
+    #[test]
+    fn tool_result_bound_zero_means_unlimited_at_either_layer() {
+        let global_unlimited = ToolResultBoundPolicy {
+            default_bound_tokens: 0,
+            per_role: BTreeMap::new(),
+        };
+        assert_eq!(global_unlimited.resolve(&RoleAlias::new("anything")), 0);
+
+        let mut per_role = BTreeMap::new();
+        per_role.insert(RoleAlias::new("planner"), 0);
+        let per_role_unlimited = ToolResultBoundPolicy {
+            default_bound_tokens: 8_192,
+            per_role,
+        };
+        assert_eq!(per_role_unlimited.resolve(&RoleAlias::new("planner")), 0);
+        assert_eq!(per_role_unlimited.resolve(&RoleAlias::new("fast")), 8_192);
+    }
+
+    #[test]
+    fn tool_result_bound_policy_deserializes_and_omitting_the_field_uses_default() {
+        let policy: ToolResultBoundPolicy =
+            serde_json::from_str(r#"{"default_bound_tokens":4096}"#).unwrap();
+        assert_eq!(policy.default_bound_tokens, 4_096);
+        assert!(policy.per_role.is_empty());
+
+        let policy: ToolResultBoundPolicy = serde_json::from_str("{}").unwrap();
+        assert_eq!(policy, ToolResultBoundPolicy::default());
     }
 
     #[test]

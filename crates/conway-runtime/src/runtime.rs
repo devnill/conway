@@ -119,7 +119,7 @@ use chrono::Utc;
 use conway_core::agent::{
     AgentDefRef, AgentResult, AgentStatus, AgentTreeSnapshot, Budget, SubagentSpec, ToolSelector,
 };
-use conway_core::capabilities::{CacheMode, HeadroomPolicy};
+use conway_core::capabilities::{CacheMode, HeadroomPolicy, ToolResultBoundPolicy};
 use conway_core::config::{AgentDef, SkillDef, DEFAULT_MAX_PARALLEL_TOOLS};
 use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::error::{ConwayError, RuntimeError, StoreError};
@@ -217,6 +217,13 @@ pub struct RuntimeDeps {
     pub instructions: Vec<PluginInstruction>,
     pub event_bus: Arc<EventBus>,
     pub headroom: Arc<HeadroomPolicy>,
+    /// The tool-result admission bound policy (board item
+    /// `01M1AVZPTRSWVE33G4DTJY7Q1B`, move 1) -- injected exactly like
+    /// [`Self::headroom`], for the identical reason: `conway`'s
+    /// `ConwayBuilder::build` is the sole real-build producer, resolving it
+    /// from `[routing]` config and model metadata once at construction
+    /// time, never rebuilt per turn.
+    pub tool_result_bound: Arc<ToolResultBoundPolicy>,
     /// The cross-session discovery capability (board item
     /// `01M0PS8J3AK7Z7253Z3E3RD3GY`; `conway_core::ports::
     /// SessionDiscoveryHost`'s own module doc) -- injected whole, like
@@ -370,6 +377,7 @@ impl Runtime {
             instructions,
             event_bus,
             headroom,
+            tool_result_bound,
             session_discovery,
             capabilities,
         } = deps;
@@ -448,6 +456,7 @@ impl Runtime {
                 bus: event_bus.clone(),
                 builder,
                 headroom,
+                tool_result_bound,
                 tree: tree.clone(),
                 // The resolver Arc created above is shared between the
                 // runtime (for `subagent.rs`'s fork resolution) and the
@@ -1967,5 +1976,6 @@ fn empty_report(agent_id: AgentId) -> ContextReport {
         dropped: Vec::new(),
         curator_failed: None,
         instruction_fragments: Vec::new(),
+        not_admitted: Vec::new(),
     }
 }

@@ -182,6 +182,7 @@ fn build_runtime(
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
@@ -1004,6 +1005,7 @@ async fn await_result_blocks_until_the_child_actually_finishes_then_resolves_eve
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
@@ -1599,6 +1601,7 @@ async fn tool_ctx_subagents_is_the_runtime_itself() {
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
@@ -1756,6 +1759,7 @@ fn build_probe_runtime(
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
@@ -1792,6 +1796,7 @@ fn build_runtime_over(store: Arc<dyn SessionStore>, script: Vec<ScriptedTurn>) -
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
@@ -2769,6 +2774,7 @@ fn build_runtime_with_two_tools_and_defs(
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
@@ -2925,6 +2931,7 @@ fn build_runtime_with_pin_aware_router(
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
@@ -3827,6 +3834,7 @@ fn build_runtime_with_panicking_reviewer(turns: usize) -> (Arc<Runtime>, Arc<Scr
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
@@ -4050,6 +4058,7 @@ fn build_runtime_with_two_tools_defs_and_instructions(
         skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),

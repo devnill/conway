@@ -333,7 +333,21 @@ pub enum RoutingError {
     /// that already exceeds a model's window" and "Estimated, not exact"
     /// sections already document, now surfaced at the error site itself
     /// rather than left for the operator to find in a doc.
-    #[error("context rejected: {est_tokens} prompt + {headroom_tokens} reserved output = {required_tokens} tokens, but {model} accepts at most {max_context_tokens} (short by {shortfall_tokens}); no truncation or escalation is performed -- to admit this request, lower role {role}'s headroom_tokens, add a larger-window model later in its fallback chain, or shorten the prompt")]
+    ///
+    /// **Extended (same board item, operator ruling 2026-09-01) with two
+    /// more remedies for the case none of the three above helps: the
+    /// conversation itself has genuinely outgrown every configured
+    /// candidate.** `/conway.history.rewind` (`conway-plugin-history`,
+    /// `crates/conway-cli/src/first_party_plugins.rs`) forks a fresh session
+    /// from an earlier `seq`, discarding the tail that grew the transcript
+    /// past the window; `conway.trim` (`conway-plugin-trim`) is an opt-in
+    /// curator that drops old tool round-trips proactively so a long-running
+    /// session does not reach this error in the first place. Both are real,
+    /// installable, first-party plugins (`docs/plugins/README.md`), never
+    /// core reaching for compaction on its own -- naming them is pointing at
+    /// an operator's own already-available levers, not core performing
+    /// either action itself.
+    #[error("context rejected: {est_tokens} prompt + {headroom_tokens} reserved output = {required_tokens} tokens, but {model} accepts at most {max_context_tokens} (short by {shortfall_tokens}); no truncation or escalation is performed -- to admit this request, lower role {role}'s headroom_tokens, add a larger-window model later in its fallback chain, or shorten the prompt; if the conversation itself has outgrown every candidate, fork from an earlier point with `/conway.history.rewind` or install the `conway.trim` plugin to curate old tool round-trips")]
     ContextTooLarge {
         role: RoleAlias,
         model: ModelRef,
@@ -854,6 +868,12 @@ mod tests {
             "fallback chain",
             "shorten the prompt",
             "planner",
+            // Operator ruling 2026-09-01 (board item 01M1AVZPTRSWVE33G4DTJY7Q1B):
+            // two more concrete remedies for "the conversation itself
+            // outgrew every candidate" -- named, reachable, first-party
+            // plugin surfaces, not core inventing compaction.
+            "/conway.history.rewind",
+            "conway.trim",
         ] {
             assert!(
                 routing.contains(needle),

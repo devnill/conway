@@ -334,6 +334,54 @@ pub struct ContextReport {
     /// existed still decodes, with no instruction fragments recorded.
     #[serde(default)]
     pub instruction_fragments: Vec<InstructionFragmentEntry>,
+    /// Every tool result this turn's context assembly refused to admit
+    /// because it exceeded the configured bound (board item
+    /// `01M1AVZPTRSWVE33G4DTJY7Q1B`, move 1 -- refuse-to-admit, per the
+    /// operator's 2026-09-01 ruling). A non-admitted result still gets a
+    /// [`ContextReportEntry`] in [`Self::segments`], with
+    /// `Provenance::ToolResult` unchanged (the model still sees WHICH tool
+    /// produced it) -- what changed is the CONTENT rendered there, a short
+    /// not-admitted note instead of the result. This list is the durable,
+    /// structured record of every such substitution, mirroring
+    /// [`Self::dropped`]'s "the intervention is part of the record, not
+    /// behind it" discipline exactly: the harness still does not curate
+    /// context on its own initiative, but where an admission bound forces
+    /// it to withhold content, that withholding is never silent.
+    ///
+    /// Empty for the overwhelmingly common case (no bound configured, or
+    /// every result fits). Applies identically to a fork child's inherited
+    /// tool results (`Provenance::Inherited`) and this turn's own -- the
+    /// SAME gate, at the SAME rendering seam, covers both (see
+    /// `conway_runtime::context::builder::ContextBuilder::build`'s doc).
+    ///
+    /// `#[serde(default)]`: every session log written before this field
+    /// existed still decodes, with nothing recorded as not admitted.
+    #[serde(default)]
+    pub not_admitted: Vec<NotAdmittedEntry>,
+}
+
+/// One tool result [`ContextReport::not_admitted`] refused to render into
+/// context, and why -- the durable record a not-admitted note's "size vs
+/// bound" claim is checked against.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NotAdmittedEntry {
+    pub call_id: String,
+    pub tool: ToolName,
+    /// The result's own byte length (its `ContentBlock`s' meaningful
+    /// payload, the same measure
+    /// `conway_runtime::context::builder::block_payload_chars` sums) --
+    /// independent of the token estimator, so the note's "size" claim is a
+    /// hard fact, not itself an estimate.
+    pub original_bytes: u64,
+    /// The SAME heuristic (`ContextReport::tokenizer`, `"heuristic-chars4"`)
+    /// every other estimate in this report uses, over the result's own
+    /// content -- what the result WOULD have cost had it been admitted.
+    pub tokens_est: u32,
+    /// The bound this result exceeded (tokens) -- the resolved
+    /// `ToolResultBoundPolicy::resolve(role)` value in effect for this
+    /// turn, so the note's "against the bound" claim is checkable without
+    /// cross-referencing config.
+    pub bound_tokens: u32,
 }
 
 /// One segment's entry in a [`ContextReport`].
@@ -754,6 +802,13 @@ mod tests {
                 tokens_est: 7,
                 unreachable_tool_ids: vec![ToolName::new("compose_path")],
                 skipped_by_scope: false,
+            }],
+            not_admitted: vec![NotAdmittedEntry {
+                call_id: "call_12".into(),
+                tool: ToolName::new("read"),
+                original_bytes: 100_000,
+                tokens_est: 25_000,
+                bound_tokens: 8_192,
             }],
         };
         let json = serde_json::to_string(&report).unwrap();

@@ -210,6 +210,7 @@ fn build_runtime_with_backend(backend: Arc<dyn Backend>, bus: Arc<EventBus>) -> 
         skills: Default::default(),
         event_bus: bus,
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),
@@ -662,6 +663,7 @@ fn build_runtime_with_backend_and_defs(
         skills: Default::default(),
         event_bus: bus,
         headroom: Arc::new(HeadroomPolicy::default()),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
 
         session_discovery: Arc::new(conway_testkit::FakeSessionDiscoveryHost::new()),
         capabilities: Arc::new(conway_core::ports::CapabilityRegistry::default()),

@@ -626,8 +626,66 @@ pub struct RoutingSection {
     /// producing an unusably small reservation — 10% of a 4K window is
     /// 400 tokens, which is too small for most outputs. The floor is
     /// disclosed here rather than silently applied.
-    #[serde(default)]
+    ///
+    /// **Default `Some(10)`, not `None`** (board item
+    /// `01M1AVZPTRSWVE33G4DTJY7Q1B`, finishing what landed opt-in in a
+    /// prior commit): the operator's 2026-09-01 ruling calls for the
+    /// adaptive fraction to be conway's actual DEFAULT behavior, with the
+    /// fixed [`Self::default_headroom_tokens`] surviving only as the
+    /// fallback for the one case adaptation cannot cover -- no model
+    /// metadata reachable for a role's chain at all (an unresolved model
+    /// id, or `[models].metadata_path` unset). Setting this to `Some(0)`
+    /// (or any other value, including reverting to `None` -- `Option<u32>`
+    /// stays the wire type so an operator config predating this default
+    /// change round-trips its own explicit `null` unchanged) opts back out
+    /// per-deployment; `None` behaves identically to `Some(0)` (fraction
+    /// disabled, `default_headroom_tokens` used everywhere).
+    #[serde(default = "default_headroom_fraction")]
     pub headroom_fraction: Option<u32>,
+    /// Fraction divisor for the tool-result admission bound (board item
+    /// `01M1AVZPTRSWVE33G4DTJY7Q1B`, move 1, operator ruling 2026-09-01): a
+    /// single tool result larger than `smallest_reachable_window(role) /
+    /// tool_result_bound_fraction`, capped at
+    /// [`Self::tool_result_bound_cap_tokens`], is not rendered into that
+    /// role's context -- the model sees a not-admitted note instead (see
+    /// `conway_runtime::context::builder::ContextBuilder::build`'s
+    /// admission gate). `0` disables the gate entirely (unlimited) for
+    /// every role with no more specific per-role
+    /// [`RoleEntry::tool_result_bound_tokens`] override.
+    ///
+    /// Same shape as [`Self::headroom_fraction`], deliberately: both are
+    /// "fraction of the smallest window this role's chain can reach,
+    /// computed once at config-load time" (`ConwayBuilder::build`, since
+    /// `ContextBuilder::build` itself renders a tool result before a model
+    /// is routed and so cannot compute a live, per-candidate bound -- see
+    /// `ToolResultBoundPolicy`'s own doc) -- but a SEPARATE knob, because
+    /// the two answer different questions (how much of the window the
+    /// MODEL's own output may reserve, vs. how much of it ONE tool result
+    /// may occupy) and an operator must be able to size them independently.
+    #[serde(default = "default_tool_result_bound_fraction")]
+    pub tool_result_bound_fraction: u32,
+    /// Fixed cap (in tokens) the fraction-computed tool-result bound above
+    /// is clamped to, so a huge window (e.g. 1M tokens) does not admit an
+    /// unreasonably large single tool result that would still degrade
+    /// attention even at a small fraction of that window. Also the bound
+    /// used directly (no fraction applied) when no model metadata is
+    /// reachable for a role's chain at all. See
+    /// [`conway_core::capabilities::DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS`]'s
+    /// own doc for the "8192 tokens ~= 32KB" justification.
+    #[serde(default = "default_tool_result_bound_cap_tokens")]
+    pub tool_result_bound_cap_tokens: u32,
+}
+
+fn default_headroom_fraction() -> Option<u32> {
+    Some(conway_core::capabilities::DEFAULT_HEADROOM_FRACTION)
+}
+
+fn default_tool_result_bound_fraction() -> u32 {
+    conway_core::capabilities::DEFAULT_TOOL_RESULT_BOUND_FRACTION
+}
+
+fn default_tool_result_bound_cap_tokens() -> u32 {
+    conway_core::capabilities::DEFAULT_TOOL_RESULT_BOUND_CAP_TOKENS
 }
 
 /// The minimum headroom the adaptive fraction may produce. Disclosed: a
@@ -640,7 +698,9 @@ impl Default for RoutingSection {
     fn default() -> Self {
         Self {
             default_headroom_tokens: DEFAULT_HEADROOM_TOKENS,
-            headroom_fraction: None,
+            headroom_fraction: default_headroom_fraction(),
+            tool_result_bound_fraction: default_tool_result_bound_fraction(),
+            tool_result_bound_cap_tokens: default_tool_result_bound_cap_tokens(),
         }
     }
 }
@@ -726,6 +786,20 @@ impl From<HealthSection> for conway_core::routing::HealthConfig {
 pub struct RoleEntry {
     pub chain: Vec<String>,
     pub headroom_tokens: Option<u32>,
+    /// Per-role override of the tool-result admission bound (board item
+    /// `01M1AVZPTRSWVE33G4DTJY7Q1B`, move 1) -- `Some(_)` wins over
+    /// `[routing].tool_result_bound_fraction`'s adaptive computation for
+    /// this role exactly the way `headroom_tokens` above wins over
+    /// `headroom_fraction`. `Some(0)` opts this ONE role out of the gate
+    /// (unlimited) even when the fraction is otherwise on. `None` (the
+    /// default) lets `ConwayBuilder::build` compute this role's bound
+    /// adaptively -- unlike `headroom_tokens`, this is never consulted by
+    /// `ConwayConfig::routing()`/routing admission at all: it exists solely
+    /// to build `conway_core::capabilities::ToolResultBoundPolicy`, a
+    /// context-ASSEMBLY concern (see that type's own doc for why it does
+    /// not live on `conway_core::routing::RoleConfig`).
+    #[serde(default)]
+    pub tool_result_bound_tokens: Option<u32>,
     /// Minimum tool-calling support. Wire vocabulary: `"none"` |
     /// `"non_streaming"` | `"streaming"` | `"streaming_validated"` — see
     /// [`ToolCallSupportSpec`] for why this isn't

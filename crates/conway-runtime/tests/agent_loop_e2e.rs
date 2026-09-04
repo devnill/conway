@@ -646,6 +646,7 @@ fn build_loop_inner(
         bus: bus.clone(),
         builder: Arc::new(ContextBuilder::new()),
         headroom: Arc::new(headroom),
+        tool_result_bound: Arc::new(conway_core::capabilities::ToolResultBoundPolicy::default()),
         tree: tree.clone(),
         // Mirrors `Runtime::set_context_hook`'s own wrap exactly -- the
         // fixture is the "a hook enters the runtime" seam for every test in

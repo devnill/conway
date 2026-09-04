@@ -103,7 +103,7 @@ use conway_core::log::LogRecord;
 use conway_core::path::{NodeStamp, ResolvedPath};
 use conway_core::ports::{FragmentAuthor, FragmentPosition, FragmentScope};
 use conway_core::provenance::{
-    ContextReport, ContextReportEntry, InstructionFragmentEntry, Provenance,
+    ContextReport, ContextReportEntry, InstructionFragmentEntry, NotAdmittedEntry, Provenance,
 };
 use conway_core::segment::{CacheHint, CacheTtl, PromptSegment};
 
@@ -268,6 +268,15 @@ pub struct ContextInput {
     pub tools: Vec<ToolSpec>,
     pub path: ResolvedPath,
     pub cache_ttl: CacheTtl,
+    /// The tool-result admission bound (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`,
+    /// move 1) for THIS turn's role, resolved by the caller
+    /// (`agent_loop.rs`, `ToolResultBoundPolicy::resolve`) before assembly
+    /// -- `ContextBuilder` itself is pure and holds no policy of its own.
+    /// `0` means unlimited: a single tool result, however large, always
+    /// renders in full. Applied identically to this session's own tool
+    /// results and a fork child's inherited ones -- see
+    /// [`admit_tool_result`]'s own doc.
+    pub tool_result_bound_tokens: u32,
     /// Why the pre-assembly curator declined to curate this turn, if it
     /// failed (DESIGN §11.6). `None` -- the overwhelmingly common case --
     /// when no curator is installed or the curator succeeded. Carried into
@@ -565,10 +574,16 @@ impl ContextBuilder {
         // the old [5..] `own_segment` call exactly. Breakpoint B is resolved
         // AFTER `drop_unanswered_tool_calls` below, so the index is never
         // stale.
+        let mut not_admitted: Vec<NotAdmittedEntry> = Vec::new();
         for (node, record) in &input.path.nodes {
             match node.stamp {
                 NodeStamp::Inherited { from } => {
-                    let Some((role, content)) = record_role_and_content(record) else {
+                    let Some((role, content)) = record_role_and_content(
+                        record,
+                        input.tool_result_bound_tokens,
+                        input.turn,
+                        &mut not_admitted,
+                    ) else {
                         continue;
                     };
                     segments.push(PromptSegment::new(
@@ -581,7 +596,12 @@ impl ContextBuilder {
                     ));
                 }
                 NodeStamp::Head | NodeStamp::Own => {
-                    if let Some((role, content, provenance)) = own_segment(record) {
+                    if let Some((role, content, provenance)) = own_segment(
+                        record,
+                        input.tool_result_bound_tokens,
+                        input.turn,
+                        &mut not_admitted,
+                    ) {
                         segments.push(PromptSegment::new(role, content, provenance));
                     }
                 }
@@ -642,6 +662,7 @@ impl ContextBuilder {
             dropped,
             input.curator_failed.clone(),
             instruction_reports,
+            not_admitted,
         );
 
         Ok((segments, report))
@@ -693,6 +714,7 @@ pub(crate) fn retotal(
     dropped: Vec<String>,
     curator_failed: Option<String>,
     instruction_fragments: Vec<InstructionFragmentEntry>,
+    not_admitted: Vec<NotAdmittedEntry>,
 ) -> ContextReport {
     for segment in segments.iter_mut() {
         segment.tokens_est = Some(estimate_tokens(&segment.content));
@@ -711,6 +733,7 @@ pub(crate) fn retotal(
         dropped,
         curator_failed,
         instruction_fragments,
+        not_admitted,
     )
 }
 
@@ -723,6 +746,13 @@ pub(crate) fn retotal(
 /// failed, and a re-totalled report would silently lose the record.
 /// `instruction_fragments` (board item `01M0K5MD59YZRSHE31JKZKFRMY`) is
 /// threaded for the identical reason -- see [`retotal`]'s own doc.
+/// `not_admitted` (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`, move 1) is
+/// threaded for the SAME reason again: the tool-result admission gate runs
+/// once, during the original assembly's per-node mapping pass, over records
+/// a hook never sees -- by the time a hook has edited `segments`, a
+/// not-admitted note (if any) is already indistinguishable in the content
+/// itself from an ordinary short tool result, so re-deriving here would
+/// silently lose the substitution's own record.
 fn build_report(
     agent_id: AgentId,
     turn: u32,
@@ -730,6 +760,7 @@ fn build_report(
     dropped: Vec<String>,
     curator_failed: Option<String>,
     instruction_fragments: Vec<InstructionFragmentEntry>,
+    not_admitted: Vec<NotAdmittedEntry>,
 ) -> ContextReport {
     let entries: Vec<ContextReportEntry> = segments
         .iter()
@@ -751,6 +782,7 @@ fn build_report(
         dropped,
         curator_failed,
         instruction_fragments,
+        not_admitted,
     }
 }
 
@@ -775,6 +807,104 @@ fn tool_result_block(result: &ToolResult) -> Vec<ContentBlock> {
         blocks: result.blocks.clone(),
         is_error: result.is_error,
     }]
+}
+
+/// The tool-result admission gate (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`,
+/// move 1, "refuse-to-admit" per the operator's 2026-09-01 ruling).
+///
+/// `bound_tokens == 0` means unlimited (the common case absent explicit
+/// configuration) -- `result`'s real content always renders, at no cost:
+/// this function does not even estimate its size in that case. Otherwise, a
+/// result whose rendered content would cost more than `bound_tokens`
+/// (`heuristic-chars4`, the SAME estimator [`estimate_tokens`] uses
+/// everywhere else in this module) does NOT enter context: `result.blocks`
+/// is replaced with a single not-admitted note (still wrapped in the same
+/// `ContentBlock::ToolResultBlock { call_id, .. }` shape a real result
+/// would use -- both wire adapters serialize a tool result ONLY from that
+/// block kind, so the request stays well-formed), and a
+/// [`NotAdmittedEntry`] is pushed onto `not_admitted` so the substitution
+/// is durably recorded (`ContextReport::not_admitted`) rather than
+/// invisible in the transcript.
+///
+/// **Never a partial/truncated middle.** The choice is binary: the whole
+/// result, or a note -- `TruncationPolicy` (`conway_core::content`) is a
+/// SEPARATE, still-unused-by-any-caller mechanism this function does not
+/// touch; see that type's own doc for why this codebase deliberately has no
+/// silent-truncation path to reach for instead.
+///
+/// The ONE seam both [`own_segment`] (this session's own tool results) and
+/// [`record_role_and_content`] (a fork child's INHERITED tool results) call
+/// through -- per the operator's ruling, "the bound applies to the
+/// inherited prefix too, or forking is cheap stays false on a
+/// non-caching provider." Both callers already destructure the identical
+/// `LogRecord::ToolResultRecord { result, .. }` shape before reaching here,
+/// so one function covers both without a second, drifting copy of the
+/// check.
+fn admit_tool_result(
+    result: &ToolResult,
+    bound_tokens: u32,
+    turn: u32,
+    not_admitted: &mut Vec<NotAdmittedEntry>,
+) -> Vec<ContentBlock> {
+    let real = tool_result_block(result);
+    if bound_tokens == 0 {
+        return real;
+    }
+    let tokens_est = estimate_tokens(&real);
+    if tokens_est <= bound_tokens {
+        return real;
+    }
+    let original_bytes: u64 = real.iter().map(|b| block_payload_chars(b) as u64).sum();
+    not_admitted.push(NotAdmittedEntry {
+        call_id: result.call_id.clone(),
+        tool: result.tool.clone(),
+        original_bytes,
+        tokens_est,
+        bound_tokens,
+    });
+    vec![ContentBlock::ToolResultBlock {
+        call_id: result.call_id.clone(),
+        blocks: text_block(&not_admitted_note(
+            &result.tool,
+            &result.call_id,
+            turn,
+            original_bytes,
+            tokens_est,
+            bound_tokens,
+        )),
+        is_error: result.is_error,
+    }]
+}
+
+/// The text a not-admitted tool result's segment carries in place of the
+/// real result -- see [`admit_tool_result`]'s own doc. Names the size
+/// against the bound (both a hard byte fact and the same heuristic token
+/// estimate every other figure in a `ContextReport` uses), WHERE the full
+/// result still lives (this session's own durable log -- no new port: the
+/// `ToolResultRecord` this note replaces was already persisted before
+/// `ContextBuilder::build` ever ran), and at least two concrete remedies
+/// that do not just re-trigger the same gate: re-admitting the SAME content
+/// unchanged (e.g. via `compose_context_path`) would hit the identical
+/// bound again, so the honest next moves are narrowing the request that
+/// produced it, or delegating the narrowing to a child.
+fn not_admitted_note(
+    tool: &ToolName,
+    call_id: &str,
+    turn: u32,
+    original_bytes: u64,
+    tokens_est: u32,
+    bound_tokens: u32,
+) -> String {
+    format!(
+        "[tool result not admitted to context] `{tool}` (call `{call_id}`) produced \
+         {original_bytes} bytes (~{tokens_est} estimated tokens), exceeding this turn's \
+         {bound_tokens}-token tool-result bound. The full result is preserved in this session's \
+         durable log (turn {turn}) but was withheld from this request -- re-admitting it \
+         unchanged would hit the same bound. To use it: re-invoke `{tool}` with a narrower range \
+         or query (e.g. the `read` tool's own `offset`/`limit` args, or a tighter grep/search \
+         filter) so the result fits, or fork a child with `conway_fork` to read and process the \
+         full result and report back only a small, distilled answer."
+    )
 }
 
 /// Drops every `ContentBlock::ToolUse` whose `call_id` has no answering
@@ -1023,13 +1153,27 @@ fn artifact_kind_label(kind: ArtifactKind) -> &'static str {
 /// Generic `(role, content)` extraction used for inherited records, whose
 /// original provenance is discarded and replaced with
 /// `Provenance::Inherited` regardless of record kind.
-fn record_role_and_content(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>)> {
+///
+/// `bound_tokens`/`turn`/`not_admitted`: the tool-result admission gate
+/// (board item `01M1AVZPTRSWVE33G4DTJY7Q1B`, move 1) applies HERE, to a
+/// fork child's INHERITED tool results, identically to [`own_segment`]'s own
+/// application to a session's OWN results -- see [`admit_tool_result`]'s own
+/// doc for why this is the one seam that can cover both without
+/// duplicating the check: it is the sole place a raw `ToolResult` is turned
+/// into the `ContentBlock`s a segment renders, for either kind of record.
+fn record_role_and_content(
+    record: &LogRecord,
+    bound_tokens: u32,
+    turn: u32,
+    not_admitted: &mut Vec<NotAdmittedEntry>,
+) -> Option<(Role, Vec<ContentBlock>)> {
     match record {
         LogRecord::UserTurn { text, .. } => Some((Role::User, text_block(text))),
         LogRecord::Assistant { content, .. } => Some((Role::Assistant, content.clone())),
-        LogRecord::ToolResultRecord { result, .. } => {
-            Some((Role::ToolResult, tool_result_block(result)))
-        }
+        LogRecord::ToolResultRecord { result, .. } => Some((
+            Role::ToolResult,
+            admit_tool_result(result, bound_tokens, turn, not_admitted),
+        )),
         LogRecord::ForkDirective { text, .. } => Some((Role::User, text_block(text))),
         LogRecord::ParentSteer { text, .. } => Some((Role::User, text_block(text))),
         LogRecord::SystemNote { text, .. } => Some((Role::System, text_block(text))),
@@ -1051,7 +1195,16 @@ fn record_role_and_content(record: &LogRecord) -> Option<(Role, Vec<ContentBlock
 
 /// Own (volatile) record mapping, per architecture §5.3: provenance
 /// derived from record kind. See the module doc for the `Assistant` gap.
-fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenance)> {
+///
+/// `bound_tokens`/`turn`/`not_admitted`: see [`record_role_and_content`]'s
+/// own doc -- the identical admission gate, applied to this session's OWN
+/// tool results rather than an inherited prefix's.
+fn own_segment(
+    record: &LogRecord,
+    bound_tokens: u32,
+    turn: u32,
+    not_admitted: &mut Vec<NotAdmittedEntry>,
+) -> Option<(Role, Vec<ContentBlock>, Provenance)> {
     match record {
         LogRecord::UserTurn { text, prov, .. } => {
             // B4: honor the STORED provenance rather than deriving it from
@@ -1074,7 +1227,7 @@ fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenanc
         )),
         LogRecord::ToolResultRecord { result, .. } => Some((
             Role::ToolResult,
-            tool_result_block(result),
+            admit_tool_result(result, bound_tokens, turn, not_admitted),
             Provenance::ToolResult {
                 call_id: result.call_id.clone(),
                 tool: result.tool.clone(),
@@ -1469,6 +1622,7 @@ mod estimator_tests {
             Vec::new(),
             None,
             Vec::new(),
+            Vec::new(),
         );
 
         let expected = estimate_tokens(&segments[0].content);
@@ -1494,6 +1648,7 @@ mod estimator_tests {
             &[],
             Vec::new(),
             None,
+            Vec::new(),
             Vec::new(),
         );
         assert_eq!(report.segments.len(), 1);
@@ -1551,6 +1706,7 @@ mod estimator_tests {
             Vec::new(),
             None,
             Vec::new(),
+            Vec::new(),
         );
 
         let expected = estimate_tool_schemas_tokens(&tools);
@@ -1590,6 +1746,7 @@ mod estimator_tests {
             .unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
             curator_failed: None,
+            tool_result_bound_tokens: 0,
         };
         let (segments, report) = ContextBuilder::new().build(&input).unwrap();
 
@@ -1653,6 +1810,7 @@ mod estimator_tests {
             .unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
             curator_failed: None,
+            tool_result_bound_tokens: 0,
         };
         let (segments, report) = ContextBuilder::new().build(&input).unwrap();
 
@@ -1718,6 +1876,7 @@ mod estimator_tests {
             .unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
             curator_failed: None,
+            tool_result_bound_tokens: 0,
         };
         let (segments, report) = ContextBuilder::new().build(&input).unwrap();
 
@@ -1788,6 +1947,7 @@ mod estimator_tests {
             .unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
             curator_failed: None,
+            tool_result_bound_tokens: 0,
         };
         let (segments, _report) = ContextBuilder::new().build(&input).unwrap();
 
@@ -1883,6 +2043,7 @@ mod estimator_tests {
             .unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
             curator_failed: None,
+            tool_result_bound_tokens: 0,
         };
         let (segments, _report) = ContextBuilder::new().build(&input).unwrap();
 
@@ -1956,6 +2117,7 @@ mod estimator_tests {
             .unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
             curator_failed: None,
+            tool_result_bound_tokens: 0,
         }
     }
 
@@ -2200,8 +2362,10 @@ mod own_segment_provenance_tests {
     #[test]
     fn own_segment_honors_stored_provenance_on_a_merged_user_turn() {
         let from = SessionId::new();
+        let mut not_admitted = Vec::new();
         let (role, _content, prov) =
-            own_segment(&user_turn(Provenance::MergedAsk { from })).expect("a UserTurn maps");
+            own_segment(&user_turn(Provenance::MergedAsk { from }), 0, 0, &mut not_admitted)
+                .expect("a UserTurn maps");
         assert_eq!(role, Role::User);
         assert_eq!(prov, Provenance::MergedAsk { from });
     }
@@ -2212,8 +2376,10 @@ mod own_segment_provenance_tests {
     /// behavior for them exactly.
     #[test]
     fn own_segment_keeps_user_prompt_for_pre_merge_records() {
+        let mut not_admitted = Vec::new();
         let (role, _content, prov) =
-            own_segment(&user_turn(Provenance::UserPrompt)).expect("a UserTurn maps");
+            own_segment(&user_turn(Provenance::UserPrompt), 0, 0, &mut not_admitted)
+                .expect("a UserTurn maps");
         assert_eq!(role, Role::User);
         assert_eq!(prov, Provenance::UserPrompt);
     }
@@ -2250,6 +2416,7 @@ mod own_segment_provenance_tests {
             .unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
             curator_failed: None,
+            tool_result_bound_tokens: 0,
         };
 
         let (segments, report) = ContextBuilder::new().build(&input).unwrap();
@@ -2338,6 +2505,7 @@ mod breakpoint_indices_tests {
             path: path_from_legacy(Some(&inherited), &head_log(), SessionId::new()).unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
             curator_failed: None,
+            tool_result_bound_tokens: 0,
         }
     }
 
@@ -2380,6 +2548,7 @@ mod breakpoint_indices_tests {
             path: path_from_legacy(None, &head_log(), SessionId::new()).unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
             curator_failed: None,
+            tool_result_bound_tokens: 0,
         };
         let (segments, _) = ContextBuilder::new().build(&input).unwrap();
 
@@ -2481,6 +2650,7 @@ mod tool_call_pairing_tests {
             path: path_from_legacy(None, &own_log, SessionId::new()).unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
             curator_failed: None,
+            tool_result_bound_tokens: 0,
         }
     }
 
@@ -2510,7 +2680,204 @@ mod tool_call_pairing_tests {
             path: path_from_legacy(Some(&inherited), &own_log, SessionId::new()).unwrap(),
             cache_ttl: CacheTtl::FiveMinutes,
             curator_failed: None,
+            tool_result_bound_tokens: 0,
         }
+    }
+
+    /// [`input_with`] with an explicit tool-result admission bound instead
+    /// of the unlimited (`0`) default every other caller of `input_with`
+    /// wants.
+    fn input_with_bound(own: Vec<LogRecord>, bound: u32) -> ContextInput {
+        ContextInput {
+            tool_result_bound_tokens: bound,
+            ..input_with(own, CacheMode::None)
+        }
+    }
+
+    /// [`input_inheriting`] with an explicit tool-result admission bound.
+    fn input_inheriting_with_bound(
+        records: Vec<LogRecord>,
+        own: Vec<LogRecord>,
+        bound: u32,
+    ) -> ContextInput {
+        ContextInput {
+            tool_result_bound_tokens: bound,
+            ..input_inheriting(records, own)
+        }
+    }
+
+    /// A `tool_result` whose text is large enough to blow any small bound
+    /// used in the tests below (repeats past any reasonable heuristic-
+    /// chars4 estimate of a "small" bound).
+    fn oversized_tool_result(seq: u64, call_id: &str) -> LogRecord {
+        LogRecord::ToolResultRecord {
+            seq: LogSeq(seq),
+            ts: Utc::now(),
+            result: ToolResult {
+                call_id: call_id.to_string(),
+                tool: ToolName::new("read"),
+                blocks: vec![ContentBlock::Text {
+                    text: "x".repeat(10_000),
+                }],
+                is_error: false,
+                truncated: None,
+            },
+        }
+    }
+
+    /// Every block of text rendered anywhere in `segments`' content --
+    /// `ToolResultBlock`'s nested `Text` blocks included -- concatenated.
+    fn all_rendered_text(segments: &[PromptSegment]) -> String {
+        fn collect(blocks: &[ContentBlock], out: &mut String) {
+            for block in blocks {
+                match block {
+                    ContentBlock::Text { text } => out.push_str(text),
+                    ContentBlock::ToolResultBlock { blocks, .. } => collect(blocks, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut out = String::new();
+        for segment in segments {
+            collect(&segment.content, &mut out);
+        }
+        out
+    }
+
+    // -----------------------------------------------------------------
+    // Tool-result admission gate (board item 01M1AVZPTRSWVE33G4DTJY7Q1B,
+    // move 1: refuse-to-admit, per the operator's 2026-09-01 ruling).
+    // -----------------------------------------------------------------
+
+    /// The gate's core behavior on a session's OWN tool result: oversized
+    /// content never reaches the rendered segment, a not-admitted note
+    /// takes its place, and the substitution is durably recorded.
+    #[test]
+    fn oversized_own_tool_result_is_not_admitted_and_recorded() {
+        let input = input_with_bound(
+            vec![
+                assistant(1, vec![tool_use("a")]),
+                oversized_tool_result(2, "a"),
+            ],
+            10, // tiny bound: the 10,000-char result is far over it.
+        );
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        let text = all_rendered_text(&segments);
+        assert!(
+            !text.contains("xxxxx"),
+            "the oversized result's real content must never reach a rendered segment: {text:?}"
+        );
+        assert!(
+            text.contains("not admitted"),
+            "a not-admitted note must render in the result's place: {text:?}"
+        );
+
+        assert_eq!(report.not_admitted.len(), 1, "{:?}", report.not_admitted);
+        let entry = &report.not_admitted[0];
+        assert_eq!(entry.call_id, "a");
+        assert_eq!(entry.tool, ToolName::new("read"));
+        assert_eq!(entry.bound_tokens, 10);
+        assert!(
+            entry.tokens_est > 10,
+            "the recorded estimate must exceed the bound it violated: {}",
+            entry.tokens_est
+        );
+        assert!(entry.original_bytes >= 10_000);
+    }
+
+    /// Negative control: the identical shape, but the result actually fits
+    /// under the bound -- admitted unchanged, nothing recorded. Establishes
+    /// the gate does not over-fire on ordinary small results.
+    #[test]
+    fn undersized_own_tool_result_is_admitted_unchanged() {
+        let input = input_with_bound(
+            vec![assistant(1, vec![tool_use("a")]), tool_result(2, "a")],
+            10_000, // generous bound; "contents of a" is tiny next to it.
+        );
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        let text = all_rendered_text(&segments);
+        assert!(text.contains("contents of a"), "{text:?}");
+        assert!(report.not_admitted.is_empty(), "{:?}", report.not_admitted);
+    }
+
+    /// `0` is the explicit "unlimited" sentinel: even a huge result always
+    /// renders in full, and the gate's own per-block estimate never runs
+    /// (so this also proves the gate does not cost anything absent
+    /// configuration).
+    #[test]
+    fn zero_bound_means_unlimited_even_for_a_huge_result() {
+        let input = input_with_bound(
+            vec![
+                assistant(1, vec![tool_use("a")]),
+                oversized_tool_result(2, "a"),
+            ],
+            0,
+        );
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        let text = all_rendered_text(&segments);
+        assert!(text.contains("xxxxx"), "{text:?}");
+        assert!(report.not_admitted.is_empty(), "{:?}", report.not_admitted);
+    }
+
+    /// The SAME gate applies to a fork child's INHERITED tool results, not
+    /// only its own -- per the operator's ruling ("or forking is cheap
+    /// stays false on a non-caching provider"). Identical assertions to
+    /// [`oversized_own_tool_result_is_not_admitted_and_recorded`], just
+    /// through `input_inheriting_with_bound` instead of `input_with_bound`.
+    #[test]
+    fn oversized_inherited_tool_result_is_not_admitted_and_recorded() {
+        let input = input_inheriting_with_bound(
+            vec![
+                assistant(1, vec![tool_use("a")]),
+                oversized_tool_result(2, "a"),
+            ],
+            vec![],
+            10,
+        );
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        let text = all_rendered_text(&segments);
+        assert!(
+            !text.contains("xxxxx"),
+            "an inherited oversized result must never reach a rendered segment: {text:?}"
+        );
+        assert!(text.contains("not admitted"), "{text:?}");
+
+        assert_eq!(report.not_admitted.len(), 1, "{:?}", report.not_admitted);
+        let entry = &report.not_admitted[0];
+        assert_eq!(entry.call_id, "a");
+        assert_eq!(entry.bound_tokens, 10);
+    }
+
+    /// The not-admitted note itself names the size against the bound, where
+    /// the full result is kept, and at least two concrete remedies -- the
+    /// declaration-honesty acceptance criterion, pinned on the actual
+    /// rendered text (not just the structured `NotAdmittedEntry`).
+    #[test]
+    fn not_admitted_note_names_size_location_and_two_remedies() {
+        let input = input_with_bound(
+            vec![
+                assistant(1, vec![tool_use("a")]),
+                oversized_tool_result(2, "a"),
+            ],
+            10,
+        );
+        let (segments, _report) = ContextBuilder::new().build(&input).unwrap();
+        let text = all_rendered_text(&segments);
+
+        // Size vs. bound.
+        assert!(text.contains("10000 bytes"), "{text:?}");
+        assert!(text.contains("10-token"), "{text:?}");
+        // Where the full result is kept.
+        assert!(text.contains("durable log"), "{text:?}");
+        // At least two concrete remedies, neither of them "compact" or a
+        // tool this codebase does not have.
+        assert!(text.contains("re-invoke"), "{text:?}");
+        assert!(text.contains("conway_fork"), "{text:?}");
+        assert!(!text.contains("compact"), "{text:?}");
     }
 
     /// Every `ToolUse` `call_id` the assembled segments actually render.
@@ -2719,6 +3086,7 @@ mod tool_call_pairing_tests {
             report.dropped.clone(),
             Some("synthetic curator failure".to_string()),
             report.instruction_fragments.clone(),
+            report.not_admitted.clone(),
         );
         assert_eq!(after.dropped, vec!["b".to_string()]);
         // §11.6: a re-totalled report must not lose the curator record --
