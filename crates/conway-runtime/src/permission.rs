@@ -3073,8 +3073,8 @@ mod tests {
     /// `HookPermissionVerdict::Deny` check above it) instead `return`s
     /// immediately -- so a refactor that "regularizes" the `Prompt` arm to
     /// match its neighbours, turning `must_reach_gate = true;` into
-    /// `return HookStepOutcome::MustReachGate;`, is exactly the drift this
-    /// item's spec warns is the natural direction. Under that mutation,
+    /// `return HookStepOutcome::MustReachGate;`, is exactly the drift the
+    /// board item above warns is the natural direction. Under that mutation,
     /// the loop would return after hook A without ever reaching hook B:
     /// `runner.call_order()` would contain only `"hook-a"` (proven below
     /// to contain both), `pre_tool_use_hook_denial` would report

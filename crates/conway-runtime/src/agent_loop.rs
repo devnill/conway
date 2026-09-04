@@ -326,13 +326,13 @@ pub struct LoopDeps {
     pub resolver: Arc<conway_core::transcript::TranscriptResolver>,
     /// Pluggable pre-assembly context curation (DESIGN-context-path §11.4).
     /// `RwLock` rather than a plain `Option` for the SAME reason
-    /// [`Self::context_hook`] is: `RuntimeDeps` (runtime.rs, out of this
-    /// item's file scope) has no field to source one from at `LoopDeps`
-    /// construction time -- `Runtime::set_context_curator` (a new, purely
-    /// additive method) sets this post-construction, before any agent
+    /// [`Self::context_hook`] is: `RuntimeDeps` (runtime.rs)
+    /// has no field to source one from at `LoopDeps`
+    /// construction time -- `Runtime::set_context_curator` (a
+    /// purely additive method) sets this post-construction, before any agent
     /// starts running, and every turn reads it fresh via
     /// `AgentLoop::context_curator`. `None` (the default every existing
-    /// construction site gets, unchanged) means the curator stage is a
+    /// construction site gets) means the curator stage is a
     /// zero-cost pass-through -- `apply_curator` returns the original
     /// `ResolvedPath` without allocating a `CurateCtx` or even reading the
     /// lock's value's internals (the

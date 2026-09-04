@@ -3035,8 +3035,7 @@ mod compose_context_hooks_tests {
     //!   `on_overflow` runs exactly once per call to the composed hook.
     //!   The bounded re-attempt loop the doc for `on_overflow`'s retry
     //!   path might suggest (`MAX_OVERFLOW_ATTEMPTS`) is `AgentLoop::
-    //!   route_and_attempt`'s concern (`conway-runtime`, out of this
-    //!   item's scope), which simply calls the SAME composed (guarded)
+    //!   route_and_attempt`'s concern (`conway-runtime`), which simply calls the SAME composed (guarded)
     //!   hook's `on_overflow` again on a subsequent attempt -- nothing
     //!   about that requires `ChainedContextHook` itself to retry
     //!   anything.

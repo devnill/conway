@@ -239,8 +239,8 @@ pub trait Plugin: Send + Sync + 'static {
     /// does the LIFETIME (bound to a plugin vs. bound to a file an
     /// operator manages directly), which is why this is a distinct
     /// contribution method rather than a widened `Self::commands`-shaped
-    /// reuse of skills' own directory-loading path -- and, since this
-    /// item, why the two no longer share a provenance stamp either.
+    /// reuse of skills' own directory-loading path -- and
+    /// why the two do not share a provenance stamp either.
     fn instructions(&self) -> Vec<InstructionFragment> {
         Vec::new()
     }
