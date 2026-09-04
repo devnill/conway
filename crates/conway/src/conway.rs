@@ -39,12 +39,8 @@ const PRE_TOOL_USE_EVENT: &str = "pre_tool_use";
 /// PROMPT_SUBMITTED`], in the same order [`Conway::
 /// active_deny_capable_hook_rules`] enumerates them -- exposed so a
 /// consumer needing "is this event deny-capable" has exactly one place to
-/// read it from, rather than re-declaring the pair (board item
-/// `01M0XRD8VMWD273W0W51T8ECCM`: `conway_cli::claude_compat_plugins` used
-/// to hardcode `"pre_tool_use"` alone as that classification, silently
-/// missing `prompt_submitted` -- the exact drift this constant exists to
-/// make structurally impossible for every future reader of it, not just
-/// that one).
+/// read it from, rather than re-declaring the pair and risking drift
+/// (board item `01M0XRD8VMWD273W0W51T8ECCM`).
 ///
 /// **What would falsify "this list is exhaustive":** [`Conway::
 /// active_deny_capable_hook_rules`]'s own doc scopes itself to these same
@@ -65,24 +61,15 @@ pub const DENY_CAPABLE_EVENTS: [&str; 2] = [
 /// [`HookRuleView::origin`]'s value for every OPERATOR-AUTHORED row
 /// [`Conway::active_deny_capable_hook_rules`] returns.
 ///
-/// **No longer the only value this field can carry** (board item
-/// `01M129QW0GV90QTQS6B3BY3DAR`): before a plugin could register a hook
-/// directly (`conway_core::ports::Plugin::hooks`), `[hooks].rules[]` really
-/// was the ONLY place a hook rule could come from -- a single array that
-/// replaces WHOLESALE per config layer (`crate::config::merge`'s own module
-/// doc, "arrays and scalars replace wholesale"), never a union of several
-/// files' entries the way a `permissions.json` grant's provenance is -- so
-/// there was exactly one honest label to report. That claim would now be
-/// FALSE for a plugin-contributed rule if this constant were still applied
-/// unconditionally: `active_deny_capable_hook_rules`, below, reads each
-/// row's own `conway_core::hook::HookOrigin` (threaded through
-/// `ConwayBuilder::build`'s `PreToolUseHookSpec`/`HookSpec`) and reports
-/// THIS label only for [`conway_core::hook::HookOrigin::Operator`] rows --
-/// see [`hook_origin_label`] for the `HookOrigin::Plugin` case. Reporting a
-/// specific FILE layer (default/user/project/env/CLI) for an
-/// operator-authored rule remains out of reach for the same reason as
-/// before: nothing downstream of `config::merge::load` still tracks which
-/// layer's `[hooks]` table won once the merge is done.
+/// Not the only value this field can carry: `active_deny_capable_hook_rules`,
+/// below, reads each row's own `conway_core::hook::HookOrigin` (threaded
+/// through `ConwayBuilder::build`'s `PreToolUseHookSpec`/`HookSpec`) and
+/// reports THIS label only for [`conway_core::hook::HookOrigin::Operator`]
+/// rows -- see [`hook_origin_label`] for the `HookOrigin::Plugin` case.
+/// Reporting a specific FILE layer (default/user/project/env/CLI) for an
+/// operator-authored rule remains out of reach: nothing downstream of
+/// `config::merge::load` still tracks which layer's `[hooks]` table won
+/// once the merge is done.
 const HOOK_ORIGIN_LABEL: &str = "settings.json (merged config)";
 
 /// [`HookRuleView::origin`]'s value for a row whose [`conway_core::hook::
@@ -151,13 +138,12 @@ pub struct Conway {
     store: Arc<dyn SessionStore>,
     router_explain: Option<Arc<dyn RoutingExplainer>>,
     warnings: Arc<Vec<ConfigWarning>>,
-    // T3 follow-up: the local model-metadata map `ConwayBuilder::build`
-    // already loads (`[models.metadata_path]`, step 2) to construct the
-    // `CapabilityIndex` -- kept here too so `Self::model_metadata` can hand
-    // the SAME loaded map back out. Before this field existed, every
-    // consumer of that file (the TUI's `App::new`, ~app.rs) re-read and
-    // re-parsed it from disk on its own, a second code path that agreed
-    // with the builder's only by coincidence.
+    // The local model-metadata map `ConwayBuilder::build` already loads
+    // (`[models.metadata_path]`, step 2) to construct the `CapabilityIndex`
+    // -- kept here too so `Self::model_metadata` can hand the SAME loaded
+    // map back out, rather than leaving a consumer to re-read and re-parse
+    // the file from disk on its own, a second code path that could drift
+    // from the builder's.
     model_metadata: Arc<ModelMetadata>,
     /// Set via
     /// `ConwayBuilder::with_root` -- see that method's own doc for the
@@ -198,13 +184,9 @@ pub struct Conway {
 
 impl Conway {
     // `Conway::new` is a crate-internal constructor called from exactly one
-    // site (`ConwayBuilder::build`); its argument list grew to nine when the
-    // facade began carrying a live plugin handle alongside the frozen status
-    // snapshot (board item `01M0Y3A8MYKKE0GMYKZE1K0QTD`, following the same
-    // growth `01M03VKQ738DTGHHK2C4RWXC0E` made for that snapshot itself).
-    // Clippy's default ceiling of seven is a smell worth a note, not a
-    // refactor worth bundling unrelated fields into a throwaway struct that
-    // would only obscure the single call site.
+    // site (`ConwayBuilder::build`). Clippy's default ceiling of seven is a
+    // smell worth a note, not a refactor worth bundling unrelated fields
+    // into a throwaway struct that would only obscure the single call site.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         rt: Arc<Runtime>,
@@ -234,38 +216,17 @@ impl Conway {
     /// (board item `01M03VKQ738DTGHHK2C4RWXC0E`). See the field's own doc for
     /// why this is a snapshot (collected at session-open, before any
     /// `status/1` notifications arrive -- typically empty) rather than a live
-    /// view. [`Self::poll_plugin_status_contributions`] is that live view,
-    /// added by board item `01M0Y3A8MYKKE0GMYKZE1K0QTD` -- see its own doc.
+    /// view. [`Self::poll_plugin_status_contributions`] is that live view --
+    /// see its own doc.
     ///
-    /// **No longer an unrendered accessor** (board item
-    /// `01M0X1B7Z41J57N6YP2JFZ2AZW`; design
-    /// `docs/vision/DESIGN-permission-modes.md` §3d/§6b): `conway-cli`'s TUI
-    /// status line (`view::status::status_line_spans`, the `plugins` field)
-    /// knows how to render a `&[PluginStatusContribution]` -- `key: value`
-    /// per entry, `status: Failed` (and every other non-`Completed` variant)
-    /// visually distinct from `Completed`, bounded rather than silently
-    /// truncated, and NEVER able to displace the permission-mode field's own
-    /// safety signal (`drop_priority` ranks it strictly below `mode`, so
-    /// every contribution is already at its own empty floor before `mode`
-    /// gives up anything). **And no longer unreachable either** (board item
-    /// `01M0XC1GF73Z9GTE7TN65TRW4A`): `crates/conway-cli`'s `App::new`
-    /// copies this accessor's result into `AppState::
-    /// plugin_status_contributions` once, at TUI startup -- the same
-    /// "populate once outside the render path" shape `AppState::
-    /// plugin_commands`/`agent_names` already use.
-    ///
-    /// **This accessor alone still does not give a live view** -- it is still
-    /// exactly the build-time snapshot described above: typically empty at
-    /// real session start, and frozen at whatever it held at that moment for
-    /// the rest of the process's life. A plugin's status changing after
+    /// **This accessor alone does not give a live view** -- it is exactly
+    /// the build-time snapshot described above: typically empty at real
+    /// session start, and frozen at whatever it held at that moment for the
+    /// rest of the process's life. A plugin's status changing after
     /// `ConwayBuilder::build` has run (a guard dying mid-session, a build
-    /// finishing) is invisible to THIS accessor. **It is no longer invisible
-    /// to the TUI as a whole, though**: `App::run`'s own event loop calls
-    /// [`Self::poll_plugin_status_contributions`] on a bounded cadence and
-    /// writes whatever it returns into `AppState::
-    /// plugin_status_contributions` in place of this accessor's one-time
-    /// copy -- see that method's own doc, and `crates/conway-cli/src/tui/
-    /// app/run.rs`'s `PLUGIN_STATUS_POLL_TICK`.
+    /// finishing) is invisible to THIS accessor -- a caller that needs a
+    /// live view must poll [`Self::poll_plugin_status_contributions`] on its
+    /// own cadence instead; see that method's own doc.
     pub fn plugin_status_contributions(&self) -> &[conway_core::ports::PluginStatusContribution] {
         &self.plugin_status_contributions
     }
@@ -313,8 +274,7 @@ impl Conway {
     /// expiry/TTL mechanism: replacing the whole set every poll is a
     /// sufficient staleness fix by construction, not a claim that TTL
     /// enforcement (`crates/conway-plugin-subprocess/src/session.rs`'s own
-    /// disclosed gap; `docs/plugins/hooks.md` point 12) has been built --
-    /// that remains exactly as undone as it was before this method existed.
+    /// disclosed gap; `docs/plugins/hooks.md` point 12) has been built.
     /// A per-key `ttl_ms` sweep is a narrower, independent thing: aging out
     /// one key while a plugin keeps reporting others is not the same
     /// question this method answers (whether the *plugin itself* is still
@@ -641,7 +601,7 @@ impl Conway {
     /// observation hook still runs an arbitrary command with the
     /// operator's own privileges is real, but it is not a permission-rule
     /// visibility gap, and a general hook-inventory surface for that
-    /// concern is not this item's to build.
+    /// concern is a separate, larger piece, not built here.
     ///
     /// A hook installs here regardless of whether its script currently
     /// resolves -- see [`conway_runtime::permission::PermissionBroker::
@@ -1059,11 +1019,8 @@ impl Conway {
     /// The local model-metadata map (`[models.metadata_path]`), loaded ONCE
     /// by `ConwayBuilder::build` and kept here so every consumer reads the
     /// SAME parse of the SAME file instead of each re-reading it from disk
-    /// on its own (T3 follow-up: `conway-cli`'s `App::new` previously
-    /// re-read `[models.metadata_path]` itself, a second code path that
-    /// happened to agree with the builder's only because both implement the
-    /// identical "missing file -> empty map" fallback -- a duplication that
-    /// could silently drift if either side's load logic ever changed alone).
+    /// on its own -- a duplication that could silently drift if either
+    /// side's load logic ever changed alone.
     /// Empty (never an error) when the builder found no metadata file, or
     /// found one that named no models -- mirrors
     /// `config::model_metadata::load`'s own "missing is expected" contract.
@@ -1109,7 +1066,7 @@ impl Conway {
     /// children deliberately do NOT inherit it. `config.limits.
     /// max_parallel_tools` remains a disclosed gap: `RootSpec` still has no
     /// field for it, so it does not reach the created session/agent through
-    /// this method -- out of this item's file scope to add.
+    /// this method.
     pub async fn new_session(&self, spec: SessionSpec) -> Result<SessionHandle> {
         let role = spec
             .role
@@ -1225,16 +1182,13 @@ impl Conway {
     /// When the builder instead received an injected `Router`
     /// (`ConwayBuilder::with_router`) with no `RouterFactory`-supplied
     /// explainer either, there is no `RoutingExplainer` to project through
-    /// at all -- `router_explain` is `None`. This used to fall back to a
-    /// fabricated-empty report (`entries: vec![]`), which `conway routes
-    /// explain` then misread as "unknown role" for a perfectly valid one
-    /// (a silent inversion of what the surface claimed
-    ///).
-    /// It now falls back to `conway_core::routing::MinimalRouter`,
-    /// projected over this `Conway`'s own resolved `RoutingConfig` -- an
-    /// honestly degenerate answer (no capability filtering, no health
-    /// filtering, one entry per configured chain candidate) rather than an
-    /// empty one.
+    /// at all -- `router_explain` is `None`. This falls back to
+    /// `conway_core::routing::MinimalRouter`, projected over this
+    /// `Conway`'s own resolved `RoutingConfig` -- an honestly degenerate
+    /// answer (no capability filtering, no health filtering, one entry per
+    /// configured chain candidate) rather than a fabricated-empty one,
+    /// which `conway routes explain` would otherwise misread as "unknown
+    /// role" for a perfectly valid one.
     pub fn explain_routing(&self, role: &RoleAlias) -> ExplainReport {
         let req = RouteRequest {
             role: role.clone(),
