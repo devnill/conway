@@ -2002,13 +2002,12 @@ impl ConwayBuilder {
         // rather than each re-implementing its own "config rules plus
         // plugin rules" merge (P-14: one implementation of the classification
         // logic, not two that could drift). Every config-declared rule is
-        // tagged [`HookOrigin::Operator`], unchanged from every hook rule
-        // that existed before this item; every plugin-declared rule is
+        // tagged [`HookOrigin::Operator`]; every plugin-declared rule is
         // tagged [`HookOrigin::Plugin`] naming its declaring plugin, and its
         // bare `id` is host-prefixed with that plugin's own manifest id --
-        // this item's own decided answer to "should provenance be
-        // structural": an author never picks their own namespace, the SAME
-        // rule `declared_plugin_events`/`CommandRegistry::build` already
+        // provenance is structural: an author never picks their own
+        // namespace, the SAME rule `declared_plugin_events`/
+        // `CommandRegistry::build` already
         // enforce for event/command names -- so a plugin can never claim an
         // id an operator might also have written, and the resulting id is
         // what makes a plugin-registered hook distinguishable from an
@@ -2304,14 +2303,13 @@ impl ConwayBuilder {
         // contains -- `PermissionBroker::pre_tool_use_hook_denial`'s own
         // doc), filtering `effective_hook_rules` (`[hooks].rules[]` PLUS
         // every plugin-declared rule folded in above) to exactly the
-        // entries this item's own `HooksConfig` doc names as dispatched:
+        // entries `HooksConfig`'s own doc names as dispatched:
         // `event == "pre_tool_use"` and `enabled`. A plugin-registered
         // `pre_tool_use` rule lands in this SAME `Vec` a config-declared one
         // does, so it reaches `PermissionBroker::decide`'s hook-check step
         // at the IDENTICAL tier -- before the mode gate, the cache, pattern
         // allows, and `AutoAllow` -- by construction, not by a second,
-        // parallel dispatch path (board item `01M129QW0GV90QTQS6B3BY3DAR`
-        // acceptance 2).
+        // parallel dispatch path (board item `01M129QW0GV90QTQS6B3BY3DAR`).
         let pre_tool_use_specs: Vec<PreToolUseHookSpec> = effective_hook_rules
             .iter()
             .filter(|(_, rule, _)| rule.enabled && rule.event == "pre_tool_use")
