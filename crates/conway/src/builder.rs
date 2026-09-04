@@ -901,8 +901,8 @@ impl ConwayBuilder {
     /// honest degenerate answer an injected `with_router` already falls back
     /// to).
     ///
-    /// **Not called at all (the default)** changes nothing: `build()`'s
-    /// router step behaves exactly as it did before this method existed --
+    /// **Not called at all (the default):** `build()`'s
+    /// router step compiles
     /// `MinimalRouter` over `[roles]`/`[routing]`, no capability or health
     /// filtering. `crates/conway-plugin-routing` is the first-party plugin
     /// that installs the richer `DeclarativeRouter` engine instead, either
@@ -916,8 +916,8 @@ impl ConwayBuilder {
     /// Installs the id-selected subset of three CALLER-SUPPLIED bundles
     /// against `self.config().plugins` in one pass -- the facade's own
     /// version of the ~70-line resolution `crates/conway-cli/src/
-    /// first_party_plugins.rs`'s `install` used to hand-roll (///; this method itself lands under
-    ///), now reachable by any embedder, not only
+    /// first_party_plugins.rs`'s `install` hand-rolls, now reachable by any
+    /// embedder, not only
     /// this workspace's own CLI binary.
     ///
     /// **The facade still depends on no plugin crate -- `plugins`,
