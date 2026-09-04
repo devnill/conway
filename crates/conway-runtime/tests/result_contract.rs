@@ -14,7 +14,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::Utc;
 use conway_core::agent::{
-    AgentResult, Budget, PermissionDecision, ResultStatus, SubagentSpec, ToolSelector,
+    AgentKnobs, AgentResult, Budget, PermissionDecision, ResultStatus, SubagentSpec, ToolSelector,
 };
 use conway_core::capabilities::{
     CacheMode, Capabilities, HeadroomPolicy, ReliabilityTier, StructuredOutput, ToolCallSupport,
@@ -912,25 +912,27 @@ async fn a_spawned_childs_result_contract_is_enforced_through_subagent_host() {
     let parent = runtime
         .start_root(RootSpec {
             session: None,
-            agent_def: None,
-            role: Some(RoleAlias::new("parent")),
-            tools: None,
-            budget: Budget::default(),
+            knobs: AgentKnobs {
+                agent_def: None,
+                role: Some(RoleAlias::new("parent")),
+                model: None,
+                tools: None,
+                budget: Budget::default(),
+                result_contract: None,
+                keep_alive: false,
+            },
             cwd: PathBuf::from("/tmp"),
             root: None,
             prompt: Some("go".to_string()),
-            keep_alive: false,
-            model: None,
             system_prompt_override: None,
-            result_contract: None,
             labels: Vec::new(),
         })
         .await
         .unwrap();
 
     let mut spec = SubagentSpec::fork("do the child's work", Budget::default());
-    spec.role = Some(RoleAlias::new("child"));
-    spec.result_contract = Some(schema_requiring("ok"));
+    spec.knobs.role = Some(RoleAlias::new("child"));
+    spec.knobs.result_contract = Some(schema_requiring("ok"));
 
     let child = SubagentHost::start(&*runtime, parent, parent, spec)
         .await
@@ -1143,8 +1145,8 @@ async fn keep_alive_validates_its_contract_but_never_resolves_await_result() {
 #[test]
 fn keep_alive_with_a_result_contract_is_rejected_by_validate() {
     let mut spec = conway_core::agent::SubagentSpec::fork("go", Budget::default());
-    spec.keep_alive = true;
-    spec.result_contract = Some(schema_requiring("ok"));
+    spec.knobs.keep_alive = true;
+    spec.knobs.result_contract = Some(schema_requiring("ok"));
 
     let err = spec
         .validate()
@@ -1165,13 +1167,13 @@ fn keep_alive_with_a_result_contract_is_rejected_by_validate() {
 #[test]
 fn either_flag_alone_still_validates() {
     let mut kept_alive = conway_core::agent::SubagentSpec::fork("go", Budget::default());
-    kept_alive.keep_alive = true;
+    kept_alive.knobs.keep_alive = true;
     kept_alive
         .validate()
         .expect("keep_alive alone is a supported shape");
 
     let mut contracted = conway_core::agent::SubagentSpec::fork("go", Budget::default());
-    contracted.result_contract = Some(schema_requiring("ok"));
+    contracted.knobs.result_contract = Some(schema_requiring("ok"));
     contracted
         .validate()
         .expect("result_contract alone is a supported shape");
@@ -1230,25 +1232,27 @@ async fn keep_alive_with_a_result_contract_is_refused_by_subagent_host() {
     let parent = runtime
         .start_root(RootSpec {
             session: None,
-            agent_def: None,
-            role: Some(RoleAlias::new("parent")),
-            tools: None,
-            budget: Budget::default(),
+            knobs: AgentKnobs {
+                agent_def: None,
+                role: Some(RoleAlias::new("parent")),
+                model: None,
+                tools: None,
+                budget: Budget::default(),
+                result_contract: None,
+                keep_alive: false,
+            },
             cwd: PathBuf::from("/tmp"),
             root: None,
             prompt: Some("go".to_string()),
-            keep_alive: false,
-            model: None,
             system_prompt_override: None,
-            result_contract: None,
             labels: Vec::new(),
         })
         .await
         .expect("root starts");
 
     let mut spec = SubagentSpec::fork("hold open and validate", Budget::default());
-    spec.keep_alive = true;
-    spec.result_contract = Some(schema_requiring("ok"));
+    spec.knobs.keep_alive = true;
+    spec.knobs.result_contract = Some(schema_requiring("ok"));
 
     let err = SubagentHost::start(&*runtime, parent, parent, spec)
         .await

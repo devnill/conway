@@ -1060,7 +1060,7 @@ async fn fork_from_child_with_a_result_contract_it_cannot_satisfy_is_rejected_na
     }))
     .unwrap();
     let mut spec = ForkSpec::new("picking up from here");
-    spec.result_contract = Some(contract);
+    spec.knobs.result_contract = Some(contract);
 
     let child = conway
         .fork_from(handle.id(), at, spec)

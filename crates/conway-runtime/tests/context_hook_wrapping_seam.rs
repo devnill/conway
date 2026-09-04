@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use conway_core::agent::{Budget, PermissionDecision, ResultStatus};
+use conway_core::agent::{AgentKnobs, Budget, PermissionDecision, ResultStatus};
 use conway_core::capabilities::HeadroomPolicy;
 use conway_core::content::{ContentBlock, StopReason, ToolResult, Usage};
 use conway_core::event::Event;
@@ -106,32 +106,36 @@ fn build_runtime_over(store: Arc<dyn SessionStore>, backend: Arc<dyn Backend>) -
 fn root_spec(prompt: &str) -> RootSpec {
     RootSpec {
         session: None,
-        agent_def: None,
-        role: Some(RoleAlias::new("planner")),
-        tools: None,
-        budget: Budget::default(),
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: Some(RoleAlias::new("planner")),
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         cwd: PathBuf::from("/tmp"),
         root: None,
         prompt: Some(prompt.to_string()),
-        keep_alive: false,
-        model: None,
         system_prompt_override: None,
-        result_contract: None,
         labels: Vec::new(),
     }
 }
 
 fn resume_spec(session: SessionId) -> ResumeSpec {
     ResumeSpec {
-        session,
-        agent_def: None,
-        role: None,
-        model: None,
-        tools: None,
-        budget: Budget::default(),
+        session: session,
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: None,
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         cwd: None,
-        result_contract: None,
-        keep_alive: false,
     }
 }
 

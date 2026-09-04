@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway_core::agent::{Budget, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec};
+use conway_core::agent::{
+    AgentKnobs, Budget, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec,
+};
 use conway_core::capabilities::{HeadroomPolicy, ProbeReport};
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::error::{BackendError, StoreError};
@@ -169,17 +171,19 @@ fn build_runtime(backend: Arc<dyn Backend>) -> (Arc<Runtime>, Arc<dyn SessionSto
 fn root_spec(prompt: &str) -> RootSpec {
     RootSpec {
         session: None,
-        agent_def: None,
-        role: Some(RoleAlias::new("planner")),
-        tools: None,
-        budget: Budget::default(),
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: Some(RoleAlias::new("planner")),
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         cwd: PathBuf::from("/tmp"),
         root: None,
         prompt: Some(prompt.to_string()),
-        keep_alive: false,
-        model: None,
         system_prompt_override: None,
-        result_contract: None,
         labels: Vec::new(),
     }
 }
@@ -191,13 +195,15 @@ fn spawn_spec(prompt: &str) -> SubagentSpec {
     SubagentSpec {
         mode: SubagentMode::Spawn,
         prompt: prompt.to_string(),
-        agent_def: None,
-        role: None,
-        pin: None,
-        tools: None,
-        budget: Budget::default(),
-        result_contract: None,
-        keep_alive: false,
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: None,
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         ephemeral: true,
         ask_origin: None,
         cwd: None,

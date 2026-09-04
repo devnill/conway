@@ -16,8 +16,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use conway_core::agent::{
-    AgentDefRef, Budget, CancelMode, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec,
-    ToolSelector,
+    AgentDefRef, AgentKnobs, Budget, CancelMode, PermissionDecision, ResultStatus, SubagentMode,
+    SubagentSpec, ToolSelector,
 };
 use conway_core::capabilities::{
     CacheMode, Capabilities, HeadroomPolicy, ProbeReport, ReliabilityTier, RequiredCaps,
@@ -192,17 +192,19 @@ fn build_runtime(
 fn root_spec(prompt: &str) -> RootSpec {
     RootSpec {
         session: None,
-        agent_def: None,
-        role: Some(RoleAlias::new("planner")),
-        tools: None,
-        budget: Budget::default(),
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: Some(RoleAlias::new("planner")),
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         cwd: PathBuf::from("/tmp"),
         root: None,
         prompt: Some(prompt.to_string()),
-        keep_alive: false,
-        model: None,
         system_prompt_override: None,
-        result_contract: None,
         labels: Vec::new(),
     }
 }
@@ -475,13 +477,15 @@ async fn spawn_without_agent_def_inherits_the_parents_role() {
     let spec = SubagentSpec {
         mode: SubagentMode::Spawn,
         prompt: "do it".into(),
-        agent_def: None,
-        role: None,
-        pin: None,
-        tools: None,
-        budget: Budget::default(),
-        result_contract: None,
-        keep_alive: false,
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: None,
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         ephemeral: false,
         ask_origin: None,
         cwd: None,
@@ -848,7 +852,7 @@ async fn start_succeeds_with_default_budget_every_child_has_a_budget_by_construc
     let root = start_and_finish_root(&runtime, "hi").await;
 
     let spec = SubagentSpec::fork("go", Budget::default());
-    assert_eq!(spec.budget, Budget::default());
+    assert_eq!(spec.knobs.budget, Budget::default());
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, root, spec)
         .await
@@ -1268,7 +1272,7 @@ async fn steer_attribution_derives_from_the_caller_not_the_targets_own_parent() 
     wait_for_agent_finished(&mut stream, a).await;
 
     let mut keep_alive_spec = SubagentSpec::fork("", Budget::default());
-    keep_alive_spec.keep_alive = true;
+    keep_alive_spec.knobs.keep_alive = true;
     let grandchild = SubagentHost::start(&*runtime, a, a, keep_alive_spec)
         .await
         .unwrap();
@@ -1809,16 +1813,18 @@ fn spawn_spec_with_cwd(prompt: &str, cwd: Option<PathBuf>) -> SubagentSpec {
     SubagentSpec {
         mode: SubagentMode::Spawn,
         prompt: prompt.to_string(),
-        agent_def: None,
-        role: None,
-        pin: None,
-        tools: None,
-        budget: Budget::default(),
-        result_contract: None,
-        keep_alive: false,
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: None,
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         ephemeral: false,
         ask_origin: None,
-        cwd,
+        cwd: cwd,
         root: None,
         tag: None,
         plugin_config: None,
@@ -2438,14 +2444,16 @@ async fn resume_root_preserves_persisted_root_unchanged() {
     runtime2
         .resume_root(ResumeSpec {
             session: confined_session,
-            agent_def: None,
-            role: None,
-            model: None,
-            tools: None,
-            budget: Budget::default(),
+            knobs: AgentKnobs {
+                agent_def: None,
+                role: None,
+                model: None,
+                tools: None,
+                budget: Budget::default(),
+                result_contract: None,
+                keep_alive: false,
+            },
             cwd: None,
-            result_contract: None,
-            keep_alive: false,
         })
         .await
         .unwrap();
@@ -2501,14 +2509,16 @@ async fn resume_root_cwd_override_outside_persisted_root_fails() {
     let err = runtime2
         .resume_root(ResumeSpec {
             session: confined_session,
-            agent_def: None,
-            role: None,
-            model: None,
-            tools: None,
-            budget: Budget::default(),
+            knobs: AgentKnobs {
+                agent_def: None,
+                role: None,
+                model: None,
+                tools: None,
+                budget: Budget::default(),
+                result_contract: None,
+                keep_alive: false,
+            },
             cwd: Some(outside_dir.path().to_path_buf()),
-            result_contract: None,
-            keep_alive: false,
         })
         .await
         .unwrap_err();
@@ -2801,7 +2811,7 @@ async fn fork_child_inherits_the_parents_agent_def_and_cannot_widen_its_tool_set
     let (runtime, backend) = build_runtime_with_two_tools_and_defs(2, defs);
 
     let mut spec = root_spec("investigate");
-    spec.agent_def = Some(AgentDefRef("restricted".to_string()));
+    spec.knobs.agent_def = Some(AgentDefRef("restricted".to_string()));
     let mut stream = runtime.subscribe();
     let root = runtime.start_root(spec).await.unwrap();
     wait_for_agent_finished(&mut stream, root).await;
@@ -2809,10 +2819,10 @@ async fn fork_child_inherits_the_parents_agent_def_and_cannot_widen_its_tool_set
     // Byte-for-byte what `conway_fork` builds: no `agent_def`, no `tools`.
     let child_spec = SubagentSpec::fork("go", Budget::default());
     assert!(
-        child_spec.agent_def.is_none(),
+        child_spec.knobs.agent_def.is_none(),
         "this spec must start with no agent_def, or the test proves nothing about inheritance"
     );
-    assert!(child_spec.tools.is_none());
+    assert!(child_spec.knobs.tools.is_none());
 
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, root, child_spec)
@@ -2960,7 +2970,7 @@ async fn fork_child_inherits_the_parents_agent_def_pinned_model() {
     let (runtime, backend) = build_runtime_with_pin_aware_router(2, defs);
 
     let mut spec = root_spec("investigate");
-    spec.agent_def = Some(AgentDefRef("restricted".to_string()));
+    spec.knobs.agent_def = Some(AgentDefRef("restricted".to_string()));
     let mut stream = runtime.subscribe();
     let root = runtime.start_root(spec).await.unwrap();
     wait_for_agent_finished(&mut stream, root).await;
@@ -2969,7 +2979,7 @@ async fn fork_child_inherits_the_parents_agent_def_pinned_model() {
     // `ForkSpec::from`) build: no `agent_def`.
     let child_spec = SubagentSpec::fork("go", Budget::default());
     assert!(
-        child_spec.agent_def.is_none(),
+        child_spec.knobs.agent_def.is_none(),
         "this spec must start with no agent_def, or the test proves nothing about inheritance"
     );
 
@@ -3022,10 +3032,10 @@ async fn fork_child_with_an_explicit_pin_override_wins_over_no_inherited_agent_d
 
     let mut child_spec = SubagentSpec::fork("go", Budget::default());
     assert!(
-        child_spec.agent_def.is_none(),
+        child_spec.knobs.agent_def.is_none(),
         "the forker has no agent_def, so an unpinned fork would route on the plain default"
     );
-    child_spec.pin = Some(pinned_model_ref());
+    child_spec.knobs.model = Some(pinned_model_ref());
 
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, root, child_spec)
@@ -3075,7 +3085,7 @@ async fn fork_child_explicit_tools_argument_replaces_rather_than_narrows_the_inh
     let (runtime, backend) = build_runtime_with_two_tools_and_defs(2, defs);
 
     let mut spec = root_spec("investigate");
-    spec.agent_def = Some(AgentDefRef("restricted".to_string()));
+    spec.knobs.agent_def = Some(AgentDefRef("restricted".to_string()));
     let mut stream = runtime.subscribe();
     let root = runtime.start_root(spec).await.unwrap();
     wait_for_agent_finished(&mut stream, root).await;
@@ -3085,8 +3095,8 @@ async fn fork_child_explicit_tools_argument_replaces_rather_than_narrows_the_inh
     // model's `conway_fork` call, or `conway_ask`'s `AskArgs::tools`, can
     // produce.
     let mut child_spec = SubagentSpec::fork("go", Budget::default());
-    child_spec.tools = Some(ToolSelector::Only(vec!["secret".to_string()]));
-    assert!(child_spec.agent_def.is_none());
+    child_spec.knobs.tools = Some(ToolSelector::Only(vec!["secret".to_string()]));
+    assert!(child_spec.knobs.agent_def.is_none());
 
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, root, child_spec)
@@ -3136,7 +3146,7 @@ async fn fork_child_does_not_source_a_result_contract_from_an_inherited_agent_de
     let (runtime, _backend) = build_runtime_with_two_tools_and_defs(3, defs);
 
     let mut spec = root_spec("investigate");
-    spec.agent_def = Some(AgentDefRef("restricted".to_string()));
+    spec.knobs.agent_def = Some(AgentDefRef("restricted".to_string()));
     let mut stream = runtime.subscribe();
     let root = runtime.start_root(spec).await.unwrap();
     wait_for_agent_finished(&mut stream, root).await;
@@ -3144,9 +3154,9 @@ async fn fork_child_does_not_source_a_result_contract_from_an_inherited_agent_de
     // Mirrors the TUI's `bare_fork` (`commands.rs`) exactly: no agent_def,
     // no result_contract, tools narrowed to exclude `report`.
     let mut child_spec = SubagentSpec::fork("go", Budget::default());
-    child_spec.tools = Some(ToolSelector::Except(vec!["report".to_string()]));
-    assert!(child_spec.agent_def.is_none());
-    assert!(child_spec.result_contract.is_none());
+    child_spec.knobs.tools = Some(ToolSelector::Except(vec!["report".to_string()]));
+    assert!(child_spec.knobs.agent_def.is_none());
+    assert!(child_spec.knobs.result_contract.is_none());
 
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, root, child_spec)
@@ -3198,7 +3208,7 @@ async fn spawn_child_declines_the_parents_agent_def_even_though_a_fork_would_inh
     // as Guard 1's fork case starts -- the only difference from that guard
     // is the mode of the CHILD spec below.
     let mut spec = root_spec("investigate");
-    spec.agent_def = Some(AgentDefRef("restricted".to_string()));
+    spec.knobs.agent_def = Some(AgentDefRef("restricted".to_string()));
     let mut stream = runtime.subscribe();
     let root = runtime.start_root(spec).await.unwrap();
     wait_for_agent_finished(&mut stream, root).await;
@@ -3208,13 +3218,15 @@ async fn spawn_child_declines_the_parents_agent_def_even_though_a_fork_would_inh
     let child_spec = SubagentSpec {
         mode: SubagentMode::Spawn,
         prompt: "do it".into(),
-        agent_def: None,
-        role: None,
-        pin: None,
-        tools: None,
-        budget: Budget::default(),
-        result_contract: None,
-        keep_alive: false,
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: None,
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         ephemeral: false,
         ask_origin: None,
         cwd: None,
@@ -3223,7 +3235,7 @@ async fn spawn_child_declines_the_parents_agent_def_even_though_a_fork_would_inh
         plugin_config: None,
         context: None,
     };
-    assert!(child_spec.agent_def.is_none());
+    assert!(child_spec.knobs.agent_def.is_none());
 
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, root, child_spec)
@@ -4151,13 +4163,15 @@ async fn spawn_child_inherits_plugin_instruction_fragments_still_gated_by_tool_i
     let child_spec = SubagentSpec {
         mode: SubagentMode::Spawn,
         prompt: "do it".into(),
-        agent_def: Some(AgentDefRef("restricted".to_string())),
-        role: None,
-        pin: None,
-        tools: None,
-        budget: Budget::default(),
-        result_contract: None,
-        keep_alive: false,
+        knobs: AgentKnobs {
+            agent_def: Some(AgentDefRef("restricted".to_string())),
+            role: None,
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         ephemeral: false,
         ask_origin: None,
         cwd: None,

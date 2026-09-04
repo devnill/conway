@@ -197,7 +197,7 @@ async fn spawn_with_agent_def_records_spawn_mode() {
     let started = fake.started();
     assert!(matches!(started[0].1.mode, SubagentMode::Spawn));
     assert_eq!(
-        started[0].1.agent_def,
+        started[0].1.knobs.agent_def,
         Some(AgentDefRef("reviewer".to_string()))
     );
 }
@@ -227,7 +227,7 @@ async fn spawn_without_agent_def_starts_with_agent_def_none() {
     let started = fake.started();
     assert_eq!(started.len(), 1);
     assert!(matches!(started[0].1.mode, SubagentMode::Spawn));
-    assert_eq!(started[0].1.agent_def, None);
+    assert_eq!(started[0].1.knobs.agent_def, None);
 }
 
 /// A model can no longer send spawn-shaped (or fork-shaped) arguments under
@@ -295,7 +295,7 @@ async fn ask_tool_calls_subagent_host_ask_with_ephemeral_fork_spec() {
     let spec = &asks[0].1;
     assert!(matches!(spec.mode, SubagentMode::Fork));
     assert!(spec.ephemeral, "ask spec must be ephemeral");
-    assert!(!spec.keep_alive, "ask spec must not keep_alive");
+    assert!(!spec.knobs.keep_alive, "ask spec must not keep_alive");
     // B5: the spec must stamp AskOrigin::ToolAsk -- the tag the TUI's
     // crash-residue sweep discriminates on (a ToolAsk child is NEVER
     // swept; its EphemeralSessionRef artifact would dangle).
@@ -305,9 +305,9 @@ async fn ask_tool_calls_subagent_host_ask_with_ephemeral_fork_spec() {
         "the conway_ask tool must stamp AskOrigin::ToolAsk at creation"
     );
     assert_eq!(spec.prompt, "summarize");
-    assert_eq!(spec.agent_def, None);
-    assert_eq!(spec.role, None);
-    assert_eq!(spec.tools, None);
+    assert_eq!(spec.knobs.agent_def, None);
+    assert_eq!(spec.knobs.role, None);
+    assert_eq!(spec.knobs.tools, None);
 
     //: the model sees the full, clean reply text.
     assert_eq!(text_of(&out), "curated brief");
@@ -358,7 +358,7 @@ async fn ask_tools_arg_maps_to_only_selector_on_child_spec() {
     let asks = fake.asks();
     assert_eq!(asks.len(), 1);
     assert_eq!(
-        asks[0].1.tools,
+        asks[0].1.knobs.tools,
         Some(ToolSelector::Only(vec!["read".to_string()]))
     );
 }
@@ -389,7 +389,7 @@ async fn ask_args_reject_unknown_fields_and_deserialize_without_tools() {
         .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
         .await
         .unwrap();
-    assert_eq!(handles.subagents.asks()[0].1.tools, None);
+    assert_eq!(handles.subagents.asks()[0].1.knobs.tools, None);
 }
 
 #[tokio::test]
@@ -487,7 +487,7 @@ async fn ask_budget_defaults_to_20_steps_and_two_minute_deadline_unless_configur
         .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
         .await
         .unwrap();
-    let budget = &handles.subagents.asks()[0].1.budget;
+    let budget = &handles.subagents.asks()[0].1.knobs.budget;
     assert_eq!(budget.max_steps, 20);
     assert!(budget.max_tokens.is_none());
     let deadline = budget.deadline.expect("default deadline is set");
@@ -514,7 +514,7 @@ async fn ask_config_keys_override_default_budget() {
         .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
         .await
         .unwrap();
-    let budget = &handles.subagents.asks()[0].1.budget;
+    let budget = &handles.subagents.asks()[0].1.knobs.budget;
     assert_eq!(budget.max_steps, 7);
     assert_eq!(budget.max_tokens, Some(500));
     let deadline = budget.deadline.expect("configured deadline is set");
@@ -549,7 +549,7 @@ async fn ask_budget_args_override_config_keys() {
         )
         .await
         .unwrap();
-    let budget = &handles.subagents.asks()[0].1.budget;
+    let budget = &handles.subagents.asks()[0].1.knobs.budget;
     assert_eq!(budget.max_steps, 3);
     assert_eq!(budget.max_tokens, Some(42));
     let deadline = budget.deadline.expect("arg deadline is set");
@@ -575,7 +575,7 @@ async fn ask_max_tool_calls_comes_from_the_arg_then_the_config_key() {
         .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
         .await
         .unwrap();
-    assert_eq!(handles.subagents.asks()[0].1.budget.max_tool_calls, Some(9));
+    assert_eq!(handles.subagents.asks()[0].1.knobs.budget.max_tool_calls, Some(9));
 
     // Tier 1: the call's argument outranks it.
     let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
@@ -595,7 +595,7 @@ async fn ask_max_tool_calls_comes_from_the_arg_then_the_config_key() {
         )
         .await
         .unwrap();
-    assert_eq!(handles.subagents.asks()[0].1.budget.max_tool_calls, Some(2));
+    assert_eq!(handles.subagents.asks()[0].1.knobs.budget.max_tool_calls, Some(2));
 
     // Absent from both: no ceiling, matching `max_tokens`'s own default.
     let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
@@ -603,7 +603,7 @@ async fn ask_max_tool_calls_comes_from_the_arg_then_the_config_key() {
         .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
         .await
         .unwrap();
-    assert_eq!(handles.subagents.asks()[0].1.budget.max_tool_calls, None);
+    assert_eq!(handles.subagents.asks()[0].1.knobs.budget.max_tool_calls, None);
 }
 
 #[tokio::test]
@@ -698,7 +698,7 @@ async fn budget_defaults_to_40_steps_and_ten_minute_deadline_unless_configured()
         .invoke(call("conway_fork", serde_json::json!({"prompt": "p"})), ctx)
         .await
         .unwrap();
-    let budget = &fake.started()[0].1.budget;
+    let budget = &fake.started()[0].1.knobs.budget;
     assert_eq!(budget.max_steps, 40);
     assert!(budget.max_tokens.is_none());
     let deadline = budget.deadline.expect("default deadline is set");
@@ -721,7 +721,7 @@ async fn config_key_overrides_default_max_steps() {
         .invoke(call("conway_fork", serde_json::json!({"prompt": "p"})), ctx)
         .await
         .unwrap();
-    assert_eq!(fake.started()[0].1.budget.max_steps, 7);
+    assert_eq!(fake.started()[0].1.knobs.budget.max_steps, 7);
 }
 
 #[tokio::test]

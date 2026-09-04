@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
-use conway_core::agent::{AgentDefRef, Budget, SubagentMode};
+use conway_core::agent::{AgentDefRef, AgentKnobs, Budget, SubagentMode};
 use conway_core::capabilities::RequiredCaps;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
@@ -1143,15 +1143,34 @@ impl Conway {
             cwd
         };
         let budget = spec.budget.unwrap_or_else(|| self.default_budget());
-        let agent_def = spec.agent_def.map(AgentDefRef);
 
         let session = spec.id.unwrap_or_default();
-        let root_spec = RootSpec {
-            session: Some(session),
-            agent_def,
+        // Built ONCE, here, and spread into `RootSpec::knobs` below --
+        // `SessionSpec` itself keeps its own pre-existing shape (see that
+        // struct's own doc for why: every knob there is individually
+        // deferrable to `self.config`, most visibly `budget` above, which
+        // has no sensible non-`Option` `AgentKnobs`-shaped default -- so
+        // composing `AgentKnobs` directly onto `SessionSpec` would either
+        // lose that per-field deferral or make `SessionSpec::default()`
+        // silently mean something other than "defer everything to config").
+        // This is the one site that resolves `SessionSpec`'s deferred shape
+        // into the seven shared, ready-to-use knobs a `RootSpec` actually
+        // carries.
+        let knobs = AgentKnobs {
+            agent_def: spec.agent_def.map(AgentDefRef),
             role: Some(role),
+            model: spec.model,
             tools: spec.tools,
             budget,
+            // `SessionSpec::result_contract`'s own doc has the
+            // call-site-wins-over-agent-def precedence; `AgentKnobs::
+            // result_contract`'s own doc has the enforcement mechanism.
+            result_contract: spec.result_contract,
+            keep_alive: spec.keep_alive,
+        };
+        let root_spec = RootSpec {
+            session: Some(session),
+            knobs,
             cwd,
             // this `Conway`'s own
             // confinement root (`ConwayBuilder::with_root`), if the operator
@@ -1161,13 +1180,7 @@ impl Conway {
             // opts into once, not something a caller varies per session.
             root: self.root.clone(),
             prompt: None,
-            keep_alive: spec.keep_alive,
-            model: spec.model,
             system_prompt_override: spec.system_prompt_override,
-            // `SessionSpec::result_contract`'s own doc has the
-            // call-site-wins-over-agent-def precedence; `RootSpec::
-            // result_contract`'s own doc has the enforcement mechanism.
-            result_contract: spec.result_contract,
             labels: spec.labels,
         };
         let root = self.rt.start_root(root_spec).await?;
@@ -1358,25 +1371,29 @@ impl Conway {
             .rt
             .resume_root(ResumeSpec {
                 session: sid,
-                agent_def: None,
-                role,
-                model,
-                tools: None,
-                budget: self.default_budget(),
+                knobs: AgentKnobs {
+                    agent_def: None,
+                    role,
+                    model,
+                    tools: None,
+                    budget: self.default_budget(),
+                    // `resume`/`resume_with` take no per-call spec to
+                    // source a contract from, so this is always `None`,
+                    // exactly as before `AgentKnobs::result_contract`
+                    // existed on `ResumeSpec`. See that field's own doc for
+                    // the caller that CAN supply `Some` (`Conway::
+                    // fork_from`, via `ForkSpec::result_contract`).
+                    result_contract: None,
+                    // `resume`/`resume_with` take no per-call spec to
+                    // source a keep-alive flag from, so this is always
+                    // `false`, exactly as before `AgentKnobs::keep_alive`
+                    // existed on `ResumeSpec` (preserving `resume`'s
+                    // existing one-shot behavior). See that field's own doc
+                    // for the caller that CAN supply `true` (`Conway::
+                    // fork_from`, via `ForkSpec::keep_alive`).
+                    keep_alive: false,
+                },
                 cwd: None,
-                // `resume`/`resume_with` take no per-call spec to source a
-                // contract from, so this is always `None`, exactly as before
-                // `ResumeSpec::result_contract` existed. See that field's
-                // own doc for the caller that CAN supply `Some`
-                // (`Conway::fork_from`, via `ForkSpec::result_contract`).
-                result_contract: None,
-                // `resume`/`resume_with` take no per-call spec to source a
-                // keep-alive flag from, so this is always `false`, exactly
-                // as before `ResumeSpec::keep_alive` existed (preserving
-                // `resume`'s existing one-shot behavior). See that field's
-                // own doc for the caller that CAN supply `true`
-                // (`Conway::fork_from`, via `ForkSpec::keep_alive`).
-                keep_alive: false,
             })
             .await
             .map_err(|err| match err {
@@ -1613,12 +1630,17 @@ impl Conway {
             parent_meta,
             at,
             crate::fork_child::ForkChildRequest {
-                agent_def: spec.agent_def,
-                role: spec.role,
-                tools: spec.tools,
-                budget: spec.budget,
-                result_contract: spec.result_contract,
-                keep_alive: spec.keep_alive,
+                // `ForkChildRequest::agent_def` stays `Option<String>` (it
+                // merges against `SessionMeta::agent_def`, which is
+                // String-typed) -- so this is the one place the shared
+                // `AgentKnobs::agent_def: Option<AgentDefRef>` still needs
+                // an explicit `.map` back to the bare name.
+                agent_def: spec.knobs.agent_def.map(|r| r.0),
+                role: spec.knobs.role,
+                tools: spec.knobs.tools,
+                budget: spec.knobs.budget,
+                result_contract: spec.knobs.result_contract,
+                keep_alive: spec.knobs.keep_alive,
                 plugin_config: spec.plugin_config,
             },
         )

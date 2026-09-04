@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use conway_core::agent::{Budget, ResultStatus, SubagentSpec, ToolSelector};
+use conway_core::agent::{AgentKnobs, Budget, ResultStatus, SubagentSpec, ToolSelector};
 use conway_core::content::{
     Artifact, ArtifactKind, ContentBlock, PermissionClass, ToolCall, ToolCategory, ToolSpec,
 };
@@ -161,24 +161,26 @@ impl Tool for AskTool {
         let spec = SubagentSpec {
             mode: SubagentMode::Fork,
             prompt: args.prompt,
-            // `None` here is not "no agent_def" -- `ToolCtx` has no
-            // `SessionMeta`/`AgentDef` lookup surface for this tool to
-            // resolve the parent's own def itself (that lookup belongs
-            // at the `SubagentHost` trait boundary, not duplicated at a
-            // single tool callsite). `Runtime::ask`
-            // (`conway_runtime::subagent`) fills this from the parent's
-            // `SessionMeta::agent_def` when it is left `None`, so the child
-            // still inherits the parent's system prompt/tools/model pin --
-            // see this module's own doc.
-            agent_def: None,
-            role: None,
-            // `conway_ask` never switches models -- inherit whatever the
-            // parent (or its agent_def) already resolves.
-            pin: None,
-            tools: args.tools.map(ToolSelector::Only),
-            budget: resolve_ask_budget(args.budget, &ctx.config)?,
-            result_contract: None,
-            keep_alive: false,
+            knobs: AgentKnobs {
+                // `None` here is not "no agent_def" -- `ToolCtx` has no
+                // `SessionMeta`/`AgentDef` lookup surface for this tool to
+                // resolve the parent's own def itself (that lookup belongs
+                // at the `SubagentHost` trait boundary, not duplicated at a
+                // single tool callsite). `Runtime::ask`
+                // (`conway_runtime::subagent`) fills this from the parent's
+                // `SessionMeta::agent_def` when it is left `None`, so the
+                // child still inherits the parent's system prompt/tools/
+                // model pin -- see this module's own doc.
+                agent_def: None,
+                role: None,
+                // `conway_ask` never switches models -- inherit whatever
+                // the parent (or its agent_def) already resolves.
+                model: None,
+                tools: args.tools.map(ToolSelector::Only),
+                budget: resolve_ask_budget(args.budget, &ctx.config)?,
+                result_contract: None,
+                keep_alive: false,
+            },
             ephemeral: true,
             // B5: tag this child as TOOL-ask residue -- DISTINCT from the
             // TUI's modal `/ask` (`AskOrigin::ModalAsk`, set by `conway`'s

@@ -5162,7 +5162,7 @@ mod tests {
             .clone()
             .expect("spawn should have been called");
         assert_eq!(
-            spec.agent_def.as_deref(),
+            spec.knobs.agent_def.as_ref().map(|r| r.0.as_str()),
             Some("reviewer"),
             "the classified agent_def must reach the SpawnSpec"
         );
@@ -6021,7 +6021,7 @@ mod tests {
             .clone()
             .expect("fork should have been called");
         assert_eq!(
-            spec.tools, None,
+            spec.knobs.tools, None,
             "an explicit-target autonomous fork must keep the default toolset"
         );
     }
@@ -6109,10 +6109,10 @@ mod tests {
             .unwrap()
             .clone()
             .expect("spawn should have been called");
-        assert!(spec.keep_alive, "a bare spawn must be keep_alive");
+        assert!(spec.knobs.keep_alive, "a bare spawn must be keep_alive");
         assert_eq!(spec.prompt, "", "the SpawnSpec's own prompt must be empty");
         assert_eq!(
-            spec.tools,
+            spec.knobs.tools,
             Some(ToolSelector::Except(vec!["report".into()])),
             "a bare, interactive keep-alive spawn must exclude `report`"
         );
@@ -6206,13 +6206,13 @@ mod tests {
             .unwrap()
             .clone()
             .expect("fork should have been called");
-        assert!(spec.keep_alive, "a bare fork must be keep_alive");
+        assert!(spec.knobs.keep_alive, "a bare fork must be keep_alive");
         assert_eq!(
             spec.directive, "",
             "the ForkSpec's own directive must be empty"
         );
         assert_eq!(
-            spec.tools,
+            spec.knobs.tools,
             Some(ToolSelector::Except(vec!["report".into()])),
             "a bare, interactive keep-alive fork must exclude `report`"
         );
@@ -6316,10 +6316,10 @@ mod tests {
             .unwrap()
             .clone()
             .expect("fork should have been called");
-        assert!(spec.keep_alive, "/model's fork must be keep_alive");
+        assert!(spec.knobs.keep_alive, "/model's fork must be keep_alive");
         assert_eq!(spec.directive, "", "/model carries no directive of its own");
         assert_eq!(
-            spec.model,
+            spec.knobs.model,
             Some(
                 "anthropic/claude-haiku"
                     .parse::<ModelRef>()
@@ -6327,7 +6327,7 @@ mod tests {
             )
         );
         assert_eq!(
-            spec.tools,
+            spec.knobs.tools,
             Some(ToolSelector::Except(vec!["report".into()])),
             "/model's fork, like a bare /fork, must exclude `report`"
         );
@@ -6530,8 +6530,8 @@ mod tests {
             .unwrap()
             .clone()
             .expect("fork should have been called");
-        assert!(spec.keep_alive, "/role's fork must be keep_alive");
-        assert_eq!(spec.role, Some(RoleAlias::new("planner")));
+        assert!(spec.knobs.keep_alive, "/role's fork must be keep_alive");
+        assert_eq!(spec.knobs.role, Some(RoleAlias::new("planner")));
         assert!(matches!(
             state.transcript.last(),
             Some(Entry::Notice { text }) if text.contains("planner")

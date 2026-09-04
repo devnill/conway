@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway_core::agent::{Budget, PermissionDecision, SubagentSpec};
+use conway_core::agent::{AgentKnobs, Budget, PermissionDecision, SubagentSpec};
 use conway_core::capabilities::HeadroomPolicy;
 use conway_core::content::{ContentBlock, PermissionClass, ToolCall, ToolCategory, ToolSpec};
 use conway_core::error::{HookFailure, ToolError};
@@ -401,20 +401,22 @@ fn build_runtime_with_store() -> (Arc<Runtime>, Arc<FakeStore>) {
 fn root_spec() -> RootSpec {
     RootSpec {
         session: None,
-        agent_def: None,
-        role: Some(RoleAlias::new("planner")),
-        tools: None,
-        budget: Budget::default(),
+        knobs: AgentKnobs {
+            agent_def: None,
+            role: Some(RoleAlias::new("planner")),
+            model: None,
+            tools: None,
+            budget: Budget::default(),
+            result_contract: None,
+            keep_alive: false,
+        },
         cwd: PathBuf::from("/tmp"),
         root: None,
         // No prompt: the root idles instead of running a turn against the
         // scripted backend, which keeps this test about the event and not
         // about turn execution.
         prompt: None,
-        keep_alive: false,
-        model: None,
         system_prompt_override: None,
-        result_contract: None,
         labels: Vec::new(),
     }
 }

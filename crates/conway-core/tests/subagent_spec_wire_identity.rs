@@ -30,7 +30,7 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use conway_core::agent::{
-    AgentDefRef, Budget, SubagentMode, SubagentSpec, ToolSelector,
+    AgentDefRef, AgentKnobs, Budget, SubagentMode, SubagentSpec, ToolSelector,
 };
 use conway_core::ids::{LogSeq, ModelRef, RoleAlias, SessionId};
 use conway_core::log::AskOrigin;
@@ -57,18 +57,20 @@ fn fully_populated_spec() -> SubagentSpec {
     SubagentSpec {
         mode: SubagentMode::Fork,
         prompt: "do the thing".to_string(),
-        agent_def: Some(AgentDefRef("reviewer".into())),
-        role: Some(RoleAlias::new("planner")),
-        pin: Some(pin),
-        tools: Some(ToolSelector::Only(vec!["read".into()])),
-        budget: Budget {
-            max_steps: 7,
-            deadline: Some(deadline),
-            max_tokens: Some(100),
-            max_tool_calls: Some(3),
+        knobs: AgentKnobs {
+            agent_def: Some(AgentDefRef("reviewer".into())),
+            role: Some(RoleAlias::new("planner")),
+            model: Some(pin),
+            tools: Some(ToolSelector::Only(vec!["read".into()])),
+            budget: Budget {
+                max_steps: 7,
+                deadline: Some(deadline),
+                max_tokens: Some(100),
+                max_tool_calls: Some(3),
+            },
+            result_contract: Some(schema),
+            keep_alive: false,
         },
-        result_contract: Some(schema),
-        keep_alive: false,
         ephemeral: true,
         ask_origin: Some(AskOrigin::ToolAsk),
         cwd: Some(PathBuf::from("/tmp/child")),

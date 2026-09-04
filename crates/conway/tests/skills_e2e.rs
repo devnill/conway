@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use conway::agents::load_agent_defs;
 use conway::skills::load_skill_defs;
-use conway_core::agent::{AgentDefRef, Budget, PermissionDecision};
+use conway_core::agent::{AgentDefRef, AgentKnobs, Budget, PermissionDecision};
 use conway_core::capabilities::{CacheMode, HeadroomPolicy};
 use conway_core::content::ContentBlock;
 use conway_core::event::Event;
@@ -185,17 +185,19 @@ async fn skill_named_in_def_appears_as_provenance_skill_segment_end_to_end() {
         &runtime,
         RootSpec {
             session: None,
-            agent_def: Some(AgentDefRef("skilled".to_string())),
-            role: None,
-            tools: None,
-            budget: Budget::default(),
+            knobs: AgentKnobs {
+                agent_def: Some(AgentDefRef("skilled".to_string())),
+                role: None,
+                model: None,
+                tools: None,
+                budget: Budget::default(),
+                result_contract: None,
+                keep_alive: false,
+            },
             cwd: PathBuf::from("/tmp"),
             root: None,
             prompt: Some("go".to_string()),
-            keep_alive: false,
-            model: None,
             system_prompt_override: None,
-            result_contract: None,
             labels: Vec::new(),
         },
     )
