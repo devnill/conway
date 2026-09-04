@@ -1581,7 +1581,7 @@ pub enum CommandOutcome {
     /// other than the invoking one; `Checkout` structurally MUST be able
     /// to, since checking out is the entire point -- there is no narrower
     /// shape that still does what `/checkout <session>` asks for. This is
-    /// the one new capability this crate grants for this item, and grants
+    /// the one new capability this crate grants, and grants
     /// nothing else: a command still cannot read another session's
     /// content, steer it, or act on it in any way other than "hand me a
     /// fresh fork of it to drive."
@@ -1607,8 +1607,7 @@ pub enum CommandOutcome {
     /// text into the conversation as a turn, which is what a
     /// prompt-template command's entire job is (`/review-this`, `/explain`,
     /// the shape Claude Code's own `commands/*.md` plugins are built almost
-    /// entirely on -- see that item's own spec for why this was filed
-    /// separately from the compatibility layer that first needed it).
+    /// entirely on).
     ///
     /// **Determine-first question 1 -- provenance, answered, not defaulted.**
     /// This text was authored by conway (a plugin's own template or logic),
@@ -1629,7 +1628,7 @@ pub enum CommandOutcome {
     /// **Determine-first question 2 -- port variant, not a renderer
     /// `Effect`, answered, not assumed.** `crate` (`conway-core`) cannot
     /// depend on `conway-cli`, so a TUI-only `Effect` could never live
-    /// here regardless; the real question this item's spec raises is
+    /// here regardless; the real question is
     /// whether the CAPABILITY should be TUI-only at all. This project's
     /// own rule (GP-05/C-03: "no capability may exist in only one mode")
     /// decides it: a library embedder holding a live `Conway`/
