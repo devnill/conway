@@ -1555,8 +1555,7 @@ impl ConwayBuilder {
         //    already-disclosed ambient read three steps up,
         //    `provider_profile_file_paths`: that one only ever looks for an
         //    optional file, this one would go on to CREATE a directory),
-        //    an unresolved `root` falls back to the exact fixed default
-        //    `session.root` always had before this item existed,
+        //    an unresolved `root` falls back to the exact fixed default,
         //    `.conway/sessions` relative to `cwd` -- byte-identical
         //    behavior for every existing `from_parts` caller (this crate's
         //    own test suite included) that never named a `session.root` of
@@ -1592,9 +1591,8 @@ impl ConwayBuilder {
         //     a SIBLING of the effective session root the session store
         //     just resolved against -- see `build_default_path_store`'s own
         //     doc for exactly where (a sibling of the root itself, not of
-        //     its parent, since this item's central default nests the root
-        //     one level deeper than the fixed default/an explicit value
-        //     ever did).
+        //     its parent, since the central default nests the root one
+        //     level deeper than the fixed default/an explicit value does).
         let path_store: Arc<dyn PathStore> = match path_store {
             Some(path_store) => path_store,
             None => build_default_path_store(&cwd, &effective_session_root)?,
@@ -1856,9 +1854,8 @@ impl ConwayBuilder {
         // The refusal `CapabilityRegistry::from_registrations` returns on a
         // duplicate provider MUST reach `build()` as a real error -- an
         // `.unwrap_or_default()` or an ignored `Err` here would silently
-        // resolve to one arbitrary provider, which is worse than the no-op
-        // this item replaces (see that method's own doc: fail closed, never
-        // "last one wins").
+        // resolve to one arbitrary provider (see that method's own doc:
+        // fail closed, never "last one wins").
         let capability_registry = CapabilityRegistry::from_registrations(
             capability_registrations
                 .into_iter()
