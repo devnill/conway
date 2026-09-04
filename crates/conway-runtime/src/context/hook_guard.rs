@@ -283,9 +283,7 @@ mod tests {
                 name: ToolName::new("read"),
                 arguments: serde_json::json!({}),
             }],
-            Provenance::SystemNote {
-                reason: "assistant_turn".to_string(),
-            },
+            Provenance::Assistant,
         )
     }
 
@@ -512,9 +510,7 @@ mod context_hook_wrapping_tests {
                 name: ToolName::new("read"),
                 arguments: serde_json::json!({}),
             }],
-            Provenance::SystemNote {
-                reason: "assistant_turn".to_string(),
-            },
+            Provenance::Assistant,
         )
     }
 

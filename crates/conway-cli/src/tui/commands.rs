@@ -2829,6 +2829,12 @@ fn provenance_kind_label(p: &Provenance) -> String {
         // "group on the variant" discipline every other row here follows.
         Provenance::PluginInstruction { .. } => "plugin instruction".to_string(),
         Provenance::Operator { .. } => "operator".to_string(),
+        // Board item `01M1FSS152J8NQPJAQZV2V2M3K`: the model's own prior
+        // turn, formerly indistinguishable from a real `system_note` row
+        // (a fabricated `SystemNote` reason, now retired) -- now its own
+        // row, same "group on the variant" discipline every other row
+        // here follows.
+        Provenance::Assistant => "assistant".to_string(),
         _ => "unknown provenance".to_string(),
     }
 }
@@ -2958,6 +2964,10 @@ fn provenance_label(p: &Provenance) -> String {
                 .map(|f| f.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string())
         ),
+        // Board item `01M1FSS152J8NQPJAQZV2V2M3K`: the model's own prior
+        // turn -- no payload to render, unlike `ToolResult`/`ChildResult`,
+        // since the segment's own content already carries what was said.
+        Provenance::Assistant => "assistant".to_string(),
         _ => "unknown provenance".to_string(),
     }
 }
@@ -7050,14 +7060,17 @@ mod tests {
         );
     }
 
-    /// The background's own note: "a sibling item this cycle may change the
-    /// provenance stamped on assistant turns (today `SystemNote{reason:
-    /// "assistant_turn"}`); group on the variant, not on the reason
-    /// string". Two `SystemNote`s with DIFFERENT reason text must still
-    /// collapse into one row -- grouping on `provenance_label` (which
-    /// renders the reason inline) instead of the variant alone would wrongly
-    /// split this into two rows, which is exactly the failure this test is
-    /// built to catch.
+    /// Two `SystemNote`s with DIFFERENT reason text must still collapse
+    /// into one row -- grouping on `provenance_label` (which renders the
+    /// reason inline) instead of the variant alone would wrongly split
+    /// this into two rows, which is exactly the failure this test is
+    /// built to catch. The two reasons used here (`repeated_step`,
+    /// `result_contract_violation`) are the two genuine runtime-authored
+    /// `SystemNote` reasons this crate stamps -- board item
+    /// `01M1FSS152J8NQPJAQZV2V2M3K` retired a third, fabricated reason
+    /// that was never a real system note: it now has its own dedicated
+    /// `Provenance::Assistant` row instead (see
+    /// `summarize_gives_assistant_turns_their_own_row` below).
     #[test]
     fn summarize_groups_system_notes_by_variant_not_reason_text() {
         let report = report_with(vec![
@@ -7069,7 +7082,7 @@ mod tests {
             ),
             (
                 Provenance::SystemNote {
-                    reason: "assistant_turn".into(),
+                    reason: "result_contract_violation".into(),
                 },
                 25,
             ),
@@ -7085,6 +7098,41 @@ mod tests {
         assert_eq!(row.label, "system note");
         assert_eq!(row.count, 2);
         assert_eq!(row.tokens, 40);
+    }
+
+    /// Board item `01M1FSS152J8NQPJAQZV2V2M3K`: an assistant turn gets its
+    /// own `assistant` row, never folded into `system note` (a fabricated
+    /// `SystemNote` reason used to land here).
+    #[test]
+    fn summarize_gives_assistant_turns_their_own_row() {
+        let report = report_with(vec![
+            (
+                Provenance::SystemNote {
+                    reason: "repeated_step".into(),
+                },
+                15,
+            ),
+            (Provenance::Assistant, 25),
+        ]);
+        let summary = summarize_context_report(&report);
+        assert_eq!(
+            summary.kinds.len(),
+            2,
+            "an assistant turn must not fragment or merge into the system-note row: {:?}",
+            summary.kinds
+        );
+        let assistant_row = summary
+            .kinds
+            .iter()
+            .find(|k| k.label == "assistant")
+            .expect("an `assistant` row");
+        assert_eq!(assistant_row.count, 1);
+        assert_eq!(assistant_row.tokens, 25);
+        assert!(
+            summary.kinds.iter().any(|k| k.label == "system note"),
+            "the genuine system note must keep its own row too: {:?}",
+            summary.kinds
+        );
     }
 
     #[test]

@@ -70,25 +70,14 @@
 //! covering BOTH orphan directions -- a hook's edit is a deliberate act, so
 //! it is refused rather than repaired; see that module's own doc).
 //!
-//! ## A documented interpretation gap: assistant-turn provenance
+//! ## Assistant-turn provenance
 //!
-//! `conway_core::provenance::Provenance` is exhaustively eleven variants
-//! (enforced by that crate's own tests; the original §5.3 nine, plus
-//! `MergedAsk` added by B4, plus `ChildResult` added by
-//!) and none of them represents "the
-//! model's own prior turn" — `LogRecord::Assistant` does not even carry a
-//! `prov` field. Architecture §5.3's own-records mapping table names a
-//! provenance for `tool_result`, `parent_steer`, and system notes, but only
-//! a role (`Role::Assistant`) for assistant turns, not a provenance. Since
-//! `PromptSegment::provenance` is mandatory and this crate cannot add
-//! another `Provenance` variant (out of `conway-runtime`'s scope), assistant
-//! turns are mapped to `Provenance::SystemNote { reason: "assistant_turn"
-//! }` — the closest existing volatile-tier variant, using a `reason`
-//! sentinel that collides with no other component's matching (only
-//! matches `"repeated_step"` and `"result_contract_violation"`). This is a
-//! placeholder, not a design decision: it should be raised against
-//! `MODULE:conway-core` as a request for a dedicated `Provenance::Assistant`
-//! (or similar) variant.
+//! `own_segment` maps an own `LogRecord::Assistant` (never an inherited
+//! one -- `record_role_and_content` discards original provenance for the
+//! inherited path regardless of record kind) to `Provenance::Assistant`
+//! (board item `01M1FSS152J8NQPJAQZV2V2M3K`), derived from the record's
+//! kind alone since `LogRecord::Assistant` carries no `prov` field of its
+//! own.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -1050,7 +1039,7 @@ fn record_role_and_content(record: &LogRecord) -> Option<(Role, Vec<ContentBlock
 }
 
 /// Own (volatile) record mapping, per architecture §5.3: provenance
-/// derived from record kind. See the module doc for the `Assistant` gap.
+/// derived from record kind. See the module doc for the `Assistant` case.
 fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenance)> {
     match record {
         LogRecord::UserTurn { text, prov, .. } => {
@@ -1065,13 +1054,9 @@ fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenanc
             // (kept readable for already-persisted records).
             Some((Role::User, text_block(text), prov.clone()))
         }
-        LogRecord::Assistant { content, .. } => Some((
-            Role::Assistant,
-            content.clone(),
-            Provenance::SystemNote {
-                reason: "assistant_turn".to_string(),
-            },
-        )),
+        LogRecord::Assistant { content, .. } => {
+            Some((Role::Assistant, content.clone(), Provenance::Assistant))
+        }
         LogRecord::ToolResultRecord { result, .. } => Some((
             Role::ToolResult,
             tool_result_block(result),
@@ -1279,6 +1264,7 @@ fn provenance_discriminant(provenance: &Provenance) -> &'static str {
         Provenance::CommandPrompt { .. } => "command_prompt",
         Provenance::PluginInstruction { .. } => "plugin_instruction",
         Provenance::Operator { .. } => "operator",
+        Provenance::Assistant => "assistant",
         _ => "unknown",
     }
 }
@@ -2179,7 +2165,8 @@ mod child_result_text_tests {
 mod own_segment_provenance_tests {
     use super::*;
     use chrono::Utc;
-    use conway_core::ids::LogSeq;
+    use conway_core::content::{StopReason, Usage};
+    use conway_core::ids::{BackendId, LogSeq, ModelRef};
 
     use crate::context::path::path_from_legacy;
 
@@ -2190,6 +2177,36 @@ mod own_segment_provenance_tests {
             text: "the merged question".into(),
             prov,
         }
+    }
+
+    fn assistant_record(content: Vec<ContentBlock>) -> LogRecord {
+        LogRecord::Assistant {
+            seq: LogSeq(1),
+            ts: Utc::now(),
+            content,
+            model: ModelRef {
+                backend: BackendId::new("b"),
+                model: ModelId::new("m"),
+            },
+            route_reason: serde_json::json!({}),
+            usage: Usage::default(),
+            stop: StopReason::EndTurn,
+        }
+    }
+
+    /// Board item `01M1FSS152J8NQPJAQZV2V2M3K`: an own `LogRecord::Assistant`
+    /// -- the model's own prior turn, re-read on the agent's next own turn --
+    /// must map to the dedicated `Provenance::Assistant`, not the retired,
+    /// fabricated `SystemNote` reason this module's own doc used to
+    /// describe. Written to fail against the unmodified tree (no
+    /// `Provenance::Assistant` variant exists yet); passes once both that
+    /// variant and this mapping exist.
+    #[test]
+    fn own_segment_maps_an_assistant_record_to_the_dedicated_provenance() {
+        let record = assistant_record(text_block("looking now"));
+        let (role, _content, prov) = own_segment(&record).expect("an Assistant record maps");
+        assert_eq!(role, Role::Assistant);
+        assert_eq!(prov, Provenance::Assistant);
     }
 
     /// B4: a `Conway::pull_in`-merged `/ask` question lands in the parent's
@@ -2752,9 +2769,7 @@ mod tool_call_pairing_tests {
         let segments = vec![PromptSegment::new(
             Role::Assistant,
             vec![tool_use("orphan")],
-            Provenance::SystemNote {
-                reason: "assistant_turn".into(),
-            },
+            Provenance::Assistant,
         )];
         assert_eq!(
             check_tool_call_coherence(&segments),
@@ -2802,9 +2817,7 @@ mod tool_call_pairing_tests {
         let unanswered = PromptSegment::new(
             Role::Assistant,
             vec![tool_use("unanswered")],
-            Provenance::SystemNote {
-                reason: "assistant_turn".into(),
-            },
+            Provenance::Assistant,
         );
         let orphaned_result = PromptSegment::new(
             Role::ToolResult,

@@ -46,8 +46,7 @@
     "ordinal": 4,
     "role": "assistant",
     "provenance": {
-      "type": "system_note",
-      "reason": "assistant_turn"
+      "type": "assistant"
     },
     "cache_hint": null,
     "content_sha": "cd41f8166936595620686b37209db1e624f7945e0fe38fa1e79ffe33acc33dbf"
