@@ -754,10 +754,10 @@ pub struct PermissionBroker {
     /// structured form the flat syntax cannot express.
     prompt_patterns: RwLock<Vec<(Rule, Option<CanonicalRoot>, PatternOrigin)>>,
     /// The injected `pre_tool_use`
-    /// hook dispatcher. `None` (the default, and every caller before this
-    /// field existed) means the hook-check step in `Self::decide` is a
-    /// byte-for-byte no-op -- see [`Self::set_hook_runner`]'s own doc for
-    /// the full "additive, not a new dependency" contract.
+    /// hook dispatcher. `None` (the default) means the hook-check step in
+    /// `Self::decide` is a byte-for-byte no-op -- see
+    /// [`Self::set_hook_runner`]'s own doc for the full "additive, not a
+    /// new dependency" contract.
     hook_runner: RwLock<Option<Arc<dyn HookRunner>>>,
     /// The `[hooks].rules[]` entries
     /// (already filtered to `event == "pre_tool_use" && enabled` by the
@@ -772,9 +772,7 @@ pub struct PermissionBroker {
 /// WHY a [`HookStepOutcome::Denied`] denies -- an explicit hook verdict, or
 /// this hook's own outage resolved (by its `on_failure` policy) to `Deny`.
 /// **This is the structural fix
-/// (`docs/vision/DESIGN-permission-modes.md` §3a/§3c): the two used to be
-/// the identical `Option<String>` value, distinguishable only by parsing
-/// the rendered text for the trailing `-- fail-closed`.** Now a downstream
+/// (`docs/vision/DESIGN-permission-modes.md` §3a/§3c):** a downstream
 /// consumer -- a future status surface, or a test -- can match on `cause`
 /// directly and never read `rendered_error` at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -805,9 +803,8 @@ enum HookStepOutcome {
     /// This call is refused outright, tagged with WHY (see
     /// [`HookDenialCause`]). `PermissionBroker::decide` returns
     /// [`PermissionOutcome::Deny`] for either `cause` identically -- the
-    /// RENDERED effect is unchanged from before this type existed -- but
-    /// the two are now different VALUES, not merely different substrings of
-    /// one rendered message.
+    /// RENDERED effect is identical for both -- but the two are different
+    /// VALUES, not merely different substrings of one rendered message.
     Denied {
         rendered_error: String,
         cause: HookDenialCause,
