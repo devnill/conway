@@ -1447,7 +1447,7 @@ impl PermissionBroker {
 
     /// Whether any installed pattern authorizes this call.
     ///
-    /// F12: evaluation is now over the stored [`Rule`]s, via the single
+    /// Evaluation is over the stored [`Rule`]s, via the single
     /// `Rule` evaluator ([`Rule::matches_allow_render`] for render-based
     /// `when` clauses, plus the broker's own `paths_under` resolution for
     /// [`When::PathsUnder`] -- the same `resolve_like_the_tool_will` +
@@ -1539,9 +1539,9 @@ impl PermissionBroker {
     /// re-implemented.** `HookRunner::run`'s `Err(HookFailure)` -- a missing
     /// script, a timeout, or stdout that failed to parse as a
     /// [`conway_core::hook::HookAnswer`] -- resolves through THIS hook's own
-    /// `on_failure` policy, which defaults to [`HookOnFailure::Deny`]:
-    /// unchanged from before this policy existed for every registration
-    /// that does not set it. There is still no separate "is this hook
+    /// `on_failure` policy, which defaults to [`HookOnFailure::Deny`]
+    /// for every registration that does not set it explicitly. There is
+    /// still no separate "is this hook
     /// broken" check layered on top that could disagree with the runner's
     /// own verdict; `on_failure` decides what to DO about that failure, it
     /// never second-guesses whether it happened.
