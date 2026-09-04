@@ -180,9 +180,8 @@ pub struct PreToolUseHookSpec {
     pub command: Vec<String>,
     pub timeout_ms: u64,
     /// The rule's `HookEntry::match_tool` , carried through untouched. `None` (the
-    /// config default) consults this hook for every `pre_tool_use` call,
-    /// unchanged from before this field existed -- see
-    /// [`crate::hook_dispatch::HookSpec::matcher`]'s own doc for the
+    /// config default) consults this hook for every `pre_tool_use` call --
+    /// see [`crate::hook_dispatch::HookSpec::matcher`]'s own doc for the
     /// identical rule applied to the observation tier's `post_tool_use`.
     /// `pre_tool_use` always carries a tool name (`AuthorizedCall::tool`),
     /// so unlike that sibling field there is no "payload with no tool"
@@ -203,15 +202,13 @@ pub struct PreToolUseHookSpec {
     /// `[hooks].rules[]` entry, or an installed plugin's own
     /// `conway_core::ports::Plugin::hooks()` declaration (board item
     /// `01M129QW0GV90QTQS6B3BY3DAR`). Defaults to [`HookOrigin::Operator`]
-    /// (`HookOrigin`'s own `Default` impl), so every construction site
-    /// that predates this field and never sets it explicitly keeps
-    /// reporting exactly what it always implicitly was. Read by
+    /// (`HookOrigin`'s own `Default` impl): a construction site that never
+    /// sets it explicitly reports the conservative default. Read by
     /// `crates/conway/src/conway.rs`'s
     /// `Conway::active_deny_capable_hook_rules` to report a plugin-
-    /// contributed rule's real source rather than the blanket
-    /// "settings.json (merged config)" label every rule used to get
-    /// unconditionally -- see [`HookOrigin`]'s own doc for the full
-    /// argument.
+    /// contributed rule's real source, distinct from the blanket
+    /// "settings.json (merged config)" label an operator-authored rule
+    /// reports -- see [`HookOrigin`]'s own doc for the full argument.
     pub origin: HookOrigin,
 }
 
@@ -228,8 +225,7 @@ pub struct PreToolUseHookSpec {
 /// path argument.
 #[derive(Clone, Debug)]
 pub enum AgentRoot {
-    /// This agent has no confinement root. The root check is a no-op:
-    /// every call proceeds exactly as it did before this slice existed.
+    /// This agent has no confinement root. The root check is a no-op.
     Unconfined,
     /// This agent's root, already canonicalized.
     Confined(CanonicalRoot),
@@ -271,9 +267,7 @@ impl AgentRoot {
 }
 
 /// [`PermissionBroker::check_root`]'s result: whether the call is denied
-/// outright, must skip straight to the operator's gate, or is unaffected
-/// (proceeds through the ordinary allow paths exactly as before this
-/// slice).
+/// outright, must skip straight to the operator's gate, or is unaffected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RootDecision {
     /// No confinement applies, or every declared path argument checked out
@@ -300,14 +294,12 @@ enum RootDecision {
 ///
 /// **A thin, same-crate wrapper around the one shared implementation,
 /// [`conway_core::containment::resolve_candidate`]
-///.** This function used to carry its own
-/// restated copy of the resolution rule (kept in sync with `conway_tools::
-/// common::resolve_path` only by a doc comment demanding lockstep edits,
-/// never enforced by the compiler); it is now a direct call, so the two
-/// crates' wrappers cannot independently drift or independently drop the
-/// NUL guard the way two inlined copies already did once -- and cannot
-/// independently drift on tilde expansion either (board item
-/// `01M10HSENWKTEE4G691XJXBH6T`): a `paths_under` permission-rule prefix
+///.** A direct call, not a restated
+/// copy of the resolution rule, so this crate's wrapper and
+/// `conway_tools::common::resolve_path` cannot independently drift or
+/// independently drop the NUL guard, and cannot independently drift on
+/// tilde expansion either (board item `01M10HSENWKTEE4G691XJXBH6T`): a
+/// `paths_under` permission-rule prefix
 /// and the call argument it is meant to bound both resolve through THIS
 /// function, so a `~`-prefixed rule and a `~`-prefixed argument can never
 /// expand two different ways (P-13). It still cannot simply BE
@@ -2441,10 +2433,9 @@ mod tests {
         );
     }
 
-    /// **The single most important test in this item.** `AutoAllow` mode
+    /// **The single most important test in this module.** `AutoAllow` mode
     /// plus a denying `pre_tool_use` hook: the call is STILL denied, and
-    /// the operator's gate is never consulted -- the exact failure this
-    /// item's placement analysis exists to prevent. A hook implemented
+    /// the operator's gate is never consulted. A hook implemented
     /// downstream of `gate.check` would never even run under `AutoAllow`;
     /// this asserts the opposite is true here.
     #[tokio::test]
@@ -2768,8 +2759,7 @@ mod tests {
     /// deny -- but `HookStepOutcome::Denied`'s `cause` field is DIFFERENT
     /// for the two, provably: a downstream consumer (a future status
     /// surface, or this test) can match on `cause` alone and never inspect
-    /// `rendered_error` at all. Before this item, both were the identical
-    /// `Option<String>` value.
+    /// `rendered_error` at all.
     #[tokio::test]
     async fn hook_step_outcome_distinguishes_a_verdict_denial_from_an_outage_denial_structurally() {
         let session = SessionId::new();
