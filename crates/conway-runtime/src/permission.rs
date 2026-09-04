@@ -1916,8 +1916,7 @@ impl PermissionBroker {
         // granted before the rule was ever installed, e.g. a plugin loaded
         // mid-session -- permanently suppress every future ask the rule was
         // meant to force. That is a real transfer of authority away from an
-        // operator's own explicit "always allow" (see this method's own
-        // history for that point being raised explicitly), but it is the
+        // operator's own explicit "always allow", but it is the
         // correct direction: `AllowAlways` is `PermissionScope`-bounded
         // consent to a class of call, not a promise that the class can never
         // later be flagged by a narrower rule -- exactly the same relationship
@@ -1940,22 +1939,21 @@ impl PermissionBroker {
         // sees this ask through the ordinary `gate.check` path below, with
         // no marker distinguishing "a rule forced this" from an ordinary
         // first-time ask -- `PermissionDecisionKind` (`#[non_exhaustive]`,
-        // so additive) is NOT extended by this item. That is deliberately
-        // narrower than it could be, not an oversight: the hazard this
-        // item's own acceptance criteria warn against is a NEW cause
-        // silently reported as `Cached` (the cache/pattern/`AutoAllow` steps'
-        // own label for "resolved without asking"), and this step cannot
-        // produce that mislabeling BY CONSTRUCTION -- setting
-        // `must_reach_gate` only ever routes a call INTO `gate.check`, whose
-        // real `PermissionDecision` (`AllowOnce`/`AllowAlways`/`Denied`/
-        // `DeniedWithFeedback`) is reported exactly as it already is for any
-        // other first-time ask. What is genuinely missing is WHY the operator
-        // is being asked -- surfacing "matched plugin rule `bash:curl`" in
-        // the prompt UI needs a wire-visible field on `PermissionRequest`/
+        // so additive) is deliberately NOT extended for this, not an
+        // oversight: the hazard to avoid is a NEW cause silently reported as
+        // `Cached` (the cache/pattern/`AutoAllow` steps' own label for
+        // "resolved without asking"), and this step cannot produce that
+        // mislabeling BY CONSTRUCTION -- setting `must_reach_gate` only ever
+        // routes a call INTO `gate.check`, whose real `PermissionDecision`
+        // (`AllowOnce`/`AllowAlways`/`Denied`/`DeniedWithFeedback`) is
+        // reported exactly as it already is for any other first-time ask.
+        // What is genuinely missing is WHY the operator is being asked --
+        // surfacing "matched plugin rule `bash:curl`" in the prompt UI
+        // needs a wire-visible field on `PermissionRequest`/
         // `Event::PermissionRequested`, a persisted-log-compatible change
         // (`#[serde(default)]`, mirroring `Event::AgentSpawned`'s `ephemeral`
-        // field) this item leaves as a follow-up rather than bundling into
-        // the mechanism fix.
+        // field) left as a follow-up rather than bundled into the mechanism
+        // fix.
         if self.prompt_matches(ctx, call).is_some() {
             must_reach_gate = true;
         }
@@ -2060,18 +2058,17 @@ impl PermissionBroker {
 
 /// The `pre_tool_use` hook step's own
 /// tests. Inline (not `tests/permission_broker.rs`) so `cargo test -p
-/// conway-runtime permission::` -- this item's own verification anchor --
-/// finds them by module path.
+/// conway-runtime permission::` finds them by module path.
 ///
 /// The acceptance criteria this module proves, one test each: a denying
-/// hook is enforced under `AutoAllow` (the failure this item's whole
-/// placement analysis exists to prevent); the same beats a cached
+/// hook is enforced under `AutoAllow` (the mode a downstream-of-
+/// `gate.check` placement would miss); the same beats a cached
 /// `AllowAlways` grant and a matching pattern-allow rule (the other two
-/// bypass paths a downstream-of-`gate.check` implementation would have
-/// missed); a missing/failing/malformed-output hook denies via the
-/// runner's own failure signal, not a second fail-closed implementation;
-/// with nothing installed, `decide()` is unchanged (proving this is
-/// additive); and no JSON shape a hook can send ever produces `Allow`.
+/// bypass paths such a placement would have missed); a missing/failing/
+/// malformed-output hook denies via the runner's own failure signal, not a
+/// second fail-closed implementation; with nothing installed, `decide()`
+/// is unchanged (proving this is additive); and no JSON shape a hook can
+/// send ever produces `Allow`.
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
