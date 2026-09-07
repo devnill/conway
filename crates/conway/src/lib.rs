@@ -38,6 +38,7 @@ mod discovery_host;
 mod error;
 mod event_stream;
 mod fork_child;
+pub mod fs;
 pub mod gates;
 mod host_caps;
 mod intent;

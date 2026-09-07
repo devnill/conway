@@ -303,13 +303,14 @@ struct StoreDocument {
 /// That is what lets the `/agents` panel call `get` once per row per frame
 /// without an I/O budget.
 ///
-/// **Writes are whole-file and atomic.** `set`/`remove` rewrite the entire
-/// document to a `.tmp` sibling and `rename` it over the real path -- the
-/// same shape `conway_cli`'s `tui::history::save` and `conway-session`'s
-/// `SessionIndex::persist_full` already use, so a crash mid-write leaves
-/// either the complete old file or the complete new one, never a truncated
-/// one. Whole-file is right at this size: the document is one short line
-/// per name an operator deliberately typed.
+/// **Writes are whole-file, atomic, and durable.** `set`/`remove` rewrite
+/// the entire document via [`conway::fs::atomic_write`] (a `.tmp` sibling,
+/// `fsync`ed, then `rename`d over the real path -- the same shared helper
+/// `conway_cli`'s `tui::history::save` and `session_names::NamesStore::save`
+/// use, board item `01M1WVNPYTFF0TEJGHGGRPDF8E`), so a crash mid-write, or
+/// right after it, leaves either the complete old file or the complete new
+/// one, never a truncated or lost one. Whole-file is right at this size: the
+/// document is one short line per name an operator deliberately typed.
 #[derive(Debug)]
 pub struct FsAgentNames {
     path: PathBuf,
@@ -368,7 +369,10 @@ impl FsAgentNames {
         &self.path
     }
 
-    /// Serializes `names` and replaces the store file with it, atomically.
+    /// Serializes `names` and replaces the store file with it, atomically
+    /// and durably: [`conway::fs::atomic_write`] (board item
+    /// `01M1WVNPYTFF0TEJGHGGRPDF8E`) writes a temp sibling, `fsync`s it,
+    /// then renames it over `self.path`.
     fn persist(&self, names: &BTreeMap<AgentId, String>) -> Result<(), AgentNamesError> {
         let doc = StoreDocument {
             names: names
@@ -382,18 +386,7 @@ impl FsAgentNames {
             path: self.path.clone(),
             detail: e.to_string(),
         })?;
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| AgentNamesError::Io {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, body).map_err(|e| AgentNamesError::Io {
-            path: tmp.clone(),
-            source: e,
-        })?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| AgentNamesError::Io {
+        conway::fs::atomic_write(&self.path, body.as_bytes()).map_err(|e| AgentNamesError::Io {
             path: self.path.clone(),
             source: e,
         })

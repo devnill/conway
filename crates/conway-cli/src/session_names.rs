@@ -25,8 +25,9 @@
 //! .jsonl`, so a session's own persisted log is byte-for-byte unaffected by
 //! any of the operations this module performs -- there is no code path
 //! from here into `conway_core::ports::SessionStore`'s `append`/`create` at
-//! all. `NamesStore::load`/`save` round-trip the sidecar atomically (a
-//! temp-file write plus a rename), matching every other durability
+//! all. `NamesStore::load`/`save` round-trip the sidecar atomically and
+//! durably (via [`conway::fs::atomic_write`]: a temp-file write, `fsync`,
+//! then a rename), matching every other durability
 //! expectation this crate holds for files under the config root, but this
 //! is furniture, not the log: a lost or corrupted sidecar loses labels, not
 //! sessions, and every session is still fully addressable by its own id
@@ -246,20 +247,18 @@ impl NamesStore {
         }
     }
 
-    /// Atomic write: serialize to a temp file beside the target, then
-    /// rename over it -- a reader never observes a half-written sidecar.
+    /// Atomic, durable write: serialize, then hand off to
+    /// [`conway::fs::atomic_write`] (temp file beside the target, `fsync`ed,
+    /// then renamed over it) -- a reader never observes a half-written
+    /// sidecar, and a crash right after the write can no longer lose it
+    /// either.
     fn save(&self) -> Result<(), NameError> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let json = serde_json::to_string_pretty(&self.by_name).map_err(|e| {
             NameError::Io(std::io::Error::other(format!(
                 "serializing session names: {e}"
             )))
         })?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(&tmp, &self.path)?;
+        conway::fs::atomic_write(&self.path, json.as_bytes())?;
         Ok(())
     }
 }
