@@ -1375,6 +1375,38 @@ impl Conway {
         Ok(self.store.head(&sid).await?)
     }
 
+    /// Attaches `label` to an already-existing session, persisting
+    /// immediately -- `SessionStore::add_label`, a thin delegation exactly
+    /// like [`Self::sessions`]/[`Self::session_head`] above (no `Runtime`
+    /// involvement: unlike [`Self::promote`], a label touches no live-tree
+    /// state, only the session's own persisted header). Board item
+    /// `01M1WVKVSDXHB68J66VZ9HE8B3` -- closes the gap where
+    /// `SessionSpec::labels`/[`Self::new_session`] was the only way to
+    /// write a label, so `SessionFilter::label`/`--label` had no reachable
+    /// write side for a session already created.
+    ///
+    /// Idempotent: labeling an already-labeled session with the same label
+    /// is `Ok(())`, no header rewrite. Errors `FacadeError::Store(
+    /// StoreError::NotFound)` for an unknown `sid` -- the CLI's `conway
+    /// sessions label` resolves an `<id-or-name>` token to a `SessionId`
+    /// before calling this, so the id given here is already known-valid or
+    /// the CLI itself refused first; a direct embedder call with a raw,
+    /// unchecked id still gets this same named refusal rather than a panic
+    /// or a silent no-op.
+    pub async fn add_label(&self, sid: SessionId, label: &str) -> Result<()> {
+        Ok(self.store.add_label(&sid, label).await?)
+    }
+
+    /// Removes `label` from a session, persisting immediately --
+    /// `SessionStore::remove_label`, the inverse of [`Self::add_label`]
+    /// with the identical idempotent shape: removing a label the session
+    /// does not carry is `Ok(())`, not an error (see that method's own doc
+    /// for why this deliberately does not mirror `NamesStore::unset`'s
+    /// "unknown target is an error" behavior).
+    pub async fn remove_label(&self, sid: SessionId, label: &str) -> Result<()> {
+        Ok(self.store.remove_label(&sid, label).await?)
+    }
+
     /// Appends a `LogRecord::ContextMask` to `sid`'s own log, masking (or,
     /// with `excluded: false`, un-masking) `target_seq` -- the host-side
     /// half of [`conway_core::ports::CommandOutcome::MaskRecord`]

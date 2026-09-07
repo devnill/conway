@@ -62,6 +62,11 @@ to hand the finding to.
   same project's own other sessions. `"all_projects"` is an explicit
   widening the model chooses, never a default it falls into.
 - `label` / `agent_def` — exact match against a session's own metadata.
+  A label is attached to a session with `conway sessions label <id-or-name>
+  <label>` (removed with `sessions unlabel`) — see
+  [`sessions.md`](../sessions.md#where-a-label-lives) for exactly where a
+  label lives and how it's written; `agent_def` is set at session-creation
+  time only, with no equivalent post-creation write.
 - `text` — a plain, case-insensitive substring. **Omitting it searches
   METADATA ONLY** (which sessions exist, when, labeled how) with zero record
   content ever read. Supplying it turns this into a bounded CONTENT scan.

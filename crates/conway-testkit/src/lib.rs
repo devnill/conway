@@ -794,6 +794,33 @@ impl SessionStore for FakeStore {
         Ok(())
     }
 
+    /// Idempotent: adding a label the session already carries is `Ok(())`
+    /// with no mutation, mirroring `JsonlSessionStore::add_label`'s
+    /// contract (see the trait-level doc, board item
+    /// `01M1WVKVSDXHB68J66VZ9HE8B3`).
+    async fn add_label(&self, sid: &SessionId, label: &str) -> Result<(), StoreError> {
+        let mut sessions = self.sessions.write().unwrap();
+        let session = sessions
+            .get_mut(sid)
+            .ok_or(StoreError::NotFound { session: *sid })?;
+        if !session.meta.labels.iter().any(|l| l == label) {
+            session.meta.labels.push(label.to_string());
+        }
+        Ok(())
+    }
+
+    /// Idempotent: removing a label the session does not carry is `Ok(())`
+    /// with no mutation, mirroring `JsonlSessionStore::remove_label`'s
+    /// contract.
+    async fn remove_label(&self, sid: &SessionId, label: &str) -> Result<(), StoreError> {
+        let mut sessions = self.sessions.write().unwrap();
+        let session = sessions
+            .get_mut(sid)
+            .ok_or(StoreError::NotFound { session: *sid })?;
+        session.meta.labels.retain(|l| l != label);
+        Ok(())
+    }
+
     // The liveness marker is a plain in-memory cell here — `live_owner`
     // returns whatever a test (or `touch_live_owner`) last set, with no
     // freshness filtering; the sweep owns the threshold. A `FakeStore` never

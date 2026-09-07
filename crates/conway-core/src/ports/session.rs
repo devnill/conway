@@ -128,6 +128,46 @@ pub trait SessionStore: Send + Sync + 'static {
     /// itself also works on a cold (not currently live) session.
     async fn set_ephemeral(&self, sid: &SessionId, ephemeral: bool) -> Result<(), StoreError>;
 
+    /// Adds `label` to a session header's `SessionMeta.labels`, persisting
+    /// immediately — the second sanctioned exception to the session file's
+    /// write-once header discipline (`set_ephemeral` above is the first).
+    /// Board item `01M1WVKVSDXHB68J66VZ9HE8B3`: closes the gap where
+    /// `SessionMeta.labels`/`SessionFilter::label` had a fully working read
+    /// side and no way to write a label onto an EXISTING session (only at
+    /// creation time, via `RootSpec::labels`).
+    ///
+    /// Idempotent: adding a label the session already carries is `Ok(())`
+    /// with no header rewrite — unlike `set_ephemeral`'s guard against a
+    /// redundant flip (which exists to catch a caller bug, a double
+    /// promote), a duplicate label request is not a bug signal, so there is
+    /// nothing to refuse. A session may carry any number of labels, in
+    /// contrast to `NamesStore`'s one-name-per-session bijection — labels
+    /// are not identity, so nothing about this operation displaces an
+    /// existing label.
+    ///
+    /// Returns `StoreError::NotFound` if the session does not exist.
+    ///
+    /// Concurrency contract: implementations serialize `add_label` against
+    /// `create`/`fork`/`remove`/`set_ephemeral`/`remove_label` with the same
+    /// lifecycle serialization those operations already share, so a label
+    /// write can never interleave with another header rewrite of the same
+    /// session.
+    async fn add_label(&self, sid: &SessionId, label: &str) -> Result<(), StoreError>;
+
+    /// Removes `label` from a session header's `SessionMeta.labels`,
+    /// persisting immediately — the inverse of [`add_label`](Self::add_label),
+    /// with the same idempotent shape: removing a label the session does
+    /// not carry is `Ok(())` with no header rewrite, not an error. (This
+    /// deliberately does NOT mirror `NamesStore::unset`'s "unknown target is
+    /// an error" behavior — that check exists there because a name is a
+    /// bijection an operator can only ever target by its one binding;
+    /// labels have no such uniqueness for a redundant removal to violate.)
+    ///
+    /// Returns `StoreError::NotFound` if the session does not exist.
+    ///
+    /// Concurrency contract: identical to [`add_label`](Self::add_label).
+    async fn remove_label(&self, sid: &SessionId, label: &str) -> Result<(), StoreError>;
+
     /// Reads this store directory's cross-process liveness marker — the
     /// [`LiveOwner`] a process published via [`touch_live_owner`], or `None`
     /// when no marker is present (no process ever claimed this store, or the

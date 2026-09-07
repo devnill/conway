@@ -124,6 +124,14 @@ pub struct SessionMeta {
     pub role: Option<RoleAlias>,
     pub created: DateTime<Utc>,
     pub cwd: PathBuf,
+    /// Operator-set marks matched by `SessionFilter::label`. Written at
+    /// session-creation time via `RootSpec::labels`
+    /// (`conway::SessionSpec::labels`), and, on an already-existing
+    /// session, via `SessionStore::add_label`/`remove_label` (board item
+    /// `01M1WVKVSDXHB68J66VZ9HE8B3` -- see those methods' own docs for the
+    /// guard/idempotency shape; `SessionStore::set_ephemeral`'s doc for why
+    /// a header rewrite after creation is a narrow, sanctioned exception
+    /// rather than the norm).
     #[serde(default)]
     pub labels: Vec<String>,
     /// Marks a session as a disposable, catalog-hidden scratchpad (the
