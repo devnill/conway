@@ -644,6 +644,7 @@ fn build_loop_inner(
         ),
         resolver,
         context_curator: std::sync::RwLock::new(None),
+        artifact_writer: std::sync::RwLock::new(None),
         observers,
         plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
     });

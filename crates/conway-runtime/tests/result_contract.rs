@@ -248,6 +248,7 @@ fn build_loop_with_contract(
         context_hook: std::sync::RwLock::new(None),
         resolver,
         context_curator: std::sync::RwLock::new(None),
+        artifact_writer: std::sync::RwLock::new(None),
         observers: Vec::new(),
         plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
     });

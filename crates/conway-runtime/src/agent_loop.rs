@@ -159,9 +159,9 @@ use conway_core::ids::{AgentId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId}
 use conway_core::log::LogRecord;
 use conway_core::path::ResolvedPath;
 use conway_core::ports::{
-    ArtifactWriteHandle, ContextHookCtx, ContextPayload, CurateCtx, CwdHandle, ObservedCall,
-    ObserverCtx, OverflowInfo, PathStore, PluginConfig, PluginEventEmitter, PluginEventHandle,
-    RegisteredObserver, Router, SessionStore, SubagentHost,
+    ArtifactWriteHandle, ArtifactWriter, ContextHookCtx, ContextPayload, CurateCtx, CwdHandle,
+    ObservedCall, ObserverCtx, OverflowInfo, PathStore, PluginConfig, PluginEventEmitter,
+    PluginEventHandle, RegisteredObserver, Router, SessionStore, SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::routing::RouteRequest;
@@ -371,6 +371,23 @@ pub struct LoopDeps {
     /// in `Runtime::set_context_hook` -- the one place a hook enters this
     /// runtime -- not at either place `AgentLoop` uses the stored value.
     pub context_hook: RwLock<Option<Arc<GuardedContextHook>>>,
+    /// Pluggable override for the artifact-write capability
+    /// `ContextHookCtx::artifacts` exposes (board item
+    /// `01M1WVQM440XZDSP0KC664HJ7S`). `RwLock` rather than a plain `Option`
+    /// for the SAME reason [`Self::context_hook`] is: `RuntimeDeps`
+    /// (`runtime.rs`) has no field to source one from at `LoopDeps`
+    /// construction time -- `Runtime::set_artifact_writer` (a purely
+    /// additive method) sets this post-construction, before any agent
+    /// starts running, and `run_inner` reads it fresh once per agent, at
+    /// loop start (an `ArtifactWriter` override is whole-runtime
+    /// configuration, unlike `chdir`/`root`, which genuinely are per-agent
+    /// -- there is nothing about the injected writer itself that varies
+    /// per agent, only the [`conway_core::ids::AgentId`] `ArtifactWriteHandle`
+    /// bakes in when wrapping it, exactly as it already does for the
+    /// built-in). `None` (the default every existing construction site
+    /// gets) means `run_inner` builds its own `AgentArtifactWriter` from
+    /// that agent's own `chdir`/`root`, byte-identical to today's behavior.
+    pub artifact_writer: RwLock<Option<Arc<dyn ArtifactWriter>>>,
     /// Every `ToolObserver` the installed plugin set contributed, each paired
     /// with the plugin that supplied it so its fired events land in that
     /// plugin's namespace.
@@ -859,6 +876,20 @@ impl AgentLoop {
             .clone()
     }
 
+    /// The currently-registered `ArtifactWriter` override, if any -- reads
+    /// `LoopDeps::artifact_writer` fresh (see that field's own doc for why
+    /// it is a `RwLock` rather than a plain `Option`). `run_inner` calls this
+    /// exactly once, at loop start, deciding whether to wrap it (an embedder
+    /// override) or the built-in `AgentArtifactWriter` (`None`) into this
+    /// agent's own `ArtifactWriteHandle`.
+    fn artifact_writer_override(&self) -> Option<Arc<dyn ArtifactWriter>> {
+        self.deps
+            .artifact_writer
+            .read()
+            .expect("artifact_writer lock poisoned")
+            .clone()
+    }
+
     /// The pre-assembly curator stage (DESIGN §11.4). Runs the registered
     /// [`Curator`](conway_core::ports::Curator) -- if any -- against the
     /// harness-resolved `path`, BEFORE `ContextInput` is assembled. This is
@@ -1164,16 +1195,22 @@ impl AgentLoop {
         let root = crate::permission::AgentRoot::reconstruct(&self.root);
         // the write-location
         // capability a registered `ContextHook` sees on `ContextHookCtx::
-        // artifacts`, built from the SAME `chdir`/`root` pair immediately
-        // above -- never a second, independent reconstruction. See
-        // `crate::artifact_store`'s own doc.
-        let artifacts = ArtifactWriteHandle::new(
-            Arc::new(crate::artifact_store::AgentArtifactWriter::new(
-                chdir.clone(),
-                root.clone(),
-            )),
-            self.agent_id,
-        );
+        // artifacts`. An embedder override (`ConwayBuilder::
+        // with_artifact_writer`, `LoopDeps::artifact_writer`'s own doc)
+        // wins unconditionally, mirroring `context_hook`'s own injected-
+        // replaces-default shape -- otherwise built from the SAME `chdir`/
+        // `root` pair immediately above, never a second, independent
+        // reconstruction. See `crate::artifact_store`'s own doc.
+        let artifacts = match self.artifact_writer_override() {
+            Some(writer) => ArtifactWriteHandle::new(writer, self.agent_id),
+            None => ArtifactWriteHandle::new(
+                Arc::new(crate::artifact_store::AgentArtifactWriter::new(
+                    chdir.clone(),
+                    root.clone(),
+                )),
+                self.agent_id,
+            ),
+        };
 
         loop {
             try_rt!(state, self.drain_inbox().await);
@@ -2626,6 +2663,7 @@ mod tests {
             resolver,
             context_curator: RwLock::new(None),
             context_hook: RwLock::new(None),
+            artifact_writer: RwLock::new(None),
             observers: Vec::new(),
             plugin_events: Arc::new(HookDispatcher::new()),
         });
