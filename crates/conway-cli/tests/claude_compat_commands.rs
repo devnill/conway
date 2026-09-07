@@ -207,16 +207,10 @@ async fn without_the_claude_compat_entry_the_translated_command_is_unknown() {
 /// exercises indirectly through `first_party_plugins::installed_plugins` --
 /// never a second, parallel implementation of either.
 mod registry_wiring {
-    use std::collections::BTreeMap;
-
-    use conway::config::schema::{
-        AgentsConfig, ClaudeCompatPluginEntry, ConwayConfig, HealthSection, HooksConfig,
-        LimitsConfig, ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection,
-        SessionConfig, ToolsConfig,
-    };
+    use conway::config::schema::{ClaudeCompatPluginEntry, ConwayConfig};
+    use conway::test_support::base_config;
     use conway_cli::claude_compat_plugins::command_plugins;
     use conway_cli::tui::commands::{parse, CommandRegistry, SlashCommand};
-    use conway_core::ids::RoleAlias;
 
     use super::{COMMAND_PROMPT, PLUGIN_NAME};
 
@@ -227,31 +221,7 @@ mod registry_wiring {
     /// test helper (duplicated here rather than shared, since each
     /// `tests/*.rs` integration file compiles independently).
     fn config_with_claude_compat_entry(dir: &std::path::Path, entry_id: &str) -> ConwayConfig {
-        let mut roles = BTreeMap::new();
-        roles.insert(
-            "default".to_string(),
-            RoleEntry {
-                chain: vec![],
-                headroom_tokens: None,
-                ..Default::default()
-            },
-        );
-        let mut config = ConwayConfig {
-            default_role: RoleAlias::new("default"),
-            cwd: std::path::PathBuf::from("."),
-            session: SessionConfig::default(),
-            limits: LimitsConfig::default(),
-            permissions: PermissionsConfig::default(),
-            backends: BTreeMap::new(),
-            routing: RoutingSection::default(),
-            roles,
-            health: HealthSection::default(),
-            agents: AgentsConfig::default(),
-            models: ModelsConfig::default(),
-            tools: ToolsConfig::default(),
-            plugins: PluginsConfig::default(),
-            hooks: HooksConfig::default(),
-        };
+        let mut config = base_config();
         config.plugins.claude_compat.push(ClaudeCompatPluginEntry {
             id: entry_id.to_string(),
             dir: dir.to_path_buf(),

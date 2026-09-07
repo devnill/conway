@@ -17,18 +17,13 @@
 //! command, so a test that never substitutes it would prove dispatch
 //! against an unrealistic fixture.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, HookEntry, HooksConfig, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-};
+use conway::config::schema::{ConwayConfig, HookEntry, HooksConfig};
 use conway::plugin::{Plugin, PluginHookRule, PluginManifest, Tool};
-use conway::test_support::test_builder;
+use conway::test_support::{base_config_at, test_builder};
 use conway::{ForkSpec, SessionSpec, SpawnSpec};
-use conway_core::ids::RoleAlias;
 use conway_plugin_claude::HookRegistration;
 
 /// The exact `[hooks].rules[]`-shaped -> real `HookEntry` conversion a
@@ -54,31 +49,9 @@ fn to_hook_entry(registration: HookRegistration) -> HookEntry {
 }
 
 fn minimal_config(cwd: &Path, hooks: HooksConfig) -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
-        "default".to_string(),
-        RoleEntry {
-            chain: vec![],
-            headroom_tokens: None,
-            ..Default::default()
-        },
-    );
-    ConwayConfig {
-        default_role: RoleAlias::new("default"),
-        cwd: cwd.to_path_buf(),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends: BTreeMap::new(),
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks,
-    }
+    let mut config = base_config_at(cwd.to_path_buf());
+    config.hooks = hooks;
+    config
 }
 
 /// `session_starting` (observation-only, fails open): a translated rule's
