@@ -187,6 +187,35 @@ it. There is no separate "recall" tool — recall is automatic: every
 assembled request gets whatever the injection budget allows, oldest-first,
 with no action required.
 
+## The operator surface: auditing and undoing what a model remembered
+
+The tools above are reachable only from the model. An operator gets the
+identical read/write/remove surface — see, add, or remove a memory by
+hand — through two complementary paths, both reading and writing the SAME
+store:
+
+- **`conway memory list` / `conway memory forget <id>`** (board item
+  `01M1WVQ36ASXCQMSB7Q5K20P44`) — a built-in `conway` subcommand, always
+  listed in `conway --help` regardless of which plugins are installed.
+  `conway memory list` prints a table (`ID`, `CREATED`, `SESSION`, `TEXT`,
+  oldest-first; add `--json` for the full, untruncated record as a JSON
+  array); `conway memory forget <id>` removes the memory named by an id
+  from that listing. Works even when `"conway.memory"` was never installed
+  — nothing could have been remembered through a plugin that isn't running,
+  so an empty listing is the honest answer, not an error.
+- **`/conway.memory.list`, `/conway.memory.remember <text>`,
+  `/conway.memory.forget <id>`** (board item `01M0EMD54BWAVZGYWPXP4S5P1J`)
+  — this plugin's own commands, reachable in the TUI's `/`-prefixed
+  dispatch and, headlessly, as `conway conway.memory.<command>` (clap's
+  external-subcommand path). Unlike the built-in pair above, these three
+  only exist once `"conway.memory"` is actually named in
+  `[plugins].install` — and `remember` here is the only way to add a
+  memory by hand with no session attached, since the model-facing
+  `remember` tool always attaches the calling session's id.
+
+Both paths are safe to mix freely: an id `conway memory list` reports is
+equally valid input to `/conway.memory.forget`, and vice versa.
+
 ## Trust
 
 No new trust mechanism. `remember`/`forget` are `PermissionClass::

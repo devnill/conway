@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`conway memory list`/`conway memory forget <id>`: a built-in, headless audit/undo surface over what a model has chosen to remember** — board item `01M1WVQ36ASXCQMSB7Q5K20P44`, architectural review finding F10, ruled in scope by the operator directly ("An operator should be able to audit and undo what a model chose to remember"). Before this, the only operator-visible trace of `conway.memory`'s `remember`/`forget`/`list_memories` tools was a token-count line in `/context`'s preamble (a read of the segment's *size*, never its *content*) — finding the on-disk store meant reading it by hand. `conway memory list` prints every stored memory as a table (`ID`, `CREATED`, `SESSION`, `TEXT`, oldest-first; `--json` for the full untruncated record) and `conway memory forget <id>` removes one by the id `list` reports, both over the SAME `Arc<dyn MemoryStore>` `conway.memory`'s tools and its own plugin-declared `/conway.memory.list`/`remember`/`forget` commands already share — no new storage mechanism, no reimplemented store access. Unlike that plugin-declared path (reachable only once `"conway.memory"` is named in `[plugins].install`, and invisible to `conway --help`), this is a BUILT-IN subcommand alongside `sessions`/`routes`/`tools`/`plugin` — always discoverable, and it never spins up a throwaway session just to build a `CommandCtx`. See `crates/conway-cli/src/commands/memory.rs`'s own module doc for the full "why alongside, not instead of" reasoning, and `docs/plugins/memory.md`'s "Using it, once installed" section for the operator-facing account.
+
 ## [0.10.0] — 2026-09-04
 
 ### Added

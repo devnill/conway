@@ -438,7 +438,7 @@ async fn build_conway(
     Ok((conway, memory_store, agent_names))
 }
 
-/// If `command.is_some()` -> `commands::{sessions,routes,tools}::run`; else if
+/// If `command.is_some()` -> `commands::{sessions,routes,tools,memory}::run`; else if
 /// `print.is_some()` -> `oneshot::run`; else -> `tui::run` (module notes).
 /// `tui_gate_rx` is `Some` exactly when the `None` (tui) arm below is the
 /// one taken -- see `main`'s comment. `tui_form_rx` (board item
@@ -459,6 +459,16 @@ async fn dispatch(
         Some(Command::Tools(args)) => {
             commands::tools::run(args, &conway, cli.root.as_deref()).await
         }
+        // Board item `01M1WVQ36ASXCQMSB7Q5K20P44`: `conway memory
+        // {list,forget}`, a BUILT-IN subcommand over the SAME
+        // `Arc<dyn MemoryStore>` `Command::Plugin`/`Command::External` below
+        // already receive -- cloned, not moved, so this arm never starves
+        // whichever of those two also needs it in the same dispatch (they
+        // are mutually exclusive with THIS arm, not with each other's own
+        // exclusivity assumptions about `memory_store`). See
+        // `commands::memory`'s own module doc for why this built-in
+        // surface exists alongside the plugin-declared one.
+        Some(Command::Memory(args)) => commands::memory::run(args, memory_store.clone()).await,
         // Board item `01M1FSDRF20E2EGHCG3RK28DKH`: `conway plugin
         // list|install|remove`, a BUILT-IN clap subcommand matched here
         // before `Command::External`'s own catch-all ever sees the word
