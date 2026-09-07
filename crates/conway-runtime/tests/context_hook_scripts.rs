@@ -35,8 +35,8 @@ use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, Session
 use conway_core::log::{LogRecord, SessionMeta};
 use conway_core::ports::{
     Backend, BoxStream, ContextHook, ContextHookCtx, ContextPayload, GenerateRequest,
-    GenerateResponse, HealthRegistry, HookRunner, PermissionGate, Plugin, PluginConfig,
-    PluginManifest, Router, SessionStore, StreamChunk, SubagentHost, Tool,
+    GenerateResponse, HealthRegistry, HookRunner, PermissionGate, Plugin, PluginConfig, Router,
+    SessionStore, StreamChunk, SubagentHost, Tool,
 };
 use conway_core::provenance::Provenance;
 use conway_core::routing::{Route, RouteRequest, RoutingReason};
@@ -50,7 +50,7 @@ use conway_runtime::permission::PermissionBroker;
 use conway_runtime::tools::PluginRegistry;
 use conway_runtime::tree::{AgentNode, AgentTree};
 use conway_testkit::{
-    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeStore,
+    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakePlugin, FakeStore,
     FakeSubagentHost,
 };
 
@@ -265,24 +265,6 @@ async fn seed_prompt(store: &dyn SessionStore, prompt: &str) -> (SessionId, Agen
     (session, agent)
 }
 
-struct FakePlugin;
-impl Plugin for FakePlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: "test".to_string(),
-            version: "0.0.0".to_string(),
-            tools: vec![],
-            required_host_caps: vec![],
-            optional_host_caps: vec![],
-            requires: vec![],
-            optional: vec![],
-        }
-    }
-    fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        vec![]
-    }
-}
-
 /// Builds a real `AgentLoop` with real `ContextBuilder`/`AttemptEngine`/
 /// `ToolRunner` wiring, returning the loop plus the shared `HookDispatcher`
 /// a test wires a `ScriptedRunner` into.
@@ -303,7 +285,8 @@ fn build_loop(
     backends.insert(backend.id(), backend as Arc<dyn Backend>);
     let attempt = Arc::new(AttemptEngine::new(backends, health, bus.clone()));
     let plugin_registry = Arc::new(
-        PluginRegistry::from_plugins(vec![Arc::new(FakePlugin) as Arc<dyn Plugin>]).unwrap(),
+        PluginRegistry::from_plugins(vec![Arc::new(FakePlugin::new(vec![])) as Arc<dyn Plugin>])
+            .unwrap(),
     );
     let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
     let broker = Arc::new(PermissionBroker::new(gate, bus.clone()));

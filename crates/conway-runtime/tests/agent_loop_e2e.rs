@@ -31,9 +31,8 @@ use conway_core::ids::{
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{
     Backend, BoxStream, ContextHook, ContextHookCtx, ContextPayload, GenerateRequest,
-    GenerateResponse, HealthRegistry, LiveOwner, OverflowInfo, PermissionGate, Plugin,
-    PluginConfig, PluginManifest, Router, SessionStore, StreamChunk, SubagentHost, Tool, ToolCtx,
-    ToolOutput,
+    GenerateResponse, HealthRegistry, LiveOwner, OverflowInfo, PermissionGate, PluginConfig,
+    Router, SessionStore, StreamChunk, SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use conway_core::provenance::Provenance;
 use conway_core::routing::{Route, RouteRequest, RoutingReason};
@@ -46,7 +45,7 @@ use conway_runtime::permission::PermissionBroker;
 use conway_runtime::tools::PluginRegistry;
 use conway_runtime::tree::{AgentNode, AgentTree};
 use conway_testkit::{
-    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeStore,
+    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakePlugin, FakeStore,
     FakeSubagentHost,
 };
 use futures::future::FutureExt;
@@ -324,30 +323,8 @@ impl Tool for DelayTool {
     }
 }
 
-struct FakePlugin {
-    tools: Vec<Arc<dyn Tool>>,
-}
-
-impl Plugin for FakePlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: "test".to_string(),
-            version: "0.0.0".to_string(),
-            tools: self.tools.iter().map(|t| t.spec().name).collect(),
-            required_host_caps: vec![],
-            optional_host_caps: vec![],
-            requires: vec![],
-            optional: vec![],
-        }
-    }
-
-    fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        self.tools.clone()
-    }
-}
-
 fn registry(tools: Vec<Arc<dyn Tool>>) -> Arc<PluginRegistry> {
-    Arc::new(PluginRegistry::from_plugins(vec![Arc::new(FakePlugin { tools })]).unwrap())
+    Arc::new(PluginRegistry::from_plugins(vec![Arc::new(FakePlugin::new(tools))]).unwrap())
 }
 
 // ---------------------------------------------------------------------

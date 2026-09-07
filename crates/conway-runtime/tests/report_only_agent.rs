@@ -33,8 +33,8 @@ use conway_core::content::{
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
 use conway_core::log::{LogRecord, SessionMeta};
 use conway_core::ports::{
-    Backend, GenerateResponse, HealthRegistry, PermissionGate, Plugin, PluginConfig,
-    PluginManifest, Router, SessionStore, Tool, ToolCtx, ToolOutput,
+    Backend, GenerateResponse, HealthRegistry, PermissionGate, Plugin, PluginConfig, Router,
+    SessionStore, Tool, ToolCtx, ToolOutput,
 };
 use conway_core::provenance::Provenance;
 use conway_runtime::agent_loop::{AgentLoop, AgentSpec, LoopDeps};
@@ -46,7 +46,7 @@ use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_runtime::tools::PluginRegistry;
 use conway_runtime::tree::{AgentNode, AgentTree};
 use conway_testkit::{
-    text_response_with_stub_usage as text_response, FakeGate, FakeRouter, FakeStore,
+    text_response_with_stub_usage as text_response, FakeGate, FakePlugin, FakeRouter, FakeStore,
     FakeSubagentHost, ScriptedBackend, ScriptedTurn,
 };
 use tokio_util::sync::CancellationToken;
@@ -152,28 +152,6 @@ impl Tool for FakeReportTool {
     }
 }
 
-struct FakePlugin {
-    tools: Vec<Arc<dyn Tool>>,
-}
-
-impl Plugin for FakePlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: "test".to_string(),
-            version: "0.0.0".to_string(),
-            tools: self.tools.iter().map(|t| t.spec().name).collect(),
-            required_host_caps: vec![],
-            optional_host_caps: vec![],
-            requires: vec![],
-            optional: vec![],
-        }
-    }
-
-    fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        self.tools.clone()
-    }
-}
-
 // ---------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------
@@ -239,7 +217,7 @@ fn build_loop(
     backends.insert(backend.id(), backend);
     let attempt = Arc::new(AttemptEngine::new(backends, health, bus.clone()));
     let plugin_registry =
-        Arc::new(PluginRegistry::from_plugins(vec![Arc::new(FakePlugin { tools })]).unwrap());
+        Arc::new(PluginRegistry::from_plugins(vec![Arc::new(FakePlugin::new(tools))]).unwrap());
     let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
     let broker = Arc::new(PermissionBroker::new(gate, bus.clone()));
     let tool_runner = Arc::new(conway_runtime::tools::ToolRunner::new(
@@ -764,7 +742,7 @@ async fn report_only_proposer_spawned_via_subagent_host_runs_end_to_end() {
     defs.insert("proposer".to_string(), proposer_def());
     let (runtime, _store) = runtime_with_plugins(
         backend.clone(),
-        vec![Arc::new(FakePlugin { tools: vec![tool] })],
+        vec![Arc::new(FakePlugin::new(vec![tool]))],
         defs,
     );
 

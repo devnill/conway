@@ -12,13 +12,11 @@ use conway_core::content::{ContentBlock, PermissionClass, ToolCall, ToolCategory
 use conway_core::error::ToolError;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId, ToolName};
-use conway_core::ports::{
-    CwdHandle, Plugin, PluginConfig, PluginManifest, SubagentHost, Tool, ToolCtx, ToolOutput,
-};
+use conway_core::ports::{CwdHandle, Plugin, PluginConfig, SubagentHost, Tool, ToolCtx, ToolOutput};
 use conway_runtime::events::EventBus;
 use conway_runtime::permission::{AgentRoot, PermissionBroker};
 use conway_runtime::tools::{PluginRegistry, ToolBatchCtx, ToolRunner};
-use conway_testkit::{FakeGate, FakePathStore, FakeStore, FakeSubagentHost};
+use conway_testkit::{FakeGate, FakePathStore, FakePlugin, FakeStore, FakeSubagentHost};
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------
@@ -282,34 +280,8 @@ impl Tool for PerCallCwdOverrideTool {
     }
 }
 
-struct FakePlugin {
-    id: String,
-    tools: Vec<Arc<dyn Tool>>,
-}
-
-impl Plugin for FakePlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: self.id.clone(),
-            version: "0.0.0".into(),
-            tools: self.tools.iter().map(|t| t.spec().name).collect(),
-            required_host_caps: vec![],
-            optional_host_caps: vec![],
-            requires: vec![],
-            optional: vec![],
-        }
-    }
-
-    fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        self.tools.clone()
-    }
-}
-
 fn plugin(id: &str, tools: Vec<Arc<dyn Tool>>) -> Arc<dyn Plugin> {
-    Arc::new(FakePlugin {
-        id: id.into(),
-        tools,
-    })
+    Arc::new(FakePlugin::with_id(id, tools))
 }
 
 fn registry(tools: Vec<Arc<dyn Tool>>) -> Arc<PluginRegistry> {

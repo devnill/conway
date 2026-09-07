@@ -26,15 +26,15 @@ use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SeqRange, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
-    Backend, GenerateResponse, Plugin, PluginManifest, Router, SessionStore, SubagentHost, Tool,
-    ToolCtx, ToolOutput,
+    Backend, GenerateResponse, Plugin, Router, SessionStore, SubagentHost, Tool, ToolCtx,
+    ToolOutput,
 };
 use conway_core::provenance::Provenance;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_testkit::{
-    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeRouter, FakeStore,
-    ScriptedBackend, ScriptedTurn,
+    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakePlugin, FakeRouter,
+    FakeStore, ScriptedBackend, ScriptedTurn,
 };
 use futures::StreamExt;
 
@@ -115,28 +115,6 @@ impl Tool for TruncatingTool {
             truncation: TruncationPolicy::Head { max_bytes: 10 },
             artifacts: vec![],
         })
-    }
-}
-
-struct FakePlugin {
-    tools: Vec<Arc<dyn Tool>>,
-}
-
-impl Plugin for FakePlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: "test".to_string(),
-            version: "0.0.0".to_string(),
-            tools: self.tools.iter().map(|t| t.spec().name).collect(),
-            required_host_caps: vec![],
-            optional_host_caps: vec![],
-            requires: vec![],
-            optional: vec![],
-        }
-    }
-
-    fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        self.tools.clone()
     }
 }
 
@@ -479,11 +457,9 @@ async fn fork_and_steer_scenario_covers_every_named_provenance_variant() {
             ScriptedTurn::Respond(text_response("child done")), // child turn 1
         ],
         defs,
-        vec![Arc::new(FakePlugin {
-            tools: vec![Arc::new(SlowTool {
-                delay: Duration::from_millis(150),
-            })],
-        })],
+        vec![Arc::new(FakePlugin::new(vec![Arc::new(SlowTool {
+            delay: Duration::from_millis(150),
+        })]))],
     );
     let mut stream = runtime.subscribe();
 
@@ -574,9 +550,7 @@ async fn truncated_tool_result_is_visible_via_its_log_record() {
             ScriptedTurn::Respond(text_response("done")),
         ],
         HashMap::new(),
-        vec![Arc::new(FakePlugin {
-            tools: vec![Arc::new(TruncatingTool)],
-        })],
+        vec![Arc::new(FakePlugin::new(vec![Arc::new(TruncatingTool)]))],
     );
 
     let root = start_and_finish_root(&runtime, "read the big file").await;
