@@ -95,6 +95,64 @@ pub fn write_fixture_with(base_url: &str, model: &str, max_steps: u32) -> Fixtur
     Fixture { dir, config_path }
 }
 
+/// As [`write_fixture`], but also sets `[limits].deadline_secs` explicitly
+/// -- board item `01M1WVK9PF5G57Y6R36B94S0RB`'s own deadline tests need a
+/// SHORT wall-clock ceiling to stay fast, rather than waiting out one-shot's
+/// real production default (`conway_cli::oneshot::
+/// DEFAULT_ONE_SHOT_DEADLINE_SECS`, 300s -- far too slow for a test). Builds
+/// its own JSON directly (`serde_json::json!`) rather than templating
+/// [`TEMPLATE`] (which has no `deadline_secs` slot), so every other test in
+/// this suite -- which never mentions deadlines and would otherwise pick up
+/// that same 300s fallback with no observable effect on a test's runtime --
+/// stays completely unaffected.
+#[allow(dead_code)]
+pub fn write_fixture_with_deadline(
+    mock: &MockHandle,
+    max_steps: u32,
+    deadline_secs: u64,
+) -> Fixture {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = serde_json::json!({
+        "default_role": "default",
+        "limits": { "max_steps": max_steps, "deadline_secs": deadline_secs },
+        "backends": {
+            "mock": { "kind": "openai-compat", "base_url": mock.base_url, "dialect": "openai" }
+        },
+        "roles": {
+            "default": { "chain": [format!("mock/{}", mock.model)] },
+            "coder": { "chain": [format!("mock/{}", mock.model)] }
+        }
+    });
+    let config_path = dir.path().join("conway.json");
+    std::fs::write(
+        &config_path,
+        serde_json::to_vec(&config).expect("serialize conway.json"),
+    )
+    .expect("write conway.json");
+
+    // Same `.conway/models.json` requirement as [`write_fixture_with`] --
+    // see that function's own comment for why.
+    let models_dir = dir.path().join(".conway");
+    std::fs::create_dir_all(&models_dir).expect("create .conway dir");
+    let models_json = serde_json::json!({
+        "models": {
+            format!("mock/{}", mock.model): {
+                "max_context_tokens": 128_000,
+                "tool_calling": "streaming_validated",
+                "reasoning": false,
+                "reliability_tier": "verified",
+            }
+        }
+    });
+    std::fs::write(
+        models_dir.join("models.json"),
+        serde_json::to_vec(&models_json).expect("serialize models.json"),
+    )
+    .expect("write models.json");
+
+    Fixture { dir, config_path }
+}
+
 /// Builds (but does not run) the real `conway` binary's `Command`, with
 /// `--config` pointing at `fixture` and the process cwd set to `fixture`'s
 /// temp dir. `CONWAY_CONFIG_DIR` is ALSO pointed at that same temp dir
