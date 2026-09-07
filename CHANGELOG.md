@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`conway sessions label`/`unlabel`: a session can now actually be labeled after the fact** — board item `01M1WVKVSDXHB68J66VZ9HE8B3`. `sessions list --label`/`conway.discover`'s `label` parameter were fully built and documented on the read side, but nothing shipped could ever write a label onto an existing session — only at session-creation time, via the embedder-facing `SessionSpec::labels`. An operator following the docs and running `--label` got silent, permanent empty results with no error explaining why. `SessionStore` gains `add_label`/`remove_label`, mirroring `set_ephemeral`'s "guarded, crash-atomic header rewrite" shape (both now share one `rewrite_header_locked` helper) rather than `NamesStore`'s separate sidecar file — a label lives IN `SessionMeta`, so it is written through the same facade every other session mutation goes through, not a second mechanism. Both are idempotent: re-labeling an already-labeled session, or unlabeling one that never carried the label, is `Ok(())`, not a refusal. `Conway::add_label`/`remove_label` are the new facade methods; `conway sessions label <id-or-name> <label>`/`unlabel <id-or-name> <label>` are the new CLI subcommands, following `name`/`unname`'s exact structure including their "unknown session id is a usage error (exit 2)" contract. See `docs/sessions.md`'s new "Where a label lives" section and `docs/plugins/discover.md`'s `label` parameter entry.
+
 ## [0.10.0] — 2026-09-04
 
 ### Added

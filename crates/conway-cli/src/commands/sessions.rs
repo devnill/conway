@@ -1,12 +1,18 @@
-//! `conway sessions {list,show,tree,export,name,unname}`: pure formatters
-//! over `Conway::sessions`/`Conway::resume`/`SessionHandle::transcript` --
-//! no method here reads a session store `<session-id>.jsonl` file
-//! directly, everything goes through the `conway` facade. `name`/`unname`
-//! are the one exception with any disk access of their own: they read and
-//! write `crate::session_names::NamesStore`'s sidecar
-//! (`session-names.json`, beside the session files but never one of them)
-//! -- see that module's own doc for why a name lives there and not in a
-//! session record.
+//! `conway sessions {list,show,tree,export,name,unname,label,unlabel}`:
+//! pure formatters over `Conway::sessions`/`Conway::resume`/
+//! `SessionHandle::transcript` -- no method here reads a session store
+//! `<session-id>.jsonl` file directly, everything goes through the
+//! `conway` facade. `name`/`unname` are the one exception with any disk
+//! access of their own: they read and write
+//! `crate::session_names::NamesStore`'s sidecar (`session-names.json`,
+//! beside the session files but never one of them) -- see that module's
+//! own doc for why a name lives there and not in a session record.
+//! `label`/`unlabel` (board item `01M1WVKVSDXHB68J66VZ9HE8B3`) are NOT a
+//! second exception of that kind: a label lives IN `SessionMeta` (the
+//! session's own header, unlike a name), so `label`/`unlabel` write
+//! through `Conway::add_label`/`remove_label` -> `SessionStore::
+//! add_label`/`remove_label` -- the facade, like every other subcommand
+//! in this file.
 //!
 //! # Why a subcommand pair, not a `--name` creation flag
 //!
@@ -78,6 +84,17 @@ pub enum SessionsAction {
     /// entirely unaffected: this only removes an entry from the separate
     /// name table.
     Unname { id: String },
+    /// Attach `LABEL` to a session -- `ID` accepts a session id or an
+    /// existing name, exactly like `name`/`unname`. Unlike a name, a
+    /// session may carry any number of labels, and re-attaching one it
+    /// already carries is a no-op success, not a refusal. `sessions list
+    /// --label LABEL`/`conway.discover`'s `label` parameter match against
+    /// labels attached this way.
+    Label { id: String, label: String },
+    /// Remove `LABEL` from a session -- `ID` accepts a session id or an
+    /// existing name. Removing a label the session does not carry is a
+    /// no-op success, not a refusal (unlike `unname` on an unbound name).
+    Unlabel { id: String, label: String },
 }
 
 pub async fn run(args: &SessionsArgs, conway: &Conway) -> conway::Result<ExitCode> {
@@ -90,6 +107,11 @@ pub async fn run(args: &SessionsArgs, conway: &Conway) -> conway::Result<ExitCod
         SessionsAction::Export { id, out } => export(conway, id, out.clone()).await,
         SessionsAction::Name { id, name: new_name } => name(conway, id, new_name).await,
         SessionsAction::Unname { id } => unname(conway, id).await,
+        SessionsAction::Label {
+            id,
+            label: the_label,
+        } => label(conway, id, the_label).await,
+        SessionsAction::Unlabel { id, label } => unlabel(conway, id, label).await,
     }
 }
 
@@ -421,6 +443,59 @@ async fn unname(conway: &Conway, id: &str) -> conway::Result<ExitCode> {
         Ok(()) => Ok(ExitCode::Completed),
         Err(e) => {
             diag::error(e.to_string());
+            Ok(ExitCode::Usage)
+        }
+    }
+}
+
+/// `sessions label <id-or-name> <label>`. Resolves `id` the same way every
+/// other subcommand in this file does (the names sidecar, then `sessions
+/// show|tree|export`'s own "unknown session is a usage error" contract),
+/// then writes through the facade -- `Conway::add_label` ->
+/// `SessionStore::add_label` -- the ONE mechanism this item introduces
+/// (board item `01M1WVKVSDXHB68J66VZ9HE8B3`); this function itself never
+/// touches a session file, exactly as `name`/`unname` never touch one
+/// either, just a different underlying store this time.
+async fn label(conway: &Conway, id: &str, label: &str) -> conway::Result<ExitCode> {
+    let names = match load_names(conway) {
+        Ok(names) => names,
+        Err(code) => return Ok(code),
+    };
+    let sid = match resolve_session_ref(id, &names) {
+        Ok(sid) => sid,
+        Err(code) => return Ok(code),
+    };
+    match conway.add_label(sid, label).await {
+        Ok(()) => {
+            println!("{sid}  {label}");
+            let _ = std::io::stdout().flush();
+            Ok(ExitCode::Completed)
+        }
+        Err(e) => {
+            diag::error(format!("unknown session {id}: {e}"));
+            Ok(ExitCode::Usage)
+        }
+    }
+}
+
+/// `sessions unlabel <id-or-name> <label>`. Removing a label the session
+/// does not carry is a no-op success (`Conway::remove_label`'s own
+/// idempotent contract) -- unlike `unname`, there is no "unknown target"
+/// refusal to surface here, since a label is not a bijective binding a
+/// caller could target incorrectly.
+async fn unlabel(conway: &Conway, id: &str, label: &str) -> conway::Result<ExitCode> {
+    let names = match load_names(conway) {
+        Ok(names) => names,
+        Err(code) => return Ok(code),
+    };
+    let sid = match resolve_session_ref(id, &names) {
+        Ok(sid) => sid,
+        Err(code) => return Ok(code),
+    };
+    match conway.remove_label(sid, label).await {
+        Ok(()) => Ok(ExitCode::Completed),
+        Err(e) => {
+            diag::error(format!("unknown session {id}: {e}"));
             Ok(ExitCode::Usage)
         }
     }

@@ -309,6 +309,8 @@ note.
 | `sessions export <id-or-name> [--out PATH]` | Writes the ancestry-resolved transcript as JSONL — to `PATH` if given, else stdout. Same content as `show --json`, without the interleaved per-line inspection framing. |
 | `sessions name <id-or-name> <name>` | Attaches `<name>` to a session, or — if `<id-or-name>` is itself an existing name — renames it. Refuses a `<name>` that parses as a valid ULID, and refuses one already bound to a *different* session, naming which session holds it — never a silent overwrite. A session carries at most one name; naming an already-named session moves its one name rather than adding a second. |
 | `sessions unname <id-or-name>` | Removes whichever name is bound to the resolved session. The session and its transcript are entirely unaffected — see [Where a name lives](#where-a-name-lives) below. |
+| `sessions label <id-or-name> <label>` | Attaches `<label>` to a session's own `SessionMeta.labels` — what `sessions list --label`/`conway.discover`'s `label` parameter match against. A session may carry any number of labels; attaching one it already has is a no-op success, not a refusal (unlike `name`'s ULID-shape/collision refusals — a label is not a bijective identifier). |
+| `sessions unlabel <id-or-name> <label>` | Removes `<label>` from a session. Removing a label the session does not carry is a no-op success, not an error — see [Where a label lives](#where-a-label-lives) below. |
 
 A few things worth knowing before you rely on the output:
 
@@ -322,8 +324,9 @@ A few things worth knowing before you rely on the output:
   `sessions`/`routes` against that config — either is a no-op for a
   subcommand that never calls a tool.
 - **An unknown session id is a usage error (exit 2), not a crash or an
-  `AgentFailed` (exit 1)** — every one of the four subcommands maps "not
-  found" and "malformed id" the same way.
+  `AgentFailed` (exit 1)** — `show`/`tree`/`export`/`name` map "not found"
+  and "malformed id" the same way, and `label`/`unlabel` do too (via
+  `Conway::add_label`/`remove_label`'s `StoreError::NotFound`).
 - **The `ORIGIN` column reads `fork@<seq> <parent>` or `spawn@<seq>
   <parent>`**, matching the persisted `SessionMeta.origin.mode` — a forked
   child inherited its parent's entire context, a spawned one is clean-slate,
@@ -331,9 +334,10 @@ A few things worth knowing before you rely on the output:
   distinction shows up. `sessions list --json`'s `origin` object carries the
   same distinction as a `"mode": "fork"`/`"mode": "spawn"` field.
 - Values passed to `--session`/`--resume`/`--fork-from` and
-  `sessions show|tree|export|name|unname <id-or-name>` accept either a full
-  ULID or an operator-chosen name (below) — never a shortened/prefix id,
-  even though `list`/`tree`'s own table output truncates ids for display.
+  `sessions show|tree|export|name|unname|label|unlabel <id-or-name>` accept
+  either a full ULID or an operator-chosen name (below) — never a
+  shortened/prefix id, even though `list`/`tree`'s own table output
+  truncates ids for display.
 
 ### Where a name lives
 
@@ -350,7 +354,7 @@ session's identity is its own append-only `<session-id>.jsonl` file, and
 naming code never opens it. Attaching, moving, or removing a name is
 entirely a read/mutate/write cycle over the separate sidecar — the
 session's own persisted record is byte-for-byte unaffected either way, and
-a lost or corrupted sidecar loses labels, never sessions.
+a lost or corrupted sidecar loses names, never sessions.
 
 **Not live-verified against a real, freshly-created session store the way
 `list`/`show`/`tree`/`export` above were** — `sessions name`/`unname` and
@@ -360,6 +364,38 @@ integration suite run against the compiled binary
 the sidecar itself (`crates/conway-cli/src/session_names.rs`), but neither
 was exercised by hand against a live invocation the way this page's other
 worked examples were.
+
+### Where a label lives
+
+Unlike a name, a label lives INSIDE the session's own header — the same
+`SessionMeta.labels` field `sessions list --label`/`conway.discover`'s
+`label` parameter already read (`crates/conway-session/src/index.rs`'s
+in-memory catalog, backed by line 0 of the session's own
+`<session-id>.jsonl`). `sessions label`/`unlabel` therefore do NOT touch a
+separate sidecar the way `name`/`unname` do: they go through the ordinary
+`conway` facade (`Conway::add_label`/`remove_label`) straight to
+`SessionStore::add_label`/`remove_label`, which durably rewrites that one
+header line — the same crash-atomic tmp-file-plus-rename discipline the
+store already uses for the `/ask` modal's ephemeral→persistent promote
+(`SessionStore::set_ephemeral`), extended to a second, narrow kind of
+in-place header mutation. Attaching or removing a label never appends,
+rewrites, or otherwise touches any record line — only line 0.
+
+Until board item `01M1WVKVSDXHB68J66VZ9HE8B3`, `SessionMeta.labels` could
+only be set once, at session-creation time, and only by an embedder calling
+`Conway::new_session` with `SessionSpec::labels` directly — no CLI flag
+existed to set it, and no way existed to label a session after the fact
+either. `sessions list --label`/`conway.discover`'s `label` parameter
+existed and worked, but nothing shipped could ever produce a match.
+`sessions label`/`unlabel` close that gap.
+
+**Not live-verified by hand against a real invocation the way
+`list`/`show`/`tree`/`export` above were** — `sessions label`/`unlabel` are
+instead covered by an automated end-to-end integration suite run against
+the compiled binary (`crates/conway-cli/tests/session_labels.rs`), which
+drives the real subcommands and reads the result back through `sessions
+list --label`, plus in-crate unit tests for `SessionStore::add_label`/
+`remove_label` themselves (`crates/conway-session/tests/label_tests.rs`).
 
 ## Dropped tool calls
 

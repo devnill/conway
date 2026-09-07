@@ -128,6 +128,22 @@ impl SessionStore for CountingStore {
         self.inner.set_ephemeral(sid, ephemeral).await
     }
 
+    async fn add_label(
+        &self,
+        sid: &SessionId,
+        label: &str,
+    ) -> Result<(), conway_core::error::StoreError> {
+        self.inner.add_label(sid, label).await
+    }
+
+    async fn remove_label(
+        &self,
+        sid: &SessionId,
+        label: &str,
+    ) -> Result<(), conway_core::error::StoreError> {
+        self.inner.remove_label(sid, label).await
+    }
+
     async fn live_owner(&self) -> Result<Option<LiveOwner>, conway_core::error::StoreError> {
         self.inner.live_owner().await
     }

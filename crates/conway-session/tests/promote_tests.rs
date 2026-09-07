@@ -113,9 +113,13 @@ async fn set_ephemeral_flips_header_on_disk_and_index_preserves_records_and_surv
             record_bytes(&records_before),
             "record bytes must be preserved verbatim across the rewrite"
         );
-        // No stray temp file remains after a successful rewrite.
+        // No stray temp file remains after a successful rewrite. Named
+        // `.header.tmp`, not `.promote.tmp` -- `set_ephemeral` shares this
+        // rewrite mechanics with `add_label`/`remove_label` via one
+        // `rewrite_header_locked` helper (board item
+        // `01M1WVKVSDXHB68J66VZ9HE8B3`), so the temp name is generic now.
         assert!(
-            !root.join(format!("{sid}.promote.tmp")).exists(),
+            !root.join(format!("{sid}.header.tmp")).exists(),
             "the temp file must be consumed by the rename"
         );
 

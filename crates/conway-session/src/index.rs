@@ -525,14 +525,16 @@ impl SessionIndex {
     }
 
     /// Re-records an EXISTING header after an in-place meta mutation — the
-    /// store's `set_ephemeral` promote path, the only header mutation the
-    /// store supports. `upsert` handles the re-record (replacing the stale
-    /// entry under the same id; `IndexState::upsert`'s defensive
-    /// old-parent eviction covers any origin change, which promote never
-    /// makes), and `persist_full` rewrites `index.jsonl` — a full rewrite
-    /// is the only option, exactly as [`remove`](Self::remove)'s doc
-    /// explains, since an appended line cannot retract the stale
-    /// `ephemeral: true` projection the file already carries.
+    /// store's `set_ephemeral` promote path and `add_label`/`remove_label`
+    /// (board item `01M1WVKVSDXHB68J66VZ9HE8B3`), the only header mutations
+    /// the store supports; all three share `rewrite_header_locked`. `upsert`
+    /// handles the re-record (replacing the stale entry under the same id;
+    /// `IndexState::upsert`'s defensive old-parent eviction covers any
+    /// origin change, which none of these mutations ever makes), and
+    /// `persist_full` rewrites `index.jsonl` — a full rewrite is the only
+    /// option, exactly as [`remove`](Self::remove)'s doc explains, since an
+    /// appended line cannot retract a stale `ephemeral`/`labels` projection
+    /// the file already carries.
     ///
     /// Must be called with the store's `lifecycle` mutex held — see
     /// [`persist_full`](Self::persist_full)'s ordering requirement (review
@@ -578,8 +580,10 @@ impl SessionIndex {
     }
 
     /// Delete the persisted `index.jsonl`, tolerating its absence. Called
-    /// by `JsonlSessionStore::set_ephemeral` BEFORE the session-header
-    /// rename so a crash at ANY point in the promote leaves a self-healing
+    /// by `JsonlSessionStore::rewrite_header_locked` (shared by
+    /// `set_ephemeral`, `add_label`, and `remove_label`) BEFORE the
+    /// session-header rename so a crash at ANY point in the mutation leaves
+    /// a self-healing
     /// absence (rebuild-by-scan reads the session files' own headers) rather
     /// than a loadable-but-stale index — `try_load` compares only id SETS,
     /// so a stale `ephemeral: true` line would otherwise load cleanly and

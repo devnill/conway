@@ -415,6 +415,14 @@ impl SessionStore for OrderingStore {
         self.inner.set_ephemeral(sid, ephemeral).await
     }
 
+    async fn add_label(&self, sid: &SessionId, label: &str) -> Result<(), StoreError> {
+        self.inner.add_label(sid, label).await
+    }
+
+    async fn remove_label(&self, sid: &SessionId, label: &str) -> Result<(), StoreError> {
+        self.inner.remove_label(sid, label).await
+    }
+
     async fn live_owner(&self) -> Result<Option<LiveOwner>, StoreError> {
         self.inner.live_owner().await
     }

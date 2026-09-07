@@ -216,7 +216,14 @@ pub struct RootSpec {
     /// existed and was tested well before anything could write a label
     /// (board item `01M0989GZ0PQAW0TN7APY1PHYW`). `conway::SessionSpec::
     /// labels` (`conway::Conway::new_session`) is this field's one facade
-    /// caller today.
+    /// caller today -- the ONLY way to set a label at session-creation
+    /// time. An already-existing session's labels are instead reached
+    /// through `conway::Conway::add_label`/`remove_label`
+    /// (`SessionStore::add_label`/`remove_label`, `conway sessions
+    /// label`/`unlabel` at the CLI), added by board item
+    /// `01M1WVKVSDXHB68J66VZ9HE8B3` to close the gap this field's own doc
+    /// used to describe: a fully working read side with no write side
+    /// reachable outside session creation.
     ///
     /// **Deliberately NOT inherited by fork/spawn children.** A label marks
     /// ONE conversation an operator explicitly chose; `subagent.rs`'s own

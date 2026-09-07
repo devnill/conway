@@ -147,7 +147,8 @@ pub struct RawSessionHandle(Arc<AsyncMutex<SessionFile>>);
 /// acquired and released synchronously — so there is no lock-ordering
 /// inversion.
 ///
-/// `lifecycle` is taken only by `create`/`fork`/`remove`/`set_ephemeral` and is
+/// `lifecycle` is taken only by `create`/`fork`/`remove`/`set_ephemeral`/
+/// `add_label`/`remove_label` and is
 /// held across remove's guard-check-plus-delete AND across fork's
 /// head-check-plus-create (and plain `create`'s file-write-plus-index- record —
 /// the spawn path in `conway-runtime` creates children through `create`
@@ -155,7 +156,9 @@ pub struct RawSessionHandle(Arc<AsyncMutex<SessionFile>>);
 /// there) — and across `set_ephemeral`'s guard-check- plus-header-rewrite (so a
 /// promote and a purge of the same session linearize: the purge fails
 /// `NotFound`, or the promote lands first and the purge fails `NotRemovable` on
-/// the flipped header). This closes the TOCTOU in which a remove's children
+/// the flipped header) — and, identically, across `add_label`/`remove_label`'s
+/// own guard-check-plus-header-rewrite, both of which share `set_ephemeral`'s
+/// `rewrite_header_locked` helper and its lock-order requirements. This closes the TOCTOU in which a remove's children
 /// check could miss a concurrently created child, orphaning it with dangling
 /// provenance (review F-1), and serializes `SessionIndex::remove`'s
 /// `persist_full` rewrite against a concurrent `record_header` append (review
@@ -708,6 +711,123 @@ impl JsonlSessionStore {
             .insert(sid, Handle::Live(Arc::new(AsyncMutex::new(sf))));
         Ok(sid)
     }
+
+    /// The crash-atomic header rewrite shared by every in-place
+    /// `SessionMeta` mutation the store supports — originally
+    /// `set_ephemeral`'s promote path alone, now also
+    /// `add_label`/`remove_label` (board item
+    /// `01M1WVKVSDXHB68J66VZ9HE8B3`). Callers own the per-field guard
+    /// checks (whether the flip/add/remove is even meaningful); this
+    /// method owns only the mechanics of getting `new_meta` durably onto
+    /// disk and reflected in every in-memory view. `sf` must be the
+    /// already-locked handle for `sid`, and the caller must hold the
+    /// store's `lifecycle` mutex across the whole guard-check-plus-rewrite
+    /// — see `set_ephemeral`'s own doc for the full lock-order rationale,
+    /// which applies verbatim to every caller of this method.
+    async fn rewrite_header_locked(
+        &self,
+        sid: &SessionId,
+        sf: &mut SessionFile,
+        new_meta: SessionMeta,
+    ) -> Result<(), StoreError> {
+        // Crash-window ordering (cycle-5 B3 review): delete the persisted
+        // index BEFORE the header rename below. `try_load`'s consistency
+        // check compares only id SETS, so a crash between the rename and
+        // the index rewrite would otherwise leave a loadable-but-stale
+        // header line that mis-hides the mutation forever (a mid-remove
+        // crash produces an id-set MISMATCH and self-heals; a mid-rewrite
+        // crash produces matching sets with stale content and never does).
+        // With the delete first, a crash at any point leaves NO index on
+        // disk, and rebuild-by-scan reads the session files' own headers —
+        // old header (the mutation didn't happen) or new (it did), both
+        // correct.
+        self.index.invalidate_persisted().await;
+
+        // The header rewrite, crash-atomic via tmp + fsync + rename — the
+        // same discipline `SessionIndex::persist_full` uses for
+        // `index.jsonl`. The new line 0 is followed by every record byte
+        // copied VERBATIM from the live file (this rewrites nothing but
+        // the header — record lines are not even re-encoded). An in-place
+        // overwrite of line 0 is unsafe in general (a mutated header need
+        // not serialize to the same byte length — e.g. `"ephemeral":true`
+        // -> `"ephemeral":false` is one byte shorter, and an added/removed
+        // label changes length by an arbitrary amount), so it can't
+        // reliably fit back into the same span — and a mid-write crash of
+        // an in-place rewrite would corrupt record bytes the store's crash
+        // recovery (trailing-line truncation only, see `recover`) cannot
+        // heal. The rename either happens or it doesn't: a crash before it
+        // leaves the original header fully intact (the mutation simply
+        // fails and can be retried), and a stray temp file left behind is
+        // skipped by every directory scan (non-`.jsonl` extension) and
+        // overwritten by the next header rewrite.
+        //
+        // Reading the raw bytes under the session mutex is what makes the
+        // verbatim copy complete: an `append` only pushes to `sf.records`
+        // after its write+flush has fully landed, and no append can be in
+        // flight while this mutex is held, so the file on disk is exactly
+        // the current header plus every record this store has ever
+        // acknowledged.
+        let path = self.session_path(sid);
+        let tmp_path = self.root.join(format!("{sid}.header.tmp"));
+        let raw = tokio::fs::read(&path).await.map_err(io_err)?;
+        let header_len = raw
+            .iter()
+            .position(|b| *b == b'\n')
+            .map(|pos| pos + 1)
+            .ok_or_else(|| StoreError::Corrupt {
+                session: *sid,
+                line: 0,
+                detail: "session file has no newline-terminated header".into(),
+            })?;
+
+        let rewrite = async {
+            let mut tmp = File::create(&tmp_path).await.map_err(io_err)?;
+            tmp.write_all(codec::encode_header(&new_meta).as_bytes())
+                .await
+                .map_err(io_err)?;
+            tmp.write_all(&raw[header_len..]).await.map_err(io_err)?;
+            // Headers always fsync (same durability class as `create`'s
+            // header write, regardless of the append-path fsync policy).
+            tmp.sync_data().await.map_err(io_err)?;
+            drop(tmp);
+            tokio::fs::rename(&tmp_path, &path).await.map_err(io_err)
+        };
+        if let Err(e) = rewrite.await {
+            // Best-effort cleanup; a leftover temp file is harmless (see
+            // the comment above) but tidy when the failure is recoverable.
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(e);
+        }
+        self.fsync_count.fetch_add(1, Ordering::Relaxed);
+
+        // The rename detached the inode this handle's `file` still points
+        // at: without this swap, every later `append` would write to the
+        // unlinked inode while reporting success — the exact failure mode
+        // `Handle::Removed` exists to prevent for purge. Reopen the path
+        // (now the rewritten file) in the same append mode `create` uses.
+        // The interval flusher cannot be mid-`sync_data` on the old fd: it
+        // locks this same session mutex.
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .append(true)
+            .open(&path)
+            .await
+            .map_err(io_err)?;
+        sf.file = file;
+        sf.meta = new_meta.clone();
+        sf.last_fsync = Instant::now();
+        sf.dirty = false;
+
+        // Index upsert + `persist_full`, under the same `lifecycle` hold as
+        // `remove`'s eviction (review F-2). Never fails the caller — the
+        // session file (source of truth) is already durably rewritten, and
+        // `update_header` converts a persist failure into a forced
+        // rebuild-by-scan on next open rather than surfacing it here (see
+        // its doc for why warn-and-swallow alone would be silently wrong).
+        self.index.update_header(&new_meta).await;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -980,102 +1100,53 @@ impl SessionStore for JsonlSessionStore {
         let mut new_meta = sf.meta.clone();
         new_meta.ephemeral = false;
 
-        // Crash-window ordering (cycle-5 B3 review): delete the persisted
-        // index BEFORE the header rename below. `try_load`'s consistency
-        // check compares only id SETS, so a crash between the rename and
-        // the index rewrite would otherwise leave a loadable-but-stale
-        // `ephemeral: true` line that mis-hides the promoted session
-        // forever (a mid-remove crash produces an id-set MISMATCH and
-        // self-heals; a mid-promote crash produces matching sets with
-        // stale content and never does). With the delete first, a crash at
-        // any point leaves NO index on disk, and rebuild-by-scan reads the
-        // session files' own headers — old header (the promote didn't
-        // happen) or new (it did), both correct.
-        self.index.invalidate_persisted().await;
+        self.rewrite_header_locked(sid, &mut sf, new_meta).await
+    }
 
-        // The header rewrite, crash-atomic via tmp + fsync + rename — the
-        // same discipline `SessionIndex::persist_full` uses for
-        // `index.jsonl`. The new line 0 is followed by every record byte
-        // copied VERBATIM from the live file (promotion rewrites
-        // nothing except the flag — record lines are not even re-encoded).
-        // An in-place overwrite of line 0 is impossible here: the promoted
-        // header serializes one byte LONGER than the ephemeral one
-        // (`"ephemeral":true` -> `"ephemeral":false`), so it can never fit
-        // back into the same span — and a mid-write crash of an in-place
-        // rewrite would corrupt record bytes the store's crash recovery
-        // (trailing-line truncation only, see `recover`) cannot heal. The
-        // rename either happens or it doesn't: a crash before it leaves the
-        // original ephemeral header fully intact (the promote simply fails
-        // and can be retried), and a stray temp file left behind is skipped
-        // by every directory scan (non-`.jsonl` extension) and overwritten
-        // by the next promote.
-        //
-        // Reading the raw bytes under the session mutex is what makes the
-        // verbatim copy complete: an `append` only pushes to `sf.records`
-        // after its write+flush has fully landed, and no append can be in
-        // flight while this mutex is held, so the file on disk is exactly
-        // the current header plus every record this store has ever
-        // acknowledged.
-        let path = self.session_path(sid);
-        let tmp_path = self.root.join(format!("{sid}.promote.tmp"));
-        let raw = tokio::fs::read(&path).await.map_err(io_err)?;
-        let header_len = raw
-            .iter()
-            .position(|b| *b == b'\n')
-            .map(|pos| pos + 1)
-            .ok_or_else(|| StoreError::Corrupt {
-                session: *sid,
-                line: 0,
-                detail: "session file has no newline-terminated header".into(),
-            })?;
+    /// Adds `label` to a session header's `SessionMeta.labels` — see the
+    /// trait-level doc for the idempotency and concurrency contract. Same
+    /// lock-order rationale as `set_ephemeral`: `lifecycle` held across the
+    /// whole guard-check-plus-rewrite, so a racing `remove` either
+    /// completes first (the handle acquisition below fails `NotFound` on
+    /// the tombstone) or runs after and simply removes the now-labeled
+    /// session.
+    async fn add_label(&self, sid: &SessionId, label: &str) -> Result<(), StoreError> {
+        let _lifecycle = self.lifecycle.lock().await;
+        let handle = self.get_or_open_handle(sid).await?;
+        let mut sf = handle.lock().await;
 
-        let rewrite = async {
-            let mut tmp = File::create(&tmp_path).await.map_err(io_err)?;
-            tmp.write_all(codec::encode_header(&new_meta).as_bytes())
-                .await
-                .map_err(io_err)?;
-            tmp.write_all(&raw[header_len..]).await.map_err(io_err)?;
-            // Headers always fsync (same durability class as `create`'s
-            // header write, regardless of the append-path fsync policy).
-            tmp.sync_data().await.map_err(io_err)?;
-            drop(tmp);
-            tokio::fs::rename(&tmp_path, &path).await.map_err(io_err)
-        };
-        if let Err(e) = rewrite.await {
-            // Best-effort cleanup; a leftover temp file is harmless (see
-            // the comment above) but tidy when the failure is recoverable.
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(e);
+        if sf.removed {
+            return Err(StoreError::NotFound { session: *sid });
         }
-        self.fsync_count.fetch_add(1, Ordering::Relaxed);
+        if sf.meta.labels.iter().any(|l| l == label) {
+            // Idempotent: already labeled, nothing to rewrite.
+            return Ok(());
+        }
 
-        // The rename detached the inode this handle's `file` still points
-        // at: without this swap, every later `append` would write to the
-        // unlinked inode while reporting success — the exact failure mode
-        // `Handle::Removed` exists to prevent for purge. Reopen the path
-        // (now the rewritten file) in the same append mode `create` uses.
-        // The interval flusher cannot be mid-`sync_data` on the old fd: it
-        // locks this same session mutex.
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .append(true)
-            .open(&path)
-            .await
-            .map_err(io_err)?;
-        sf.file = file;
-        sf.meta = new_meta.clone();
-        sf.last_fsync = Instant::now();
-        sf.dirty = false;
+        let mut new_meta = sf.meta.clone();
+        new_meta.labels.push(label.to_string());
+        self.rewrite_header_locked(sid, &mut sf, new_meta).await
+    }
 
-        // Index upsert + `persist_full`, under the same `lifecycle` hold as
-        // `remove`'s eviction (review F-2). Never fails the promote — the
-        // session file (source of truth) is already durably flipped, and
-        // `update_header` converts a persist failure into a forced
-        // rebuild-by-scan on next open rather than surfacing it here (see
-        // its doc for why warn-and-swallow alone would be silently wrong).
-        self.index.update_header(&new_meta).await;
-        Ok(())
+    /// Removes `label` from a session header's `SessionMeta.labels` — see
+    /// the trait-level doc for the idempotency and concurrency contract.
+    /// Same lock-order rationale as `add_label`.
+    async fn remove_label(&self, sid: &SessionId, label: &str) -> Result<(), StoreError> {
+        let _lifecycle = self.lifecycle.lock().await;
+        let handle = self.get_or_open_handle(sid).await?;
+        let mut sf = handle.lock().await;
+
+        if sf.removed {
+            return Err(StoreError::NotFound { session: *sid });
+        }
+        if !sf.meta.labels.iter().any(|l| l == label) {
+            // Idempotent: not labeled, nothing to rewrite.
+            return Ok(());
+        }
+
+        let mut new_meta = sf.meta.clone();
+        new_meta.labels.retain(|l| l != label);
+        self.rewrite_header_locked(sid, &mut sf, new_meta).await
     }
 
     // Cross-process liveness sidecar (S1 follow-up to B5). The sweep reads
