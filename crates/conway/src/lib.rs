@@ -365,17 +365,6 @@ pub mod plugin {
     /// curator against exactly this surface so the claim is checked rather
     /// than asserted.
     pub use conway_core::error::StoreError;
-    /// `SessionStore::live_owner`/`touch_live_owner`'s
-    /// own value type (board item `01M1WVQM440XZDSP0KC664HJ7S`) -- an
-    /// embedder implementing `SessionStore` (`ConwayBuilder::
-    /// with_session_store`, `conway::SessionStore`) cannot spell those two
-    /// methods' signatures without naming this type. Re-exported alongside
-    /// `StoreError`/`SeqRange` for the same reason: implementing the port
-    /// from outside is no longer out of scope, it is this item's whole
-    /// point, so this module's re-export list has to be complete against
-    /// `SessionStore`'s full signature, not only the narrower read surface
-    /// `CurateCtx::store` exercises.
-    pub use conway_core::ports::LiveOwner;
     pub use conway_core::error::{
         ArtifactWriteError, CwdError, HookFailure, MemoryStoreError, SubagentError, ToolError,
     };
@@ -425,6 +414,17 @@ pub mod plugin {
     /// a tool set narrower than the whole fragment (board item
     /// `01M1FSRJJAB3ZYZXED4SVT2ZSF`); see that field's own doc.
     pub use conway_core::ports::InstructionPart;
+    /// `SessionStore::live_owner`/`touch_live_owner`'s
+    /// own value type (board item `01M1WVQM440XZDSP0KC664HJ7S`) -- an
+    /// embedder implementing `SessionStore` (`ConwayBuilder::
+    /// with_session_store`, `conway::SessionStore`) cannot spell those two
+    /// methods' signatures without naming this type. Re-exported alongside
+    /// `StoreError`/`SeqRange` for the same reason: implementing the port
+    /// from outside is no longer out of scope, it is this item's whole
+    /// point, so this module's re-export list has to be complete against
+    /// `SessionStore`'s full signature, not only the narrower read surface
+    /// `CurateCtx::store` exercises.
+    pub use conway_core::ports::LiveOwner;
     /// [`Plugin::narrowable_keys`]'s own return-type element -- a plugin
     /// author constructs one of these per per-agent-configurable key it
     /// declares narrowable, pairing the bare key name with the pure

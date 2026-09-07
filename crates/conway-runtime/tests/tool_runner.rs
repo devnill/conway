@@ -12,7 +12,9 @@ use conway_core::content::{ContentBlock, PermissionClass, ToolCall, ToolCategory
 use conway_core::error::ToolError;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId, ToolName};
-use conway_core::ports::{CwdHandle, Plugin, PluginConfig, SubagentHost, Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{
+    CwdHandle, Plugin, PluginConfig, SubagentHost, Tool, ToolCtx, ToolOutput,
+};
 use conway_runtime::events::EventBus;
 use conway_runtime::permission::{AgentRoot, PermissionBroker};
 use conway_runtime::tools::{PluginRegistry, ToolBatchCtx, ToolRunner};

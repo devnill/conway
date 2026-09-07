@@ -388,7 +388,10 @@ fn install_canonicalized_rule<T>(
     if canonical.is_none() && matches!(rule.when, When::PathsUnder(_)) {
         return false;
     }
-    store.write().expect(lock_poisoned_msg).push(build(rule, canonical));
+    store
+        .write()
+        .expect(lock_poisoned_msg)
+        .push(build(rule, canonical));
     true
 }
 
@@ -859,6 +862,10 @@ enum HookStepOutcome {
     MustReachGate,
 }
 
+/// The flat/structured partition [`PermissionBroker::split_flat_and_structured`]
+/// returns: rules that round-trip to a [`PatternRule`], and rules that don't.
+type SplitRules<E> = (Vec<(PatternRule, E)>, Vec<(Rule, E)>);
+
 impl PermissionBroker {
     pub fn new(gate: Arc<dyn PermissionGate>, bus: Arc<EventBus>) -> Self {
         Self {
@@ -1259,9 +1266,7 @@ impl PermissionBroker {
     /// in the same relative order `entries` was given in -- a stored `Rule`
     /// appears in exactly one of the two, never both, exactly as the six
     /// callers' own docs already promise.
-    fn split_flat_and_structured<E>(
-        entries: impl Iterator<Item = (Rule, E)>,
-    ) -> (Vec<(PatternRule, E)>, Vec<(Rule, E)>) {
+    fn split_flat_and_structured<E>(entries: impl Iterator<Item = (Rule, E)>) -> SplitRules<E> {
         let mut flat = Vec::new();
         let mut structured = Vec::new();
         for (rule, extra) in entries {
@@ -1326,7 +1331,9 @@ impl PermissionBroker {
             .deny_patterns
             .read()
             .expect("permission deny patterns poisoned");
-        let entries = store.iter().map(|(rule, _, origin)| (rule.clone(), origin.clone()));
+        let entries = store
+            .iter()
+            .map(|(rule, _, origin)| (rule.clone(), origin.clone()));
         Self::split_flat_and_structured(entries).0
     }
 
@@ -1338,7 +1345,9 @@ impl PermissionBroker {
             .deny_patterns
             .read()
             .expect("permission deny patterns poisoned");
-        let entries = store.iter().map(|(rule, _, origin)| (rule.clone(), origin.clone()));
+        let entries = store
+            .iter()
+            .map(|(rule, _, origin)| (rule.clone(), origin.clone()));
         Self::split_flat_and_structured(entries).1
     }
 
@@ -1351,7 +1360,9 @@ impl PermissionBroker {
             .prompt_patterns
             .read()
             .expect("permission prompt patterns poisoned");
-        let entries = store.iter().map(|(rule, _, origin)| (rule.clone(), origin.clone()));
+        let entries = store
+            .iter()
+            .map(|(rule, _, origin)| (rule.clone(), origin.clone()));
         Self::split_flat_and_structured(entries).0
     }
 
@@ -1364,7 +1375,9 @@ impl PermissionBroker {
             .prompt_patterns
             .read()
             .expect("permission prompt patterns poisoned");
-        let entries = store.iter().map(|(rule, _, origin)| (rule.clone(), origin.clone()));
+        let entries = store
+            .iter()
+            .map(|(rule, _, origin)| (rule.clone(), origin.clone()));
         Self::split_flat_and_structured(entries).1
     }
 

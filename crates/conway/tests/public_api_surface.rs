@@ -9,9 +9,9 @@ use conway::{
     BreakerKind, BreakerSnapshot, BreakerState, Budget, CapabilitySummary, ContextHook,
     ContextReport, EndpointId, EntryOutcome, Envelope, Event, ExplainEntry, ExplainReport,
     FacadeError, HealthRegistry, LogRecord, LogSeq, ModelRef, Observation, PermissionDecision,
-    PermissionDecisionKind, PermissionGate, PermissionRequest, PermissionScope, Plugin,
-    Provenance, Result, ResultStatus, RoleAlias, Router, RoutingReason, SessionFilter, SessionId,
-    SessionMeta, SessionStore, SubagentMode, Tool, ToolCategory, ToolName,
+    PermissionDecisionKind, PermissionGate, PermissionRequest, PermissionScope, Plugin, Provenance,
+    Result, ResultStatus, RoleAlias, Router, RoutingReason, SessionFilter, SessionId, SessionMeta,
+    SessionStore, SubagentMode, Tool, ToolCategory, ToolName,
 };
 
 /// Every re-exported *type* must be nameable at this path. The function is

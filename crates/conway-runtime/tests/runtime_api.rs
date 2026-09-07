@@ -390,8 +390,7 @@ async fn cancel_trips_token_and_agent_finishes_cancelled() {
     let backend = Arc::new(ScriptedBackend::new(vec![ScriptedTurn::Respond(
         tool_call_response("tc_1", "slow"),
     )]));
-    let (runtime, _store) =
-        build_runtime(backend, vec![Arc::new(FakePlugin::new(vec![tool]))]);
+    let (runtime, _store) = build_runtime(backend, vec![Arc::new(FakePlugin::new(vec![tool]))]);
     let mut stream = runtime.subscribe();
 
     let agent_id = runtime.start_root(root_spec("hello")).await.unwrap();
@@ -515,8 +514,7 @@ async fn context_report_survives_and_updates_across_multiple_turns() {
         ScriptedTurn::Respond(tool_call_response("tc_1", "quick")),
         ScriptedTurn::Respond(text_response("done")),
     ]));
-    let (runtime, _store) =
-        build_runtime(backend, vec![Arc::new(FakePlugin::new(vec![tool]))]);
+    let (runtime, _store) = build_runtime(backend, vec![Arc::new(FakePlugin::new(vec![tool]))]);
     let mut stream = runtime.subscribe();
 
     let agent_id = runtime.start_root(root_spec("hello")).await.unwrap();

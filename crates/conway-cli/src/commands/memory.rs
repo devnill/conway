@@ -154,7 +154,10 @@ async fn list(memory_store: Arc<dyn MemoryStore>, json: bool) -> conway::Result<
     }
 
     let rows = memories.iter().map(memory_row).collect();
-    print!("{}", fmt::table(&["ID", "CREATED", "SESSION", "TEXT"], rows));
+    print!(
+        "{}",
+        fmt::table(&["ID", "CREATED", "SESSION", "TEXT"], rows)
+    );
     Ok(ExitCode::Completed)
 }
 
@@ -212,7 +215,10 @@ mod tests {
         let id = m.id;
         store.put(m).await.unwrap();
 
-        assert_eq!(list(store.clone(), false).await.unwrap(), ExitCode::Completed);
+        assert_eq!(
+            list(store.clone(), false).await.unwrap(),
+            ExitCode::Completed
+        );
 
         let code = forget(store.clone(), &id.to_string()).await.unwrap();
         assert_eq!(code, ExitCode::Completed);

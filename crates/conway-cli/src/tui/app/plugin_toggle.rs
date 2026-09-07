@@ -599,8 +599,10 @@ mod tests {
             manifest(conway_plugin_ui::PLUGIN_ID, &[], &[]),
             manifest("conway.permissions", &[conway_plugin_ui::PLUGIN_ID], &[]),
         ];
-        let enabled: std::collections::HashSet<String> =
-            [conway_plugin_ui::PLUGIN_ID].iter().map(|s| s.to_string()).collect();
+        let enabled: std::collections::HashSet<String> = [conway_plugin_ui::PLUGIN_ID]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert!(
             enabled_dependents_requiring(&manifests, &enabled, conway_plugin_ui::PLUGIN_ID)
                 .is_empty(),
@@ -640,8 +642,10 @@ mod tests {
                 &[],
             ),
         ];
-        let enabled: std::collections::HashSet<String> =
-            [conway_plugin_ui::PLUGIN_ID].iter().map(|s| s.to_string()).collect();
+        let enabled: std::collections::HashSet<String> = [conway_plugin_ui::PLUGIN_ID]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let missing = missing_required_dependencies(&manifests, &enabled, "conway.permissions");
         assert_eq!(missing, vec![conway_plugin_memory::PLUGIN_ID.to_string()]);
     }
@@ -669,7 +673,10 @@ mod tests {
             "{}",
             entry.description.you_lose
         );
-        assert!(entry.description.you_lose.contains(conway_plugin_ui::PLUGIN_ID));
+        assert!(entry
+            .description
+            .you_lose
+            .contains(conway_plugin_ui::PLUGIN_ID));
         let after_first = entry.description.you_lose.clone();
 
         // Calling again against the SAME world must not duplicate the note.
@@ -680,8 +687,10 @@ mod tests {
         );
 
         // Once conway.ui is enabled, the annotation must clear.
-        let enabled_with_ui: std::collections::HashSet<String> =
-            [conway_plugin_ui::PLUGIN_ID].iter().map(|s| s.to_string()).collect();
+        let enabled_with_ui: std::collections::HashSet<String> = [conway_plugin_ui::PLUGIN_ID]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         refresh_degradation_annotation(&mut entry, Some(&manifest), &enabled_with_ui);
         assert_eq!(entry.description.you_lose, "nothing without conway.ui");
     }
@@ -849,7 +858,10 @@ mod tests {
         assert_eq!(value["default_role"], "coder");
         assert_eq!(
             value["plugins"]["install"],
-            serde_json::json!([conway_plugin_memory::PLUGIN_ID, conway_plugin_path::PLUGIN_ID])
+            serde_json::json!([
+                conway_plugin_memory::PLUGIN_ID,
+                conway_plugin_path::PLUGIN_ID
+            ])
         );
     }
 
@@ -1265,7 +1277,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
         // conway.ui is NOT present in the manifest set at all -- unlinked.
-        let manifests = [manifest("conway.permissions", &[conway_plugin_ui::PLUGIN_ID], &[])];
+        let manifests = [manifest(
+            "conway.permissions",
+            &[conway_plugin_ui::PLUGIN_ID],
+            &[],
+        )];
 
         app.apply_plugin_toggle_against(
             "conway.permissions".to_string(),
@@ -1381,7 +1397,10 @@ mod tests {
             "the browser row for conway.permissions must now say it is degraded: {}",
             permissions_entry.description.you_lose
         );
-        assert!(permissions_entry.description.you_lose.contains(conway_plugin_ui::PLUGIN_ID));
+        assert!(permissions_entry
+            .description
+            .you_lose
+            .contains(conway_plugin_ui::PLUGIN_ID));
 
         // Turning conway.ui back on must clear the annotation again.
         app.apply_plugin_toggle_against(

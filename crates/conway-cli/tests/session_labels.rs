@@ -150,7 +150,10 @@ async fn unlabel_a_label_the_session_never_had_is_a_no_op_success() {
     // label is not a bijective binding a caller could target incorrectly,
     // so removing one that was never attached is idempotent, not a
     // refusal -- see `SessionStore::remove_label`'s own doc.
-    let out = run_conway(&["sessions", "unlabel", &sid.to_string(), "never-set"], &fixture);
+    let out = run_conway(
+        &["sessions", "unlabel", &sid.to_string(), "never-set"],
+        &fixture,
+    );
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -183,7 +186,10 @@ async fn unlabel_unknown_session_id_exits_2_with_a_named_error() {
     let fixture = write_fixture(&mock, 10);
     let bogus = SessionId::new();
 
-    let out = run_conway(&["sessions", "unlabel", &bogus.to_string(), "foo"], &fixture);
+    let out = run_conway(
+        &["sessions", "unlabel", &bogus.to_string(), "foo"],
+        &fixture,
+    );
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(

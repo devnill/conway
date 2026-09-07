@@ -132,7 +132,10 @@ async fn add_label_flips_header_on_disk_and_index_preserves_records_and_survives
 
         // Post-rewrite append through the SAME warm handle must land in the
         // renamed file, not a detached inode.
-        store.append(&sid, turn(2, "post-label turn")).await.unwrap();
+        store
+            .append(&sid, turn(2, "post-label turn"))
+            .await
+            .unwrap();
         let head = store.head(&sid).await.unwrap();
         assert_eq!(head.0, 3);
     }
@@ -172,7 +175,10 @@ async fn add_label_as_first_access_cold_opens_and_labels() {
 
     let store = JsonlSessionStore::open(root.clone()).await.unwrap();
     store.add_label(&sid, "cold").await.unwrap();
-    assert_eq!(store.meta(&sid).await.unwrap().labels, vec!["cold".to_string()]);
+    assert_eq!(
+        store.meta(&sid).await.unwrap().labels,
+        vec!["cold".to_string()]
+    );
     let records = store
         .read(&sid, conway_core::ids::SeqRange::full())
         .await

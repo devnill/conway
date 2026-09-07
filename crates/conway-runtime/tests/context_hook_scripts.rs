@@ -36,7 +36,7 @@ use conway_core::log::{LogRecord, SessionMeta};
 use conway_core::ports::{
     Backend, BoxStream, ContextHook, ContextHookCtx, ContextPayload, GenerateRequest,
     GenerateResponse, HealthRegistry, HookRunner, PermissionGate, Plugin, PluginConfig, Router,
-    SessionStore, StreamChunk, SubagentHost, Tool,
+    SessionStore, StreamChunk, SubagentHost,
 };
 use conway_core::provenance::Provenance;
 use conway_core::routing::{Route, RouteRequest, RoutingReason};

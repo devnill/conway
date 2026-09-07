@@ -260,11 +260,11 @@
 //!      all). `diag::progress` is new: unconditional stderr, like
 //!      [`diag::warn`], but not `warn`'s "something to act on" -- see that
 //!      function's own doc.
-//!    - **A bounded default wait.** [`resolve_budget`] now applies a
+//!    - **A bounded default wait.** `resolve_budget` now applies a
 //!      one-shot-only fallback deadline (`DEFAULT_ONE_SHOT_DEADLINE_SECS`,
 //!      300s) whenever nothing else already names one for this invocation
 //!      (no `--max-seconds`, and `[limits].deadline_secs` resolves to `0`)
-//!      -- see [`DEFAULT_ONE_SHOT_DEADLINE_SECS`]'s own doc for why this is
+//!      -- see `DEFAULT_ONE_SHOT_DEADLINE_SECS`'s own doc for why this is
 //!      deliberately NOT a change to `LimitsConfig::default()`'s own
 //!      config-wide baseline (still `0`/unbounded, unchanged): `Budget::
 //!      deadline` is a SESSION-lifetime cutoff, and the TUI's interactive
@@ -285,8 +285,8 @@ use std::time::Duration;
 
 use conway::gates::AllowListGate;
 use conway::{
-    AgentDef, AgentResult, Budget, Conway, Event, ForkSpec, ResultStatus, RoleAlias,
-    SessionHandle, SessionSpec, ToolName, ToolSelector,
+    AgentDef, AgentResult, Budget, Conway, Event, ForkSpec, ResultStatus, RoleAlias, SessionHandle,
+    SessionSpec, ToolName, ToolSelector,
 };
 use futures::StreamExt;
 use schemars::schema::RootSchema;
