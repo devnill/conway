@@ -241,6 +241,43 @@
 //!    restriction" -- so the pre-existing gap between announced and
 //!    permitted narrows everywhere else but stays open here, disclosed
 //!    rather than silently left, until `ResumeSpec` grows the field.
+//! 9. **A silent 90+ second hang in default `text` mode (board item
+//!    `01M1WVK9PF5G57Y6R36B94S0RB`, a live-reproduced finding).** A
+//!    brand-new user's very first `conway -p "<prompt>"` -- `text` is
+//!    `OutputFormat`'s default (`crate::cli::Cli::output_format`) -- against
+//!    a real, slow local backend printed nothing at all, on stdout OR
+//!    stderr, for over 90 seconds; `--output-format jsonl` against the
+//!    identical invocation streamed real events within milliseconds. Two
+//!    independent fixes, both scoped to this module:
+//!
+//!    - **A progress notice.** [`run`]'s own event loop now ticks a
+//!      `tokio::time::interval` (`PROGRESS_NOTICE_INTERVAL`) alongside the
+//!      event stream/SIGINT branches already there, printing
+//!      `diag::progress` ("waiting for a response... `<n>`s") every tick
+//!      until the FIRST non-empty `Event::TextDelta` arrives -- the same
+//!      "text mode only" scoping the finding asked for (`jsonl`/`json`
+//!      already show real activity immediately and construct no ticker at
+//!      all). `diag::progress` is new: unconditional stderr, like
+//!      [`diag::warn`], but not `warn`'s "something to act on" -- see that
+//!      function's own doc.
+//!    - **A bounded default wait.** [`resolve_budget`] now applies a
+//!      one-shot-only fallback deadline (`DEFAULT_ONE_SHOT_DEADLINE_SECS`,
+//!      300s) whenever nothing else already names one for this invocation
+//!      (no `--max-seconds`, and `[limits].deadline_secs` resolves to `0`)
+//!      -- see [`DEFAULT_ONE_SHOT_DEADLINE_SECS`]'s own doc for why this is
+//!      deliberately NOT a change to `LimitsConfig::default()`'s own
+//!      config-wide baseline (still `0`/unbounded, unchanged): `Budget::
+//!      deadline` is a SESSION-lifetime cutoff, and the TUI's interactive
+//!      root is `keep_alive: true` with no budget override of its own,
+//!      deferring to that exact same config value -- a global default
+//!      change would silently end a long-running human conversation the
+//!      moment it crossed the new ceiling from SESSION START, not from
+//!      whichever turn was actually in flight. When the deadline trips,
+//!      [`run`] now also prints a `diag::error` naming the routed backend
+//!      (tracked from `Event::ModelDecision::chosen` as the run proceeds)
+//!      and the elapsed wall-clock time -- before this item, a one-shot
+//!      `BudgetExceeded` termination produced only a bare exit code 5, no
+//!      stderr explanation at all.
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -248,17 +285,24 @@ use std::time::Duration;
 
 use conway::gates::AllowListGate;
 use conway::{
-    AgentDef, AgentResult, Budget, Conway, Event, ForkSpec, RoleAlias, SessionHandle, SessionSpec,
-    ToolName, ToolSelector,
+    AgentDef, AgentResult, Budget, Conway, Event, ForkSpec, ResultStatus, RoleAlias,
+    SessionHandle, SessionSpec, ToolName, ToolSelector,
 };
 use futures::StreamExt;
 use schemars::schema::RootSchema;
 
-use crate::cli::{Cli, OneShotPermissionMode};
+use crate::cli::{Cli, OneShotPermissionMode, OutputFormat};
 use crate::exit::ExitCode;
 use crate::model_pin::{parse_model_pin, usage_error};
 use crate::session_names::{self, NamesStore};
 use crate::{diag, render, signal};
+
+/// How often [`run`]'s progress ticker (`text` mode only -- see this
+/// module's doc comment, reconciliation #9) prints a `diag::progress`
+/// notice while a turn has not yet produced any visible text. Short enough
+/// to prove liveness well before a person starts to wonder if the process
+/// is hung, long enough not to read as spam on an ordinarily-paced run.
+const PROGRESS_NOTICE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// One-shot mode's entry point (dispatched from `main.rs` when
 /// `cli.print.is_some()`). `conway`'s `Runtime` already has this module's
@@ -289,10 +333,42 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
     let mut final_result: Option<AgentResult> = None;
     let mut grace_deadline: Option<tokio::time::Instant> = None;
 
+    // Reconciliation #9: text mode's own "prove the run is alive" ticker.
+    // `turn_started` is this invocation's own clock for both the ticker's
+    // elapsed-seconds display and the deadline-exceeded error below;
+    // `chosen_backend` is filled in from the first `Event::ModelDecision`
+    // this run sees, so a deadline failure can name what it was actually
+    // waiting on; `output_started` latches once the FIRST non-empty
+    // `Event::TextDelta` arrives, permanently silencing the ticker -- the
+    // reply has started landing, which is the ticker's whole job. Scoped to
+    // `text` mode only (`jsonl`/`json` already show real activity
+    // immediately, per this module's doc comment): `progress_ticks` is
+    // `None` for either of those, and the ticker branch below is inert.
+    let turn_started = std::time::Instant::now();
+    let mut chosen_backend: Option<String> = None;
+    let mut output_started = false;
+    let mut progress_ticks = (cli.output_format == OutputFormat::Text).then(|| {
+        let mut iv = tokio::time::interval(PROGRESS_NOTICE_INTERVAL);
+        // `interval` fires its first tick immediately, at creation time --
+        // consumed here (synchronously, before the loop) so the first REAL
+        // notice lands one full `PROGRESS_NOTICE_INTERVAL` later, not at
+        // t=0 before there is anything to report.
+        iv.reset();
+        iv
+    });
+
     loop {
         let grace = async {
             match grace_deadline {
                 Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending().await,
+            }
+        };
+        let progress_tick = async {
+            match progress_ticks.as_mut() {
+                Some(iv) => {
+                    iv.tick().await;
+                }
                 None => std::future::pending().await,
             }
         };
@@ -306,9 +382,48 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
                     diag::warn(format!("event stream lagged: {skipped} event(s) dropped"));
                     continue;
                 }
+                // Root-scoped: a subagent's own `ModelDecision` (its
+                // lifecycle events reach this session-scoped stream too,
+                // like `AgentFinished` below) must not overwrite the name
+                // this run's own deadline error reports if the ROOT itself
+                // times out.
+                if let Event::ModelDecision { chosen, .. } = &env.event {
+                    if env.agent == root {
+                        chosen_backend = Some(chosen.to_string());
+                    }
+                }
+                if let Event::TextDelta { text } = &env.event {
+                    if !text.is_empty() {
+                        output_started = true;
+                    }
+                }
                 renderer.on_event(&env)?;
                 if let Event::AgentFinished { result, .. } = &env.event {
                     if env.agent == root {
+                        // A deadline-exceeded termination previously
+                        // produced only a bare exit code, with nothing on
+                        // stderr explaining why -- see this module's doc
+                        // comment, reconciliation #9. Every other
+                        // `ResultStatus` (including the two other
+                        // `BudgetExceeded` dimensions, `max_steps`/
+                        // `max_tokens`) is left exactly as before: this is
+                        // scoped to the specific finding this item closes,
+                        // not a general "explain every non-Completed
+                        // status" change.
+                        if let ResultStatus::BudgetExceeded { limit } = &result.status {
+                            if limit.starts_with("deadline=") {
+                                let elapsed = turn_started.elapsed().as_secs();
+                                let backend = chosen_backend
+                                    .as_deref()
+                                    .unwrap_or("the configured backend");
+                                diag::error(format!(
+                                    "no response from {backend} within {elapsed}s (deadline \
+                                     exceeded); the backend may be stuck, unreachable, or too \
+                                     slow for the configured limit -- raise it with \
+                                     --max-seconds or [limits].deadline_secs"
+                                ));
+                            }
+                        }
                         final_result = Some(result.clone());
                         break;
                     }
@@ -321,6 +436,12 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
             _ = grace, if grace_deadline.is_some() => {
                 diag::warn("no terminal result within the SIGINT grace window; exiting");
                 break;
+            }
+            _ = progress_tick, if !output_started => {
+                diag::progress(format!(
+                    "waiting for a response... {}s",
+                    turn_started.elapsed().as_secs()
+                ));
             }
         }
     }
@@ -783,28 +904,80 @@ fn load_output_schema(cli: &Cli) -> conway::Result<Option<RootSchema>> {
     Ok(Some(schema))
 }
 
-/// Builds a [`Budget`] from `--max-turns`/`--max-tokens`/`--max-seconds`,
-/// or `None` when none of the three was given -- preserving the
-/// pre-existing behavior exactly (`SessionSpec::budget: None` falls back to
-/// `Conway::new_session`'s own `self.default_budget()`, config-sourced).
-/// When at least one flag IS given, this starts from that SAME config
-/// baseline (`conway.config().limits`, replicating `Conway::
-/// default_budget`'s own `0`-means-unset mapping, not exported either) and
-/// overrides only the specific dimension(s) named -- so `--max-turns 5`
-/// alone still respects a configured `[limits].max_tokens`/
-/// `deadline_secs`, rather than silently clearing them.
+/// One-shot's own default wall-clock ceiling for the whole run, applied by
+/// [`resolve_budget`] whenever nothing else already names one for this
+/// invocation (board item `01M1WVK9PF5G57Y6R36B94S0RB`; see this module's
+/// doc comment, reconciliation #9, for the live-reproduced 90+ second
+/// silent hang this closes).
+///
+/// **Deliberately scoped to one-shot mode alone -- NOT a change to
+/// `LimitsConfig::default()`'s own config-wide baseline**
+/// (`crates/conway/src/config/schema.rs`, still `0`/unbounded). `Budget::
+/// deadline` is a SESSION-LIFETIME cutoff computed once at session start,
+/// not a per-turn or per-network-call one (`conway_runtime::agent_loop::
+/// AgentLoop::check_budget`'s own doc: "every other budget dimension
+/// (deadline, max_tokens) is intentionally left session-lifetime ... A
+/// session-lifetime max_tokens/deadline can still end an interactive
+/// keep-alive session outright"). The TUI's interactive root
+/// (`conway_cli::tui::app::startup::App::session_spec`) is `keep_alive:
+/// true` with no `budget` override of its own, deferring entirely to
+/// `Conway::default_budget()` -- had this constant instead become the
+/// SHARED config baseline, every ordinary interactive conversation running
+/// longer than it would have been silently ended mid-chat, counted from
+/// SESSION START rather than from whichever turn was actually in flight.
+/// One-shot's own root is never `keep_alive` (`SessionSpec::default()`), so
+/// "session lifetime" and "this one run" coincide there -- exactly the case
+/// this fallback is meant to bound, with none of that hazard.
+///
+/// **Disclosed limitation:** the five-source config merge
+/// (`conway::config::merge`) tracks no provenance -- an operator who writes
+/// `"limits": {"deadline_secs": 0}` explicitly, meaning "one-shot mode,
+/// never time me out," is indistinguishable after merge from an operator
+/// who never mentioned the key at all, so this fallback fires for both. An
+/// operator who genuinely wants unbounded one-shot behavior should
+/// configure `[limits].deadline_secs` (or pass `--max-seconds`) to a
+/// large-but-nonzero value instead of `0` -- e.g. `315360000` (10 years) --
+/// which [`resolve_budget`] already honors as a real, explicit ceiling
+/// rather than this fallback.
+///
+/// 300 seconds: comfortably above the observed real-world worst case (a
+/// raw single-request local-model latency of ~57 wall-clock seconds was
+/// measured while reproducing this finding) while still bounding a
+/// genuinely stalled/crashed backend to a wait a person will not mistake
+/// for a hang.
+const DEFAULT_ONE_SHOT_DEADLINE_SECS: i64 = 300;
+
+/// Builds this run's effective [`Budget`] from `--max-turns`/`--max-tokens`/
+/// `--max-seconds` composed with `conway.config().limits` -- always
+/// `Some`, unlike before this item (see [`DEFAULT_ONE_SHOT_DEADLINE_SECS`]'s
+/// own doc for why a bare `None`, deferring entirely to `Conway::
+/// new_session`'s own `default_budget()`, is no longer sufficient: this
+/// function is now the one place that also injects one-shot's own deadline
+/// fallback).
+///
+/// Every dimension other than `deadline` is unchanged from before this
+/// item: `conway.config().limits` is the baseline (replicating `Conway::
+/// default_budget`'s own `0`-means-unset mapping, not exported either), and
+/// a given CLI flag overrides only its own dimension -- `--max-turns 5`
+/// alone still respects a configured `[limits].max_tokens`, rather than
+/// silently clearing it.
+///
+/// `deadline` itself: `--max-seconds`, when given, always wins outright
+/// (including `--max-seconds 0`, which -- unchanged from before this item
+/// -- trips immediately, `docs/scripting.md`'s documented behavior).
+/// Absent that flag, an explicit non-zero `[limits].deadline_secs` is
+/// honored exactly as before. Only when NEITHER names a ceiling does
+/// [`DEFAULT_ONE_SHOT_DEADLINE_SECS`] apply.
 fn resolve_budget(cli: &Cli, conway: &Conway) -> Option<Budget> {
-    if cli.max_turns.is_none() && cli.max_tokens.is_none() && cli.max_seconds.is_none() {
-        return None;
-    }
     let limits = &conway.config().limits;
+    let now = chrono::Utc::now();
     let mut budget = Budget {
         max_steps: limits.max_steps,
-        deadline: if limits.deadline_secs == 0 {
-            None
-        } else {
-            Some(chrono::Utc::now() + chrono::Duration::seconds(limits.deadline_secs as i64))
-        },
+        deadline: Some(match (cli.max_seconds, limits.deadline_secs) {
+            (Some(secs), _) => now + chrono::Duration::seconds(secs as i64),
+            (None, 0) => now + chrono::Duration::seconds(DEFAULT_ONE_SHOT_DEADLINE_SECS),
+            (None, secs) => now + chrono::Duration::seconds(secs as i64),
+        }),
         max_tokens: if limits.max_tokens == 0 {
             None
         } else {
@@ -821,9 +994,6 @@ fn resolve_budget(cli: &Cli, conway: &Conway) -> Option<Budget> {
     }
     if let Some(tokens) = cli.max_tokens {
         budget.max_tokens = Some(tokens);
-    }
-    if let Some(secs) = cli.max_seconds {
-        budget.deadline = Some(chrono::Utc::now() + chrono::Duration::seconds(secs as i64));
     }
     Some(budget)
 }
@@ -1041,7 +1211,6 @@ mod tests {
     use conway_core::ids::{AgentId, ToolName};
 
     use super::*;
-    use crate::cli::OutputFormat;
 
     fn request(tool: &str) -> PermissionRequest {
         PermissionRequest {

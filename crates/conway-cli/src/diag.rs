@@ -2,7 +2,7 @@
 //! and none takes a stdout handle. This is the mechanism that enforces
 //! "stdout carries only program output" across the whole CLI -- a renderer
 //! or command handler that wants to tell the user something can only reach
-//! for `diag::{error,warn,info}`, never a stray `println!`.
+//! for `diag::{error,warn,info,progress}`, never a stray `println!`.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -45,4 +45,26 @@ pub fn info(msg: impl AsRef<str>) {
     if VERBOSITY.load(Ordering::Relaxed) >= 1 {
         let _ = writeln!(std::io::stderr(), "conway: {}", msg.as_ref());
     }
+}
+
+/// Unconditional stderr progress notice: proves a still-running turn is
+/// alive, never gated by `--verbose`.
+///
+/// Board item `01M1WVK9PF5G57Y6R36B94S0RB`: a brand-new user's default
+/// `conway -p "<prompt>"` (`text` output mode) sat completely silent for
+/// 90+ seconds against a real local backend -- no spinner, no "thinking",
+/// nothing on stdout OR stderr to distinguish "still working" from "hung".
+/// `--output-format jsonl`/`json` already stream real activity immediately
+/// and are unaffected by this; `text` mode's own contract keeps stdout
+/// carrying only the model's own reply (`crate::render::text`'s module
+/// doc), so this -- like every other diagnostic -- goes to stderr instead.
+///
+/// Distinct from both [`warn`] (reserved for something an operator would
+/// act on) and [`info`] (gated behind `--verbose`, for routine detail a
+/// person only wants when investigating): this exists purely so a slow but
+/// healthy run visibly proves it is alive, which is exactly the case
+/// [`info`]'s gating would hide by default and [`warn`]'s "act on this"
+/// framing does not fit.
+pub fn progress(msg: impl AsRef<str>) {
+    let _ = writeln!(std::io::stderr(), "conway: {}", msg.as_ref());
 }

@@ -126,9 +126,16 @@ pub struct Cli {
     pub max_tokens: Option<u32>,
 
     /// Wall-clock ceiling, in seconds, counted from the moment this run
-    /// starts. Absent: the configured `[limits].deadline_secs` (`0` there
-    /// means no deadline). Same `--resume`/`--fork-from` restriction as
-    /// `--max-turns`.
+    /// starts (`0` trips immediately, before any request). Absent: the
+    /// configured `[limits].deadline_secs`, when it is non-zero; otherwise
+    /// one-shot's own default of 300 seconds (5 minutes) applies -- board
+    /// item `01M1WVK9PF5G57Y6R36B94S0RB`, so a stalled/crashed backend
+    /// fails loud with a named error instead of hanging indefinitely. This
+    /// default is specific to one-shot mode (`oneshot::
+    /// DEFAULT_ONE_SHOT_DEADLINE_SECS`); it does not change `[limits].
+    /// deadline_secs`'s own config-wide default (still `0`/unbounded,
+    /// which continues to govern the interactive TUI and any other
+    /// caller). Same `--resume`/`--fork-from` restriction as `--max-turns`.
     #[arg(long, value_name = "SECONDS")]
     pub max_seconds: Option<u64>,
 
