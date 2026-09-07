@@ -90,13 +90,13 @@ pub mod permission_pattern {
 pub use conway_core::content::{CacheAccounting, ToolCategory, Usage};
 pub use conway_core::event::{Envelope, Event};
 pub use conway_core::ids::{
-    AgentId, LogSeq, MemoryId, ModelRef, RoleAlias, SegmentId, SessionId, ToolName,
+    AgentId, EndpointId, LogSeq, MemoryId, ModelRef, RoleAlias, SegmentId, SessionId, ToolName,
 };
 pub use conway_core::log::{AskOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 pub use conway_core::ports::{
-    Backend, BackendBuildContext, BackendFactory, ContextHook, HealthRegistry, PermissionGate,
-    Plugin, RenderKind, Router, RouterBuildContext, RouterBundle, RouterFactory, SessionStore,
-    Tool,
+    ArtifactWriter, Backend, BackendBuildContext, BackendFactory, ContextHook, HealthRegistry,
+    PermissionGate, Plugin, RenderKind, Router, RouterBuildContext, RouterBundle, RouterFactory,
+    SessionStore, Tool,
 };
 
 /// The shared error type [`RouterFactory::build`] and [`BackendFactory::
@@ -276,24 +276,56 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   internal sink, unlike the separate `observe_sink` path above) — but
 ///   that narrower absence is not why `EventSink` is unreachable through
 ///   this module, because it isn't unreachable.
-/// - The `SessionStore`/`HealthRegistry` implementation surfaces.
-///   `SessionStore` because *implementing* it means spelling
-///   `SessionStore::append`'s own signature, and the full set that requires
-///   is not re-exported. Note the narrower *calling* surface IS reachable as
-///   of D1-8: `CurateCtx` hands a curator a live `Arc<dyn SessionStore>` and
-///   its module doc advertises `ctx.store.read(...)`, so `SeqRange` and
-///   `StoreError` are re-exported from `plugin` below — without them that
-///   advertised read surface would not compile from a facade-only crate.
-///   Implementing the port from outside remains out of scope;
-///   `HealthRegistry` because, like `SubagentHost` above, no
-///   `ConwayBuilder::with_*` method injects a replacement. Both checked by
-///   compiling a facade-only scratch crate against each claim, not by
-///   reading.
-///   `Backend` used to be named alongside these here; a later change added
-///   `pub mod backend` (below, a second
+/// - `SessionStore`/`HealthRegistry`/`ArtifactWriter` used to be named here
+///   as implementation surfaces this module could not complete (architecture
+///   review finding F11, board item `01M1WVQM440XZDSP0KC664HJ7S`) — an
+///   operator ruling given directly against that finding ("build injection
+///   points for all three, same as other ports already allow") closed the
+///   gap for all three, and none of them belongs on this closed list any
+///   longer:
+///
+///   - `SessionStore`: `ConwayBuilder::with_session_store` already existed
+///     (`crates/conway/src/builder.rs`) — the gap this finding actually
+///     named was narrower than "no injection point," it was that
+///     *implementing* the port meant spelling `SessionStore::append`'s (and
+///     `live_owner`'s/`touch_live_owner`'s) full signature, and this facade
+///     did not re-export everything that requires. `LiveOwner` is now
+///     re-exported from `plugin` above, alongside the `SeqRange`/
+///     `StoreError` the narrower *calling* surface already needed — every
+///     other type the trait's thirteen methods name (`SessionId`, `LogSeq`,
+///     `LogRecord`, `SessionMeta`, `SessionFilter`) was already reachable at
+///     this module's root. `crates/conway/tests/session_store_injection.rs`
+///     compiles and exercises a facade-only, non-default `SessionStore` impl
+///     end to end.
+///   - `HealthRegistry`: `ConwayBuilder::with_health_registry` is new
+///     (mirrors `ConwayBuilder::with_session_store`'s own shape exactly —
+///     see that method's own doc). `EndpointId` (root) and `Observation`
+///     (re-exported alongside `BreakerState`, which was already reachable)
+///     complete the trait's two-method signature.
+///     `crates/conway/tests/health_registry_injection.rs` exercises a
+///     facade-only, non-default `HealthRegistry` impl end to end.
+///   - `ArtifactWriter`: `ConwayBuilder::with_artifact_writer` is new. The
+///     trait itself, `ArtifactWriteHandle`, and `ArtifactWriteError` were
+///     already re-exported from `plugin` below (a `ContextHook` author needs
+///     them to *call* `ctx.artifacts.write(..)`); what was missing was
+///     purely an injection point replacing the runtime's own
+///     `AgentArtifactWriter` — see `conway_runtime::agent_loop::LoopDeps`'s
+///     own `artifact_writer` field doc for the `RwLock`-backed, purely-
+///     additive wiring this method sets through `Runtime::
+///     set_artifact_writer`, the SAME shape `Self::with_context_hook`/
+///     `Runtime::set_context_hook` already established for an identical "no
+///     `RuntimeDeps` field to source this from" constraint.
+///     `crates/conway/tests/artifact_writer_injection.rs` exercises a
+///     facade-only, non-default `ArtifactWriter` impl end to end, via a
+///     `ContextHook` that writes through it.
+///
+///   All three were checked by compiling and running a facade-only test
+///   crate against each claim, not by reading.
+///   `Backend` used to be named alongside these here too; a later change
+///   added `pub mod backend` (below, a second
 ///   curated module beside this one — see its own doc for why it is
 ///   separate) specifically to make third-party `Backend` implementations
-///   possible, so `Backend` is no longer part of this closed list.
+///   possible, so `Backend` is no longer part of this closed list either.
 ///
 ///   `Router` stays on this list for a narrower reason than it used to: a
 ///   wholly new `impl Router`
@@ -328,13 +360,22 @@ pub mod plugin {
     /// `ctx.store.read(&sid, SeqRange::full())` — so a curator that cannot
     /// name `SeqRange` cannot use the cross-session read the port exists to
     /// provide, and one that cannot name `StoreError` cannot handle its
-    /// failure. Both are re-exported for *calling* `SessionStore`, which is
-    /// distinct from *implementing* it (still out of scope — see the
-    /// `forbidden`-types discussion on this module's parent).
+    /// failure. Both are re-exported for *calling* `SessionStore` --
     /// `crates/conway/tests/plugin_surface.rs` compiles a facade-only
     /// curator against exactly this surface so the claim is checked rather
     /// than asserted.
     pub use conway_core::error::StoreError;
+    /// `SessionStore::live_owner`/`touch_live_owner`'s
+    /// own value type (board item `01M1WVQM440XZDSP0KC664HJ7S`) -- an
+    /// embedder implementing `SessionStore` (`ConwayBuilder::
+    /// with_session_store`, `conway::SessionStore`) cannot spell those two
+    /// methods' signatures without naming this type. Re-exported alongside
+    /// `StoreError`/`SeqRange` for the same reason: implementing the port
+    /// from outside is no longer out of scope, it is this item's whole
+    /// point, so this module's re-export list has to be complete against
+    /// `SessionStore`'s full signature, not only the narrower read surface
+    /// `CurateCtx::store` exercises.
+    pub use conway_core::ports::LiveOwner;
     pub use conway_core::error::{
         ArtifactWriteError, CwdError, HookFailure, MemoryStoreError, SubagentError, ToolError,
     };
@@ -745,7 +786,9 @@ pub mod backend {
 }
 
 pub use conway_core::provenance::{ContextReport, Provenance};
-pub use conway_core::routing::{AttemptFailure, BreakerKind, BreakerState, RoutingReason};
+pub use conway_core::routing::{
+    AttemptFailure, BreakerKind, BreakerState, Observation, RoutingReason,
+};
 
 /// Canonical JSON bytes — recursively sort object keys, serialize without
 /// insignificant whitespace. Re-exported from `conway-core` (DESIGN-context-path

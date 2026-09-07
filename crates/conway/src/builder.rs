@@ -136,11 +136,11 @@ use conway_core::ids::{BackendId, ModelRef};
 use conway_core::permission_pattern::{PatternOrigin, Rule, Select, Then, When};
 use conway_core::ports::CapabilityIndex;
 use conway_core::ports::{
-    Backend, BackendBuildContext, BackendFactory, CapabilityRegistration, CapabilityRegistry,
-    ContextHook, CurateOutcome, Curator, HealthRegistry, HookRunner, PathArgs, PathStore,
-    PermissionGate, Plugin, PluginHookRule, PluginManifest, PluginPermissionRule,
-    PluginPermissionVerdict, PluginStatusContribution, RenderKind, Router, RouterBuildContext,
-    RouterBundle, RouterFactory, RoutingExplainer, SessionStore,
+    ArtifactWriter, Backend, BackendBuildContext, BackendFactory, CapabilityRegistration,
+    CapabilityRegistry, ContextHook, CurateOutcome, Curator, HealthRegistry, HookRunner,
+    PathArgs, PathStore, PermissionGate, Plugin, PluginHookRule, PluginManifest,
+    PluginPermissionRule, PluginPermissionVerdict, PluginStatusContribution, RenderKind, Router,
+    RouterBuildContext, RouterBundle, RouterFactory, RoutingExplainer, SessionStore,
 };
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::context::PluginInstruction;
@@ -272,6 +272,26 @@ pub struct ConwayBuilder {
     /// `context_hook` at the `Runtime`-constructed default of `None` --
     /// i.e. today's behavior, unchanged.
     context_hook: Option<Arc<dyn ContextHook>>,
+    /// An embedder-injected [`ArtifactWriter`] (board item
+    /// `01M1WVQM440XZDSP0KC664HJ7S`), replacing the runtime's own
+    /// `AgentArtifactWriter` for every agent -- see
+    /// [`Self::with_artifact_writer`]'s own doc for the full precedence and
+    /// why `RuntimeDeps` carries no field for this (mirrors `context_hook`
+    /// immediately above exactly). `None` (the default) means `build()`
+    /// never calls `Runtime::set_artifact_writer` at all, leaving every
+    /// agent's `ContextHookCtx::artifacts` backed by the built-in,
+    /// per-agent-`cwd`/`root`-confined writer -- today's behavior,
+    /// unchanged.
+    artifact_writer: Option<Arc<dyn ArtifactWriter>>,
+    /// An embedder-injected [`HealthRegistry`] (board item
+    /// `01M1WVQM440XZDSP0KC664HJ7S`), replacing the honestly degenerate
+    /// `AlwaysClosedHealthRegistry` [`Self::build`] would otherwise
+    /// construct -- see [`Self::with_health_registry`]'s own doc for the
+    /// full precedence against an installed [`Self::with_router_factory`].
+    /// `None` (the default) preserves today's behavior exactly: no breaker
+    /// ever opens, `record` is a no-op, UNLESS a router factory's own
+    /// `RouterBundle::health` replaces it (unchanged by this field).
+    health_registry: Option<Arc<dyn HealthRegistry>>,
     /// An embedder-injected [`Curator`] (DESIGN §11.4). `None` (the default)
     /// means `build()` contributes no curator of its own -- it still composes
     /// any plugin-contributed curators, and if BOTH are `None` the runtime's
@@ -433,6 +453,8 @@ impl ConwayBuilder {
             backend_factories: Vec::new(),
             declined_backend_kinds: Vec::new(),
             context_hook: None,
+            artifact_writer: None,
+            health_registry: None,
             context_curator: None,
             hook_runner: None,
             builtin_selection: None,
@@ -728,6 +750,54 @@ impl ConwayBuilder {
     /// overflow.
     pub fn with_context_hook(mut self, hook: Arc<dyn ContextHook>) -> Self {
         self.context_hook = Some(hook);
+        self
+    }
+
+    /// Overrides the runtime's own `AgentArtifactWriter` (board item
+    /// `01M1WVQM440XZDSP0KC664HJ7S`) -- the one implementation the runtime
+    /// otherwise constructs per agent, confined to that agent's own
+    /// `cwd`/root, and hands out as `ContextHookCtx::artifacts` (see
+    /// `conway::plugin::ArtifactWriteHandle`'s own doc). `writer` replaces it
+    /// for EVERY agent this `Conway` starts -- there is no per-agent
+    /// override, only a single, whole-runtime one, mirroring
+    /// [`Self::with_session_store`]'s own single-instance shape. Since
+    /// `ArtifactWriter::write` already takes the calling agent's own
+    /// [`conway_core::ids::AgentId`] as a parameter, a custom implementation
+    /// is free to branch on it exactly as the built-in would have branched on
+    /// per-agent `cwd`/root, without conway resolving or checking containment
+    /// on its behalf.
+    ///
+    /// **Not called at all (the default):** `build()` never calls
+    /// `Runtime::set_artifact_writer`, so every agent keeps today's behavior
+    /// unchanged -- the built-in `AgentArtifactWriter`, confined to that
+    /// agent's own `cwd`/root exactly as it always has been.
+    pub fn with_artifact_writer(mut self, writer: Arc<dyn ArtifactWriter>) -> Self {
+        self.artifact_writer = Some(writer);
+        self
+    }
+
+    /// Overrides the default `AlwaysClosedHealthRegistry` (board item
+    /// `01M1WVQM440XZDSP0KC664HJ7S`) -- the honestly degenerate
+    /// `HealthRegistry` [`Self::build`] otherwise constructs when no router
+    /// factory is installed (no breaker ever opens, `record` is a no-op).
+    /// Mirrors [`Self::with_session_store`]'s own shape exactly: a single,
+    /// whole-runtime instance, no composition.
+    ///
+    /// **Precedence against [`Self::with_router_factory`]:** an installed
+    /// factory's own `RouterBundle::health` STILL replaces whatever `health`
+    /// this method set, exactly as it already replaces the default -- the
+    /// router and the runtime must continue to share exactly one registry
+    /// (see [`Self::with_router_factory`]'s own doc), so a factory that
+    /// returns its own health takes precedence over an injected one here just
+    /// as it does over the default. Calling this method with no router
+    /// factory installed (or a [`Self::with_router`] override, which never
+    /// reassigns `health`) means `registry` is what every backend attempt
+    /// actually reports state/observations to.
+    ///
+    /// **Not called at all (the default):** unchanged -- `AlwaysClosedHealthRegistry`,
+    /// unless a router factory replaces it.
+    pub fn with_health_registry(mut self, registry: Arc<dyn HealthRegistry>) -> Self {
+        self.health_registry = Some(registry);
         self
     }
 
@@ -1239,6 +1309,8 @@ impl ConwayBuilder {
             backend_factories,
             declined_backend_kinds,
             context_hook,
+            artifact_writer,
+            health_registry,
             context_curator,
             hook_runner,
             builtin_selection,
@@ -1480,7 +1552,12 @@ impl ConwayBuilder {
                 per_role,
             })
         };
-        let health: Arc<dyn HealthRegistry> = Arc::new(AlwaysClosedHealthRegistry);
+        // `with_health_registry`, when set, replaces the honestly degenerate
+        // default here -- still subject to being reassigned below if a
+        // router factory is taken (see that step's own comment: the router
+        // and the runtime must continue to share exactly one registry).
+        let health: Arc<dyn HealthRegistry> =
+            health_registry.unwrap_or_else(|| Arc::new(AlwaysClosedHealthRegistry));
 
         // 7. Router: injected `router` wins UNCONDITIONALLY over everything
         //    below and is never wrapped, inspected, or validated; else a
@@ -1493,10 +1570,12 @@ impl ConwayBuilder {
         //    `MinimalRouter` itself) is kept alongside the type-erased
         //    `Router` so `Conway::explain_routing` can still project
         //    through it. When the factory path is taken, its returned
-        //    `health` REPLACES the `AlwaysClosedHealthRegistry` built
-        //    immediately above -- the router and the runtime must continue
-        //    to share exactly ONE registry, so `health` is reassigned
-        //    below, never both kept alive.
+        //    `health` REPLACES whatever `health` was built immediately above
+        //    (the `AlwaysClosedHealthRegistry` default, OR an embedder's own
+        //    `with_health_registry` override -- see that method's own doc)
+        //    -- the router and the runtime must continue to share exactly
+        //    ONE registry, so `health` is reassigned below, never both kept
+        //    alive.
         //    The three outcomes are spelled as a `RouterBundle` rather than a
         //    bare triple: that type already IS this exact shape (router,
         //    health, explain), because it is what a `RouterFactory` hands
@@ -2265,6 +2344,17 @@ impl ConwayBuilder {
         }
         composed.extend(plugin_context_hooks);
         rt.set_context_hook(compose_context_hooks(composed));
+        // `RuntimeDeps` has no `artifact_writer` field either, for the
+        // identical reason `context_hook` above has none -- registration
+        // happens post-construction via this dedicated setter. Unlike
+        // `context_hook`/`context_curator`, there is exactly ONE source (no
+        // plugin contribution point -- board item `01M1WVQM440XZDSP0KC664HJ7S`
+        // deliberately built only the builder-method injection point, not a
+        // second `Plugin::` method), so no composition step is needed:
+        // `artifact_writer` is `None` unless `with_artifact_writer` was
+        // called, and `Runtime::set_artifact_writer(None)` is a harmless
+        // no-op identical to never calling it at all.
+        rt.set_artifact_writer(artifact_writer);
         // Mirrors the `context_hook` wiring immediately above: the single
         // curator the runtime accepts is composed here from TWO sources, in
         // this order -- (1) an embedder's explicit `with_curator`-injected
