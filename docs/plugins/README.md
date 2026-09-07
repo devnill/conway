@@ -197,7 +197,7 @@ bounded refresh cadence (floored at one spawn per second regardless of
 configuration) and pushes its output as a `PluginStatusContribution` shown
 on the status line. The migration home for a Claude Code
 `statusLine.command`, which conway's own closed status-line vocabulary
-cannot express. Deliberately excluded from the "eleven shipped first-party
+cannot express. Deliberately excluded from the "twelve shipped first-party
 plugins" count above: it attaches through its own `[tui.status_line_command]`
 config surface, resolved by `crates/conway-cli/src/statusline_plugin.rs`,
 a fifth choke point alongside the MCP/Claude-compat/marketplace ones in
@@ -221,7 +221,7 @@ directory the operator already has on disk (no downloading) and translates
 what it can. **Only its MCP server declarations are wired to actually
 run** — everything else it finds (`commands/*.md`, `skills/`, `agents/*.md`,
 most hook events) is named in an operator-visible report, never silently
-imported. Deliberately excluded from the "eleven shipped first-party plugins"
+imported. Deliberately excluded from the "twelve shipped first-party plugins"
 count above and from the MCP section immediately above this one: it
 attaches through its own `[plugins].claude_compat[]` config surface,
 resolved by `crates/conway-cli/src/claude_compat_plugins.rs`, a fourth
@@ -239,7 +239,7 @@ describes, pointing at where it landed. Not a fourth import mechanism: an
 installed marketplace plugin is, on disk and in `settings.json`,
 indistinguishable from a directory the operator cloned or typed the path to
 by hand — same entry shape, same read-at-runtime translation, same trust
-footing. Deliberately excluded from the "eleven shipped first-party plugins"
+footing. Deliberately excluded from the "twelve shipped first-party plugins"
 count and from both sections immediately above: it writes its own
 `[plugins].claude_compat[]` entry through `crates/conway-cli/src/tui/app/
 marketplace.rs`, not through `first_party_plugins::bundle()`,
