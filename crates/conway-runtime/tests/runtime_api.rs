@@ -28,15 +28,15 @@ use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
-    Backend, BoxStream, GenerateRequest, GenerateResponse, Plugin, PluginManifest, Router,
-    SessionStore, StreamChunk, Tool, ToolCtx, ToolOutput,
+    Backend, BoxStream, GenerateRequest, GenerateResponse, Plugin, Router, SessionStore,
+    StreamChunk, Tool, ToolCtx, ToolOutput,
 };
 use conway_core::provenance::Provenance;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_testkit::{
-    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakeRouter, FakeStore,
-    ScriptedBackend, ScriptedTurn,
+    text_response_with_stub_usage as text_response, FakeGate, FakeHealth, FakePlugin, FakeRouter,
+    FakeStore, ScriptedBackend, ScriptedTurn,
 };
 use futures::stream;
 use futures::StreamExt;
@@ -182,28 +182,6 @@ impl Tool for DelayTool {
     async fn invoke(&self, _call: ToolCall, _ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
         tokio::time::sleep(self.delay).await;
         Ok(text_output("done"))
-    }
-}
-
-struct FakePlugin {
-    tools: Vec<Arc<dyn Tool>>,
-}
-
-impl Plugin for FakePlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: "test".to_string(),
-            version: "0.0.0".to_string(),
-            tools: self.tools.iter().map(|t| t.spec().name).collect(),
-            required_host_caps: vec![],
-            optional_host_caps: vec![],
-            requires: vec![],
-            optional: vec![],
-        }
-    }
-
-    fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        self.tools.clone()
     }
 }
 
@@ -413,7 +391,7 @@ async fn cancel_trips_token_and_agent_finishes_cancelled() {
         tool_call_response("tc_1", "slow"),
     )]));
     let (runtime, _store) =
-        build_runtime(backend, vec![Arc::new(FakePlugin { tools: vec![tool] })]);
+        build_runtime(backend, vec![Arc::new(FakePlugin::new(vec![tool]))]);
     let mut stream = runtime.subscribe();
 
     let agent_id = runtime.start_root(root_spec("hello")).await.unwrap();
@@ -538,7 +516,7 @@ async fn context_report_survives_and_updates_across_multiple_turns() {
         ScriptedTurn::Respond(text_response("done")),
     ]));
     let (runtime, _store) =
-        build_runtime(backend, vec![Arc::new(FakePlugin { tools: vec![tool] })]);
+        build_runtime(backend, vec![Arc::new(FakePlugin::new(vec![tool]))]);
     let mut stream = runtime.subscribe();
 
     let agent_id = runtime.start_root(root_spec("hello")).await.unwrap();

@@ -2,8 +2,8 @@
 //! `ScriptedBackend` (`Backend`), `FakeStore` (`SessionStore`), `FakeGate`
 //! (`PermissionGate`), `FakeRouter` (`Router`), `FakeHealth`
 //! (`HealthRegistry`), `FakeSubagentHost` (`SubagentHost`), `FakePathStore`
-//! (`PathStore`), `FakeSessionDiscoveryHost` (`SessionDiscoveryHost`), and
-//! `CollectingEventSink` (`EventSink`).
+//! (`PathStore`), `FakeSessionDiscoveryHost` (`SessionDiscoveryHost`),
+//! `FakePlugin` (`Plugin`), and `CollectingEventSink` (`EventSink`).
 //!
 //! Plus the response constructors those doubles get scripted with —
 //! `text_response` and `text_response_with_stub_usage` — which 52 test
@@ -42,7 +42,7 @@
 //! first poll.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -64,8 +64,8 @@ use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, Subage
 use conway_core::path::{PathSelection, SelectionKey};
 use conway_core::ports::{
     Backend, BoxStream, EventSink, GenerateRequest, GenerateResponse, HealthRegistry, LiveOwner,
-    PathStore, PermissionGate, Router, SessionDiscoveryHost, SessionSearchQuery,
-    SessionSearchResult, SessionStore, StreamChunk, SubagentHost,
+    PathStore, PermissionGate, Plugin, PluginManifest, Router, SessionDiscoveryHost,
+    SessionSearchQuery, SessionSearchResult, SessionStore, StreamChunk, SubagentHost, Tool,
 };
 use conway_core::routing::{BreakerState, Observation, Route, RouteRequest, RoutingReason};
 
@@ -1278,5 +1278,68 @@ impl FakeSessionDiscoveryHost {
 impl SessionDiscoveryHost for FakeSessionDiscoveryHost {
     async fn search(&self, _query: SessionSearchQuery) -> Result<SessionSearchResult, StoreError> {
         Ok(self.result.lock().unwrap().clone().unwrap_or_default())
+    }
+}
+
+// ---------------------------------------------------------------------
+// Plugin fake
+// ---------------------------------------------------------------------
+
+/// A [`Plugin`] with a fixed version, a configurable id and tool list, and
+/// every other manifest field left empty -- every optional `Plugin` method
+/// (`instructions`, `commands`, `context_hooks`, `hooks`, ...) keeps the
+/// trait's own zero-cost default.
+///
+/// This is the shape 8 hand-rolled `struct FakePlugin` copies across
+/// `conway-runtime`'s own test suite converged on independently, byte for
+/// byte in 7 of the 8, before this consolidated them: `manifest()` always
+/// reports `version: "0.0.0"` and empty `required_host_caps`/
+/// `optional_host_caps`/`requires`/`optional`, with `tools` derived from the
+/// configured tool list's own specs. Only `id` genuinely varies across
+/// callers -- `crates/conway-runtime/tests/tool_runner.rs`'s duplicate-tool
+/// test needs two plugins with distinct ids to name both in the error it
+/// asserts on, which is what [`Self::with_id`] is for; every other caller
+/// used the fixed id `"test"`, which [`Self::new`] supplies.
+pub struct FakePlugin {
+    id: String,
+    tools: Vec<Arc<dyn Tool>>,
+}
+
+impl FakePlugin {
+    /// A plugin with id `"test"` and the given tools -- the shape used
+    /// verbatim by every hand-rolled copy except `tool_runner.rs`'s.
+    pub fn new(tools: Vec<Arc<dyn Tool>>) -> Self {
+        Self {
+            id: "test".to_string(),
+            tools,
+        }
+    }
+
+    /// A plugin with an explicit id and the given tools, for a test that
+    /// installs more than one `FakePlugin` at once and needs their ids to
+    /// differ (e.g. asserting a duplicate-tool error names both plugins).
+    pub fn with_id(id: impl Into<String>, tools: Vec<Arc<dyn Tool>>) -> Self {
+        Self {
+            id: id.into(),
+            tools,
+        }
+    }
+}
+
+impl Plugin for FakePlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: self.id.clone(),
+            version: "0.0.0".to_string(),
+            tools: self.tools.iter().map(|t| t.spec().name).collect(),
+            required_host_caps: vec![],
+            optional_host_caps: vec![],
+            requires: vec![],
+            optional: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        self.tools.clone()
     }
 }
