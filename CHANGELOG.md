@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`docs/agents.md`'s worked `[limits]` example no longer implies `max_parallel_tools`/`tool_timeout_secs` are wired for a root session when they are not** — board item `01M1WVMB9DXY8NMWPZA6HT9F86`, architectural review finding F3. Both fields parse and round-trip through `settings.json`, but `Runtime::start_root` still hardcodes the compiled-in default for each (neither `RootSpec` nor the internally-built `AgentSpec` exposes a field to set either through) — a gap `crates/conway/src/builder.rs`'s own module doc already disclosed, but that disclosure never reached the operator-facing example that shows `"max_parallel_tools": 4` with no caveat. Minimum bar chosen over real wiring: closing the gap for a root session touches roughly two dozen `RootSpec`/`RuntimeDeps` construction sites across `conway-runtime`'s own test suite alone (none of which build via `..Default::default()`), which is out of proportion to a documentation defect and cannot be safely verified without cargo access in this change. `docs/agents.md` now states the gap next to the example, matching the disclosure `docs/tools.md`'s "Timeouts" section already carries for `tool_timeout_secs`.
+
 ## [0.10.0] — 2026-09-04
 
 ### Added

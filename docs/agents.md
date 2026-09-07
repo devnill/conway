@@ -317,6 +317,21 @@ comment for the full three-site cross-reference.
 `max_parallel_tools` is not a budget — it caps how many calls in one batch run
 concurrently, and never ends an agent.
 
+**Disclosed gap: `max_parallel_tools` and `tool_timeout_secs` are not yet
+wired for a root session.** Both parse and round-trip through
+`settings.json` exactly as shown above, but neither one currently reaches a
+running root agent: `Runtime::start_root` always builds its session with the
+compiled-in default (`4` concurrent tool calls, no per-call timeout),
+because neither `RootSpec` nor the internally-built `AgentSpec` exposes a
+field a caller could set either value through yet. Setting either key in a
+real `settings.json` today is silently a no-op for the root session it
+appears to configure — only an embedder constructing
+`conway_runtime::tools::ToolBatchCtx` directly benefits from either value
+right now. See `crates/conway/src/builder.rs`'s
+module doc for the full account, and
+[`tools.md`'s "Timeouts" section](tools.md#timeouts) for the identical gap
+as it affects `tool_timeout_secs` specifically.
+
 A child overrides any of these per call: `budget` on `conway_fork`/
 `conway_spawn`/`conway_ask` for a model, or `ForkSpec::budget`/
 `SpawnSpec::budget` for an embedder. **A child never inherits its parent's
