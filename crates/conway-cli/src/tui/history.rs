@@ -10,11 +10,12 @@
 //! degrades to an empty history on a missing, unreadable, or corrupt file
 //! -- never a panic, never a startup failure -- and skips individual
 //! malformed lines rather than discarding the whole file over one bad
-//! entry. [`save`] follows the same tmp-write-then-rename shape
-//! `conway-session`'s `SessionIndex::persist_full` uses (write a `.tmp`
-//! sibling, `rename` it over the real path) so a crash mid-write can never
-//! leave a half-written, corrupt history file in place -- the file on disk
-//! is always either the complete old version or the complete new one.
+//! entry. [`save`] durably round-trips via [`conway::fs::atomic_write`]
+//! (write a temp sibling, `fsync` it, then `rename` it over the real path
+//! -- the same shape `conway-session`'s `SessionIndex::persist_full` uses)
+//! so a crash mid-write, or right after it, can never leave a half-written
+//! or lost history file in place -- the file on disk is always either the
+//! complete old version or the complete new one.
 //! `App::submit` (the only caller) treats a failed [`save`] as best-effort:
 //! a lost history write must never fail the submit it was recording.
 //!
@@ -47,17 +48,16 @@ pub fn load(path: &Path) -> VecDeque<String> {
         .collect()
 }
 
-/// Writes `history` to `path`, one JSON-string-encoded entry per line, via a
-/// `.tmp` sibling + atomic `rename` (mirrors
-/// `conway-session::index::SessionIndex::persist_full`'s write-then-rename
-/// shape). Creates the parent directory if it does not exist yet. Returns an
-/// `io::Result` so the caller can decide how to treat a failure -- the file is
-/// untrusted input: this function itself never panics, and the caller
-/// (`App::submit`) never lets a failure here fail the submit it was recording.
+/// Writes `history` to `path`, one JSON-string-encoded entry per line, via
+/// [`conway::fs::atomic_write`] (a `.tmp` sibling, `fsync`ed, then an atomic
+/// `rename` -- the same shared helper `conway-plugin-names`'s
+/// `FsAgentNames::persist` and `conway-cli`'s own `session_names::
+/// NamesStore::save` use, board item `01M1WVNPYTFF0TEJGHGGRPDF8E`). Creates
+/// the parent directory if it does not exist yet. Returns an `io::Result` so
+/// the caller can decide how to treat a failure -- the file is untrusted
+/// input: this function itself never panics, and the caller (`App::submit`)
+/// never lets a failure here fail the submit it was recording.
 pub fn save(path: &Path, history: &VecDeque<String>) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let mut buf = String::new();
     for entry in history {
         // `String`/`&str` serialization to JSON cannot fail; the
@@ -66,10 +66,7 @@ pub fn save(path: &Path, history: &VecDeque<String>) -> std::io::Result<()> {
         buf.push_str(&serde_json::to_string(entry).unwrap_or_default());
         buf.push('\n');
     }
-    let tmp_path = path.with_extension("tmp");
-    std::fs::write(&tmp_path, buf)?;
-    std::fs::rename(&tmp_path, path)?;
-    Ok(())
+    conway::fs::atomic_write(path, buf.as_bytes())
 }
 
 #[cfg(test)]
