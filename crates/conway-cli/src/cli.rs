@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
+use crate::commands::memory::MemoryArgs;
 use crate::commands::plugin::PluginArgs;
 use crate::commands::routes::RoutesArgs;
 use crate::commands::sessions::SessionsArgs;
@@ -222,6 +223,15 @@ pub enum Command {
     /// List every tool this process has registered -- the vocabulary
     /// `--allowed-tools`/`--deny-tools` accepts, self-described headlessly.
     Tools(ToolsArgs),
+    /// `conway memory {list,forget}` (board item `01M1WVQ36ASXCQMSB7Q5K20P44`):
+    /// the operator's audit/undo surface over `conway.memory`'s store --
+    /// what has the model chosen to remember, and a way to remove it. A
+    /// BUILT-IN clap subcommand, always in `--help` regardless of which
+    /// plugins are installed -- see `commands::memory`'s own module doc for
+    /// why this exists alongside the plugin-declared `conway
+    /// conway.memory.list`/`conway.memory.forget` path, which already
+    /// works and is left untouched.
+    Memory(MemoryArgs),
     /// `conway plugin list|install|remove` (board item
     /// `01M1FSDRF20E2EGHCG3RK28DKH`): the headless half of the interactive
     /// `/plugin` command -- the same compiled-in-plugin table, and the
