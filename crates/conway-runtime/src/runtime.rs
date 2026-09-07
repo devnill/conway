@@ -108,9 +108,9 @@ use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, LogSeq, RoleAlias, SeqRange, SessionId, ToolName};
 use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 use conway_core::ports::{
-    Backend, CapabilityHost, ContextHook, HealthRegistry, HookRunner, PathStore, PermissionGate,
-    Plugin, PluginConfig, PluginEventEmitter, RegisteredObserver, Router, SessionStore,
-    SubagentHost,
+    ArtifactWriter, Backend, CapabilityHost, ContextHook, HealthRegistry, HookRunner, PathStore,
+    PermissionGate, Plugin, PluginConfig, PluginEventEmitter, RegisteredObserver, Router,
+    SessionStore, SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::segment::CacheTtl;
@@ -453,6 +453,12 @@ impl Runtime {
                 // returns the original path untouched, so the
                 // `context_golden` 11/11 gate stays unregenerated.
                 context_curator: RwLock::new(None),
+                // Same additive-post-construction shape as `context_hook`
+                // above: `set_artifact_writer` below fills it in. `None`
+                // here means every agent's `run_inner` builds its own
+                // `AgentArtifactWriter`, byte-identical to before this field
+                // existed.
+                artifact_writer: RwLock::new(None),
                 observers,
                 // The SAME dispatcher `post_tool_use` and every other
                 // plugin-declared event already fan out through, so an
@@ -580,6 +586,34 @@ impl Runtime {
             .context_curator
             .write()
             .expect("context_curator lock poisoned") = curator;
+    }
+
+    /// Registers (or clears, via `None`) the [`ArtifactWriter`] override
+    /// every subsequently-run agent's `ContextHookCtx::artifacts` is backed
+    /// by (board item `01M1WVQM440XZDSP0KC664HJ7S`) -- see
+    /// `AgentLoop::run_inner`'s own comment at the `artifacts` construction
+    /// site. Mirrors [`Self::set_context_hook`]'s own shape exactly, for the
+    /// identical reason: `RuntimeDeps` is constructed by field literal in
+    /// several existing tests a new required field would break, so this is a
+    /// purely additive post-construction setter rather than a new
+    /// `RuntimeDeps` field.
+    ///
+    /// **No guard wrapper** -- unlike `set_context_hook`'s
+    /// `GuardedContextHook`, an `ArtifactWriter` needs no re-validation
+    /// layer: `ArtifactWriteHandle` already bakes in the calling agent's own
+    /// `AgentId` at the ONE construction site (`AgentLoop::run_inner`), so
+    /// there is no coherence property for a wrapper to enforce here the way
+    /// `GuardedContextHook` enforces tool-call/result pairing.
+    ///
+    /// Not called at all (the default) means every agent keeps the built-in
+    /// `AgentArtifactWriter`, confined to that agent's own `cwd`/root exactly
+    /// as before this method existed.
+    pub fn set_artifact_writer(&self, writer: Option<Arc<dyn ArtifactWriter>>) {
+        *self
+            .loop_deps
+            .artifact_writer
+            .write()
+            .expect("artifact_writer lock poisoned") = writer;
     }
 
     /// Registers (or clears, via

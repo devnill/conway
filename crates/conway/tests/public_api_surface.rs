@@ -5,13 +5,13 @@
 //! compile failure here, not a silent surface shrink.
 
 use conway::{
-    AgentDef, AgentId, AgentResult, AgentTreeSnapshot, AttemptFailure, Backend, BreakerKind,
-    BreakerSnapshot, BreakerState, Budget, CapabilitySummary, ContextHook, ContextReport,
-    EntryOutcome, Envelope, Event, ExplainEntry, ExplainReport, FacadeError, HealthRegistry,
-    LogRecord, LogSeq, ModelRef, PermissionDecision, PermissionDecisionKind, PermissionGate,
-    PermissionRequest, PermissionScope, Plugin, Provenance, Result, ResultStatus, RoleAlias,
-    Router, RoutingReason, SessionFilter, SessionId, SessionMeta, SessionStore, SubagentMode, Tool,
-    ToolCategory, ToolName,
+    AgentDef, AgentId, AgentResult, AgentTreeSnapshot, ArtifactWriter, AttemptFailure, Backend,
+    BreakerKind, BreakerSnapshot, BreakerState, Budget, CapabilitySummary, ContextHook,
+    ContextReport, EndpointId, EntryOutcome, Envelope, Event, ExplainEntry, ExplainReport,
+    FacadeError, HealthRegistry, LogRecord, LogSeq, ModelRef, Observation, PermissionDecision,
+    PermissionDecisionKind, PermissionGate, PermissionRequest, PermissionScope, Plugin,
+    Provenance, Result, ResultStatus, RoleAlias, Router, RoutingReason, SessionFilter, SessionId,
+    SessionMeta, SessionStore, SubagentMode, Tool, ToolCategory, ToolName,
 };
 
 /// Every re-exported *type* must be nameable at this path. The function is
@@ -52,6 +52,8 @@ fn assert_types_nameable(
     _: Option<CapabilitySummary>,
     _: Option<BreakerSnapshot>,
     _: Option<AttemptFailure>,
+    _: Option<EndpointId>,
+    _: Option<Observation>,
 ) {
 }
 
@@ -67,6 +69,7 @@ fn assert_traits_object_safe(
     _: &dyn Router,
     _: &dyn HealthRegistry,
     _: &dyn ContextHook,
+    _: &dyn ArtifactWriter,
 ) {
 }
 

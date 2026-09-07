@@ -806,8 +806,9 @@ A few things worth knowing before you build a host UI on this:
 
 Every extension point below is a `conway_core::ports` trait, and every one
 of those *traits* is re-exported at the facade's crate root
-(`conway::{Backend, ContextHook, HealthRegistry, PermissionGate, Plugin,
-Router, SessionStore, Tool}`). A re-exported trait is only implementable
+(`conway::{ArtifactWriter, Backend, ContextHook, HealthRegistry,
+PermissionGate, Plugin, Router, SessionStore, Tool}`). A re-exported trait
+is only implementable
 if every type its methods name is also reachable; the authoring surface
 for the three traits plugin authors implement lives in the curated
 `conway::plugin` module (below), so that `use conway::plugin::...` plus
@@ -822,7 +823,9 @@ the facade root is the whole surface — no `conway-core` dependency.
 | `Plugin` | Yes | Yes, via `conway::plugin` (`PluginManifest`, plus `Tool`'s own types) | **Yes** |
 | `ContextHook` (`with_context_hook`) | Yes | Yes, via `conway::plugin` (`ContextPayload`, `ContextHookCtx`, `OverflowInfo`, `PromptSegment`, `Role`, `Provenance`) | **Yes** |
 | `Backend` | Yes | Yes, via `conway::backend` (`GenerateRequest`, `GenerateResponse`, `StreamChunk`, `BoxStream`, `Admission`, `check_admission`, `BackendError`, `Capabilities`, `ProbeReport`, `BackendId`, `ModelId`, plus the field types those structs are built from) | **Yes** |
-| `SessionStore` | Yes | No (`SeqRange`, `StoreError`) | No |
+| `SessionStore` (`with_session_store`) | Yes | Yes (`SessionId`, `LogSeq`, `LogRecord`, `SessionMeta`, `SessionFilter` at the root; `SeqRange`, `StoreError`, `LiveOwner` via `conway::plugin`) | **Yes** |
+| `HealthRegistry` (`with_health_registry`) | Yes | Yes (`EndpointId`, `BreakerState`, `Observation`, all at the root) | **Yes** |
+| `ArtifactWriter` (`with_artifact_writer`) | Yes | Yes (`ArtifactWriteError` via `conway::plugin`; `AgentId` at the root) | **Yes** |
 | `Router` | Yes | No (`RouteRequest`, `Route`, `RoutingError`) | No |
 
 **This table is about the IN-PROCESS question — can a crate depending only
@@ -837,11 +840,33 @@ table's "not reachable" set; a later item added
 `conway::backend` specifically to make the raw trait facade-only
 authorable, so that row is unconditionally **Yes** now.
 
-`SessionStore`'s row is unchanged and stays **No**: `SeqRange`/`StoreError`
-are not re-exported, so a facade-only crate cannot spell `SessionStore::
-append`'s own signature. `Router`'s row is also correctly **No** for the
-same narrow reason — `RouteRequest`/`Route`/`RoutingError` are not
-re-exported either, so a facade-only crate cannot write `impl Router`'s
+`SessionStore`/`HealthRegistry`/`ArtifactWriter` used to be a second "not
+reachable" cluster in this table (architecture review finding F11, board
+item `01M1WVQM440XZDSP0KC664HJ7S`) — closed by an operator ruling given
+directly against that finding ("build injection points for all three, same
+as other ports already allow"). All three rows are now **Yes**, end to end:
+a facade-only crate can both *implement* each trait (every type its methods
+name is reachable, per the table) and *install* the implementation via its
+own `ConwayBuilder::with_*` method (`with_session_store` already existed;
+`with_health_registry`/`with_artifact_writer` are new). See
+`crates/conway/tests/session_store_injection.rs`,
+`crates/conway/tests/health_registry_injection.rs`, and
+`crates/conway/tests/artifact_writer_injection.rs` for a facade-only,
+non-default implementation of each, checked to be genuinely called (not
+merely accepted by the builder).
+
+`ArtifactWriter` has one shape worth calling out explicitly:
+`ConwayBuilder::with_artifact_writer` installs a single, whole-runtime
+override, replacing the runtime's own per-agent `AgentArtifactWriter`
+(which confines writes to that agent's own `cwd`/root) for *every* agent —
+there is no per-agent override. `ArtifactWriter::write` already takes the
+calling `AgentId` as a parameter, so a custom implementation that wants
+per-agent behavior branches on that itself; conway performs no path
+resolution or containment check on a custom writer's behalf the way it does
+for the built-in.
+
+`Router`'s row is correctly **No**: `RouteRequest`/`Route`/`RoutingError`
+are not re-exported, so a facade-only crate cannot write `impl Router`'s
 `resolve` method by hand, and (checked directly) `conway-plugin-routing`,
 the one crate in this workspace that does implement `Router`, depends on
 `conway-core` directly rather than only on `conway` to do it — verified by
@@ -853,10 +878,10 @@ authoring, a router — genuinely is facade-only implementable end to end
 (its own methods name only `RouterBuildContext`/`RouterBundle`/
 `ConwayError`, all re-exported), and is real, tested machinery, not a
 forward declaration — see "Installing a router" below, and
-`crates/conway/tests/router_factory.rs`. `SessionStore` and `Router` are
-both still re-exported at the trait level so you can *inject* the
+`crates/conway/tests/router_factory.rs`. `Router` is
+still re-exported at the trait level so you can *inject* the
 workspace's own implementation or a test double built inside this
-workspace via `with_session_store`/`with_router`, not so a facade-only
+workspace via `with_router`, not so a facade-only
 crate authors a wholly new one.
 
 ### Installing a backend: `BackendFactory`
