@@ -355,13 +355,39 @@ command line instead of `settings.json`'s `[limits]` table:
 | --- | --- |
 | `--max-turns <n>` | `[limits].max_steps` — the turn (step) ceiling. |
 | `--max-tokens <n>` | `[limits].max_tokens` — the total-token ceiling for the run (`0` there means unlimited; a flag value of `0` means the run trips immediately, before any request). |
-| `--max-seconds <n>` | `[limits].deadline_secs` — a wall-clock ceiling counted from the moment the run starts (`0` there means no deadline; a flag value of `0` also trips immediately). |
+| `--max-seconds <n>` | `[limits].deadline_secs` — a wall-clock ceiling counted from the moment the run starts (a flag value of `0` trips immediately, before any request). |
 
 Passing any one of the three still respects the configured value for the
 other dimensions — `--max-turns 5` alone does not silently clear a
 configured `[limits].max_tokens`. None of the three is supported with
 `--resume`/`--fork-from` in this release (a usage error): neither facade
 path accepts a caller-supplied budget override yet.
+
+**One-shot's own default deadline.** `[limits].deadline_secs` is `0`
+("no ceiling") out of the box, but one-shot mode (`-p`) no longer takes that
+literally: with no `--max-seconds` and no non-zero `[limits].deadline_secs`
+configured, one-shot applies its own default of **300 seconds (5
+minutes)** — board item `01M1WVK9PF5G57Y6R36B94S0RB`, filed after a
+brand-new user's default `conway -p "<prompt>"` sat completely silent for
+90+ seconds against a real, slow local backend, with nothing to
+distinguish "still working" from "hung." A backend that never responds at
+all now fails loud with a named, actionable error (which backend, and how
+long it waited) instead of hanging indefinitely.
+
+This default is **specific to one-shot mode** — it does not change
+`[limits].deadline_secs`'s own config-wide default, which stays `0`
+(unbounded) and continues to govern the interactive TUI and any other
+caller that does not supply its own budget. If you want genuinely unbounded
+one-shot behavior, set `[limits].deadline_secs` (or `--max-seconds`) to a
+large-but-nonzero value rather than `0` — e.g. `315360000` (10 years) — a
+literal `0` is indistinguishable, after config merging, from never having
+configured the key at all, so it does not opt back out of this default.
+
+`text` mode also now prints a periodic `waiting for a response... <n>s`
+notice on stderr while a turn has not yet produced any visible reply text,
+so a slow-but-healthy run no longer looks identical to a hung one.
+`--output-format jsonl`/`json` are unaffected (both already stream real
+activity immediately).
 
 **`--max-turns`/`[limits].max_steps` means something different for a
 keep-alive session.** A `-p`/scripted run is never keep-alive, so

@@ -302,6 +302,19 @@ session is watched by the person running it, who can read the transcript and
 interrupt, so a fixed step ceiling has no one it protects and can only cut a
 real task off early.
 
+**`deadline_secs`'s `0` default above is unbounded for every caller of this
+config, but one-shot mode (`conway -p`) no longer takes it literally.** With
+no `--max-seconds` and no non-zero `deadline_secs` configured, one-shot
+applies its own out-of-the-box default of 300 seconds (5 minutes) — board
+item `01M1WVK9PF5G57Y6R36B94S0RB`; see
+[`scripting.md`](scripting.md#budget-flags) for the full rationale (a
+live-reproduced 90+ second silent hang) and the escape hatch. This is
+deliberately scoped to one-shot's own root only: a person driving the
+interactive TUI (or any other `keep_alive` session) still gets this
+config's own `0`/unbounded default, since `deadline_secs` is a
+session-lifetime ceiling, not a per-turn one, and would otherwise end a
+long-running conversation mid-chat.
+
 **A bare subagent's default `max_steps` is `40`, not `0` — and that is a
 deliberate difference, not drift.** A step ceiling earns its keep on a
 subagent, which no one is watching directly, so `conway_core::agent::
