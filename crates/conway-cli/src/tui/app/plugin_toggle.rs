@@ -579,28 +579,31 @@ mod tests {
     #[test]
     fn enabled_dependents_requiring_finds_only_enabled_requirers() {
         let manifests = vec![
-            manifest("conway.ui", &[], &[]),
-            manifest("conway.permissions", &["conway.ui"], &[]),
-            manifest("conway.other", &["conway.ui"], &[]),
+            manifest(conway_plugin_ui::PLUGIN_ID, &[], &[]),
+            manifest("conway.permissions", &[conway_plugin_ui::PLUGIN_ID], &[]),
+            manifest("conway.other", &[conway_plugin_ui::PLUGIN_ID], &[]),
         ];
-        let enabled: std::collections::HashSet<String> = ["conway.ui", "conway.permissions"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let dependents = enabled_dependents_requiring(&manifests, &enabled, "conway.ui");
+        let enabled: std::collections::HashSet<String> =
+            [conway_plugin_ui::PLUGIN_ID, "conway.permissions"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        let dependents =
+            enabled_dependents_requiring(&manifests, &enabled, conway_plugin_ui::PLUGIN_ID);
         assert_eq!(dependents, vec!["conway.permissions".to_string()]);
     }
 
     #[test]
     fn enabled_dependents_requiring_is_empty_with_no_enabled_requirer() {
         let manifests = vec![
-            manifest("conway.ui", &[], &[]),
-            manifest("conway.permissions", &["conway.ui"], &[]),
+            manifest(conway_plugin_ui::PLUGIN_ID, &[], &[]),
+            manifest("conway.permissions", &[conway_plugin_ui::PLUGIN_ID], &[]),
         ];
         let enabled: std::collections::HashSet<String> =
-            ["conway.ui"].iter().map(|s| s.to_string()).collect();
+            [conway_plugin_ui::PLUGIN_ID].iter().map(|s| s.to_string()).collect();
         assert!(
-            enabled_dependents_requiring(&manifests, &enabled, "conway.ui").is_empty(),
+            enabled_dependents_requiring(&manifests, &enabled, conway_plugin_ui::PLUGIN_ID)
+                .is_empty(),
             "conway.permissions is off, so it cannot be broken by conway.ui turning off"
         );
     }
@@ -608,35 +611,44 @@ mod tests {
     #[test]
     fn enabled_optional_dependents_finds_optional_users_only() {
         let manifests = vec![
-            manifest("conway.ui", &[], &[]),
-            manifest("conway.permissions", &[], &["conway.ui"]),
+            manifest(conway_plugin_ui::PLUGIN_ID, &[], &[]),
+            manifest("conway.permissions", &[], &[conway_plugin_ui::PLUGIN_ID]),
         ];
-        let enabled: std::collections::HashSet<String> = ["conway.ui", "conway.permissions"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let dependents = enabled_optional_dependents(&manifests, &enabled, "conway.ui");
+        let enabled: std::collections::HashSet<String> =
+            [conway_plugin_ui::PLUGIN_ID, "conway.permissions"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        let dependents =
+            enabled_optional_dependents(&manifests, &enabled, conway_plugin_ui::PLUGIN_ID);
         assert_eq!(dependents, vec!["conway.permissions".to_string()]);
         // The required-dependents function must NOT also report an
         // optional user -- the two tiers must never cross-fire.
-        assert!(enabled_dependents_requiring(&manifests, &enabled, "conway.ui").is_empty());
+        assert!(
+            enabled_dependents_requiring(&manifests, &enabled, conway_plugin_ui::PLUGIN_ID)
+                .is_empty()
+        );
     }
 
     #[test]
     fn missing_required_dependencies_reports_only_unmet_ones() {
         let manifests = vec![
-            manifest("conway.ui", &[], &[]),
-            manifest("conway.permissions", &["conway.ui", "conway.memory"], &[]),
+            manifest(conway_plugin_ui::PLUGIN_ID, &[], &[]),
+            manifest(
+                "conway.permissions",
+                &[conway_plugin_ui::PLUGIN_ID, conway_plugin_memory::PLUGIN_ID],
+                &[],
+            ),
         ];
         let enabled: std::collections::HashSet<String> =
-            ["conway.ui"].iter().map(|s| s.to_string()).collect();
+            [conway_plugin_ui::PLUGIN_ID].iter().map(|s| s.to_string()).collect();
         let missing = missing_required_dependencies(&manifests, &enabled, "conway.permissions");
-        assert_eq!(missing, vec!["conway.memory".to_string()]);
+        assert_eq!(missing, vec![conway_plugin_memory::PLUGIN_ID.to_string()]);
     }
 
     #[test]
     fn missing_required_dependencies_is_empty_for_an_unknown_id() {
-        let manifests = vec![manifest("conway.ui", &[], &[])];
+        let manifests = vec![manifest(conway_plugin_ui::PLUGIN_ID, &[], &[])];
         let enabled = std::collections::HashSet::new();
         assert!(
             missing_required_dependencies(&manifests, &enabled, "acme.unknown").is_empty(),
@@ -646,7 +658,7 @@ mod tests {
 
     #[test]
     fn refresh_degradation_annotation_appends_and_is_idempotent() {
-        let manifest = manifest("conway.permissions", &[], &["conway.ui"]);
+        let manifest = manifest("conway.permissions", &[], &[conway_plugin_ui::PLUGIN_ID]);
         let mut entry = browser_entry("conway.permissions", true);
         entry.description.you_lose = "nothing without conway.ui".to_string();
         let enabled_without_ui = std::collections::HashSet::new();
@@ -657,7 +669,7 @@ mod tests {
             "{}",
             entry.description.you_lose
         );
-        assert!(entry.description.you_lose.contains("conway.ui"));
+        assert!(entry.description.you_lose.contains(conway_plugin_ui::PLUGIN_ID));
         let after_first = entry.description.you_lose.clone();
 
         // Calling again against the SAME world must not duplicate the note.
@@ -669,14 +681,14 @@ mod tests {
 
         // Once conway.ui is enabled, the annotation must clear.
         let enabled_with_ui: std::collections::HashSet<String> =
-            ["conway.ui"].iter().map(|s| s.to_string()).collect();
+            [conway_plugin_ui::PLUGIN_ID].iter().map(|s| s.to_string()).collect();
         refresh_degradation_annotation(&mut entry, Some(&manifest), &enabled_with_ui);
         assert_eq!(entry.description.you_lose, "nothing without conway.ui");
     }
 
     #[test]
     fn refresh_degradation_annotation_never_fires_for_an_off_row() {
-        let manifest = manifest("conway.permissions", &[], &["conway.ui"]);
+        let manifest = manifest("conway.permissions", &[], &[conway_plugin_ui::PLUGIN_ID]);
         let mut entry = browser_entry("conway.permissions", false);
         let enabled = std::collections::HashSet::new();
         refresh_degradation_annotation(&mut entry, Some(&manifest), &enabled);
@@ -703,17 +715,17 @@ mod tests {
         let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
-        app.state.plugin_browser = vec![browser_entry("conway.memory", false)];
+        app.state.plugin_browser = vec![browser_entry(conway_plugin_memory::PLUGIN_ID, false)];
 
         let no_project_layer = no_project_layer();
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
         app.apply_plugin_toggle_against(
-            "conway.memory".to_string(),
+            conway_plugin_memory::PLUGIN_ID.to_string(),
             true,
             &env,
             no_project_layer.path(),
-            &[manifest("conway.memory", &[], &[])],
+            &[manifest(conway_plugin_memory::PLUGIN_ID, &[], &[])],
         );
 
         let settings_path = dir.path().join("settings.json");
@@ -721,14 +733,14 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
         assert_eq!(
             value["plugins"]["install"],
-            serde_json::json!(["conway.memory"])
+            serde_json::json!([conway_plugin_memory::PLUGIN_ID])
         );
 
         assert!(
             app.state
                 .plugin_browser
                 .iter()
-                .find(|e| e.id == "conway.memory")
+                .find(|e| e.id == conway_plugin_memory::PLUGIN_ID)
                 .expect("entry still present")
                 .installed,
             "the display mirror must flip to installed on a successful write"
@@ -737,7 +749,7 @@ mod tests {
         assert!(
             app.state.transcript.iter().any(|e| matches!(
                 e,
-                Entry::Notice { text } if text.contains("conway.memory")
+                Entry::Notice { text } if text.contains(conway_plugin_memory::PLUGIN_ID)
                     && text.contains("turned on")
                     && text.contains("next restart")
             )),
@@ -754,7 +766,7 @@ mod tests {
             .config()
             .plugins
             .install
-            .contains(&"conway.memory".to_string()));
+            .contains(&conway_plugin_memory::PLUGIN_ID.to_string()));
     }
 
     /// Turning a plugin OFF removes it from `plugins.install` and flips
@@ -764,24 +776,24 @@ mod tests {
         let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
-        app.state.plugin_browser = vec![browser_entry("conway.skills", true)];
+        app.state.plugin_browser = vec![browser_entry(conway_plugin_skills::PLUGIN_ID, true)];
 
         let no_project_layer = no_project_layer();
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
-        let manifests = [manifest("conway.skills", &[], &[])];
+        let manifests = [manifest(conway_plugin_skills::PLUGIN_ID, &[], &[])];
         // First turn it on (so there is something real to remove), then
         // off -- proving the round trip through the real writer, not just
         // a single-direction happy path.
         app.apply_plugin_toggle_against(
-            "conway.skills".to_string(),
+            conway_plugin_skills::PLUGIN_ID.to_string(),
             true,
             &env,
             no_project_layer.path(),
             &manifests,
         );
         app.apply_plugin_toggle_against(
-            "conway.skills".to_string(),
+            conway_plugin_skills::PLUGIN_ID.to_string(),
             false,
             &env,
             no_project_layer.path(),
@@ -796,7 +808,7 @@ mod tests {
             !app.state
                 .plugin_browser
                 .iter()
-                .find(|e| e.id == "conway.skills")
+                .find(|e| e.id == conway_plugin_skills::PLUGIN_ID)
                 .expect("entry still present")
                 .installed
         );
@@ -811,22 +823,25 @@ mod tests {
         let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
-        app.state.plugin_browser = vec![browser_entry("conway.path", false)];
+        app.state.plugin_browser = vec![browser_entry(conway_plugin_path::PLUGIN_ID, false)];
 
         let no_project_layer = no_project_layer();
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             dir.path().join("settings.json"),
-            r#"{"default_role": "coder", "plugins": {"install": ["conway.memory"]}}"#,
+            format!(
+                r#"{{"default_role": "coder", "plugins": {{"install": ["{}"]}}}}"#,
+                conway_plugin_memory::PLUGIN_ID
+            ),
         )
         .expect("write fixture");
         let env = isolated_env(dir.path());
         app.apply_plugin_toggle_against(
-            "conway.path".to_string(),
+            conway_plugin_path::PLUGIN_ID.to_string(),
             true,
             &env,
             no_project_layer.path(),
-            &[manifest("conway.path", &[], &[])],
+            &[manifest(conway_plugin_path::PLUGIN_ID, &[], &[])],
         );
 
         let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
@@ -834,7 +849,7 @@ mod tests {
         assert_eq!(value["default_role"], "coder");
         assert_eq!(
             value["plugins"]["install"],
-            serde_json::json!(["conway.memory", "conway.path"])
+            serde_json::json!([conway_plugin_memory::PLUGIN_ID, conway_plugin_path::PLUGIN_ID])
         );
     }
 
@@ -847,7 +862,7 @@ mod tests {
         let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
-        app.state.plugin_browser = vec![browser_entry("conway.memory", false)];
+        app.state.plugin_browser = vec![browser_entry(conway_plugin_memory::PLUGIN_ID, false)];
 
         let no_project_layer = no_project_layer();
         let dir = tempfile::tempdir().expect("tempdir");
@@ -856,18 +871,18 @@ mod tests {
         std::fs::write(dir.path().join("settings.json"), "{ not json").expect("write fixture");
         let env = isolated_env(dir.path());
         app.apply_plugin_toggle_against(
-            "conway.memory".to_string(),
+            conway_plugin_memory::PLUGIN_ID.to_string(),
             true,
             &env,
             no_project_layer.path(),
-            &[manifest("conway.memory", &[], &[])],
+            &[manifest(conway_plugin_memory::PLUGIN_ID, &[], &[])],
         );
 
         assert!(
             !app.state
                 .plugin_browser
                 .iter()
-                .find(|e| e.id == "conway.memory")
+                .find(|e| e.id == conway_plugin_memory::PLUGIN_ID)
                 .expect("entry still present")
                 .installed,
             "a failed write must never flip the display mirror"
@@ -875,7 +890,8 @@ mod tests {
         assert!(
             app.state.transcript.iter().any(|e| matches!(
                 e,
-                Entry::Error { text, fatal: false } if text.contains("conway.memory")
+                Entry::Error { text, fatal: false }
+                    if text.contains(conway_plugin_memory::PLUGIN_ID)
             )),
             "a failed write must surface as a non-fatal transcript error: {:?}",
             app.state.transcript
@@ -906,7 +922,7 @@ mod tests {
         let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
-        app.state.plugin_browser = vec![browser_entry("conway.memory", false)];
+        app.state.plugin_browser = vec![browser_entry(conway_plugin_memory::PLUGIN_ID, false)];
 
         // A project layer pinning `plugins.install` to a list that does
         // NOT name the plugin being toggled on.
@@ -921,18 +937,18 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
         app.apply_plugin_toggle_against(
-            "conway.memory".to_string(),
+            conway_plugin_memory::PLUGIN_ID.to_string(),
             true,
             &env,
             project.path(),
-            &[manifest("conway.memory", &[], &[])],
+            &[manifest(conway_plugin_memory::PLUGIN_ID, &[], &[])],
         );
 
         // The user-layer write still happens, and that is correct.
         let text = std::fs::read_to_string(dir.path().join("settings.json"))
             .expect("settings.json must still be written");
         assert!(
-            text.contains("conway.memory"),
+            text.contains(conway_plugin_memory::PLUGIN_ID),
             "the user-layer write must still happen: {text}"
         );
 
@@ -948,7 +964,7 @@ mod tests {
         .plugins
         .install
         .iter()
-        .any(|id| id == "conway.memory");
+        .any(|id| id == conway_plugin_memory::PLUGIN_ID);
         assert!(
             !effective,
             "fixture precondition: the project layer must actually override the user \
@@ -958,7 +974,7 @@ mod tests {
         assert!(
             app.state.transcript.iter().any(|e| matches!(
                 e,
-                Entry::Error { text, .. } if text.contains("conway.memory")
+                Entry::Error { text, .. } if text.contains(conway_plugin_memory::PLUGIN_ID)
                     && text.contains("NOT take effect")
             )),
             "a toggle defeated by a higher-precedence layer must be reported, not \
@@ -990,7 +1006,7 @@ mod tests {
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
         app.state.plugin_browser = vec![
-            browser_entry("conway.ui", true),
+            browser_entry(conway_plugin_ui::PLUGIN_ID, true),
             browser_entry("conway.permissions", true),
         ];
 
@@ -998,12 +1014,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
         let manifests = [
-            manifest("conway.ui", &[], &[]),
-            manifest("conway.permissions", &["conway.ui"], &[]),
+            manifest(conway_plugin_ui::PLUGIN_ID, &[], &[]),
+            manifest("conway.permissions", &[conway_plugin_ui::PLUGIN_ID], &[]),
         ];
 
         app.apply_plugin_toggle_against(
-            "conway.ui".to_string(),
+            conway_plugin_ui::PLUGIN_ID.to_string(),
             false,
             &env,
             no_project_layer.path(),
@@ -1022,7 +1038,7 @@ mod tests {
             app.state
                 .plugin_browser
                 .iter()
-                .find(|e| e.id == "conway.ui")
+                .find(|e| e.id == conway_plugin_ui::PLUGIN_ID)
                 .expect("entry still present")
                 .installed,
             "a refusal must never flip the mirror -- disk was never written"
@@ -1031,7 +1047,7 @@ mod tests {
         assert!(
             app.state.transcript.iter().any(|e| matches!(
                 e,
-                Entry::Error { text, fatal: false } if text.contains("conway.ui")
+                Entry::Error { text, fatal: false } if text.contains(conway_plugin_ui::PLUGIN_ID)
                     && text.contains("conway.permissions")
             )),
             "the refusal must name both the plugin being refused and the dependent that \
@@ -1050,7 +1066,7 @@ mod tests {
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
         app.state.plugin_browser = vec![
-            browser_entry("conway.ui", true),
+            browser_entry(conway_plugin_ui::PLUGIN_ID, true),
             browser_entry("conway.permissions", false),
         ];
 
@@ -1058,8 +1074,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
         let manifests = [
-            manifest("conway.ui", &[], &[]),
-            manifest("conway.permissions", &["conway.ui"], &[]),
+            manifest(conway_plugin_ui::PLUGIN_ID, &[], &[]),
+            manifest("conway.permissions", &[conway_plugin_ui::PLUGIN_ID], &[]),
         ];
 
         // `config::writer::set_plugin_installed` is a no-op (never creates
@@ -1069,14 +1085,14 @@ mod tests {
         // nothing requires it yet) so there is something real for the OFF
         // toggle under test to remove.
         app.apply_plugin_toggle_against(
-            "conway.ui".to_string(),
+            conway_plugin_ui::PLUGIN_ID.to_string(),
             true,
             &env,
             no_project_layer.path(),
             &manifests,
         );
         app.apply_plugin_toggle_against(
-            "conway.ui".to_string(),
+            conway_plugin_ui::PLUGIN_ID.to_string(),
             false,
             &env,
             no_project_layer.path(),
@@ -1091,7 +1107,7 @@ mod tests {
             !app.state
                 .plugin_browser
                 .iter()
-                .find(|e| e.id == "conway.ui")
+                .find(|e| e.id == conway_plugin_ui::PLUGIN_ID)
                 .expect("entry still present")
                 .installed
         );
@@ -1107,7 +1123,7 @@ mod tests {
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
         app.state.plugin_browser = vec![
-            browser_entry("conway.ui", true),
+            browser_entry(conway_plugin_ui::PLUGIN_ID, true),
             browser_entry("conway.permissions", true),
         ];
 
@@ -1115,8 +1131,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
         let manifests = [
-            manifest("conway.ui", &[], &[]),
-            manifest("conway.permissions", &[], &["conway.ui"]),
+            manifest(conway_plugin_ui::PLUGIN_ID, &[], &[]),
+            manifest("conway.permissions", &[], &[conway_plugin_ui::PLUGIN_ID]),
         ];
 
         // Same reason as the required-dependency test above: an OFF toggle
@@ -1124,14 +1140,14 @@ mod tests {
         // no-op write. Turn conway.ui ON first (unrefused) so the OFF
         // toggle under test has something real to remove.
         app.apply_plugin_toggle_against(
-            "conway.ui".to_string(),
+            conway_plugin_ui::PLUGIN_ID.to_string(),
             true,
             &env,
             no_project_layer.path(),
             &manifests,
         );
         app.apply_plugin_toggle_against(
-            "conway.ui".to_string(),
+            conway_plugin_ui::PLUGIN_ID.to_string(),
             false,
             &env,
             no_project_layer.path(),
@@ -1146,7 +1162,7 @@ mod tests {
             !app.state
                 .plugin_browser
                 .iter()
-                .find(|e| e.id == "conway.ui")
+                .find(|e| e.id == conway_plugin_ui::PLUGIN_ID)
                 .expect("entry still present")
                 .installed,
             "the mirror must flip -- this toggle succeeded"
@@ -1155,7 +1171,7 @@ mod tests {
             app.state.transcript.iter().any(|e| matches!(
                 e,
                 Entry::Notice { text } if text.contains("conway.permissions")
-                    && text.contains("conway.ui")
+                    && text.contains(conway_plugin_ui::PLUGIN_ID)
                     && text.contains("presentation/convenience")
             )),
             "an optional-dependency toggle-off must announce what is lost: {:?}",
@@ -1181,7 +1197,7 @@ mod tests {
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
         app.state.plugin_browser = vec![
-            browser_entry("conway.ui", false),
+            browser_entry(conway_plugin_ui::PLUGIN_ID, false),
             browser_entry("conway.permissions", false),
         ];
 
@@ -1189,8 +1205,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
         let manifests = [
-            manifest("conway.ui", &[], &[]),
-            manifest("conway.permissions", &["conway.ui"], &[]),
+            manifest(conway_plugin_ui::PLUGIN_ID, &[], &[]),
+            manifest("conway.permissions", &[conway_plugin_ui::PLUGIN_ID], &[]),
         ];
 
         app.apply_plugin_toggle_against(
@@ -1218,7 +1234,7 @@ mod tests {
             !app.state
                 .plugin_browser
                 .iter()
-                .find(|e| e.id == "conway.ui")
+                .find(|e| e.id == conway_plugin_ui::PLUGIN_ID)
                 .expect("entry still present")
                 .installed,
             "the dependency must not be silently enabled"
@@ -1227,7 +1243,7 @@ mod tests {
             app.state.transcript.iter().any(|e| matches!(
                 e,
                 Entry::Notice { text } if text.contains("conway.permissions")
-                    && text.contains("conway.ui")
+                    && text.contains(conway_plugin_ui::PLUGIN_ID)
                     && text.contains("bundled")
             )),
             "the offer must name both plugins and that the dependency is bundled: {:?}",
@@ -1249,7 +1265,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
         // conway.ui is NOT present in the manifest set at all -- unlinked.
-        let manifests = [manifest("conway.permissions", &["conway.ui"], &[])];
+        let manifests = [manifest("conway.permissions", &[conway_plugin_ui::PLUGIN_ID], &[])];
 
         app.apply_plugin_toggle_against(
             "conway.permissions".to_string(),
@@ -1264,7 +1280,7 @@ mod tests {
             app.state.transcript.iter().any(|e| matches!(
                 e,
                 Entry::Error { text, fatal: false } if text.contains("conway.permissions")
-                    && text.contains("conway.ui")
+                    && text.contains(conway_plugin_ui::PLUGIN_ID)
             )),
             "an unlinked requirement must be refused as a non-fatal Error: {:?}",
             app.state.transcript
@@ -1280,7 +1296,7 @@ mod tests {
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
         app.state.plugin_browser = vec![
-            browser_entry("conway.ui", true),
+            browser_entry(conway_plugin_ui::PLUGIN_ID, true),
             browser_entry("conway.permissions", false),
         ];
 
@@ -1288,8 +1304,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
         let manifests = [
-            manifest("conway.ui", &[], &[]),
-            manifest("conway.permissions", &["conway.ui"], &[]),
+            manifest(conway_plugin_ui::PLUGIN_ID, &[], &[]),
+            manifest("conway.permissions", &[conway_plugin_ui::PLUGIN_ID], &[]),
         ];
 
         app.apply_plugin_toggle_against(
@@ -1323,7 +1339,7 @@ mod tests {
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
         app.state.plugin_browser = vec![
-            browser_entry("conway.ui", true),
+            browser_entry(conway_plugin_ui::PLUGIN_ID, true),
             browser_entry("conway.permissions", true),
         ];
 
@@ -1331,8 +1347,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
         let manifests = [
-            manifest("conway.ui", &[], &[]),
-            manifest("conway.permissions", &[], &["conway.ui"]),
+            manifest(conway_plugin_ui::PLUGIN_ID, &[], &[]),
+            manifest("conway.permissions", &[], &[conway_plugin_ui::PLUGIN_ID]),
         ];
 
         // conway.permissions is not yet degraded -- conway.ui is on.
@@ -1347,7 +1363,7 @@ mod tests {
             .contains("DEGRADED"));
 
         app.apply_plugin_toggle_against(
-            "conway.ui".to_string(),
+            conway_plugin_ui::PLUGIN_ID.to_string(),
             false,
             &env,
             no_project_layer.path(),
@@ -1365,11 +1381,11 @@ mod tests {
             "the browser row for conway.permissions must now say it is degraded: {}",
             permissions_entry.description.you_lose
         );
-        assert!(permissions_entry.description.you_lose.contains("conway.ui"));
+        assert!(permissions_entry.description.you_lose.contains(conway_plugin_ui::PLUGIN_ID));
 
         // Turning conway.ui back on must clear the annotation again.
         app.apply_plugin_toggle_against(
-            "conway.ui".to_string(),
+            conway_plugin_ui::PLUGIN_ID.to_string(),
             true,
             &env,
             no_project_layer.path(),
@@ -1403,13 +1419,13 @@ mod tests {
         let conway = echo_conway();
         let cli = minimal_cli();
         let mut app = App::new(&cli, &conway, &[]).await.expect("App::new");
-        app.state.plugin_browser = vec![browser_entry("conway.memory", false)];
+        app.state.plugin_browser = vec![browser_entry(conway_plugin_memory::PLUGIN_ID, false)];
 
         let no_project_layer = no_project_layer();
         let dir = tempfile::tempdir().expect("tempdir");
         let env = isolated_env(dir.path());
         app.apply_plugin_toggle(
-            "conway.memory".to_string(),
+            conway_plugin_memory::PLUGIN_ID.to_string(),
             true,
             &env,
             no_project_layer.path(),
@@ -1417,12 +1433,12 @@ mod tests {
 
         let text = std::fs::read_to_string(dir.path().join("settings.json"))
             .expect("settings.json must exist");
-        assert!(text.contains("conway.memory"), "{text}");
+        assert!(text.contains(conway_plugin_memory::PLUGIN_ID), "{text}");
         assert!(
             app.state
                 .plugin_browser
                 .iter()
-                .find(|e| e.id == "conway.memory")
+                .find(|e| e.id == conway_plugin_memory::PLUGIN_ID)
                 .expect("entry still present")
                 .installed
         );

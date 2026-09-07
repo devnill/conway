@@ -349,12 +349,12 @@ mod tests {
     #[test]
     fn rows_from_plugin_browser_alone_needs_no_app_state() {
         let entries = vec![
-            compiled_in("conway.memory", true, "notes"),
-            compiled_in("conway.skills", false, "skill index"),
+            compiled_in(conway_plugin_memory::PLUGIN_ID, true, "notes"),
+            compiled_in(conway_plugin_skills::PLUGIN_ID, false, "skill index"),
         ];
         let rows = rows_from_plugin_browser(&entries);
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].id, "conway.memory");
+        assert_eq!(rows[0].id, conway_plugin_memory::PLUGIN_ID);
         assert!(rows[0].active);
         assert_eq!(rows[0].toggle, PluginToggle::Toggleable { installed: true });
         assert!(!rows[1].active);
@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn all_plugin_rows_with_empty_other_sources_matches_plugin_browser_alone() {
-        let entries = vec![compiled_in("conway.memory", true, "notes")];
+        let entries = vec![compiled_in(conway_plugin_memory::PLUGIN_ID, true, "notes")];
         let via_all = all_plugin_rows(&entries, &[], &[], &[]);
         let via_direct = rows_from_plugin_browser(&entries);
         assert_eq!(via_all, via_direct);

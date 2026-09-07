@@ -514,7 +514,7 @@ mod tests {
     #[test]
     fn every_row_names_its_origin() {
         let mut state = AppState::new(AgentId::new());
-        state.plugin_browser = vec![compiled_in("conway.memory", true, "notes")];
+        state.plugin_browser = vec![compiled_in(conway_plugin_memory::PLUGIN_ID, true, "notes")];
         state.subprocess_plugins = vec![configured("acme.review")];
         state.mcp_plugins = vec![configured("acme.search")];
 
@@ -594,12 +594,12 @@ mod tests {
     #[test]
     fn a_compiled_in_row_is_still_toggleable() {
         let mut state = AppState::new(AgentId::new());
-        state.plugin_browser = vec![compiled_in("conway.memory", true, "notes")];
+        state.plugin_browser = vec![compiled_in(conway_plugin_memory::PLUGIN_ID, true, "notes")];
 
         let rows = build_tree(&state).rows();
         let row = rows
             .iter()
-            .find(|r| r.label.contains("conway.memory"))
+            .find(|r| r.label.contains(conway_plugin_memory::PLUGIN_ID))
             .expect("the compiled-in row must render");
         assert_eq!(
             row.kind,
@@ -661,7 +661,7 @@ mod tests {
     #[test]
     fn a_claude_compat_entry_appears_alongside_a_compiled_in_one_naming_both_origins() {
         let mut state = AppState::new(AgentId::new());
-        state.plugin_browser = vec![compiled_in("conway.memory", true, "notes")];
+        state.plugin_browser = vec![compiled_in(conway_plugin_memory::PLUGIN_ID, true, "notes")];
         state.claude_compat_plugins = vec![claude_compat("acme-tools", 1, vec![], vec![])];
 
         let text = plain_rows(&state);
@@ -813,7 +813,7 @@ mod tests {
                 description: None,
             },
             PluginRow {
-                id: "conway.memory".to_string(),
+                id: conway_plugin_memory::PLUGIN_ID.to_string(),
                 origin: PluginOrigin::COMPILED_IN,
                 contributes: "notes".to_string(),
                 active: true,
@@ -839,7 +839,7 @@ mod tests {
     #[test]
     fn draw_never_panics_on_a_tiny_terminal() {
         let mut state = AppState::new(AgentId::new());
-        state.plugin_browser = vec![compiled_in("conway.memory", true, "notes")];
+        state.plugin_browser = vec![compiled_in(conway_plugin_memory::PLUGIN_ID, true, "notes")];
         state.subprocess_plugins = vec![configured("acme.review")];
         state.mcp_plugins = vec![configured("acme.search")];
         for (w, h) in [(80u16, 1u16), (80, 2), (1, 24), (0, 0)] {
@@ -858,13 +858,13 @@ mod tests {
     #[test]
     fn the_detail_panel_shows_the_full_breakdown_for_a_compiled_in_selection() {
         let mut state = AppState::new(AgentId::new());
-        state.plugin_browser = vec![compiled_in("conway.memory", true, "notes")];
+        state.plugin_browser = vec![compiled_in(conway_plugin_memory::PLUGIN_ID, true, "notes")];
         state.subprocess_plugins = vec![configured("acme.review")];
 
         let idx = build_tree(&state)
             .rows()
             .iter()
-            .position(|r| r.label.contains("conway.memory"))
+            .position(|r| r.label.contains(conway_plugin_memory::PLUGIN_ID))
             .expect("row exists");
         state.plugins_selected = idx;
         let text = render(&state, 120, 40);
