@@ -68,7 +68,7 @@ use std::path::{Path, PathBuf};
 /// workspace targets -- replaces the destination as a single filesystem
 /// operation).
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    atomic_write_with(path, bytes, fs::File::create)
+    atomic_write_with(path, bytes, |p| fs::File::create(p))
 }
 
 /// [`atomic_write`]'s body, generic over how the temp file is opened --
