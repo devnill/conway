@@ -20,16 +20,11 @@
 //! actually dialed the configured `base_url`, would leave the mock server
 //! unreached and this test hanging/failing rather than completing.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
-    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig,
-};
-use conway::test_support::test_builder_without_router;
+use conway::config::schema::{BackendEntry, ConwayConfig, RoleEntry};
+use conway::test_support::{base_config, test_builder_without_router};
 use conway::SessionSpec;
 use conway_core::ids::RoleAlias;
 use conway_plugin_backends::OpenAiCompatBackendFactory;
@@ -43,8 +38,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// `with_backend` injection standing in for it (that would prove nothing
 /// about `with_backend_factory` itself).
 fn config(base_url: String) -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
+    let mut config = base_config();
+    config.default_role = RoleAlias::new("coder");
+    config.roles.insert(
         "coder".to_string(),
         RoleEntry {
             chain: vec!["mock/echo-model".to_string()],
@@ -52,8 +48,7 @@ fn config(base_url: String) -> ConwayConfig {
             ..Default::default()
         },
     );
-    let mut backends = BTreeMap::new();
-    backends.insert(
+    config.backends.insert(
         "mock".to_string(),
         BackendEntry {
             kind: "openai-compat".to_string(),
@@ -62,22 +57,7 @@ fn config(base_url: String) -> ConwayConfig {
             ..BackendEntry::default()
         },
     );
-    ConwayConfig {
-        default_role: RoleAlias::new("coder"),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends,
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
+    config
 }
 
 /// Renders `events` as an SSE body, one `data:` line per event, terminated

@@ -159,45 +159,15 @@ async fn ideates_real_refine_skill_resolves_runs_and_keeps_its_cross_reference()
 /// In-process coverage for the parts a subprocess spawn cannot observe --
 /// mirrors `claude_compat_commands.rs::registry_wiring`'s own split.
 mod registry_wiring {
-    use std::collections::BTreeMap;
-
-    use conway::config::schema::{
-        AgentsConfig, ClaudeCompatPluginEntry, ConwayConfig, HealthSection, HooksConfig,
-        LimitsConfig, ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection,
-        SessionConfig, ToolsConfig,
-    };
+    use conway::config::schema::{ClaudeCompatPluginEntry, ConwayConfig};
+    use conway::test_support::base_config;
     use conway_cli::claude_compat_plugins::command_plugins;
     use conway_cli::tui::commands::{parse, CommandRegistry, SlashCommand};
-    use conway_core::ids::RoleAlias;
 
     use super::{fixture_plugin_dir, PLUGIN_NAME};
 
     fn config_with_ideate_entry() -> ConwayConfig {
-        let mut roles = BTreeMap::new();
-        roles.insert(
-            "default".to_string(),
-            RoleEntry {
-                chain: vec![],
-                headroom_tokens: None,
-                ..Default::default()
-            },
-        );
-        let mut config = ConwayConfig {
-            default_role: RoleAlias::new("default"),
-            cwd: std::path::PathBuf::from("."),
-            session: SessionConfig::default(),
-            limits: LimitsConfig::default(),
-            permissions: PermissionsConfig::default(),
-            backends: BTreeMap::new(),
-            routing: RoutingSection::default(),
-            roles,
-            health: HealthSection::default(),
-            agents: AgentsConfig::default(),
-            models: ModelsConfig::default(),
-            tools: ToolsConfig::default(),
-            plugins: PluginsConfig::default(),
-            hooks: HooksConfig::default(),
-        };
+        let mut config = base_config();
         config.plugins.claude_compat.push(ClaudeCompatPluginEntry {
             id: PLUGIN_NAME.to_string(),
             dir: fixture_plugin_dir(),

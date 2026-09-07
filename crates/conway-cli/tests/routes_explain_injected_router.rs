@@ -17,15 +17,10 @@
 //! already uses (`conway_testkit::{FakeBackend, FakeGate, FakeRouter,
 //! FakeStore}`).
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
-    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig,
-};
-use conway::test_support::test_builder;
+use conway::config::schema::{BackendEntry, ConwayConfig, RoleEntry};
+use conway::test_support::{base_config, test_builder};
 use conway_cli::commands::routes::{run, RoutesAction, RoutesArgs};
 use conway_cli::exit::ExitCode;
 use conway_core::ids::BackendId;
@@ -48,15 +43,18 @@ use conway_testkit::FakeBackend;
 /// to test that configuration. `report.entries.is_empty()` cannot tell
 /// these two apart; `conway.config().roles.contains_key(..)` can.
 fn config_with_role(role: &str) -> ConwayConfig {
-    let mut roles = BTreeMap::new();
-    roles.insert(
+    let mut config = base_config();
+    config.default_role = conway::RoleAlias::new(role);
+    config.roles.insert(
         role.to_string(),
         RoleEntry {
             chain: vec!["fake/echo-model".to_string()],
             ..Default::default()
         },
     );
-    roles.insert("empty-chain".to_string(), RoleEntry::default());
+    config
+        .roles
+        .insert("empty-chain".to_string(), RoleEntry::default());
     // `config::merge::validate` (called from `ConwayBuilder::build`'s step
     // 1) rejects a chain entry naming a backend id absent from
     // `[backends]`, regardless of whether a real `Backend` was later
@@ -68,30 +66,14 @@ fn config_with_role(role: &str) -> ConwayConfig {
     // rejects an empty one, but this backend is never actually dialed --
     // it is immediately shadowed by the injected `FakeBackend` sharing its
     // id.
-    let mut backends = BTreeMap::new();
-    backends.insert(
+    config.backends.insert(
         "fake".to_string(),
         BackendEntry {
             api_key: "unused-placeholder-key".to_string(),
             ..BackendEntry::default()
         },
     );
-    ConwayConfig {
-        default_role: conway::RoleAlias::new(role),
-        cwd: std::path::PathBuf::from("."),
-        session: SessionConfig::default(),
-        limits: LimitsConfig::default(),
-        permissions: PermissionsConfig::default(),
-        backends,
-        routing: RoutingSection::default(),
-        roles,
-        health: HealthSection::default(),
-        agents: AgentsConfig::default(),
-        models: ModelsConfig::default(),
-        tools: ToolsConfig::default(),
-        plugins: PluginsConfig::default(),
-        hooks: HooksConfig::default(),
-    }
+    config
 }
 
 fn explain_args(role: &str) -> RoutesArgs {
