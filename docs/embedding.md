@@ -806,8 +806,9 @@ A few things worth knowing before you build a host UI on this:
 
 Every extension point below is a `conway_core::ports` trait, and every one
 of those *traits* is re-exported at the facade's crate root
-(`conway::{Backend, ContextHook, HealthRegistry, PermissionGate, Plugin,
-Router, SessionStore, Tool}`). A re-exported trait is only implementable
+(`conway::{ArtifactWriter, Backend, ContextHook, HealthRegistry,
+PermissionGate, Plugin, Router, SessionStore, Tool}`). A re-exported trait
+is only implementable
 if every type its methods name is also reachable; the authoring surface
 for the three traits plugin authors implement lives in the curated
 `conway::plugin` module (below), so that `use conway::plugin::...` plus
