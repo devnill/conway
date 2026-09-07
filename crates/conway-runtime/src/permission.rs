@@ -359,6 +359,39 @@ fn canonicalize_when(when: &When, base: &Path) -> Option<CanonicalRoot> {
     }
 }
 
+/// P-14: the ONE canonicalize-and-fail-closed-install sequence shared by
+/// [`PermissionBroker::remember_pattern_rule`],
+/// [`PermissionBroker::remember_deny_rule`], and
+/// [`PermissionBroker::remember_prompt_rule`] -- consolidating the copy
+/// each of those three used to carry independently (board item
+/// `01M1WVMVT17B61PV1FQ82W51J5`; the historical proof this scatter is not
+/// hypothetical is `d508a5d`, a real shipped defect from this exact
+/// class). Canonicalizes `rule.when` against `base` via
+/// [`canonicalize_when`] and, for a [`When::PathsUnder`] whose prefix does
+/// NOT canonicalize, fails closed: returns `false`, installing nothing (a
+/// boundary that cannot be established cannot be trusted to confine).
+/// Every other outcome pushes `build(rule, canonical)` onto `store` and
+/// returns `true`.
+///
+/// Deliberately does NOT check `rule.then` or any `origin` guard -- those
+/// differ per rule kind (allow additionally refuses a `PatternOrigin::
+/// Plugin` rule) and stay inline at each thin call site; this function
+/// owns only the canonicalization/install step all three share verbatim.
+fn install_canonicalized_rule<T>(
+    rule: Rule,
+    base: &Path,
+    store: &RwLock<Vec<T>>,
+    lock_poisoned_msg: &str,
+    build: impl FnOnce(Rule, Option<CanonicalRoot>) -> T,
+) -> bool {
+    let canonical = canonicalize_when(&rule.when, base);
+    if canonical.is_none() && matches!(rule.when, When::PathsUnder(_)) {
+        return false;
+    }
+    store.write().expect(lock_poisoned_msg).push(build(rule, canonical));
+    true
+}
+
 /// The `paths_under` predicate: every one of the call's DECLARED path
 /// arguments (per `Tool::path_args`, resolved exactly as
 /// [`PermissionBroker::check_root`] resolves them -- via
@@ -989,16 +1022,14 @@ impl PermissionBroker {
         if matches!(origin, PatternOrigin::Plugin) {
             return false;
         }
-        let canonical = canonicalize_when(&rule.when, base);
-        if canonical.is_none() && matches!(rule.when, When::PathsUnder(_)) {
-            return false;
-        }
         let grant = grant_scope_for(scope, granting_agent);
-        self.patterns
-            .write()
-            .expect("permission patterns poisoned")
-            .push((rule, canonical, grant, origin));
-        true
+        install_canonicalized_rule(
+            rule,
+            base,
+            &self.patterns,
+            "permission patterns poisoned",
+            |rule, canonical| (rule, canonical, grant, origin),
+        )
     }
 
     /// Installs a DENY rule, attributed to `origin`. Unlike
@@ -1027,15 +1058,13 @@ impl PermissionBroker {
         if rule.then != Then::Deny {
             return false;
         }
-        let canonical = canonicalize_when(&rule.when, base);
-        if canonical.is_none() && matches!(rule.when, When::PathsUnder(_)) {
-            return false;
-        }
-        self.deny_patterns
-            .write()
-            .expect("permission deny patterns poisoned")
-            .push((rule, canonical, origin));
-        true
+        install_canonicalized_rule(
+            rule,
+            base,
+            &self.deny_patterns,
+            "permission deny patterns poisoned",
+            |rule, canonical| (rule, canonical, origin),
+        )
     }
 
     /// Installs a PROMPT rule, attributed to `origin`.
@@ -1067,15 +1096,13 @@ impl PermissionBroker {
         if rule.then != Then::Prompt {
             return false;
         }
-        let canonical = canonicalize_when(&rule.when, base);
-        if canonical.is_none() && matches!(rule.when, When::PathsUnder(_)) {
-            return false;
-        }
-        self.prompt_patterns
-            .write()
-            .expect("permission prompt patterns poisoned")
-            .push((rule, canonical, origin));
-        true
+        install_canonicalized_rule(
+            rule,
+            base,
+            &self.prompt_patterns,
+            "permission prompt patterns poisoned",
+            |rule, canonical| (rule, canonical, origin),
+        )
     }
 
     /// S5, NARROWED by (`AgentRoot`/`SubagentSpec::root`/`--root` confinement
@@ -1219,25 +1246,51 @@ impl PermissionBroker {
         }
     }
 
+    /// P-14: the ONE "does this stored [`Rule`] round-trip to a flat
+    /// [`PatternRule`]" split shared by all six `active_*` review methods --
+    /// consolidating the copy their own comments (`permission.rs:722`,
+    /// `:1278`) already flagged in prose as repeating three times, once per
+    /// vector (board item `01M1WVMVT17B61PV1FQ82W51J5`). `entries` pairs
+    /// each stored rule with whatever else its caller's review row carries
+    /// beyond the rule itself -- nothing extra for deny/prompt, the
+    /// [`GrantScope`] for allow. Returns the FLAT partition (rules that
+    /// round-trip, rendered as [`PatternRule`]) and the STRUCTURED
+    /// partition (rules that do not, kept as the original [`Rule`]), each
+    /// in the same relative order `entries` was given in -- a stored `Rule`
+    /// appears in exactly one of the two, never both, exactly as the six
+    /// callers' own docs already promise.
+    fn split_flat_and_structured<E>(
+        entries: impl Iterator<Item = (Rule, E)>,
+    ) -> (Vec<(PatternRule, E)>, Vec<(Rule, E)>) {
+        let mut flat = Vec::new();
+        let mut structured = Vec::new();
+        for (rule, extra) in entries {
+            match rule.to_pattern_rule() {
+                Some(pattern) => flat.push((pattern, extra)),
+                None => structured.push((rule, extra)),
+            }
+        }
+        (flat, structured)
+    }
+
     /// Every active pattern ALLOW grant, paired with its origin, for the
     /// settings menu's review list. An operator must be able to see what
     /// they have granted, AND where it came from; a rule set nobody can
     /// inspect -- or whose provenance nobody can tell -- is a trap (board
     /// item).
     pub fn active_patterns(&self) -> Vec<(PatternRule, PatternOrigin)> {
-        self.patterns
-            .read()
-            .expect("permission patterns poisoned")
+        // F12: a stored `Rule` rounds back to the flat `PatternRule` it
+        // desugared from when it can -- so the existing `PatternRule`-
+        // shaped review surface keeps working unchanged for flat rules.
+        // A structured rule the flat form cannot express (`paths_under`,
+        // `categories`, `category_in`, multiple tools) is NOT returned
+        // here; it is returned by [`Self::active_structured_allow_rules`]
+        // so the review surface can list it without a type widening.
+        let store = self.patterns.read().expect("permission patterns poisoned");
+        let entries = store
             .iter()
-            // F12: a stored `Rule` rounds back to the flat `PatternRule` it
-            // desugared from when it can -- so the existing `PatternRule`-
-            // shaped review surface keeps working unchanged for flat rules.
-            // A structured rule the flat form cannot express (`paths_under`,
-            // `categories`, `category_in`, multiple tools) is NOT returned
-            // here; it is returned by [`Self::active_structured_allow_rules`]
-            // so the review surface can list it without a type widening.
-            .filter_map(|(rule, _, _, origin)| rule.to_pattern_rule().map(|p| (p, origin.clone())))
-            .collect()
+            .map(|(rule, _, _, origin)| (rule.clone(), origin.clone()));
+        Self::split_flat_and_structured(entries).0
     }
 
     /// F12: every active ALLOW [`Rule`] the flat form cannot express, paired
@@ -1254,12 +1307,14 @@ impl PermissionBroker {
     /// [`Self::revoke_pattern_rule`] addresses, so what the surface displays
     /// is what a revoke names.
     pub fn active_structured_allow_rules(&self) -> Vec<(Rule, PatternOrigin, GrantScope)> {
-        self.patterns
-            .read()
-            .expect("permission patterns poisoned")
+        let store = self.patterns.read().expect("permission patterns poisoned");
+        let entries = store
             .iter()
-            .filter(|(rule, _, _, _)| rule.to_pattern_rule().is_none())
-            .map(|(rule, _, scope, origin)| (rule.clone(), origin.clone(), *scope))
+            .map(|(rule, _, scope, origin)| (rule.clone(), (origin.clone(), *scope)));
+        Self::split_flat_and_structured(entries)
+            .1
+            .into_iter()
+            .map(|(rule, (origin, scope))| (rule, origin, scope))
             .collect()
     }
 
@@ -1267,25 +1322,24 @@ impl PermissionBroker {
     /// own review list, so a `deny` an operator did not expect (or forgot
     /// they wrote) is discoverable the same way an `allow` grant is.
     pub fn active_deny_patterns(&self) -> Vec<(PatternRule, PatternOrigin)> {
-        self.deny_patterns
+        let store = self
+            .deny_patterns
             .read()
-            .expect("permission deny patterns poisoned")
-            .iter()
-            .filter_map(|(rule, _, origin)| rule.to_pattern_rule().map(|p| (p, origin.clone())))
-            .collect()
+            .expect("permission deny patterns poisoned");
+        let entries = store.iter().map(|(rule, _, origin)| (rule.clone(), origin.clone()));
+        Self::split_flat_and_structured(entries).0
     }
 
     /// F12: the structured half of the deny review list -- mirrors
     /// [`Self::active_structured_allow_rules`] for deny rules the flat form
     /// cannot express.
     pub fn active_structured_deny_rules(&self) -> Vec<(Rule, PatternOrigin)> {
-        self.deny_patterns
+        let store = self
+            .deny_patterns
             .read()
-            .expect("permission deny patterns poisoned")
-            .iter()
-            .filter(|(rule, _, _)| rule.to_pattern_rule().is_none())
-            .map(|(rule, _, origin)| (rule.clone(), origin.clone()))
-            .collect()
+            .expect("permission deny patterns poisoned");
+        let entries = store.iter().map(|(rule, _, origin)| (rule.clone(), origin.clone()));
+        Self::split_flat_and_structured(entries).1
     }
 
     /// Every active PROMPT rule, paired with its origin -- the prompt half's
@@ -1293,12 +1347,12 @@ impl PermissionBroker {
     /// an operator did not expect (or forgot they trusted) must be
     /// discoverable the same way a `deny` is.
     pub fn active_prompt_patterns(&self) -> Vec<(PatternRule, PatternOrigin)> {
-        self.prompt_patterns
+        let store = self
+            .prompt_patterns
             .read()
-            .expect("permission prompt patterns poisoned")
-            .iter()
-            .filter_map(|(rule, _, origin)| rule.to_pattern_rule().map(|p| (p, origin.clone())))
-            .collect()
+            .expect("permission prompt patterns poisoned");
+        let entries = store.iter().map(|(rule, _, origin)| (rule.clone(), origin.clone()));
+        Self::split_flat_and_structured(entries).0
     }
 
     /// F12: the structured half of the prompt review list -- mirrors
@@ -1306,13 +1360,12 @@ impl PermissionBroker {
     /// form cannot express (the flat form has no prompt syntax at all, so
     /// every prompt rule the `rules` array installed lives here).
     pub fn active_structured_prompt_rules(&self) -> Vec<(Rule, PatternOrigin)> {
-        self.prompt_patterns
+        let store = self
+            .prompt_patterns
             .read()
-            .expect("permission prompt patterns poisoned")
-            .iter()
-            .filter(|(rule, _, _)| rule.to_pattern_rule().is_none())
-            .map(|(rule, _, origin)| (rule.clone(), origin.clone()))
-            .collect()
+            .expect("permission prompt patterns poisoned");
+        let entries = store.iter().map(|(rule, _, origin)| (rule.clone(), origin.clone()));
+        Self::split_flat_and_structured(entries).1
     }
 
     /// Drops every pattern ALLOW grant and every cached `AllowAlways`,
@@ -3422,6 +3475,63 @@ mod tests {
                 Path::new("/"),
             ),
             "a Plugin-origin Allow rule is refused at the broker boundary -- the wire policy cannot widen"
+        );
+    }
+
+    /// **Acceptance 4 / P-14: an uncanonicalizable `paths_under` prefix
+    /// fails closed identically through `remember_deny_rule` and
+    /// `remember_prompt_rule`.** Both now delegate their canonicalize-and-
+    /// install step to the same private `install_canonicalized_rule`
+    /// helper (the write-side consolidation board item
+    /// `01M1WVMVT17B61PV1FQ82W51J5` performs); this pins that the shared
+    /// path really does refuse identically for both callers, not merely
+    /// for one -- exactly the class of drift `d508a5d` shipped (correct
+    /// for one rule kind, silently fail-open for another). A NUL byte in
+    /// the prefix is a portable way to make `resolve_like_the_tool_will`
+    /// (and therefore `canonicalize_when`) fail -- see
+    /// `conway_core::containment::resolve_candidate`'s own NUL guard.
+    #[test]
+    fn uncanonicalizable_paths_under_prefix_fails_closed_for_both_deny_and_prompt() {
+        let broker = PermissionBroker::new(
+            RecordingGate::new() as Arc<dyn PermissionGate>,
+            EventBus::new(64),
+        );
+        let uncanonicalizable_deny_rule = Rule {
+            select: Select::Tools(vec!["read".to_string()]),
+            when: When::PathsUnder("/tmp/bad\0prefix".to_string()),
+            then: Then::Deny,
+        };
+        let uncanonicalizable_prompt_rule = Rule {
+            select: Select::Tools(vec!["read".to_string()]),
+            when: When::PathsUnder("/tmp/bad\0prefix".to_string()),
+            then: Then::Prompt,
+        };
+
+        assert!(
+            !broker.remember_deny_rule(
+                uncanonicalizable_deny_rule,
+                PatternOrigin::Interactive,
+                Path::new("/"),
+            ),
+            "a paths_under deny rule whose prefix cannot canonicalize must fail closed \
+             (installed nothing), not be stored inert"
+        );
+        assert!(
+            !broker.remember_prompt_rule(
+                uncanonicalizable_prompt_rule,
+                PatternOrigin::Interactive,
+                Path::new("/"),
+            ),
+            "a paths_under prompt rule whose prefix cannot canonicalize must fail closed \
+             identically to the deny rule above -- both go through the same shared helper"
+        );
+        assert!(
+            broker.active_structured_deny_rules().is_empty(),
+            "the rejected deny rule must not have been installed"
+        );
+        assert!(
+            broker.active_structured_prompt_rules().is_empty(),
+            "the rejected prompt rule must not have been installed"
         );
     }
 }
